@@ -264,24 +264,71 @@ def _tracked_gitlink(root: Path, relative: str) -> bool:
     )
 
 
+def _submodule_checkout_complete(root: Path, relative: str) -> bool:
+    """Check that a tracked submodule has a real checkout with no missing tracked files."""
+    path = root / relative
+    try:
+        if not path.is_dir() or not any(
+            entry.name != ".git" for entry in path.iterdir()
+        ):
+            return False
+    except OSError:
+        return False
+
+    try:
+        worktree = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if worktree.returncode != 0 or not worktree.stdout.strip():
+            return False
+        if Path(worktree.stdout.strip()).resolve() != path.resolve():
+            return False
+
+        deleted = subprocess.run(
+            ["git", "-C", str(path), "ls-files", "--deleted", "-z"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    # A partially populated submodule can contain other files and still be
+    # unusable. Git's index is the source of truth for tracked files, so a
+    # missing tracked file makes the whole dependency eligible for targeted repair.
+    return deleted.returncode == 0 and not deleted.stdout
+
+
 def _submodule_state(root: Path) -> dict[str, Any]:
     missing: list[str] = []
     orphaned: list[tuple[str, str]] = []
     entries = _declared_submodules(root)
     for relative, url in entries:
         path = root / relative
+        tracked = _tracked_gitlink(root, relative)
         try:
             # A submodule directory can exist with only Git's .git marker
-            # (a file for normal submodules). That is metadata, not a checked-out
-            # dependency tree, and must trigger the pre-build recovery path.
+            # (a file for normal submodules). That is metadata, not a checkout.
             initialized = path.is_dir() and any(
                 entry.name != ".git" for entry in path.iterdir()
             )
         except OSError:
             initialized = False
+
+        # For real gitlinks, checking only whether the directory is non-empty
+        # misses damaged/partial worktrees. Validate the submodule repository and
+        # ask Git for tracked files deleted from its working tree.
+        if tracked and initialized:
+            initialized = _submodule_checkout_complete(root, relative)
+
         if not initialized:
             missing.append(relative)
-        if url and not _tracked_gitlink(root, relative) and not initialized:
+        if url and not tracked and not initialized:
             orphaned.append((relative, url))
     return {
         "declared": len(entries),
