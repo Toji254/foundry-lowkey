@@ -132,6 +132,8 @@ def _endpoint(provider: str, supplied: str | None) -> str:
         raise AIHarnessError("Provider URL must be an absolute HTTP(S) URL.")
     if parsed.username or parsed.password:
         raise AIHarnessError("Do not put credentials in provider URLs; use the secure prompt or an environment variable.")
+    if parsed.query or parsed.fragment:
+        raise AIHarnessError("Provider base URLs must not contain query parameters or fragments.")
     if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise AIHarnessError("Remote provider endpoints must use HTTPS.")
     return value
