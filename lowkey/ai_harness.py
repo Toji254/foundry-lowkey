@@ -1344,17 +1344,26 @@ def render_ai_help(parser: Any) -> str:
     return "\n".join(lines)
 
 
+def _safe_terminal_text(value: str) -> str:
+    """Make untrusted source text safe to print to a terminal."""
+    return re.sub(
+        r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]",
+        lambda match: f"\\x{ord(match.group(0)):02x}",
+        value,
+    )
+
+
 def _human_context_lines(label: str, value: Any, indent: int = 0) -> list[str]:
     """Render context as readable terminal text without changing the provider payload."""
     prefix = " " * indent
-    heading = label.replace("_", " ").strip().capitalize()
+    heading = _safe_terminal_text(label.replace("_", " ").strip().capitalize())
 
     if label == "source_excerpt" and isinstance(value, str):
         lines = [
             f"{prefix}Source excerpt (redacted; inspect before sharing):",
             f"{prefix}  --- BEGIN SOURCE EXCERPT ---",
         ]
-        lines.extend(f"{prefix}  {line}" for line in value.splitlines())
+        lines.extend(f"{prefix}  {_safe_terminal_text(line)}" for line in value.splitlines())
         lines.append(f"{prefix}  --- END SOURCE EXCERPT ---")
         return lines
 
@@ -1366,7 +1375,7 @@ def _human_context_lines(label: str, value: Any, indent: int = 0) -> list[str]:
             if not isinstance(item, Mapping):
                 lines.append(f"{prefix}  [{index}] {item}")
                 continue
-            path = str(item.get("path", "(unknown path)"))
+            path = _safe_terminal_text(str(item.get("path", "(unknown path)")))
             source = str(item.get("source_excerpt", ""))
             marker_count = (
                 source.count("[REDACTED]")
@@ -1415,7 +1424,7 @@ def _human_context_lines(label: str, value: Any, indent: int = 0) -> list[str]:
         lines.extend(f"{prefix}  {line}" for line in value.splitlines())
         return lines
 
-    rendered = "(empty)" if value is None or value == "" else str(value)
+    rendered = "(empty)" if value is None or value == "" else _safe_terminal_text(str(value))
     return [f"{prefix}{heading}: {rendered}"]
 
 
@@ -1433,8 +1442,8 @@ def render_human_context_preview(
         "LOWKEY AI CONTEXT PREVIEW — HUMAN-READABLE",
         "==========================================",
         "Provider request: NOT SENT (this preview is local-only)",
-        f"Project: {project_root.expanduser().resolve()}",
-        f"Requested contract: {context.get('requested_contract') or '(not specified)'}",
+        f"Project: {_safe_terminal_text(str(project_root.expanduser().resolve()))}",
+        f"Requested contract: {_safe_terminal_text(str(context.get('requested_contract') or '(not specified)'))}",
         f"Selected source files: {len(source_files) if isinstance(source_files, list) else 0}",
         f"Context size: {context_bytes:,} / {context_limit:,} bytes",
         f"Redaction markers found: {redaction_markers}",
