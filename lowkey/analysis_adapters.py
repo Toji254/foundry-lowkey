@@ -950,7 +950,11 @@ def security_analysis_plan(
     plan: list[dict[str, Any]] = []
     available = set(available_security_analyzers(root, list(stacks), languages))
     if "slither" in available:
-        plan.append({"name": "slither", "kind": "static-security", "command": ["slither", str(root)]})
+        # `lk scan` is triage, not a severity-gating CI command. Keep
+        # detector findings as reportable evidence instead of letting Slither's
+        # default finding-based exit policy misclassify a completed analysis as
+        # a tool failure. Compilation/runtime errors still return nonzero.
+        plan.append({"name": "slither", "kind": "static-security", "command": ["slither", str(root), "--fail-none"]})
     if "cargo-audit" in available:
         plan.append({"name": "cargo-audit", "kind": "dependency-security", "command": ["cargo", "audit", "--json"]})
     if "cargo-geiger" in available:
