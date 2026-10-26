@@ -164,6 +164,25 @@ jobs:
           lk --h
           lk --version
           grep -q 'Runtime:' <(lk --version)
+          # Exercise the installed AI preview route without configuring a provider.
+          # The command must not contact a provider and must exclude tests/dependencies.
+          lk ai status
+          lk ai preview --root /tmp/lowkey-fixture | tee /tmp/lowkey-ai-preview.txt
+          grep -q 'no provider request made' /tmp/lowkey-ai-preview.txt
+          grep -q 'src/Fixture.sol' /tmp/lowkey-ai-preview.txt
+          lk ai preview --root /tmp/lowkey-fixture --show-context > /tmp/lowkey-ai-context.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          preview = json.loads(Path("/tmp/lowkey-ai-context.json").read_text())
+          assert preview["preview_only"] is True, preview
+          assert preview["provider_request_made"] is False, preview
+          assert preview["context_bytes"] <= preview["context_limit_bytes"], preview
+          paths = [item["path"] for item in preview["context"]["source_files"]]
+          assert "src/Fixture.sol" in paths, paths
+          assert not any("Fixture.t.sol" in path for path in paths), paths
+          assert not any(path.startswith("lib/") for path in paths), paths
+          PY
           grep -q 'lk lab' <(lk -h)
           grep -q 'lk walkthrough' <(lk -h)
           grep -q 'lk system' <(lk -h)
