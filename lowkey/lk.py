@@ -15121,6 +15121,32 @@ COMMAND_HELP = {
     "decode-error": _help_entry("Decode a Solidity custom-error payload.", "lk decode-error <data>", "lk decode-error 0x...", "Use it when a revert payload is hex and you want the actual error and arguments.", related=["lk trace", "lk decode"]),
     "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
     "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
+    "verification": _help_entry(
+        "List compatible verification engines or run a bounded multi-engine campaign from a manifest.",
+        "lk verification <engines|run> ... (short alias: lk verify)",
+        "lk verification engines --json",
+        "Use it to see which installed engines can run against this project, or to run an explicit campaign while retaining each engine's evidence.",
+        children={
+            "engines": _help_entry("Inventory installed verification engines and their compatibility with this project.", "lk verification engines [--json]", "lk verification engines --json", "Use it before selecting engines for a campaign."),
+            "run": _help_entry("Run a bounded, serial verification campaign defined by a JSON manifest.", "lk verification run <manifest.json> [--profile light|balanced|deep] [--output <path>]", "lk verification run .audit/verification/campaign.json --profile balanced", "Use it when the manifest states the test kind, engine-specific arguments, and execution budget.", options=[("--profile <profile>", "Choose light, balanced, or deep engine selection.", "lk verification run campaign.json --profile light"), ("--output <path>", "Write the campaign report to this path.", "lk verification run campaign.json --output .audit/verification/run.json")]),
+        },
+        related=["lk verification-benchmark", "lk mutation-check", "lk test-gen"],
+    ),
+    "verification-benchmark": _help_entry(
+        "Evaluate a manifest of test/mutation benchmark cases and optionally enforce a minimum mutation score.",
+        "lk verification-benchmark <manifest.json> [--workspace <dir>] [--output <path>] [--min-mutation-score <0..1>] (short alias: lk vbench)",
+        "lk verification-benchmark .audit/verification/benchmark.json --min-mutation-score 0.8",
+        "Use it to compare reproducible cases. Failed baselines, invalid mutations, and timeouts remain separate from the scored killed/survived mutants.",
+        options=[("--workspace <dir>", "Resolve relative project paths from this workspace directory.", "lk vbench benchmark.json --workspace ."), ("--output <path>", "Write the report to this path.", "lk vbench benchmark.json --output .audit/verification/report.json"), ("--min-mutation-score <0..1>", "Fail the gate when the measured mutation score is below this threshold.", "lk vbench benchmark.json --min-mutation-score 0.8")],
+        related=["lk mutation-check", "lk verification engines", "lk test-gen"],
+    ),
+    "mutation-check": _help_entry(
+        "Run baseline-first isolated mutation validation for a manifest of explicit behavioral changes.",
+        "lk mutation-check <manifest.json> (short alias: lk mcheck)",
+        "lk mutation-check .audit/verification/mutations.json",
+        "Use it to check whether the existing tests detect specified behavior changes; setup failures are not counted as killed bugs.",
+        related=["lk verification-benchmark", "lk test", "lk verification engines"],
+    ),
     "generate": _help_entry(
         "Create deployment scripts, exact-call replay tests, and impact-assertion-backed PoC candidates.",
         "lk generate <test|poc|deployment> ...",
@@ -15404,7 +15430,24 @@ COMMAND_HELP = {
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
     "script": _help_entry("Run a native Forge script.", "lk script <args...>", "lk script script/LocalDeploy.s.sol --sig run()", "Use it when the project already has a useful setup/deployment script.", related=["lk lab", "lk forge"]),
     "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect MyContract storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
-    "coverage": _help_entry("Run Forge coverage reporting.", "lk coverage <args...>", "lk coverage", "Use it to see which code paths your tests actually execute.", related=["lk test", "lk audit run"]),
+    "coverage": _help_entry(
+        "Run Foundry coverage reporting and optionally write an LCOV report for editor extensions such as Coverage Gutters (short alias: lk cov).",
+        "lk coverage [Forge options...]",
+        "lk coverage --report lcov --lcov-version 1.0",
+        "Use it after running tests to see which lines and functions the executed tests reached. Coverage is evidence of execution, not proof that tests assert the right security properties.",
+        forms=[
+            ("lk coverage", "Run coverage with Foundry's default report format.", "lk coverage"),
+            ("lk coverage --report lcov", "Generate an LCOV report, normally written as lcov.info in the project root.", "lk coverage --report lcov"),
+            ("lk coverage --report lcov --lcov-version 1.0", "Select LCOV 1.0 for compatibility with parsers that do not understand newer function-record formats.", "lk coverage --report lcov --lcov-version 1.0"),
+            ("lk cov <Forge options...>", "Short alias for lk coverage; the options are passed through to the installed Forge version.", "lk cov --report lcov --lcov-version 1.0"),
+        ],
+        options=[
+            ("--report lcov", "Ask native Forge to emit LCOV coverage data.", "lk coverage --report lcov"),
+            ("--lcov-version 1.0", "Choose LCOV 1.0 when supported by the installed Forge version.", "lk coverage --report lcov --lcov-version 1.0"),
+            ("Other Forge options", "Coverage options are passed to Forge rather than reimplemented by Lowkey. Check the options supported by your installed version.", "lk forge coverage --help"),
+        ],
+        related=["lk test", "lk audit run", "lk cov"],
+    ),
     "lint": _help_entry("Run Forge lint tooling when supported.", "lk lint", "lk lint", "Use it for quick static/code-quality checks.", related=["lk geiger", "lk doctor"]),
     "geiger": _help_entry("Run Geiger-style scanning when available.", "lk geiger", "lk geiger", "Use it as an extra dependency/security signal.", related=["lk lint", "lk audit"]),
     "fmt": _help_entry("Format Foundry source files.", "lk fmt", "lk fmt", "Use it after intentional Solidity edits.", related=["lk build", "lk test"]),
@@ -15498,6 +15541,11 @@ HELP_ALIASES = {
     "signals": "findings",
     "signal": "findings",
     "investigate": "focus",
+    "gen": "generate",
+    "verify": "verification",
+    "vbench": "verification-benchmark",
+    "mcheck": "mutation-check",
+    "cov": "coverage",
     "investigation": "focus",
     "try": "probe",
     "statediff": "state-diff",
@@ -15867,20 +15915,20 @@ TRANSACTION FORENSICS
 REPRODUCE / ATTACK / TEST
   lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
   lk test-gen                      Turn the latest send into a Forge test.
-  lk generate test '<function(parameter TYPES...)>' <VALUES...>
+  lk generate test '<function(parameter TYPES...)>' <VALUES...> (alias: lk gen test)
                                    Generate a reusable Forge test.
                                    FUNCTION SIGNATURE = function name + parameter TYPES.
                                    The quoted part contains TYPES, not real values.
                                    Put actual argument VALUES after the closing quote.
                                    Example:
                                      lk generate test 'createRecord(address,uint256)' <addr> <amount>
-  lk generate poc <function>       Requires --calldata and --impact-assertion.
-  lk generate deployment <Contract> Generate a deployment script.
+  lk generate poc <function>       Requires --calldata and --impact-assertion (alias: lk gen poc).
+  lk generate deployment <Contract> Generate a deployment script (alias: lk gen deployment).
   lk test-gen <Contract> --types ... Generate complete tests when the property is established.
-  lk mutation-check <manifest.json>  Run isolated mutation validation and report a score.
-  lk verification-benchmark <manifest> Run a manifest-driven benchmark and enforce gates.
-  lk verification engines [--json]   Inventory installed verification engines.
-  lk verification run <manifest>    Run a bounded, serial multi-engine campaign.
+  lk mutation-check <manifest.json>  Run isolated mutation validation (alias: lk mcheck).
+  lk verification-benchmark <manifest> Run a manifest-driven benchmark (alias: lk vbench).
+  lk verification engines [--json]   Inventory installed engines (alias: lk verify engines).
+  lk verification run <manifest>    Run a bounded multi-engine campaign (alias: lk verify run).
   lk poc --calldata 0x... --impact-assertion '<condition>'
                                   Generate a candidate with explicit measurable impact.
   lk fuzz [args...]                Run Forge fuzz tests.
@@ -15950,7 +15998,8 @@ FOUNDRY SHORTCUTS
   lk test                           Shortcut for forge test. Example: lk test
   lk script <args>                  Shortcut for forge script.
   lk inspect <args>                 Shortcut for forge inspect.
-  lk coverage <args>                Shortcut for forge coverage.
+  lk coverage [Forge options...]      Shortcut for forge coverage (alias: lk cov).
+                                   Example: lk coverage --report lcov --lcov-version 1.0
   lk lint / geiger                  Run those Forge tools when installed.
   lk fmt                            Format Foundry sources.
   lk create                         Create a new Foundry component.
@@ -16211,6 +16260,8 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     if help_index is not None:
         return _render_command_help([cmd, *(args or [])[:help_index]])
 
+    # Resolve documented short forms before runtime dispatch as well as help lookup.
+    cmd = HELP_ALIASES.get(lowered_cmd, lowered_cmd)
     activate_project_target(config)
     if cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
@@ -16889,7 +16940,7 @@ def main():
     # Machine-readable engine inventory must be valid JSON without Lowkey's
     # normal recommendation footer appended to stdout.
     machine_readable_verification = (
-        str(command).strip().lower() == "verification"
+        _canonical_help_command(command) == "verification"
         and len(sys.argv) > 2
         and str(sys.argv[2]).strip().lower() == "engines"
         and "--json" in sys.argv[3:]
