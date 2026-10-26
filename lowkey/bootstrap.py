@@ -1289,27 +1289,30 @@ def bootstrap_plan(
             repo_label = str(submodule_repo)
 
         if tracked_missing and shutil.which("git"):
-            evidence = (
-                f"{len(tracked_missing)} incomplete tracked submodule(s) "
-                f"in dependency repository {repo_label}"
-            )
             actions.append({
                 "kind": "git-submodule",
                 "cwd": submodule_repo,
                 "command": ["git", "submodule", "sync"],
-                "evidence": evidence,
+                "evidence": (
+                    f"{len(tracked_missing)} incomplete tracked submodule(s) "
+                    f"in dependency repository {repo_label}"
+                ),
             })
-            actions.append({
-                "kind": "git-submodule",
-                "cwd": submodule_repo,
-                # Repair only incomplete paths in this one repository. Nested
-                # repositories are replanned separately once their parent is ready.
-                "command": [
-                    "git", "submodule", "update", "--init",
-                    "--force", "--", *tracked_missing,
-                ],
-                "evidence": evidence,
-            })
+            for relative in tracked_missing:
+                # Keep each dependency independent. A slow repository must not
+                # block unrelated missing libraries from being restored.
+                actions.append({
+                    "kind": "git-submodule",
+                    "cwd": submodule_repo,
+                    "command": [
+                        "git", "submodule", "update", "--init",
+                        "--force", "--", relative,
+                    ],
+                    "evidence": (
+                        f"incomplete tracked submodule {relative} "
+                        f"in dependency repository {repo_label}"
+                    ),
+                })
         for relative, url in submodules["orphaned"]:
             actions.append({
                 "kind": "git-submodule-recovery",
@@ -1544,12 +1547,12 @@ def run_bootstrap(
                 print(f"FAIL  {action['kind']}: timed out after {max(timeout, 300)}s")
                 failures = failures or 1
                 stage_failed = True
-                break
+                continue
             except OSError as error:
                 print(f"FAIL  {action['kind']}: {error}")
                 failures = failures or 1
                 stage_failed = True
-                break
+                continue
 
             output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
             if output:
@@ -1558,7 +1561,7 @@ def run_bootstrap(
                 print(f"FAIL  {action['kind']}: exit {result.returncode}")
                 failures = failures or result.returncode or 1
                 stage_failed = True
-                break
+                continue
             print(f"PASS  {action['kind']}")
 
         # Refresh dependency discovery even after a partial failure so remaining
