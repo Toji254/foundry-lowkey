@@ -46,8 +46,8 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("Slither", rendered)
         self.assertIn("PASS", rendered)
         self.assertIn("2 finding(s)", rendered)
-        self.assertIn("PoC scaffold", rendered)
-        self.assertIn("scaffold generated (placeholder)", rendered)
+        self.assertIn("PoC evidence", rendered)
+        self.assertIn("no PoC validation evidence recorded", rendered)
         self.assertIn("SLITHER-ABC", rendered)
         self.assertIn("Security patterns:", rendered)
         self.assertIn("1 review", rendered)
@@ -111,7 +111,48 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("REVIEW NEEDED", output.getvalue())
         self.assertIn("Target : not configured", output.getvalue())
 
-    def test_audit_bootstraps_poc_before_dashboard(self):
+    def test_review_status_code_does_not_masquerade_as_pipeline_failure(self):
+        context = {
+            "target": {"address": None, "contract": None},
+            "actor": "lab-deployer",
+            "signals": [],
+            "tools": {
+                "forge-build": {"status": "completed"},
+                "forge-tests": {"status": "completed"},
+                "forge-coverage": {"status": "completed"},
+            },
+        }
+        output = io.StringIO()
+        with patch.object(forge_tools.audit_context, "load", return_value=context):
+            with patch("sys.stdout", output):
+                result = forge_tools.render_audit_dashboard(
+                    pathlib.Path("/project"), 2, execution_failed=False
+                )
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("Overall: REVIEW NEEDED", rendered)
+        self.assertNotIn("PIPELINE FAILED", rendered)
+
+    def test_execution_error_still_renders_pipeline_failed(self):
+        context = {
+            "target": {"address": "0x" + "1" * 40, "contract": "Fixture"},
+            "actor": "Alice",
+            "signals": [],
+            "tools": {
+                "forge-build": {"status": "completed"},
+                "forge-tests": {"status": "completed"},
+                "forge-coverage": {"status": "completed"},
+            },
+        }
+        output = io.StringIO()
+        with patch.object(forge_tools.audit_context, "load", return_value=context):
+            with patch("sys.stdout", output):
+                result = forge_tools.render_audit_dashboard(pathlib.Path("/project"), 2)
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("Overall: PIPELINE FAILED", rendered)
+
+    def test_audit_does_not_invent_poc_without_impact_assertion(self):
         import types
         fake_generator = types.ModuleType("generator")
         fake_generator.run_generate = lambda config, args: 0
@@ -123,7 +164,7 @@ class LowkeyForgeTests(unittest.TestCase):
              patch.object(forge_tools, "render_audit_dashboard", return_value=0), \
              patch.dict("sys.modules", {"generator": fake_generator}):
             result = forge_tools.run_audit(["--checks"])
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 2)
 
     def test_native_commands(self):
         for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "clone", "fuzz", "lsp"):
@@ -177,6 +218,35 @@ class LowkeyForgeTests(unittest.TestCase):
             self.assertEqual(forge_tools.run_forge(["build"], quiet=True), 0)
         self.assertEqual(output.getvalue(), "")
 
+    def test_run_audit_returns_zero_only_for_a_complete_baseline(self):
+        root = pathlib.Path("/workspace/fixture")
+        complete_context = {
+            "target": {"address": "0x" + "1" * 40, "contract": "Fixture"},
+            "signals": [],
+            "tools": {
+                "forge-build": {"status": "completed"},
+                "forge-tests": {"status": "completed"},
+                "forge-coverage": {"status": "completed"},
+                "slither": {"status": "completed"},
+                "forge-lint": {"status": "completed"},
+                "forge-geiger": {"status": "completed"},
+            },
+        }
+        with patch.object(forge_tools, "_project_root", return_value=root), \
+             patch.object(forge_tools, "_project_owned_tests", return_value=[root / "test" / "Fixture.t.sol"]), \
+             patch.object(forge_tools.audit_context, "load", return_value=complete_context), \
+             patch.object(forge_tools.audit_context, "record_tool"), \
+             patch.object(forge_tools.audit_context, "emit"), \
+             patch.object(forge_tools, "run_forge", return_value=0), \
+             patch.object(forge_tools, "run_forge_diagnostics", return_value=0), \
+             patch.object(forge_tools, "run_slither_preflight", return_value=0), \
+             patch.object(forge_tools, "_geiger_command", return_value=["lint", "--only-lint", "unsafe-cheatcode"]), \
+             patch.object(forge_tools, "run_coverage_audit", return_value=0), \
+             patch.object(forge_tools, "_coverage_compatibility_flags", return_value=[]), \
+             patch.object(forge_tools, "_supports_option", return_value=True), \
+             patch.object(forge_tools, "render_audit_dashboard", return_value=0):
+            self.assertEqual(forge_tools.run_audit([]), 0)
+
     def test_run_audit_uses_active_project_when_called_from_workspace_parent(self):
         root = pathlib.Path("/workspace/pkg/quantamm")
         profile = {
@@ -194,7 +264,7 @@ class LowkeyForgeTests(unittest.TestCase):
              patch.object(forge_tools, "run_coverage_audit", return_value=0), \
              patch.object(forge_tools, "_coverage_compatibility_flags", return_value=[]), \
              patch.object(forge_tools, "_supports_option", return_value=True):
-            self.assertEqual(forge_tools.run_audit([]), 0)
+            self.assertEqual(forge_tools.run_audit([]), 2)
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_coverage_audit", return_value=0)
@@ -207,7 +277,7 @@ class LowkeyForgeTests(unittest.TestCase):
     def test_run_audit_is_quiet_by_default(self, _supports, _compat, available, geiger, slither, diagnostics, coverage, run):
         output = io.StringIO()
         with patch("sys.stdout", output):
-            self.assertEqual(forge_tools.run_audit([]), 0)
+            self.assertEqual(forge_tools.run_audit([]), 2)
         rendered = output.getvalue()
         self.assertIn("Mode    : quiet", rendered)
         self.assertNotIn("=== LOWKEY FORGE", rendered)
@@ -233,7 +303,7 @@ class LowkeyForgeTests(unittest.TestCase):
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
     def test_audit_sequence(self, _supports, _compat, available, geiger, slither, diagnostics, coverage, run):
-        self.assertEqual(forge_tools.run_audit([]), 0)
+        self.assertEqual(forge_tools.run_audit([]), 2)
         self.assertEqual([call.args[0] for call in run.call_args_list],
                          [["build", "--skip", "test", "--skip", "script"],
                           ["test", "-vvv", "--no-match-path", "test/Lowkey_*"]])
@@ -258,7 +328,7 @@ class LowkeyForgeTests(unittest.TestCase):
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
     def test_audit_checks_runs_slither_preflight(self, supports, compat, available, slither, coverage, run):
-        self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
+        self.assertEqual(forge_tools.run_audit(["--checks"]), 2)
         slither.assert_called_once()
         self.assertEqual(run.call_args_list[0].args[0], ["build", "--skip", "test", "--skip", "script"])
         self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv", "--no-match-path", "test/Lowkey_*"])
@@ -278,7 +348,7 @@ class LowkeyForgeTests(unittest.TestCase):
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
     def test_audit_runs_static_checks_by_default(self, _supports, _compat, available, geiger, coverage, run, diagnostics, slither):
-        self.assertEqual(forge_tools.run_audit([]), 0)
+        self.assertEqual(forge_tools.run_audit([]), 2)
         slither.assert_called_once()
         self.assertEqual(
             [call.args[0] for call in diagnostics.call_args_list],
@@ -508,7 +578,7 @@ after
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
     def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, _compat, available, slither, diagnostics, coverage, run):
-        self.assertEqual(forge_tools.run_audit(["--via-ir"]), 0)
+        self.assertEqual(forge_tools.run_audit(["--via-ir"]), 2)
         self.assertEqual(
             run.call_args_list[1].args[0],
             ["test", "-vvv", "--via-ir", "--no-match-path", "test/Lowkey_*"],
@@ -526,7 +596,7 @@ after
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
     def test_audit_respects_explicit_verbosity(self, _supports, _compat, available, slither, diagnostics, coverage, run):
-        self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 0)
+        self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 2)
         self.assertEqual(
             run.call_args_list[1].args[0],
             ["test", "--verbosity", "4", "--no-match-path", "test/Lowkey_*"],

@@ -158,6 +158,14 @@ class CommandHelpTests(unittest.TestCase):
         ]
         self.assertEqual(missing, [])
 
+
+    def test_test_gen_help_documents_native_backend_selection(self):
+        code, output = self.capture_dispatch("test-gen", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--language <solidity|vyper>", output)
+        self.assertIn("Vyper + Titanoboa", output)
+        self.assertIn("lk test-gen Counter --language vyper", output)
+
     def test_transaction_help_documents_beginner_critical_options(self):
         cases = {
             "send": (

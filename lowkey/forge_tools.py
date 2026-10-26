@@ -892,7 +892,9 @@ def _dashboard_status(state: dict | None) -> tuple[str, str]:
     return status.upper() or "UNKNOWN", str(state.get("summary") or "recorded")
 
 
-def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
+def render_audit_dashboard(
+    root: Path, pipeline_code: int = 0, *, execution_failed: bool | None = None,
+) -> int:
     """Render an evidence dashboard using the project's detected toolchain."""
     context = audit_context.load(root)
     tools = context.get("tools", {}) if isinstance(context.get("tools"), dict) else {}
@@ -917,7 +919,7 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
             ("forge-geiger", "Forge geiger"),
             ("forge-tests", "Forge tests"),
             ("forge-coverage", "Coverage"),
-            ("generator", "PoC scaffold"),
+            ("generator", "PoC evidence"),
         ]
         mandatory_keys = ("forge-build", "forge-tests", "forge-coverage")
     else:
@@ -926,7 +928,7 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
             ("slither", "Slither"),
             ("project-tests", "Project tests"),
             ("project-coverage", "Coverage"),
-            ("generator", "PoC scaffold"),
+            ("generator", "PoC evidence"),
         ]
         mandatory_keys = ("project-build", "project-tests", "project-coverage")
 
@@ -937,10 +939,19 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
             count = state.get("finding_count")
             if count is not None:
                 detail = f"{count} finding(s)"
-        elif key == "generator" and isinstance(state, dict) and status == "PASS":
-            detail = "scaffold generated"
-            if state.get("placeholder"):
-                detail += " (placeholder)"
+        elif key == "generator" and isinstance(state, dict):
+            mode = str(state.get("mode") or "")
+            summary = str(state.get("summary") or "")
+            candidate = mode == "poc" or "candidate-not-validated" in summary.lower()
+            if candidate:
+                status = "REVIEW"
+                detail = "candidate; impact/chain run unvalidated"
+            elif mode == "test" or "replay" in summary.lower():
+                status = "REVIEW"
+                detail = "call replay; not an exploit proof"
+            elif status == "PASS":
+                detail = "no PoC validation evidence recorded"
+                status = "REVIEW"
             if state.get("candidate_signal"):
                 detail += f" | {state['candidate_signal']}"
         rows.append((label, status, detail))
@@ -977,7 +988,12 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         )
 
     mandatory_pass = all(state in {"completed", "skipped", "pass", "passed"} for state in mandatory_states)
-    pipeline_failed = pipeline_code not in (None, 0) or any(
+    # Exit code 2 from the final audit summary means REVIEW NEEDED, not that
+    # the build/test/coverage pipeline itself failed. Early command failures
+    # keep the default behavior; summary callers pass this run's execution result.
+    if execution_failed is None:
+        execution_failed = pipeline_code not in (None, 0)
+    pipeline_failed = bool(execution_failed) or any(
         state in {"failed", "fail"} for state in mandatory_states
     )
     static_failures = any(
@@ -1119,6 +1135,7 @@ def run_audit(args: Sequence[str]) -> int:
                 data={"enabled": False},
             )
     steps.extend([("tests", test_cmd), ("coverage", coverage_cmd)])
+    execution_codes: dict[str, int] = {}
 
     print("LOWKEY CONNECTED AUDIT")
     print("======================")
@@ -1166,6 +1183,8 @@ def run_audit(args: Sequence[str]) -> int:
             code = run_coverage_audit(command, root, quiet=quiet)
         else:
             code = run_forge(command, quiet=quiet)
+
+        execution_codes[label] = code
 
         if label == "build":
             audit_context.record_tool(
@@ -1216,21 +1235,9 @@ def run_audit(args: Sequence[str]) -> int:
             render_audit_dashboard(root, pipeline_code=code)
             return code
 
-    try:
-        from generator import run_generate
-        poc_code = run_generate({}, ["poc"])
-        if poc_code != 0:
-            print(
-                "LowkeyForge: initial PoC scaffold was not generated.",
-                file=sys.stderr,
-            )
-    except Exception as exc:
-        print(
-            f"LowkeyForge: initial PoC scaffold skipped: {exc}",
-            file=sys.stderr,
-        )
+    # Do not auto-generate a PoC without an explicit security-impact assertion.
+    # Investigative signals are leads; they are not enough to invent an exploit property.
 
-    render_audit_dashboard(root, pipeline_code=0)
     print("\nAUDIT SUMMARY")
     print("=============")
     context = audit_context.load(root)
@@ -1242,22 +1249,42 @@ def run_audit(args: Sequence[str]) -> int:
         for item in (context.get("signals") or [])
         if isinstance(item, dict) and item.get("status") == "open"
     )
+    # Use the exit codes captured during THIS run for build/tests/coverage.
+    # Persisted context is useful for reports but must not override fresh execution
+    # evidence or cause a successful run to be classified as a tool failure.
     pipeline_ok = all(
+        execution_codes.get(key) == 0
+        for key in ("build", "tests", "coverage")
+    )
+
+    required_static_steps = ("slither", "forge-lint", "forge-geiger")
+    static_checks_complete = bool(checks) and all(
         isinstance(tool_states.get(key), dict)
         and tool_states.get(key, {}).get("status") == "completed"
-        for key in ("forge-build", "forge-tests", "forge-coverage")
+        for key in required_static_steps
     )
 
     if not pipeline_ok:
         result_label = "PIPELINE FAILED"
+        result_code = 1
     elif not project_owned_tests:
         result_label = "INCOMPLETE — NO PROJECT-OWNED TESTS FOUND"
+        result_code = 2
     elif not has_target:
         result_label = "STATIC BASELINE — NO LIVE TARGET"
-    elif open_signals:
+        result_code = 2
+    elif open_signals or not static_checks_complete:
         result_label = "REVIEW NEEDED"
+        result_code = 2
     else:
         result_label = "BASELINE PASS"
+        result_code = 0
+
+    # The CLI exit status must agree with the displayed verdict. A completed
+    # build/test run is not a clean audit when required static checks were
+    # skipped, project-owned tests are absent, the live target is unverified,
+    # or open investigation signals remain.
+    render_audit_dashboard(root, pipeline_code=result_code, execution_failed=not pipeline_ok)
 
     print(f"Result  : {result_label}")
     if not has_target:
@@ -1269,7 +1296,7 @@ def run_audit(args: Sequence[str]) -> int:
         print("Review  : no open evidence signals recorded by Lowkey.")
     print("Artifacts: .audit/context.json + tool evidence")
     print("Next    : lk findings | lk context")
-    return 0
+    return result_code
 
 
 def main(argv: Iterable[str] | None = None) -> int:

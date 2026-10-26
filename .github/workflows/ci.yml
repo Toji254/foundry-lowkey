@@ -184,10 +184,8 @@ jobs:
           lk benchmark
           lk doctor
           lk scan src
-          set +e
-          lk scan src/Fixture.sol
-          test $? -eq 2
-          set -e
+          lk scan src/Fixture.sol | tee /tmp/lowkey-single-file-scan.txt
+          grep -q "requested single-file scope scanned" /tmp/lowkey-single-file-scan.txt
           lk project
           lk graph
           lk system
@@ -200,10 +198,20 @@ jobs:
           grep -q '"abi": \[' .audit/abi/Fixture.json
           test "$(wc -l < .audit/abi/Fixture.json)" -gt 2
           lk status
+          set +e
           lk audit --non-interactive | tee /tmp/lowkey-audit-noninteractive.txt
+          AUDIT_NONINTERACTIVE_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_NONINTERACTIVE_EXIT" -ne 0
           grep -Eq "Target[[:space:]]+: Fixture" /tmp/lowkey-audit-noninteractive.txt
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-noninteractive.txt
+          set +e
           lk audit check --non-interactive | tee /tmp/lowkey-audit-check-noninteractive.txt
+          AUDIT_CHECK_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_CHECK_EXIT" -ne 0
           grep -q "Slither" /tmp/lowkey-audit-check-noninteractive.txt
+          grep -q "REVIEW NEEDED" /tmp/lowkey-audit-check-noninteractive.txt
           lk forge build
           lk walkthrough --static --steps 4
           test -f .audit/walkthrough/model.json
@@ -236,23 +244,51 @@ jobs:
           lk status
           lk context
           lk signals
+          set +e
           lk audit | tee /tmp/lowkey-audit-baseline.txt
+          AUDIT_BASELINE_EXIT=${PIPESTATUS[0]}
+          set -e
+          # CI intentionally does not install Slither in this job; Lowkey must surface
+          # the incomplete static-analysis coverage as REVIEW NEEDED, not as a clean pass.
+          test "$AUDIT_BASELINE_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-baseline.txt
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
           ! grep -q "Pipeline: build -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
-          test -f script/LowkeyPoC_Fixture.s.sol
-          test -f .audit/poc/LowkeyPoc_Fixture.json
+          # An audit cannot invent an exploit property. It must report the missing PoC inputs.
+          ! test -f script/LowkeyPoC_Fixture.s.sol
+          ! test -f .audit/poc/LowkeyPoc_Fixture.json
+          set +e
           lk audit --checks | tee /tmp/lowkey-audit-checks.txt
+          AUDIT_CHECKS_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_CHECKS_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-checks.txt
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-checks.txt
+          set +e
           lk audit--checks | tee /tmp/lowkey-audit-compact-checks.txt
+          AUDIT_COMPACT_CHECKS_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_COMPACT_CHECKS_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-compact-checks.txt
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
           lk lint | tee /tmp/lowkey-lint.txt
           lk geiger | tee /tmp/lowkey-geiger.txt
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
+          set +e
           lk audit check | tee /tmp/lowkey-audit-check-alias.txt
+          AUDIT_CHECK_ALIAS_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_CHECK_ALIAS_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-check-alias.txt
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-check-alias.txt
+          set +e
           lk audit run --poc | tee /tmp/lowkey-audit-run.txt
+          AUDIT_POC_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_POC_EXIT" -ne 0
           grep -q "LOWKEY PROJECT DETECTION" /tmp/lowkey-audit-run.txt
-          test -f .audit/poc/LowkeyPoc_Fixture.json
+          test -f .audit/evidence/poc_generation.json
+          ! test -f .audit/poc/LowkeyPoc_Fixture.json
           lk findings
           lk functions
           lk fn ping
@@ -314,8 +350,10 @@ jobs:
           lk target "$GENERATED_TARGET"
           lk generate test ping 42 --calldata 0xdeadbeef
           test -f test/LowkeyTest_Fixture.t.sol
-          lk generate poc ping 42 --calldata 0xdeadbeef
+          lk generate poc ping --calldata 0xdeadbeef --impact-assertion 'attackerAfter > attackerBefore'
           test -f script/LowkeyPoC_Fixture.s.sol
+          grep -q 'security-impact assertion failed' script/LowkeyPoC_Fixture.s.sol
+          ! grep -q 'Put the actual security property here' script/LowkeyPoC_Fixture.s.sol
           forge build
           lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
           set +e
@@ -323,8 +361,14 @@ jobs:
           test $? -ne 0
           lk event 'Ping(uint256)' 0xdeadbeef
           test $? -ne 0
-          lk forge debug --help
-          test $? -ne 0
+          set +e
+          lk forge debug --help > /tmp/lowkey-forge-debug-help.txt 2>&1
+          FORGE_DEBUG_HELP_EXIT=$?
+          set -e
+          # This pinned Foundry CLI does not implement 'forge debug'; the test
+          # verifies that Lowkey forwards to native Forge and preserves its error.
+          test "$FORGE_DEBUG_HELP_EXIT" -ne 0
+          grep -Eq "unrecognized subcommand 'debug'|Usage: forge" /tmp/lowkey-forge-debug-help.txt
 
 
       - name: Generate and compile project-aware test artifacts
@@ -332,25 +376,45 @@ jobs:
         run: |
           export LOWKEY_RPC_URL=http://127.0.0.1:8545
           lk target 0x1000000000000000000000000000000000000001
-          lk test-gen Fixture --types unit,integration,invariant,exploit,regression,fuzz,formal --force
+          lk test-gen Fixture --types unit,invariant,fuzz --force --validate --strict
           python3 - <<'PY'
           import json
           import pathlib
           import shutil
           report = json.loads(pathlib.Path(".audit/test-gen/Fixture/report.json").read_text())
-          required = {"unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal"}
-          assert required.issubset(set(report["requested_types"]))
-          assert len(report["generated"]) == 7, report
+          required = {"unit", "invariant", "fuzz"}
+          assert set(report["requested_types"]) == required, report
+          assert len(report["generated"]) == 3, report
+          assert report["skipped"] == [], report
+          assert report["validation"]["status"] == "passed", report["validation"]
           assert report["fuzz_property"]["setter"] == "setCount", report
+          assert report["validation"].get("test_executions"), report["validation"]
           generated = pathlib.Path("test/lowkey-generated")
           generated.mkdir(parents=True, exist_ok=True)
           for item in report["generated"]:
               source = pathlib.Path(item)
               if source.suffix == ".sol":
                   shutil.copy2(source, generated / source.name)
-          formal = pathlib.Path(".audit/test-gen/Fixture/LowkeyGeneratedFormal_Fixture.spec")
-          assert formal.is_file(), "recognized formal property should generate a CVL spec"
-          assert "assert target.count() == fuzzValue" in formal.read_text()
+          PY
+          # Categories without a concrete, supplied property must fail closed.
+          set +e
+          lk test-gen Fixture --types integration,exploit,regression,formal --force --output-dir .audit/test-gen-unsupported
+          UNSUPPORTED_EXIT=$?
+          set -e
+          test "$UNSUPPORTED_EXIT" -eq 1
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path(".audit/test-gen-unsupported/Fixture")
+          report = json.loads((root / "report.json").read_text())
+          assert report["generated"] == [], report
+          assert {item["type"] for item in report["skipped"]} == {
+              "integration", "exploit", "regression", "formal"
+          }, report
+          assert all(item["level"] == "not-generated"
+                     for item in report["generation_assessment"].values()), report
+          assert not list(root.glob("*.t.sol")), list(root.glob("*.t.sol"))
+          assert not list(root.glob("*.spec")), list(root.glob("*.spec"))
           PY
           forge build
           forge test --match-path test/lowkey-generated/LowkeyGeneratedUnit_Fixture.t.sol
@@ -395,26 +459,77 @@ jobs:
         run: |
           ./install.sh
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
-      - name: Run pinned OpenZeppelin generation benchmark
+      - name: Validate complete test generation on a controlled Foundry fixture
         run: |
+          rm -rf /tmp/lowkey-generation-fixture
+          mkdir -p /tmp/lowkey-generation-fixture/src
+          cat > /tmp/lowkey-generation-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cd /tmp/lowkey-generation-fixture
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+          cat > src/Counter.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract Counter {
+              uint256 public value;
+              function setValue(uint256 next) external { value = next; }
+          }
+          EOF
+          lk test-gen Counter --types unit,fuzz,invariant --validate --strict
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("/tmp/lowkey-generation-fixture")
+          report = json.load(open(root / ".audit/test-gen/Counter/report.json", encoding="utf-8"))
+          assert len(report["generated"]) == 3, report
+          assert report["skipped"] == [], report
+          assert report["validation"]["status"] == "passed", report["validation"]
+          assert all(report["generation_assessment"][kind]["level"] == "executable-candidate"
+                     for kind in ("unit", "fuzz", "invariant")), report["generation_assessment"]
+          assert report["validation"].get("test_executions"), report["validation"]
+          print("PASS: supported unit/fuzz/invariant generation compiled and executed against the fixture")
+          PY
+      - name: Verify unsupported public-project behavior fails closed
+        run: |
+          set +e
           python3 scripts/test-gen-ecosystem-benchmark.py \
             --limit-projects 1 --targets-per-project 1 \
             --output .audit/test-gen-ecosystem-smoke.json
+          benchmark_exit=$?
+          set -e
+          # The pinned OpenZeppelin ERC20Mock is deliberately outside the generator's
+          # safely inferred direct-setter property. It must be refused, not scaffolded.
+          test "$benchmark_exit" -ne 0
           python3 - <<'PY'
           import json
           report = json.load(open(".audit/test-gen-ecosystem-smoke.json", encoding="utf-8"))
           assert report["project_count"] == 1, report
-          assert report["evaluated_count"] == 1, report
+          assert report["evaluated_count"] == 0, report
+          assert report["baseline_build_failed_count"] == 0, report
+          assert report["generation_validation_failed_count"] == 1, report
+          assert report["revision_pin_failed_count"] == 0, report
           project = report["results"][0]
           assert project["id"] == "openzeppelin-contracts", project
-          assert project["status"] == "evaluated", project
+          assert project["status"] == "generation-validation-failed", project
           assert project["revision"] == "11565e5f6277a320408025e649240056ba6a3919", project
-          assert len(project["targets"]) == 1, project
+          assert project["baseline_build"]["exit_code"] == 0, project["baseline_build"]
           target = project["targets"][0]
-          assert target["generation_succeeded"], target
-          assert target["validation_succeeded"], target
-          assert target["validation_status"] == "passed", target
-          print("PASS: pinned OpenZeppelin target generation and eligible local-test validation")
+          assert target["generation_report_found"], target
+          assert not target["generation_succeeded"], target
+          assert not target["validation_succeeded"], target
+          assert target["validation_status"] == "not-applicable", target
+          assert all(item["level"] == "not-generated"
+                     for item in target["generation_assessment"].values()), target
+          assert not target["formal_artifact_exists"], target
+          print("PASS: unsupported protocol generation is rejected without fake test artifacts")
           PY
       - name: Retain ecosystem benchmark report
         if: always()
@@ -432,8 +547,8 @@ jobs:
         with:
           python-version: "3.11"
           check-latest: true
-      - name: Install Vyper
-        run: python -m pip install "vyper>=0.4,<0.5"
+      - name: Install Vyper and Titanoboa test runtime
+        run: python -m pip install "vyper>=0.4,<0.5" titanoboa pytest hypothesis
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
       - name: Install Lowkey
@@ -450,6 +565,10 @@ jobs:
           @external
           def increment():
               self.count += 1
+
+          @external
+          def set_count(next_value: uint256):
+              self.count = next_value
           EOF
       - name: Start Anvil
         run: |
@@ -486,6 +605,20 @@ jobs:
           lk break --function increment --rounds 1 | tee /tmp/lowkey-vyper-break.txt
           grep -q 'Backend : evm' /tmp/lowkey-vyper-break.txt
           grep -q 'Language: vyper' /tmp/lowkey-vyper-break.txt
+          lk test-gen Counter --types unit,fuzz,invariant --validate --strict
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path(".audit/test-gen/vyper/Counter/report.json").read_text(encoding="utf-8"))
+          assert len(report["generated"]) == 3, report
+          assert report["skipped"] == [], report
+          assert report["validation"]["status"] == "passed", report["validation"]
+          assert len(report["validation"]["test_executions"]) == 3, report["validation"]
+          assert all(item["exit_code"] == 0 for item in report["validation"]["test_executions"]), report["validation"]
+          assert report["recognized_property"]["setter"] == "set_count", report["recognized_property"]
+          assert all(Path(item).is_file() for item in report["generated"]), report["generated"]
+          print("PASS: Lowkey generated and executed Vyper unit/fuzz/sequence-property tests with Titanoboa")
+          PY
           lk status
           lk context
 

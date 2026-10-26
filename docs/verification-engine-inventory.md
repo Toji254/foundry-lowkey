@@ -2,9 +2,9 @@
 
 Status: validated first-release integration for the pinned tools and fixtures below. Capability claims remain project- and environment-specific; smoke tests are not security certification.
 
-## Existing architecture observed on `integration-test-drive`
+## Current architecture and implementation boundaries
 
-- `lowkey/generator.py`: Foundry-artifact/ABI-driven deployment, PoC, and test scaffolding. Generated test artifacts are intentionally scaffolds; the generator does not yet establish that every intended security property is encoded correctly or that the test detects a bug.
+- `lowkey/generator.py`: Foundry-artifact/ABI-driven deployment and recorded-call reproduction. A replay is evidence of reproduced execution, not an exploit proof unless a measurable impact assertion is validated.
 - `lowkey/forge_tools.py` and command dispatch in `lowkey/lk.py`: wrappers for native Forge workflows, including build/test, fuzz, invariant, mutation, and symbolic commands.
 - `lowkey/analysis_adapters.py`: repository/language/build detection and optional security-analysis command planning. Its current adapters are analysis-plan entries, not a universal test-execution plugin interface.
 - `lowkey/audit_context.py`: project-scoped shared context/evidence used to connect findings, traces, state changes, and generated PoCs.
@@ -30,13 +30,13 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - Medusa exit code `7` is normalized as a native fuzz-test failure; documented general/handled error codes `1` and `6` are reported as execution `error`, not a discovered contract failure. Other outcomes retain raw process evidence. The live CI fixture exercises Echidna 2.3.3, Medusa 1.5.1, and Halmos 0.3.3 via actual Lowkey campaigns, and separately invokes Slither on the same Foundry fixture. These are compatibility smoke tests for the pinned fixture, not a guarantee across every version or arbitrary project.
 - A campaign containing a Certora `submitted` result exits nonzero until the remote proof outcome is available; a submitted job is not a completed verification.
 - `default_registry()` is a candidate catalogue, not a guarantee that an executable is installed or that every advertised workflow has an engine-specific integration.
-- `lowkey/test_generation.py` adds project-aware Solidity/Foundry drafts for unit, integration, invariant, exploit, regression, fuzz, and formal categories, plus fork/PoC variants. It recognizes only a narrow direct integer setter/getter property; unsupported constructor types are skipped rather than guessed.
+- `lowkey/test_generation.py` emits only Solidity/Foundry artifacts that pass a completeness gate: no TODO/worksheet/scaffold content, executable test functions and assertions for local candidates, and explicit constructor values where required. The generation plugin registry additionally supports a Vyper/Titanoboa backend for a narrow public-integer getter/direct-setter property, with real pytest/Hypothesis execution under `--validate`. Complex integration, exploit, regression, PoC and formal requests without the required scenario/property/verifier evidence are not generated and make the command exit nonzero.
 - `lk test-gen <ContractName> --types ...` routes to the project-aware generator. Bare `lk test-gen` retains the existing last-send reproduction workflow for backward compatibility.
 
 ## Generation plugins and behavioral validation
 
 - `lowkey/generation_plugins.py` defines `GenerationCapability`, `GeneratedArtifact`, `GenerationRun`, the `GenerationAdapter` protocol, and `GenerationRegistry`.
-- The current `SolidityFoundryGenerationAdapter` routes project-aware generation for Solidity + Foundry through the existing test generator. Each artifact carries a status, recognized property when one is actually inferred, assumptions, source provenance, and a review-required marker.
+- The current `SolidityFoundryGenerationAdapter` routes project-aware generation for Solidity + Foundry through the existing test generator. It carries status, recognized property, assumptions, source provenance, and a review-required marker; incomplete templates are rejected rather than emitted as runnable-looking tests.
 - `lk test-gen Contract --types unit,integration,invariant,exploit,regression,fuzz,formal` routes through that registry. Bare `lk test-gen` preserves the legacy last-send workflow.
 - `lowkey/behavioral_validation.py` adds a baseline-first mutation runner. It executes commands without a shell in isolated project copies, requires exact unique source replacements, records hashes and raw output, separates killed/survived/invalid/timeout/error outcomes, and writes reproducible JSON.
 - `lk mutation-check manifest.json` exposes the mutation runner. The manifest supplies a native argv array and mutation definitions. A failed baseline produces no mutation score; compile/setup failures are not automatically counted as killed behavioral bugs.
@@ -92,15 +92,18 @@ The [CI workflow](../.github/workflows/ci.yml) has separate real-project smoke g
 - **Halmos 0.3.3:** Lowkey runs a `check_*` symbolic test and checks native PASS evidence is normalized as `passed`.
 - **Slither 0.11.6:** Slither compiles and analyzes the fixture. The deliberately simple fixture emits a compiler-version detector finding; successful analysis means the tool ran, not that the fixture is security-clean.
 - **Certora CLI 8.20.2:** installation and CLI startup are checked, but CI does not submit a remote proof because that requires authorized credentials and may invoke a paid service. Therefore remote proof submission/completion is not marked live-validated.
-- **Generation/mutation:** CI generates the requested Solidity/Foundry draft classes, compiles generated Solidity drafts, executes generated unit/fuzz/invariant candidates, and runs the mutation harness against a seeded setter mutant. The mutation gate requires the unmodified unit baseline to pass and the known setter mutant to be killed.
+- **Generation/mutation:** CI generates and executes the supported direct-setter/getter unit/fuzz/invariant tests and runs the mutation harness against a seeded setter mutant. It separately asserts that unsupported integration/exploit/regression/formal requests emit no files and return nonzero. A pinned OpenZeppelin corpus smoke test confirms that the current generic generator refuses a complex inherited contract when it cannot establish a real property; this is an explicit coverage gap, not a successful generation benchmark. The mutation gate requires the unmodified unit baseline to pass and the known setter mutant to be killed.
 
 The live checks are run by the [CI workflow](../.github/workflows/ci.yml); each successful run validates pinned fixtures and exact tool versions, not every user project. The workflow pins observed external-tool versions and asserts Python package versions rather than relying on an unpinned latest install.
 
 ### Remaining work
 
 - **Certora remote proof:** the adapter requests native CLI wait-for-results behavior by default and parses CLI output conservatively, but no authenticated remote proof run has been performed and no separate Certora REST polling client is implemented. A real authorized proof run is still required before claiming end-to-end Certora proof validation.
-- **Generator scope:** the generation adapter currently supports Solidity + Foundry only. Other language/build-system generators are not implemented.
-- **Test substance:** the direct integer setter/getter path generates executable candidate properties. Many integration, exploit, regression, fork, and custom protocol cases remain review-required drafts until concrete dependencies, attack conditions, expected outcomes, and oracles are supplied. Compilation alone is not behavioral validation.
+- **Generator scope:** executable test generation now supports Solidity + Foundry and a narrow Vyper + Titanoboa path. Rust, Move, Cairo and other language/build-system generators are still not implemented; detection of a language is not test-generation support.
+- **Test substance:** the direct integer setter/getter path can generate executable candidate properties. Integration, exploit, regression, and protocol-specific test cases need concrete dependencies, attack conditions, expected outcomes, and assertion oracles; the generator now refuses to emit incomplete templates. Compilation alone is not behavioral validation.
+- **Language coverage:** project-aware generation currently supports Solidity + Foundry and the narrow Vyper + Titanoboa property described in the test-generation guide. Other languages are not reported as supported until they have a native generator plus compile/run gates.
+- **Protocol coverage:** comprehensive multi-protocol security verification has not been established. The pinned multi-repository benchmark is a release gate that must be expanded and pass with meaningful, evidence-backed properties before making a broad coverage claim.
+- **PoC generation:** exact-call replay is not an exploit proof. PoC creation requires exact calldata and an explicit impact assertion, and generated candidates are labelled unvalidated until a subsequent run records outcome evidence.
 - **Mutation generality:** CI demonstrates one meaningful mutant is killed. That is a regression gate for this fixture, not a trustworthy mutation score across protocol families or arbitrary projects.
 - **Real-project corpus:** `docs/test-generation-ecosystem-benchmark.md` describes a broader evaluation protocol, but the full multi-repository corpus has not yet been run and retained as result evidence. Do not describe it as completed.
 - **Formal-specification quality:** generated CVL is a candidate specification for a narrow recognized property. A real Certora proof and review of assumptions/vacuity are still outstanding.
