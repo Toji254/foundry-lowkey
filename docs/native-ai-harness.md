@@ -28,6 +28,13 @@ lk ai setup --provider ollama --model qwen2.5-coder
 lk ai status
 ~~~
 
+OpenAI API example (the key is requested with hidden terminal input and saved separately):
+
+~~~bash
+lk ai setup --provider openai --model MODEL
+lk ai status
+~~~
+
 Custom compatible endpoint:
 
 ~~~bash
