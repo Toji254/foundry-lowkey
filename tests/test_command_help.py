@@ -1,8 +1,12 @@
 import importlib.util
 import io
+import json
+import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
@@ -731,6 +735,9 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("--install --dry-run ERC20", output)
         self.assertIn("Named import vs whole-file import", output)
         self.assertIn("lk import --copy-only IERC20", output)
+        self.assertIn("--copy-only / --copy", output)
+        self.assertIn("--verbose / -v", output)
+        self.assertIn("b to go back one menu level", output)
 
     def test_question_help_is_contextual(self):
         code, output = self.capture_dispatch("q", "--h")
@@ -1004,6 +1011,156 @@ class CommandHelpTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
         self.assertIn("lk ask buyNft", rendered)
+
+
+    def test_verification_root_and_nested_pages_document_usage_and_flags(self):
+        code, output = self.capture_dispatch("verification", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification", output)
+        self.assertIn("lk verification engines", output)
+        self.assertIn("lk verification run", output)
+        self.assertIn("lk verify", output)
+
+        code, output = self.capture_dispatch("verification", "engines", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification engines", output)
+        self.assertIn("--json", output)
+        self.assertIn("machine-readable JSON", output)
+        self.assertIn("lk verification engines --json", output)
+
+        # The shorter command must reach the exact same nested help page.
+        code, alias_output = self.capture_dispatch("verify", "engines", "-h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification engines", alias_output)
+        self.assertIn("--json", alias_output)
+
+        code, output = self.capture_dispatch("verification", "run", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification run", output)
+        self.assertIn("--profile <light|balanced|deep>", output)
+        self.assertIn("--output <path>", output)
+        self.assertIn("campaign.json --profile=deep", output)
+        self.assertIn(".audit/verification/campaign.json", output)
+
+    def test_mutation_and_generation_help_lists_supported_flags(self):
+        code, output = self.capture_dispatch("mutation-check", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk mcheck", output)
+        self.assertIn("--output <path>", output)
+        self.assertIn("--timeout <seconds>", output)
+        self.assertIn("Default: 300", output)
+        self.assertIn("--timeout=SECONDS", output)
+
+        code, output = self.capture_dispatch("verification-benchmark", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--workspace <dir>", "--output <path>", "--min-mutation-score <0..1>"):
+            self.assertIn(option, output)
+        self.assertIn("0.8 means 80%", output)
+        self.assertIn("lk vbench", output)
+
+        code, output = self.capture_dispatch("generate", "test", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--value <amount>", "--calldata <hex>", "--output, -o <file>", "--force"):
+            self.assertIn(option, output)
+        self.assertIn("Default: 0 ETH", output)
+        self.assertIn("lk gen", output)
+
+        code, output = self.capture_dispatch("generate", "poc", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--impact-assertion <condition>", "--value <amount>", "--calldata <hex>", "--output, -o <file>", "--force"):
+            self.assertIn(option, output)
+        self.assertIn("Required.", output)
+        self.assertIn("candidate", output.lower())
+
+        code, output = self.capture_dispatch("generate", "deployment", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--output, -o <file>", output)
+        self.assertIn("--force", output)
+        self.assertIn("dry-run", output.lower())
+
+    def test_long_command_shortcuts_are_visible_in_full_help(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        for command in ("lk gen", "lk verify", "lk vbench", "lk mcheck", "lk cov"):
+            self.assertIn(command, rendered)
+
+    def test_coverage_help_documents_lcov_and_short_alias(self):
+        code, output = self.capture_dispatch("coverage", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk coverage --report lcov --lcov-version 1.0", output)
+        self.assertIn("lcov.info", output)
+        self.assertIn("--report lcov", output)
+        self.assertIn("--lcov-version 1.0", output)
+        self.assertIn("lk cov --report lcov --lcov-version 1.0", output)
+
+        code, alias_output = self.capture_dispatch("cov", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP", alias_output)
+        self.assertIn("lcov.info", alias_output)
+
+    def test_short_aliases_dispatch_to_existing_verification_handlers(self):
+        calls = []
+
+        def capture(label):
+            def run_cli(args):
+                calls.append((label, list(args)))
+                return 0
+            return run_cli
+
+        with patch.object(lk, "activate_project_target"):
+            with patch.object(lk, "verification_cli", SimpleNamespace(run_cli=capture("verification"))):
+                code = lk.dispatch_command("verify", ["engines", "--json"], {})
+            self.assertEqual(code, 0)
+
+            with patch.object(lk, "verification_benchmark", SimpleNamespace(run_cli=capture("verification-benchmark"))):
+                code = lk.dispatch_command("vbench", ["benchmark.json", "--min-mutation-score", "0.8"], {})
+            self.assertEqual(code, 0)
+
+            with patch.object(lk, "behavioral_validation", SimpleNamespace(run_cli=capture("mutation-check"))):
+                code = lk.dispatch_command("mcheck", ["mutations.json"], {})
+            self.assertEqual(code, 0)
+
+        self.assertEqual(calls, [
+            ("verification", ["engines", "--json"]),
+            ("verification-benchmark", ["benchmark.json", "--min-mutation-score", "0.8"]),
+            ("mutation-check", ["mutations.json"]),
+        ])
+
+    def test_launcher_routes_cov_and_gen_to_the_same_native_handlers(self):
+        launcher = ROOT / "bin" / "lk"
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "forge_tools.py").write_text(
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "generator.py").write_text(
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            coverage = subprocess.run(
+                ["bash", str(launcher), "cov", "--report", "lcov", "--lcov-version", "1.0"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(coverage.returncode, 0, coverage.stderr)
+            self.assertEqual(json.loads(coverage.stdout), [
+                "coverage", "--report", "lcov", "--lcov-version", "1.0"
+            ])
+
+            generation = subprocess.run(
+                ["bash", str(launcher), "gen", "test", "setValue(uint256)", "10"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(generation.returncode, 0, generation.stderr)
+            self.assertEqual(json.loads(generation.stdout), [
+                "test", "setValue(uint256)", "10"
+            ])
 
 
 if __name__ == "__main__":
