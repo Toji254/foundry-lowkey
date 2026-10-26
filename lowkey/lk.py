@@ -10460,14 +10460,13 @@ def run_lab(config,args):
                 review = _ai_harness.review_project_protocol(root, requested_contract)
                 meta = review.get("_lowkey_meta", {})
                 print()
+                print("@ AI OUTPUT — PROTOCOL REVIEW (UNVERIFIED)")
+                print("==========================================")
                 if _ai_review_mode == "auto":
-                    print("AUTO-ASSIST PROTOCOL REVIEW — UNVERIFIED")
-                    print("=======================================")
+                    print("Mode: complexity-triggered auto-assist")
                     print("Trigger: " + json.dumps(str(_ai_review_reason), ensure_ascii=True))
                 else:
-                    print("OPTIONAL AI PROTOCOL REVIEW — UNVERIFIED")
-                    print("========================================")
-                    print("Trigger: explicit user request")
+                    print("Mode: explicit user request")
                 print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
                 print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
                 if meta.get("context_sha256"):
@@ -17281,8 +17280,49 @@ def _recommended_next_commands(command, args=None, config=None):
     return rendered
 
 
+def _print_ai_recommendations(command, native_items, config=None):
+    """Print optional model advice beside (never instead of) Lowkey's native suggestions."""
+    try:
+        try:
+            import ai_harness
+        except ImportError:
+            from lowkey import ai_harness
+        current = ai_harness.status()
+        if not current.get("auto_recommendations"):
+            return
+        if not current.get("enabled") or not current.get("usable"):
+            return
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = Path.cwd()
+        contract_name = None
+        if isinstance(config, dict):
+            contract_name = str(config.get("target_contract") or "").strip() or None
+        native = [
+            {"command": str(item[0]), "reason": str(item[1])}
+            for item in native_items if isinstance(item, (tuple, list)) and len(item) == 2
+        ]
+        report = ai_harness.recommend_next_steps(
+            root,
+            command=str(command or "").strip().lower(),
+            native_recommendations=native,
+            contract_name=contract_name,
+        )
+        rendered = ai_harness.render_ai_recommendations(report)
+        print("")
+        print(rendered)
+    except Exception as exc:
+        # An optional remote call must never break the native command that just succeeded.
+        print(
+            f"\n@ AI RECOMMENDATIONS UNAVAILABLE ({type(exc).__name__}). "
+            "Lowkey's native recommendations above remain available.",
+            file=sys.stderr,
+        )
+
+
 def _print_recommended_next_commands(command, args=None, result=0, config=None):
-    """Render contextual next steps without breaking failed or machine-readable commands."""
+    """Render deterministic Lowkey suggestions and optional AI suggestions separately."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
     if result_code not in {None, 0}:
         return
@@ -17290,10 +17330,11 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     if not items:
         return
     print("")
-    print("RECOMMENDED NEXT COMMANDS")
-    print("=========================")
+    print("LOWKEY RECOMMENDED NEXT COMMANDS")
+    print("================================")
     for command_text, reason in items:
         print(f"  {command_text:<42} {reason}")
+    _print_ai_recommendations(command, items, config)
 
 
 def _dispatch_command_impl(cmd,args,config,from_batch=False):

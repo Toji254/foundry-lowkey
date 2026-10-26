@@ -32,7 +32,7 @@ class AIHarnessTests(unittest.TestCase):
             "status", "preview", "mode", "setup", "enable", "disable", "test",
             "keys list", "keys add", "keys remove", "keys clear", "explain-error",
             "errors", "test-plan", "security-review", "ledger", "verify",
-            "disposition", "runtime",
+            "disposition", "runtime", "recommendations",
         ):
             with self.subTest(command=command):
                 self.assertIn(command, help_text)
@@ -68,6 +68,88 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("--api-key-env", output.getvalue())
         self.assertIn("WHEN:", output.getvalue())
         self.assertIn("lk ai setup --provider gemini", output.getvalue())
+
+    def test_ai_recommendations_are_off_by_default_and_setting_is_independent(self):
+        value = ai.status()
+        self.assertFalse(value["auto_recommendations"])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["recommendations", "auto"]), 0)
+        self.assertTrue(ai.load_config()["auto_recommendations"])
+        self.assertIn("native next-command list stays separate", output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["recommendations", "manual"]), 0)
+        self.assertFalse(ai.load_config()["auto_recommendations"])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["recommendations", "status", "--json"]), 0)
+        self.assertIn('"automatic_ai_recommendations": false', output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["recommendations", "status"]), 0)
+        self.assertIn("MANUAL / OFF", output.getvalue())
+
+    def test_ai_recommendations_keep_only_source_grounded_read_only_commands(self):
+        context = {
+            "source_files": [{
+                "path": "src/Vault.sol",
+                "source_excerpt": "contract Vault { function withdraw(uint256 amount) external {} function owner() external view returns(address) {} }",
+            }]
+        }
+        raw = {
+            "recommendations": [
+                {
+                    "title": "Check the owner gate",
+                    "why": "The withdrawal path should be compared with the owner authorization rule.",
+                    "command": "lk read owner",
+                    "source": {"path": "src/Vault.sol", "symbol": "withdraw"},
+                },
+                {
+                    "title": "Submit a transaction",
+                    "why": "Try sending a transaction.",
+                    "command": "lk send withdraw 1",
+                    "source": {"path": "src/Vault.sol", "symbol": "withdraw"},
+                },
+                {
+                    "title": "Run a shell chain",
+                    "why": "This is unsafe.",
+                    "command": "lk read owner; rm -rf .",
+                    "source": {"path": "src/Vault.sol", "symbol": "owner"},
+                },
+                {
+                    "title": "Unknown source claim",
+                    "why": "It is not in the reviewed excerpt.",
+                    "command": "lk read balanceOf [account]",
+                    "source": {"path": "src/Missing.sol", "symbol": "balanceOf"},
+                },
+            ]
+        }
+        result = ai.validate_ai_recommendations(raw, context, [{"command": "lk read owner", "reason": "native"}])
+        self.assertEqual(result["recommendations"], [])
+        raw["recommendations"] = [raw["recommendations"][0]]
+        result = ai.validate_ai_recommendations(raw, context, [])
+        self.assertEqual(len(result["recommendations"]), 1)
+        self.assertEqual(result["recommendations"][0]["command"], "lk read owner")
+        self.assertTrue(result["ai_generated"])
+        self.assertEqual(result["origin"], "configured-model")
+
+    def test_model_derived_text_renderers_have_visible_ai_watermarks(self):
+        from lowkey import error_advisor, security_review, test_planner
+
+        plan_text = test_planner.render_test_plan({"summary": "Candidate test idea", "test_cases": []})
+        review_text = security_review.render_review({"summary": "Candidate review", "candidate_findings": []})
+        error_text = error_advisor.render({
+            "summary": "Check the RPC endpoint",
+            "likely_cause": "The endpoint is unreachable",
+            "confidence": "medium",
+            "checks": [],
+            "fixes": [],
+            "caveats": [],
+        })
+        self.assertTrue(plan_text.startswith("@ AI OUTPUT — TEST IDEAS"))
+        self.assertTrue(review_text.startswith("@ AI OUTPUT — SECURITY REVIEW"))
+        self.assertTrue(error_text.startswith("@ AI OUTPUT — ERROR DIAGNOSIS"))
 
     def test_disabled_and_unconfigured_by_default(self):
         value = ai.status()

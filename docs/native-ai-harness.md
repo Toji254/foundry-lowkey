@@ -196,6 +196,18 @@ In auto mode, Lowkey first runs a local, deterministic complexity heuristic over
 
 Return to manual mode at any time with \`lk ai mode manual\`. Neither mode gives the model tool execution, deployment, target-selection, or finding-confirmation authority.
 
+## AI next-command recommendations
+
+Lowkey's deterministic footer remains the **LOWKEY RECOMMENDED NEXT COMMANDS** section. Extra recommendations from the model are a separate, watermarked section and are disabled by default:
+
+~~~bash
+lk ai recommendations status
+lk ai recommendations auto
+lk ai recommendations manual
+~~~
+
+Auto mode may make a provider request after a successful command only when Lowkey already has a native next-command menu. It sends bounded, redacted first-party source excerpts plus the existing native suggestions. AI suggestions must cite a selected file and symbol and use a read-only command allowlist; malformed/unsafe suggestions are discarded. No suggested command is executed. Provider pricing and best-effort redaction still apply.
+
 ## Explicit protocol review in the lab
 
 ~~~bash
@@ -224,6 +236,8 @@ The internal request_structured API is for Lowkey-owned callers. It is deliberat
 
 
 ## Readable output by default
+
+Model-derived prose is visibly labelled with `@ AI OUTPUT` (or `@ AI CANDIDATE` inside the review ledger) so it is not mistaken for a native Lowkey result. JSON remains valid JSON and carries `ai_generated: true` and `origin: "configured-model"` metadata where the report is model-derived. Lowkey's native recommendations are labelled separately from model suggestions.
 
 Lowkey's AI commands are intended to be understandable without reading internal JSON. Commands such as `lk ai status`, `lk ai runtime`, `lk ai keys list`, `lk ai errors status`, `lk ai security-review`, `lk ai test-plan`, and `lk ai ledger` print short explanations and next steps by default. Use `--json` where supported when another tool needs the structured data.
 

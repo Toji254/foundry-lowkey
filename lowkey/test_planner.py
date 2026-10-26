@@ -185,6 +185,8 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
     )
     status = ai_harness.status()
     normalized["_lowkey_meta"] = {
+        "ai_generated": True,
+        "origin": "configured-model",
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_files_included": context.get("source_files_included", len(context.get("source_files", []))),
         "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
@@ -218,8 +220,8 @@ def render_test_plan(report: Mapping[str, Any]) -> str:
     if not isinstance(cases, list):
         cases = []
     lines = [
-        "LOWKEY TEST IDEAS",
-        "=================",
+        "@ AI OUTPUT — TEST IDEAS (UNVERIFIED)",
+        "======================================",
         f"Summary: {str(report.get('summary', '')).strip()}",
         f"Test ideas suggested: {len(cases)}",
         "",

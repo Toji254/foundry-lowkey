@@ -171,8 +171,8 @@ def diagnose_record(record: Mapping[str, Any]) -> dict[str, Any]:
 
 def render(diagnosis: Mapping[str, Any]) -> str:
     lines = [
-        "LOWKEY ERROR DIAGNOSIS — SUGGESTIONS ONLY",
-        "========================================",
+        "@ AI OUTPUT — ERROR DIAGNOSIS (SUGGESTIONS ONLY)",
+        "=================================================",
         "No command was executed. Inspect each command before running it.",
         "",
         "Summary: " + str(diagnosis.get("summary", "")),

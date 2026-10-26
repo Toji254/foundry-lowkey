@@ -180,6 +180,8 @@ def review_project_security(root: str | Path, contract_name: str | None = None) 
         "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
         "provider": status.get("provider"),
         "model": status.get("model"),
+        "ai_generated": True,
+        "origin": "configured-model",
         "agent": "security-review",
         "runtime_id": runtime.runtime_id,
         "verified": False,
@@ -199,8 +201,8 @@ def render_review(review: Mapping[str, Any]) -> str:
     if not isinstance(findings, list):
         findings = []
     lines = [
-        "LOWKEY SECURITY REVIEW",
-        "======================",
+        "@ AI OUTPUT — SECURITY REVIEW (UNVERIFIED)",
+        "===========================================",
         f"Overall result: {'No concrete issue was reported in this pass.' if not findings else f'{len(findings)} possible issue(s) need human review.'}",
         str(review.get("summary", "")).strip(),
     ]

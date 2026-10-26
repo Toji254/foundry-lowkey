@@ -23,7 +23,7 @@ MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
 PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama"}
-PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis"}
+PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
@@ -67,7 +67,8 @@ def credentials_path() -> Path:
 
 def _default_config() -> dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "enabled": False, "auto_assist": False,
-            "auto_explain_errors": False, "provider": None, "model": None, "base_url": None,
+            "auto_explain_errors": False, "auto_recommendations": False,
+            "provider": None, "model": None, "base_url": None,
             "api_key_env": None, "timeout_seconds": DEFAULT_TIMEOUT,
             "max_output_tokens": DEFAULT_OUTPUT_TOKENS}
 
@@ -355,6 +356,7 @@ def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     key_count = pool_info.get("providers", {}).get(str(provider), {}).get("effective_key_capacity", 0) if provider else 0
     return {"enabled": bool(cfg["enabled"]), "configured": configured, "usable": usable,
             "auto_assist": auto_assist, "auto_explain_errors": bool(cfg.get("auto_explain_errors", False)),
+            "auto_recommendations": bool(cfg.get("auto_recommendations", False)),
             "mode": "auto" if auto_assist else "manual",
             "provider": provider, "model": cfg.get("model"), "base_url": cfg.get("base_url"),
             "reason": reason, "timeout_seconds": cfg.get("timeout_seconds"),
@@ -422,6 +424,28 @@ def render_status(value: Mapping[str, Any]) -> str:
         if value.get("auto_explain_errors")
         else "Automatic error explanations: OFF — use 'lk ai explain-error --last' when needed."
     )
+    lines.append(
+        "AI next-command recommendations: ON — eligible successful commands may send selected source to the provider."
+        if value.get("auto_recommendations")
+        else "AI next-command recommendations: OFF — Lowkey's native recommendations remain available."
+    )
+    return "\n".join(lines)
+
+
+def render_recommendation_status(value: Mapping[str, Any]) -> str:
+    automatic = bool(value.get("automatic_ai_recommendations"))
+    lines = [
+        "LOWKEY AI RECOMMENDATION SETTING",
+        "================================",
+        f"AI recommendations: {'AUTO' if automatic else 'MANUAL / OFF'}",
+        "Lowkey native recommendations: Always shown when the command has a curated next-step menu.",
+        (
+            "Provider requests: May be made after eligible successful commands; selected source may be sent and charges may apply."
+            if automatic
+            else "Provider requests: No automatic next-command recommendation requests will be made."
+        ),
+        "Safety: AI suggestions are labelled separately, restricted to an allowlist of read-only commands, and never executed by Lowkey.",
+    ]
     return "\n".join(lines)
 
 
@@ -556,9 +580,9 @@ def render_ledger(value: Mapping[str, Any]) -> str:
         quote_label = "quoted code was found" if quote_status == "matched" else "quoted code was not found; check the reference"
         lines.extend([
             "",
-            f"Possible issue: {item.get('title') or 'Untitled finding'}",
+            f"@ AI CANDIDATE: {item.get('title') or 'Untitled finding'}",
             f"Finding ID: {item.get('finding_id')}",
-            f"AI-estimated severity: {severity} (not proof)",
+            f"@ AI-estimated severity: {severity} (not proof)",
             f"Where to look: {location.get('path') or 'file not recorded'} — {location.get('symbol') or 'code location not recorded'}",
             f"Source check: {quote_label}. This check alone does not prove the claim is true.",
             f"Current status: {state_labels.get(status, 'Status: ' + status)}",
@@ -953,11 +977,208 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
     )
     _validate_protocol_review_output(result)
     result["_lowkey_meta"] = {
+        "ai_generated": True,
+        "origin": "configured-model",
         "source_files_included": context["source_files_included"],
         "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
         "verified": False,
     }
     return result
+
+
+
+AI_RECOMMENDATION_COMMAND_FORMS = (
+    "lk read <source-backed function> [values...]",
+    "lk fn <source-backed function>",
+    "lk ask <short function or code question>",
+    "lk functions",
+    "lk status",
+    "lk trace <transaction-hash>",
+    "lk events",
+    "lk logs",
+    "lk changes <source-backed function> [values...]",
+    "lk proxy",
+    "lk recon",
+    "lk roles",
+    "lk questions",
+    "lk q",
+    "lk findings",
+)
+_AI_RECOMMENDATION_COMMAND_ROOTS = {
+    "read", "fn", "ask", "functions", "status", "trace", "events", "logs",
+    "changes", "proxy", "recon", "roles", "questions", "q", "findings",
+}
+_AI_RECOMMENDATION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./:=+\-\[\]\(\),]+$")
+
+
+def _safe_ai_recommendation_command(value: Any) -> str | None:
+    """Accept only display-only commands from a deliberately read-only allowlist."""
+    if not isinstance(value, str):
+        return None
+    command = " ".join(value.strip().split())
+    if not command or len(command) > 300:
+        return None
+    # Reject command chaining, shell substitution, quoting, redirects and newlines.
+    if any(char in command for char in ("\r", "\n", ";", "|", "&", chr(96), "$", "<", ">", "\\", '"', "'")):
+        return None
+    tokens = command.split()
+    if len(tokens) < 2 or tokens[0] != "lk" or tokens[1] not in _AI_RECOMMENDATION_COMMAND_ROOTS:
+        return None
+    if any(not _AI_RECOMMENDATION_TOKEN_RE.fullmatch(token) for token in tokens):
+        return None
+    if tokens[1] in {"read", "fn", "ask", "trace", "changes"} and len(tokens) < 3:
+        return None
+    if tokens[1] in {"functions", "status", "proxy", "recon", "roles", "questions", "q", "findings", "events", "logs"} and len(tokens) != 2:
+        return None
+    return command
+
+
+def validate_ai_recommendations(
+    result: Mapping[str, Any],
+    context: Mapping[str, Any],
+    native_recommendations: list[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Keep only short, source-grounded, read-only suggestions with a safe command form."""
+    values = result.get("recommendations")
+    if not isinstance(values, list) or len(values) > 10:
+        raise AIHarnessError("AI next-step recommendations must be a list of at most 10 items.")
+    sources = context.get("source_files", [])
+    if not isinstance(sources, list):
+        raise AIHarnessError("Selected source context is malformed.")
+    known_sources = {
+        str(item.get("path") or ""): str(item.get("source_excerpt") or "")
+        for item in sources if isinstance(item, dict)
+    }
+    native_commands = {
+        " ".join(str(item.get("command") or "").strip().lower().split())
+        for item in (native_recommendations or []) if isinstance(item, Mapping)
+    }
+    normalized = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        why = item.get("why")
+        if not isinstance(title, str) or not isinstance(why, str):
+            continue
+        title = " ".join(title.split())[:220]
+        why = " ".join(why.split())[:900]
+        command = _safe_ai_recommendation_command(item.get("command"))
+        source = item.get("source")
+        if not title or not why or not command or not isinstance(source, dict):
+            continue
+        source_path = source.get("path")
+        symbol = source.get("symbol")
+        if not isinstance(source_path, str) or not isinstance(symbol, str):
+            continue
+        source_path = source_path.strip()
+        symbol = " ".join(symbol.split())[:180]
+        excerpt = known_sources.get(source_path)
+        if not excerpt or not symbol or symbol.casefold() not in excerpt.casefold():
+            continue
+        normalized_command = " ".join(command.lower().split())
+        if normalized_command in native_commands or normalized_command in seen:
+            continue
+        seen.add(normalized_command)
+        normalized.append({
+            "title": title,
+            "why": why,
+            "command": command,
+            "source": {"path": source_path, "symbol": symbol},
+            "origin": "configured-model",
+            "verified": False,
+        })
+        if len(normalized) >= 3:
+            break
+    return {
+        "recommendations": normalized,
+        "status": "unverified",
+        "ai_generated": True,
+        "origin": "configured-model",
+        "execution_policy": "Suggestions only; Lowkey does not execute them.",
+    }
+
+
+def recommend_next_steps(
+    root: str | Path,
+    command: str,
+    native_recommendations: list[Mapping[str, Any]],
+    contract_name: str | None = None,
+) -> dict[str, Any]:
+    """Suggest extra source-grounded read-only commands alongside native next steps."""
+    context = _source_context(Path(root), contract_name)
+    native = []
+    for item in native_recommendations[:4]:
+        if isinstance(item, Mapping):
+            native.append({
+                "command": str(item.get("command") or "")[:240],
+                "reason": str(item.get("reason") or "")[:500],
+            })
+    context["current_native_command"] = str(command or "").strip().lower()[:80]
+    context["native_recommendations"] = native
+    context["allowed_read_only_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
+    task = (
+        "Suggest up to three additional next investigative steps using the actual contract logic in the selected source. "
+        "Lowkey already provides the separate native next-command list in the context: do not repeat those commands. "
+        "Return JSON with one key, recommendations, an array of objects with title, why, command, and source {path, symbol}. "
+        "Each recommendation must cite a path exactly present in context.source_files and a symbol/identifier that appears "
+        "in that source excerpt. Use one of the allowed read-only command forms from the context, filling in only function "
+        "or identifier names supported by the source. No transaction submission, deployment, file modification, tests, "
+        "shell commands, pipes, chaining, redirections, or commands outside the allowed forms. Prefer a useful command that "
+        "checks a concrete assumption about the protocol rather than a generic repeat of Lowkey's existing menu. If no "
+        "extra source-grounded command is justified, return an empty recommendations array. These are hypotheses, not proof."
+    )
+    result = request_structured(
+        purpose="next_step_recommendations",
+        task=task,
+        context=context,
+        required_fields=("recommendations",),
+    )
+    normalized = validate_ai_recommendations(result, context, native_recommendations)
+    normalized["_lowkey_meta"] = {
+        "ai_generated": True,
+        "origin": "configured-model",
+        "source_files_included": context.get("source_files_included", len(context.get("source_files", []))),
+        "context_sha256": hashlib.sha256(
+            json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
+        "verified": False,
+    }
+    return normalized
+
+
+def render_ai_recommendations(report: Mapping[str, Any]) -> str:
+    items = report.get("recommendations", [])
+    if not isinstance(items, list):
+        items = []
+    lines = [
+        "@ AI OUTPUT — NEXT-STEP RECOMMENDATIONS (UNVERIFIED)",
+        "===================================================",
+        "These extra suggestions come from the configured AI model, not Lowkey's native recommendation rules.",
+        "They are based on selected, redacted source excerpts. No command was executed.",
+    ]
+    if not items:
+        lines.extend([
+            "",
+            "No additional source-grounded command was suggested beyond Lowkey's native list.",
+        ])
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        lines.extend([
+            "",
+            f"AI suggestion {index}: {item.get('title', 'Untitled suggestion')}",
+            f"Why: {item.get('why', '')}",
+            f"Suggested command (review before running): {item.get('command', '')}",
+            f"Source to inspect: {source.get('path', 'not recorded')} — {source.get('symbol', 'not recorded')}",
+        ])
+    lines.extend([
+        "",
+        "Trust boundary: this is AI advice, not a native Lowkey conclusion. Check the source and command first.",
+    ])
+    return "\n".join(lines)
 
 
 def auto_review_reason(root: str | Path, contract_name: str | None = None) -> str | None:
@@ -1433,6 +1654,35 @@ accepts the compatibility forms "lk ai help" and "lk ai --h".
       lk ai runtime --json
 
 
+17. RECOMMENDATIONS — "Can AI suggest better next commands?"
+    Syntax:
+      lk ai recommendations status [--json]
+      lk ai recommendations auto
+      lk ai recommendations manual
+
+    Why / when:
+      Lowkey's existing next-command section is deterministic and stays in place.
+      This setting adds a separate "@ AI OUTPUT" section after eligible successful commands, when
+      Lowkey already has a native recommendation menu. The model reads selected, redacted contract
+      excerpts and the native suggestions, then may suggest up to three extra investigative commands.
+      It does not execute them or change Lowkey's own recommendations.
+
+    Values:
+      status   Show the current setting in plain English; use --json for scripts.
+      auto     Opt in to extra AI requests after eligible successful commands.
+      manual   Turn off automatic AI recommendations. This is the default.
+
+    Examples:
+      lk ai recommendations status
+      lk ai recommendations auto
+      lk ai recommendations manual
+
+    Privacy and cost:
+      Auto mode can send selected, redacted first-party source excerpts to your configured provider.
+      Provider charges may apply. Secret redaction is best-effort, not a guarantee. Suggestions are
+      source-cited but unverified, and the command validator permits only a read-only command allowlist.
+      JSON-output commands and commands without Lowkey's own recommendation menu do not trigger this footer.
+
 COMMON OPTIONS AND WORDS
 ------------------------
 -h, --help
@@ -1483,6 +1733,7 @@ Local-only commands (no provider request):
   lk ai preview [--show-context]
   lk ai mode manual
   lk ai mode auto
+  lk ai recommendations status/manual
   lk ai setup
   lk ai enable
   lk ai disable
@@ -1497,6 +1748,7 @@ Commands that can contact the provider:
   lk ai test-plan            Sends selected source context.
   lk ai explain-error        Sends a redacted error for diagnosis.
   lk ai errors auto          Enables future eligible automatic error-diagnosis requests.
+  lk ai recommendations auto Enables extra AI requests after eligible native recommendation menus.
 
 Remember:
   Lowkey does not run commands suggested by its AI. Verify important claims with source,
@@ -1537,6 +1789,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
     mode.add_argument("value", choices=("manual", "auto"), help="manual = only on request (default); auto = opt in to complexity-triggered review")
+    recommendations_cmd = sub.add_parser("recommendations", help="show native next commands plus optional AI-generated suggestions")
+    recommendations_cmd.add_argument("mode", choices=("manual", "auto", "status"), help="auto adds source-grounded AI suggestions after eligible successful commands; manual disables them; status shows the setting")
+    recommendations_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON for status")
     setup = sub.add_parser("setup", help="configure a provider once")
     setup.add_argument("--provider", choices=sorted(PROVIDERS), required=True, help="service name: deepseek, gemini, openai, openai-compatible, or ollama")
     setup.add_argument("--model", required=True, help="exact model name available to your provider account/server")
@@ -1603,6 +1858,8 @@ def main(argv: list[str] | None = None) -> int:
     preview.epilog = "WHEN: review this before sending source to a provider. Example: lk ai preview --contract ConfidencePool"
     mode.description = "Choose manual mode or opt in to complexity-triggered protocol review."
     mode.epilog = "WHEN: use manual for full control; use auto only when you accept possible provider requests and charges. Example: lk ai mode manual"
+    recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
+    recommendations_cmd.epilog = "WHEN: enable only if you accept source being sent to your provider after eligible commands. Example: lk ai recommendations auto"
     setup.description = "Configure the provider, exact model name, and optional endpoint/credential source."
     setup.epilog = "WHEN: first setup or when changing providers/models. Setup does not test the connection. Example: lk ai setup --provider gemini --model YOUR_API_MODEL"
     enable_cmd.description = "Enable the configured AI extension without running a review."
@@ -1905,6 +2162,26 @@ def main(argv: list[str] | None = None) -> int:
                     )
             print("Use --show-context to inspect the complete redacted payload locally.")
             return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
+        if parsed.action == "recommendations":
+            cfg = load_config()
+            if parsed.mode == "status":
+                value = {
+                    "mode": "auto" if cfg.get("auto_recommendations", False) else "manual",
+                    "automatic_ai_recommendations": bool(cfg.get("auto_recommendations", False)),
+                    "native_recommendations_preserved": True,
+                    "provider_requests_may_send_selected_source": bool(cfg.get("auto_recommendations", False)),
+                }
+                print(json.dumps(value, indent=2, sort_keys=True) if parsed.as_json else render_recommendation_status(value))
+                return 0
+            cfg["auto_recommendations"] = parsed.mode == "auto"
+            save_config(cfg)
+            if cfg["auto_recommendations"]:
+                print("AI recommendations: auto. Lowkey's native next-command list stays separate and unchanged.")
+                print("After eligible successful commands, Lowkey may send selected, redacted contract source and its native suggestions to the configured provider; charges may apply.")
+                print("AI suggestions are read-only command hints. Lowkey will not execute them.")
+            else:
+                print("AI recommendations: manual/off. Lowkey will keep showing its native next-command suggestions without making extra AI requests.")
+            return 0
         if parsed.action == "mode":
             cfg = load_config()
             cfg["auto_assist"] = parsed.value == "auto"
