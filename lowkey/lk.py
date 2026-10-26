@@ -9461,6 +9461,31 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
+def _decode_address_return_data(raw_value):
+    """Decode a Cast address result without truncating its ABI-encoded word.
+
+    Cast can display a returned address as either a 20-byte address or as one
+    32-byte ABI word. For the latter, the address occupies the final 40 hex
+    characters and the leading 24 hex characters must be zero.
+    """
+    raw = str(raw_value or "").strip()
+    encoded_word = re.search(
+        r"(?i)(?<![0-9a-f])0x([0-9a-f]{64})(?![0-9a-f])",
+        raw,
+    )
+    if encoded_word:
+        word = encoded_word.group(1)
+        if word[:24] != "0" * 24:
+            return None
+        return "0x" + word[-40:]
+
+    direct_address = re.search(
+        r"(?i)(?<![0-9a-f])0x[0-9a-f]{40}(?![0-9a-f])",
+        raw,
+    )
+    return direct_address.group(0) if direct_address else None
+
+
 def _validate_local_target_dependency_code(root, rpc, target, artifact_path):
     """Validate address-valued dependency getters exposed by a project target.
 
@@ -9492,16 +9517,14 @@ def _validate_local_target_dependency_code(root, rpc, target, artifact_path):
         code, raw_value, error = cast_output([
             "cast", "call", target, signature, "--rpc-url", str(rpc)
         ])
-        address_match = re.search(r"0x[0-9a-fA-F]{40}", str(raw_value or ""))
-        if code != 0 or not address_match:
+        dependency = _decode_address_return_data(raw_value)
+        if code != 0 or not dependency:
             if required_link:
                 return (
                     f"required dependency getter {name}() could not be read on the local chain"
                     + (f": {error}" if error else "")
                 )
             continue
-
-        dependency = address_match.group(0)
         if int(dependency, 16) == 0:
             if required_link:
                 return f"required dependency {name}() is the zero address"
