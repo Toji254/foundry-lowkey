@@ -53,11 +53,11 @@ def classify_forge_execution_failure(
         }
 
     setup_failures = re.findall(
-        r"(?m)^.*\\[FAIL:.*\\]\\s+setUp\\(\\)(?:\\s+\\(gas:.*\\))?\\s*$",
+        r"(?m)^.*\[FAIL:.*\]\s+setUp\(\)(?:\s+\(gas:.*\))?\s*$",
         output,
     )
     test_body_failures = re.findall(
-        r"(?m)^.*\\[FAIL:.*\\]\\s+(?:test\\w*|invariant\\w*)\\s*\\(",
+        r"(?m)^.*\[FAIL:.*\]\s+(?:test\w*|invariant\w*)\s*\(",
         output,
     )
     if setup_failures and not test_body_failures:
