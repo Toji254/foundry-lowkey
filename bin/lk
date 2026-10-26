@@ -36,6 +36,14 @@ case "${1:-}" in
     # Short alias for the native coverage wrapper. Keep the native subcommand
     # canonical so it receives the same arguments and behavior as "lk coverage".
     cov)
+        # Friendly help must go through Lowkey's canonical coverage help page.
+        for arg in "$@"; do
+            case "$arg" in
+                --h|--help|-h|help)
+                    exec python3 "$HOME/.lowkey/lk.py" "$@"
+                    ;;
+            esac
+        done
         shift
         exec python3 "$HOME/.lowkey/forge_tools.py" coverage "$@"
         ;;
