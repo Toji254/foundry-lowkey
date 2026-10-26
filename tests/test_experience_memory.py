@@ -92,6 +92,15 @@ class ExperienceMemoryTests(unittest.TestCase):
         with self.assertRaises(memory.MemoryError):
             memory.reject_lesson(proposal["id"], reason="changing mind", root=self.project)
 
+    def test_memory_text_rejects_terminal_control_characters(self):
+        with self.assertRaises(memory.MemoryError):
+            memory.propose_lesson(
+                kind="test-procedure",
+                title="Invalid " + chr(27) + "[31mterminal text",
+                lesson="A valid lesson.",
+                root=self.project,
+            )
+
     def test_invalid_lesson_tags_are_rejected(self):
         with self.assertRaises(memory.MemoryError):
             memory.propose_lesson(
