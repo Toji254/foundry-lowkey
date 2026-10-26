@@ -73,8 +73,28 @@ bash scripts/test-native-ai-harness.sh
 The script checks the installed `lk ai` and `lk memory` command routes, verifies that preview makes no provider request, and confirms the payload excludes test/dependency source and redacts its deliberate test secret. It uses a temporary fixture and removes it on exit. It does not configure or enable an AI provider. The Python regression tests are separate:
 
 ~~~bash
-python3 -m unittest tests.test_ai_harness tests.test_experience_memory -v
+python3 -m unittest tests.test_ai_harness tests.test_ai_harness_live_integration tests.test_experience_memory -v
 ~~~
+
+The live-request integration tests start a local HTTP server and exercise Lowkey's actual HTTP request/response path, structured protocol-review validation, redaction, and metadata-only event logging. They use a fixture response, do not contact an external model, and do not incur provider charges. They verify transport and application handling—not the quality of a real model review or compatibility with an external provider's current service.
+
+To verify an actual provider end to end, configure a model name that is enabled for API use in your provider account, then run the fixed connectivity check before sending contract context:
+
+~~~bash
+lk ai setup --provider openai --model 'YOUR_API_MODEL_NAME'
+lk ai status
+lk ai test
+~~~
+
+The setup command prompts for the API key with hidden terminal input. The fixed connectivity test sends no project source. After it passes, enter the audited project and explicitly run a protocol review:
+
+~~~bash
+cd /path/to/your/foundry-project
+lk ai preview --contract ConfidencePool
+lk lab --ai-review
+~~~
+
+The preview is local-only. The explicit review sends the selected, redacted source excerpts and approved memory to the configured provider, and provider charges may apply. Inspect the result as unverified hypotheses; it is not proof of safety or a confirmed vulnerability report.
 
 ## Manual and automatic assistance modes
 
