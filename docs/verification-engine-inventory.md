@@ -88,6 +88,7 @@ Every generated artifact should record: intended property, preconditions, actors
 ## Validation evidence and remaining release blockers
 
 ### Live CI evidence (25–26 October 2026)
+- **Targeted finding investigation:** a live Foundry regression fixture deliberately defines an `onlyOwner` modifier that does not enforce ownership. CI creates a matching project-scoped signal, runs `lk verification investigate` through the installed CLI and real generator, executes the generated test with Forge, and checks that the test failure and hash-backed evidence are attached to the original signal without confirming a vulnerability automatically. This proves only the supported simple access-control path, not universal static-finding-to-test coverage.
 
 The [CI workflow](../.github/workflows/ci.yml) has separate real-project smoke gates:
 
