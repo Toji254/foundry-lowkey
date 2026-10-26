@@ -539,6 +539,57 @@ jobs:
           path: .audit/test-gen-ecosystem-smoke.json
           if-no-files-found: warn
 
+  test-generation-ecosystem-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Run the complete pinned real-project corpus
+        id: benchmark
+        continue-on-error: true
+        run: |
+          python3 scripts/test-gen-ecosystem-benchmark.py \
+            --manifest tests/fixtures/test-generation-ecosystem.json \
+            --targets-per-project 2 \
+            --work-dir /tmp/lowkey-full-ecosystem-work \
+            --output .audit/test-gen-ecosystem-full.json
+      - name: Summarize the full corpus without equating gaps with passes
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path(".audit/test-gen-ecosystem-full.json")
+          if not path.is_file():
+              raise SystemExit("Full benchmark did not produce a report")
+          report = json.loads(path.read_text(encoding="utf-8"))
+          print(f"Projects recorded: {report.get('project_count')}")
+          print(f"Projects fully evaluated by the current runner: {report.get('evaluated_count')}")
+          print(f"Baseline build failures: {report.get('baseline_build_failed_count')}")
+          print(f"Generation/validation failures or coverage gaps: {report.get('generation_validation_failed_count')}")
+          print(f"Revision pin failures: {report.get('revision_pin_failed_count')}")
+          for item in report.get("results", []):
+              print(f"{item.get('id')}: {item.get('status')} @ {item.get('revision', 'no-verified-revision')}")
+          print("NOTE: a completed benchmark is not a security certification; inspect each target's per-category evidence.")
+          PY
+      - name: Retain full real-project benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-generation-ecosystem-full
+          path: .audit/test-gen-ecosystem-full.json
+          if-no-files-found: error
+
   vyper-integration:
     runs-on: ubuntu-latest
     steps:

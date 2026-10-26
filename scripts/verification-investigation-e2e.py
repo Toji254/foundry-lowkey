@@ -270,6 +270,97 @@ contract RoleVault {
         print("PASS: onlyRole targeted investigation generated and executed a real passing outsider-revert test")
         print(f"Role signal: {role_signal['id']}")
         print(f"Generated test: {role_report['targeted_test']}")
+
+        # Third supported property family: reentrancy in ETH withdrawal where
+        # a mapping credit is reset after an external value transfer.
+        reentrancy_source = root / "src" / "ReentrantVault.sol"
+        reentrancy_source.write_text(
+            """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract ReentrantVault {
+    mapping(address => uint256) public credits;
+
+    function deposit() external payable {
+        credits[msg.sender] += msg.value;
+    }
+
+    function withdraw() external {
+        uint256 amount = credits[msg.sender];
+        require(amount > 0, "no credit");
+        (bool success, ) = msg.sender.call{value: amount}("");
+        require(success, "transfer failed");
+        credits[msg.sender] = 0;
+    }
+}
+""",
+            encoding="utf-8",
+        )
+        run([forge, "build"], root)
+        reentrancy_signal = audit_context.add_signal(
+            {
+                "tool": "slither",
+                "category": "static-analysis",
+                "check": "reentrancy-eth",
+                "title": "Potential ETH reentrancy in withdraw",
+                "description": "ETH is transferred before credits[msg.sender] is cleared.",
+                "impact": "High",
+                "confidence": "High",
+                "file": "src/ReentrantVault.sol",
+                "line": 12,
+                "function": "withdraw()",
+            },
+            root,
+        )
+        reentrancy_run = subprocess.run(
+            [lk, "verification", "investigate", str(reentrancy_signal["id"])],
+            cwd=root, text=True, capture_output=True, timeout=360, check=False,
+        )
+        if reentrancy_run.returncode != 1:
+            raise AssertionError(
+                "Expected the ETH reentrancy probe to identify a failing assertion (exit 1); "
+                f"got {reentrancy_run.returncode}.\nstdout:\n{reentrancy_run.stdout[-12000:]}\nstderr:\n{reentrancy_run.stderr[-12000:]}"
+            )
+        if "Status         : test-failed-needs-review" not in reentrancy_run.stdout or "Evidence       : attached" not in reentrancy_run.stdout:
+            raise AssertionError(f"Reentrancy outcome/evidence missing:\n{reentrancy_run.stdout}")
+        reentrancy_reports = []
+        for path in (root / ".audit" / "investigations").glob("*/investigation.json"):
+            candidate_report = json.loads(path.read_text(encoding="utf-8"))
+            if candidate_report.get("signal_id") == reentrancy_signal["id"]:
+                reentrancy_reports.append((path, candidate_report))
+        if len(reentrancy_reports) != 1:
+            raise AssertionError(f"Expected one reentrancy report; found {len(reentrancy_reports)}")
+        _, reentrancy_report = reentrancy_reports[0]
+        if reentrancy_report.get("investigation_kind") != "reentrancy-eth":
+            raise AssertionError(f"Wrong investigation kind: {reentrancy_report.get('investigation_kind')!r}")
+        if reentrancy_report.get("status") != "test-failed-needs-review":
+            raise AssertionError(f"Reentrancy did not become a review lead: {reentrancy_report}")
+        if reentrancy_report.get("target_test_name") != "test_reentrancyCannotPayMoreThanCredited":
+            raise AssertionError(f"Wrong reentrancy property: {reentrancy_report.get('target_test_name')!r}")
+        reentrancy_test_path = (root / str(reentrancy_report.get("targeted_test"))).resolve()
+        if not reentrancy_test_path.is_relative_to(root) or not reentrancy_test_path.is_file():
+            raise AssertionError(f"Reentrancy test is missing/outside the fixture: {reentrancy_test_path}")
+        if hashlib.sha256(reentrancy_test_path.read_bytes()).hexdigest() != reentrancy_report.get("targeted_test_sha256"):
+            raise AssertionError("Reentrancy test digest does not match report")
+        reentrancy_native = reentrancy_report.get("native_evidence") or {}
+        reentrancy_execution = reentrancy_native.get("execution")
+        if not isinstance(reentrancy_execution, dict) or reentrancy_execution.get("exit_code") == 0:
+            raise AssertionError(f"Expected a real failed Forge reentrancy assertion: {reentrancy_execution!r}")
+        reentrancy_output = "\n".join(str(reentrancy_execution.get(key) or "") for key in ("stdout_tail", "stderr_tail"))
+        if "test_reentrancyCannotPayMoreThanCredited" not in reentrancy_output or "credit paid more than once" not in reentrancy_output:
+            raise AssertionError(f"Reentrancy failure evidence does not show the exact overpayment assertion:\n{reentrancy_output}")
+        stored_reentrancy = next(
+            (item for item in audit_context.signals(root) if item.get("id") == reentrancy_signal["id"]), None
+        )
+        reentrancy_evidence = [
+            item for item in (stored_reentrancy or {}).get("evidence", [])
+            if isinstance(item, dict) and item.get("kind") == "targeted-test-investigation"
+        ]
+        if len(reentrancy_evidence) != 1 or reentrancy_evidence[0].get("security_finding_confirmed") is not False:
+            raise AssertionError("Reentrancy result not attached once as unconfirmed evidence")
+        print("PASS: real ETH reentrancy probe reproduced overpayment and attached a review lead")
+        print(f"Reentrancy signal: {reentrancy_signal['id']}")
+        print(f"Generated test: {reentrancy_report['targeted_test']}")
     return 0
 
 
