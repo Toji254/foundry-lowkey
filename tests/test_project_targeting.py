@@ -1027,6 +1027,20 @@ if __name__ == "__main__":
                     ["SAFE_REGISTRY"],
                 )
 
+                custom_env = root / ".env.project"
+                custom_env.write_text(
+                    'SAFE_REGISTRY="0x' + "2" * 40 + '"\n',
+                    encoding="utf-8",
+                )
+                custom_config = root / "foundry-ci.toml"
+                custom_config.write_text(
+                    '[profile.default]\n'
+                    'env_file = ".env.project"\n',
+                    encoding="utf-8",
+                )
+                os.environ["FOUNDRY_CONFIG"] = str(custom_config)
+                self.assertEqual(lk._lab_script_unresolved_env_names(script, root), [])
+
     def test_audit_target_prefers_contract_that_creates_child_instances(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
