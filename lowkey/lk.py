@@ -5704,7 +5704,7 @@ def _target_entry_is_protocol(root, entry):
     # Classify Solidity-style name tokens, not arbitrary substrings:
     # "ContestFactory" is application code, while "ConfidencePoolFactoryTest"
     # and "MockAgreement" are normally test/support contracts.
-    tokenized_name = re.sub(r"([a-z0-9])([A-Z])", r"\\1_\\2", name).lower()
+    tokenized_name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
     name_tokens = {token for token in re.split(r"[^a-z0-9]+", tokenized_name) if token}
     if name_tokens & {"mock", "fixture", "test"}:
         return False
