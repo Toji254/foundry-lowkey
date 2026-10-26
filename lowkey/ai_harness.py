@@ -815,6 +815,10 @@ def main(argv: list[str] | None = None) -> int:
     explain.add_argument("--command", default="", help="command that produced --text")
     errors = sub.add_parser("errors", help="configure optional AI explanations after failed Lowkey commands")
     errors.add_argument("mode", choices=("auto", "manual", "status"))
+    test_plan = sub.add_parser("test-plan", help="propose source-cited tests; never writes or runs test code")
+    test_plan.add_argument("--root", default=".", help="project root (default: current directory)")
+    test_plan.add_argument("--contract", help="prioritize source matching a contract name")
+    test_plan.add_argument("--json", dest="as_json", action="store_true", help="print the complete test-plan JSON")
     security = sub.add_parser("security-review", help="review source for candidate vulnerabilities; findings remain unverified")
     security.add_argument("--root", default=".", help="project root (default: current directory)")
     security.add_argument("--contract", help="prioritize source matching a contract name")
@@ -902,6 +906,17 @@ def main(argv: list[str] | None = None) -> int:
                 record = error_context.read_last_error()
             diagnosis = error_advisor.diagnose_record(record)
             print(error_advisor.render(diagnosis))
+            return 0
+        if parsed.action == "test-plan":
+            try:
+                import test_planner
+            except ImportError:
+                from lowkey import test_planner
+            report = test_planner.create_test_plan(Path(parsed.root).expanduser(), parsed.contract)
+            if parsed.as_json:
+                print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False))
+            else:
+                print(test_planner.render_test_plan(report))
             return 0
         if parsed.action == "security-review":
             try:

@@ -105,7 +105,7 @@ lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test t
 lk ai disposition F-0123456789ab --status confirmed --reviewer auditor --reason 'Reviewed the reproduced impact and assertion.' --evidence-id NATIVE_TEST_EVENT_ID
 lk ai runtime
 ~~~
-### Error help and provider key failover
+### AI test planning without AI-driven execution,,`lk ai test-plan --contract ConfidencePool` proposes source-cited unit/fuzz/invariant/regression cases, including explicit setup, steps and assertions. It saves a plan and ledger event only: it does not write test code or run tests.,,~~~bash,lk ai test-plan --contract ConfidencePool,lk ai test-plan --contract ConfidencePool --json,~~~,,Review the proposals against current source and tests before implementing them. See `docs/native-ai-harness.md` for the evidence lifecycle and guardrails.,### Error help and provider key failover
 
 `lk ai explain-error --last` diagnoses the most recently captured Lowkey error; use `lk ai explain-error --text '...'` for any copied error. `lk ai errors auto` opts into an AI diagnosis after routed CLI failures (provider requests may incur charges); `lk ai errors manual` disables automatic explanations. AI-suggested commands are never executed.
 

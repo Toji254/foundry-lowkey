@@ -96,6 +96,7 @@ DEFAULT_AGENTS.register(AgentSpec(
 ))
 DEFAULT_AGENTS.register(AgentSpec("source-evidence-checker", frozenset({"source_quote_check"})))
 DEFAULT_AGENTS.register(AgentSpec("native-test-verifier", frozenset({"run_native_test"})))
+DEFAULT_AGENTS.register(AgentSpec("test-planner", frozenset({"read_source", "provider_request", "write_evidence"}), ("source-evidence-checker",)))
 
 
 @dataclass(frozen=True)

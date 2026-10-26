@@ -126,6 +126,16 @@ The security-review pipeline stores a report under `.audit/ai-review/reviews/` a
 Provider adapters are selected through a replaceable registry. Agents depend on a structured task interface rather than a specific vendor. The built-in providers currently share an OpenAI-compatible transport; replacing a transport requires explicit application-code registration and regression tests. The agent registry exposes bounded capabilities, one-level allowlisted delegation, and an action log at `.audit/ai-review/runtime-events.jsonl`. Logs store action metadata and digests rather than prompts, model responses, credentials, or raw test output.
 
 Historical project feedback is included only as labeled historical context when available. It is not a source citation or current proof and must be rechecked against the current source revision and current native tests. Only separately approved memory lessons are treated as reusable validated procedures, and those lessons remain reference context—not proof that a current finding is true.
+## Optional AI test planning
+
+`lk ai test-plan --contract ConfidencePool` proposes targeted unit, fuzz, invariant, regression, integration, and (when justified) fork-test cases from the current source. It records source quote matches, explicit assertions, setup/steps, priority, limitations, and whether existing coverage may overlap.
+
+~~~bash
+lk ai test-plan --contract ConfidencePool
+lk ai test-plan --contract ConfidencePool --json
+~~~
+
+The result is a saved proposal at `.audit/ai-review/test-plans/TP-<id>.json` and a `test_plan_created` ledger event. This command does not write Solidity tests, execute tests, or mark any proposed test as passing. Review the source quote, assertion, test setup, and existing coverage before implementing a case. Use the native `lk ai verify` flow only for a test that already exists and has been manually inspected.
 ## Error diagnosis and key failover
 
 Lowkey can retain the most recent routed CLI failure in a private, redacted state file and diagnose it on demand. The model provides proposed causes and copy-pasteable checks/fixes; it does not run any suggested command.
