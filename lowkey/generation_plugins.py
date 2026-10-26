@@ -277,6 +277,9 @@ class SolidityFoundryGenerationAdapter:
             )
         validation = report.get("validation") or {}
         validation_status = validation.get("status", "not-requested")
+        # Solidity validation executes uniquely renamed temporary copies, so the
+        # executed basename includes a LowkeyValidation_<token>_ prefix rather
+        # than matching the original generated artifact's basename exactly.
         execution_paths = {
             Path(str(item.get("path", ""))).name
             for item in validation.get("test_executions", [])
@@ -291,7 +294,10 @@ class SolidityFoundryGenerationAdapter:
                 "unknown",
             )
             has_property = bool(property_description) and kind in {"unit", "fuzz", "invariant"}
-            executed_successfully = path.name in execution_paths
+            executed_successfully = any(
+                executed_name == path.name or executed_name.endswith("_" + path.name)
+                for executed_name in execution_paths
+            )
             artifact_status = "behaviorally-validated" if executed_successfully else "generated-unvalidated"
             artifacts.append(GeneratedArtifact(
                 kind=kind,
