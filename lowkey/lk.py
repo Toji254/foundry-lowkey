@@ -7519,7 +7519,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
                 if (
                     candidate_result.code == 0
                     and candidate_runtime not in {"", "0x", "0X"}
-                    and target_normalizer(candidate_runtime) is False
+                    and not target_normalizer(candidate_runtime)
                 ):
                     print(
                         f"INFO  recovered operational {kind} target from fixture snapshot: "
