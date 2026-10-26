@@ -7576,12 +7576,8 @@ def _lab_script_unresolved_env_names(script, root=None):
         if isinstance(value, str) and value.strip()
     }
     env_files = [root_path / ".env"]
-    try:
-        foundry_text = (root_path / "foundry.toml").read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except OSError:
-        foundry_text = ""
+    # Use the same config selected by Foundry, including FOUNDRY_CONFIG.
+    foundry_text = _foundry_project_config_text(root_path)
     for raw_value in re.findall(
         r"(?m)^\s*env_file\s*=\s*(.+?)\s*(?:#.*)?$",
         foundry_text,
