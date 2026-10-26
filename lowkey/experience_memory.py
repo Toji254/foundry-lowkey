@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import uuid
@@ -410,8 +411,61 @@ def memory_status(root: str | Path | None = None) -> dict[str, Any]:
     return result
 
 
-def lessons_for_context(root: str | Path | None = None, *, project_limit: int = 5, global_limit: int = 3) -> list[dict[str, Any]]:
-    """Return a compact set of approved lessons for explicit AI tasks only."""
+_MEMORY_STOPWORDS = {
+    "this", "that", "with", "from", "into", "when", "where", "what", "which",
+    "then", "than", "them", "they", "their", "there", "have", "has", "had",
+    "were", "was", "are", "for", "and", "not", "but", "all", "any", "only",
+    "must", "should", "could", "would", "will", "can", "use", "using", "used",
+    "contract", "function", "returns", "return", "memory", "lesson", "project",
+    "source", "tests", "test", "true", "false", "uint", "uint256", "address",
+    "public", "private", "external", "internal", "view", "pure", "payable",
+    "memory", "storage", "calldata", "pragma", "solidity", "import", "event",
+}
+
+
+def _memory_tokens(value: str) -> set[str]:
+    return {
+        token for token in re.findall(r"[a-z][a-z0-9]{2,}", str(value).casefold())
+        if token not in _MEMORY_STOPWORDS
+    }
+
+
+def _lesson_relevance(record: Mapping[str, Any], query_tokens: set[str]) -> int:
+    """Rank by overlap with the current project's source and identifiers."""
+    if not query_tokens:
+        return 0
+    score = 0
+    for field, weight in (
+        ("tags", 5),
+        ("title", 4),
+        ("when_relevant", 3),
+        ("kind", 2),
+        ("lesson", 2),
+        ("rationale", 1),
+    ):
+        value = record.get(field, "")
+        if isinstance(value, list):
+            text_value = " ".join(str(item) for item in value)
+        else:
+            text_value = str(value or "")
+        overlap = query_tokens.intersection(_memory_tokens(text_value))
+        score += len(overlap) * weight
+    return score
+
+
+def lessons_for_context(
+    root: str | Path | None = None,
+    *,
+    project_limit: int = 5,
+    global_limit: int = 3,
+    query_text: str = "",
+) -> list[dict[str, Any]]:
+    """Return approved, relevant lessons for explicitly requested AI tasks only.
+
+    Proposed or rejected lessons are never supplied. Query text is used only
+    for local relevance ranking and is not persisted by this module.
+    """
+    query_tokens = _memory_tokens(query_text)
     try:
         project_lessons = list_lessons(status="approved", scope="project", root=root)
     except MemoryError:
@@ -422,7 +476,16 @@ def lessons_for_context(root: str | Path | None = None, *, project_limit: int = 
         ("project", project_lessons, project_limit),
         ("global", global_lessons, global_limit),
     ):
-        for record in records[:max(0, limit)]:
+        ranked = sorted(
+            records,
+            key=lambda record: (
+                _lesson_relevance(record, query_tokens),
+                str(record.get("created_at", "")),
+                str(record.get("id", "")),
+            ),
+            reverse=True,
+        )
+        for record in ranked[:max(0, limit)]:
             picked.append({
                 "id": record.get("id"), "scope": scope, "kind": record.get("kind"),
                 "title": record.get("title"), "lesson": record.get("lesson"),
