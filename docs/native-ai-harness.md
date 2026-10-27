@@ -36,6 +36,17 @@ lk ai switch 2
 
 Profiles store provider, endpoint, model ID, and request limits—not API key values. Credentials remain in Lowkey's separate private credential store. Switching does not automatically contact a provider; run `lk ai test` afterwards to check the selected model.
 
+### Delete old profiles safely
+
+Delete one inactive profile by its exact ID from `lk ai switch list`, or prune every profile except the active one and any fallbacks you explicitly keep:
+
+~~~bash
+lk ai profile delete PROFILE_ID
+lk ai profile prune --keep ollama-rogue-0bddcd2b
+~~~
+
+`profile delete` refuses to delete the active profile; switch away first. `profile prune` always protects the active profile, accepts repeatable `--keep PROFILE_ID` options for other models you want to retain, displays the removal plan, and asks for confirmation. Use `--yes` only when you deliberately want to skip that confirmation. These commands delete profile entries only—provider API keys and current AI settings remain unchanged.
+
 Keep credentials in Lowkey's hidden prompt or an environment variable. Never put keys in a URL or commit them to source control.
 
 ## Preview the exact context before sending it

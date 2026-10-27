@@ -34,7 +34,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("lk ai security-review", help_text)
         self.assertNotIn("usage: lk ai", help_text)
         for command in (
-            "status", "preview", "mode", "setup", "switch", "enable", "disable", "test", "run",
+            "status", "preview", "mode", "setup", "switch", "profile", "delete", "prune", "enable", "disable", "test", "run",
             "keys", "list", "add", "remove", "clear", "explain-error",
             "errors", "project", "test-plan", "security-review", "ledger", "verify",
             "disposition", "runtime", "recommendations",
@@ -43,7 +43,7 @@ class AIHarnessTests(unittest.TestCase):
                 self.assertIn(command, help_text)
         for flag in (
             "--json", "--root", "--contract", "--show-context", "--provider",
-            "--model", "--base-url", "--api-key-env", "--timeout",
+            "--model", "--base-url", "--api-key-env", "--timeout", "--keep",
             "--max-output-tokens", "--slot", "--last", "--text", "--command",
             "--test", "--match-test", "--run", "--plan-only", "--yes", "--status", "--reviewer",
             "--reason", "--evidence-id",
@@ -962,6 +962,86 @@ class AIHarnessTests(unittest.TestCase):
         self.assertNotIn("orca-secret", json.dumps(profile_data))
         self.assertNotIn("openrouter-secret", json.dumps(profile_data))
         self.assertEqual(len(profile_data["profiles"]), 2)
+
+    def test_profile_delete_removes_only_an_inactive_profile_and_keeps_credentials(self):
+        first = ai.configure(
+            provider="gemini", model="old-model", api_key="gemini-secret"
+        )
+        old_id = ai._save_model_profile(first)
+        active = ai.configure(provider="gemini", model="working-model")
+        active_id = ai._save_model_profile(active)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["profile", "delete", old_id]), 0)
+
+        profiles = json.loads(ai._profiles_path().read_text(encoding="utf-8"))["profiles"]
+        self.assertNotIn(old_id, profiles)
+        self.assertIn(active_id, profiles)
+        self.assertEqual(ai.load_config()["model"], "working-model")
+        self.assertEqual(ai._credentials()["gemini"]["1"], "gemini-secret")
+        self.assertIn("Provider API keys and active settings were not changed.", output.getvalue())
+
+    def test_profile_delete_refuses_to_delete_active_profile(self):
+        cfg = ai.configure(provider="gemini", model="working-model", api_key="gemini-secret")
+        active_id = ai._save_model_profile(cfg)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(ai.main(["profile", "delete", active_id]), 2)
+        self.assertIn("Cannot delete the active AI profile", output.getvalue())
+        profiles = json.loads(ai._profiles_path().read_text(encoding="utf-8"))["profiles"]
+        self.assertIn(active_id, profiles)
+        self.assertEqual(ai._credentials()["gemini"]["1"], "gemini-secret")
+
+    def test_profile_prune_keeps_active_and_requested_fallback_and_removes_other_profiles(self):
+        good = ai.configure(provider="gemini", model="working-model", api_key="gemini-secret")
+        good_id = ai._save_model_profile(good)
+        bad = ai.configure(provider="gemini", model="old-model")
+        bad_id = ai._save_model_profile(bad)
+        fallback = ai.configure(provider="ollama", model="rogue")
+        fallback_id = ai._save_model_profile(fallback)
+        active = ai.configure(provider="gemini", model="working-model")
+        ai._save_model_profile(active)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(
+                ai.main(["profile", "prune", "--keep", fallback_id, "--yes"]), 0
+            )
+
+        profiles = json.loads(ai._profiles_path().read_text(encoding="utf-8"))["profiles"]
+        self.assertEqual(set(profiles), {good_id, fallback_id})
+        self.assertNotIn(bad_id, profiles)
+        self.assertEqual(ai.load_config()["provider"], "gemini")
+        self.assertEqual(ai.load_config()["model"], "working-model")
+        self.assertEqual(ai._credentials()["gemini"]["1"], "gemini-secret")
+        rendered = output.getvalue()
+        self.assertIn("Profiles to remove (1)", rendered)
+        self.assertIn("Pruned 1 saved AI profile(s).", rendered)
+        self.assertIn("Provider API keys and active settings were preserved.", rendered)
+
+    def test_profile_prune_cancel_preserves_profiles(self):
+        ai.configure(provider="gemini", model="working-model", api_key="gemini-secret")
+        active_id = ai._save_model_profile(ai.load_config())
+        old = ai.configure(provider="gemini", model="old-model")
+        old_id = ai._save_model_profile(old)
+        output = io.StringIO()
+        with patch("lowkey.ai_harness._read_prompt", return_value="n"):
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main(["profile", "prune"]), 0)
+        profiles = json.loads(ai._profiles_path().read_text(encoding="utf-8"))["profiles"]
+        self.assertEqual(set(profiles), {active_id, old_id})
+        self.assertIn("Profile prune cancelled", output.getvalue())
+
+    def test_profile_prune_rejects_unknown_keep_id_without_deleting_anything(self):
+        ai.configure(provider="gemini", model="working-model", api_key="gemini-secret")
+        active_id = ai._save_model_profile(ai.load_config())
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(ai.main(["profile", "prune", "--keep", "missing-id", "--yes"]), 2)
+        profiles = json.loads(ai._profiles_path().read_text(encoding="utf-8"))["profiles"]
+        self.assertIn(active_id, profiles)
+        self.assertIn("nothing was deleted", output.getvalue())
 
     def test_guided_setup_migrates_a_key_only_when_the_saved_endpoint_matches(self):
         ai.configure(

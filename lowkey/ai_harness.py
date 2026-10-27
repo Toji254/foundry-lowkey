@@ -1299,6 +1299,13 @@ SETUP & CONNECTION
       Select a saved provider/model configuration. Credentials stay in a separate private store.
       Example: lk ai switch
 
+  lk ai profile delete PROFILE_ID
+      Delete one inactive profile. The active profile is protected.
+
+  lk ai profile prune [--keep PROFILE_ID]... [--yes]
+      Keep the active profile and each --keep ID; preview and confirm removal of the rest.
+      API keys and active settings are never deleted.
+
   lk ai enable / lk ai disable
       Enable or pause optional AI. Native Lowkey commands still work.
       Example: lk ai enable
@@ -1410,23 +1417,14 @@ OPTIONS / MODES
 
 COMMON WORKFLOWS
 ----------------
-  Understand the protocol without starting a lab:
+  Review roles and source:
     lk ai project --contract Vault
-
-  Inspect context, then run a security review:
     lk ai preview --contract Vault --show-context
     lk ai security-review --contract Vault
 
-  Get AI guidance while starting a lab:
-    lk lab Vault --ai-review
-
-  Propose test cases, then implement and run them yourself:
+  Propose tests or explain an error:
     lk ai test-plan --contract Vault
-    lk test
-
-  Explain a captured/copied error:
     lk ai explain-error --last
-    lk ai explain-error --text "connection timed out" --command "forge test"
 
 HELP FOR A SPECIFIC COMMAND
 ---------------------------
@@ -1955,6 +1953,106 @@ def _render_model_profiles(config: Mapping[str, Any], profiles: Mapping[str, Any
     return "\n".join(lines)
 
 
+def delete_model_profile(profile_id: str) -> int:
+    """Delete one inactive saved model profile without touching provider credentials."""
+    selector = str(profile_id or "").strip()
+    if not selector:
+        raise AIHarnessError("Provide the exact profile ID shown by 'lk ai switch list'.")
+
+    store = _read_model_profiles()
+    profiles = store["profiles"]
+    record = profiles.get(selector)
+    if record is None:
+        raise AIHarnessError(
+            f"No saved model profile matches '{selector}'. Run 'lk ai switch list' to see profile IDs."
+        )
+
+    current = load_config()
+    active_id = (
+        _profile_id(current)
+        if current.get("provider") in PROVIDERS and current.get("model") and current.get("base_url")
+        else None
+    )
+    if selector == active_id:
+        raise AIHarnessError(
+            "Cannot delete the active AI profile. Switch to another model first; active settings and credentials are unchanged."
+        )
+
+    del profiles[selector]
+    if store.get("last_used") == selector:
+        store["last_used"] = active_id if active_id in profiles else None
+    _write_model_profiles(store)
+    label = str(record.get("label") or selector)
+    print(f"Deleted saved AI profile: {label}")
+    print("Provider API keys and active settings were not changed.")
+    return 0
+
+
+def prune_model_profiles(keep_profile_ids: list[str] | None = None, *, assume_yes: bool = False) -> int:
+    """Remove non-active profiles except explicitly kept IDs; credentials are never touched."""
+    current = load_config()
+    active_id = (
+        _profile_id(current)
+        if current.get("provider") in PROVIDERS and current.get("model") and current.get("base_url")
+        else None
+    )
+    if active_id:
+        _save_model_profile(current)
+
+    store = _read_model_profiles()
+    profiles = store["profiles"]
+    requested_keep = {str(value).strip() for value in (keep_profile_ids or []) if str(value).strip()}
+    missing = sorted(requested_keep - set(profiles))
+    if missing:
+        raise AIHarnessError(
+            "Cannot prune because these --keep profile ID(s) were not found: "
+            + ", ".join(missing)
+            + ". Run 'lk ai switch list' to check IDs; nothing was deleted."
+        )
+
+    keep_ids = set(requested_keep)
+    if active_id:
+        keep_ids.add(active_id)
+    ordered = sorted(
+        profiles.items(),
+        key=lambda pair: (str(pair[1].get("label") or "").lower(), pair[0]),
+    )
+    remove = [(pid, record) for pid, record in ordered if pid not in keep_ids]
+    if not remove:
+        print("Nothing to prune. The active profile and requested keep profiles are already the only saved profiles.")
+        return 0
+
+    print("LOWKEY AI PROFILE PRUNE")
+    print("=======================")
+    if active_id and active_id in profiles:
+        print(f"Keeping active profile: {profiles[active_id].get('label', active_id)}")
+    for profile_id in sorted(requested_keep):
+        if profile_id != active_id:
+            print(f"Keeping: {profiles[profile_id].get('label', profile_id)}")
+    print("")
+    print(f"Profiles to remove ({len(remove)}):")
+    for profile_id, record in remove:
+        print(f"  - {record.get('label', profile_id)}")
+        print(f"    ID: {profile_id}")
+    print("")
+    print("API keys and active AI settings will not be removed.")
+
+    if not assume_yes:
+        answer = _read_prompt(f"Remove these {len(remove)} saved profile(s)? [y/N]: ").lower()
+        if answer not in {"y", "yes"}:
+            print("Profile prune cancelled. No profiles were deleted.")
+            return 0
+
+    for profile_id, _ in remove:
+        del profiles[profile_id]
+    if store.get("last_used") not in profiles:
+        store["last_used"] = active_id if active_id in profiles else None
+    _write_model_profiles(store)
+    print(f"Pruned {len(remove)} saved AI profile(s).")
+    print("Provider API keys and active settings were preserved.")
+    return 0
+
+
 def switch_model_profile(selector: str | None = None) -> int:
     current = load_config()
     _save_model_profile(current)
@@ -2210,6 +2308,13 @@ def main(argv: list[str] | None = None) -> int:
     setup.add_argument("--max-output-tokens", type=int, default=DEFAULT_OUTPUT_TOKENS, help=f"maximum output size requested (default: {DEFAULT_OUTPUT_TOKENS}; allowed: 128–8192)")
     switch_cmd = sub.add_parser("switch", help="switch between model setups saved by lk ai setup")
     switch_cmd.add_argument("profile", nargs="?", help="profile number, profile ID, exact label/model, or 'list'; omit to choose interactively")
+    profile_cmd = sub.add_parser("profile", help="delete or prune saved AI model profiles")
+    profile_actions = profile_cmd.add_subparsers(dest="profile_action")
+    profile_delete = profile_actions.add_parser("delete", help="delete one inactive saved model profile")
+    profile_delete.add_argument("profile_id", help="exact ID shown by 'lk ai switch list'")
+    profile_prune = profile_actions.add_parser("prune", help="keep the active profile and selected fallbacks; remove the rest")
+    profile_prune.add_argument("--keep", action="append", default=[], metavar="PROFILE_ID", help="also keep this profile ID; repeat for multiple fallbacks")
+    profile_prune.add_argument("--yes", action="store_true", help="skip the removal confirmation")
     enable_cmd = sub.add_parser("enable", help="enable the configured extension")
     disable_cmd = sub.add_parser("disable", help="disable AI without changing native commands")
     test_cmd = sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
@@ -2724,6 +2829,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if parsed.action == "switch":
             return switch_model_profile(parsed.profile)
+        if parsed.action == "profile":
+            if parsed.profile_action is None:
+                profile_cmd.print_help()
+                return 0
+            if parsed.profile_action == "delete":
+                return delete_model_profile(parsed.profile_id)
+            if parsed.profile_action == "prune":
+                return prune_model_profiles(parsed.keep, assume_yes=parsed.yes)
         if parsed.action in {"enable", "disable"}:
             cfg = load_config()
             if parsed.action == "enable" and not (cfg.get("provider") and cfg.get("model")):
