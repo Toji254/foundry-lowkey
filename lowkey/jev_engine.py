@@ -357,9 +357,16 @@ def _clean_context(command: str, arguments: list[str], exit_code: int, output: s
     except ImportError:
         import ai_harness, ai_workflow
     safe_args = ai_workflow._safe_arguments([str(item) for item in arguments])
-    # Apply the same URL, bearer-token and secret-flag redaction as Lowkey's text-AI
-    # pipeline, then redact 32-byte hex values before the snapshot leaves the machine.
+    # URL paths can carry API/RPC credentials, so omit every URL rather than trying
+    # to guess whether a particular provider puts its token in the path or query.
+    safe_args = [
+        re.sub(r"(?i)\b(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED URL]", value)
+        for value in safe_args
+    ]
     safe_output = ai_workflow._redact_text(str(output or ""))
+    safe_output = re.sub(r"(?i)\b(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED URL]", safe_output)
+    # Hex-looking 32-byte values can be transaction hashes or private keys; mask them
+    # because classification does not require their full value.
     safe_output = re.sub(r"(?i)\b0x[a-f0-9]{64}\b", "[REDACTED 32-BYTE HEX]", safe_output)
     safe_output = safe_output[-4_000:]
     return {
