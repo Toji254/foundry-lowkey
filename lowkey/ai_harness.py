@@ -1299,7 +1299,7 @@ lk ai explain-error --text "ERROR TEXT" [MORE_WORDS ...] [--command "ORIGINAL CO
 
 WHAT DOES "AUTO" MEAN?
 ----------------------
-"auto" is a setting value, not a top-level command. Choose the setting you want:
+"auto" is a value after a setting command, not a standalone command. Choose the setting you want:
 
   lk ai mode auto
       Allow complexity-triggered protocol reviews from eligible Lowkey workflows.
@@ -1349,10 +1349,8 @@ OUTPUT & SAFETY
 ''' 
 
 
-def render_ai_help(parser: Any) -> str:
-    """Render the AI command root in the same readable style as other Lowkey help pages."""
-    import textwrap
-
+def render_ai_help(parser: Any = None) -> str:
+    """Render one organized AI command reference without a duplicate, poorly aligned command dump."""
     lines = [
         "LOWKEY HELP  •  lk ai",
         "=" * 72,
@@ -1362,23 +1360,7 @@ def render_ai_help(parser: Any) -> str:
         "Usage: lk ai <command> [options]",
         "Example: lk ai security-review --contract Vault",
         "",
-        "COMMANDS",
-        "--------",
     ]
-    actions = [
-        action for action in getattr(parser, "_actions", [])
-        if getattr(action, "dest", None) == "action" and hasattr(action, "choices")
-    ]
-    if actions:
-        for name, command_parser in actions[0].choices.items():
-            summary = str(getattr(command_parser, "description", None) or "").strip()
-            if not summary:
-                summary = str(command_parser.format_usage()).strip()
-            wrapped = textwrap.wrap(summary, width=44) or ["See command help for details."]
-            lines.append(f"  {'lk ai ' + name:<26} {wrapped[0]}")
-            lines.extend(" " * 28 + part for part in wrapped[1:])
-    # The compact index below already contains the detailed-help navigation.
-    # Keep it once so the root menu stays in the same compact style as other lk pages.
     lines.extend(AI_HELP_GUIDE.splitlines())
     return "\n".join(lines)
 
