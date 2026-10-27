@@ -900,6 +900,7 @@ def _source_context(
                 "command": str(item.get("command") or "")[:160],
                 "exit_code": item.get("exit_code") if isinstance(item.get("exit_code"), int) else None,
                 "status": "failed" if item.get("status") == "failed" else "completed",
+                "diagnostic_excerpt": str(item.get("diagnostic_excerpt") or "")[:700],
                 "signals": [
                     str(signal)[:240]
                     for signal in (item.get("signals") or [])[:3]
