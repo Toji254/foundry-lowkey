@@ -2,7 +2,7 @@
 
 ## Scope
 
-This is an experiment-only benchmark, not a production integration. It compares a small deterministic rules baseline with TypeSafe Jev on a curated set of 24 Foundry/Solidity diagnostic examples. Each fixture has two independently labeled dimensions:
+This is an experiment-only benchmark, not a production integration. It compares a small deterministic rules baseline with TypeSafe Jev on a curated set of 25 Foundry/Solidity diagnostic examples. Each fixture has two independently labeled dimensions:
 
 - **Failure stage:** where progress stopped, such as dependency resolution, compilation, test execution, RPC transport, or deployment.
 - **Root cause:** the most specific supported explanation, such as a missing import or a Solidity compiler diagnostic.
