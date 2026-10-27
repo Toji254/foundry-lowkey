@@ -1,8 +1,9 @@
-"""Private last-error capture shared by Lowkey command routers.
+"""Private last-error capture and shared per-project command evidence.
 
-Only bounded, redacted diagnostic text and command metadata are saved. Raw argv,
-environment variables, prompts, credentials, source files and command outputs are
-never stored as part of the error context.
+The last-error record contains bounded, redacted diagnostic text and command
+metadata. The project history stores only bounded, redacted excerpts/signals,
+not full terminal sessions, raw argv, environment variables, prompts,
+credentials, or full source files. Both live outside the audited repository.
 """
 from __future__ import annotations
 
