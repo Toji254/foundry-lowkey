@@ -75,7 +75,7 @@ class JevEngineTests(unittest.TestCase):
              patch.object(jev_engine, "_find_running_jevos_process", return_value=4567), \\
              patch.object(jev_engine, "_write_service_record") as write_record:
             message = jev_engine.start_server()
-        self.assertIn("Lowkey adopted it", message)
+        self.assertIn("Lowkey registered it for control", message)
         write_record.assert_called_once_with(4567, executable.resolve())
 
     def test_start_server_spawns_detached_process_and_waits_for_health(self):
@@ -105,8 +105,9 @@ class JevEngineTests(unittest.TestCase):
     def test_stop_server_refuses_to_kill_a_server_not_started_by_lowkey(self):
         with patch.object(jev_engine, "_read_service_record", return_value=None), \
              patch.object(jev_engine, "_health_payload", return_value={"status": "ready"}):
-            with self.assertRaisesRegex(jev_engine.JevError, "started outside Lowkey"):
-                jev_engine.stop_server()
+            with patch.object(jev_engine, "_adopt_running_jevos", return_value=None):
+                with self.assertRaisesRegex(jev_engine.JevError, "could not verify its process"):
+                    jev_engine.stop_server()
 
     def test_stop_server_sends_term_only_to_verified_managed_jev_process(self):
         record = {"pid": 8123, "executable": "/opt/jev/jev"}
