@@ -34,7 +34,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("lk ai security-review", help_text)
         self.assertNotIn("usage: lk ai", help_text)
         for command in (
-            "status", "preview", "mode", "setup", "enable", "disable", "test",
+            "status", "preview", "mode", "setup", "switch", "enable", "disable", "test",
             "keys", "list", "add", "remove", "clear", "explain-error",
             "errors", "project", "test-plan", "security-review", "ledger", "verify",
             "disposition", "runtime", "recommendations",
@@ -897,6 +897,86 @@ class AIHarnessTests(unittest.TestCase):
         )
         self.assertNotIn("\x1b", rendered)
         self.assertIn(r"\x1b[31m", rendered)
+
+
+    def test_guided_setup_uses_provider_menu_and_saves_a_profile_without_network_until_opted_in(self):
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=["1", "", "n"]), patch(
+            "lowkey.ai_harness.getpass.getpass", return_value="orca-secret"
+        ):
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main(["setup"]), 0)
+        rendered = output.getvalue()
+        self.assertIn("LOWKEY AI SETUP", rendered)
+        self.assertIn("OrcaRouter", rendered)
+        self.assertIn("Configured OrcaRouter", rendered)
+        self.assertIn("Saved model profile:", rendered)
+        self.assertIn("Connection not tested", rendered)
+        cfg = ai.load_config()
+        self.assertEqual(cfg["provider"], "orcarouter")
+        self.assertEqual(cfg["base_url"], "https://api.orcarouter.ai/v1")
+        self.assertEqual(cfg["model"], "deepseek/deepseek-v4.1-flash-free")
+        self.assertEqual(ai._credentials()["orcarouter"]["1"], "orca-secret")
+        profiles = json.loads(ai._profiles_path().read_text(encoding="utf-8"))
+        self.assertNotIn("orca-secret", json.dumps(profiles))
+        self.assertEqual(len(profiles["profiles"]), 1)
+
+    def test_switch_between_saved_models_does_not_reprompt_or_mix_provider_keys(self):
+        output = io.StringIO()
+        with patch("lowkey.ai_harness.getpass.getpass", side_effect=["orca-secret", "openrouter-secret"]):
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main([
+                    "setup", "--provider", "orcarouter", "--model", "model-orca"
+                ]), 0)
+                self.assertEqual(ai.main([
+                    "setup", "--provider", "openrouter", "--model", "model-openrouter"
+                ]), 0)
+                self.assertEqual(ai.main(["switch", "model-orca"]), 0)
+        cfg = ai.load_config()
+        self.assertEqual(cfg["provider"], "orcarouter")
+        self.assertEqual(cfg["model"], "model-orca")
+        self.assertIn("Active AI model: orcarouter / model-orca", output.getvalue())
+        pools = ai._credentials()
+        self.assertEqual(pools["orcarouter"]["1"], "orca-secret")
+        self.assertEqual(pools["openrouter"]["1"], "openrouter-secret")
+        self.assertNotEqual(pools["orcarouter"]["1"], pools["openrouter"]["1"])
+        profile_data = json.loads(ai._profiles_path().read_text(encoding="utf-8"))
+        self.assertNotIn("orca-secret", json.dumps(profile_data))
+        self.assertNotIn("openrouter-secret", json.dumps(profile_data))
+        self.assertEqual(len(profile_data["profiles"]), 2)
+
+    def test_guided_setup_migrates_a_key_only_when_the_saved_endpoint_matches(self):
+        ai.configure(
+            provider="deepseek", model="old-orca-model",
+            base_url="https://api.orcarouter.ai/v1", api_key="existing-orca-key"
+        )
+        self.assertTrue(
+            ai._matching_endpoint_key_migration("orcarouter", "https://api.orcarouter.ai/v1")
+        )
+        pools = ai._credentials()
+        self.assertEqual(pools["orcarouter"]["1"], "existing-orca-key")
+        self.assertEqual(pools["deepseek"]["1"], "existing-orca-key")
+        # A different provider host must not receive the stored key.
+        self.assertFalse(
+            ai._matching_endpoint_key_migration("openrouter", "https://openrouter.ai/api/v1")
+        )
+        self.assertNotIn("openrouter", ai._credentials())
+
+    def test_service_provider_aliases_have_separate_defaults_and_adapters(self):
+        from lowkey import provider_adapters
+
+        expected = {
+            "orcarouter": "https://api.orcarouter.ai/v1",
+            "openrouter": "https://openrouter.ai/api/v1",
+            "nvidia": "https://integrate.api.nvidia.com/v1",
+        }
+        for provider, endpoint in expected.items():
+            with self.subTest(provider=provider):
+                cfg = ai.configure(provider=provider, model="probe-model", api_key=f"{provider}-key")
+                self.assertEqual(cfg["base_url"], endpoint)
+                self.assertEqual(provider_adapters.get_provider_adapter(provider).name, "openai-compatible")
+                self.assertEqual(ai._credentials()[provider]["1"], f"{provider}-key")
+
 
 
 if __name__ == "__main__":
