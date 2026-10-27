@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "lowkey"))
 import error_advisor
 import error_context
 import ai_harness
+import ai_workflow
 import lk
 
 
@@ -253,6 +254,34 @@ Warning (2072): Unused local variable.
                 ai_harness.render_ai_recommendations(report),
             )
 
+
+    def test_general_ai_guidance_receives_same_shared_project_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "project"
+            root.mkdir()
+            shared = {
+                "project_label": "project",
+                "events": [{"command": "build", "exit_code": 0, "signals": ["Compiler warning: 6321"]}],
+                "project_knowledge": {
+                    "audit_context": {"target": {"contract": "Escrow"}},
+                    "system_model": {"deployments": [{"contract": "Escrow"}]},
+                    "evidence_ledger": {"findings": [{"id": "F-1", "status": "candidate"}]},
+                },
+            }
+            fake_source_context = {
+                "project_label": "project",
+                "requested_contract": None,
+                "source_files": [],
+                "source_files_included": 0,
+            }
+            with patch.object(ai_workflow.ai, "_source_context", return_value=fake_source_context), \
+                 patch.object(ai_workflow, "_prior_evidence_context", return_value={}), \
+                 patch.object(error_context, "read_project_context", return_value=shared):
+                context = ai_workflow._project_context(root, None)
+
+            self.assertEqual(context["shared_project_context"], shared)
+            self.assertEqual(context["shared_project_context"]["project_knowledge"]["audit_context"]["target"]["contract"], "Escrow")
+            self.assertIn("system/deployment graph", context["shared_project_context_policy"])
 
     def test_ai_diagnosis_receives_recent_project_history_without_absolute_path(self):
         with tempfile.TemporaryDirectory() as tmp:
