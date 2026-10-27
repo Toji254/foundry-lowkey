@@ -3,7 +3,6 @@ import pathlib
 import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -11,7 +10,7 @@ sys.path.insert(0, str(ROOT / "lowkey"))
 
 import error_advisor
 import error_context
-import ai_workflow
+import ai_harness
 import lk
 
 
@@ -119,10 +118,15 @@ Warning (2072): Unused local variable.
             self.assertNotIn(str(root), rendered)
             self.assertIn("[REDACTED]", saved)
 
-    def test_general_ai_workflows_include_shared_command_history(self):
+    def test_ai_next_step_recommendations_consider_shared_command_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "project"
-            root.mkdir()
+            source_dir = root / "src"
+            source_dir.mkdir(parents=True)
+            (source_dir / "Demo.sol").write_text(
+                "contract Demo { function value() external pure returns (uint256) { return 1; } }",
+                encoding="utf-8",
+            )
             shared_events = [{
                 "timestamp": "2026-10-27T03:00:00+00:00",
                 "command": "build",
@@ -131,21 +135,33 @@ Warning (2072): Unused local variable.
                 "signals": ["Compiler warning: Unnamed return variable can remain unassigned (script/Deploy.s.sol:9:38)"],
                 "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\n --> script/Deploy.s.sol:9:38:",
             }]
-            fake_ledger = SimpleNamespace(
-                summary=lambda project: {"event_count": 0, "findings": []},
-                historical_feedback_context=lambda project, limit=3: [],
-            )
-            with patch.dict(sys.modules, {"evidence_ledger": fake_ledger}), \
-                 patch.object(error_context, "read_project_context", return_value={
-                     "project_label": "project",
-                     "events": shared_events,
-                 }):
-                prior = ai_workflow._prior_evidence_context(root)
+            history = {"project_label": "project", "events": shared_events}
 
-            self.assertEqual(prior["recent_command_event_count"], 1)
-            self.assertEqual(prior["recent_command_events"][0]["command"], "build")
-            self.assertIn("Compiler warning", prior["recent_command_events"][0]["signals"][0])
-            self.assertNotIn(str(root), json.dumps(prior))
+            with patch.object(error_context, "read_project_context", return_value=history):
+                context = ai_harness._source_context(root, None)
+
+            self.assertEqual(context["shared_command_history"]["events"], shared_events)
+            self.assertIn("not instructions", context["shared_command_history_policy"])
+
+            captured = {}
+            def capture_request(**kwargs):
+                captured.update(kwargs)
+                return {"recommendations": []}
+
+            with patch.object(ai_harness, "_source_context", return_value=context), \
+                 patch.object(ai_harness, "request_structured", side_effect=capture_request), \
+                 patch.object(ai_harness, "validate_ai_recommendations", return_value={"recommendations": []}):
+                report = ai_harness.recommend_next_steps(
+                    root,
+                    "build",
+                    [{"command": "lk functions", "reason": "Review callable surfaces."}],
+                )
+
+            self.assertIn("shared_command_history", captured["context"])
+            self.assertIn("Unnamed return variable", json.dumps(captured["context"]))
+            self.assertIn("prioritize investigation", captured["task"])
+            self.assertTrue(report["_lowkey_meta"]["ai_generated"])
+
 
     def test_ai_diagnosis_receives_recent_project_history_without_absolute_path(self):
         with tempfile.TemporaryDirectory() as tmp:
