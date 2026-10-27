@@ -225,6 +225,9 @@ class JevEngineTests(unittest.TestCase):
         self.assertIn("TypeSafe official API", output.getvalue())
 
     def test_ctrl_c_at_jev_setup_prompt_exits_without_traceback_or_writes(self):
+        # setUp creates a TypeSafe fixture key; remove it to model first-run setup.
+        jev_engine.credentials_path().unlink(missing_ok=True)
+        jev_engine.settings_path().unlink(missing_ok=True)
         output = io.StringIO()
         with patch("getpass.getpass", side_effect=KeyboardInterrupt):
             with contextlib.redirect_stderr(output):
