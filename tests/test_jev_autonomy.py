@@ -96,8 +96,8 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertFalse(cfg["auto_assist"])
         self.assertFalse(cfg["auto_explain_errors"])
         self.assertFalse(cfg["auto_recommendations"])
-        self.assertIn("8 provider attempts", output.getvalue())
-        self.assertIn("TypeSafe charges for input tokens", output.getvalue())
+        self.assertIn("5 provider attempts", output.getvalue())
+        self.assertIn("TypeSafe's official endpoint uses separate account pricing and limits", output.getvalue())
 
     def test_jev_off_disables_automatic_features_but_preserves_manual_ai_and_guard(self):
         self._configure_local_provider()
