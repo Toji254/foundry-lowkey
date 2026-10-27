@@ -228,7 +228,26 @@ def _maybe_explain_error(record):
             from lowkey import error_context, error_advisor
         if not error_context.auto_error_explain_enabled():
             return
-        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
+        error_text = " ".join(
+            str(record.get(key) or "")
+            for key in ("error", "message", "diagnostic_excerpt")
+        )
+        if re.search(r"\\bunknown Lowkey command\\b", error_text, re.IGNORECASE):
+            # The native error already explains how to open help. When the
+            # learner note is enabled and usable, it provides the one contextual
+            # AI explanation; avoid printing a second, longer diagnosis for a typo.
+            try:
+                import ai_harness
+            except ImportError:
+                from lowkey import ai_harness
+            ai_status = ai_harness.status()
+            if (
+                ai_status.get("auto_recommendations")
+                and ai_status.get("enabled")
+                and ai_status.get("usable")
+            ):
+                return
+        print("\\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
         result = error_advisor.maybe_auto_explain(record)
         if result:
             print(result, file=sys.stderr)
@@ -4258,7 +4277,11 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             return _friendly_error(
                 "Check the command syntax",
                 reason=_clean_error_detail(text),
-                next_step=(f"Run lk {command} --h for command usage." if command else "Run lk --help for the command list."),
+                next_step=(
+                    "Run lk --help for the command list."
+                    if "unknown lowkey command" in lowered or "unknown lk " in lowered
+                    else (f"Run lk {command} --h for command usage." if command else "Run lk --help for the command list.")
+                ),
             )
         if any(marker in lowered for marker in (
             "no target", "set target first", "no rpc", "rpc is not configured",
