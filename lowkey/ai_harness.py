@@ -1279,6 +1279,7 @@ lk ai keys clear --provider PROVIDER
 REVIEW & EVIDENCE
 -----------------
 lk ai preview [--root DIR] [--contract NAME] [--show-context | --json-context]
+lk ai project [--root DIR] [--contract NAME] [--json]
 lk ai security-review [--root DIR] [--contract NAME] [--json]
 lk ai test-plan [--root DIR] [--contract NAME] [--json]
 lk ai ledger [--root DIR] [--json]
@@ -1317,7 +1318,11 @@ COMMON WORKFLOWS
     lk ai setup --provider gemini --model MODEL
     lk ai test
 
-  Inspect what would be sent, then review:
+  Review the whole project's protocol design without starting a local lab:
+    lk ai project
+    lk ai project --contract Vault
+
+  Inspect what would be sent, then run a focused security review:
     lk ai preview --contract Vault --show-context
     lk ai security-review --contract Vault
 
@@ -1412,6 +1417,39 @@ def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None)
     ])
     return "\n".join(lines)
 
+
+
+def render_project_protocol_review(review: Mapping[str, Any]) -> str:
+    """Render an unverified whole-project protocol review without changing lab state."""
+    meta = review.get("_lowkey_meta") if isinstance(review.get("_lowkey_meta"), dict) else {}
+    lines = [
+        "@ AI OUTPUT — PROJECT PROTOCOL REVIEW (UNVERIFIED)",
+        "===================================================",
+        "AI suggestions are hypotheses, not verified findings or deployment instructions.",
+        f"Source excerpts included: {meta.get('source_files_included', 'unknown')}",
+    ]
+    if meta.get("context_sha256"):
+        lines.append(f"Context SHA-256: {meta['context_sha256']}")
+    lines.extend(["", "Summary:", str(review.get("summary", "")).strip() or "(No summary supplied.)"])
+    for label, key in (
+        ("Contract roles", "contract_roles"),
+        ("Candidate invariants", "invariants"),
+        ("Open questions", "open_questions"),
+        ("Deployment considerations", "deployment_considerations"),
+    ):
+        values = review.get(key, [])
+        if not isinstance(values, list) or not values:
+            continue
+        lines.extend(["", f"{label}:"])
+        lines.extend("  - " + json.dumps(value, ensure_ascii=True, sort_keys=True)[:1200] for value in values[:8])
+        if len(values) > 8:
+            lines.append(f"  - {len(values) - 8} additional item(s) are available with --json.")
+    lines.extend([
+        "",
+        "No local lab was started and no Solidity test was written or run by this command.",
+        "Selected source was sent to the configured AI provider; treat all output as unverified and review the code yourself.",
+    ])
+    return "\\n".join(lines)
 
 
 def _safe_terminal_text(value: str) -> str:
@@ -1605,6 +1643,10 @@ def main(argv: list[str] | None = None) -> int:
     errors.add_argument("mode", choices=("auto", "manual", "status"), help="auto enables eligible automatic diagnoses; manual disables them; status shows the setting")
 
     errors.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON for status")
+    project = sub.add_parser("project", help="review project roles, invariants and open questions; does not start a local lab")
+    project.add_argument("--root", default=".", help="project root (default: current directory)")
+    project.add_argument("--contract", help="prioritize source matching a contract name")
+    project.add_argument("--json", dest="as_json", action="store_true", help="print the complete review JSON")
     test_plan = sub.add_parser("test-plan", help="suggest tests in plain language; does not write or run them")
     test_plan.add_argument("--root", default=".", help="project directory (default: current directory)")
     test_plan.add_argument("--contract", help="focus on a contract name, such as Vault")
@@ -1664,6 +1706,8 @@ def main(argv: list[str] | None = None) -> int:
     explain.epilog = "WHEN: after a failed build, RPC, compiler, Forge or Cast command. Example: lk ai explain-error --last"
     errors.description = "Control automatic AI explanations after supported routed Lowkey failures."
     errors.epilog = "WHEN: keep manual for control, or opt into auto when provider requests/charges are acceptable. Example: lk ai errors status"
+    project.description = "Review the project's contract roles, candidate invariants, open questions, and deployment considerations."
+    project.epilog = "WHEN: build a protocol-level mental model before a focused audit. Does not start or deploy a local lab. Example: lk ai project --contract ConfidencePool"
     test_plan.description = "Suggest test ideas from the selected contract source; never writes or runs Solidity tests."
     test_plan.epilog = "WHEN: turn a state rule or possible bug into a concrete test outline. Example: lk ai test-plan --contract ConfidencePool"
     security.description = "Ask for possible, source-grounded vulnerability leads from selected source excerpts."
@@ -1789,6 +1833,13 @@ def main(argv: list[str] | None = None) -> int:
                 record = error_context.read_last_error()
             diagnosis = error_advisor.diagnose_record(record)
             print(error_advisor.render(diagnosis))
+            return 0
+        if parsed.action == "project":
+            review = review_project_protocol(Path(parsed.root).expanduser(), parsed.contract)
+            if parsed.as_json:
+                print(json.dumps(review, indent=2, sort_keys=True, ensure_ascii=False))
+            else:
+                print(render_project_protocol_review(review))
             return 0
         if parsed.action == "test-plan":
             try:
