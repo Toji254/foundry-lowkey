@@ -56,7 +56,9 @@ fi
 
 MARKER="# >>> Lowkey Jevos shell shortcuts >>>"
 if ! grep -Fq "$MARKER" "$RC_FILE"; then
-  cp -p "$RC_FILE" "${RC_FILE}.backup-jev-${STAMP}"
+  if [[ "$MENU_FILE" != "$RC_FILE" ]]; then
+    cp -p "$RC_FILE" "${RC_FILE}.backup-jev-${STAMP}"
+  fi
   cat >> "$RC_FILE" <<'EOF'
 
 # >>> Lowkey Jevos shell shortcuts >>>
