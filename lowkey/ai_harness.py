@@ -1335,7 +1335,7 @@ REVIEW & EVIDENCE
       Inspect the test first; add --run only when you are ready.
       Example: lk ai verify F-0123456789ab --test test/Vault.t.sol --match-test testWithdraw
 
-  lk ai disposition FINDING_ID --status STATUS --reviewer NAME --reason TEXT
+  lk ai disposition FINDING_ID --status STATUS --reviewer NAME --reason TEXT [--evidence-id EVENT_ID]
       Record your human decision. Confirmed/rejected decisions require linked test evidence.
       Example: lk ai disposition F-0123456789ab --status needs-review --reviewer rogue --reason "Need to inspect the state transition."
 
@@ -1413,7 +1413,8 @@ HELP FOR A SPECIFIC COMMAND
   lk ai --h                 This overview and common workflows.
   lk ai <command> --h       Usage, options, when to use it, and examples.
   lk ai keys --h
-  lk ai keys add --h
+  lk ai keys add --h / --help
+  lk ai keys add --help
   lk ai recommendations --h
 
 OUTPUT & SAFETY
@@ -1425,7 +1426,7 @@ OUTPUT & SAFETY
 - The test planner proposes ideas; it never writes or runs Solidity tests.
 - lk ai verify previews by default; a local test runs only with --run.
 - Lowkey's native recommendations stay separate from optional AI recommendations.
-- Use --json only where listed; use --json-context for the full preview JSON.
+- Use --json only on commands that list it; use --json-context for the full preview JSON.
 - Help forms: --h, --help, -h, and help. Use '<command> --h' to discover commands.
 '''  
 
