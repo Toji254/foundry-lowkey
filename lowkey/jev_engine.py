@@ -365,8 +365,8 @@ def evaluate(
             f"Jev needs an API key for {provider_meta['label']}. "
             f"Run 'lk ai jev setup --provider {provider}' or export {provider_meta['key_env']}."
         )
-    # Reserve from the same local budget as the legacy AI path. Failed calls still
-    # count, and exact repeat requests are returned from the cache without a charge.
+    # Hosted calls reserve from Lowkey's guarded provider budget. Local Jevos
+    # requests bypass that counter; exact-repeat requests can use the private cache.
     try:
         from . import ai_harness
     except ImportError:
@@ -434,6 +434,8 @@ def evaluate(
             raise JevError(f"{provider_name} is temporarily unavailable (HTTP {exc.code}). No automatic retry was made.") from exc
         raise JevError(f"{provider_name} request failed (HTTP {exc.code}). {hint}") from exc
     except URLError as exc:
+        if provider_meta.get("local"):
+            raise JevError("Could not reach local Jevos-v5 at 127.0.0.1:8017. Start its 'jev serve' process and leave it running.") from exc
         raise JevError(f"Could not reach {provider_meta['label']}. Check the connection and try again.") from exc
     except TimeoutError as exc:
         raise JevError(f"{provider_meta['label']} request timed out. The native Lowkey command remains unaffected.") from exc
