@@ -796,7 +796,7 @@ def _log_event(purpose: str, config: Mapping[str, Any], digest: str, outcome: st
 
 
 def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mapping[str, Any],
-          required_fields: tuple[str, ...]) -> dict[str, Any]:
+          required_fields: tuple[str, ...], first_attempt_reserved: bool = False) -> dict[str, Any]:
     context_json = json.dumps(context, ensure_ascii=False, sort_keys=True)
     encoded_context = context_json.encode("utf-8")
     if len(encoded_context) > MAX_CONTEXT_BYTES:
@@ -844,6 +844,10 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
         result_raw: bytes | None = None
         for attempt, (slot_label, key) in enumerate(ordered):
             last_key_slot = slot_label
+            # Key failover can create multiple provider requests for one logical
+            # LK task. Count each real attempt under the free-tier guard.
+            if config.get("jev_free_tier_mode") and not (attempt == 0 and first_attempt_reserved):
+                _reserve_jev_request(config, purpose)
             try:
                 result_raw = adapter.send(
                     config=config,
@@ -1047,7 +1051,10 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
         )
         cfg["timeout_seconds"] = min(int(cfg.get("timeout_seconds", DEFAULT_TIMEOUT)), 30)
         _reserve_jev_request(cfg, purpose)
-    result = _send(cfg, purpose=purpose, task=task.strip(), context=request_context, required_fields=required_fields)
+    result = _send(
+        cfg, purpose=purpose, task=task.strip(), context=request_context,
+        required_fields=required_fields, first_attempt_reserved=free_tier,
+    )
     if cache_key is not None:
         _store_jev_cached_response(cache_key, result)
     return result
