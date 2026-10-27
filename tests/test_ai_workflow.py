@@ -1,11 +1,13 @@
 import contextlib
 import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from lowkey import ai_workflow as workflow
+from lowkey import evidence_ledger
 
 
 class AIWorkflowTests(unittest.TestCase):
@@ -185,11 +187,13 @@ class AIWorkflowTests(unittest.TestCase):
                 }
                 for index in range(10)
             ]
-            with patch(
-                "lowkey.evidence_ledger.summary",
+            with patch.dict(sys.modules, {"evidence_ledger": evidence_ledger}), patch.object(
+                evidence_ledger,
+                "summary",
                 return_value={"event_count": 10, "findings": findings},
-            ), patch(
-                "lowkey.evidence_ledger.historical_feedback_context",
+            ), patch.object(
+                evidence_ledger,
+                "historical_feedback_context",
                 return_value=[{
                     "kind": "lesson",
                     "summary": "Recheck withdrawal accounting against current source.",
