@@ -23,6 +23,10 @@ MAX_SOURCE_CONTEXT_BYTES = 32_000
 MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
+JEV_DEFAULT_DAILY_LIMIT = 8
+JEV_DEFAULT_CONTEXT_LIMIT_BYTES = 16_000
+JEV_DEFAULT_OUTPUT_TOKENS = 650
+JEV_MAX_DAILY_LIMIT = 24
 PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama", "orcarouter", "openrouter", "nvidia"}
 PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1", "orcarouter": "https://api.orcarouter.ai/v1", "openrouter": "https://openrouter.ai/api/v1", "nvidia": "https://integrate.api.nvidia.com/v1"}
@@ -69,6 +73,10 @@ def credentials_path() -> Path:
 def _default_config() -> dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "enabled": False, "auto_assist": False,
             "auto_explain_errors": False, "auto_recommendations": False,
+            "jev_autonomous": False, "jev_free_tier_mode": False,
+            "jev_daily_call_limit": JEV_DEFAULT_DAILY_LIMIT,
+            "jev_context_limit_bytes": JEV_DEFAULT_CONTEXT_LIMIT_BYTES,
+            "jev_max_output_tokens": JEV_DEFAULT_OUTPUT_TOKENS,
             "provider": None, "model": None, "base_url": None,
             "api_key_env": None, "timeout_seconds": DEFAULT_TIMEOUT,
             "max_output_tokens": DEFAULT_OUTPUT_TOKENS}
@@ -100,6 +108,19 @@ def load_config() -> dict[str, Any]:
         raise AIHarnessError("AI configuration 'auto_assist' must be true or false.")
     if not isinstance(cfg.get("auto_explain_errors"), bool):
         raise AIHarnessError("AI configuration 'auto_explain_errors' must be true or false.")
+    for key in ("auto_recommendations", "jev_autonomous", "jev_free_tier_mode"):
+        if not isinstance(cfg.get(key), bool):
+            raise AIHarnessError(f"AI configuration '{key}' must be true or false.")
+    for key, minimum, maximum in (
+        ("jev_daily_call_limit", 1, JEV_MAX_DAILY_LIMIT),
+        ("jev_context_limit_bytes", 4_096, 32_000),
+        ("jev_max_output_tokens", 128, 1_024),
+    ):
+        value = cfg.get(key)
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise AIHarnessError(
+                f"AI configuration '{key}' must be an integer from {minimum} to {maximum}."
+            )
     return cfg
 
 
@@ -336,6 +357,110 @@ def configure(*, provider: str, model: str, base_url: str | None = None, api_key
     return cfg
 
 
+
+def _jev_budget_path() -> Path:
+    return _state_home() / "jev-free-tier-budget.json"
+
+
+def _jev_budget_day() -> str:
+    # Use the machine's local day so the displayed reset matches the user's device.
+    return datetime.now().astimezone().date().isoformat()
+
+
+def autonomy_budget_status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Return local free-tier request usage without contacting an AI provider."""
+    cfg = dict(config or load_config())
+    today = _jev_budget_day()
+    value = _read_json(_jev_budget_path(), {"schema_version": 1, "day": today, "calls": 0})
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise AIHarnessError(
+            "Jev's local request-budget file is invalid. Preserve a backup before repairing it."
+        )
+    calls = 0 if value.get("day") != today else value.get("calls", 0)
+    if type(calls) is not int or calls < 0:
+        raise AIHarnessError("Jev's local request-budget counter is invalid.")
+    limit = int(cfg.get("jev_daily_call_limit", JEV_DEFAULT_DAILY_LIMIT))
+    enabled = bool(cfg.get("jev_free_tier_mode", False))
+    return {
+        "free_tier_guard": enabled,
+        "day": today,
+        "calls_today": calls,
+        "daily_limit": limit,
+        "remaining": max(0, limit - calls) if enabled else None,
+        "context_limit_bytes": int(cfg.get("jev_context_limit_bytes", JEV_DEFAULT_CONTEXT_LIMIT_BYTES)),
+        "max_output_tokens": int(cfg.get("jev_max_output_tokens", JEV_DEFAULT_OUTPUT_TOKENS)),
+        "reset": "at the next local-device calendar day",
+    }
+
+
+def _reserve_jev_request(config: Mapping[str, Any], purpose: str) -> None:
+    """Count a provider attempt before sending it, including failures that may consume quota."""
+    budget = autonomy_budget_status(config)
+    if not budget.get("free_tier_guard"):
+        return
+    if int(budget.get("remaining") or 0) <= 0:
+        raise AIUnavailable(
+            "Jev's local free-tier request cap has been reached "
+            f"({budget['calls_today']}/{budget['daily_limit']} requests today). "
+            "Native Lowkey commands still work. Check 'lk ai jev status'; the counter resets on the next local day."
+        )
+    path = _jev_budget_path()
+    _atomic_json(path, {
+        "schema_version": 1,
+        "day": budget["day"],
+        "calls": int(budget["calls_today"]) + 1,
+        "last_purpose": str(purpose)[:80],
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+
+
+def _compact_free_tier_context(context: Mapping[str, Any], byte_limit: int) -> dict[str, Any]:
+    """Reduce optional context before a free-tier request; never edit project files."""
+    attempts = (
+        (2_200, 10, 64),
+        (1_600, 8, 52),
+        (1_200, 6, 44),
+        (800, 5, 36),
+        (500, 4, 30),
+        (300, 3, 24),
+        (160, 2, 20),
+    )
+
+    def shrink(value: Any, text_limit: int, list_limit: int, dict_limit: int, depth: int = 0) -> Any:
+        if depth > 8:
+            return "[context omitted: nesting limit]"
+        if isinstance(value, str):
+            if len(value) <= text_limit:
+                return value
+            return value[:text_limit] + "…[trimmed for free-tier context budget]"
+        if isinstance(value, Mapping):
+            result = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= dict_limit:
+                    result["_lowkey_context_note"] = "[remaining context fields omitted for free-tier budget]"
+                    break
+                result[str(key)[:160]] = shrink(item, text_limit, list_limit, dict_limit, depth + 1)
+            return result
+        if isinstance(value, (list, tuple)):
+            values = [shrink(item, text_limit, list_limit, dict_limit, depth + 1)
+                      for item in list(value)[:list_limit]]
+            if len(value) > list_limit:
+                values.append("[remaining context items omitted for free-tier budget]")
+            return values
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)[:text_limit]
+
+    for text_limit, list_limit, dict_limit in attempts:
+        candidate = shrink(context, text_limit, list_limit, dict_limit)
+        if len(json.dumps(candidate, ensure_ascii=False, sort_keys=True).encode("utf-8")) <= byte_limit:
+            return candidate
+    raise AIHarnessError(
+        "Jev could not reduce this context to the configured free-tier size limit. "
+        "Use 'lk ai jev on --tier standard' only if your provider plan supports the larger request."
+    )
+
+
 def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     cfg = dict(config or load_config())
     provider = cfg.get("provider")
@@ -355,9 +480,16 @@ def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     auto_assist = bool(cfg.get("auto_assist", False))
     pool_info = key_pool_status(str(provider) if provider else None)
     key_count = pool_info.get("providers", {}).get(str(provider), {}).get("effective_key_capacity", 0) if provider else 0
+    budget = autonomy_budget_status(cfg)
     return {"enabled": bool(cfg["enabled"]), "configured": configured, "usable": usable,
             "auto_assist": auto_assist, "auto_explain_errors": bool(cfg.get("auto_explain_errors", False)),
             "auto_recommendations": bool(cfg.get("auto_recommendations", False)),
+            "jev_autonomous": bool(cfg.get("jev_autonomous", False)),
+            "jev_free_tier_mode": bool(cfg.get("jev_free_tier_mode", False)),
+            "jev_daily_call_limit": int(cfg.get("jev_daily_call_limit", JEV_DEFAULT_DAILY_LIMIT)),
+            "jev_calls_today": budget["calls_today"], "jev_calls_remaining": budget["remaining"],
+            "jev_context_limit_bytes": budget["context_limit_bytes"],
+            "jev_max_output_tokens": budget["max_output_tokens"],
             "mode": "auto" if auto_assist else "manual",
             "provider": provider, "model": cfg.get("model"), "base_url": cfg.get("base_url"),
             "reason": reason, "timeout_seconds": cfg.get("timeout_seconds"),
@@ -430,6 +562,21 @@ def render_status(value: Mapping[str, Any]) -> str:
         if value.get("auto_recommendations")
         else "AI learning recommendations: OFF — Lowkey's native recommendations remain available."
     )
+    lines.append(
+        f"Jev autonomous mode: {'ON' if value.get('jev_autonomous') else 'OFF'} — "
+        + ("lab review, command guidance, error help, and learning recommendations are enabled together."
+           if value.get("jev_autonomous') else "manual AI requests remain available; automatic Jev behaviors are paused.")
+    )
+    if value.get("jev_free_tier_mode"):
+        lines.append(
+            f"Free-tier guard: ON — {value.get('jev_calls_today', 0)}/{value.get('jev_daily_call_limit', JEV_DEFAULT_DAILY_LIMIT)} "
+            f"AI requests used today; {value.get('jev_calls_remaining', 0)} remain. "
+            f"Automatic free-tier context/output caps: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes / "
+            f"{value.get('jev_max_output_tokens', JEV_DEFAULT_OUTPUT_TOKENS)} tokens."
+        )
+    else:
+        lines.append("Free-tier guard: OFF — provider-side quotas/rate limits still apply.")
+    lines.append("Turn Jev automation on/off with 'lk ai jev on' / 'lk ai jev off'; status is local-only.")
     return "\n".join(lines)
 
 
@@ -796,7 +943,22 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
         )
     if not isinstance(task, str) or not task.strip() or len(task) > 6000:
         raise AIHarnessError("Task must contain 1–6000 characters.")
-    return _send(cfg, purpose=purpose, task=task.strip(), context=context, required_fields=required_fields)
+    request_context: Mapping[str, Any] = context
+    if cfg.get("jev_free_tier_mode"):
+        budget = autonomy_budget_status(cfg)
+        request_context = _compact_free_tier_context(
+            context, int(budget["context_limit_bytes"])
+        )
+        # Keep the user's configured provider/model, but cap autonomous/free-tier
+        # requests locally. A provider's own quota may be stricter than this guard.
+        cfg = dict(cfg)
+        cfg["max_output_tokens"] = min(
+            int(cfg.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)),
+            int(budget["max_output_tokens"]),
+        )
+        cfg["timeout_seconds"] = min(int(cfg.get("timeout_seconds", DEFAULT_TIMEOUT)), 30)
+        _reserve_jev_request(cfg, purpose)
+    return _send(cfg, purpose=purpose, task=task.strip(), context=request_context, required_fields=required_fields)
 
 
 _SOURCE_LOCATION_PATTERN = re.compile(
@@ -1838,6 +2000,24 @@ QUICK START
        lk ai preview --contract Vault --show-context
   5. Run the focused task you need:
        lk ai security-review --contract Vault
+  6. Turn Jev on for coordinated, opt-in guidance across LK:
+       lk ai jev on
+       lk ai jev status
+       lk ai jev off
+
+JEV AUTONOMY & FREE-TIER SAFETY
+------------------------------
+  lk ai jev on [--tier free|standard] [--daily-limit 1..24]
+      Enables the existing automatic lab review, command guidance, error diagnoses,
+      and learner recommendations together. Free tier is the default and locally caps
+      requests/day, context size and output tokens. This is a local safeguard, not a
+      guarantee that a provider will never charge or rate-limit you.
+  lk ai jev off
+      Stops Jev's automatic behaviors while leaving explicit 'lk ai ...' tasks available.
+      The free-tier request cap remains active unless '--tier standard' is selected.
+  lk ai jev status
+      Show automation settings and today's local request-budget usage without contacting
+      the provider. Jev never executes suggestions, edits files, deploys, signs or sends.
 
 SETUP & CONNECTION
 ------------------
@@ -2852,6 +3032,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
     mode.add_argument("value", choices=("manual", "auto"), help="manual = only on request (default); auto = opt in to complexity-triggered review")
+    jev = sub.add_parser("jev", aliases=("autonomy", "autonomous"), help="turn coordinated Jev automation on, off, or inspect it")
+    jev.add_argument("value", nargs="?", choices=("on", "off", "status"), default="status", help="on enables existing AI automations; off pauses them without removing features")
+    jev.add_argument("--tier", choices=("free", "standard"), default=None, help="free (default on enable) applies a local request/context/output cap; standard removes these local caps")
+    jev.add_argument("--daily-limit", type=int, help=f"free-tier local AI request limit per device day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
+    jev.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable status")
     recommendations_cmd = sub.add_parser("recommendations", help="show native next commands plus optional AI-generated suggestions")
     recommendations_cmd.add_argument("mode", choices=("manual", "auto", "status"), help="auto adds source-grounded AI suggestions after eligible successful commands; manual disables them; status shows the setting")
     recommendations_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON for status")
@@ -2934,6 +3119,8 @@ def main(argv: list[str] | None = None) -> int:
     preview.epilog = "WHEN: review this before sending source to a provider. Example: lk ai preview --contract ConfidencePool"
     mode.description = "Choose manual mode or opt in to automatic guidance for eligible workflows and failures."
     mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to your provider after eligible commands. Charges may apply. Example: lk ai mode manual"
+    jev.description = "Jev coordinates Lowkey's existing AI assistance features. It does not replace native tools or gain execution authority."
+    jev.epilog = "WHEN: enable coordinated assistance with a free-tier guard. Examples: lk ai jev on; lk ai jev status; lk ai jev off"
     run_cmd.description = "Plan a source-grounded investigation and optionally execute only validated read-oriented Lowkey commands."
     run_cmd.epilog = "WHEN: investigate a multi-step question. Commands are shown first; approval is required unless --yes is supplied. Example: lk ai run \"investigate why withdrawal reverts\" --plan-only"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
@@ -3339,6 +3526,75 @@ def main(argv: list[str] | None = None) -> int:
                 print("AI recommendations: MANUAL / OFF.")
                 print("Lowkey will keep showing its native next-command suggestions.")
                 print("No automatic AI learning-note requests will be made.")
+            return 0
+        if parsed.action in {"jev", "autonomy", "autonomous"}:
+            cfg = load_config()
+            selected = parsed.value
+            if parsed.daily_limit is not None and not 1 <= parsed.daily_limit <= JEV_MAX_DAILY_LIMIT:
+                raise AIHarnessError(f"--daily-limit must be from 1 to {JEV_MAX_DAILY_LIMIT}; free-tier defaults are deliberately conservative.")
+            if selected == "status":
+                value = status(cfg)
+                budget = autonomy_budget_status(cfg)
+                value["jev_budget"] = budget
+                if parsed.as_json:
+                    print(json.dumps(value, indent=2, sort_keys=True))
+                else:
+                    print("JEV AUTONOMY STATUS")
+                    print("===================")
+                    print(f"Autonomous mode: {'ON' if value['jev_autonomous'] else 'OFF'}")
+                    print(f"AI extension: {'ON' if value['enabled'] else 'OFF'}")
+                    print(f"Command guidance: {'ON' if value['auto_assist'] else 'OFF'}")
+                    print(f"Automatic error diagnosis: {'ON' if value['auto_explain_errors'] else 'OFF'}")
+                    print(f"Automatic recommendations: {'ON' if value['auto_recommendations'] else 'OFF'}")
+                    print(f"Free-tier guard: {'ON' if budget['free_tier_guard'] else 'OFF'}")
+                    if budget['free_tier_guard']:
+                        print(f"Today's requests: {budget['calls_today']}/{budget['daily_limit']} ({budget['remaining']} remaining)")
+                        print(f"Per-request caps: {budget['context_limit_bytes']:,} context bytes; {budget['max_output_tokens']} output tokens")
+                    print("Native commands are unchanged. Jev suggestions are never executed.")
+                return 0
+            if selected == "on":
+                if not cfg.get("provider") or not cfg.get("model"):
+                    raise AIHarnessError("Configure Jev first with 'lk ai setup', then run 'lk ai status'.")
+                candidate = dict(cfg)
+                candidate["enabled"] = True
+                readiness = status(candidate)
+                if not readiness.get("usable"):
+                    reason = readiness.get("reason") or "provider credentials are not ready"
+                    raise AIHarnessError(f"Jev cannot start yet: {reason}. Run 'lk ai status' for the exact next step.")
+                cfg = candidate
+                cfg["jev_autonomous"] = True
+                tier = parsed.tier or "free"
+                cfg["jev_free_tier_mode"] = tier == "free"
+                cfg["jev_daily_call_limit"] = parsed.daily_limit or int(cfg.get("jev_daily_call_limit", JEV_DEFAULT_DAILY_LIMIT))
+                cfg["auto_assist"] = True
+                cfg["auto_explain_errors"] = True
+                cfg["auto_recommendations"] = True
+                save_config(cfg)
+                print("Jev autonomous mode: ON.")
+                print("Enabled together: eligible lab/protocol review, post-command guidance, automatic error diagnoses, and learner recommendations.")
+                if cfg["jev_free_tier_mode"]:
+                    print(f"Free-tier guard: ON — up to {cfg['jev_daily_call_limit']} AI requests per local device day, {cfg['jev_context_limit_bytes']:,} context bytes and {cfg['jev_max_output_tokens']} output tokens per request.")
+                    print("These are local safety caps, not the provider's published quota or a guarantee of zero charges. Failed provider attempts can count toward the local cap.")
+                else:
+                    print("Free-tier guard: OFF — provider quotas, limits and possible charges still apply.")
+                print("Jev can explain and recommend; it cannot execute suggestions, edit files, deploy, sign or send transactions.")
+                return 0
+            # Stop only autonomous behaviors; leave the AI extension and manual commands available.
+            cfg["jev_autonomous"] = False
+            cfg["auto_assist"] = False
+            cfg["auto_explain_errors"] = False
+            cfg["auto_recommendations"] = False
+            if parsed.tier == "standard":
+                cfg["jev_free_tier_mode"] = False
+            elif parsed.tier == "free":
+                cfg["jev_free_tier_mode"] = True
+            save_config(cfg)
+            print("Jev autonomous mode: OFF. Automatic guidance, error diagnoses and recommendations are paused.")
+            print("Existing LK commands and features are unchanged; explicit 'lk ai ...' requests remain available.")
+            if cfg.get("jev_free_tier_mode"):
+                print("The free-tier request/context/output guard remains active for manual AI requests too.")
+            else:
+                print("Free-tier guard: OFF. Provider-side quotas/rate limits still apply.")
             return 0
         if parsed.action == "mode":
             cfg = load_config()
