@@ -2108,22 +2108,24 @@ QUICK START
 
 JEV AUTONOMY & LOCAL BUDGET GUARD
 ------------------------------
-  lk ai jev setup [--model jev-latest]
-      Save a TypeSafe Jev API key securely (hidden input) or use TYPESAFE_API_KEY.
-      This configures the decision model; it does not configure a text-generating LLM.
+  lk ai jev setup [--provider jevmodel|typesafe] [--model jev-latest]
+      Fresh setup defaults to JevModel, which advertises 100,000 starter input tokens
+      after email verification. Use --provider typesafe for the official TypeSafe API.
+      API keys are separate between providers; use hidden input or the matching env var.
   lk ai jev on [--tier guarded|standard] [--daily-limit 1..24] [--with-text-ai]
-      Enable Jev's structured triage on selected Lowkey command results. Guarded mode
-      defaults to 8 provider attempts/day and 16,000 request bytes. Add --with-text-ai
-      to request optional natural-language explanations from an already configured text provider; it can use a second call.
+      Enable Jev's typed triage on selected Lowkey command results. Guarded mode
+      defaults to 8 provider attempts/day and a 7,500-byte JevModel request cap.
+      --with-text-ai additionally uses an existing text provider for natural-language
+      explanations, and may use a separate provider request.
   lk ai jev off
-      Stop Jev's automatic triage without uninstalling or disabling other AI features.
+      Stop Jev's automatic triage without disabling other AI features.
       The local budget guard remains active unless '--tier standard' is selected.
   lk ai jev status
-      Show Jev key readiness, mode and local request usage; no provider request is made.
+      Show endpoint, key readiness, mode and local request usage; no provider request is made.
   lk ai jev test
-      Send one small, source-free typed decision to check the Jev API. This uses quota.
+      Send one small, source-free typed decision to check the selected Jev API. This uses tokens.
   lk ai jev remove-key
-      Remove the key saved in Lowkey's private settings; environment keys are not changed.
+      Remove the saved key for the active provider; environment keys are not changed.
       Jev classifies evidence only. It does not generate prose or execute suggestions.
 
 SETUP & CONNECTION
@@ -3230,8 +3232,8 @@ def main(argv: list[str] | None = None) -> int:
     preview.epilog = "WHEN: review this before sending source to a provider. Example: lk ai preview --contract ConfidencePool"
     mode.description = "Choose manual mode or opt in to automatic text-LLM guidance for eligible workflows and failures."
     mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to the configured text provider after eligible commands. Jev structured triage is controlled separately. Example: lk ai mode manual"
-    jev.description = "Connect TypeSafe Jev's typed decisions to Lowkey command triage. Prose generation remains with Lowkey's separate optional AI harness."
-    jev.epilog = "WHEN: run 'lk ai jev setup', then 'lk ai jev test', 'lk ai jev on', or 'lk ai jev off'. This API is metered by input tokens; guarded mode limits use but does not guarantee zero charges."
+    jev.description = "Connect Jev's typed decisions to Lowkey command triage. JevModel starter tokens and the official TypeSafe API are separate providers; prose generation remains a separate optional AI feature."
+    jev.epilog = "WHEN: run 'lk ai jev setup' for the advertised JevModel starter-token endpoint, or add '--provider typesafe' for the official API. Guarded mode limits local usage but cannot guarantee zero charges."
     run_cmd.description = "Plan a source-grounded investigation and optionally execute only validated read-oriented Lowkey commands."
     run_cmd.epilog = "WHEN: investigate a multi-step question. Commands are shown first; approval is required unless --yes is supplied. Example: lk ai run \"investigate why withdrawal reverts\" --plan-only"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
