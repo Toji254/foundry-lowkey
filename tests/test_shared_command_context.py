@@ -316,6 +316,12 @@ Warning (2072): Unused local variable.
                 "contract Demo { function value() external pure returns (uint256) { return 1; } }",
                 encoding="utf-8",
             )
+            script_dir = root / "script"
+            script_dir.mkdir()
+            (script_dir / "Deploy.s.sol").write_text(
+                "contract Deploy { function run() external returns (uint256) { return 1; } }",
+                encoding="utf-8",
+            )
             shared_events = [{
                 "timestamp": "2026-10-27T03:00:00+00:00",
                 "command": "build",
@@ -337,6 +343,7 @@ Warning (2072): Unused local variable.
             with patch.object(error_context, "read_project_context", return_value=history):
                 context = ai_harness._source_context(root, None)
             self.assertEqual(context["shared_project_context"]["events"], shared_events)
+            self.assertEqual(context["source_files"][0]["path"], "script/Deploy.s.sol")
             compact_history = context["shared_command_history"]
             self.assertEqual(compact_history["events"][0]["command"], "build")
             self.assertNotIn("project_knowledge", compact_history)
@@ -365,6 +372,7 @@ Warning (2072): Unused local variable.
             self.assertNotIn("project_knowledge", captured["context"]["shared_command_history"])
             self.assertIn("current_command_evidence", captured["context"])
             self.assertIn("Unnamed return variable", context_text)
+            self.assertEqual(captured["context"]["source_files"][0]["path"], "script/Deploy.s.sol")
             self.assertIn("Deploy.s.sol", context_text)
             self.assertNotIn(str(root), context_text)
             self.assertNotIn(secret, context_text)
