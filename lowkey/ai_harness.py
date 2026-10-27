@@ -2095,17 +2095,13 @@ QUICK START
 JEV AUTONOMY & LOCAL BUDGET GUARD
 --------------------------------
   lk ai jev setup [--provider jevmodel|typesafe|jevos]
-      Hosted default: JevModel (100,000 starter input tokens after email verification);
-      typesafe = official hosted API.
-  lk ai jev setup --provider jevos
-      Local Jevos-v5 at 127.0.0.1:8017; no key or hosted token usage.
+      JevModel stays the hosted default; Jevos-v5 runs locally without a key.
   lk ai jev start|stop|restart
-      Manage local Jevos-v5; start runs it in the background without an API key.
+      Manage the local Jevos server (background when started by Lowkey).
   lk ai jev test / lk ai jev on [options] / lk ai jev off / lk ai jev status
   lk ai jev remove-key
       test sends a source-free probe; Jev never executes suggestions.
       on flags: --tier guarded|standard, --daily-limit N, --with-text-ai.
-      Hosted guard: 5 attempts/day; local Jevos requests are not counted.
 SETUP & CONNECTION
 ------------------
   lk ai status
