@@ -70,6 +70,12 @@ class JevEngineTests(unittest.TestCase):
             timeout_seconds=10,
         )
 
+    def test_fresh_install_reports_missing_key_instead_of_invalid_credentials(self):
+        self.assertFalse(jev_engine.credentials_path().exists())
+        value = jev_engine.status()
+        self.assertFalse(value["configured"])
+        self.assertIsNone(value["key_source"])
+
     def test_setup_stores_key_in_private_file_and_status_never_exposes_it(self):
         key_path = jev_engine.credentials_path()
         self.assertTrue(key_path.is_file())
