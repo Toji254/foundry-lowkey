@@ -210,6 +210,68 @@ class JevEngineTests(unittest.TestCase):
         self.assertNotIn("fixed data", cached_text)
         self.assertNotIn("typesafe_test_key_0123456789", cached_text)
 
+    def test_fresh_install_defaults_to_jevmodel_starter_token_provider(self):
+        # Simulate a genuinely fresh user profile with no old TypeSafe key to preserve.
+        jev_engine.settings_path().unlink(missing_ok=True)
+        jev_engine.credentials_path().unlink(missing_ok=True)
+        settings = jev_engine.load_settings()
+        self.assertEqual(settings["provider"], "jevmodel")
+        self.assertEqual(
+            jev_engine.status()["endpoint"],
+            "https://jevmodel.app/api/v1/systemone",
+        )
+        self.assertFalse(jev_engine.status()["configured"])
+
+    def test_jevmodel_uses_its_response_envelope_and_does_not_send_model_field(self):
+        jev_engine.configure(
+            api_key="jevmodel_test_key_0123456789",
+            provider="jevmodel",
+            model="jev-latest",
+            timeout_seconds=10,
+        )
+        seen = {}
+
+        def opener(request, timeout):
+            seen["url"] = request.full_url
+            seen["headers"] = dict(request.header_items())
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["timeout"] = timeout
+            return FakeResponse({
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "request_id": "fixture-request",
+                    "model": "jev-1.13.0",
+                    "answers": {
+                        "probe": {
+                            "type": "noul",
+                            "noul": 0.92,
+                        }
+                    },
+                    "usage": {"inputTokens": 142},
+                },
+            })
+
+        result = jev_engine.evaluate(
+            state={"probe": "short fixture"},
+            questions={"probe": {
+                "type": "noul",
+                "instructions": "Does the state describe a short fixture?",
+            }},
+            opener=opener,
+        )
+        self.assertEqual(seen["url"], jev_engine.JEVMODEL_API_URL)
+        self.assertEqual(seen["timeout"], 10)
+        self.assertNotIn("model", seen["body"])
+        self.assertIn("Bearer jevmodel_test_key_0123456789", seen["headers"]["Authorization"])
+        self.assertEqual(result["provider"], "jevmodel")
+        self.assertEqual(result["answers"]["probe"]["noul"], 0.92)
+        self.assertEqual(result["usage"]["input_tokens"], 142)
+        self.assertIsNone(result["usage"]["estimated_input_cost_usd"])
+        self.assertEqual(jev_engine.status()["provider"], "jevmodel")
+        # Preserve the existing TypeSafe credential if the user switches provider.
+        self.assertEqual(jev_engine._saved_key("typesafe"), "typesafe_test_key_0123456789")
+
     def test_bad_question_is_rejected_before_network_call(self):
         def never_call(*args, **kwargs):
             self.fail("Invalid question must not make a provider request")
