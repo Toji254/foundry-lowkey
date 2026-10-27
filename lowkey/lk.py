@@ -17963,7 +17963,6 @@ def dispatch_command(cmd, args, config, from_batch=False):
     error_code = returned_code if isinstance(returned_code, int) and returned_code != 0 else 2
     recorded_text = diagnostic.strip() or getattr(result, "output", None) or f"Command returned exit code {error_code} without detailed diagnostic output."
     record = _record_last_error(recorded_text, code=error_code, source="dispatcher")
-    _maybe_explain_error(record)
     if diagnostic.strip():
         rendered = (
             diagnostic.strip()
@@ -17990,6 +17989,9 @@ def dispatch_command(cmd, args, config, from_batch=False):
         )
         print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
 
+    # Keep the primary failure first in the terminal output. Optional AI
+    # explanations are secondary context and must never obscure the Error line.
+    _maybe_explain_error(record)
     record_status(error_code)
     if isinstance(returned_code, int) and returned_code != 0:
         return result
