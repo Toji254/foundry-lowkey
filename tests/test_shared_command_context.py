@@ -258,6 +258,12 @@ Warning (2072): Unused local variable.
                 "deployments": [{"contract": "Escrow", "address": deployed, "broadcast": str(root / "broadcast/Deploy/31337/run-latest.json"), "code_size": 1234, "live": True}],
                 "relationships": [{"from": "Escrow", "to": "Token", "kind": "constructor-arg", "argument_index": 0}],
                 "roles": [{"kind": "role_grant", "contract": "Escrow", "role": "OWNER_ROLE", "account": "Alice"}],
+                "actors": {"actors": [{"name": "Alice", "address": "0x" + "3" * 40, "source": "wallet config"}]},
+                "initialization": [{"source": "script/Deploy.s.sol", "line": 16, "kind": "role_grant", "target": "grantRole", "evidence": "token.grantRole(OWNER_ROLE, owner);"}],
+                "scripts": [{"path": "script/Deploy.s.sol", "lines": 30, "actions": [{"kind": "role_grant", "line": 16, "target": "grantRole", "text": "token.grantRole(OWNER_ROLE, owner);"}]}],
+                "tests": [{"path": "test/Escrow.t.sol", "kind": "test", "signals": ["test/invariant function", "assertion"], "functions": ["testWithdraw"]}],
+                "adversarial_evidence": [{"path": "test/EscrowExploit.t.sol", "kind": "adversarial-test", "signals": ["actor control"], "functions": ["testReentrantWithdraw"], "summary": {"candidate": "F-123", "evidence": "test only", "poc_file": "test/EscrowExploit.t.sol"}}],
+                "audit_evidence": [{"file": ".audit/evidence/audit_start.json", "exit_code": 0, "finding_count": 1, "count": 1, "target": target, "git_branch": "integration-test-drive"}],
                 "security_pattern_summary": {"total": 1, "reviews": 1, "confirmed": 0, "candidates": 0},
                 "security_patterns": [{
                     "id": "REENTRANCY-1", "title": "External call before state update", "category": "reentrancy",
@@ -288,6 +294,12 @@ Warning (2072): Unused local variable.
             self.assertEqual(knowledge["audit_context"]["signals"][0]["file"], "src/Escrow.sol")
             self.assertEqual(knowledge["system_model"]["deployments"][0]["address"], deployed)
             self.assertEqual(knowledge["system_model"]["relationships"][0]["kind"], "constructor-arg")
+            self.assertEqual(knowledge["system_model"]["actors"][0]["name"], "Alice")
+            self.assertEqual(knowledge["system_model"]["initialization"][0]["source"], "script/Deploy.s.sol")
+            self.assertEqual(knowledge["system_model"]["scripts"][0]["actions"][0]["kind"], "role_grant")
+            self.assertEqual(knowledge["system_model"]["tests"][0]["functions"], ["testWithdraw"])
+            self.assertEqual(knowledge["system_model"]["adversarial_evidence"][0]["kind"], "adversarial-test")
+            self.assertEqual(knowledge["system_model"]["audit_evidence"][0]["target"], target)
             self.assertEqual(knowledge["evidence_ledger"]["findings"][0]["status"], "candidate")
             rendered = json.dumps(shared)
             self.assertNotIn(str(root), rendered)
