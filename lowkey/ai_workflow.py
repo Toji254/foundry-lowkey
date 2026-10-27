@@ -20,7 +20,7 @@ _SECRET_FLAGS = {
 }
 _SHELL_META = {";", "|", "&", chr(96), "$", "<", ">", "\\", "\r", "\n", '"', "'"}
 _TASK_ROOTS = {
-    "read", "fn", "ask", "functions", "events", "logs",
+    "read", "fn", "ask", "functions", "logs",
     "proxy", "recon", "questions",
 }
 _AUTO_GUIDANCE_COMMANDS = {
@@ -356,7 +356,7 @@ def _safe_task_command(value: Any) -> str | None:
     if any(token.startswith("--") or (token.startswith("-") and token != "-1") for token in tokens[2:]):
         return None
     root = tokens[1]
-    if root in {"events", "logs", "proxy", "recon", "questions"}:
+    if root in {"logs", "proxy", "recon", "questions"}:
         if len(tokens) != 2:
             return None
     elif root == "functions":
@@ -416,7 +416,7 @@ def _make_plan(root: Path, goal: str, contract_name: str | None,
     ]
     context["allowed_command_forms"] = [
         "lk functions", "lk fn FunctionName", "lk ask FunctionName",
-        "lk read ZeroArgumentViewName", "lk events", "lk logs", "lk proxy", "lk recon",
+        "lk read ZeroArgumentViewName", "lk logs", "lk proxy", "lk recon",
         "lk questions",
     ]
     context["execution_policy"] = (
