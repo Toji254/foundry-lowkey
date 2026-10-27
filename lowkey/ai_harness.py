@@ -1436,7 +1436,32 @@ def validate_ai_recommendations(
         })
         if len(normalized) >= 2:
             break
-    return {
+    diagnosis = None
+    runtime_paths = {
+        path for path, excerpt in known_sources.items()
+        if path.startswith("lowkey-runtime/") and "run_lab" in excerpt
+    }
+    raw_diagnosis = result.get("diagnosis")
+    if runtime_paths and isinstance(raw_diagnosis, Mapping):
+        summary = raw_diagnosis.get("summary")
+        evidence_values = raw_diagnosis.get("evidence")
+        evidence = []
+        if isinstance(summary, str) and isinstance(evidence_values, list):
+            for item in evidence_values[:4]:
+                if not isinstance(item, Mapping):
+                    continue
+                path = item.get("path")
+                symbol = item.get("symbol")
+                if not isinstance(path, str) or not isinstance(symbol, str):
+                    continue
+                path = path.strip()
+                symbol = " ".join(symbol.split())[:180]
+                excerpt = known_sources.get(path, "")
+                if path in runtime_paths and symbol and symbol.casefold() in excerpt.casefold():
+                    evidence.append({"path": path, "symbol": symbol})
+        if isinstance(summary, str) and summary.strip() and evidence:
+            diagnosis = {"summary": " ".join(summary.split())[:1200], "evidence": evidence}
+    report = {
         "recommendations": normalized,
         "candidate_count": len(values),
         "discarded_count": len(values) - len(normalized),
@@ -1445,6 +1470,9 @@ def validate_ai_recommendations(
         "origin": "configured-model",
         "execution_policy": "Optional learning notes only; Lowkey never executes recommendations.",
     }
+    if diagnosis:
+        report["diagnosis"] = diagnosis
+    return report
 
 
 
@@ -1620,7 +1648,7 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
     if isinstance(shared_count, int) and shared_count > 0:
         lines.append(f"Recent project history considered: {shared_count} event(s).")
     if meta.get("current_command_evidence_included") is True:
-        lines.append("The command's redacted output was included as evidence.")
+        lines.append("Current command's redacted output was supplied as direct evidence.")
     if meta.get("lowkey_runtime_source_included") is True:
         lines.append("Lowkey's own lab-selection code was included to help explain its behavior.")
     diagnosis = report.get("diagnosis")
