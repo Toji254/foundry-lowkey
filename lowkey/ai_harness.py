@@ -27,8 +27,10 @@ JEV_DEFAULT_DAILY_LIMIT = 8
 JEV_DEFAULT_CONTEXT_LIMIT_BYTES = 16_000
 JEV_DEFAULT_OUTPUT_TOKENS = 650
 JEV_MAX_DAILY_LIMIT = 24
+JEV_RESPONSE_CACHE_TTL_SECONDS = 1_800
+JEV_RESPONSE_CACHE_MAX_ENTRIES = 40
 PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama", "orcarouter", "openrouter", "nvidia"}
-PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan"}
+PURPOSES = {"provider_test", "lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1", "orcarouter": "https://api.orcarouter.ai/v1", "openrouter": "https://openrouter.ai/api/v1", "nvidia": "https://integrate.api.nvidia.com/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
@@ -923,6 +925,81 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
         )
 
 
+
+def _jev_cache_path() -> Path:
+    return _state_home() / "jev-response-cache.json"
+
+
+def _jev_cache_key(config: Mapping[str, Any], purpose: str, task: str,
+                   context: Mapping[str, Any], required_fields: tuple[str, ...]) -> str:
+    # Hash the exact request inputs; the cache never needs to persist source context.
+    identity = {
+        "provider": config.get("provider"),
+        "model": config.get("model"),
+        "base_url": config.get("base_url"),
+        "purpose": purpose,
+        "task": task,
+        "required_fields": list(required_fields),
+        "context": context,
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _read_jev_cached_response(cache_key: str, required_fields: tuple[str, ...]) -> dict[str, Any] | None:
+    """Return a recent exact-match response, failing open because cache is optional."""
+    try:
+        value = _read_json(_jev_cache_path(), {"schema_version": 1, "entries": {}})
+        if not isinstance(value, dict) or value.get("schema_version") != 1:
+            return None
+        entries = value.get("entries")
+        if not isinstance(entries, dict):
+            return None
+        entry = entries.get(cache_key)
+        if not isinstance(entry, dict):
+            return None
+        created_at = entry.get("created_at")
+        result = entry.get("result")
+        if not isinstance(created_at, (int, float)) or time.time() - created_at > JEV_RESPONSE_CACHE_TTL_SECONDS:
+            return None
+        if not isinstance(result, dict) or any(field not in result for field in required_fields):
+            return None
+        return result
+    except (AIHarnessError, OSError, TypeError, ValueError):
+        return None
+
+
+def _store_jev_cached_response(cache_key: str, result: Mapping[str, Any]) -> None:
+    """Store only the model result and request digest in a private bounded local cache."""
+    try:
+        path = _jev_cache_path()
+        value = _read_json(path, {"schema_version": 1, "entries": {}})
+        if not isinstance(value, dict) or value.get("schema_version") != 1:
+            value = {"schema_version": 1, "entries": {}}
+        raw_entries = value.get("entries")
+        entries = dict(raw_entries) if isinstance(raw_entries, dict) else {}
+        now = time.time()
+        entries = {
+            key: item for key, item in entries.items()
+            if isinstance(item, dict)
+            and isinstance(item.get("created_at"), (int, float))
+            and now - item["created_at"] <= JEV_RESPONSE_CACHE_TTL_SECONDS
+        }
+        entries[cache_key] = {"created_at": now, "result": dict(result)}
+        if len(entries) > JEV_RESPONSE_CACHE_MAX_ENTRIES:
+            newest = sorted(
+                entries.items(),
+                key=lambda item: float(item[1].get("created_at", 0)),
+                reverse=True,
+            )[:JEV_RESPONSE_CACHE_MAX_ENTRIES]
+            entries = dict(newest)
+        _atomic_json(path, {"schema_version": 1, "entries": entries})
+    except (AIHarnessError, OSError, TypeError, ValueError):
+        # Cache failures must never make a successful native/AI path fail.
+        return
+
+
 def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
                        required_fields: tuple[str, ...] = ()) -> dict[str, Any]:
     """Request one explicitly named Lowkey task; free-form chat purposes are rejected."""
@@ -944,13 +1021,20 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
     if not isinstance(task, str) or not task.strip() or len(task) > 6000:
         raise AIHarnessError("Task must contain 1–6000 characters.")
     request_context: Mapping[str, Any] = context
-    if cfg.get("jev_free_tier_mode"):
+    cache_key = None
+    free_tier = bool(cfg.get("jev_free_tier_mode"))
+    if free_tier and purpose != "provider_test":
+        cache_key = _jev_cache_key(cfg, purpose, task.strip(), context, required_fields)
+        cached = _read_jev_cached_response(cache_key, required_fields)
+        if cached is not None:
+            return cached
+    if free_tier:
         budget = autonomy_budget_status(cfg)
         request_context = _compact_free_tier_context(
             context, int(budget["context_limit_bytes"])
         )
-        # Keep the user's configured provider/model, but cap autonomous/free-tier
-        # requests locally. A provider's own quota may be stricter than this guard.
+        # Keep the user's configured provider/model, but cap all guarded requests
+        # locally. A provider's own quota may be stricter than this guard.
         cfg = dict(cfg)
         cfg["max_output_tokens"] = min(
             int(cfg.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)),
@@ -958,7 +1042,10 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
         )
         cfg["timeout_seconds"] = min(int(cfg.get("timeout_seconds", DEFAULT_TIMEOUT)), 30)
         _reserve_jev_request(cfg, purpose)
-    return _send(cfg, purpose=purpose, task=task.strip(), context=request_context, required_fields=required_fields)
+    result = _send(cfg, purpose=purpose, task=task.strip(), context=request_context, required_fields=required_fields)
+    if cache_key is not None:
+        _store_jev_cached_response(cache_key, result)
+    return result
 
 
 _SOURCE_LOCATION_PATTERN = re.compile(
