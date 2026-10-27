@@ -1664,7 +1664,6 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
                     lines.append(f"  {item.get('path', 'unknown')} — {item.get('symbol', 'unknown')}")
     if not items:
         discarded = int(report.get("discarded_count") or 0)
-        candidates = int(report.get("candidate_count") or 0)
         lines.append("")
         if discarded:
             lines.append(
