@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from lowkey import jev_error_benchmark as bench
+from lowkey import lk as lowkey_cli
 
 
 class JevErrorBenchmarkTests(unittest.TestCase):
@@ -158,6 +163,38 @@ class JevErrorBenchmarkTests(unittest.TestCase):
         self.assertFalse(report["jev_enabled"])
         self.assertNotIn("jev", report["summary"])
         self.assertEqual(report["summary"]["rules"]["stage"]["total"], 2)
+
+
+    def test_native_lk_jev_benchmark_help_and_dispatch_are_registered(self):
+        self.assertIn("jev", lowkey_cli.COMMAND_HELP)
+        self.assertIn("benchmark", lowkey_cli.COMMAND_HELP["jev"]["children"])
+        self.assertIsNotNone(lowkey_cli.jev_error_benchmark)
+
+        with patch.object(lowkey_cli, "activate_project_target"), patch.object(
+            lowkey_cli.jev_error_benchmark, "run", return_value=7
+        ) as handler:
+            result = lowkey_cli._dispatch_command_impl(
+                "jev", ["benchmark", "--limit", "3"], {}
+            )
+        self.assertEqual(result, 7)
+        handler.assert_called_once_with(
+            ["benchmark", "--limit", "3"], prog="lk jev"
+        )
+
+    def test_native_benchmark_handler_runs_offline_and_writes_report(self):
+        with tempfile.TemporaryDirectory() as raw:
+            output_path = Path(raw) / "report.json"
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                code = bench.run([
+                    "benchmark", "--limit", "3", "--output", str(output_path)
+                ])
+            self.assertEqual(code, 0)
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertFalse(report["jev_enabled"])
+            self.assertEqual(report["summary"]["case_count"], 3)
+            self.assertNotIn("jev", report["summary"])
+            self.assertIn("no network request", captured.getvalue())
 
 
 if __name__ == "__main__":
