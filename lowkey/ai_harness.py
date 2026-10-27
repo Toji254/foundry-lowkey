@@ -3688,14 +3688,15 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         print(
                             f"Per-request context cap: {budget['context_limit_bytes']:,} bytes; "
-                            "Jev input cost is metered by TypeSafe."
+                            ("JevModel starter-token usage is account-based." if jev_state.get("provider") == "jevmodel"
+                             else "TypeSafe bills input tokens under its own account terms.")
                         )
                     print(
                         "Text AI: "
                         + (f"{cfg.get('provider')} / {cfg.get('model')}" if cfg.get("enabled") else "disabled")
-                        + " (separate from TypeSafe Jev)."
+                        + " (separate from the Jev decision API)."
                     )
-                    print("Status is local-only; it does not contact TypeSafe.")
+                    print("Status is local-only; it does not contact the provider.")
                     print("Jev can classify evidence but cannot confirm findings or execute commands.")
                 return 0
 
