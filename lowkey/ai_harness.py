@@ -2094,9 +2094,10 @@ QUICK START
 
 JEV AUTONOMY & LOCAL BUDGET GUARD
 --------------------------------
-  lk ai jev setup [--provider jevmodel|typesafe]
-      Fresh setup defaults to JevModel: 100,000 starter input tokens after email verification.
-      Use --provider typesafe for the official endpoint; keys are provider-specific.
+  lk ai jev setup [--provider jevmodel|typesafe|jevos]
+      Fresh setup keeps the existing JevModel hosted default; use --provider typesafe
+      for the official API or --provider jevos for local Jevos-v5 CPU inference.
+      Jevos requires no API key and sends requests only to 127.0.0.1:8017.
   lk ai jev test / lk ai jev on [options]
   lk ai jev off / lk ai jev status / lk ai jev remove-key
       test sends one fixed source-free request; status is local-only. Jev never executes suggestions.
@@ -3115,7 +3116,7 @@ def main(argv: list[str] | None = None) -> int:
     jev.add_argument("--tier", choices=("guarded", "standard"), default=None, help="guarded applies local daily/context/output request caps; standard removes the local caps")
     jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per UTC day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
     jev.add_argument("--with-text-ai", action="store_true", help="also request optional text-AI explanations when Jev says they are useful; requires enabled text AI and may use extra provider calls")
-    jev.add_argument("--provider", choices=("jevmodel", "typesafe"), default=None, help="jevmodel = hosted endpoint advertising starter tokens; typesafe = official TypeSafe endpoint (setup only)")
+    jev.add_argument("--provider", choices=("jevmodel", "typesafe", "jevos"), default=None, help="jevmodel = existing hosted default; typesafe = official hosted API; jevos = local Jevos-v5 server at 127.0.0.1:8017 (setup only)")
     jev.add_argument("--model", default="jev-latest", help="TypeSafe Jev model ID or alias (setup only; JevModel fixes its model server-side)")
     jev.add_argument("--timeout", type=int, default=18, help="Jev API timeout in seconds (setup only; 5–60)")
     jev.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable status")
@@ -3202,7 +3203,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.description = "Choose manual mode or opt in to automatic text-LLM guidance for eligible workflows and failures."
     mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to the configured text provider after eligible commands. Jev structured triage is controlled separately. Example: lk ai mode manual"
     jev.description = "Structured Jev triage; prose generation stays in the separate optional text-AI feature."
-    jev.epilog = "Run 'lk ai jev setup' and 'lk ai jev test'. Fresh setup uses JevModel; '--provider typesafe' selects the official endpoint. The local guard is not a free-plan guarantee."
+    jev.epilog = "Run 'lk ai jev setup' and 'lk ai jev test'. Fresh setup keeps JevModel as the default; use '--provider typesafe' for official hosted Jev or '--provider jevos' for local Jevos-v5. Local Jevos does not need an API key."
     run_cmd.description = "Plan a source-grounded investigation and optionally execute only validated read-oriented Lowkey commands."
     run_cmd.epilog = "WHEN: investigate a multi-step question. Commands are shown first; approval is required unless --yes is supplied. Example: lk ai run \"investigate why withdrawal reverts\" --plan-only"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
@@ -3645,7 +3646,7 @@ def main(argv: list[str] | None = None) -> int:
                     print("JEV / LOWKEY AUTONOMY STATUS")
                     print("============================")
                     print(f"Provider: {jev_state.get('provider_label', jev_state.get('provider', 'TypeSafe Jev'))}")
-                    print(f"API key: {'configured' if jev_state['configured'] else 'not configured'}")
+                    print("API key: not required (local provider)" if jev_state.get("provider") == "jevos" else f"API key: {'configured' if jev_state['configured'] else 'not configured'}")
                     print(f"Key source: {jev_state['key_source'] or 'none'}")
                     print(f"Jev model: {jev_state['model']}")
                     print(f"Endpoint: {jev_state['endpoint']}")
@@ -3662,11 +3663,14 @@ def main(argv: list[str] | None = None) -> int:
                             7_500 if jev_state.get("provider") == "jevmodel" else jev_engine.MAX_REQUEST_BYTES,
                         )
                         print(f"Per-request context cap: {effective_context_cap:,} bytes.")
-                        print(
-                            "JevModel starter-token usage is account-based; check the account balance."
-                            if jev_state.get("provider") == "jevmodel"
-                            else "TypeSafe bills input tokens under its own account terms."
-                        )
+                        if jev_state.get("provider") == "jevos":
+                            print("Local Jevos inference does not consume hosted-provider request allowance; the guard applies to hosted Jev and separate text-AI requests.")
+                        else:
+                            print(
+                                "JevModel starter-token usage is account-based; check the account balance."
+                                if jev_state.get("provider") == "jevmodel"
+                                else "TypeSafe bills input tokens under its own account terms."
+                            )
                     print(
                         "Text AI: "
                         + (f"{cfg.get('provider')} / {cfg.get('model')}" if cfg.get("enabled") else "disabled")
@@ -3699,7 +3703,7 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         provider = current_provider
                 if provider not in jev_engine.PROVIDERS:
-                    raise AIHarnessError("Choose a Jev provider: jevmodel or typesafe.")
+                    raise AIHarnessError("Choose a Jev provider: jevmodel, typesafe, or jevos.")
                 env_name = jev_engine.PROVIDERS[provider]["key_env"]
                 env_key = os.environ.get(env_name, "").strip()
                 try:
@@ -3707,7 +3711,7 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception:
                     saved_key = None
                 key = None
-                if not env_key and not saved_key:
+                if not jev_engine.PROVIDERS[provider].get("local") and not env_key and not saved_key:
                     key = getpass.getpass(f"{jev_engine.PROVIDERS[provider]['label']} API key (input hidden): ").strip()
                     if not key:
                         raise AIHarnessError("No API key entered; Jev settings were not changed.")
@@ -3723,29 +3727,37 @@ def main(argv: list[str] | None = None) -> int:
                 if parsed.daily_limit is not None:
                     cfg["jev_daily_call_limit"] = parsed.daily_limit
                 save_config(cfg)
-                source = env_name + " environment variable" if env_key else (
-                    "existing private saved key" if saved_key else "private local credential file"
-                )
+                source = ("not required (local Jevos-v5 endpoint)" if provider == "jevos" else
+                    env_name + " environment variable" if env_key else
+                    "existing private saved key" if saved_key else "private local credential file")
                 print(f"Jev provider configured: {jev_engine.PROVIDERS[provider]['label']}.")
-                print(f"Jev model: {parsed.model if provider == 'typesafe' else 'fixed by JevModel service'}.")
+                print(f"Jev model: {'jevos-v5 (served locally)' if provider == 'jevos' else parsed.model if provider == 'typesafe' else 'fixed by JevModel service'}.")
                 print(f"API key source: {source}; key values are never displayed.")
                 if provider == "jevmodel":
                     print("JevModel advertises 100,000 starter input tokens after email verification plus five successful free runs per UTC day, subject to service capacity; check your account for current balance and terms.")
-                else:
+                elif provider == "typesafe":
                     print("TypeSafe's official API has separate account pricing/limits; check the official console.")
+                else:
+                    print("Jevos-v5 runs locally on CPU. No hosted API key or token allowance is required; keep its server running at 127.0.0.1:8017.")
                 effective_context_cap = min(
                     cfg["jev_context_limit_bytes"],
                     7_500 if provider == "jevmodel" else jev_engine.MAX_REQUEST_BYTES,
                 )
-                print(
-                    f"Local request guard: {'ON' if cfg['jev_free_tier_mode'] else 'OFF'} "
-                    f"(daily limit {cfg['jev_daily_call_limit']}; effective request cap {effective_context_cap:,} bytes)."
-                )
+                if provider == "jevos":
+                    print(f"Hosted-provider guard: {'ON' if cfg['jev_free_tier_mode'] else 'OFF'} for separate hosted/text-AI calls; Jevos local inference is not counted. Request cap: {effective_context_cap:,} bytes.")
+                else:
+                    print(
+                        f"Local request guard: {'ON' if cfg['jev_free_tier_mode'] else 'OFF'} "
+                        f"(daily limit {cfg['jev_daily_call_limit']}; effective request cap {effective_context_cap:,} bytes)."
+                    )
                 print("No request was sent. Use 'lk ai jev test' for a small source-free API probe.")
                 return 0
 
             if selected == "remove-key":
                 current_provider = jev_engine.load_settings().get("provider", "typesafe")
+                if current_provider == "jevos":
+                    print("Jevos-v5 is a local provider and does not use an API key; nothing was removed.")
+                    return 0
                 jev_engine.clear_saved_key(current_provider)
                 env_name = jev_engine.PROVIDERS[current_provider]["key_env"]
                 if os.environ.get(env_name):
@@ -3825,8 +3837,10 @@ def main(argv: list[str] | None = None) -> int:
                     print("Local usage guard: OFF. Provider/account billing and rate limits still apply.")
                 if jev_state.get("provider") == "jevmodel":
                     print("JevModel advertises 100,000 starter input tokens after email verification; check the current account balance.")
-                else:
+                elif jev_state.get("provider") == "typesafe":
                     print("TypeSafe's official endpoint uses separate account pricing and limits.")
+                else:
+                    print("Jevos-v5 runs locally; no hosted token allowance or API key is involved.")
                 print("Jev never executes commands, edits files, changes targets, deploys, signs or sends transactions.")
                 return 0
 
