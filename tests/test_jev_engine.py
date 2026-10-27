@@ -148,6 +148,21 @@ class JevEngineTests(unittest.TestCase):
         self.assertIn("no hosted api key", output.getvalue().lower())
         self.assertIn("No request was sent", output.getvalue())
 
+    def test_blank_hosted_key_cancels_provider_switch_without_auto_error_advice(self):
+        jev_engine.configure(provider="jevos", model="jev-latest")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("getpass.getpass", return_value="") as prompt:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = ai_harness.main(["jev", "setup", "--provider", "jevmodel"])
+        prompt.assert_called_once()
+        self.assertEqual(code, 130)
+        self.assertEqual(jev_engine.load_settings()["provider"], "jevos")
+        self.assertIn("Cancelled by user", stderr.getvalue())
+        self.assertIn("settings were not changed", stderr.getvalue())
+        self.assertNotIn("AI OUTPUT", stdout.getvalue() + stderr.getvalue())
+        self.assertNotIn("--key", stdout.getvalue() + stderr.getvalue())
+
     def test_setup_stores_key_in_private_file_and_status_never_exposes_it(self):
         key_path = jev_engine.credentials_path()
         self.assertTrue(key_path.is_file())
