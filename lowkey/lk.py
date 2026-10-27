@@ -117,6 +117,11 @@ except ImportError:
     benchmark = None
 
 try:
+    import jev_error_benchmark
+except ImportError:
+    jev_error_benchmark = None
+
+try:
     from audit_engine import (
         run_rg as audit_run_rg,
         run_slither as audit_run_slither,
@@ -15854,6 +15859,28 @@ COMMAND_HELP = {
         ],
         related=["lk self-test", "lk doctor", "lk audit run"],
     ),
+    "jev": _help_entry(
+        "Evaluate a labeled Foundry/Solidity diagnostic corpus with local rules and, optionally, TypeSafe Jev. This is an experiment; Jev predictions are advisory and never control command execution or audit verdicts.",
+        "lk jev benchmark [--with-jev] [--limit N] [--timeout SEC] [--output PATH]",
+        "lk jev benchmark --limit 3",
+        "Use it to compare local error-routing rules against Jev before considering any production integration. The default run is offline and requires no API key.",
+        children={
+            "benchmark": _help_entry(
+                "Run the labeled failure-stage and root-cause benchmark; by default it makes no network requests.",
+                "lk jev benchmark [--with-jev] [--limit N] [--timeout SEC] [--output PATH]",
+                "lk jev benchmark --limit 3",
+                "Use --with-jev only after configuring TYPESAFE_API_KEY through your shell; each selected fixture makes one API request. The fixture corpus, not your project files, is sent to Jev.",
+                options=[
+                    ("--with-jev", "Call TypeSafe Jev once per selected fixture; requires API-key access and may incur usage.", "lk jev benchmark --with-jev --limit 3"),
+                    ("--limit N", "Run only the first N cases; zero means the full curated corpus.", "lk jev benchmark --limit 3"),
+                    ("--timeout SEC", "Set the per-request timeout from 1 to 60 seconds.", "lk jev benchmark --with-jev --limit 3 --timeout 20"),
+                    ("--output PATH", "Write the JSON results to a chosen path.", "lk jev benchmark --output /tmp/jev-benchmark.json"),
+                ],
+                related=["lk ai status", "lk benchmark", "lk doctor"],
+            ),
+        },
+        related=["lk ai status", "lk benchmark", "lk doctor"],
+    ),
     "q": _help_entry(
         "Drive a deterministic auditor-mindset question frontier from project evidence. The screen explains what the question means, what to inspect, and how strongly to trust the evidence.",
         "lk q [current|next|why|evidence|path|done|note|skip|na|not-applicable|source|reset]",
@@ -17614,6 +17641,7 @@ def _recommended_next_commands(command, args=None, config=None):
         "checklist": {"done", "reset"},
         "actor": {"reset"},
         "q": {"current", "next", "why", "evidence", "path", "done", "note", "skip", "na", "not-applicable", "source", "reset"},
+        "jev": {"benchmark"},
     }
     first_arg = raw_args[0].lower() if raw_args else ""
     if first_arg in nested.get(canonical, set()):
@@ -17891,6 +17919,12 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
 
     # Resolve documented short forms before runtime dispatch as well as help lookup.
     cmd = HELP_ALIASES.get(lowered_cmd, lowered_cmd)
+    # This experiment is not project-target-specific. Keep it out of the target
+    # activation path so a benchmark cannot change the selected contract context.
+    if cmd == "jev":
+        if jev_error_benchmark is None:
+            return fail("Jev benchmark module is not installed. Re-run install.sh from this checkout.")
+        return jev_error_benchmark.run(args, prog="lk jev")
     activate_project_target(config)
     if cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
