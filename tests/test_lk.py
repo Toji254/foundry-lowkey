@@ -3345,6 +3345,51 @@ contract Pool {
         self.assertIn("lk nope", captured["kwargs"]["lowkey_command_context"]["invocation"])
         self.assertIn("Known top-level Lowkey commands", captured["kwargs"]["lowkey_command_context"]["source_excerpt"])
 
+    def test_run_lab_passes_remembered_contract_to_native_script_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            script = root / "script" / "Deploy.s.sol"
+            script.parent.mkdir(parents=True)
+            script.write_text("contract Deploy {}", encoding="utf-8")
+            target = "0x" + "1" * 40
+            key = "0x" + "2" * 64
+            config = {
+                "target": target,
+                "target_contract": "TokenSaleContract",
+                "rpc": "http://127.0.0.1:8545",
+                "aliases": {},
+                "targets": {},
+                "abi_paths": {},
+                "wallets": {},
+                "labels": {},
+            }
+            output = io.StringIO()
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "project_tools", None), \
+                 patch.object(lk, "_lab_source_integrity_issue", return_value=None), \
+                 patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)), \
+                 patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic, \
+                 patch.object(lk, "discover_local_lab_script", return_value=str(script)), \
+                 patch.object(lk, "discover_local_lab_fixture", return_value=None), \
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk, "anvil_rpc_info", return_value={
+                     "url": "http://127.0.0.1:8545",
+                     "accounts": ["0x" + "3" * 40],
+                 }), \
+                 patch.object(lk, "_live_target_state", return_value={"status": "NOT_DEPLOYED"}), \
+                 patch.object(lk, "save_config"), \
+                 patch.object(lk.audit_context, "set_target"), \
+                 patch.object(lk, "derive_default_anvil_key", return_value=key), \
+                 patch.object(lk, "run_project_lab_script", return_value=0) as run_script, \
+                 redirect_stdout(output):
+                result = lk.run_lab(config, [])
+
+        self.assertEqual(result, 0)
+        self.assertIn("Target selection: preserving remembered contract TokenSaleContract.", output.getvalue())
+        self.assertIn("STALE TARGET", output.getvalue())
+        self.assertEqual(run_script.call_args.args[6], "TokenSaleContract")
+        heuristic.assert_not_called()
+
     def test_lab_preserves_remembered_contract_when_artifact_is_available(self):
         with patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)) as artifact, \
              patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic:
