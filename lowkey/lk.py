@@ -14914,6 +14914,7 @@ def refresh_generated_poc(config):
 def run_context(config):
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
+    _attach_shared_command_context(config, root)
     _sync_security_patterns(root)
     print("LOWKEY AUDIT CONTEXT")
     print("====================")
@@ -18506,18 +18507,25 @@ def main():
         return
 
     if command.lower() in {"cheat", "cheats", "cheatsheet"}:
-        if ai_requested:
-            stdout_capture = _TeeCapture(sys.stdout)
-            stderr_capture = _TeeCapture(sys.stderr)
-            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                result = run_cheat(sys.argv[2:])
-            ai_output = stdout_capture.getvalue() + ("\n[LOWKEY STDERR]\n" + stderr_capture.getvalue() if stderr_capture.getvalue() else "")
-        else:
+        shared_root = audit_context.foundry_project_root()
+        _attach_shared_command_context(config, shared_root)
+        stdout_capture = _TeeCapture(sys.stdout)
+        stderr_capture = _TeeCapture(sys.stderr)
+        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             result = run_cheat(sys.argv[2:])
-            ai_output = ""
+        ai_output = stdout_capture.getvalue()
+        if stderr_capture.getvalue():
+            ai_output += "\n[LOWKEY STDERR]\n" + stderr_capture.getvalue()
         footer_status = result
         if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
             footer_status = _COMMAND_STATUS
+        _record_shared_command_event(
+            shared_root,
+            command,
+            sys.argv[2:],
+            footer_status if isinstance(footer_status, int) else 0,
+            ai_output,
+        )
         _print_recommended_next_commands(command, sys.argv[2:], footer_status, config)
         if ai_requested:
             _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_output)
@@ -18547,6 +18555,10 @@ def main():
             print(f"  FIX: cd {source_repo} && bash install.sh", file=sys.stderr)
         else:
             print("  FIX: reinstall Lowkey with bash install.sh", file=sys.stderr)
+        _record_shared_command_event(
+            root, command, sys.argv[2:], 3,
+            "LOWKEY RUNTIME OUT OF SYNC: " + str(runtime.get("detail", "installed runtime verification failed")),
+        )
         return fail("Refusing to run with a mismatched Lowkey installation.", 3)
 
     auto_capture = command.lower() != "ai" and _ai_auto_mode_enabled()
