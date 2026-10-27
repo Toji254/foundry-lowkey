@@ -518,7 +518,7 @@ class AIHarnessTests(unittest.TestCase):
         rendered = ai.render_ai_recommendations(report)
         self.assertIn("did not choose a new one", note["why"])
         self.assertIn("could not confirm code exists", note["learning_point"])
-        self.assertIn("unverified", note["title"].lower())
+        self.assertIn("saved target", note["title"].lower())
         self.assertNotIn("simulated network", rendered.lower())
         self.assertNotIn("You selected", rendered)
         self.assertEqual(note["optional_command"], "")
