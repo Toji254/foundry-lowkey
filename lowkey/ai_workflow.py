@@ -179,22 +179,11 @@ def _prior_evidence_context(root: Path) -> dict[str, Any]:
                 "created_at": _clean(item.get("created_at"), 60),
                 "trust_boundary": "historical feedback only; not proof about current source or runtime state",
             })
-        try:
-            try:
-                import error_context as shared_context_store
-            except ImportError:
-                from lowkey import error_context as shared_context_store
-            shared_context = shared_context_store.read_project_context(root, max_events=6)
-        except Exception:
-            shared_context = {"events": []}
-        recent_commands = shared_context.get("events", []) if isinstance(shared_context, Mapping) else []
         return {
             "event_count": int(summary.get("event_count") or 0),
             "candidate_findings": findings,
             "historical_feedback": feedback,
-            "recent_command_events": recent_commands,
-            "recent_command_event_count": len(recent_commands) if isinstance(recent_commands, list) else 0,
-            "trust_boundary": "Historical findings, test records, command excerpts and approved lessons must be rechecked against the current source revision and current runtime; they are context, not proof.",
+            "trust_boundary": "Historical findings, test records and approved lessons must be rechecked against the current source revision and current runtime; they are context, not proof.",
         }
     except Exception as exc:
         return {
