@@ -1382,25 +1382,13 @@ independent:
 Use the matching "manual" form to switch a setting off. Use "status" to inspect it where
 available. Keep them manual when you want every model request to be explicit.
 
-UNIVERSAL COMMAND GUIDANCE
+UNIVERSAL --ai / TASK RUN
 -------------------------
   lk status --ai
-      Run the normal command, then explain its observed output, relevant risks, missing evidence, and next step.
-  lk read isAgreementValid --ai
-      Explain the actual read result and suggest what to inspect next.
-  lk send --ai
-      Keep native send behavior unchanged; guidance explains the command result and never sends a transaction itself.
-  lk test --ai
-      Interpret test output and evidence gaps; AI does not rewrite or rerun the test.
-
-MULTI-STEP INVESTIGATION
-------------------------
-  lk ai run "investigate why withdrawal reverts"
-      Build a source-grounded plan, ask before running, then execute only validated read-oriented lk commands.
-  lk ai run "investigate why withdrawal reverts" --plan-only
-      Print the plan without running any command.
-  lk ai run "investigate why withdrawal reverts" --yes
-      Approve only the allowlisted read-oriented checks; never approve tests, deployments, transactions, or file edits.
+      Explain the native result, risks and next step; native behavior stays unchanged.
+  lk ai run "investigate why withdrawal reverts" [--plan-only | --yes]
+      Build a source-grounded plan. Approval is required; execution is limited to validated read-only lk checks.
+      --plan-only prints the plan. --yes approves only those checks; no tests, file edits, deployments or transactions.
 
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
