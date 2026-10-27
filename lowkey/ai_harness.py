@@ -22,9 +22,9 @@ MAX_SOURCE_CONTEXT_BYTES = 32_000
 MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
-PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama"}
+PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama", "orcarouter", "openrouter", "nvidia"}
 PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations"}
-DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
+DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1", "orcarouter": "https://api.orcarouter.ai/v1", "openrouter": "https://openrouter.ai/api/v1", "nvidia": "https://integrate.api.nvidia.com/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
     r'''(?im)(\b[\w]*(?:api[_-]?key|secret|password|private[_-]?key|mnemonic|seed[_-]?phrase|access[_-]?token|bearer[_-]?token)\b\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^;\n,]+)'''
@@ -1262,8 +1262,11 @@ AI_HELP_GUIDE = r'''COMMAND FORMS & OPTIONS
 SETUP & CONNECTION
 ------------------
 lk ai status [--json]
-lk ai setup --provider {deepseek|gemini|openai|openai-compatible|ollama} --model MODEL
+lk ai setup
+lk ai setup --provider {deepseek|gemini|openai|openai-compatible|ollama|orcarouter|openrouter|nvidia} --model MODEL
      [--base-url URL] [--api-key-env ENV] [--timeout SECONDS] [--max-output-tokens COUNT]
+lk ai switch [PROFILE|NUMBER]
+lk ai switch list
 lk ai enable
 lk ai disable
 lk ai test
@@ -1314,9 +1317,13 @@ Manual mode is the default; these settings are independent of one another.
 
 COMMON WORKFLOWS
 ----------------
-  Configure, then test the connection:
-    lk ai setup --provider gemini --model MODEL
+  Guided setup, then switch between saved model configurations:
+    lk ai setup
+    lk ai switch
     lk ai test
+
+  Advanced setup with explicit provider/model:
+    lk ai setup --provider gemini --model MODEL
 
   Review the whole project's protocol design without starting a local lab:
     lk ai project
@@ -1570,6 +1577,351 @@ def render_human_context_preview(
     return "\n".join(lines).rstrip()
 
 
+
+def _profiles_path() -> Path:
+    """Private, user-wide index of configured model profiles; contains no API key values."""
+    return _config_home() / "ai-profiles.json"
+
+
+def _profile_id(config: Mapping[str, Any]) -> str:
+    provider = str(config.get("provider") or "provider").strip().lower()
+    model = str(config.get("model") or "model").strip()
+    base_url = str(config.get("base_url") or "").strip()
+    raw = f"{provider}|{base_url}|{model}"
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{provider}-{model}".lower()).strip("-")[:54].rstrip("-")
+    suffix = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    return f"{slug or 'model'}-{suffix}"
+
+
+def _read_model_profiles() -> dict[str, Any]:
+    value = _read_json(_profiles_path(), {"schema_version": 1, "profiles": {}, "last_used": None})
+    if not isinstance(value, dict) or value.get("schema_version") != 1 or not isinstance(value.get("profiles"), dict):
+        raise AIHarnessError("Saved AI model profiles are invalid. Back up ai-profiles.json before replacing it.")
+    clean = {}
+    for profile_id, record in value["profiles"].items():
+        if not isinstance(profile_id, str) or not isinstance(record, dict):
+            continue
+        provider = str(record.get("provider") or "").strip().lower()
+        model = str(record.get("model") or "").strip()
+        base_url = str(record.get("base_url") or "").strip()
+        if provider not in PROVIDERS or not model or not base_url:
+            continue
+        clean[profile_id] = {
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+            "api_key_env": record.get("api_key_env"),
+            "timeout_seconds": int(record.get("timeout_seconds") or DEFAULT_TIMEOUT),
+            "max_output_tokens": int(record.get("max_output_tokens") or DEFAULT_OUTPUT_TOKENS),
+            "label": str(record.get("label") or f"{provider} / {model}"),
+        }
+    return {"schema_version": 1, "profiles": clean, "last_used": value.get("last_used")}
+
+
+def _write_model_profiles(value: Mapping[str, Any]) -> None:
+    _atomic_json(_profiles_path(), value)
+
+
+def _save_model_profile(config: Mapping[str, Any]) -> str | None:
+    """Remember a provider/model/endpoint tuple without copying any credential material."""
+    provider = str(config.get("provider") or "").strip().lower()
+    model = str(config.get("model") or "").strip()
+    base_url = str(config.get("base_url") or "").strip()
+    if provider not in PROVIDERS or not model or not base_url:
+        return None
+    identity = _profile_id(config)
+    store = _read_model_profiles()
+    store["profiles"][identity] = {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_key_env": config.get("api_key_env"),
+        "timeout_seconds": int(config.get("timeout_seconds") or DEFAULT_TIMEOUT),
+        "max_output_tokens": int(config.get("max_output_tokens") or DEFAULT_OUTPUT_TOKENS),
+        "label": f"{provider} / {model}",
+    }
+    store["last_used"] = identity
+    _write_model_profiles(store)
+    return identity
+
+
+def _matching_endpoint_key_migration(provider: str, base_url: str) -> bool:
+    """Separate a previously shared compatible-provider key pool when its endpoint is known."""
+    if provider not in {"orcarouter", "openrouter", "nvidia"}:
+        return False
+    target_host = (urlparse(base_url).hostname or "").lower()
+    current = load_config()
+    source_provider = str(current.get("provider") or "").lower()
+    source_host = (urlparse(str(current.get("base_url") or "")).hostname or "").lower()
+    if target_host != source_host:
+        return False
+    allowed = {
+        "orcarouter": {"deepseek"},
+        "openrouter": {"openai-compatible"},
+        "nvidia": {"openai-compatible"},
+    }
+    if source_provider not in allowed.get(provider, set()):
+        return False
+    pools = _credentials()
+    if pools.get(provider) or not pools.get(source_provider):
+        return False
+    pools[provider] = dict(pools[source_provider])
+    _save_credentials(pools)
+    return True
+
+
+_SETUP_PRESETS = {
+    "orcarouter": {
+        "label": "OrcaRouter",
+        "base_url": DEFAULT_URLS["orcarouter"],
+        "model": "deepseek/deepseek-v4.1-flash-free",
+        "hint": "Hosted models, including free/rate-limited options.",
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "base_url": DEFAULT_URLS["openrouter"],
+        "model": "google/gemma-4-26b-a4b-it:free",
+        "hint": "One API key can access many model providers.",
+    },
+    "gemini": {
+        "label": "Google Gemini",
+        "base_url": DEFAULT_URLS["gemini"],
+        "model": "gemini-2.5-flash",
+        "hint": "Google AI Studio API; account quotas apply.",
+    },
+    "nvidia": {
+        "label": "NVIDIA",
+        "base_url": DEFAULT_URLS["nvidia"],
+        "model": "z-ai/glm-5.3-flash",
+        "hint": "NVIDIA hosted inference endpoints.",
+    },
+    "deepseek": {
+        "label": "DeepSeek direct API",
+        "base_url": DEFAULT_URLS["deepseek"],
+        "model": "deepseek-chat",
+        "hint": "Direct DeepSeek API; check provider pricing.",
+    },
+    "ollama": {
+        "label": "Ollama on this computer",
+        "base_url": DEFAULT_URLS["ollama"],
+        "model": "qwen2.5-coder",
+        "hint": "Local endpoint; Ollama must be running and the model pulled.",
+    },
+    "openai": {
+        "label": "OpenAI",
+        "base_url": DEFAULT_URLS["openai"],
+        "model": "",
+        "hint": "Direct OpenAI API; API usage may be billed.",
+    },
+    "openai-compatible": {
+        "label": "Custom OpenAI-compatible provider",
+        "base_url": "",
+        "model": "",
+        "hint": "For any service that exposes an OpenAI-compatible chat-completions API.",
+    },
+}
+
+
+def _read_prompt(prompt: str) -> str:
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise AIHarnessError("AI setup cancelled; no configuration was changed.") from exc
+
+
+def _choose_guided_provider(provider: str | None) -> tuple[str, dict[str, str]]:
+    if provider:
+        if provider not in _SETUP_PRESETS:
+            raise AIHarnessError(f"Unsupported setup provider '{provider}'. Run 'lk ai setup --help'.")
+        return provider, _SETUP_PRESETS[provider]
+    choices = [
+        ("1", "orcarouter"), ("2", "openrouter"), ("3", "gemini"),
+        ("4", "nvidia"), ("5", "deepseek"), ("6", "ollama"),
+        ("7", "openai"), ("8", "openai-compatible"),
+    ]
+    print("LOWKEY AI SETUP")
+    print("===============")
+    print("Choose the service that issued your API key:")
+    for number, name in choices:
+        preset = _SETUP_PRESETS[name]
+        print(f"  {number}. {preset['label']} — {preset['hint']}")
+    print("  0. Cancel")
+    allowed = {number: name for number, name in choices}
+    while True:
+        choice = _read_prompt("Provider [1-8, 0 to cancel]: ")
+        if choice == "0":
+            raise AIHarnessError("AI setup cancelled; no configuration was changed.")
+        if choice in allowed:
+            provider_name = allowed[choice]
+            return provider_name, _SETUP_PRESETS[provider_name]
+        print("Choose a number from 1 to 8, or 0 to cancel.")
+
+
+def _prompt_model(default_model: str) -> str:
+    if default_model:
+        value = _read_prompt(f"Model ID [{default_model}]: ")
+        return value or default_model
+    while True:
+        value = _read_prompt("Exact model ID: ")
+        if value:
+            return value
+        print("Enter the model ID shown by your provider.")
+
+
+def _run_connectivity_test(config: Mapping[str, Any]) -> None:
+    current = status(config)
+    if not current["usable"]:
+        raise AIUnavailable(f"Optional AI is unavailable ({current['reason']}).")
+    result = _send(
+        config,
+        purpose="provider_test",
+        task='Return exactly {"ok": true, "purpose": "provider_test"}.',
+        context={"probe": "connectivity only", "project_context_sent": False},
+        required_fields=("ok", "purpose"),
+    )
+    if result.get("ok") is not True or result.get("purpose") != "provider_test":
+        raise AIHarnessError("Provider failed Lowkey's fixed connectivity-test contract.")
+    print("Provider connectivity test passed. No project source was sent.")
+
+
+def _guided_setup(parsed: Any) -> int:
+    provider, preset = _choose_guided_provider(parsed.provider)
+    base_url = str(parsed.base_url or preset.get("base_url") or "").strip()
+    if not base_url:
+        base_url = _read_prompt("API base URL (must end at the API root, not /chat/completions): ")
+    model = _prompt_model(str(parsed.model or preset.get("model") or "").strip())
+    if provider == "orcarouter" and _matching_endpoint_key_migration(provider, base_url):
+        print("Found your existing OrcaRouter key and separated it from the DeepSeek key pool.")
+    elif provider in {"openrouter", "nvidia"} and _matching_endpoint_key_migration(provider, base_url):
+        print(f"Found a saved key for this exact endpoint and separated it into the {provider} key pool.")
+
+    key = None
+    api_key_env = parsed.api_key_env
+    if provider != "ollama" and not api_key_env:
+        saved = bool(_credentials().get(provider))
+        if saved:
+            reuse = _read_prompt(f"A saved {provider} API key exists. Reuse it? [Y/n]: ").lower()
+            if reuse not in {"n", "no"}:
+                print("Using the saved key; its value remains hidden.")
+            else:
+                key = getpass.getpass(f"{provider} API key (input hidden): ").strip()
+                if not key:
+                    raise AIHarnessError("No API key entered; configuration was not changed.")
+        else:
+            key = getpass.getpass(f"{preset['label']} API key (input hidden): ").strip()
+            if not key:
+                raise AIHarnessError("No API key entered; configuration was not changed.")
+
+    config = configure(
+        provider=provider,
+        model=model,
+        base_url=base_url or None,
+        api_key=key,
+        api_key_env=api_key_env,
+        timeout_seconds=parsed.timeout,
+        max_output_tokens=parsed.max_output_tokens,
+    )
+    profile_id = _save_model_profile(config)
+    mode_label = "auto" if config.get("auto_assist") else "manual"
+    print(f"Configured {preset['label']} ({config['model']}); AI mode is {mode_label}.")
+    if profile_id:
+        print(f"Saved model profile: {profile_id}")
+    if provider == "ollama":
+        print("No API key was needed for the local Ollama endpoint.")
+    print("Only a fixed connectivity probe will be sent if you choose to test now; no project source is included.")
+    choice = _read_prompt("Test connection now? [Y/n]: ").lower()
+    if choice not in {"n", "no"}:
+        try:
+            _run_connectivity_test(config)
+        except AIHarnessError as exc:
+            print(f"Connection test failed: {exc}", file=sys.stderr)
+            print("Your settings and model profile were saved. Fix the provider/model/quota, then run 'lk ai test'.", file=sys.stderr)
+            return 2
+    else:
+        print("Connection not tested. Run 'lk ai test' when ready.")
+    print("Switch between saved setups anytime with 'lk ai switch'.")
+    return 0
+
+
+def _render_model_profiles(config: Mapping[str, Any], profiles: Mapping[str, Any]) -> str:
+    current_id = _profile_id(config) if config.get("provider") and config.get("model") else None
+    lines = [
+        "LOWKEY AI MODEL PROFILES",
+        "========================",
+    ]
+    records = sorted(
+        profiles.items(),
+        key=lambda pair: (str(pair[1].get("label") or "").lower(), pair[0]),
+    )
+    if not records:
+        return "\n".join(lines + ["No saved model profiles yet. Run 'lk ai setup' to add one."])
+    lines.extend(["", "Choose a number, or use 'lk ai switch PROFILE_ID'."])
+    for index, (profile_id, record) in enumerate(records, 1):
+        active = "  [ACTIVE]" if profile_id == current_id else ""
+        lines.append(f"  {index}. {record['label']}{active}")
+        lines.append(f"     ID: {profile_id}")
+    lines.extend(["", "Profiles store provider/model settings only. API keys remain in the separate private credential store."])
+    return "\n".join(lines)
+
+
+def switch_model_profile(selector: str | None = None) -> int:
+    current = load_config()
+    _save_model_profile(current)
+    store = _read_model_profiles()
+    profiles = store["profiles"]
+    ordered = sorted(
+        profiles.items(),
+        key=lambda pair: (str(pair[1].get("label") or "").lower(), pair[0]),
+    )
+    if selector and selector.strip().lower() == "list":
+        print(_render_model_profiles(current, profiles))
+        return 0
+    if not ordered:
+        print("No saved model profiles. Run 'lk ai setup' first.", file=sys.stderr)
+        return 2
+    if selector is None:
+        print(_render_model_profiles(current, profiles))
+        raw = _read_prompt("Switch to model number (or q to cancel): ")
+        if raw.lower() in {"q", "quit", "cancel", "0"}:
+            print("Model switch cancelled.")
+            return 0
+        selector = raw
+    chosen = None
+    value = str(selector).strip()
+    if value.isdigit():
+        index = int(value)
+        if 1 <= index <= len(ordered):
+            chosen = ordered[index - 1]
+    else:
+        lowered = value.lower()
+        exact_ids = [item for item in ordered if item[0].lower() == lowered]
+        exact_models = [item for item in ordered if str(item[1].get("model") or "").lower() == lowered]
+        exact_labels = [item for item in ordered if str(item[1].get("label") or "").lower() == lowered]
+        matches = exact_ids or exact_labels or exact_models
+        if len(matches) == 1:
+            chosen = matches[0]
+    if not chosen:
+        print("No unique saved model matched that choice. Run 'lk ai switch' to see the numbered list.", file=sys.stderr)
+        return 2
+
+    profile_id, profile = chosen
+    config = load_config()
+    for key in ("provider", "model", "base_url", "api_key_env", "timeout_seconds", "max_output_tokens"):
+        config[key] = profile.get(key)
+    save_config(config)
+    store["last_used"] = profile_id
+    _write_model_profiles(store)
+    print(f"Active AI model: {profile['label']}")
+    current_status = status(config)
+    if not current_status.get("usable"):
+        print(f"Setup needs attention: {current_status.get('reason') or 'provider key unavailable'}.")
+        if profile["provider"] != "ollama":
+            print(f"Add the key with: lk ai keys add --provider {profile['provider']} --slot 1")
+    else:
+        print("Model settings selected. Run 'lk ai test' to verify the connection.")
+    return 0
+
+
 def render_ai_subcommand_help(command_parser: Any) -> str:
     """Render command-specific AI help with stable spacing and explicit option descriptions."""
     import argparse
@@ -1751,12 +2103,14 @@ def main(argv: list[str] | None = None) -> int:
     recommendations_cmd.add_argument("mode", choices=("manual", "auto", "status"), help="auto adds source-grounded AI suggestions after eligible successful commands; manual disables them; status shows the setting")
     recommendations_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON for status")
     setup = sub.add_parser("setup", help="configure a provider once")
-    setup.add_argument("--provider", choices=sorted(PROVIDERS), required=True, help="service name: deepseek, gemini, openai, openai-compatible, or ollama")
-    setup.add_argument("--model", required=True, help="exact model name available to your provider account/server")
+    setup.add_argument("--provider", choices=sorted(PROVIDERS), help="service name; omit provider/model to use the guided setup")
+    setup.add_argument("--model", help="exact model name available to your provider account/server")
     setup.add_argument("--base-url", help="custom API base URL; required in practice for openai-compatible")
     setup.add_argument("--api-key-env", help="read the key from this environment variable instead of prompting")
     setup.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help=f"request timeout in seconds (default: {DEFAULT_TIMEOUT}; allowed: 5–180)")
     setup.add_argument("--max-output-tokens", type=int, default=DEFAULT_OUTPUT_TOKENS, help=f"maximum output size requested (default: {DEFAULT_OUTPUT_TOKENS}; allowed: 128–8192)")
+    switch_cmd = sub.add_parser("switch", help="switch between model setups saved by lk ai setup")
+    switch_cmd.add_argument("profile", nargs="?", help="profile number, profile ID, exact label/model, or 'list'; omit to choose interactively")
     enable_cmd = sub.add_parser("enable", help="enable the configured extension")
     disable_cmd = sub.add_parser("disable", help="disable AI without changing native commands")
     test_cmd = sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
@@ -1822,8 +2176,10 @@ def main(argv: list[str] | None = None) -> int:
     mode.epilog = "WHEN: use manual for full control; use auto only when you accept possible provider requests and charges. Example: lk ai mode manual"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
     recommendations_cmd.epilog = "WHEN: enable only if you accept source being sent to your provider after eligible commands. Example: lk ai recommendations auto"
-    setup.description = "Configure the provider, exact model name, and optional endpoint/credential source."
-    setup.epilog = "WHEN: first setup or when changing providers/models. Setup does not test the connection. Example: lk ai setup --provider gemini --model YOUR_API_MODEL"
+    setup.description = "Run a guided provider/model setup, or pass explicit flags for advanced configuration."
+    setup.epilog = "WHEN: first setup or when adding a model. Run without arguments for the guided menu, or use --provider/--model for advanced setup. Example: lk ai setup"
+    switch_cmd.description = "Choose a previously configured provider/model without re-entering its model settings or API key."
+    switch_cmd.epilog = "WHEN: after adding two or more models. Example: lk ai switch"
     enable_cmd.description = "Enable the configured AI extension without running a review."
     enable_cmd.epilog = "WHEN: after configuring AI if it was disabled. Example: lk ai enable"
     disable_cmd.description = "Turn off the optional AI extension while keeping native Lowkey commands available."
@@ -2222,8 +2578,18 @@ def main(argv: list[str] | None = None) -> int:
                 print("AI mode: manual. A protocol review runs only when you use lk lab --ai-review.")
             return 0
         if parsed.action == "setup":
+            if not parsed.provider or not parsed.model:
+                return _guided_setup(parsed)
             if parsed.api_key_env or parsed.provider == "ollama":
                 key = None
+            elif _credentials().get(parsed.provider):
+                reuse = _read_prompt(f"A saved {parsed.provider} API key exists. Reuse it? [Y/n]: ").lower()
+                if reuse in {"n", "no"}:
+                    key = getpass.getpass(f"{parsed.provider} API key (input hidden): ").strip()
+                    if not key:
+                        raise AIHarnessError("No API key entered; configuration was not changed.")
+                else:
+                    key = None
             else:
                 key = getpass.getpass(f"{parsed.provider} API key (input hidden): ").strip()
                 if not key:
@@ -2233,10 +2599,16 @@ def main(argv: list[str] | None = None) -> int:
                 api_key_env=parsed.api_key_env, timeout_seconds=parsed.timeout,
                 max_output_tokens=parsed.max_output_tokens,
             )
+            profile_id = _save_model_profile(cfg)
             mode_label = "auto" if cfg.get("auto_assist") else "manual"
             print(f"Configured {cfg['provider']} ({cfg['model']}); AI mode is {mode_label}.")
-            print("No provider request was made. Run lk ai test to test connectivity (charges may apply).")
+            if profile_id:
+                print(f"Saved model profile: {profile_id}")
+            print("No provider request was made. Run 'lk ai test' to test connectivity (no project source is sent).")
+            print("Switch between saved setups with 'lk ai switch'.")
             return 0
+        if parsed.action == "switch":
+            return switch_model_profile(parsed.profile)
         if parsed.action in {"enable", "disable"}:
             cfg = load_config()
             if parsed.action == "enable" and not (cfg.get("provider") and cfg.get("model")):
@@ -2247,17 +2619,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if parsed.action == "test":
             cfg = load_config()
-            current = status(cfg)
-            if not current["usable"]:
-                raise AIUnavailable(f"Optional AI is unavailable ({current['reason']}).")
-            result = _send(
-                cfg, purpose="provider_test", task='Return exactly {"ok": true, "purpose": "provider_test"}.',
-                context={"probe": "connectivity only", "project_context_sent": False},
-                required_fields=("ok", "purpose"),
-            )
-            if result.get("ok") is not True or result.get("purpose") != "provider_test":
-                raise AIHarnessError("Provider failed Lowkey's fixed connectivity-test contract.")
-            print("Provider connectivity test passed. No project source was sent.")
+            _run_connectivity_test(cfg)
             return 0
         parser.print_help()
         return 2
