@@ -1,9 +1,11 @@
+import io
 import json
 import pathlib
 import stat
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -75,6 +77,58 @@ class SharedCommandContextTests(unittest.TestCase):
             self.assertEqual(build_event["command"], "build")
             self.assertIn("Unnamed return variable", build_event["diagnostic_excerpt"])
             self.assertTrue(any("Compiler warning" in signal for signal in build_event["signals"]))
+
+    def test_lk_context_displays_the_unified_project_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "project"
+            root.mkdir()
+            shared = {
+                "project_label": "project",
+                "events": [{
+                    "timestamp": "2026-10-27T03:00:00+00:00",
+                    "command": "build",
+                    "status": "completed",
+                    "exit_code": 0,
+                    "signals": ["Compiler warning: Unnamed return variable can remain unassigned."],
+                    "diagnostic_excerpt": "",
+                }],
+                "project_knowledge": {
+                    "audit_context": {
+                        "target": {"contract": "Escrow", "address": "0x" + "1" * 40},
+                        "signals": [{
+                            "id": "REENTRANCY-1", "title": "Reentrancy in withdraw",
+                            "file": "src/Escrow.sol", "line": 42, "severity": "High",
+                            "verification_status": "REVIEW", "status": "open",
+                        }],
+                    },
+                    "system_model": {
+                        "contracts": [{"name": "Escrow"}],
+                        "deployments": [{"contract": "Escrow", "address": "0x" + "2" * 40, "live": True}],
+                    },
+                    "evidence_ledger": {
+                        "event_count": 3,
+                        "findings": [{"id": "F-123", "title": "Withdrawal issue", "status": "candidate", "verified": False}],
+                    },
+                },
+            }
+            output = io.StringIO()
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "_sync_audit_context"), \
+                 patch.object(lk, "_sync_security_patterns"), \
+                 patch.object(lk.audit_context, "human_snapshot", return_value="Project snapshot"), \
+                 patch.object(lk.audit_context, "context_path", return_value=root / ".audit/context.json"), \
+                 patch.object(lk.audit_context, "events_path", return_value=root / ".audit/events.jsonl"), \
+                 patch.object(lk, "_attach_shared_command_context", return_value=shared), \
+                 redirect_stdout(output):
+                lk.run_context({})
+
+            rendered = output.getvalue()
+            self.assertIn("SHARED PROJECT KNOWLEDGE", rendered)
+            self.assertIn("Deployments:", rendered)
+            self.assertIn("REENTRANCY-1", rendered)
+            self.assertIn("F-123", rendered)
+            self.assertIn("RECENT SHARED COMMAND EVIDENCE", rendered)
+            self.assertIn("Unnamed return variable", rendered)
 
     def test_build_warnings_are_available_to_a_later_lab_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
