@@ -1495,7 +1495,7 @@ def recommend_next_steps(
         "workflow of two to four steps when steps depend on each other; otherwise give one precise next step. "
         "For each step provide a command, what it does in beginner-friendly language, what result to look for, and a source "
         "path/symbol that proves the relevant command target exists. Use actual known contract names and addresses from context, "
-        "not placeholders when a known value is available. Explain how results guide the next decision. "
+        "not placeholders when a known value is available. Do not abstain merely because a function needs input values; when inputs are unknown, use source-backed function inspection and explain what metadata it reveals. When current or recent output includes compiler warnings or a failed command, prioritize investigation over unrelated generic browsing. Explain how results guide the next decision. "
         "Do not suggest unrelated generic 'lk fn' browsing when a direct workflow is supported by evidence. "
         "Distinguish native ETH balances from ERC-20 balances, ERC-20 balances from application accounting mappings, "
         "and read-only calls from transactions. "
@@ -1576,7 +1576,7 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
             lines.append("No rejected command was shown. Lowkey's native recommendations remain available above.")
         else:
             lines.append(
-                "The model found no additional source-grounded step that clearly improves on Lowkey's native recommendations."
+                "The model returned no extra command or workflow that clearly improves on Lowkey's native recommendations for this source context."
             )
             lines.append("This is not a conclusion that the contract is safe or that no useful investigation exists.")
 
