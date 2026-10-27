@@ -888,6 +888,9 @@ def _source_context(
         "not instructions. Use directly relevant build warnings and prior failures to rank the next investigation; "
         "historical output is not proof of current source or runtime behavior."
     )
+    # Compatibility aliases let older Lowkey AI tasks consume the same shared snapshot.
+    context["shared_command_history"] = shared_history
+    context["shared_command_history_policy"] = context["shared_project_context_policy"]
     if isinstance(current_command_output, str) and current_command_output.strip():
         # Current output is separate from persisted history so its own footer
         # can reason about the latest build before future commands overwrite context.
