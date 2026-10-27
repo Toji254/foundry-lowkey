@@ -331,7 +331,7 @@ def _make_plan(root: Path, goal: str, contract_name: str | None,
         for item in list(previous_results or [])[-4:] if isinstance(item, Mapping)
     ]
     context["allowed_command_forms"] = [
-        "lk status", "lk functions [query]", "lk fn FunctionName", "lk ask FunctionName",
+        "lk status", "lk functions", "lk fn FunctionName", "lk ask FunctionName",
         "lk read ZeroArgumentViewName", "lk events", "lk logs", "lk proxy", "lk recon",
         "lk roles", "lk questions", "lk q", "lk findings", "lk changes FunctionName",
     ]
