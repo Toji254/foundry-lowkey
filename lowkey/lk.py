@@ -232,7 +232,7 @@ def _maybe_explain_error(record):
             str(record.get(key) or "")
             for key in ("error", "message", "diagnostic_excerpt")
         )
-        if re.search(r"\\bunknown Lowkey command\\b", error_text, re.IGNORECASE):
+        if re.search(r"\bunknown Lowkey command\b", error_text, re.IGNORECASE):
             # The native error already explains how to open help. When the
             # learner note is enabled and usable, it provides the one contextual
             # AI explanation; avoid printing a second, longer diagnosis for a typo.
@@ -247,7 +247,7 @@ def _maybe_explain_error(record):
                 and ai_status.get("usable")
             ):
                 return
-        print("\\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
+        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
         result = error_advisor.maybe_auto_explain(record)
         if result:
             print(result, file=sys.stderr)
