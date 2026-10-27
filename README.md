@@ -82,6 +82,30 @@ lk audit and lk audit run are intentionally separate surfaces: the former is the
 
 AI is an optional, once-configured reasoning extension for narrowly scoped tasks such as protocol interpretation and proposing test hypotheses. It does not replace Lowkey's native analyzers or run commands, edit files, sign transactions, deploy contracts, or confirm findings. Normal workflows work with AI disabled.
 
+### Universal command guidance
+
+Add `--ai` to a native command to get a separate explanation of its actual output, risks, missing evidence, and a useful next step:
+
+~~~bash
+lk status --ai
+lk read isAgreementValid --ai
+lk send --ai
+lk test --ai
+~~~
+
+The native command still runs with its normal behavior. In particular, `lk send --ai` is not a transaction safety preview; it can send if the unmodified `lk send` command would send. AI guidance is added afterward, is labeled unverified, and never executes its suggestions.
+
+`lk ai mode auto` opts into guidance after eligible complex workflows or supported failures. It requires AI to be enabled and usable; `lk ai mode manual` turns that automatic behavior off. The independent `lk ai recommendations` and `lk ai errors` settings remain separate.
+
+For a task spanning several checks, `lk ai run` makes a source-grounded plan and shows each proposed command:
+
+~~~bash
+lk ai run "investigate why withdrawal reverts" --plan-only
+lk ai run "investigate why withdrawal reverts"
+~~~
+
+Review the plan before approving execution. The current task runner only accepts a strict allowlist of read-oriented `lk` commands, executes without a shell, stops at the first failed checkpoint, and interprets the captured output. It does not run tests, modify files, switch targets/RPCs/actors, deploy, sign, or send transactions. If source evidence is insufficient, it can return no executable plan.
+
 Start with guided provider/model setup. Save multiple model configurations and switch between them without re-entering their API keys:
 
 ~~~bash
