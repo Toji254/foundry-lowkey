@@ -17682,8 +17682,8 @@ def _recommended_next_commands(command, args=None, config=None):
     return rendered
 
 
-def _print_ai_recommendations(command, native_items, config=None):
-    """Print optional model advice beside (never instead of) Lowkey's native suggestions."""
+def _print_ai_recommendations(command, native_items, config=None, args=None, result=0):
+    """Print optional learner-first advice tied to the command just attempted."""
     try:
         try:
             import ai_harness
@@ -17694,6 +17694,16 @@ def _print_ai_recommendations(command, native_items, config=None):
             return
         if not current.get("enabled") or not current.get("usable"):
             return
+
+        # Batch/raw and JSON output must stay clean. A user setting or malformed
+        # subcommand should not recursively trigger another recommendation footer.
+        raw_args = [str(item) for item in (args or [])]
+        if (
+            str(command or "").strip().lower() in {"ai", "batch", "raw"}
+            or any(item.strip().lower() in {"--json", "json"} for item in raw_args)
+        ):
+            return
+
         try:
             root = audit_context.foundry_project_root()
         except Exception:
@@ -17707,6 +17717,73 @@ def _print_ai_recommendations(command, native_items, config=None):
             contract_name = str(project_target.get("contract") or "").strip() or None
         if not contract_name and isinstance(config, dict):
             contract_name = str(config.get("target_contract") or "").strip() or None
+
+        # Reuse Lowkey's own argument redaction; command invocations can contain
+        # private-key flags or other values that must not be sent to a provider.
+        safe_args = raw_args
+        try:
+            try:
+                import ai_workflow
+            except ImportError:
+                from lowkey import ai_workflow
+            safe_args = ai_workflow._safe_arguments(raw_args)
+        except Exception:
+            safe_args = [str(value)[:160] for value in raw_args[:16]]
+
+        canonical = _canonical_help_command(command)
+        help_path = [canonical]
+        entry, resolved, unknown = _help_entry_for_path(help_path)
+        for token in safe_args:
+            children = entry.get("children", {}) if isinstance(entry, dict) else {}
+            key = HELP_ALIASES.get(str(token).strip().lower(), str(token).strip().lower())
+            if key not in children:
+                if token:
+                    unknown = key if entry and children else unknown
+                break
+            help_path.append(key)
+            entry, resolved, unknown = _help_entry_for_path(help_path)
+        entry = entry if isinstance(entry, dict) else {}
+        invocation = " ".join(["lk", str(command or "").strip(), *safe_args]).strip()[:360]
+        exit_code = result if isinstance(result, int) else getattr(result, "code", 0)
+        if not isinstance(exit_code, int):
+            exit_code = 0
+
+        # Give the model the relevant built-in help entry, not just Solidity source.
+        # This lets recommendation mode teach Lowkey even when the command failed or
+        # the project has no eligible contract source.
+        source_lines = [
+            "COMMAND CONTEXT",
+            f"Attempted invocation: {invocation}",
+            f"Resolved Lowkey help path: {'lk ' + ' '.join(resolved) if resolved else '(no exact built-in help entry)'}",
+            f"Attempted command exit code: {exit_code}",
+            "This excerpt is Lowkey's built-in command documentation and current invocation, not user contract source.",
+        ]
+        if entry:
+            source_lines.extend([
+                f"Command summary: {str(entry.get('summary') or '')[:650]}",
+                f"Command use case: {str(entry.get('use') or '')[:650]}",
+                f"Command usage: {str(entry.get('usage') or '')[:260]}",
+                f"Command example: {str(entry.get('example') or '')[:260]}",
+                "Related Lowkey commands: " + ", ".join(str(value)[:120] for value in (entry.get("related") or [])[:8]),
+                "Available subcommands: " + ", ".join(str(value)[:80] for value in list((entry.get("children") or {}).keys())[:20]),
+            ])
+        if unknown:
+            source_lines.append(f"Unknown subcommand or help segment: {str(unknown)[:100]}")
+        known_commands = sorted(str(value) for value in COMMAND_HELP)
+        source_lines.append("Known top-level Lowkey commands: " + ", ".join(known_commands[:80]))
+        command_context = {
+            "invocation": invocation,
+            "arguments": safe_args[:16],
+            "exit_code": exit_code,
+            "help_path": "lk " + " ".join(resolved) if resolved else "",
+            "summary": str(entry.get("summary") or "")[:650],
+            "use_case": str(entry.get("use") or "")[:650],
+            "example": str(entry.get("example") or "")[:260],
+            "related_commands": [str(value)[:120] for value in (entry.get("related") or [])[:8]],
+            "known_top_level_commands": known_commands[:80],
+            "unknown_subcommand": unknown,
+            "source_excerpt": "\n".join(source_lines)[:4500],
+        }
         native = [
             {"command": str(item[0]), "reason": str(item[1])}
             for item in native_items if isinstance(item, (tuple, list)) and len(item) == 2
@@ -17718,34 +17795,48 @@ def _print_ai_recommendations(command, native_items, config=None):
             native_recommendations=native,
             contract_name=contract_name,
             current_command_output=current_output,
+            command_args=[str(value) for value in safe_args],
+            command_result=exit_code,
+            lowkey_command_context=command_context,
         )
+        # Echo context metadata into the renderer without exposing private config values.
+        report["current_lowkey_command"] = {
+            "invocation": invocation,
+            "exit_code": exit_code,
+        }
         rendered = ai_harness.render_ai_recommendations(report)
         print("")
         print(rendered)
     except Exception as exc:
-        # An optional remote call must never break the native command that just succeeded.
+        # Optional advice must never break the native command that just ran.
         print(
             f"\n@ AI RECOMMENDATIONS UNAVAILABLE ({type(exc).__name__}). "
-            "Lowkey's native recommendations above remain available.",
+            "Lowkey's native command behavior remains unchanged.",
             file=sys.stderr,
         )
 
-
 def _print_recommended_next_commands(command, args=None, result=0, config=None):
-    """Render deterministic Lowkey suggestions and optional AI suggestions separately."""
+    """Render native suggestions on success and optional learning notes for any eligible attempt."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
-    if result_code not in {None, 0}:
+    canonical = _canonical_help_command(command)
+    raw_args = [str(item).strip().lower() for item in (args or [])]
+    machine_readable = any(item == "--json" or item == "json" for item in raw_args)
+    if machine_readable or canonical in {"raw", "batch", "ai"}:
         return
-    items = _recommended_next_commands(command, args, config)
-    if not items:
-        return
-    print("")
-    print("LOWKEY RECOMMENDED NEXT COMMANDS")
-    print("================================")
-    for index, (command_text, reason) in enumerate(items, 1):
-        print(f"  {index}. {command_text}")
-        print(f"     Why: {reason}")
-    _print_ai_recommendations(command, items, config)
+
+    items = []
+    if result_code in {None, 0}:
+        items = _recommended_next_commands(command, args, config)
+    if items:
+        print("")
+        print("LOWKEY RECOMMENDED NEXT COMMANDS")
+        print("================================")
+        for index, (command_text, reason) in enumerate(items, 1):
+            print(f"  {index}. {command_text}")
+            print(f"     Why: {reason}")
+    # Unlike the native task menu, the AI learning nudge is allowed after a
+    # failed/unknown command and when there is no static next-command menu.
+    _print_ai_recommendations(command, items, config, args=args, result=result_code)
 
 
 def _dispatch_command_impl(cmd,args,config,from_batch=False):
