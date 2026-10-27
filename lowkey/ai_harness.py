@@ -1393,6 +1393,9 @@ def validate_ai_recommendations(
         # deliberately reject multi-step lists: auto-recommendations are learning nudges,
         # not instructions or an autonomous task plan.
         raw_steps = item.get("steps")
+        command_value = item.get("optional_command")
+        if command_value is None:
+            command_value = item.get("command", "")
         if isinstance(raw_steps, list):
             if len(raw_steps) > 1:
                 continue
@@ -1403,10 +1406,6 @@ def validate_ai_recommendations(
                 command_value = raw_step.get("command")
                 if not what_to_notice:
                     what_to_notice = str(raw_step.get("expected_result") or raw_step.get("look_for") or "").strip()[:600]
-        else:
-            command_value = item.get("optional_command")
-            if command_value is None:
-                command_value = item.get("command", "")
         command = _safe_ai_recommendation_command(command_value) if str(command_value or "").strip() else ""
         if command_value and str(command_value).strip() and not command:
             continue
