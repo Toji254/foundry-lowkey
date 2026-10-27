@@ -284,6 +284,10 @@ class JevEngineTests(unittest.TestCase):
             questions={"probe": {
                 "type": "noul",
                 "instructions": "Does the state describe a short fixture?",
+                "criteria": {
+                    "true": "The state describes a short fixture.",
+                    "false": "The state does not describe a short fixture.",
+                },
             }},
             opener=opener,
         )
