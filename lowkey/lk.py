@@ -18848,6 +18848,7 @@ def main():
             footer_status,
             config,
         )
+    text_guidance_ran = False
     if ai_requested:
         if machine_readable_verification:
             # Preserve the machine-readable stdout contract when --ai is explicit.
@@ -18855,6 +18856,7 @@ def main():
                 _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
         else:
             _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+        text_guidance_ran = True
     elif auto_capture:
         try:
             import ai_workflow
@@ -18866,7 +18868,10 @@ def main():
                     _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
             else:
                 _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
-    if jev_active and _jev_command_eligible(command, sys.argv[2:], footer_status):
+            text_guidance_ran = True
+    # Do not spend a second model request on a result for which the user explicitly
+    # asked for text guidance or the configured automatic text helper already ran.
+    if jev_active and not text_guidance_ran and _jev_command_eligible(command, sys.argv[2:], footer_status):
         _print_jev_command_classification(command, sys.argv[2:], footer_status, ai_command_output)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
