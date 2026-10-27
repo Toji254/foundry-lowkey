@@ -572,14 +572,14 @@ class AIHarnessTests(unittest.TestCase):
                 )
 
         self.assertEqual(report["current_lowkey_command"]["exit_code"], 2)
-        self.assertEqual(report["recommendations"][0]["optional_command"], "lk --h")
+        self.assertEqual(report["recommendations"][0]["optional_command"], "")
         self.assertIn("current_command_evidence", captured["context"])
         self.assertEqual(captured["context"]["source_files"][0]["path"], "lowkey-command-reference")
         self.assertIn("Lowkey itself", captured["task"])
         rendered = ai.render_ai_recommendations(report)
         self.assertIn("Command you tried: lk no-such-command", rendered)
         self.assertIn("Lowkey reported a problem (code 2)", rendered)
-        self.assertIn("Optional experiment (not homework)", rendered)
+        self.assertNotIn("Optional experiment", rendered)
 
     def test_recommendation_allowlist_rejects_transaction_and_shell_commands(self):
         for command in (
