@@ -293,7 +293,7 @@ class AIHarnessTests(unittest.TestCase):
             self.assertEqual(ai.main(["recommendations", "status"]), 0)
         self.assertIn("MANUAL / OFF", output.getvalue())
 
-    def test_ai_recommendations_keep_only_source_grounded_read_only_commands(self):
+    def test_ai_recommendations_keep_source_grounded_notes_and_reject_unsafe_commands(self):
         context = {
             "source_files": [{
                 "path": "src/Vault.sol",
@@ -335,7 +335,11 @@ class AIHarnessTests(unittest.TestCase):
             ]
         }
         result = ai.validate_ai_recommendations(raw, context, [{"command": "lk read owner", "reason": "native"}])
-        self.assertEqual(result["recommendations"], [])
+        self.assertEqual(len(result["recommendations"]), 1)
+        # The native menu already has this command, so AI should teach the
+        # concept without duplicating the command as another recommendation.
+        self.assertEqual(result["recommendations"][0]["optional_command"], "")
+        self.assertIn("owner authorization rule", result["recommendations"][0]["learning_point"])
         raw["recommendations"] = [raw["recommendations"][0], raw["recommendations"][4]]
         result = ai.validate_ai_recommendations(raw, context, [])
         self.assertEqual(len(result["recommendations"]), 1)
