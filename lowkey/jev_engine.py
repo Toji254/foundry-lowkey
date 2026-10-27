@@ -1,7 +1,7 @@
-"""Direct TypeSafe Jev integration for structured Lowkey decisions.
+"""Jev-compatible hosted and local decision providers for Lowkey.
 
-Jev classifies evidence using typed Choice/Score/Noul questions. It is not a
-free-text chatbot and never receives authority to execute a command.
+Providers classify evidence using typed Choice/Score/Noul questions. This is not a
+free-text chatbot, and no provider receives authority to execute a command.
 """
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ def _saved_key(provider: str = "typesafe") -> str | None:
 def _api_key(provider: str | None = None) -> tuple[str | None, str | None]:
     selected = provider or load_settings()["provider"]
     if selected not in PROVIDERS:
-        raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
+        raise JevError("Jev provider must be 'jevmodel', 'typesafe', or 'jevos'.")
     if PROVIDERS[selected].get("local"):
         return None, "not required (local Jevos-v5 endpoint)"
     env_name = PROVIDERS[selected]["key_env"]
@@ -176,9 +176,14 @@ def configure(
     provider: str = "typesafe",
 ) -> dict[str, Any]:
     if provider not in PROVIDERS:
-        raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
-    if not isinstance(model, str) or not re.fullmatch(r"jev-(?:latest|preview|[0-9]+\.[0-9]+\.[0-9]+)", model):
-        raise JevError("Jev model must be jev-latest, jev-preview, or a version such as jev-1.14.0.")
+        raise JevError("Jev provider must be 'jevmodel', 'typesafe', or 'jevos'.")
+    valid_model = (
+        isinstance(model, str) and model in {"jev-latest", "jevos-v5"}
+        if provider == "jevos"
+        else isinstance(model, str) and bool(re.fullmatch(r"jev-(?:latest|preview|[0-9]+\.[0-9]+\.[0-9]+)", model))
+    )
+    if not valid_model:
+        raise JevError("Jev model must be jev-latest, jev-preview, or a version such as jev-1.14.0; Jevos accepts jev-latest or jevos-v5.")
     if type(timeout_seconds) is not int or not 5 <= timeout_seconds <= 60:
         raise JevError("Jev timeout must be an integer from 5 to 60 seconds.")
     if provider == "jevos" and api_key is not None:
