@@ -145,7 +145,8 @@ class JevAutonomyTests(unittest.TestCase):
         ai.save_config(cfg)
         observed = {}
 
-        def fake_send(**kwargs):
+        def fake_send(config, **kwargs):
+            observed["config"] = config
             observed.update(kwargs)
             return {"ok": True}
 
@@ -183,8 +184,8 @@ class JevAutonomyTests(unittest.TestCase):
         ai.save_config(cfg)
         observed = []
 
-        def fake_send(**kwargs):
-            observed.append(kwargs)
+        def fake_send(config, **kwargs):
+            observed.append({"config": config, **kwargs})
             return {"ok": True, "summary": "Same exact context and task."}
 
         request = {
@@ -211,7 +212,7 @@ class JevAutonomyTests(unittest.TestCase):
         cfg["jev_free_tier_mode"] = False
         ai.save_config(cfg)
 
-        def fake_send(**kwargs):
+        def fake_send(config, **kwargs):
             return {"ok": True}
 
         with patch.object(ai, "_send", side_effect=fake_send) as send:
