@@ -2251,8 +2251,12 @@ def main_with_jev(argv=None) -> int:
     if code == 0 and not install_requested:
         return code
 
-    budget = ai_harness.autonomy_budget_status()
-    if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
+    try:
+        budget = ai_harness.autonomy_budget_status()
+        if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
+            return code
+    except Exception:
+        # Corrupt/unavailable optional Jev state must not change the import result.
         return code
     captured = stdout_capture.getvalue()
     errors = stderr_capture.getvalue()
