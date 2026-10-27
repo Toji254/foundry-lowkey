@@ -164,6 +164,53 @@ class AIWorkflowTests(unittest.TestCase):
             self.assertIn("lk recon", rendered)
             self.assertNotIn("\\x1b", rendered)
 
+    def test_prior_project_evidence_is_bounded_and_marked_historical(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            findings = [
+                {
+                    "finding_id": f"F-{index:02d}",
+                    "title": f"Finding {index} https://user:LEDGER-PASSWORD@rpc.example.invalid/?token=LEDGER-TOKEN",
+                    "category": "access-control",
+                    "severity": "medium",
+                    "location": "src/Vault.sol:withdraw",
+                    "status": "candidate",
+                    "verified": False,
+                    "test_runs": [{
+                        "test_path": "test/Vault.t.sol",
+                        "test_name": "testWithdraw",
+                        "status": "passed",
+                        "exit_code": 0,
+                    }],
+                    "disposition": {"disposition": "needs-review", "reason": "private reviewer note"},
+                }
+                for index in range(10)
+            ]
+            with patch(
+                "lowkey.evidence_ledger.summary",
+                return_value={"event_count": 10, "findings": findings},
+            ), patch(
+                "lowkey.evidence_ledger.historical_feedback_context",
+                return_value=[{
+                    "kind": "lesson",
+                    "summary": "Recheck withdrawal accounting against current source.",
+                    "evidence_note": "Historical evidence only.",
+                    "finding_id": "F-01",
+                    "created_at": "2026-10-01T00:00:00Z",
+                }],
+            ):
+                context = workflow._prior_evidence_context(Path(temporary))
+
+        self.assertEqual(context["event_count"], 10)
+        self.assertEqual(len(context["candidate_findings"]), 8)
+        self.assertEqual(len(context["candidate_findings"][0]["recent_test_runs"]), 1)
+        self.assertEqual(context["candidate_findings"][0]["human_disposition"], "needs-review")
+        self.assertIn("historical", context["trust_boundary"].lower())
+        rendered = repr(context)
+        self.assertNotIn("LEDGER-PASSWORD", rendered)
+        self.assertNotIn("LEDGER-TOKEN", rendered)
+        self.assertNotIn("private reviewer note", rendered)
+        self.assertIn("historical feedback only", rendered)
+
     def test_run_plan_only_never_executes_commands(self):
         with tempfile.TemporaryDirectory() as temporary:
             plan = {
