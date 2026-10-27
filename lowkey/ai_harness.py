@@ -2099,7 +2099,8 @@ JEV AUTONOMY & LOCAL BUDGET GUARD
       typesafe selects the official hosted Jev API.
   lk ai jev setup --provider jevos
       Local Jevos-v5 CPU model at 127.0.0.1:8017; no key or hosted-budget usage.
-  lk ai jev test / on / off / status / remove-key
+  lk ai jev test / lk ai jev on [options]
+  lk ai jev off / lk ai jev status / lk ai jev remove-key
       test sends a fixed source-free probe; status is local-only; Jev never executes suggestions.
       on flags: --tier guarded|standard, --daily-limit N, --with-text-ai.
       Hosted guard: 5 attempts/day; JevModel cap: 7,500 request bytes.
