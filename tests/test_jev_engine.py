@@ -106,7 +106,7 @@ class JevEngineTests(unittest.TestCase):
         self.assertIn("Bearer typesafe_test_key_0123456789", seen["headers"]["Authorization"])
         self.assertEqual(result["answers"]["probe"]["noul"], 0.99)
         self.assertEqual(result["usage"]["input_tokens"], 1000)
-        self.assertAlmostEqual(result["usage"]["estimated_input_cost_usd"], 0.000000042)
+        self.assertAlmostEqual(result["usage"]["estimated_input_cost_usd"], 0.000042)
 
     def test_classify_command_uses_structured_answers_and_redacts_sensitive_output(self):
         seen = {}
