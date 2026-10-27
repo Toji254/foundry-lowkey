@@ -18342,135 +18342,6 @@ def _record_shared_command_event(project_root, cmd, args, exit_code, output):
     return None
 
 
-def dispatch_command(cmd, args, config, from_batch=False):
-    """Dispatch a command, capture bounded output, and share project evidence.
-
-    Stdout is teed rather than swallowed, so interactive prompts and normal
-    command output remain visible. Every command contributes bounded evidence
-    to a private project-scoped history before an optional AI diagnosis runs.
-    """
-    status_before = _COMMAND_STATUS
-    # Attach the same recent project evidence to every command handler before
-    # it runs, not just to commands that later request AI advice.
-    _attach_shared_command_context(config)
-    captured_stdout = _TeeCapture(sys.stdout)
-    captured_stderr = io.StringIO()
-    try:
-        with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
-            result = _dispatch_command_impl(cmd, args, config, from_batch=from_batch)
-    except SystemExit as exc:
-        # A few commands intentionally exit from inside their handler. Do not
-        # discard diagnostics just because the handler uses SystemExit.
-        diagnostic = captured_stderr.getvalue()
-        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
-        root = None
-        try:
-            root = audit_context.foundry_project_root()
-        except Exception:
-            root = Path.cwd()
-        current_output = captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else "")
-        if isinstance(config, dict):
-            config["_last_command_output"] = current_output[-24000:]
-        _record_shared_command_event(
-            root, cmd, args, code,
-            current_output,
-        )
-        _attach_shared_command_context(config, root)
-        if diagnostic:
-            code = exc.code if isinstance(exc.code, int) and exc.code else 2
-            if _is_error_diagnostic(diagnostic):
-                rendered = (
-                    diagnostic.strip()
-                    if _has_standard_error_shape(diagnostic)
-                    else _format_cli_error(
-                        diagnostic.strip(),
-                        code=code,
-                        command=cmd,
-                        config=config,
-                        source="lowkey",
-                    )
-                )
-                print(_ensure_error_context(rendered, cmd, code), file=sys.stderr)
-                record_status(code)
-                record = _record_last_error(rendered, code=code, source="dispatcher")
-                _maybe_explain_error(record)
-            else:
-                sys.stderr.write(diagnostic)
-        raise
-
-    diagnostic = captured_stderr.getvalue()
-    returned_code = result if isinstance(result, int) else getattr(result, "code", None)
-    if returned_code is None and _COMMAND_STATUS != status_before and _COMMAND_STATUS != 0:
-        returned_code = _COMMAND_STATUS
-
-    has_error_text = _is_error_diagnostic(diagnostic)
-    is_failure = (isinstance(returned_code, int) and returned_code != 0) or has_error_text
-    root = None
-    try:
-        root = audit_context.foundry_project_root()
-    except Exception:
-        root = Path.cwd()
-    event_code = returned_code if isinstance(returned_code, int) else (2 if is_failure else 0)
-    event_output = captured_stdout.getvalue()
-    if diagnostic:
-        event_output += "\n[LOWKEY STDERR]\n" + diagnostic
-    native_output = getattr(result, "output", None)
-    if native_output is None:
-        native_output = getattr(result, "text", None)
-    if native_output:
-        native_output = str(native_output)
-        if native_output not in event_output:
-            event_output += "\n[LOWKEY RESULT OUTPUT]\n" + native_output
-    # Make this command's own output available to its immediate AI footer.
-    # save_config excludes this transient underscore-prefixed field.
-    if isinstance(config, dict):
-        config["_last_command_output"] = event_output[-24000:]
-    _record_shared_command_event(root, cmd, args, event_code, event_output)
-    _attach_shared_command_context(config, root)
-
-    if not is_failure:
-        if diagnostic:
-            sys.stderr.write(diagnostic)
-        return result
-
-    error_code = returned_code if isinstance(returned_code, int) and returned_code != 0 else 2
-    recorded_text = diagnostic.strip() or getattr(result, "output", None) or f"Command returned exit code {error_code} without detailed diagnostic output."
-    record = _record_last_error(recorded_text, code=error_code, source="dispatcher")
-    if diagnostic.strip():
-        rendered = (
-            diagnostic.strip()
-            if _has_standard_error_shape(diagnostic)
-            else _format_cli_error(
-                diagnostic.strip(),
-                code=error_code,
-                command=cmd,
-                config=config,
-                source="lowkey",
-            )
-        )
-        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
-    else:
-        rendered = _format_cli_error(
-            (
-                f"Command returned exit code {error_code}; no Python-level stderr was captured. "
-                "An external tool may have written its detailed diagnostic directly to the terminal."
-            ),
-            code=error_code,
-            command=cmd,
-            config=config,
-            source="lowkey",
-        )
-        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
-
-    # Keep the primary failure first in the terminal output. Optional AI
-    # explanations are secondary context and must never obscure the Error line.
-    _maybe_explain_error(record)
-    record_status(error_code)
-    if isinstance(returned_code, int) and returned_code != 0:
-        return result
-    return error_code
-
-
 def _running_from_source_checkout() -> bool:
     """Whether this CLI is running from a recognized Lowkey source checkout."""
     try:
@@ -18858,6 +18729,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
             root, cmd, args, code,
             current_output,
         )
+        _attach_shared_command_context(config, root)
         if diagnostic:
             code = exc.code if isinstance(exc.code, int) and exc.code else 2
             if _is_error_diagnostic(diagnostic):
@@ -18908,6 +18780,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
     if isinstance(config, dict):
         config["_last_command_output"] = event_output[-24000:]
     _record_shared_command_event(root, cmd, args, event_code, event_output)
+    _attach_shared_command_context(config, root)
 
     if not is_failure:
         if diagnostic:
