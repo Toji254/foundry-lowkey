@@ -17733,6 +17733,35 @@ def _print_ai_recommendations(command, native_items, config=None, args=None, res
         ):
             return
 
+        canonical = _canonical_help_command(command)
+        exit_code = result if isinstance(result, int) else getattr(result, "code", 0)
+        if not isinstance(exit_code, int):
+            exit_code = 0
+        if current.get("jev_autonomous") and current.get("jev_free_tier_mode"):
+            # The master Jev mode is deliberately selective on a free account:
+            # failures are handled by the automatic error adviser, and workflows
+            # receiving command guidance should not pay for a second AI footer.
+            if exit_code != 0:
+                return
+            try:
+                import ai_workflow as _jev_workflow
+            except ImportError:
+                from lowkey import ai_workflow as _jev_workflow
+            if _jev_workflow.should_auto_guide(command, raw_args, exit_code, current):
+                return
+            # Only high-value learning/audit decisions receive the additional
+            # recommendation note in guarded Jev mode. Routine read/balance/
+            # receipt/ABI operations and state-changing commands are excluded.
+            free_tier_recommendation_commands = {
+                "ask", "functions", "findings", "focus",
+            }
+            if canonical not in free_tier_recommendation_commands:
+                return
+        # Once the local free-tier guard is exhausted, stop background calls quietly.
+        # Explicit AI requests still reach the provider guard and get an actionable error.
+        if current.get("jev_free_tier_mode") and int(current.get("jev_calls_remaining") or 0) <= 0:
+            return
+
         try:
             root = audit_context.foundry_project_root()
         except Exception:
