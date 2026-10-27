@@ -19158,6 +19158,14 @@ def _safe_main() -> int:
             source="runtime",
         )
         print(formatted_error, file=sys.stderr)
+        if root:
+            _record_shared_command_event(
+                root,
+                sys.argv[1] if len(sys.argv) > 1 else "runtime",
+                sys.argv[2:] if len(sys.argv) > 2 else [],
+                2,
+                formatted_error,
+            )
         record = _record_last_error(formatted_error, code=2, source="runtime")
         _maybe_explain_error(record)
         if root:
