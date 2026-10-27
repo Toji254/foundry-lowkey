@@ -46,7 +46,7 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
         self.assertIn("1. lk functions", rendered)
         self.assertIn("Why: List contract functions.", rendered)
-        ai_footer.assert_called_once_with("status", native, {})
+        ai_footer.assert_called_once_with("status", native, {}, args=[], result=0)
 
     def test_named_actor_resolves_for_address_argument(self):
         alice = "0x" + "1" * 40
