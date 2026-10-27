@@ -17766,7 +17766,12 @@ def _print_ai_recommendations(command, native_items, config=None, args=None, res
             free_tier_recommendation_commands = {
                 "ask", "functions", "findings", "focus",
             }
-            if canonical not in free_tier_recommendation_commands:
+            q_learning_action = bool(raw_args) and raw_args[0].strip().lower() in {
+                "why", "next", "evidence", "path",
+            }
+            if canonical not in free_tier_recommendation_commands and not (
+                canonical == "q" and q_learning_action
+            ):
                 return
         # Once the local free-tier guard is exhausted, stop background calls quietly.
         # Explicit AI requests still reach the provider guard and get an actionable error.
