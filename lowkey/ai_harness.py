@@ -1358,7 +1358,7 @@ REVIEW & EVIDENCE
 AUTOMATION SETTINGS
 -------------------
   lk ai mode {manual|auto}
-      Control complexity-triggered protocol reviews, chiefly in lk lab.
+      Enable automatic guidance for eligible workflows; lab can also request complexity-triggered review.
       Example: lk ai mode auto
 
   lk ai recommendations {status|auto|manual}
@@ -1373,7 +1373,7 @@ AUTOMATION SETTINGS
 WHAT DOES "AUTO" MEAN?
 ----------------------
 auto is a value after a setting command, not a standalone command. Settings are independent:
-  lk ai mode auto             Guide eligible complex workflows.
+  lk ai mode auto             Guide eligible command results and supported failures.
   lk ai recommendations auto  Add source-cited suggestions after success.
   lk ai errors auto           Explain supported failures without rerunning.
 Use "manual" to switch off; "status" shows the setting. Automatic requests may send selected source/error context and incur charges.
@@ -2684,7 +2684,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg["auto_assist"] = parsed.value == "auto"
             save_config(cfg)
             if cfg["auto_assist"]:
-                print("AI mode: auto. Eligible complex workflows and supported failures may receive AI guidance.")
+                print("AI mode: auto. Eligible audit/test workflows and supported failures may receive AI guidance.")
                 print("Native commands keep their existing behavior; AI suggestions are never executed.")
                 print("Relevant command output and selected redacted source may be sent to the provider; charges may apply.")
             else:
