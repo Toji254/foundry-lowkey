@@ -3366,6 +3366,7 @@ contract Pool {
             output = io.StringIO()
             with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
                  patch.object(lk, "project_tools", None), \
+                 patch.object(lk, "bootstrap_project", return_value=0), \
                  patch.object(lk, "_lab_source_integrity_issue", return_value=None), \
                  patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)), \
                  patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic, \
