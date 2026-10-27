@@ -694,6 +694,15 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Run lk --help for the command list.", rendered)
         self.assertNotIn("Run lk no-such-command --h", rendered)
 
+    def test_unknown_command_does_not_print_stale_generic_help_hint(self):
+        config = lk.fresh_config()
+        stream = io.StringIO()
+        with patch("sys.stderr", stream):
+            result = lk.dispatch_command("no-such-command", [], config)
+        self.assertEqual(result, 2)
+        self.assertIn("unknown Lowkey command", stream.getvalue())
+        self.assertNotIn("lk <command> --h", stream.getvalue())
+
     def test_unknown_command_skips_duplicate_error_ai_when_learning_note_is_ready(self):
         fake_context = types.ModuleType("error_context")
         fake_context.auto_error_explain_enabled = lambda: True
