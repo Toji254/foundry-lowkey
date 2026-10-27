@@ -228,6 +228,17 @@ def _maybe_explain_error(record):
             from lowkey import error_context, error_advisor
         if not error_context.auto_error_explain_enabled():
             return
+        try:
+            import ai_harness
+        except ImportError:
+            from lowkey import ai_harness
+        ai_status = ai_harness.status()
+        if (
+            ai_status.get("jev_free_tier_mode")
+            and int(ai_status.get("jev_calls_remaining") or 0) <= 0
+        ):
+            # Do not repeatedly call an exhausted free-tier provider on every failure.
+            return
         error_text = " ".join(
             str(record.get(key) or "")
             for key in ("error", "message", "diagnostic_excerpt")
