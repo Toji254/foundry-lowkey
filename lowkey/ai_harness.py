@@ -3272,12 +3272,12 @@ def main(argv: list[str] | None = None) -> int:
             save_config(cfg)
             if cfg["auto_recommendations"]:
                 print("AI recommendations: auto. Lowkey's native next-command list stays separate and unchanged.")
-                print("After eligible successful commands, Lowkey may send selected, redacted contract source and its native suggestions to the configured provider; charges may apply.")
-                print("AI suggestions are read-only command hints. Lowkey will not execute them.")
+                print("After eligible command attempts, including failures or commands without a native menu, Lowkey may send selected source, the attempted command and redacted output to the configured provider; charges may apply.")
+                print("AI output is an optional Lowkey learning note. At most one safe experiment may be suggested; Lowkey never executes it.")
             else:
                 print("AI recommendations: MANUAL / OFF.")
                 print("Lowkey will keep showing its native next-command suggestions.")
-                print("No automatic AI recommendation requests will be made.")
+                print("No automatic AI learning-note requests will be made.")
             return 0
         if parsed.action == "mode":
             cfg = load_config()
