@@ -234,11 +234,16 @@ def record_command_event(
         return None
     try:
         path, root = _project_context_path(project_root)
+        private_root = state_dir()
+        projects_dir = private_root / "projects"
         path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(path.parent, 0o700)
-        except OSError:
-            pass
+        # All directory levels containing project identities/history are private,
+        # not just the final hashed project directory.
+        for directory in (private_root, projects_dir, path.parent):
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
 
         excerpt = _diagnostic_excerpt(output).replace(str(root), ".")
         signals = [item.replace(str(root), ".") for item in _event_signals(output)]
