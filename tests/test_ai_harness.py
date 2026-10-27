@@ -88,9 +88,22 @@ class AIHarnessTests(unittest.TestCase):
             "lk ai recommendations auto",
             "lk ai errors auto",
             "auto is a value after a setting command",
+            "AI INSIDE EXISTING LK WORKFLOWS",
+            "lk lab Vault --ai-review",
             "Use --json only on commands that list it",
         ):
             self.assertIn(expected, help_text)
+
+    def test_top_level_help_makes_lab_ai_review_flag_discoverable(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["--h"]), 0)
+        rendered = output.getvalue()
+        self.assertIn("AI INSIDE EXISTING LK WORKFLOWS", rendered)
+        self.assertIn("lk lab Vault --ai-review", rendered)
+        self.assertIn("lk ai mode manual", rendered)
+        self.assertIn("lk ai mode auto", rendered)
+        self.assertIn("It does not choose", rendered)
 
     def test_auto_is_not_a_top_level_command_and_help_alias_does_not_hide_the_error(self):
         for args in (["auto", "--h"], ["auto", "--help"]):
