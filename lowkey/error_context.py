@@ -134,11 +134,11 @@ def _redact_diagnostic_output(value: Any, limit: int = 24000) -> str:
     """Redact secrets before selecting bounded, useful command observations."""
     text = redact(value, limit=limit)
     text = re.sub(
-        r"(?i)(--(?:private-key|mnemonic|seed(?:-phrase)?|password|api-key|token|secret|authorization|bearer-token)(?:=|\\s+))\\S+",
-        r"\\1[REDACTED]",
+        r"(?i)(--(?:private-key|mnemonic|seed(?:-phrase)?|password|api-key|token|secret|authorization|bearer-token)(?:=|\s+))\S+",
+        r"\1[REDACTED]",
         text,
     )
-    text = re.sub(r"\\b0x[0-9a-fA-F]{64}\\b", "[REDACTED PRIVATE KEY OR HASH]", text)
+    text = re.sub(r"\b0x[0-9a-fA-F]{64}\b", "[REDACTED PRIVATE KEY OR HASH]", text)
     return text
 
 
@@ -150,12 +150,12 @@ def _diagnostic_excerpt(output: Any, limit: int = 6000) -> str:
         return ""
 
     signal = re.compile(
-        r"warning\\s*\\(\\d+\\)|\\bwarning:|\\berror\\s*\\(\\d+\\)|\\berror:|"
-        r"compiler run|build diagnostics|build failure|reason\\s*:|"
+        r"warning\s*\(\d+\)|\bwarning:|\berror\s*\(\d+\)|\berror:|"
+        r"compiler run|build diagnostics|build failure|reason\s*:|"
         r"unnamed return|unused local|return variable|"
         r"could not identify|no .*target|target discovery|deployment|deployed to|"
-        r"contract address|broadcast|script/[^\\s]+\\.sol|src/[^\\s]+\\.sol|"
-        r"\\.sol:\\d+|lowkey local audit lab|lowkey build|"
+        r"contract address|broadcast|script/[^\s]+\.sol|src/[^\s]+\.sol|"
+        r"\.sol:\d+|lowkey local audit lab|lowkey build|"
         r"result: review needed|failed|reverted|connection refused|chain id",
         re.IGNORECASE,
     )
@@ -174,12 +174,12 @@ def _diagnostic_excerpt(output: Any, limit: int = 6000) -> str:
         if not line:
             continue
         line = line[:600]
-        addition = line + "\\n"
+        addition = line + "\n"
         if size + len(addition) > limit:
             break
         parts.append(line)
         size += len(addition)
-    return "\\n".join(parts)[-limit:]
+    return "\n".join(parts)[-limit:]
 
 
 def _event_signals(output: Any) -> list[str]:
@@ -190,15 +190,15 @@ def _event_signals(output: Any) -> list[str]:
 
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if re.search(r"warning\\s*\\(\\d+\\)|\\bwarning:", stripped, re.IGNORECASE):
+        if re.search(r"warning\s*\(\d+\)|\bwarning:", stripped, re.IGNORECASE):
             location = ""
             for follow in lines[index + 1:index + 5]:
-                match = re.search(r"([A-Za-z0-9_./-]+\\.sol:\\d+(?::\\d+)?)", follow)
+                match = re.search(r"([A-Za-z0-9_./-]+\.sol:\d+(?::\d+)?)", follow)
                 if match:
                     location = match.group(1)
                     break
             signals.append(("Compiler warning: " + stripped + (f" ({location})" if location else ""))[:500])
-        elif re.search(r"error\\s*\\(\\d+\\)|\\berror:", stripped, re.IGNORECASE):
+        elif re.search(r"error\s*\(\d+\)|\berror:", stripped, re.IGNORECASE):
             signals.append(("Compiler/runtime error: " + stripped)[:500])
         if len(signals) >= 10:
             break
@@ -278,7 +278,7 @@ def record_command_event(
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, sort_keys=True)
-                handle.write("\\n")
+                handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, path)
