@@ -239,14 +239,15 @@ def record_command_event(
         except OSError:
             pass
 
-        excerpt = _diagnostic_excerpt(output)
+        excerpt = _diagnostic_excerpt(output).replace(str(root), ".")
+        signals = [item.replace(str(root), ".") for item in _event_signals(output)]
         event = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "command": _safe_command(command)[:160],
             "exit_code": exit_code if isinstance(exit_code, int) else None,
             "status": "failed" if isinstance(exit_code, int) and exit_code != 0 else "completed",
             "source": re.sub(r"[^A-Za-z0-9_.-]", "", str(source or "dispatcher"))[:40],
-            "signals": _event_signals(output),
+            "signals": signals,
             "diagnostic_excerpt": excerpt,
         }
 
