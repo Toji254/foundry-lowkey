@@ -1372,14 +1372,11 @@ AUTOMATION SETTINGS
 
 WHAT DOES "AUTO" MEAN?
 ----------------------
-auto is a value after a setting command, not a standalone command. Settings are
-independent:
-  lk ai mode auto             Complexity-triggered protocol reviews on eligible workflows.
-  lk ai recommendations auto  Extra suggestions after eligible successful commands.
-  lk ai errors auto           Explanations after supported routed failures.
-
-Use the matching "manual" form to switch a setting off. Use "status" to inspect it where
-available. Keep them manual when you want every model request to be explicit.
+auto is a value after a setting command, not a standalone command. Settings are independent:
+  lk ai mode auto             Guide eligible complex workflows.
+  lk ai recommendations auto  Add source-cited suggestions after success.
+  lk ai errors auto           Explain supported failures without rerunning.
+Use "manual" to switch off; "status" shows the setting. Automatic requests may send selected source/error context and incur charges.
 
 UNIVERSAL --ai / TASK RUN
 -------------------------
@@ -1392,27 +1389,24 @@ UNIVERSAL --ai / TASK RUN
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
   lk lab Vault --ai-review
-      Ask for a protocol review before normal lab setup continues. It does not choose
-      targets, deploy, or run tests; the review is unverified.
+      Request an unverified review. It does not choose targets, deploy or test.
   lk ai mode manual
-      Keep reviews on-demand; use --ai-review when you want a review in the lab.
+      Reviews run only when requested (--ai-review).
   lk ai mode auto
-      Let local complexity checks request a review for eligible labs. Simple projects
-      may not trigger a request.
+      Complexity checks may request reviews for eligible labs.
   lk ai recommendations auto
-      Add AI suggestions alongside Lowkey's native next-command menu.
+      Add source-cited suggestions beside native next steps.
   lk ai errors auto
-      Explain supported failures after they happen; this does not rerun the command.
+      Explain supported failures without rerunning commands.
 
 OPTIONS / MODES
 ---------------
-  --root DIR       Select a project folder; normally run lk from inside the project.
-  --contract NAME  Prioritize source related to a contract; preview what was selected.
-  --show-context   Print selected context readably (local-only).
-  --json-context   Print selected context as JSON (local-only).
-  --json           Print structured output on commands that list this option.
-  --run            On lk ai verify only, explicitly execute the selected existing test.
-  status           A value accepted by some setting commands, not a global flag.
+  --root DIR       Project folder (default: current directory).
+  --contract NAME  Prioritize source matching a contract.
+  --show-context / --json-context  Inspect redacted context locally.
+  --json           Structured output only where listed.
+  --run            Only on lk ai verify; executes the selected existing test.
+  status           A setting value, not a global flag.
 
 COMMON WORKFLOWS
 ----------------
