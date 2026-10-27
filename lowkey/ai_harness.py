@@ -1570,6 +1570,136 @@ def render_human_context_preview(
     return "\n".join(lines).rstrip()
 
 
+def render_ai_subcommand_help(command_parser: Any) -> str:
+    """Render command-specific AI help with stable spacing and explicit option descriptions."""
+    import argparse
+    import textwrap
+
+    width = 78
+
+    def child_parser_action(value: Any) -> Any:
+        return next(
+            (
+                action for action in getattr(value, "_actions", [])
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+
+    def value_label(action: Any) -> str:
+        """Format the value accepted by an action without relying on argparse alignment."""
+        if action.nargs == 0:
+            return ""
+        metavar = action.metavar
+        if isinstance(metavar, tuple):
+            label = " ".join(str(item) for item in metavar)
+        elif metavar:
+            label = str(metavar)
+        elif action.choices is not None:
+            label = "{" + ",".join(str(item) for item in action.choices) + "}"
+        else:
+            label = str(action.dest or "VALUE").upper()
+
+        if action.nargs == "?":
+            return f"[{label}]"
+        if action.nargs == "*":
+            return f"[{label} ...]"
+        if action.nargs == "+":
+            return f"{label} [{label} ...]"
+        if isinstance(action.nargs, int) and action.nargs > 1:
+            return " ".join(label for _ in range(action.nargs))
+        return label
+
+    def usage_token(action: Any) -> str:
+        if action.option_strings:
+            label = ", ".join(action.option_strings)
+            value = value_label(action)
+            if value:
+                label += " " + value
+            if action.required:
+                return label
+            return "[" + label + "]"
+
+        label = str(action.metavar or action.dest or "ARGUMENT")
+        if action.choices is not None and action.metavar is None:
+            label += " {" + ",".join(str(item) for item in action.choices) + "}"
+        if action.nargs in ("?", "*"):
+            return "[" + label + ( " ..." if action.nargs == "*" else "") + "]"
+        if action.nargs == "+":
+            return label + " [" + label + " ...]"
+        if isinstance(action.nargs, int) and action.nargs > 1:
+            return " ".join(label for _ in range(action.nargs))
+        return label
+
+    actions = list(getattr(command_parser, "_actions", []))
+    child_action = child_parser_action(command_parser)
+    usage_tokens = []
+    for action in actions:
+        if action is child_action:
+            usage_tokens.append("[COMMAND]")
+        elif action.option_strings or action.dest != "help":
+            usage_tokens.append(usage_token(action))
+    usage = command_parser.prog
+    if usage_tokens:
+        usage += " " + " ".join(usage_tokens)
+
+    heading = f"LOWKEY HELP  •  {command_parser.prog}"
+    lines = [heading, "=" * min(width, max(heading_length := len(heading), 24)), ""]
+
+    description = (getattr(command_parser, "description", None) or "").strip()
+    if description:
+        lines.extend(["WHAT THIS COMMAND DOES", textwrap.fill(description, width=width, initial_indent="  ", subsequent_indent="  "), ""])
+
+    lines.extend(["USAGE", textwrap.fill(usage, width=width, initial_indent="  ", subsequent_indent="       "), ""])
+
+    option_actions = [
+        action for action in actions
+        if action is not child_action
+        and not (getattr(action, "help", None) == argparse.SUPPRESS)
+    ]
+    if option_actions:
+        lines.append("OPTIONS & ARGUMENTS")
+        for action in option_actions:
+            if action.option_strings:
+                label = ", ".join(action.option_strings)
+                value = value_label(action)
+                if value:
+                    label += " " + value
+            else:
+                label = str(action.metavar or action.dest or "ARGUMENT")
+                if action.choices is not None and action.metavar is None:
+                    label += " {" + ",".join(str(item) for item in action.choices) + "}"
+                if action.nargs in ("?", "*"):
+                    label = "[" + label + ( " ..." if action.nargs == "*" else "") + "]"
+                elif action.nargs == "+":
+                    label += " [" + label + " ...]"
+                elif isinstance(action.nargs, int) and action.nargs > 1:
+                    label = " ".join(label for _ in range(action.nargs))
+
+            lines.append("  " + label)
+            help_text = (getattr(action, "help", None) or "").strip()
+            if help_text and help_text != argparse.SUPPRESS:
+                lines.append(textwrap.fill(help_text, width=width, initial_indent="      ", subsequent_indent="      "))
+        lines.append("")
+
+    if child_action is not None and getattr(child_action, "choices", None):
+        lines.extend(["COMMANDS"])
+        for name, child in child_action.choices.items():
+            child_description = (getattr(child, "description", None) or "").strip()
+            if not child_description:
+                child_description = (getattr(child, "_lowkey_help", None) or "").strip()
+            lines.append(f"  {name}")
+            if child_description:
+                lines.append(textwrap.fill(child_description, width=width, initial_indent="      ", subsequent_indent="      "))
+        lines.append("")
+
+    epilog = (getattr(command_parser, "epilog", None) or "").strip()
+    if epilog:
+        lines.extend(["WHEN / EXAMPLES", textwrap.fill(epilog, width=width, initial_indent="  ", subsequent_indent="  "), ""])
+
+    return "\n".join(lines).rstrip()
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -1762,6 +1892,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: unknown 'lk ai' command '{args[0]}'.", file=sys.stderr)
             print("Run 'lk ai --help' to see available commands.", file=sys.stderr)
         return 2
+
+    if any(value in {"-h", "--help"} for value in args):
+        command_parser = parser
+        for value in args:
+            if value in {"-h", "--help"}:
+                break
+            nested = next(
+                (
+                    action for action in getattr(command_parser, "_actions", [])
+                    if action.__class__.__name__ == "_SubParsersAction"
+                ),
+                None,
+            )
+            choices = getattr(nested, "choices", {}) if nested is not None else {}
+            if value in choices:
+                command_parser = choices[value]
+        print(render_ai_subcommand_help(command_parser))
+        raise SystemExit(0)
 
     if len(args) == 1 and args[0] in {"mode", "recommendations", "errors"}:
         print(render_ai_setting_help(args[0]))
