@@ -1924,7 +1924,9 @@ def switch_model_profile(selector: str | None = None) -> int:
     _write_model_profiles(store)
     print(f"Active AI model: {profile['label']}")
     current_status = status(config)
-    if not current_status.get("usable"):
+    if not config.get("enabled"):
+        print("The model is selected, but AI is disabled. Run 'lk ai enable' when you want to use it.")
+    elif not current_status.get("usable"):
         print(f"Setup needs attention: {current_status.get('reason') or 'provider key unavailable'}.")
         if profile["provider"] != "ollama":
             print(f"Add the key with: lk ai keys add --provider {profile['provider']} --slot 1")
