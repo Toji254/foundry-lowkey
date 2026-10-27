@@ -976,7 +976,7 @@ class CommandHelpTests(unittest.TestCase):
         with patch.object(lk, "_print_ai_recommendations") as ai_footer, redirect_stdout(output):
             lk._print_recommended_next_commands("functions", [], result=1)
         self.assertEqual(output.getvalue(), "")
-        ai_footer.assert_called_once_with("functions", [], None, args=None, result=1)
+        ai_footer.assert_called_once_with("functions", [], None, args=[], result=1)
 
     def test_recommendation_footer_renders_for_successful_commands(self):
         previous_status = lk._COMMAND_STATUS
