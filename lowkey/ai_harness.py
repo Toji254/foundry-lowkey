@@ -1370,6 +1370,8 @@ AI INSIDE EXISTING LK WORKFLOWS
   lk lab Vault --ai-review
       Ask for a protocol review before normal lab setup continues. It does not choose
       targets, deploy, or run tests; the review is unverified.
+  lk ai mode manual
+      Keep reviews on-demand; use --ai-review when you want a review in the lab.
   lk ai mode auto
       Let local complexity checks request a review for eligible labs. Simple projects
       may not trigger a request.
