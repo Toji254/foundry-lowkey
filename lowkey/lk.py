@@ -18802,6 +18802,9 @@ def dispatch_command(cmd, args, config, from_batch=False):
     to a private project-scoped history before an optional AI diagnosis runs.
     """
     status_before = _COMMAND_STATUS
+    # Reuse prior evidence before this command runs; the final dispatcher wrapper
+    # is the single execution path used by native CLI commands.
+    _attach_shared_command_context(config)
     captured_stdout = _TeeCapture(sys.stdout)
     captured_stderr = io.StringIO()
     try:
@@ -18859,8 +18862,13 @@ def dispatch_command(cmd, args, config, from_batch=False):
     event_output = captured_stdout.getvalue()
     if diagnostic:
         event_output += "\n[LOWKEY STDERR]\n" + diagnostic
-    if not event_output and getattr(result, "output", None):
-        event_output = str(result.output)
+    native_output = getattr(result, "output", None)
+    if native_output is None:
+        native_output = getattr(result, "text", None)
+    if native_output:
+        native_output = str(native_output)
+        if native_output not in event_output:
+            event_output += "\n[LOWKEY RESULT OUTPUT]\n" + native_output
     _record_shared_command_event(root, cmd, args, event_code, event_output)
 
     if not is_failure:
