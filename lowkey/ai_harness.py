@@ -1644,7 +1644,7 @@ def render_ai_subcommand_help(command_parser: Any) -> str:
         usage += " " + " ".join(usage_tokens)
 
     heading = f"LOWKEY HELP  •  {command_parser.prog}"
-    lines = [heading, "=" * min(width, max(heading_length := len(heading), 24)), ""]
+    lines = [heading, "=" * min(width, max(len(heading), 24)), ""]
 
     description = (getattr(command_parser, "description", None) or "").strip()
     if description:
@@ -1695,7 +1695,14 @@ def render_ai_subcommand_help(command_parser: Any) -> str:
 
     epilog = (getattr(command_parser, "epilog", None) or "").strip()
     if epilog:
-        lines.extend(["WHEN / EXAMPLES", textwrap.fill(epilog, width=width, initial_indent="  ", subsequent_indent="  "), ""])
+        lines.append("WHEN / EXAMPLES")
+        # Keep example commands intact for copy/paste; the terminal handles visual wrapping.
+        for part in re.split(r"\\s+(?=Example:)", epilog):
+            if part.startswith("Example:"):
+                lines.append("  " + part)
+            else:
+                lines.append(textwrap.fill(part, width=width, initial_indent="  ", subsequent_indent="  "))
+        lines.append("")
 
     return "\n".join(lines).rstrip()
 
