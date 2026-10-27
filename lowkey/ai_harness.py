@@ -3714,15 +3714,22 @@ def main(argv: list[str] | None = None) -> int:
                 existing_jev_settings = jev_engine.load_settings()
                 provider = parsed.provider
                 if provider is None:
-                    # Preserve an existing provider/key pairing. Fresh setup uses
-                    # JevModel, which advertises starter tokens; existing TypeSafe
-                    # environment keys still select the official endpoint.
-                    if os.environ.get("TYPESAFE_API_KEY", "").strip():
-                        provider = "typesafe"
+                    # Keep the currently selected provider when its own key exists.
+                    # Only a profile without usable credentials is inferred from env;
+                    # merely setting a second provider key must not silently switch it.
+                    current_provider = existing_jev_settings.get("provider", "jevmodel")
+                    try:
+                        current_key, _ = jev_engine._api_key(current_provider)
+                    except Exception:
+                        current_key = None
+                    if current_key:
+                        provider = current_provider
                     elif os.environ.get("JEVMODEL_API_KEY", "").strip():
                         provider = "jevmodel"
+                    elif os.environ.get("TYPESAFE_API_KEY", "").strip():
+                        provider = "typesafe"
                     else:
-                        provider = existing_jev_settings.get("provider", "jevmodel")
+                        provider = current_provider
                 if provider not in jev_engine.PROVIDERS:
                     raise AIHarnessError("Choose a Jev provider: jevmodel or typesafe.")
                 env_name = jev_engine.PROVIDERS[provider]["key_env"]
