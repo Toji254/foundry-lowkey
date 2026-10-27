@@ -48,6 +48,7 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertIn("lk ai jev on", help_text)
         self.assertIn("lk ai jev status", help_text)
         self.assertIn("lk ai jev off", help_text)
+        self.assertIn("--provider jevos", help_text)
         self.assertIn("--daily-limit", help_text)
 
     def test_legacy_config_gets_new_defaults_without_schema_migration(self):
