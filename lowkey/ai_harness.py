@@ -1486,8 +1486,12 @@ def recommend_next_steps(
     context["active_contract"] = str(contract_name or context.get("requested_contract") or "not supplied")
     context["native_recommendations"] = native
     context["allowed_recommendation_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
-    # Keep the older field for compatibility with configured prompts and tests.
-    context["allowed_read_only_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
+    # Keep the compatibility field accurate: target changes local selection and
+    # lab may deploy, so neither belongs in the read-only subset.
+    context["allowed_read_only_command_forms"] = [
+        item for item in AI_RECOMMENDATION_COMMAND_FORMS
+        if not item.startswith(("lk target ", "lk lab --generic "))
+    ]
     task = (
         "Help a learner make progress in the current Lowkey workflow, not merely browse function names. "
         "Inspect current_command_evidence first, then the shared project context, project_knowledge, saved target/deployment "
@@ -1552,7 +1556,7 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
     if isinstance(shared_count, int) and shared_count > 0:
         lines.append(f"Shared project command history considered: {shared_count} recent event(s).")
     if meta.get("current_command_evidence_included") is True:
-        lines.append("The latest command output was included as redacted evidence.")
+        lines.append("Current command's redacted output was supplied as direct evidence.")
     if meta.get("lowkey_runtime_source_included") is True:
         lines.append("Lowkey's own lab-selection implementation was also inspected to diagnose its behavior.")
     diagnosis = report.get("diagnosis")
