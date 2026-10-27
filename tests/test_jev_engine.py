@@ -145,7 +145,7 @@ class JevEngineTests(unittest.TestCase):
                 self.assertEqual(ai_harness.main(["jev", "setup", "--provider", "jevos"]), 0)
         prompt.assert_not_called()
         self.assertEqual(jev_engine.load_settings()["provider"], "jevos")
-        self.assertIn("no hosted API key", output.getvalue().lower())
+        self.assertIn("no hosted api key", output.getvalue().lower())
         self.assertIn("No request was sent", output.getvalue())
 
     def test_setup_stores_key_in_private_file_and_status_never_exposes_it(self):
