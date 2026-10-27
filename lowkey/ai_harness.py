@@ -565,7 +565,7 @@ def render_status(value: Mapping[str, Any]) -> str:
         else "AI learning recommendations: OFF — Lowkey's native recommendations remain available."
     )
     lines.append(
-        f"Jev autonomous mode: {'ON' if value.get('jev_autonomous') else 'OFF'} — "
+        f"Jev autonomous triage: {'ON' if value.get('jev_autonomous') else 'OFF'} — "
         + ("lab review, command guidance, error help, and learning recommendations are enabled together."
            if value.get("jev_autonomous") else "the Jev master switch is off; individual settings shown above still apply.")
     )
@@ -573,7 +573,7 @@ def render_status(value: Mapping[str, Any]) -> str:
         lines.append(
             f"Free-tier guard: ON — {value.get('jev_calls_today', 0)}/{value.get('jev_daily_call_limit', JEV_DEFAULT_DAILY_LIMIT)} "
             f"AI requests used today; {value.get('jev_calls_remaining', 0)} remain. "
-            f"Per-request free-tier context/output caps: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes / "
+            f"Local context cap (Jev) / text-AI output cap: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes / "
             f"{value.get('jev_max_output_tokens', JEV_DEFAULT_OUTPUT_TOKENS)} tokens."
         )
     else:
@@ -2104,7 +2104,7 @@ QUICK START
        lk ai jev status
        lk ai jev off
 
-JEV AUTONOMY & FREE-TIER SAFETY
+JEV AUTONOMY & LOCAL BUDGET GUARD
 ------------------------------
   lk ai jev setup [--model jev-latest]
       Save a TypeSafe Jev API key securely (hidden input) or use TYPESAFE_API_KEY.
