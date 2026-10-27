@@ -428,8 +428,8 @@ class AIHarnessTests(unittest.TestCase):
                 self.assertIsNone(ai._safe_ai_recommendation_command(command))
         self.assertEqual(ai._safe_ai_recommendation_command("lk target"), "lk target")
         self.assertEqual(
-            ai._safe_ai_recommendation_command("lk lab --generic TokenSaleContract"),
-            "lk lab --generic TokenSaleContract",
+            ai._safe_ai_recommendation_command("lk target --h"),
+            "lk target --h",
         )
 
     def test_stale_lab_target_output_adds_a_bounded_lowkey_runtime_excerpt(self):
