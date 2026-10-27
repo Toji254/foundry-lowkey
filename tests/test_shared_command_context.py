@@ -69,10 +69,10 @@ class SharedCommandContextTests(unittest.TestCase):
                  patch.object(lk, "_dispatch_command_impl", side_effect=emit_build_output), \
                  patch.object(lk, "_COMMAND_STATUS", 0):
                 result = lk.dispatch_command("build", [], config)
+                history = error_context.read_project_context(root)
 
             self.assertEqual(result, 0)
             self.assertIn("Unnamed return variable", config["_last_command_output"])
-            history = error_context.read_project_context(root)
             build_event = history["events"][-1]
             self.assertEqual(build_event["command"], "build")
             self.assertIn("Unnamed return variable", build_event["diagnostic_excerpt"])
@@ -446,7 +446,7 @@ Warning (2072): Unused local variable.
                 })
 
             context_text = json.dumps(captured["context"])
-            self.assertIn("shared_project_command_history", captured["context"])
+            self.assertIn("shared_project_context", captured["context"])
             self.assertIn("Compiler warning", context_text)
             self.assertIn("Deployment target discovery failed", context_text)
             self.assertNotIn(str(root), context_text)
