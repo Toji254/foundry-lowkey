@@ -43,6 +43,15 @@ lk ai jev off
 lk ai jev remove-key
 ```
 
+For the custom `lh` shell toolbox menu, run this once from the Lowkey repository checkout. It backs up the matching Bash config file, adds menu entries when it finds the existing toolbox menu, and installs shell shortcuts:
+
+```bash
+bash scripts/install-lh-jev-shortcuts.sh
+source ~/.bashrc
+```
+
+Then use `jevup`, `jevstat`, `jevrestart`, or `jevdn` from any Bash terminal.
+
 Optional local-budget controls:
 
 ```bash
