@@ -328,6 +328,27 @@ class JevEngineTests(unittest.TestCase):
                 opener=never_call,
             )
 
+    def test_jevmodel_noul_requires_true_false_criteria_before_network(self):
+        jev_engine.configure(
+            api_key="jevmodel_test_key_0123456789",
+            provider="jevmodel",
+            model="jev-latest",
+            timeout_seconds=10,
+        )
+
+        def never_call(*args, **kwargs):
+            self.fail("Invalid JevModel Noul must not make a provider request")
+
+        with self.assertRaisesRegex(jev_engine.JevError, "must define true and false descriptions"):
+            jev_engine.evaluate(
+                state="fixed probe",
+                questions={"probe": {
+                    "type": "noul",
+                    "instructions": "Is this a test probe?",
+                }},
+                opener=never_call,
+            )
+
     def test_bad_question_is_rejected_before_network_call(self):
         def never_call(*args, **kwargs):
             self.fail("Invalid question must not make a provider request")
