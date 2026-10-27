@@ -3637,71 +3637,166 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.action in {"jev", "autonomy", "autonomous"}:
             cfg = load_config()
             selected = parsed.value
+            try:
+                import jev_engine
+            except ImportError:
+                from lowkey import jev_engine
+
             if parsed.daily_limit is not None and not 1 <= parsed.daily_limit <= JEV_MAX_DAILY_LIMIT:
-                raise AIHarnessError(f"--daily-limit must be from 1 to {JEV_MAX_DAILY_LIMIT}; free-tier defaults are deliberately conservative.")
+                raise AIHarnessError(
+                    f"--daily-limit must be from 1 to {JEV_MAX_DAILY_LIMIT}; "
+                    "this is a local usage cap, not a TypeSafe plan setting."
+                )
+
             if selected == "status":
-                value = status(cfg)
+                jev_state = jev_engine.status()
                 budget = autonomy_budget_status(cfg)
-                value["jev_budget"] = budget
+                value = {
+                    "jev": jev_state,
+                    "autonomous_mode": bool(cfg.get("jev_autonomous")),
+                    "local_budget_guard": budget,
+                    "text_ai": {
+                        "enabled": bool(cfg.get("enabled")),
+                        "provider": cfg.get("provider"),
+                        "model": cfg.get("model"),
+                        "automatic_guidance": bool(cfg.get("auto_assist")),
+                        "automatic_error_explanations": bool(cfg.get("auto_explain_errors")),
+                        "automatic_recommendations": bool(cfg.get("auto_recommendations")),
+                    },
+                }
                 if parsed.as_json:
                     print(json.dumps(value, indent=2, sort_keys=True))
                 else:
-                    print("JEV AUTONOMY STATUS")
-                    print("===================")
-                    print(f"Autonomous mode: {'ON' if value['jev_autonomous'] else 'OFF'}")
-                    print(f"AI extension: {'ON' if value['enabled'] else 'OFF'}")
-                    print(f"Command guidance: {'ON' if value['auto_assist'] else 'OFF'}")
-                    print(f"Automatic error diagnosis: {'ON' if value['auto_explain_errors'] else 'OFF'}")
-                    print(f"Automatic recommendations: {'ON' if value['auto_recommendations'] else 'OFF'}")
-                    print(f"Free-tier guard: {'ON' if budget['free_tier_guard'] else 'OFF'}")
-                    if budget['free_tier_guard']:
-                        print(f"Today's requests: {budget['calls_today']}/{budget['daily_limit']} ({budget['remaining']} remaining)")
-                        print(f"Per-request caps: {budget['context_limit_bytes']:,} context bytes; {budget['max_output_tokens']} output tokens")
-                    print("Native commands are unchanged. Jev suggestions are never executed.")
+                    print("JEV / LOWKEY AUTONOMY STATUS")
+                    print("============================")
+                    print(f"TypeSafe API key: {'configured' if jev_state['configured'] else 'not configured'}")
+                    print(f"Key source: {jev_state['key_source'] or 'none'}")
+                    print(f"Jev model: {jev_state['model']}")
+                    print(f"Jev autonomous triage: {'ON' if cfg.get('jev_autonomous') else 'OFF'}")
+                    print(f"Local request guard: {'ON' if budget['free_tier_guard'] else 'OFF'}")
+                    if budget["free_tier_guard"]:
+                        print(
+                            f"Today's provider attempts: {budget['calls_today']}/{budget['daily_limit']} "
+                            f"({budget['remaining']} remaining)"
+                        )
+                        print(
+                            f"Per-request context cap: {budget['context_limit_bytes']:,} bytes; "
+                            "Jev input cost is metered by TypeSafe."
+                        )
+                    print(
+                        "Text AI: "
+                        + (f"{cfg.get('provider')} / {cfg.get('model')}" if cfg.get("enabled") else "disabled")
+                        + " (separate from TypeSafe Jev)."
+                    )
+                    print("Status is local-only; it does not contact TypeSafe.")
+                    print("Jev can classify evidence but cannot confirm findings or execute commands.")
                 return 0
-            if selected == "on":
-                if not cfg.get("provider") or not cfg.get("model"):
-                    raise AIHarnessError("Configure Jev first with 'lk ai setup', then run 'lk ai status'.")
-                candidate = dict(cfg)
-                candidate["enabled"] = True
-                readiness = status(candidate)
-                if not readiness.get("usable"):
-                    reason = readiness.get("reason") or "provider credentials are not ready"
-                    raise AIHarnessError(f"Jev cannot start yet: {reason}. Run 'lk ai status' for the exact next step.")
-                cfg = candidate
-                cfg["jev_autonomous"] = True
-                tier = parsed.tier or "free"
-                cfg["jev_free_tier_mode"] = tier == "free"
-                cfg["jev_daily_call_limit"] = parsed.daily_limit or int(cfg.get("jev_daily_call_limit", JEV_DEFAULT_DAILY_LIMIT))
-                cfg["auto_assist"] = True
-                cfg["auto_explain_errors"] = True
-                cfg["auto_recommendations"] = True
+
+            if selected == "setup":
+                if not 5 <= parsed.timeout <= 60:
+                    raise AIHarnessError("--timeout must be from 5 to 60 seconds.")
+                env_key = os.environ.get("TYPESAFE_API_KEY", "").strip()
+                try:
+                    saved_key, _ = jev_engine._api_key()
+                except Exception:
+                    saved_key = None
+                key = None
+                if not env_key and not saved_key:
+                    key = getpass.getpass("TypeSafe Jev API key (input hidden): ").strip()
+                    if not key:
+                        raise AIHarnessError("No API key entered; Jev settings were not changed.")
+                jev_engine.configure(
+                    api_key=key,
+                    model=parsed.model,
+                    timeout_seconds=parsed.timeout,
+                )
+                # Guarded usage is the safe default. It limits Lowkey requests,
+                # not TypeSafe's billing rules or account-level quotas.
+                cfg["jev_free_tier_mode"] = parsed.tier != "standard"
+                if parsed.daily_limit is not None:
+                    cfg["jev_daily_call_limit"] = parsed.daily_limit
                 save_config(cfg)
-                print("Jev autonomous mode: ON.")
-                print("Enabled together: eligible lab/protocol review, post-command guidance, automatic error diagnoses, and learner recommendations.")
-                if cfg["jev_free_tier_mode"]:
-                    print(f"Free-tier guard: ON — up to {cfg['jev_daily_call_limit']} AI requests per local device day, {cfg['jev_context_limit_bytes']:,} context bytes and {cfg['jev_max_output_tokens']} output tokens per request.")
-                    print("These are local safety caps, not the provider's published quota or a guarantee of zero charges. Failed provider attempts can count toward the local cap.")
-                else:
-                    print("Free-tier guard: OFF — provider quotas, limits and possible charges still apply.")
-                print("Jev can explain and recommend; it cannot execute suggestions, edit files, deploy, sign or send transactions.")
+                source = "TYPESAFE_API_KEY environment variable" if env_key else (
+                    "existing private saved key" if saved_key else "private local credential file"
+                )
+                print(f"Jev configured: {parsed.model}.")
+                print(f"API key source: {source}; key values are never displayed.")
+                print(
+                    f"Local request guard: {'ON' if cfg['jev_free_tier_mode'] else 'OFF'} "
+                    f"(daily limit {cfg['jev_daily_call_limit']}; context cap {cfg['jev_context_limit_bytes']:,} bytes)."
+                )
+                print("No request was sent. Use 'lk ai jev test' for a small source-free API probe.")
                 return 0
-            # Stop only autonomous behaviors; leave the AI extension and manual commands available.
+
+            if selected == "remove-key":
+                jev_engine.clear_saved_key()
+                if os.environ.get("TYPESAFE_API_KEY"):
+                    print("Removed the saved key. TYPESAFE_API_KEY is still set in your environment and remains active.")
+                else:
+                    print("Removed the saved TypeSafe key. Jev is not configured until a key is provided.")
+                return 0
+
+            if selected == "test":
+                probe = jev_engine.evaluate(
+                    state={"purpose": "connectivity_probe", "message": "Lowkey Jev API probe. No project source or contract data is included."},
+                    questions={
+                        "probe_ok": {
+                            "type": "noul",
+                            "instructions": "Does the supplied state explicitly identify itself as a Lowkey Jev API connectivity probe?",
+                        }
+                    },
+                )
+                answer = probe["answers"].get("probe_ok", {})
+                print("TYPESAFE JEV CONNECTIVITY PROBE")
+                print("===============================")
+                print(f"Endpoint: {jev_engine.API_URL}")
+                print(f"Model: {probe.get('model')}")
+                print(f"Probe answer: {answer.get('noul', 'unknown')}")
+                usage = probe.get("usage", {})
+                if isinstance(usage.get("input_tokens"), int):
+                    print(f"Input tokens: {usage['input_tokens']:,}")
+                    print(f"Estimated input cost: ${usage.get('estimated_input_cost_usd'):.8f} at published list price.")
+                print("Only a fixed probe was sent; no source code, project output, wallet or RPC data was included.")
+                return 0
+
+            if selected == "on":
+                jev_state = jev_engine.status()
+                if not jev_state.get("configured"):
+                    raise AIHarnessError("Configure Jev first with 'lk ai jev setup' or export TYPESAFE_API_KEY.")
+                cfg["jev_autonomous"] = True
+                tier = parsed.tier or "guarded"
+                cfg["jev_free_tier_mode"] = tier == "guarded"
+                cfg["jev_daily_call_limit"] = parsed.daily_limit or int(
+                    cfg.get("jev_daily_call_limit", JEV_DEFAULT_DAILY_LIMIT)
+                )
+                save_config(cfg)
+                print("Jev autonomous triage: ON.")
+                print("Lowkey will classify selected build, test, audit, verification, diagnostic and import-install results.")
+                print("Classification is a structured Jev decision; existing text-AI explanation/recommendation settings remain independent.")
+                if cfg["jev_free_tier_mode"]:
+                    print(
+                        f"Local usage guard: ON — up to {cfg['jev_daily_call_limit']} provider attempts per local day "
+                        f"and {cfg['jev_context_limit_bytes']:,} request bytes."
+                    )
+                    print("The guard is not an official free plan or a zero-cost guarantee; TypeSafe charges for input tokens.")
+                else:
+                    print("Local usage guard: OFF. TypeSafe list pricing and account-level limits apply.")
+                print("Jev never executes commands, edits files, changes targets, deploys, signs or sends transactions.")
+                return 0
+
+            # Pause Jev only. Preserve every separate Lowkey AI feature and setting.
             cfg["jev_autonomous"] = False
-            cfg["auto_assist"] = False
-            cfg["auto_explain_errors"] = False
-            cfg["auto_recommendations"] = False
             if parsed.tier == "standard":
                 cfg["jev_free_tier_mode"] = False
-            elif parsed.tier == "free":
+            elif parsed.tier == "guarded":
                 cfg["jev_free_tier_mode"] = True
             save_config(cfg)
-            print("Jev autonomous mode: OFF. Automatic guidance, error diagnoses and recommendations are paused.")
-            print("Existing LK commands and features are unchanged; explicit 'lk ai ...' requests remain available.")
+            print("Jev autonomous triage: OFF.")
+            print("Other Lowkey AI settings and native commands are unchanged.")
             if cfg.get("jev_free_tier_mode"):
-                print("The free-tier request/context/output guard remains active for manual AI requests too.")
+                print("The local request/context budget guard remains active for TypeSafe Jev and configured text-AI requests.")
             else:
-                print("Free-tier guard: OFF. Provider-side quotas/rate limits still apply.")
+                print("Local budget guard: OFF. Provider-side limits and charges still apply.")
             return 0
         if parsed.action == "mode":
             cfg = load_config()
