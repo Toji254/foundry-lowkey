@@ -1356,7 +1356,7 @@ AUTOMATION SETTINGS
 
 WHAT DOES "AUTO" MEAN?
 ----------------------
-"auto" is a value after a setting command, not a standalone command. Settings are
+auto is a value after a setting command, not a standalone command. Settings are
 independent:
   lk ai mode auto             Complexity-triggered protocol reviews on eligible workflows.
   lk ai recommendations auto  Extra suggestions after eligible successful commands.
