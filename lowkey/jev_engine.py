@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -422,6 +423,24 @@ def evaluate(
     missing = required - set(data["answers"])
     if missing:
         raise JevError(f"{provider_meta['label']} response omitted required answer(s): " + ", ".join(sorted(missing)))
+    # Validate the typed result before it enters the response cache or reaches LK.
+    # Provider output remains untrusted model data, even when it is valid JSON.
+    for question_id, question in questions.items():
+        answer = data["answers"].get(question_id)
+        expected_type = question.get("type")
+        if not isinstance(answer, dict) or answer.get("type") != expected_type:
+            raise JevError(f"{provider_meta['label']} answer for '{question_id}' has the wrong type; result discarded.")
+        if expected_type == "choice":
+            if answer.get("choice") not in question["criteria"]:
+                raise JevError(f"{provider_meta['label']} returned an unapproved Choice label for '{question_id}'; result discarded.")
+        elif expected_type == "score":
+            score = answer.get("score")
+            if type(score) not in (int, float) or not math.isfinite(score):
+                raise JevError(f"{provider_meta['label']} returned an invalid Score for '{question_id}'; result discarded.")
+        elif expected_type == "noul":
+            probability = answer.get("noul")
+            if type(probability) not in (int, float) or not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+                raise JevError(f"{provider_meta['label']} returned an invalid Noul probability for '{question_id}'; result discarded.")
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     input_tokens = usage.get("inputTokens") if provider == "jevmodel" else usage.get("input_tokens")
     output_tokens = usage.get("outputTokens") if provider == "jevmodel" else usage.get("output_tokens")
