@@ -1697,7 +1697,7 @@ def render_ai_subcommand_help(command_parser: Any) -> str:
     if epilog:
         lines.append("WHEN / EXAMPLES")
         # Keep example commands intact for copy/paste; the terminal handles visual wrapping.
-        for part in re.split(r"\\s+(?=Example:)", epilog):
+        for part in re.split(r"\s+(?=Example:)", epilog):
             if part.startswith("Example:"):
                 lines.append("  " + part)
             else:
