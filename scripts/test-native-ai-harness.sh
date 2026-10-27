@@ -75,7 +75,7 @@ grep -Fq 'src/Vault.sol' <<<"$SUMMARY"
 ! grep -Fq 'AI_PREVIEW_DEPENDENCY_SENTINEL' <<<"$SUMMARY"
 
 echo "Checking complete redacted payload..."
-"$LK" ai preview --root "$PROJECT" --contract Vault --show-context > "$TMP_ROOT/context.json"
+"$LK" ai preview --root "$PROJECT" --contract Vault --json-context > "$TMP_ROOT/context.json"
 python3 - "$TMP_ROOT/context.json" <<'PY'
 import json
 import sys
