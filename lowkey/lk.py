@@ -18313,8 +18313,13 @@ def dispatch_command(cmd, args, config, from_batch=False):
     event_output = captured_stdout.getvalue()
     if diagnostic:
         event_output += "\n[LOWKEY STDERR]\n" + diagnostic
-    if not event_output and getattr(result, "output", None):
-        event_output = str(result.output)
+    native_output = getattr(result, "output", None)
+    if native_output is None:
+        native_output = getattr(result, "text", None)
+    if native_output:
+        native_output = str(native_output)
+        if native_output not in event_output:
+            event_output += "\n[LOWKEY RESULT OUTPUT]\n" + native_output
     _record_shared_command_event(root, cmd, args, event_code, event_output)
 
     if not is_failure:
@@ -18679,6 +18684,14 @@ def _safe_main() -> int:
             source="runtime",
         )
         print(formatted_error, file=sys.stderr)
+        if root:
+            _record_shared_command_event(
+                root,
+                sys.argv[1] if len(sys.argv) > 1 else "runtime",
+                sys.argv[2:] if len(sys.argv) > 2 else [],
+                2,
+                formatted_error,
+            )
         record = _record_last_error(formatted_error, code=2, source="runtime")
         _maybe_explain_error(record)
         if root:
