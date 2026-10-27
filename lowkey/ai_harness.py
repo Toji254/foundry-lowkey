@@ -1186,10 +1186,13 @@ def recommend_next_steps(
         required_fields=("recommendations",),
     )
     normalized = validate_ai_recommendations(result, context, native_recommendations)
+    shared_history = context.get("shared_command_history")
+    shared_events = shared_history.get("events", []) if isinstance(shared_history, Mapping) else []
     normalized["_lowkey_meta"] = {
         "ai_generated": True,
         "origin": "configured-model",
         "source_files_included": context.get("source_files_included", len(context.get("source_files", []))),
+        "shared_command_events_included": len(shared_events) if isinstance(shared_events, list) else 0,
         "context_sha256": hashlib.sha256(
             json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest(),
@@ -1208,6 +1211,10 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
         "These extra suggestions come from the configured AI model, not Lowkey's native recommendation rules.",
         "They are based on selected, redacted source excerpts. No command was executed.",
     ]
+    meta = report.get("_lowkey_meta") if isinstance(report.get("_lowkey_meta"), Mapping) else {}
+    shared_count = meta.get("shared_command_events_included")
+    if isinstance(shared_count, int) and shared_count > 0:
+        lines.append(f"Shared project command history considered: {shared_count} recent event(s).")
     if not items:
         lines.extend([""])
         discarded = int(report.get("discarded_count") or 0)
