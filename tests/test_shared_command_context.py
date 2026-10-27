@@ -320,7 +320,7 @@ Warning (2072): Unused local variable.
             with patch.object(error_advisor.error_context, "read_project_context", return_value=history), \
                  patch.object(error_advisor.ai_harness, "request_structured", side_effect=capture_request):
                 result = error_advisor.diagnose_record({
-                    "error": "local project deployment ran, but Lowkey could not identify a deployed application target",
+                    "error": "local project deployment ran, but Lowkey could not identify a deployed application target at " + str(root) + "/script/Deploy.s.sol:9:38",
                     "command": "lab",
                     "exit_code": 2,
                     "project_label": "project",
