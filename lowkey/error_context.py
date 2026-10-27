@@ -503,6 +503,89 @@ def _read_project_knowledge(root: Path) -> dict[str, Any]:
                     for key in ("kind", "contract", "role", "account", "function", "source")
                     if item.get(key) is not None
                 })
+            actor_data = manifest.get("actors") if isinstance(manifest.get("actors"), dict) else {}
+            actors = []
+            for item in (actor_data.get("actors") or [])[:20] if isinstance(actor_data.get("actors"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                address = item.get("address")
+                actors.append({
+                    "name": _safe_project_text(root, item.get("name"), 100),
+                    "address": address if isinstance(address, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", address) else None,
+                    "source": _safe_project_text(root, item.get("source"), 80),
+                })
+            initialization = []
+            for item in (manifest.get("initialization") or [])[:32] if isinstance(manifest.get("initialization"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                line = item.get("line")
+                initialization.append({
+                    "source": _safe_project_file(root, item.get("source")),
+                    "line": line if isinstance(line, int) and 0 <= line <= 10_000_000 else None,
+                    "kind": _safe_project_text(root, item.get("kind"), 80),
+                    "target": _safe_project_text(root, item.get("target"), 140),
+                    "evidence": _safe_project_text(root, item.get("evidence"), 280),
+                })
+            scripts = []
+            for item in (manifest.get("scripts") or [])[:12] if isinstance(manifest.get("scripts"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                actions = []
+                for action in (item.get("actions") or [])[:16] if isinstance(item.get("actions"), list) else []:
+                    if not isinstance(action, dict):
+                        continue
+                    line = action.get("line")
+                    actions.append({
+                        "kind": _safe_project_text(root, action.get("kind"), 80),
+                        "line": line if isinstance(line, int) and 0 <= line <= 10_000_000 else None,
+                        "target": _safe_project_text(root, action.get("target"), 140),
+                        "evidence": _safe_project_text(root, action.get("text"), 280),
+                    })
+                scripts.append({
+                    "path": _safe_project_file(root, item.get("path")),
+                    "lines": item.get("lines") if isinstance(item.get("lines"), int) else None,
+                    "actions": actions,
+                })
+            test_evidence = []
+            for item in (manifest.get("tests") or [])[:20] if isinstance(manifest.get("tests"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                signals = item.get("signals") if isinstance(item.get("signals"), list) else []
+                functions = item.get("functions") if isinstance(item.get("functions"), list) else []
+                test_evidence.append({
+                    "path": _safe_project_file(root, item.get("path")),
+                    "kind": _safe_project_text(root, item.get("kind") or "test", 40),
+                    "signals": [_safe_project_text(root, value, 100) for value in signals[:8]],
+                    "functions": [_safe_project_text(root, value, 120) for value in functions[:16]],
+                })
+            adversarial_evidence = []
+            for item in (manifest.get("adversarial_evidence") or [])[:12] if isinstance(manifest.get("adversarial_evidence"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+                adversarial_evidence.append({
+                    "path": _safe_project_file(root, item.get("path")),
+                    "kind": _safe_project_text(root, item.get("kind"), 60),
+                    "signals": [_safe_project_text(root, value, 100) for value in (item.get("signals") or [])[:8]] if isinstance(item.get("signals"), list) else [],
+                    "functions": [_safe_project_text(root, value, 120) for value in (item.get("functions") or [])[:16]] if isinstance(item.get("functions"), list) else [],
+                    "summary": {
+                        key: _safe_project_text(root, summary.get(key), 240)
+                        for key in ("candidate", "evidence", "poc_file") if summary.get(key) is not None
+                    },
+                })
+            audit_evidence = []
+            for item in (manifest.get("audit_evidence") or [])[:20] if isinstance(manifest.get("audit_evidence"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                target = item.get("target")
+                audit_evidence.append({
+                    "file": _safe_project_file(root, item.get("file")),
+                    "exit_code": item.get("exit_code") if isinstance(item.get("exit_code"), int) else None,
+                    "finding_count": item.get("finding_count") if isinstance(item.get("finding_count"), int) else None,
+                    "count": item.get("count") if isinstance(item.get("count"), int) else None,
+                    "target": target if isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) else None,
+                    "git_branch": _safe_project_text(root, item.get("git_branch"), 100) or None,
+                })
             security_summary = manifest.get("security_pattern_summary")
             if not isinstance(security_summary, dict):
                 security_summary = {}
@@ -533,6 +616,12 @@ def _read_project_knowledge(root: Path) -> dict[str, Any]:
                 "deployments": deployments,
                 "relationships": relationships,
                 "roles": roles,
+                "actors": actors,
+                "initialization": initialization,
+                "scripts": scripts,
+                "tests": test_evidence,
+                "adversarial_evidence": adversarial_evidence,
+                "audit_evidence": audit_evidence,
                 "security_pattern_summary": {
                     key: int(security_summary.get(key) or 0)
                     for key in ("total", "reviews", "confirmed", "candidates")
