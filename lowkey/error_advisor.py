@@ -244,7 +244,7 @@ def diagnose_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "project_label": str(record.get("project_label") or "")[:160],
         "error_text_redacted": error,
         "native_diagnostic_hints": hints,
-        "shared_project_command_history": shared_project_context,
+        "shared_project_context": shared_project_context,
         "documented_lowkey_command_reference": LOWKEY_COMMAND_REFERENCE,
         "command_policy": (
             "This is LowkeyCast. Prefer documented lk commands and workflows, not bare Forge/Cast commands. "
