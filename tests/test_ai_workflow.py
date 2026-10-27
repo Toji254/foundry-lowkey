@@ -37,9 +37,14 @@ class AIWorkflowTests(unittest.TestCase):
             "auto_explain_errors": False,
         }
         self.assertTrue(workflow.should_auto_guide("test", [], 0, active))
-        self.assertTrue(workflow.should_auto_guide("build", [], 0, active))
-        self.assertTrue(workflow.should_auto_guide("doctor", [], 0, active))
-        self.assertTrue(workflow.should_auto_guide("trace", [], 0, active))
+        # Existing auto mode keeps its original scope; Jev opts into wider coverage.
+        self.assertFalse(workflow.should_auto_guide("build", [], 0, active))
+        self.assertFalse(workflow.should_auto_guide("doctor", [], 0, active))
+        self.assertFalse(workflow.should_auto_guide("trace", [], 0, active))
+        jev_active = {**active, "jev_autonomous": True}
+        self.assertTrue(workflow.should_auto_guide("build", [], 0, jev_active))
+        self.assertTrue(workflow.should_auto_guide("doctor", [], 0, jev_active))
+        self.assertTrue(workflow.should_auto_guide("trace", [], 0, jev_active))
         self.assertFalse(workflow.should_auto_guide("read", ["balanceOf"], 0, active))
         self.assertTrue(workflow.should_auto_guide("read", ["balanceOf"], 1, active))
         self.assertTrue(workflow.should_auto_guide("audit", ["run"], 0, active))
