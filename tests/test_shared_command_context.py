@@ -36,7 +36,12 @@ class SharedCommandContextTests(unittest.TestCase):
                 lk.shared_command_context(config)["events"][0]["command"],
                 "build",
             )
-            self.assertNotIn("_shared_command_context", lk.fresh_config())
+            config_path = root / "lowkey-config.json"
+            with patch.object(lk, "CONFIG_DIR", str(root / "config")), \
+                 patch.object(lk, "CONFIG_FILE", str(config_path)):
+                lk.save_config(config)
+                persisted = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertNotIn("_shared_command_context", persisted)
 
     def test_build_warnings_are_available_to_a_later_lab_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
