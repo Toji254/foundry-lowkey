@@ -34,7 +34,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("lk ai security-review", help_text)
         self.assertNotIn("usage: lk ai", help_text)
         for command in (
-            "status", "preview", "mode", "setup", "switch", "enable", "disable", "test",
+            "status", "preview", "mode", "setup", "switch", "enable", "disable", "test", "run",
             "keys", "list", "add", "remove", "clear", "explain-error",
             "errors", "project", "test-plan", "security-review", "ledger", "verify",
             "disposition", "runtime", "recommendations",
@@ -45,7 +45,7 @@ class AIHarnessTests(unittest.TestCase):
             "--json", "--root", "--contract", "--show-context", "--provider",
             "--model", "--base-url", "--api-key-env", "--timeout",
             "--max-output-tokens", "--slot", "--last", "--text", "--command",
-            "--test", "--match-test", "--run", "--status", "--reviewer",
+            "--test", "--match-test", "--run", "--plan-only", "--yes", "--status", "--reviewer",
             "--reason", "--evidence-id",
         ):
             with self.subTest(flag=flag):
@@ -88,6 +88,9 @@ class AIHarnessTests(unittest.TestCase):
             "lk ai recommendations auto",
             "lk ai errors auto",
             "auto is a value after a setting command",
+            "UNIVERSAL --ai / TASK RUN",
+            "lk status --ai",
+            "lk ai run",
             "AI INSIDE EXISTING LK WORKFLOWS",
             "lk lab Vault --ai-review",
             "Use --json only on commands that list it",
@@ -137,7 +140,7 @@ class AIHarnessTests(unittest.TestCase):
                 self.assertEqual(ai.main([action]), 0)
             rendered = output.getvalue()
             expected_heading = {
-                "mode": "LOWKEY AI PROTOCOL REVIEW MODE",
+                "mode": "LOWKEY AI AUTOMATIC GUIDANCE MODE",
                 "recommendations": "LOWKEY AI NEXT-COMMAND RECOMMENDATIONS",
                 "errors": "LOWKEY AI AUTOMATIC ERROR EXPLANATIONS",
             }[action]
@@ -160,6 +163,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_command_help_exposes_each_command_flag_and_nested_variation(self):
         cases = [
             (["status", "--help"], ["--json"]),
+            (["run", "--help"], ["--root", "--contract", "--plan-only", "--yes"]),
             (["preview", "--help"], ["--root", "--contract", "--show-context", "--json-context"]),
             (["setup", "--help"], ["--provider", "--model", "--base-url", "--api-key-env", "--timeout", "--max-output-tokens"]),
             (["switch", "--help"], ["profile", "number", "list"]),
