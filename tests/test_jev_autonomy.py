@@ -65,6 +65,23 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertFalse(value["jev_free_tier_mode"])
         self.assertEqual(value["jev_daily_call_limit"], 8)
 
+    def test_jev_setup_uses_hidden_prompt_and_makes_no_network_request(self):
+        output = io.StringIO()
+        with patch("lowkey.ai_harness.getpass.getpass", return_value="typesafe_test_key_0123456789") as prompt:
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main(["jev", "setup"]), 0)
+        prompt.assert_called_once()
+        self.assertTrue(jev_engine.status()["configured"])
+        self.assertTrue(ai.load_config()["jev_free_tier_mode"])
+        self.assertIn("No request was sent", output.getvalue())
+
+    def test_jev_cannot_enable_autonomy_without_a_type_safe_key(self):
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(ai.main(["jev", "on"]), 2)
+        self.assertFalse(ai.load_config()["jev_autonomous"])
+        self.assertIn("Configure Jev first", output.getvalue())
+
     def test_jev_on_enables_existing_automation_and_free_tier_guard(self):
         self._configure_local_provider()
         output = io.StringIO()
