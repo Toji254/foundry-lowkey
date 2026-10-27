@@ -31,7 +31,7 @@ _AUTO_GUIDANCE_COMMANDS = {
 _JEV_AUTO_GUIDANCE_COMMANDS = {
     # Wider automatic coverage is enabled only by the Jev master switch.
     "build", "doctor", "recon", "probe", "trace", "state-diff", "project", "system",
-    "changes", "risk", "poc", "test-gen", "mutation-check", "verification", "matrix", "seams", "clone",
+    "changes", "risk", "poc", "test-gen", "mutation-check", "seams", "clone",
 }
 
 
@@ -53,13 +53,14 @@ def should_auto_guide(command: str, arguments: Sequence[str], exit_code: int,
         return not bool(ai_status.get("auto_explain_errors"))
     root = str(command or "").strip().lower()
     args = list(arguments or [])
-    path = f"{root} {args[0].lower()}" if args and args[0] in {
-        "run", "pipeline", "engines", "correlate", "investigate"
+    path = f"{root} {args[0].lower()}" if args and args[0].lower() in {
+        "run", "pipeline", "engines", "correlate", "investigate", "test"
     } else root
     return (
         root in _AUTO_GUIDANCE_COMMANDS
         or (bool(ai_status.get("jev_autonomous")) and root in _JEV_AUTO_GUIDANCE_COMMANDS)
         or path in {"audit run", "verification run", "verification investigate"}
+        or (bool(ai_status.get("jev_autonomous")) and path == "matrix test")
     )
 
 
