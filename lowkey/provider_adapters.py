@@ -115,5 +115,5 @@ def provider_adapter_status() -> dict[str, Any]:
 
 
 _default = OpenAICompatibleAdapter()
-for _provider in ("deepseek", "gemini", "openai", "openai-compatible", "ollama"):
+for _provider in ("deepseek", "gemini", "openai", "openai-compatible", "ollama", "orcarouter", "openrouter", "nvidia"):
     register_provider_adapter(_provider, _default)
