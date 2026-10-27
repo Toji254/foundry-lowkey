@@ -304,6 +304,61 @@ class JevEngineTests(unittest.TestCase):
         # Preserve the existing TypeSafe credential if the user switches provider.
         self.assertEqual(jev_engine._saved_key("typesafe"), "typesafe_test_key_0123456789")
 
+    def test_jevmodel_rejects_unapproved_choice_and_invalid_noul_responses(self):
+        jev_engine.configure(
+            api_key="jevmodel_test_key_0123456789",
+            provider="jevmodel",
+            model="jev-latest",
+            timeout_seconds=10,
+        )
+        questions = {"decision": {
+            "type": "choice",
+            "instructions": "Choose an allowed result based on the supplied fixture.",
+            "criteria": {
+                "safe": "The fixture supports a safe result.",
+                "review": "The fixture needs a manual review.",
+            },
+        }}
+
+        def bad_choice(request, timeout):
+            return FakeResponse({
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "answers": {"decision": {"type": "choice", "choice": "unapproved"}},
+                    "usage": {"inputTokens": 20},
+                },
+            })
+
+        with self.assertRaises(jev_engine.JevError) as rejected:
+            jev_engine.evaluate(state={"fixture": "small"}, questions=questions, opener=bad_choice)
+        self.assertIn("unapproved Choice label", str(rejected.exception))
+
+        def bad_noul(request, timeout):
+            return FakeResponse({
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "answers": {"check": {"type": "noul", "noul": 1.7}},
+                    "usage": {"inputTokens": 20},
+                },
+            })
+
+        with self.assertRaises(jev_engine.JevError) as rejected_probability:
+            jev_engine.evaluate(
+                state={"fixture": "small"},
+                questions={"check": {
+                    "type": "noul",
+                    "instructions": "Does the fixture support this bounded statement?",
+                    "criteria": {
+                        "true": "The fixture supports the statement.",
+                        "false": "The fixture does not support the statement.",
+                    },
+                }},
+                opener=bad_noul,
+            )
+        self.assertIn("invalid Noul probability", str(rejected_probability.exception))
+
     def test_jevmodel_question_and_choice_limits_are_rejected_before_network(self):
         def never_call(*args, **kwargs):
             self.fail("Invalid JevModel request must not make a provider request")
