@@ -4,44 +4,39 @@ Lowkey's AI extension is optional and task-specific. It is not a chatbot and is 
 
 ## Configure once
 
-DeepSeek API example. The key is requested with hidden terminal input and stored separately from normal configuration with owner-only file permissions.
+The easiest path is the guided setup. It lets you choose a provider, suggests a starting model, requests API keys using hidden input, saves a model profile, and offers a connection test that sends no project source.
 
 ~~~bash
-lk ai setup --provider deepseek --model deepseek-flash
-lk ai status
-lk ai test
+lk ai setup
 ~~~
 
-The test sends a fixed connectivity probe without project source. Provider charges may apply; free access in a consumer app does not necessarily include API access.
+The guided menu includes OrcaRouter, OpenRouter, Google Gemini, NVIDIA, DeepSeek direct API, Ollama, OpenAI, and a custom OpenAI-compatible endpoint. Press Enter to accept the suggested model ID or type the exact ID listed by your provider.
 
-Keep the key in an environment variable instead:
+For explicit control, the advanced form remains available:
 
 ~~~bash
-export DEEPSEEK_API_KEY='your-key'
-lk ai setup --provider deepseek --model deepseek-flash --api-key-env DEEPSEEK_API_KEY
+lk ai setup --provider deepseek --model MODEL
+lk ai setup --provider openrouter --model 'google/gemma-4-26b-a4b-it:free'
+lk ai setup --provider orcarouter --model 'deepseek/deepseek-v4.1-flash-free'
 ~~~
 
-Local OpenAI-compatible Ollama example:
+The provider is the service that issued your key. OrcaRouter, OpenRouter, and NVIDIA have separate Lowkey provider names and key pools even though they use compatible API request formats. This prevents one service's API key from being sent to another service's endpoint. For other compatible services, use `--provider openai-compatible --base-url URL --model MODEL`.
+
+Setup saves the settings; **only a passing `lk ai test` verifies the current connection**. The test sends a fixed request and no project source. It may consume free-tier quota or incur charges.
+
+### Switch models without re-entering keys
+
+Each setup is saved as a local model profile. Use the interactive chooser, or provide a number/profile ID:
 
 ~~~bash
-lk ai setup --provider ollama --model qwen2.5-coder
-lk ai status
+lk ai switch
+lk ai switch list
+lk ai switch 2
 ~~~
 
-OpenAI API example (the key is requested with hidden terminal input and saved separately):
+Profiles store provider, endpoint, model ID, and request limits—not API key values. Credentials remain in Lowkey's separate private credential store. Switching does not automatically contact a provider; run `lk ai test` afterwards to check the selected model.
 
-~~~bash
-lk ai setup --provider openai --model MODEL
-lk ai status
-~~~
-
-Custom compatible endpoint:
-
-~~~bash
-lk ai setup --provider openai-compatible --base-url https://provider.example/v1 --model MODEL
-~~~
-
-Provider availability and pricing are controlled by the provider. Never put credentials in a URL or commit them to source control.
+Keep credentials in Lowkey's hidden prompt or an environment variable. Never put keys in a URL or commit them to source control.
 
 ## Preview the exact context before sending it
 
