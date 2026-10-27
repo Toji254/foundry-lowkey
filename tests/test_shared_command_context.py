@@ -432,7 +432,7 @@ Warning (2072): Unused local variable.
                 captured.update(kwargs)
                 return response
 
-            with patch.object(error_advisor.error_context, "read_project_context", return_value=history), \\
+            with patch.object(error_advisor.error_context, "read_project_context", return_value=history), \
                  patch.object(error_advisor.ai_harness, "request_structured", side_effect=capture_request):
                 result = error_advisor.diagnose_record({
                     "error": (
