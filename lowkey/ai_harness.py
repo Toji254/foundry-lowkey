@@ -3689,10 +3689,15 @@ def main(argv: list[str] | None = None) -> int:
                             f"Today's provider attempts: {budget['calls_today']}/{budget['daily_limit']} "
                             f"({budget['remaining']} remaining)"
                         )
+                        effective_context_cap = min(
+                            budget["context_limit_bytes"],
+                            7_500 if jev_state.get("provider") == "jevmodel" else jev_engine.MAX_REQUEST_BYTES,
+                        )
+                        print(f"Per-request context cap: {effective_context_cap:,} bytes.")
                         print(
-                            f"Per-request context cap: {budget['context_limit_bytes']:,} bytes; "
-                            ("JevModel starter-token usage is account-based." if jev_state.get("provider") == "jevmodel"
-                             else "TypeSafe bills input tokens under its own account terms.")
+                            "JevModel starter-token usage is account-based; check the account balance."
+                            if jev_state.get("provider") == "jevmodel"
+                            else "TypeSafe bills input tokens under its own account terms."
                         )
                     print(
                         "Text AI: "
