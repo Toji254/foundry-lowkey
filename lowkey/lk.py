@@ -17038,6 +17038,14 @@ def _render_command_help(path):
             print(f"      {description}")
             print(f"      Example: {example}")
 
+    if shown_path.split()[0].lower() != "ai":
+        print("")
+        print("AI GUIDANCE")
+        print("-----------")
+        print("  Add --ai to this command to explain its observed result, risks, and next step.")
+        print(f"  Example: lk {shown_path} --ai")
+        print("  The native command keeps its normal behavior; AI suggestions are never run.")
+
     related = entry.get("related") or []
     if related:
         print("")
@@ -17076,6 +17084,10 @@ START HERE
   lk test                            Run the project's Forge tests.
   lk lab                             Start/rebuild a disposable local audit lab.
   lk lab --ai-review                 Add an optional, unverified protocol review.
+  lk status --ai                    Explain status output, risks, and what to inspect next.
+  lk send --ai                      Keep normal send behavior, then explain the result and evidence gaps.
+  lk test --ai                      Interpret test output and suggest the next verification step.
+  lk ai run "investigate why withdrawal reverts"  Plan/approve read-only checks and interpret results.
   lk ai --h                          Show AI commands, settings, examples, and safety notes.
   lk ai status                       Show optional AI provider status.
   lk memory status                   Inspect native project/global experience memory.
@@ -18283,9 +18295,112 @@ def _warn_if_help_runtime_is_stale() -> None:
     print("  Help will still be shown, but recent commands may be missing until Lowkey is reinstalled.", file=sys.stderr)
 
 
+def _extract_universal_ai_flag(argv):
+    """Extract --ai from native commands without changing the dedicated lk ai CLI."""
+    values = list(argv or [])
+    if not values or str(values[0]).strip().lower() == "ai":
+        return False, values
+    requested = "--ai" in values
+    return requested, [value for value in values if value != "--ai"] if requested else values
+
+
+class _TeeCapture:
+    """Pass output straight through while retaining a bounded tail for optional AI context."""
+    def __init__(self, stream, limit=24000):
+        self.stream = stream
+        self.limit = int(limit)
+        self.parts = []
+        self.size = 0
+
+    def write(self, value):
+        written = self.stream.write(value)
+        if isinstance(value, str) and value:
+            self.parts.append(value)
+            self.size += len(value)
+            while self.size > self.limit and self.parts:
+                excess = self.size - self.limit
+                first = self.parts[0]
+                if len(first) <= excess:
+                    self.parts.pop(0)
+                    self.size -= len(first)
+                else:
+                    self.parts[0] = first[excess:]
+                    self.size -= excess
+        return written
+
+    def flush(self):
+        return self.stream.flush()
+
+    def getvalue(self):
+        return "".join(self.parts)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def _ai_status_safely():
+    try:
+        try:
+            import ai_harness
+        except ImportError:
+            from lowkey import ai_harness
+        return ai_harness.status()
+    except Exception:
+        return {}
+
+
+def _ai_auto_mode_enabled():
+    state = _ai_status_safely()
+    return bool(state.get("enabled") and state.get("usable") and state.get("auto_assist"))
+
+
+def _dispatch_command_captured(command, args, config):
+    stdout_capture = _TeeCapture(sys.stdout)
+    stderr_capture = _TeeCapture(sys.stderr)
+    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+        result = dispatch_command(command, args, config)
+    captured = stdout_capture.getvalue()
+    errors = stderr_capture.getvalue()
+    if errors:
+        captured += "\n[LOWKEY STDERR]\n" + errors
+    return result, captured
+
+
+def _print_ai_command_guidance(command, args, result_code, config, command_output=""):
+    """Optional post-command guidance must never change native execution success."""
+    try:
+        try:
+            import ai_workflow
+        except ImportError:
+            from lowkey import ai_workflow
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = Path.cwd()
+        report = ai_workflow.guide_command(
+            root=root,
+            command="lk " + str(command or "").strip(),
+            arguments=args or [],
+            exit_code=int(result_code),
+            command_output=command_output,
+            project_config=config if isinstance(config, dict) else {},
+        )
+        print("")
+        print(ai_workflow.render_guidance(report))
+    except Exception as exc:
+        print(
+            f"\n@ AI GUIDANCE UNAVAILABLE ({type(exc).__name__}). "
+            "The native command already ran with its normal behavior; run 'lk ai status' for setup details.",
+            file=sys.stderr,
+        )
+
+
 def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
+    ai_requested, cleaned_args = _extract_universal_ai_flag(sys.argv[1:])
+    if ai_requested:
+        sys.argv = [sys.argv[0], *cleaned_args]
     config=load_config()
     if len(sys.argv)<2:
         print_help()
@@ -18302,11 +18417,21 @@ def main():
         return
 
     if command.lower() in {"cheat", "cheats", "cheatsheet"}:
-        result = run_cheat(sys.argv[2:])
+        if ai_requested:
+            stdout_capture = _TeeCapture(sys.stdout)
+            stderr_capture = _TeeCapture(sys.stderr)
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                result = run_cheat(sys.argv[2:])
+            ai_output = stdout_capture.getvalue() + ("\n[LOWKEY STDERR]\n" + stderr_capture.getvalue() if stderr_capture.getvalue() else "")
+        else:
+            result = run_cheat(sys.argv[2:])
+            ai_output = ""
         footer_status = result
         if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
             footer_status = _COMMAND_STATUS
         _print_recommended_next_commands(command, sys.argv[2:], footer_status, config)
+        if ai_requested:
+            _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_output)
         if isinstance(result, int):
             raise SystemExit(result)
         return
@@ -18335,7 +18460,12 @@ def main():
             print("  FIX: reinstall Lowkey with bash install.sh", file=sys.stderr)
         return fail("Refusing to run with a mismatched Lowkey installation.", 3)
 
-    result=dispatch_command(command,sys.argv[2:],config)
+    auto_capture = command.lower() != "ai" and _ai_auto_mode_enabled()
+    if ai_requested or auto_capture:
+        result, ai_command_output = _dispatch_command_captured(command, sys.argv[2:], config)
+    else:
+        result = dispatch_command(command,sys.argv[2:],config)
+        ai_command_output = ""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
     if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
         result_code = _COMMAND_STATUS
@@ -18365,6 +18495,15 @@ def main():
             footer_status,
             config,
         )
+    if ai_requested:
+        _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+    elif auto_capture:
+        try:
+            import ai_workflow
+        except ImportError:
+            from lowkey import ai_workflow
+        if ai_workflow.should_auto_guide(command, sys.argv[2:], footer_status, _ai_status_safely()):
+            _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
