@@ -794,8 +794,8 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
 
 
 _SOURCE_LOCATION_PATTERN = re.compile(
-    r"(?P<path>(?:[A-Za-z]:[\\/]|/|\\.\\.?[\\/])?[^()\\n:]*?\\."
-    r"(?:sol|vy|move|rs|cairo|tact|fc|func|clar)):\\d+(?::\\d+)?",
+    r"(?P<path>(?:[A-Za-z]:[\\/]|/|\.\.?[\\/])?[^()\n:]*?\."
+    r"(?:sol|vy|move|rs|cairo|tact|fc|func|clar)):\d+(?::\d+)?",
     re.IGNORECASE,
 )
 
@@ -818,7 +818,7 @@ def _evidence_source_priorities(root: Path, paths: list[Path], evidence: str) ->
     canonical_root = root.resolve()
     for match in _SOURCE_LOCATION_PATTERN.finditer(str(evidence or "")):
         candidate = match.group("path").strip().strip("\\\"' ")
-        candidate = re.sub(r"^(?:-->\\s*|at\\s+)", "", candidate).strip()
+        candidate = re.sub(r"^(?:-->\s*|at\s+)", "", candidate).strip()
         if not candidate:
             continue
         try:
