@@ -1369,9 +1369,9 @@ def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None)
     """Show useful defaults and exact commands when a setting group has no value."""
     cfg = dict(config or load_config())
     setting = {
-        "mode": ("auto_assist", "AI protocol review mode"),
-        "recommendations": ("auto_recommendations", "AI next-command recommendations"),
-        "errors": ("auto_explain_errors", "automatic AI error explanations"),
+        "mode": ("auto_assist", "protocol review mode"),
+        "recommendations": ("auto_recommendations", "next-command recommendations"),
+        "errors": ("auto_explain_errors", "automatic error explanations"),
     }.get(action)
     if setting is None:
         return "Unknown AI setting group. Run 'lk ai --help' for available commands."
