@@ -15,6 +15,26 @@ spec.loader.exec_module(lk)
 
 
 class CliConsistencyTests(unittest.TestCase):
+    def test_universal_ai_flag_is_removed_only_for_native_commands(self):
+        self.assertEqual(lk._extract_universal_ai_flag(["status", "--ai"]), (True, ["status"]))
+        self.assertEqual(
+            lk._extract_universal_ai_flag(["read", "isAgreementValid", "--ai", "Alice"]),
+            (True, ["read", "isAgreementValid", "Alice"]),
+        )
+        self.assertEqual(
+            lk._extract_universal_ai_flag(["ai", "run", "goal", "--ai"]),
+            (False, ["ai", "run", "goal", "--ai"]),
+        )
+
+    def test_command_help_makes_universal_ai_guidance_discoverable(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(lk._render_command_help(["status"]), 0)
+        rendered = output.getvalue()
+        self.assertIn("AI GUIDANCE", rendered)
+        self.assertIn("lk status --ai", rendered)
+        self.assertIn("native command keeps its normal behavior", rendered)
+
     def test_next_command_footer_keeps_lowkey_suggestions_separate_from_ai(self):
         native = [("lk functions", "List contract functions.")]
         with patch.object(lk, "_recommended_next_commands", return_value=native), \
