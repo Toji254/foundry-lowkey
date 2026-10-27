@@ -729,6 +729,40 @@ class AIHarnessTests(unittest.TestCase):
         self.assertEqual(json.loads(ai.credentials_path().read_text(encoding="utf-8"))["keys"]["deepseek"]["1"], "example-secret")
         self.assertEqual(ai.credentials_path().stat().st_mode & 0o777, 0o600)
 
+    def test_shared_ai_voice_uses_plain_beginner_friendly_language(self):
+        from lowkey import provider_adapters
+
+        ai.configure(
+            provider="openai-compatible",
+            model="fixture-model",
+            base_url="https://provider.example/v1",
+            api_key="voice-test-key",
+        )
+        adapter = provider_adapters.get_provider_adapter("openai-compatible")
+        sent_payloads = []
+        response = json.dumps({
+            "choices": [{"message": {"content": json.dumps({"facts": [], "hypotheses": ["ok"]})}}]
+        }).encode("utf-8")
+
+        def send(**kwargs):
+            sent_payloads.append(kwargs["payload"])
+            return response
+
+        with patch.object(adapter, "send", side_effect=send):
+            ai.request_structured(
+                purpose="protocol_analysis",
+                task="Explain this result.",
+                context={"safe": True},
+                required_fields=("facts", "hypotheses"),
+            )
+
+        system_message = sent_payloads[0]["messages"][0]["content"]
+        self.assertIn("complete beginner", system_message)
+        self.assertIn("ordinary words", system_message)
+        self.assertIn("behind-the-scenes", system_message)
+        self.assertIn("without talking down", system_message)
+        self.assertIn("never override evidence", system_message)
+
     def test_three_key_slots_fail_over_after_quota_and_never_log_key_values(self):
         from lowkey import provider_adapters
 
