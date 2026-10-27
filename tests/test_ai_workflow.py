@@ -46,7 +46,6 @@ class AIWorkflowTests(unittest.TestCase):
         for command in (
             "lk status",
             "lk functions",
-            "lk functions withdraw",
             "lk fn withdraw",
             "lk ask withdraw",
             "lk read isAgreementValid",
