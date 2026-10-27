@@ -1161,25 +1161,28 @@ _AI_RECOMMENDATION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./:=+\-\[\]\(\),]+$")
 
 
 def _safe_ai_recommendation_command(value: Any) -> str | None:
-    """Accept only optional, bounded Lowkey learning commands; never shell or transactions."""
+    """Accept optional, bounded Lowkey learning commands; never shell or transactions."""
     if not isinstance(value, str):
         return None
     command = " ".join(value.strip().split())
     if not command or len(command) > 300:
         return None
-    if any(char in command for char in ("\r", "\n", ";", "|", "&", chr(96), "$", "<", ">", "\\", '"', "'")):
+    # Reject command chaining, shell substitution, quoting, redirects and newlines.
+    if any(char in command for char in ("\\r", "\\n", ";", "|", "&", chr(96), "$", "<", ">", "\\\\", '"', "'")):
         return None
     tokens = command.split()
     if len(tokens) < 2 or tokens[0] != "lk":
         return None
     if any(not _AI_RECOMMENDATION_TOKEN_RE.fullmatch(token) for token in tokens):
         return None
-    # Help is side-effect free, including for an unknown command. This matters
-    # when the user is experimenting with a typo or undocumented subcommand.
-    if tokens == ["lk", "--h"] or tokens == ["lk", "--help"] or tokens == ["lk", "-h"] or tokens == ["lk", "help"]:
+
+    # Help only displays text. Allow it even for an unfamiliar command name,
+    # so a beginner can discover the syntax without triggering the command.
+    if tokens in (["lk", "--h"], ["lk", "--help"], ["lk", "-h"], ["lk", "help"]):
         return command
     if tokens[-1] in {"--h", "--help", "-h", "help"} and len(tokens) <= 5:
         return command
+
     root = tokens[1]
     if root not in _AI_RECOMMENDATION_COMMAND_ROOTS:
         return None
@@ -1194,36 +1197,6 @@ def _safe_ai_recommendation_command(value: Any) -> str | None:
     if root == "balance" and len(tokens) not in {2, 3}:
         return None
     if root == "q" and tokens[2:] != ["current"]:
-        return None
-    return command
-
-def _safe_ai_recommendation_command(value: Any) -> str | None:
-    """Accept only explicitly allowlisted Lowkey commands; never accept shell syntax or writes."""
-    if not isinstance(value, str):
-        return None
-    command = " ".join(value.strip().split())
-    if not command or len(command) > 300:
-        return None
-    # Reject command chaining, shell substitution, quoting, redirects and newlines.
-    if any(char in command for char in ("\r", "\n", ";", "|", "&", chr(96), "$", "<", ">", "\\", '"', "'")):
-        return None
-    tokens = command.split()
-    if len(tokens) < 2 or tokens[0] != "lk" or tokens[1] not in _AI_RECOMMENDATION_COMMAND_ROOTS:
-        return None
-    if any(not _AI_RECOMMENDATION_TOKEN_RE.fullmatch(token) for token in tokens):
-        return None
-    root = tokens[1]
-    if root in {"read", "fn", "ask", "changes"} and len(tokens) < 3:
-        return None
-    if root in {"functions", "status", "proxy", "recon", "roles", "questions", "q", "findings", "events", "logs", "targets", "deployments", "actors"} and len(tokens) != 2:
-        return None
-    if root == "target" and (len(tokens) != 3 or tokens[2].lower() in {"reset", "remove", "clear"}):
-        return None
-    # Never recommend an implicit lab deployment: name the contract and choose
-    # the local generic deploy path so the effect is obvious to the user.
-    if root == "lab" and not (len(tokens) == 4 and tokens[2] == "--generic"):
-        return None
-    if root == "balance" and len(tokens) not in {2, 3}:
         return None
     return command
 
