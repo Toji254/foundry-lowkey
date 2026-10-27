@@ -1292,7 +1292,6 @@ SETUP & CONNECTION
 
   lk ai setup [--provider PROVIDER --model MODEL] [options]
       Run the guided setup when no provider/model is supplied, or configure directly.
-      Presets: OrcaRouter, OpenRouter, Google Gemini, NVIDIA, DeepSeek, Ollama, OpenAI, Custom.
       Options include --base-url, --api-key-env, --timeout, --max-output-tokens.
       Example: lk ai setup
 
