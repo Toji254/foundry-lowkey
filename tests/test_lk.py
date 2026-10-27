@@ -3537,6 +3537,7 @@ contract Pool {
         self.assertIn("LOWKEY", result.stdout)
         self.assertIn("lk actor 0 Alice", result.stdout)
         self.assertIn("lk lab [Contract] --ai-review", result.stdout)
+        self.assertIn("lk ai --h", result.stdout)
 
     def test_cli_failure_exit_codes(self):
         cases = [
