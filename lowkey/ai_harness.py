@@ -565,7 +565,7 @@ def render_status(value: Mapping[str, Any]) -> str:
     lines.append(
         f"Jev autonomous mode: {'ON' if value.get('jev_autonomous') else 'OFF'} — "
         + ("lab review, command guidance, error help, and learning recommendations are enabled together."
-           if value.get("jev_autonomous') else "manual AI requests remain available; automatic Jev behaviors are paused.")
+           if value.get("jev_autonomous") else "manual AI requests remain available; automatic Jev behaviors are paused.")
     )
     if value.get("jev_free_tier_mode"):
         lines.append(
