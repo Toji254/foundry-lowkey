@@ -390,20 +390,33 @@ Warning (2072): Unused local variable.
             self.assertEqual(context["shared_project_context"]["project_knowledge"]["audit_context"]["target"]["contract"], "Escrow")
             self.assertIn("system/deployment graph", context["shared_project_context_policy"])
 
-    def test_ai_diagnosis_receives_recent_project_history_without_absolute_path(self):
+    def test_ai_diagnosis_correlates_build_warnings_with_lab_failure_without_absolute_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "project"
             root.mkdir()
             history = {
                 "project_label": "project",
-                "events": [{
-                    "timestamp": "2026-10-27T03:00:00+00:00",
-                    "command": "build",
-                    "exit_code": 0,
-                    "status": "completed",
-                    "signals": ["Compiler warning: Unnamed return variable can remain unassigned (script/Deploy.s.sol:9:38)"],
-                    "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\n --> script/Deploy.s.sol:9:38:",
-                }],
+                "events": [
+                    {
+                        "timestamp": "2026-10-27T03:00:00+00:00",
+                        "command": "build",
+                        "exit_code": 0,
+                        "status": "completed",
+                        "signals": ["Compiler warning: Unnamed return variable can remain unassigned (script/Deploy.s.sol:9:38)"],
+                        "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\\n --> script/Deploy.s.sol:9:38:",
+                    },
+                    {
+                        "timestamp": "2026-10-27T03:01:00+00:00",
+                        "command": "lab",
+                        "exit_code": 2,
+                        "status": "failed",
+                        "signals": ["Deployment target discovery failed after a project-native deployment attempt."],
+                        "diagnostic_excerpt": (
+                            "Error: local project deployment ran, but Lowkey could not identify a deployed application target.\\n"
+                            "script/Deploy.s.sol:9:38"
+                        ),
+                    },
+                ],
             }
             captured = {}
             response = {
@@ -419,10 +432,13 @@ Warning (2072): Unused local variable.
                 captured.update(kwargs)
                 return response
 
-            with patch.object(error_advisor.error_context, "read_project_context", return_value=history), \
+            with patch.object(error_advisor.error_context, "read_project_context", return_value=history), \\
                  patch.object(error_advisor.ai_harness, "request_structured", side_effect=capture_request):
                 result = error_advisor.diagnose_record({
-                    "error": "local project deployment ran, but Lowkey could not identify a deployed application target at " + str(root) + "/script/Deploy.s.sol:9:38",
+                    "error": (
+                        "local project deployment ran, but Lowkey could not identify a deployed application target at "
+                        + str(root) + "/script/Deploy.s.sol:9:38"
+                    ),
                     "command": "lab",
                     "exit_code": 2,
                     "project_label": "project",
@@ -432,9 +448,13 @@ Warning (2072): Unused local variable.
             context_text = json.dumps(captured["context"])
             self.assertIn("shared_project_command_history", captured["context"])
             self.assertIn("Compiler warning", context_text)
+            self.assertIn("Deployment target discovery failed", context_text)
             self.assertNotIn(str(root), context_text)
-            self.assertEqual(result["shared_evidence_events"], 1)
-
+            self.assertEqual(result["shared_evidence_events"], 2)
+            self.assertTrue(any(
+                hint["title"] == "Correlate the lab failure with the preceding deployment-script warnings"
+                for hint in result["deterministic_hints"]
+            ))
 
 if __name__ == "__main__":
     unittest.main()
