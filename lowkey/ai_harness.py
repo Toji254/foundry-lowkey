@@ -1168,7 +1168,7 @@ def _safe_ai_recommendation_command(value: Any) -> str | None:
     if not command or len(command) > 300:
         return None
     # Reject command chaining, shell substitution, quoting, redirects and newlines.
-    if any(char in command for char in ("\\r", "\\n", ";", "|", "&", chr(96), "$", "<", ">", "\\\\", '"', "'")):
+    if any(char in command for char in ("\r", "\n", ";", "|", "&", chr(96), "$", "<", ">", "\\", '"', "'")):
         return None
     tokens = command.split()
     if len(tokens) < 2 or tokens[0] != "lk":
@@ -1848,9 +1848,9 @@ WHAT DOES "AUTO" MEAN?
 ----------------------
 auto is a value after a setting command, not a standalone command. Settings are independent:
   lk ai mode auto             Guide eligible command results and supported failures.
-  lk ai recommendations auto  Add optional learning notes after eligible command attempts, including failures.
+  lk ai recommendations auto  Add notes after attempts, even failures.
   lk ai errors auto           Explain supported failures without rerunning.
-Use "manual" to switch off; "status" shows the setting. Automatic requests may send selected source/error context and incur charges.
+Use "manual" to switch off; "status" shows it. Requests may send context and incur charges.
 
 UNIVERSAL --ai / TASK RUN
 -------------------------
