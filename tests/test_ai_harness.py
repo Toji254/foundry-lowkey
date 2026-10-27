@@ -149,6 +149,7 @@ class AIHarnessTests(unittest.TestCase):
             (["status", "--help"], ["--json"]),
             (["preview", "--help"], ["--root", "--contract", "--show-context", "--json-context"]),
             (["setup", "--help"], ["--provider", "--model", "--base-url", "--api-key-env", "--timeout", "--max-output-tokens"]),
+            (["switch", "--help"], ["profile", "number", "list"]),
             (["recommendations", "--help"], ["status", "auto", "manual", "--json"]),
             (["keys", "--help"], ["list", "add", "remove", "clear"]),
             (["keys", "list", "--help"], ["--provider", "--json"]),
