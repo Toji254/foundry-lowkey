@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import subprocess
@@ -13,6 +14,9 @@ class InstallSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             env = os.environ.copy()
             env["HOME"] = home
+            env["XDG_CONFIG_HOME"] = str(pathlib.Path(home) / ".config")
+            env["XDG_DATA_HOME"] = str(pathlib.Path(home) / ".local" / "share")
+            env["XDG_STATE_HOME"] = str(pathlib.Path(home) / ".local" / "state")
 
             result = subprocess.run(
                 ["bash", str(INSTALL)],
@@ -31,6 +35,8 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(question_engine.exists())
             cheatsheet = pathlib.Path(home) / ".lowkey" / "solidity_cheatsheet.py"
             self.assertTrue(cheatsheet.exists())
+            self.assertTrue((pathlib.Path(home) / ".lowkey" / "ai_harness.py").exists())
+            self.assertTrue((pathlib.Path(home) / ".lowkey" / "experience_memory.py").exists())
 
             version = subprocess.run(
                 [str(installed_lk), "--version"],
@@ -56,6 +62,22 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk q", help_result.stdout)
             self.assertIn("lk questions", help_result.stdout)
             self.assertIn("lk cheat", help_result.stdout)
+            self.assertIn("lk ai status", help_result.stdout)
+            self.assertIn("lk memory status", help_result.stdout)
+
+            ai_status = subprocess.run(
+                [str(installed_lk), "ai", "status", "--json"], cwd=ROOT, env=env,
+                capture_output=True, text=True,
+            )
+            self.assertEqual(ai_status.returncode, 0, ai_status.stdout + ai_status.stderr)
+            self.assertFalse(json.loads(ai_status.stdout)["enabled"])
+
+            memory_status = subprocess.run(
+                [str(installed_lk), "memory", "status"], cwd=ROOT, env=env,
+                capture_output=True, text=True,
+            )
+            self.assertEqual(memory_status.returncode, 0, memory_status.stdout + memory_status.stderr)
+            self.assertIn('"global_approved": 0', memory_status.stdout)
             for command in ("forge", "slither"):
                 contextual_help = subprocess.run(
                     [str(installed_lk), command, "--h"],

@@ -195,6 +195,47 @@ def record_status(code):
         _COMMAND_STATUS = code
     return code
 
+def _record_last_error(error_text, code=2, source="lowkey"):
+    """Persist a private, redacted error summary for optional explanation."""
+    try:
+        try:
+            import error_context
+        except ImportError:
+            from lowkey import error_context
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            pass
+        command = sys.argv[1:2]  # never persist arbitrary argv, which may contain secrets
+        return error_context.record_last_error(
+            command=command, error=error_text, exit_code=code,
+            project_root=str(root) if root else None, source=source,
+        )
+    except Exception:
+        return None
+
+
+def _maybe_explain_error(record):
+    """Run an opt-in diagnostic suggestion after a failed command; never execute suggested commands."""
+    if not isinstance(record, dict):
+        return
+    try:
+        try:
+            import error_context
+            import error_advisor
+        except ImportError:
+            from lowkey import error_context, error_advisor
+        if not error_context.auto_error_explain_enabled():
+            return
+        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
+        result = error_advisor.maybe_auto_explain(record)
+        if result:
+            print(result, file=sys.stderr)
+    except Exception as exc:
+        print(f"Optional AI error explanation unavailable ({type(exc).__name__}); run 'lk ai explain-error --last' when ready.", file=sys.stderr)
+
+
 def fail(message, code=2):
     # Shared formatter recognizes external/runtime failures while preserving
     # Lowkey's own specific validation messages and their usage hints.
@@ -203,6 +244,7 @@ def fail(message, code=2):
     except Exception:
         rendered = str(message)
     print(rendered, file=sys.stderr)
+    _record_last_error(rendered, code=code, source="fail")
     return record_status(code)
 
 def is_tx_hash(value):
@@ -10544,11 +10586,16 @@ def run_native_lab(config, root, project):
     return 0
 
 def run_lab(config,args):
+    args = list(args or [])
+    ai_review_requested = "--ai-review" in args
+    if ai_review_requested:
+        args = [argument for argument in args if argument != "--ai-review"]
     if args and args[0].lower() in {"help","-h","--help"}:
         print("Usage:")
         print("  lk lab [Contract]")
         print("  lk lab --generic [Contract]")
         print("  lk lab --artifact <Contract>")
+        print("  lk lab --ai-review  # optional unverified protocol review")
         print("  lk lab stop")
         print("")
         print("MODES")
@@ -10631,6 +10678,84 @@ def run_lab(config,args):
                     print(f"ACTIVE PROJECT: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
                     break
                 print("Please enter one of the project numbers, or q.")
+    # Optional protocol reasoning has two explicit modes: manual review on demand,
+    # or deterministic complexity-triggered assistance after the user selects auto.
+    # Neither mode grants the model authority over targets, tool execution, or deployment.
+    _ai_is_stop = any(str(argument).lower() == "stop" for argument in args)
+    requested_contract = next(
+        (str(argument) for argument in args
+         if not str(argument).startswith("-")
+         and str(argument).lower() not in {"stop", "auto", "help", "-h", "--help"}),
+        None,
+    )
+    _ai_review_reason = "explicit --ai-review request" if ai_review_requested else None
+    _ai_review_mode = "manual" if ai_review_requested else None
+    _ai_harness = None
+    _ai_status = None
+
+    if not _ai_is_stop and (_ai_review_mode is not None or not ai_review_requested):
+        try:
+            try:
+                import ai_harness as _ai_harness
+            except ImportError:
+                from lowkey import ai_harness as _ai_harness
+            _ai_status = _ai_harness.status()
+            if _ai_review_mode is None and _ai_status.get("usable") and _ai_status.get("auto_assist"):
+                _reason = _ai_harness.automatic_review_reason(root, requested_contract, _ai_status)
+                if _reason:
+                    _ai_review_mode = "auto"
+                    _ai_review_reason = _reason
+        except Exception:
+            # Status/heuristic failures never affect the deterministic lab path.
+            _ai_harness = None
+            _ai_status = None
+
+    if _ai_review_mode is not None and not _ai_is_stop:
+        try:
+            if _ai_harness is None:
+                try:
+                    import ai_harness as _ai_harness
+                except ImportError:
+                    from lowkey import ai_harness as _ai_harness
+            if _ai_status is None:
+                _ai_status = _ai_harness.status()
+            if not _ai_status.get("usable"):
+                print(
+                    "INFO  Optional AI protocol review skipped "
+                    f"({_ai_status.get('reason') or 'not available'}); native lab setup continues."
+                )
+            else:
+                review = _ai_harness.review_project_protocol(root, requested_contract)
+                meta = review.get("_lowkey_meta", {})
+                print()
+                print("@ AI OUTPUT — PROTOCOL REVIEW (UNVERIFIED)")
+                print("==========================================")
+                if _ai_review_mode == "auto":
+                    print("Mode: complexity-triggered auto-assist")
+                    print("Trigger: " + json.dumps(str(_ai_review_reason), ensure_ascii=True))
+                else:
+                    print("Mode: explicit user request")
+                print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
+                print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
+                if meta.get("context_sha256"):
+                    print(f"Context SHA-256: {meta['context_sha256']}")
+                print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=True))
+                for label, key in (
+                    ("Contract roles", "contract_roles"),
+                    ("Candidate invariants", "invariants"),
+                    ("Open questions", "open_questions"),
+                    ("Deployment considerations", "deployment_considerations"),
+                ):
+                    values = review.get(key, [])
+                    if not values:
+                        continue
+                    print(f"\n{label}:")
+                    for item in values[:8]:
+                        print("  - " + json.dumps(item, ensure_ascii=True, sort_keys=True)[:1200])
+                print("\nContinuing with Lowkey's native lab logic; AI output does not alter deployment choices.")
+        except Exception as exc:
+            print(f"INFO  Optional AI protocol review failed ({type(exc).__name__}); native lab setup continues.")
+
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
 
@@ -15749,7 +15874,7 @@ COMMAND_HELP = {
     ),
     "lab": _help_entry(
         "Create a disposable local EVM lab for safe contract interaction and audit experiments.",
-        "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop",
+        "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab --ai-review | lk lab stop",
         "lk lab MyContract",
         "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
         forms=[
@@ -15765,6 +15890,7 @@ COMMAND_HELP = {
         options=[
             ("--generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic MyContract"),
             ("--artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact MyContract"),
+            ("--ai-review", "Request optional unverified protocol reasoning; native lab logic remains authoritative.", "lk lab --ai-review"),
         ],
         related=["lk target", "lk walkthrough", "lk status"],
     ),
@@ -16935,6 +17061,9 @@ START HERE
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
   lk lab                             Start/rebuild a disposable local audit lab.
+  lk lab --ai-review                 Add an optional, unverified protocol review.
+  lk ai status                       Show optional AI provider status.
+  lk memory status                   Inspect native project/global experience memory.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
@@ -17419,8 +17548,55 @@ def _recommended_next_commands(command, args=None, config=None):
     return rendered
 
 
+def _print_ai_recommendations(command, native_items, config=None):
+    """Print optional model advice beside (never instead of) Lowkey's native suggestions."""
+    try:
+        try:
+            import ai_harness
+        except ImportError:
+            from lowkey import ai_harness
+        current = ai_harness.status()
+        if not current.get("auto_recommendations"):
+            return
+        if not current.get("enabled") or not current.get("usable"):
+            return
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = Path.cwd()
+        contract_name = None
+        try:
+            project_target = project_context_target(root)
+        except Exception:
+            project_target = None
+        if isinstance(project_target, dict):
+            contract_name = str(project_target.get("contract") or "").strip() or None
+        if not contract_name and isinstance(config, dict):
+            contract_name = str(config.get("target_contract") or "").strip() or None
+        native = [
+            {"command": str(item[0]), "reason": str(item[1])}
+            for item in native_items if isinstance(item, (tuple, list)) and len(item) == 2
+        ]
+        report = ai_harness.recommend_next_steps(
+            root,
+            command=str(command or "").strip().lower(),
+            native_recommendations=native,
+            contract_name=contract_name,
+        )
+        rendered = ai_harness.render_ai_recommendations(report)
+        print("")
+        print(rendered)
+    except Exception as exc:
+        # An optional remote call must never break the native command that just succeeded.
+        print(
+            f"\n@ AI RECOMMENDATIONS UNAVAILABLE ({type(exc).__name__}). "
+            "Lowkey's native recommendations above remain available.",
+            file=sys.stderr,
+        )
+
+
 def _print_recommended_next_commands(command, args=None, result=0, config=None):
-    """Render contextual next steps without breaking failed or machine-readable commands."""
+    """Render deterministic Lowkey suggestions and optional AI suggestions separately."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
     if result_code not in {None, 0}:
         return
@@ -17428,10 +17604,12 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     if not items:
         return
     print("")
-    print("RECOMMENDED NEXT COMMANDS")
-    print("=========================")
-    for command_text, reason in items:
-        print(f"  {command_text:<42} {reason}")
+    print("LOWKEY RECOMMENDED NEXT COMMANDS")
+    print("================================")
+    for index, (command_text, reason) in enumerate(items, 1):
+        print(f"  {index}. {command_text}")
+        print(f"     Why: {reason}")
+    _print_ai_recommendations(command, items, config)
 
 
 def _dispatch_command_impl(cmd,args,config,from_batch=False):
@@ -18008,6 +18186,8 @@ def dispatch_command(cmd, args, config, from_batch=False):
                 )
                 print(_ensure_error_context(rendered, cmd, code), file=sys.stderr)
                 record_status(code)
+                record = _record_last_error(rendered, code=code, source="dispatcher")
+                _maybe_explain_error(record)
             else:
                 sys.stderr.write(diagnostic)
         raise
@@ -18026,6 +18206,8 @@ def dispatch_command(cmd, args, config, from_batch=False):
         return result
 
     error_code = returned_code if isinstance(returned_code, int) and returned_code != 0 else 2
+    recorded_text = diagnostic.strip() or getattr(result, "output", None) or f"Command returned exit code {error_code} without detailed diagnostic output."
+    record = _record_last_error(recorded_text, code=error_code, source="dispatcher")
     if diagnostic.strip():
         rendered = (
             diagnostic.strip()
@@ -18052,6 +18234,9 @@ def dispatch_command(cmd, args, config, from_batch=False):
         )
         print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
 
+    # Keep the primary failure first in the terminal output. Optional AI
+    # explanations are secondary context and must never obscure the Error line.
+    _maybe_explain_error(record)
     record_status(error_code)
     if isinstance(returned_code, int) and returned_code != 0:
         return result
@@ -18222,15 +18407,15 @@ def _safe_main() -> int:
         except Exception:
             root = None
 
-        print(
-            _format_cli_error(
-                f"{type(exc).__name__}: {exc}",
-                code=2,
-                command=sys.argv[1] if len(sys.argv) > 1 else None,
-                source="runtime",
-            ),
-            file=sys.stderr,
+        formatted_error = _format_cli_error(
+            f"{type(exc).__name__}: {exc}",
+            code=2,
+            command=sys.argv[1] if len(sys.argv) > 1 else None,
+            source="runtime",
         )
+        print(formatted_error, file=sys.stderr)
+        record = _record_last_error(formatted_error, code=2, source="runtime")
+        _maybe_explain_error(record)
         if root:
             print(f"  project: {root}", file=sys.stderr)
             try:

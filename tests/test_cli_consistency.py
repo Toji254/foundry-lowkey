@@ -15,6 +15,19 @@ spec.loader.exec_module(lk)
 
 
 class CliConsistencyTests(unittest.TestCase):
+    def test_next_command_footer_keeps_lowkey_suggestions_separate_from_ai(self):
+        native = [("lk functions", "List contract functions.")]
+        with patch.object(lk, "_recommended_next_commands", return_value=native), \
+             patch.object(lk, "_print_ai_recommendations") as ai_footer:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk._print_recommended_next_commands("status", [], 0, {})
+        rendered = output.getvalue()
+        self.assertIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertIn("1. lk functions", rendered)
+        self.assertIn("Why: List contract functions.", rendered)
+        ai_footer.assert_called_once_with("status", native, {})
+
     def test_named_actor_resolves_for_address_argument(self):
         alice = "0x" + "1" * 40
         deployer = "0x" + "2" * 40

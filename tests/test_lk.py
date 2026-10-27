@@ -701,6 +701,30 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertNotIn("Operation: lk sample", rendered)
         self.assertIn("required input was missing", rendered)
 
+    def test_dispatcher_prints_primary_error_before_optional_ai_explanation(self):
+        output = io.StringIO()
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            print("Error: required input was missing", file=sys.stderr)
+            return None
+
+        def optional_explanation(record):
+            print("@ AI OUTPUT — OPTIONAL ERROR EXPLANATION", file=sys.stderr)
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler), patch.object(
+            lk, "_maybe_explain_error", side_effect=optional_explanation
+        ):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("sample", [], {})
+
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("Error:"))
+        self.assertLess(
+            rendered.index("Error:"),
+            rendered.index("@ AI OUTPUT — OPTIONAL ERROR EXPLANATION"),
+        )
+
     def test_dispatcher_does_not_double_wrap_a_formatted_error(self):
         output = io.StringIO()
         formatted = lk._format_cli_error(

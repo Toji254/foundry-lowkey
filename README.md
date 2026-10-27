@@ -78,6 +78,61 @@ The active workspace scope is used by commands such as lk audit and lk lab when 
 - Protocol walkthrough: uses the richer local Foundry walkthrough/lab engine for actual stateful execution and replayable observations.
 
 lk audit and lk audit run are intentionally separate surfaces: the former is the interactive Lowkey audit console; the latter is the evidence pipeline. Neither should be read as a vulnerability verdict.
+## Native-first AI harness
+
+AI is an optional, once-configured reasoning extension for narrowly scoped tasks such as protocol interpretation and proposing test hypotheses. It does not replace Lowkey's native analyzers or run commands, edit files, sign transactions, deploy contracts, or confirm findings. Normal workflows work with AI disabled.
+
+See [the native AI harness guide](docs/native-ai-harness.md) for provider setup, privacy boundaries, and use of the explicit \`lk lab --ai-review\` option.
+
+Preview the exact redacted payload locally before sharing any project context with a provider:
+
+~~~bash
+lk ai preview
+lk ai preview --contract ConfidencePool --show-context
+bash scripts/test-native-ai-harness.sh
+~~~
+
+### Focused security review with evidence
+
+The protocol overview and security-finding workflow are separate commands. The focused review records only unverified candidates; source-quote validation checks citation existence, not exploitability. Use native tests and an explicit human disposition for conclusions.
+
+~~~bash
+lk ai security-review --contract ConfidencePool
+lk ai ledger
+lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test testWithdrawSucceedsInAttackRequested
+# Inspect the plan and selected test before explicitly executing:
+lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test testWithdrawSucceedsInAttackRequested --run
+lk ai disposition F-0123456789ab --status confirmed --reviewer auditor --reason 'Reviewed the reproduced impact and assertion.' --evidence-id NATIVE_TEST_EVENT_ID
+lk ai runtime
+~~~
+### AI test planning without AI-driven execution,,`lk ai test-plan --contract ConfidencePool` proposes source-cited unit/fuzz/invariant/regression cases, including explicit setup, steps and assertions. It saves a plan and ledger event only: it does not write test code or run tests.,,~~~bash,lk ai test-plan --contract ConfidencePool,lk ai test-plan --contract ConfidencePool --json,~~~,,Review the proposals against current source and tests before implementing them. See `docs/native-ai-harness.md` for the evidence lifecycle and guardrails.,### Error help and provider key failover
+
+`lk ai explain-error --last` diagnoses the most recently captured Lowkey error; use `lk ai explain-error --text '...'` for any copied error. `lk ai errors auto` opts into an AI diagnosis after routed CLI failures (provider requests may incur charges); `lk ai errors manual` disables automatic explanations. AI-suggested commands are never executed.
+
+Add up to three API key slots for one configured provider with hidden input:
+
+~~~bash
+lk ai keys add --provider openai-compatible --slot 1
+lk ai keys add --provider openai-compatible --slot 2
+lk ai keys add --provider openai-compatible --slot 3
+lk ai keys list --provider openai-compatible
+~~~
+
+Quota/rate-limit/key-auth failures trigger bounded failover across the configured slots. Keys are not printed or logged; model/provider is not silently changed.
+## Native experience memory
+
+Lowkey can retain audit feedback and reusable lessons without an AI provider. Feedback and proposed lessons are stored in a private user-data directory keyed to the canonical path of the audited project, not inside the target repository. Only lessons explicitly approved with validation evidence are supplied as relevance-ranked reference context to an explicitly requested AI review; lessons never execute as code or change native security rules.
+
+~~~bash
+lk memory status
+lk memory feedback --kind false-positive --summary "Lead did not reproduce" --evidence "Regression test confirms the only path is guarded."
+lk memory propose --kind test-procedure --title "Check factory registry" --lesson "Assert both the factory event and registry mapping." --tag factory
+lk memory list --status proposed
+lk memory approve LESSON_ID --validation-kind test --validation "The linked Foundry regression test passes."
+~~~
+
+See [the experience memory guide](docs/experience-memory.md) for validation, scope, global promotion, and correction workflows.
+
 ## Start here
 
 ~~~bash
