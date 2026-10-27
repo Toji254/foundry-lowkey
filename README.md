@@ -82,7 +82,16 @@ lk audit and lk audit run are intentionally separate surfaces: the former is the
 
 AI is an optional, once-configured reasoning extension for narrowly scoped tasks such as protocol interpretation and proposing test hypotheses. It does not replace Lowkey's native analyzers or run commands, edit files, sign transactions, deploy contracts, or confirm findings. Normal workflows work with AI disabled.
 
-See [the native AI harness guide](docs/native-ai-harness.md) for provider setup, privacy boundaries, and use of the explicit \`lk lab --ai-review\` option.
+Start with guided provider/model setup. Save multiple model configurations and switch between them without re-entering their API keys:
+
+~~~bash
+lk ai setup
+lk ai status
+lk ai test
+lk ai switch
+~~~
+
+See [the native AI harness guide](docs/native-ai-harness.md) for provider setup, privacy boundaries, saved model profiles, and use of the explicit \`lk lab --ai-review\` option.
 
 Preview the exact redacted payload locally before sharing any project context with a provider:
 
