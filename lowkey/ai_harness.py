@@ -1561,6 +1561,8 @@ def recommend_next_steps(
         "Do NOT give the user a required sequence, checklist, task plan, or a series of commands. Do NOT use imperative wording "
         "such as 'first do this, then do that'. At most, offer ONE optional experiment the user may ignore; if an experiment "
         "is not genuinely useful, leave optional_command empty. Prefer a Lowkey help command when the user is exploring the CLI. "
+        "Do not abstain merely because a function needs input values; explain that 'lk fn FunctionName' can inspect function metadata without values. "
+        "When recent output contains a warning or failure, prioritize investigation of that evidence instead of unrelated browsing. "
         "Avoid generic contract-security advice unless the just-run Lowkey command or its output makes that connection relevant. "
         "If the attempted command is unknown, use the built-in command catalog to explain how Lowkey help works and suggest "
         "one relevant way to discover a valid command; do not pretend the invalid command ran. "
@@ -1633,11 +1635,19 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
                 if isinstance(item, Mapping):
                     lines.append(f"  {item.get('path', 'unknown')} — {item.get('symbol', 'unknown')}")
     if not items:
-        lines.extend([
-            "",
-            "No additional learning note passed Lowkey's evidence checks for this command.",
-            "That does not mean the command, contract, or project is safe; it means no useful note was produced from the supplied context.",
-        ])
+        discarded = int(report.get("discarded_count") or 0)
+        candidates = int(report.get("candidate_count") or 0)
+        lines.append("")
+        if discarded:
+            lines.append(
+                f"The model returned {candidates} candidate learning note(s), but none passed Lowkey's evidence and safety checks."
+            )
+            lines.append("No rejected command or workflow was shown.")
+        else:
+            lines.append("No additional learning note passed Lowkey's evidence checks for this command.")
+        lines.append(
+            "That does not mean the command, contract, or project is safe; it means no useful note was produced from the supplied context."
+        )
     for index, item in enumerate(items, 1):
         if not isinstance(item, Mapping):
             continue
