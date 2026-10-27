@@ -1279,9 +1279,9 @@ QUICK START
        lk ai test
   3. Add more models, then switch without re-entering settings:
        lk ai switch
-  3. Inspect selected source locally before a source-based request:
+  4. Inspect selected source locally before a source-based request:
        lk ai preview --contract Vault --show-context
-  4. Run the focused task you need:
+  5. Run the focused task you need:
        lk ai security-review --contract Vault
 
 SETUP & CONNECTION
