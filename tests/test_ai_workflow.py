@@ -116,7 +116,7 @@ class AIWorkflowTests(unittest.TestCase):
                 "source_files_included": 1,
             }
             answer = {
-                "summary": "\\x1b[31mThe status command completed, but the selected target still needs review.\\x1b[0m",
+                "summary": "\x1b[31mThe status command completed, but the selected target still needs review.\x1b[0m",
                 "observations": ["The native command exited successfully."],
                 "risks": ["Confirm that the selected network is the intended one."],
                 "missing_information": ["No transaction trace was supplied."],
@@ -162,7 +162,7 @@ class AIWorkflowTests(unittest.TestCase):
             self.assertIn("AI COMMAND GUIDANCE — UNVERIFIED", rendered)
             self.assertIn("SUGGESTED COMMAND (NOT RUN)", rendered)
             self.assertIn("lk recon", rendered)
-            self.assertNotIn("\\x1b", rendered)
+            self.assertNotIn("\x1b", rendered)
 
     def test_prior_project_evidence_is_bounded_and_marked_historical(self):
         with tempfile.TemporaryDirectory() as temporary:
