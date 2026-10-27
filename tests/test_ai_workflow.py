@@ -39,6 +39,10 @@ class AIWorkflowTests(unittest.TestCase):
         self.assertTrue(workflow.should_auto_guide("test", [], 0, active))
         self.assertTrue(workflow.should_auto_guide("read", ["balanceOf"], 1, active))
         self.assertTrue(workflow.should_auto_guide("audit", ["run"], 0, active))
+        self.assertTrue(workflow.should_auto_guide("verification", ["run", "campaign.json"], 0, active))
+        self.assertTrue(workflow.should_auto_guide("verification", ["investigate", "F-123"], 0, active))
+        self.assertFalse(workflow.should_auto_guide("verification", ["engines", "--json"], 0, active))
+        self.assertFalse(workflow.should_auto_guide("verification", ["correlate", "campaign.json"], 0, active))
         no_double_error = {**active, "auto_explain_errors": True}
         self.assertFalse(workflow.should_auto_guide("read", ["balanceOf"], 1, no_double_error))
         self.assertFalse(workflow.should_auto_guide("test", [], 0, {**active, "auto_assist": False}))
