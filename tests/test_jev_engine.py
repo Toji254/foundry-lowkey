@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -221,6 +223,16 @@ class JevEngineTests(unittest.TestCase):
                 self.assertEqual(ai_harness.main(["jev", "setup"]), 0)
         self.assertEqual(jev_engine.load_settings()["provider"], "typesafe")
         self.assertIn("TypeSafe official API", output.getvalue())
+
+    def test_ctrl_c_at_jev_setup_prompt_exits_without_traceback_or_writes(self):
+        output = io.StringIO()
+        with patch("getpass.getpass", side_effect=KeyboardInterrupt):
+            with contextlib.redirect_stderr(output):
+                self.assertEqual(ai_harness.main(["jev", "setup", "--provider", "jevmodel"]), 130)
+        self.assertIn("Cancelled by user", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+        self.assertFalse(jev_engine.credentials_path().exists())
+        self.assertFalse(jev_engine.settings_path().exists())
 
     def test_cli_setup_defaults_to_jevmodel_when_no_existing_provider_is_configured(self):
         # Preserve old TypeSafe keys in real installations, but choose the advertised
