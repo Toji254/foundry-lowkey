@@ -18496,14 +18496,23 @@ def main():
             config,
         )
     if ai_requested:
-        _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+        if machine_readable_verification:
+            # Preserve the machine-readable stdout contract when --ai is explicit.
+            with redirect_stdout(sys.stderr):
+                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+        else:
+            _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
     elif auto_capture:
         try:
             import ai_workflow
         except ImportError:
             from lowkey import ai_workflow
         if ai_workflow.should_auto_guide(command, sys.argv[2:], footer_status, _ai_status_safely()):
-            _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+            if machine_readable_verification:
+                with redirect_stdout(sys.stderr):
+                    _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+            else:
+                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
