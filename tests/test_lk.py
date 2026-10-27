@@ -684,6 +684,41 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("provider rejected an unknown request", generic)
         self.assertNotIn("Exit code: 1", generic)
 
+    def test_unknown_command_error_points_to_general_help(self):
+        rendered = lk._format_cli_error(
+            "unknown Lowkey command 'no-such-command'",
+            code=2,
+            command="no-such-command",
+            source="lowkey",
+        )
+        self.assertIn("Run lk --help for the command list.", rendered)
+        self.assertNotIn("Run lk no-such-command --h", rendered)
+
+    def test_unknown_command_skips_duplicate_error_ai_when_learning_note_is_ready(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(return_value="duplicate diagnosis")
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {
+            "auto_recommendations": True,
+            "enabled": True,
+            "usable": True,
+        }
+        output = io.StringIO()
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "unknown Lowkey command 'no-such-command'"})
+
+        self.assertEqual(output.getvalue(), "")
+        fake_advisor.maybe_auto_explain.assert_not_called()
+
     def test_dispatcher_normalizes_direct_stderr_errors_and_sets_failure_status(self):
         output = io.StringIO()
 
