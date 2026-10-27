@@ -55,7 +55,7 @@ You can also set `JEVMODEL_API_KEY` or `TYPESAFE_API_KEY` in your environment. C
 
 ## What autonomous mode does
 
-When `lk ai jev on` is enabled and a key is available, Lowkey sends a **bounded, redacted snapshot** of selected arguments and captured output to Jev after eligible native workflows. Jev returns structured classifications, including:
+When `lk ai jev on` is enabled and the selected provider is available, Lowkey sends a **bounded, redacted snapshot** of selected arguments and captured output to Jev after eligible native workflows. Hosted providers require their own key; local Jevos-v5 requires the local server to be running. Jev returns structured classifications, including:
 
 - What the result most resembles: ordinary output, command/tool failure, test failure, security signal, target/runtime mismatch, incomplete evidence, state change, or unclear.
 - A review priority and model confidence where the answer type provides one.
@@ -71,7 +71,7 @@ When Jev setup or autonomy is enabled, Lowkey defaults to a conservative local g
 
 | Local guard | Default |
 |---|---:|
-| Combined Jev/text-AI provider attempts | 5 per UTC day |
+| Combined hosted Jev/text-AI provider attempts | 5 per UTC day |
 | TypeSafe Jev request size | 16,000 bytes maximum |
 | JevModel request size | 7,500 bytes maximum |
 | Jevos-v5 local request size | 32,000 bytes maximum (also subject to configured context cap) |
