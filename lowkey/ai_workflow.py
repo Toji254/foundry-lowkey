@@ -24,12 +24,14 @@ _TASK_ROOTS = {
     "proxy", "recon", "questions",
 }
 _AUTO_GUIDANCE_COMMANDS = {
-    # Existing complex workflows plus the most useful setup/forensic command results.
-    # Free-tier Jev should interpret one result once, not emit duplicate AI footers.
-    "audit", "audit-checks", "audit--checks", "build", "doctor", "test", "scan",
+    # Preserve the original manual/auto guidance scope. Jev adds an opt-in layer below.
+    "audit", "audit-checks", "audit--checks", "test", "scan",
     "break", "walkthrough", "walk", "fuzz", "invariant", "mutate", "symbolic", "slither",
-    "recon", "probe", "trace", "state-diff", "project", "system", "changes", "risk",
-    "poc", "test-gen", "mutation-check", "verification", "matrix", "seams",
+}
+_JEV_AUTO_GUIDANCE_COMMANDS = {
+    # Wider automatic coverage is enabled only by the Jev master switch.
+    "build", "doctor", "recon", "probe", "trace", "state-diff", "project", "system",
+    "changes", "risk", "poc", "test-gen", "mutation-check", "verification", "matrix", "seams",
 }
 
 
@@ -54,9 +56,11 @@ def should_auto_guide(command: str, arguments: Sequence[str], exit_code: int,
     path = f"{root} {args[0].lower()}" if args and args[0] in {
         "run", "pipeline", "engines", "correlate", "investigate"
     } else root
-    return root in _AUTO_GUIDANCE_COMMANDS or path in {
-        "audit run", "verification run", "verification investigate"
-    }
+    return (
+        root in _AUTO_GUIDANCE_COMMANDS
+        or (bool(ai_status.get("jev_autonomous")) and root in _JEV_AUTO_GUIDANCE_COMMANDS)
+        or path in {"audit run", "verification run", "verification investigate"}
+    )
 
 
 def _clean(value: Any, limit: int = 900) -> str:
