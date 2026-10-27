@@ -3146,7 +3146,7 @@ def main(argv: list[str] | None = None) -> int:
     jev = sub.add_parser("jev", aliases=("autonomy", "autonomous"), help="turn coordinated Jev automation on, off, or inspect it")
     jev.add_argument("value", nargs="?", choices=("setup", "on", "off", "status", "test", "remove-key"), default="status", help="configure Jev, run its structured triage, or inspect/pause autonomous mode")
     jev.add_argument("--tier", choices=("guarded", "standard"), default=None, help="guarded applies local daily/context/output request caps; standard removes the local caps")
-    jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per device day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
+    jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per UTC day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
     jev.add_argument("--with-text-ai", action="store_true", help="also request optional text-AI explanations when Jev says they are useful; requires enabled text AI and may use extra provider calls")
     jev.add_argument("--provider", choices=("jevmodel", "typesafe"), default=None, help="jevmodel = hosted endpoint advertising starter tokens; typesafe = official TypeSafe endpoint (setup only)")
     jev.add_argument("--model", default="jev-latest", help="TypeSafe Jev model ID or alias (setup only; JevModel fixes its model server-side)")
