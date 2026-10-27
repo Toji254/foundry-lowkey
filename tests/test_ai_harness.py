@@ -421,6 +421,110 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("target is Lowkey's current contract context", tip["learning_point"])
         self.assertEqual(tip["source"]["path"], "lowkey-command-reference")
 
+    def test_recommend_next_steps_requests_one_contextual_source_grounded_learning_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Registry.sol").write_text(
+                "contract Registry { "
+                "function isAgreementValid(address agreement) external view returns (bool) { return true; } "
+                "function owner() external view returns (address) { return msg.sender; } "
+                "}",
+                encoding="utf-8",
+            )
+            model_result = {
+                "recommendations": [{
+                    "title": "Function inspection does not require arguments",
+                    "why": "You are working with a contract function, and Lowkey separates inspection from calling it.",
+                    "learning_point": (
+                        "'lk fn' inspects the function's ABI-facing details without calling it. 'lk read' is for observing "
+                        "view/pure results, while 'lk send' would submit a transaction and is not an AI recommendation."
+                    ),
+                    "what_to_notice": "The function inputs and mutability help you decide what kind of inspection is possible.",
+                    "optional_command": "lk fn isAgreementValid",
+                    "source": {"path": "src/Registry.sol", "symbol": "isAgreementValid"},
+                }]
+            }
+            with patch.object(ai, "request_structured", return_value=model_result) as request:
+                report = ai.recommend_next_steps(
+                    root,
+                    command="read",
+                    native_recommendations=[{"command": "lk functions", "reason": "List callable functions."}],
+                    contract_name="Registry",
+                    command_args=["isAgreementValid"],
+                    command_result=0,
+                    lowkey_command_context={
+                        "invocation": "lk read isAgreementValid",
+                        "arguments": ["isAgreementValid"],
+                        "exit_code": 0,
+                        "source_excerpt": "COMMAND CONTEXT\nAttempted invocation: lk read isAgreementValid",
+                    },
+                )
+            context = request.call_args.kwargs["context"]
+            self.assertEqual(context["current_lowkey_command"]["exit_code"], 0)
+            self.assertEqual(context["current_lowkey_command"]["arguments"], ["isAgreementValid"])
+            self.assertIn("Do not abstain merely because a function needs input values", request.call_args.kwargs["task"])
+            self.assertIn("current_command_evidence", request.call_args.kwargs["task"])
+            self.assertEqual(report["recommendations"][0]["optional_command"], "lk fn isAgreementValid")
+            self.assertNotIn("steps", report["recommendations"][0])
+
+    def test_recommendations_use_command_docs_after_failed_unknown_command_without_contract_source(self):
+        from lowkey import error_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            captured = {}
+            command_context = {
+                "invocation": "lk no-such-command",
+                "arguments": [],
+                "exit_code": 2,
+                "summary": "",
+                "source_excerpt": (
+                    "COMMAND CONTEXT\n"
+                    "Attempted invocation: lk no-such-command\n"
+                    "Attempted command exit code: 2\n"
+                    "Known top-level Lowkey commands: target, status, functions\n"
+                ),
+            }
+            model_result = {
+                "recommendations": [{
+                    "title": "Lowkey commands have a built-in help path",
+                    "why": "The command you tried was not recognized, so this is about discovering Lowkey's own command surface.",
+                    "learning_point": (
+                        "Lowkey checks command names against its own command catalog. Help is handled before a native "
+                        "command runs, so a help request is a safe way to learn available syntax."
+                    ),
+                    "what_to_notice": "Help output describes a command without running its normal action.",
+                    "optional_command": "lk --h",
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                }]
+            }
+            with patch.object(
+                ai,
+                "_source_context",
+                side_effect=ai.AIHarnessError("No eligible first-party contract source was found for protocol review."),
+            ), patch.object(error_context, "read_project_context", return_value={"project_label": root.name, "events": []}), \
+                 patch.object(ai, "request_structured", side_effect=lambda **kwargs: captured.update(kwargs) or model_result):
+                report = ai.recommend_next_steps(
+                    root,
+                    "no-such-command",
+                    [],
+                    current_command_output="unknown Lowkey command 'no-such-command'",
+                    command_args=[],
+                    command_result=2,
+                    lowkey_command_context=command_context,
+                )
+
+        self.assertEqual(report["current_lowkey_command"]["exit_code"], 2)
+        self.assertEqual(report["recommendations"][0]["optional_command"], "lk --h")
+        self.assertIn("current_command_evidence", captured["context"])
+        self.assertEqual(captured["context"]["source_files"][0]["path"], "lowkey-command-reference")
+        self.assertIn("Lowkey itself", captured["task"])
+        rendered = ai.render_ai_recommendations(report)
+        self.assertIn("Command you tried: lk no-such-command", rendered)
+        self.assertIn("returned exit code 2", rendered)
+        self.assertIn("Optional experiment (not a task)", rendered)
+
     def test_recommendation_allowlist_rejects_transaction_and_shell_commands(self):
         for command in (
             "lk send pay",
