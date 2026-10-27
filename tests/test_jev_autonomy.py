@@ -29,6 +29,17 @@ class JevAutonomyTests(unittest.TestCase):
             base_url="http://127.0.0.1:11434/v1",
         )
 
+    def test_help_exposes_jev_switch_and_tier_controls(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["--help"]), 0)
+        help_text = output.getvalue()
+        self.assertIn("JEV AUTONOMY & FREE-TIER SAFETY", help_text)
+        self.assertIn("lk ai jev on", help_text)
+        self.assertIn("lk ai jev status", help_text)
+        self.assertIn("lk ai jev off", help_text)
+        self.assertIn("--daily-limit", help_text)
+
     def test_legacy_config_gets_new_defaults_without_schema_migration(self):
         ai.save_config({
             "schema_version": ai.SCHEMA_VERSION,
