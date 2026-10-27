@@ -2215,6 +2215,9 @@ class _JevTeeCapture:
     def flush(self):
         return self.stream.flush()
 
+    def getvalue(self) -> str:
+        return "".join(self.parts)
+
     def __getattr__(self, name):
         return getattr(self.stream, name)
 
