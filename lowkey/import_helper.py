@@ -2,7 +2,9 @@
 """Standalone Solidity import browser for Lowkey."""
 from __future__ import annotations
 
+import contextlib
 import difflib
+import io
 import json
 import re
 import subprocess
@@ -2185,5 +2187,102 @@ def main(argv=None) -> int:
     )
 
 
+
+class _JevTeeCapture:
+    """Show import-helper output normally while retaining a short diagnostic tail."""
+    def __init__(self, stream, limit: int = 18_000):
+        self.stream = stream
+        self.limit = limit
+        self.parts: list[str] = []
+        self.size = 0
+
+    def write(self, value):
+        written = self.stream.write(value)
+        if isinstance(value, str) and value:
+            self.parts.append(value)
+            self.size += len(value)
+            while self.size > self.limit and self.parts:
+                excess = self.size - self.limit
+                first = self.parts[0]
+                if len(first) <= excess:
+                    self.parts.pop(0)
+                    self.size -= len(first)
+                else:
+                    self.parts[0] = first[excess:]
+                    self.size -= excess
+        return written
+
+    def flush(self):
+        return self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def main_with_jev(argv=None) -> int:
+    """Add Jev guidance to import installation outcomes/errors without changing normal lookups."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    # Preserve interactive, help, JSON and copy-only contracts exactly; these are not
+    # useful autonomous AI triggers and JSON output must remain machine-readable.
+    if not args or any(str(item).strip().lower() in {"--h", "--help", "-h", "help", "--json", "--copy-only", "--copy"} for item in args):
+        return main(args)
+    try:
+        try:
+            import ai_harness
+            import ai_workflow
+        except ImportError:
+            from lowkey import ai_harness, ai_workflow
+        state = ai_harness.status()
+    except Exception:
+        # AI setup problems never block the native import browser.
+        return main(args)
+    if not (
+        state.get("jev_autonomous")
+        and state.get("enabled")
+        and state.get("usable")
+    ):
+        return main(args)
+
+    stdout_capture = _JevTeeCapture(sys.stdout)
+    stderr_capture = _JevTeeCapture(sys.stderr)
+    with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+        result = main(args)
+    code = result if isinstance(result, int) else 0
+    install_requested = "--install" in args or (args and args[0].strip().lower() == "install")
+    if code == 0 and not install_requested:
+        return code
+
+    if state.get("jev_free_tier_mode") and int(state.get("jev_calls_remaining") or 0) <= 0:
+        return code
+    captured = stdout_capture.getvalue()
+    errors = stderr_capture.getvalue()
+    if errors:
+        captured += "\n[LOWKEY STDERR]\n" + errors
+    try:
+        root = root_for()
+        report = ai_workflow.guide_command(
+            root=root,
+            command="lk import",
+            arguments=args,
+            exit_code=code,
+            command_output=captured,
+            project_config={},
+            task_note=(
+                "Interpret the completed import-browser lookup/install result. Explain whether a component was resolved, "
+                "whether an install actually succeeded, and any evidenced dependency/configuration issue. Never recommend "
+                "running an install automatically; suggestions are display-only."
+            ),
+        )
+        print()
+        print(ai_workflow.render_guidance(report))
+    except Exception as exc:
+        print(
+            f"\n@ JEV IMPORT GUIDANCE UNAVAILABLE ({type(exc).__name__}). "
+            "The native import command kept its normal result.",
+            file=sys.stderr,
+        )
+    return code
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main_with_jev())
