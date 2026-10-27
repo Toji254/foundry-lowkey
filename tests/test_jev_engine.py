@@ -210,6 +210,17 @@ class JevEngineTests(unittest.TestCase):
         self.assertNotIn("fixed data", cached_text)
         self.assertNotIn("typesafe_test_key_0123456789", cached_text)
 
+    def test_cli_setup_preserves_active_provider_when_both_provider_keys_exist(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {
+            "TYPESAFE_API_KEY": "typesafe_env_key_0123456789",
+            "JEVMODEL_API_KEY": "jevmodel_env_key_0123456789",
+        }):
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai_harness.main(["jev", "setup"]), 0)
+        self.assertEqual(jev_engine.load_settings()["provider"], "typesafe")
+        self.assertIn("TypeSafe official API", output.getvalue())
+
     def test_cli_setup_defaults_to_jevmodel_when_no_existing_provider_is_configured(self):
         # Preserve old TypeSafe keys in real installations, but choose the advertised
         # starter-token endpoint for a brand-new profile.
