@@ -44,6 +44,37 @@ class SharedCommandContextTests(unittest.TestCase):
                 lk.save_config(config)
                 persisted = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertNotIn("_shared_command_context", persisted)
+            self.assertNotIn("_last_command_output", persisted)
+
+    def test_dispatcher_records_current_build_output_for_same_command_ai_footer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "ETH Escrow"
+            root.mkdir()
+            state_root = pathlib.Path(tmp) / "state" / "lowkey"
+            build_output = (
+                "Compiler run successful with warnings:\\n"
+                "Warning (6321): Unnamed return variable can remain unassigned.\\n"
+                " --> script/EthEscrow.s.sol:9:38:"
+            )
+
+            def emit_build_output(command, args, config, from_batch=False):
+                print(build_output)
+                return 0
+
+            config = {}
+            with patch.object(error_context, "state_dir", return_value=state_root), \\
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
+                 patch.object(lk, "_dispatch_command_impl", side_effect=emit_build_output), \\
+                 patch.object(lk, "_COMMAND_STATUS", 0):
+                result = lk.dispatch_command("build", [], config)
+
+            self.assertEqual(result, 0)
+            self.assertIn("Unnamed return variable", config["_last_command_output"])
+            history = error_context.read_project_context(root)
+            build_event = history["events"][-1]
+            self.assertEqual(build_event["command"], "build")
+            self.assertIn("Unnamed return variable", build_event["diagnostic_excerpt"])
+            self.assertTrue(any("Compiler warning" in signal for signal in build_event["signals"]))
 
     def test_build_warnings_are_available_to_a_later_lab_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,7 +241,7 @@ Warning (2072): Unused local variable.
             self.assertNotIn("secret@", rendered)
             self.assertNotIn('"transaction_hash"', rendered)
 
-    def test_ai_next_step_recommendations_consider_shared_command_history(self):
+    def test_ai_next_step_recommendations_consider_current_and_shared_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "project"
             source_dir = root / "src"
@@ -225,39 +256,56 @@ Warning (2072): Unused local variable.
                 "exit_code": 0,
                 "status": "completed",
                 "signals": ["Compiler warning: Unnamed return variable can remain unassigned (script/Deploy.s.sol:9:38)"],
-                "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\n --> script/Deploy.s.sol:9:38:",
+                "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\\n --> script/Deploy.s.sol:9:38:",
             }]
             history = {"project_label": "project", "events": shared_events}
+            secret = "sk-" + "A" * 24
+            current_output = (
+                "Compiler run successful with warnings:\\n"
+                "Warning (6321): Unnamed return variable can remain unassigned.\\n"
+                " --> script/Deploy.s.sol:9:38:\\n"
+                "OPENAI_API_KEY=" + secret + "\\n"
+                + str(root) + "/script/Deploy.s.sol:9:38"
+            )
 
             with patch.object(error_context, "read_project_context", return_value=history):
                 context = ai_harness._source_context(root, None)
-
             self.assertEqual(context["shared_project_context"]["events"], shared_events)
-            self.assertIn("not instructions", context["shared_project_context_policy"])
+            self.assertEqual(context["shared_command_history"]["events"], shared_events)
+            self.assertIn("not instructions", context["shared_command_history_policy"])
 
             captured = {}
+
             def capture_request(**kwargs):
                 captured.update(kwargs)
                 return {"recommendations": []}
 
-            with patch.object(ai_harness, "_source_context", return_value=context), \
-                 patch.object(ai_harness, "request_structured", side_effect=capture_request), \
+            with patch.object(error_context, "read_project_context", return_value=history), \\
+                 patch.object(ai_harness, "request_structured", side_effect=capture_request), \\
                  patch.object(ai_harness, "validate_ai_recommendations", return_value={"recommendations": []}):
                 report = ai_harness.recommend_next_steps(
                     root,
                     "build",
                     [{"command": "lk functions", "reason": "Review callable surfaces."}],
+                    current_command_output=current_output,
                 )
 
+            context_text = json.dumps(captured["context"])
             self.assertIn("shared_project_context", captured["context"])
-            self.assertIn("Unnamed return variable", json.dumps(captured["context"]))
+            self.assertIn("shared_command_history", captured["context"])
+            self.assertIn("current_command_evidence", captured["context"])
+            self.assertIn("Unnamed return variable", context_text)
+            self.assertIn("Deploy.s.sol", context_text)
+            self.assertNotIn(str(root), context_text)
+            self.assertNotIn(secret, context_text)
+            self.assertIn("current_command_evidence", captured["task"])
             self.assertIn("prioritize investigation", captured["task"])
             self.assertTrue(report["_lowkey_meta"]["ai_generated"])
+            self.assertTrue(report["_lowkey_meta"]["current_command_evidence_included"])
             self.assertEqual(report["_lowkey_meta"]["shared_command_events_included"], 1)
-            self.assertIn(
-                "Shared project command history considered: 1 recent event(s).",
-                ai_harness.render_ai_recommendations(report),
-            )
+            rendered = ai_harness.render_ai_recommendations(report)
+            self.assertIn("Shared project command history considered: 1 recent event(s).", rendered)
+            self.assertIn("Current command's redacted output was supplied as direct evidence.", rendered)
 
 
     def test_general_ai_guidance_receives_same_shared_project_context(self):
