@@ -23,7 +23,7 @@ MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
 PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama", "orcarouter", "openrouter", "nvidia"}
-PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations"}
+PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1", "orcarouter": "https://api.orcarouter.ai/v1", "openrouter": "https://openrouter.ai/api/v1", "nvidia": "https://integrate.api.nvidia.com/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
@@ -1382,6 +1382,26 @@ independent:
 Use the matching "manual" form to switch a setting off. Use "status" to inspect it where
 available. Keep them manual when you want every model request to be explicit.
 
+UNIVERSAL COMMAND GUIDANCE
+-------------------------
+  lk status --ai
+      Run the normal command, then explain its observed output, relevant risks, missing evidence, and next step.
+  lk read isAgreementValid --ai
+      Explain the actual read result and suggest what to inspect next.
+  lk send --ai
+      Keep native send behavior unchanged; guidance explains the command result and never sends a transaction itself.
+  lk test --ai
+      Interpret test output and evidence gaps; AI does not rewrite or rerun the test.
+
+MULTI-STEP INVESTIGATION
+------------------------
+  lk ai run "investigate why withdrawal reverts"
+      Build a source-grounded plan, ask before running, then execute only validated read-oriented lk commands.
+  lk ai run "investigate why withdrawal reverts" --plan-only
+      Print the plan without running any command.
+  lk ai run "investigate why withdrawal reverts" --yes
+      Approve only the allowlisted read-oriented checks; never approve tests, deployments, transactions, or file edits.
+
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
   lk lab Vault --ai-review
@@ -1470,7 +1490,7 @@ def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None)
     """Show useful defaults and exact commands when a setting group has no value."""
     cfg = dict(config or load_config())
     setting = {
-        "mode": ("auto_assist", "protocol review mode"),
+        "mode": ("auto_assist", "automatic guidance mode"),
         "recommendations": ("auto_recommendations", "next-command recommendations"),
         "errors": ("auto_explain_errors", "automatic error explanations"),
     }.get(action)
@@ -1487,8 +1507,8 @@ def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None)
     ]
     if action == "mode":
         lines.extend([
-            "  lk ai mode manual   Run protocol review only when explicitly requested.",
-            "  lk ai mode auto     Allow complexity-triggered review for eligible workflows.",
+            "  lk ai mode manual   Request guidance only when explicitly asked.",
+            "  lk ai mode auto     Add guidance after eligible complex workflows or supported failures.",
             "",
             "Check current settings: lk ai status",
         ])
@@ -2175,6 +2195,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="action")
     status_cmd = sub.add_parser("status", help="show whether AI is set up and what to do next")
     status_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
+    run_cmd = sub.add_parser("run", help="investigate a goal with a checked plan and approved read-only commands")
+    run_cmd.add_argument("goal", nargs="+", help="task to investigate, for example: investigate why withdrawal reverts")
+    run_cmd.add_argument("--root", default=".", help="project directory (default: current directory)")
+    run_cmd.add_argument("--contract", help="prioritize source matching a contract name")
+    run_cmd.add_argument("--plan-only", action="store_true", help="show the validated plan without running commands")
+    run_cmd.add_argument("--yes", action="store_true", help="approve only the displayed allowlisted read-only checks")
     preview = sub.add_parser(
         "preview", help="inspect the redacted project context locally; never contacts a provider"
     )
@@ -2264,8 +2290,10 @@ def main(argv: list[str] | None = None) -> int:
     status_cmd.epilog = "WHEN: run this before an AI task. Example: lk ai status"
     preview.description = "Inspect the selected, redacted project context locally. No provider request is made."
     preview.epilog = "WHEN: review this before sending source to a provider. Example: lk ai preview --contract ConfidencePool"
-    mode.description = "Choose manual mode or opt in to complexity-triggered protocol review."
-    mode.epilog = "WHEN: use manual for full control; use auto only when you accept possible provider requests and charges. Example: lk ai mode manual"
+    mode.description = "Choose manual mode or opt in to automatic guidance for eligible workflows and failures."
+    mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to your provider after eligible commands. Charges may apply. Example: lk ai mode manual"
+    run_cmd.description = "Plan a source-grounded investigation and optionally execute only validated read-oriented Lowkey commands."
+    run_cmd.epilog = "WHEN: investigate a multi-step question. Commands are shown first; approval is required unless --yes is supplied. Example: lk ai run \"investigate why withdrawal reverts\" --plan-only"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
     recommendations_cmd.epilog = "WHEN: enable only if you accept source being sent to your provider after eligible commands. Example: lk ai recommendations auto"
     setup.description = "Run a guided provider/model setup, or pass explicit flags for advanced configuration."
@@ -2372,6 +2400,18 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         parsed = parser.parse_args(args)
+        if parsed.action == "run":
+            try:
+                import ai_workflow
+            except ImportError:
+                from lowkey import ai_workflow
+            return ai_workflow.run_task(
+                Path(parsed.root).expanduser(),
+                " ".join(parsed.goal),
+                contract_name=parsed.contract,
+                plan_only=parsed.plan_only,
+                assume_yes=parsed.yes,
+            )
         if parsed.action == "status":
             value = status()
             print(json.dumps(value, indent=2, sort_keys=True) if parsed.as_json else render_status(value))
@@ -2663,11 +2703,11 @@ def main(argv: list[str] | None = None) -> int:
             cfg["auto_assist"] = parsed.value == "auto"
             save_config(cfg)
             if cfg["auto_assist"]:
-                print("AI mode: auto. Native heuristics may request a protocol review for complex projects.")
-                print("Only the review request is automated; model output cannot choose targets or run tools.")
-                print("Selected source is sent to the configured provider, and charges may apply.")
+                print("AI mode: auto. Eligible complex workflows and supported failures may receive AI guidance.")
+                print("Native commands keep their existing behavior; AI suggestions are never executed.")
+                print("Relevant command output and selected redacted source may be sent to the provider; charges may apply.")
             else:
-                print("AI mode: manual. A protocol review runs only when you use lk lab --ai-review.")
+                print("AI mode: manual. Use --ai on a native command or lk lab --ai-review when you want guidance.")
             return 0
         if parsed.action == "setup":
             if not parsed.provider or not parsed.model:
