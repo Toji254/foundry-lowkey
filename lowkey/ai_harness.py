@@ -2095,9 +2095,11 @@ QUICK START
 JEV AUTONOMY & LOCAL BUDGET GUARD
 --------------------------------
   lk ai jev setup [--provider jevmodel|typesafe|jevos]
-      JevModel stays the hosted default; Jevos-v5 runs locally without a key.
+      JevModel default; 100,000 starter input tokens after verification.
+  lk ai jev setup --provider jevos
+      Use local Jevos-v5; no API key needed.
   lk ai jev start|stop|restart
-      Manage the local Jevos server (background when started by Lowkey).
+      Manage the local Jevos server in the background.
   lk ai jev test / lk ai jev on [options] / lk ai jev off / lk ai jev status
   lk ai jev remove-key
       test sends a source-free probe; Jev never executes suggestions.
@@ -3613,9 +3615,9 @@ def main(argv: list[str] | None = None) -> int:
             cfg = load_config()
             selected = parsed.value
             try:
-                import jev_engine
-            except ImportError:
                 from lowkey import jev_engine
+            except ImportError:
+                import jev_engine
 
             if parsed.daily_limit is not None and not 1 <= parsed.daily_limit <= JEV_MAX_DAILY_LIMIT:
                 raise AIHarnessError(
