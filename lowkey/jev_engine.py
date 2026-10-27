@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 API_URL = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_MODEL = "jev-latest"
 DEFAULT_TIMEOUT = 18
-MAX_REQUEST_BYTES = 16_000
+MAX_REQUEST_BYTES = 32_000
 MAX_RESPONSE_BYTES = 48_000
 INPUT_PRICE_USD_PER_MILLION = 0.042
 
@@ -355,8 +355,10 @@ def _clean_context(command: str, arguments: list[str], exit_code: int, output: s
     except ImportError:
         import ai_harness, ai_workflow
     safe_args = ai_workflow._safe_arguments([str(item) for item in arguments])
-    safe_output = ai_harness._redact_sensitive_source(str(output or ""))
-    safe_output = re.sub(r"(?i)(--(?:private-key|mnemonic|seed(?:-phrase)?|password|api-key|token|secret)(?:=|\s+))\S+", r"\1[REDACTED]", safe_output)
+    # Apply the same URL, bearer-token and secret-flag redaction as Lowkey's text-AI
+    # pipeline, then redact 32-byte hex values before the snapshot leaves the machine.
+    safe_output = ai_workflow._redact_text(str(output or ""))
+    safe_output = re.sub(r"(?i)\\b0x[a-f0-9]{64}\\b", "[REDACTED 32-BYTE HEX]", safe_output)
     safe_output = safe_output[-4_000:]
     return {
         "native_command": str(command or "")[:100],
