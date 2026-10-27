@@ -3310,6 +3310,35 @@ contract Pool {
                 os.chdir(old)
             self.assertEqual(code, 2)
 
+    def test_lab_preserves_remembered_contract_when_artifact_is_available(self):
+        with patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)) as artifact, \
+             patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic:
+            result = lk._preferred_lab_contract(
+                pathlib.Path("/tmp/project"), None, "TokenSaleContract"
+            )
+        self.assertEqual(result, "TokenSaleContract")
+        artifact.assert_called_once_with(pathlib.Path("/tmp/project"), "TokenSaleContract")
+        heuristic.assert_not_called()
+
+    def test_lab_explicit_contract_overrides_remembered_contract(self):
+        with patch.object(lk, "discover_artifact_lab_contract") as artifact, \
+             patch.object(lk, "discover_audit_target_contract") as heuristic:
+            result = lk._preferred_lab_contract(
+                pathlib.Path("/tmp/project"), "TokenSaleContract", "Token"
+            )
+        self.assertEqual(result, "TokenSaleContract")
+        artifact.assert_not_called()
+        heuristic.assert_not_called()
+
+    def test_lab_falls_back_to_heuristic_when_remembered_artifact_is_missing(self):
+        with patch.object(lk, "discover_artifact_lab_contract", return_value=None), \
+             patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic:
+            result = lk._preferred_lab_contract(
+                pathlib.Path("/tmp/project"), None, "TokenSaleContract"
+            )
+        self.assertEqual(result, "Token")
+        heuristic.assert_called_once_with(pathlib.Path("/tmp/project"))
+
     def test_lab_help_explains_ai_review_flag_and_automatic_mode(self):
         output = io.StringIO()
         with redirect_stdout(output):
