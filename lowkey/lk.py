@@ -14920,6 +14920,27 @@ def run_context(config):
     print(audit_context.human_snapshot(root))
     print(f"Context : {audit_context.context_path(root)}")
     print(f"Events  : {audit_context.events_path(root)}")
+    shared = shared_command_context(config, root, max_events=8)
+    recent = shared.get("events", []) if isinstance(shared, dict) else []
+    print("")
+    print("RECENT SHARED COMMAND EVIDENCE")
+    print("==============================")
+    if not recent:
+        print("No prior command evidence has been recorded for this project yet.")
+    for event in recent[-8:]:
+        if not isinstance(event, dict):
+            continue
+        status = "FAILED" if event.get("status") == "failed" else "completed"
+        exit_code = event.get("exit_code")
+        code_text = f", exit {exit_code}" if isinstance(exit_code, int) else ""
+        print(f"- {event.get('timestamp', 'unknown time')} | lk {event.get('command', 'command')} | {status}{code_text}")
+        for signal in (event.get("signals") or [])[:3]:
+            if isinstance(signal, str) and signal.strip():
+                print("    " + signal[:300])
+        if not event.get("signals") and event.get("diagnostic_excerpt"):
+            excerpt_lines = str(event["diagnostic_excerpt"]).splitlines()
+            for line in excerpt_lines[-2:]:
+                print("    " + line[:300])
 
 def run_signals(config, args):
     root = audit_context.foundry_project_root()
