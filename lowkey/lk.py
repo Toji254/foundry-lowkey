@@ -10585,6 +10585,18 @@ def run_native_lab(config, root, project):
     print("Ready   : native build/test state completed; EVM commands such as 'lk read' require an EVM lab target.")
     return 0
 
+
+def _preferred_lab_contract(root, requested=None, remembered_name=None):
+    """Prefer an explicit contract, then the remembered project target, then heuristics."""
+    explicit = str(requested or "").strip()
+    if explicit:
+        return explicit
+    remembered = str(remembered_name or "").strip()
+    if remembered and discover_artifact_lab_contract(root, remembered):
+        return remembered
+    return discover_audit_target_contract(root)
+
+
 def run_lab(config,args):
     args = list(args or [])
     ai_review_requested = "--ai-review" in args
@@ -10869,7 +10881,17 @@ def run_lab(config,args):
                 "Run it from a terminal, or use 'lk lab --artifact <Contract>' for a non-interactive lab."
             )
     
-    auto_selected = requested or discover_audit_target_contract(root)
+    # Save the user's project target before stale-target cleanup clears runtime state.
+    # If its artifact still exists, rebuilding the local lab should preserve that intent
+    # instead of silently switching from e.g. TokenSaleContract to Token.
+    remembered_contract_name = str(config.get("target_contract") or "").strip()
+    if not remembered_contract_name:
+        remembered_project_target = project_context_target(root)
+        if isinstance(remembered_project_target, dict):
+            remembered_contract_name = str(remembered_project_target.get("contract") or "").strip()
+    auto_selected = _preferred_lab_contract(root, requested, remembered_contract_name)
+    if not requested and remembered_contract_name and auto_selected == remembered_contract_name:
+        print(f"Target selection: preserving remembered contract {remembered_contract_name}.")
     script = discover_local_lab_script(root, auto_selected) if mode == "auto" else None
     fixture = discover_local_lab_fixture(root, auto_selected) if mode == "auto" else None
 
@@ -10974,10 +10996,10 @@ def run_lab(config,args):
             "falling back to generic artifact deployment."
         )
 
-    # No harness? Prefer the audit evidence; it usually points at the application's
-    # most security-relevant implementation contract.
+    # No harness? Keep an explicitly or previously selected project contract when
+    # its artifact remains deployable; only then fall back to the scoring heuristic.
     if not requested:
-        requested = discover_audit_target_contract(root)
+        requested = _preferred_lab_contract(root, None, remembered_contract_name)
 
     if not requested:
         context = audit_context.load(root)
