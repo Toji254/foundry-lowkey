@@ -83,9 +83,55 @@ class TestPlannerTests(unittest.TestCase):
         self.assertEqual(report["_lowkey_meta"]["validation_retry_count"], 1)
         retry_task = request.call_args_list[1].kwargs["task"]
         self.assertIn("CORRECTION REQUIRED", retry_task)
-        self.assertIn("at most 8 test cases", retry_task)
-        self.assertIn("8 steps per case", retry_task)
+        self.assertIn("at most 4 test cases", retry_task)
+        self.assertIn("5 steps per case", retry_task)
         self.assertIn("Format note:", test_planner.render_test_plan(report))
+
+    def test_malformed_structured_response_retries_once_with_compact_request(self):
+        malformed = test_planner.ai_harness.AIHarnessError(
+            "Provider returned an invalid structured JSON response; result rejected."
+        )
+        with patch.object(
+            test_planner.ai_harness, "request_structured",
+            side_effect=[malformed, self._response()],
+        ) as request:
+            report = test_planner.create_test_plan(self.root, "Vault")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(report["_lowkey_meta"]["validation_retry_count"], 1)
+        retry_task = request.call_args_list[1].kwargs["task"]
+        self.assertIn("structured-output error", retry_task)
+        self.assertIn("at most 4 test cases", retry_task)
+        self.assertIn("5 assertions per case", retry_task)
+        self.assertIn("JSON only", retry_task)
+        self.assertIn("did not pass Lowkey's output checks", test_planner.render_test_plan(report))
+
+    def test_repeated_malformed_structured_response_fails_without_saving_plan(self):
+        malformed = test_planner.ai_harness.AIHarnessError(
+            "Provider returned an invalid structured JSON response; result rejected."
+        )
+        with patch.object(
+            test_planner.ai_harness, "request_structured",
+            side_effect=[malformed, malformed],
+        ) as request:
+            with self.assertRaisesRegex(
+                test_planner.TestPlanError,
+                "could not produce a valid structured response after one correction attempt",
+            ):
+                test_planner.create_test_plan(self.root, "Vault")
+
+        self.assertEqual(request.call_count, 2)
+        plan_dir = self.root / ".audit" / "ai-review" / "test-plans"
+        self.assertFalse(plan_dir.exists() and list(plan_dir.glob("TP-*.json")))
+
+    def test_provider_unavailable_does_not_trigger_structured_output_retry(self):
+        unavailable = test_planner.ai_harness.AIUnavailable("provider could not be reached")
+        with patch.object(
+            test_planner.ai_harness, "request_structured", side_effect=unavailable,
+        ) as request:
+            with self.assertRaises(test_planner.ai_harness.AIUnavailable):
+                test_planner.create_test_plan(self.root, "Vault")
+        request.assert_called_once()
 
     def test_repeated_invalid_test_plan_is_rejected_without_saving_plan(self):
         invalid = self._response()
