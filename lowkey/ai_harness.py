@@ -1163,9 +1163,10 @@ def recommend_next_steps(
     context["allowed_read_only_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
     task = (
         "Suggest up to three additional next investigative steps using the actual contract logic in the selected source. "
-        "Before choosing suggestions, inspect shared_project_context and shared_project_context_policy. When recent build output "
-        "contains compiler warnings or a later command failed, acknowledge directly relevant evidence and prioritize investigation "
-        "of it over unrelated generic function browsing. A warning is a clue, not proof of causation. "
+        "Before choosing suggestions, inspect shared_project_context and shared_project_context_policy, including its project_knowledge "
+        "snapshot of the selected audit target, current Lowkey signals, saved deployment relationships, and evidence-ledger status. "
+        "When recent build output contains compiler warnings or a later command failed, acknowledge directly relevant evidence and "
+        "prioritize investigation of it over unrelated generic function browsing. A warning is a clue, not proof of causation. "
         "Lowkey already provides the separate native next-command list in the context: do not repeat those commands. "
         "Return JSON with one key, recommendations, an array of objects with title, why, command, and source {path, symbol}. "
         "Each recommendation must cite a path exactly present in context.source_files and a symbol/identifier that appears "
