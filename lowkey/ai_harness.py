@@ -1426,11 +1426,12 @@ def render_project_protocol_review(review: Mapping[str, Any]) -> str:
         "@ AI OUTPUT — PROJECT PROTOCOL REVIEW (UNVERIFIED)",
         "===================================================",
         "AI suggestions are hypotheses, not verified findings or deployment instructions.",
-        f"Source excerpts included: {meta.get('source_files_included', 'unknown')}",
+        f"Source excerpts included: {_safe_terminal_text(str(meta.get('source_files_included', 'unknown')))}",
     ]
     if meta.get("context_sha256"):
-        lines.append(f"Context SHA-256: {meta['context_sha256']}")
-    lines.extend(["", "Summary:", str(review.get("summary", "")).strip() or "(No summary supplied.)"])
+        lines.append(f"Context SHA-256: {_safe_terminal_text(str(meta['context_sha256']))}")
+    summary = _safe_terminal_text(str(review.get("summary", "")).strip())
+    lines.extend(["", "Summary:", summary or "(No summary supplied.)"])
     for label, key in (
         ("Contract roles", "contract_roles"),
         ("Candidate invariants", "invariants"),
