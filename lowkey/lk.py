@@ -10773,6 +10773,8 @@ def run_lab(config,args):
                     "INFO  Optional AI protocol review skipped "
                     f"({_ai_status.get('reason') or 'not available'}); native lab setup continues."
                 )
+            elif _ai_status.get("jev_free_tier_mode") and int(_ai_status.get("jev_calls_remaining") or 0) <= 0:
+                print("INFO  Optional Jev protocol review skipped (local free-tier AI request cap reached); native lab setup continues.")
             else:
                 review = _ai_harness.review_project_protocol(root, requested_contract)
                 meta = review.get("_lowkey_meta", {})
@@ -17717,6 +17719,10 @@ def _print_ai_recommendations(command, native_items, config=None, args=None, res
             return
         if not current.get("enabled") or not current.get("usable"):
             return
+        # Once the local free-tier guard is exhausted, stop background calls quietly.
+        # Explicit AI requests still reach the provider guard and get an actionable error.
+        if current.get("jev_free_tier_mode") and int(current.get("jev_calls_remaining") or 0) <= 0:
+            return
 
         # Batch/raw and JSON output must stay clean. A user setting or malformed
         # subcommand should not recursively trigger another recommendation footer.
@@ -18563,13 +18569,16 @@ def _dispatch_command_captured(command, args, config):
     return result, captured
 
 
-def _print_ai_command_guidance(command, args, result_code, config, command_output=""):
+def _print_ai_command_guidance(command, args, result_code, config, command_output="", *, automatic=False):
     """Optional post-command guidance must never change native execution success."""
     try:
         try:
             import ai_workflow
         except ImportError:
             from lowkey import ai_workflow
+        state = _ai_status_safely()
+        if automatic and state.get("jev_free_tier_mode") and int(state.get("jev_calls_remaining") or 0) <= 0:
+            return
         try:
             root = audit_context.foundry_project_root()
         except Exception:
@@ -18724,9 +18733,9 @@ def main():
         if ai_workflow.should_auto_guide(command, sys.argv[2:], footer_status, _ai_status_safely()):
             if machine_readable_verification:
                 with redirect_stdout(sys.stderr):
-                    _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+                    _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
             else:
-                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
