@@ -1,66 +1,89 @@
-# Jev autonomy in Lowkey
+# TypeSafe Jev integration and autonomy
 
-Jev is Lowkey's coordinated AI-assistance mode. It activates existing features; it does not replace Forge, native analyzers, Lowkey's project/evidence stores, or command handlers.
+Jev is integrated as Lowkey's **structured decision layer**. It evaluates state against typed questions (Choice, Score, and Noul). It is not a prose-generating chatbot; Lowkey's existing optional text-AI harness still handles natural-language explanations, test plans, and longer reasoning tasks.
 
-## Commands
+Jev is a hosted API. Lowkey does not include Jev weights or run Jev locally. TypeSafe currently publishes a price of $0.042 per million input tokens; output tokens are free. Verify your account's plan and billing in the [TypeSafe model docs](https://docs.typesafe.ai/models). Lowkey's local budget guard limits usage but cannot create a free plan or guarantee zero charges.
+
+## Set up and control Jev
 
 ```bash
+# Save a TypeSafe key using hidden input (or set TYPESAFE_API_KEY in your environment).
+lk ai jev setup
+
+# Send one fixed, source-free connectivity probe. This makes a real, metered API call.
+lk ai jev test
+
+# Turn automatic Jev triage on, using the conservative local request guard.
 lk ai jev on
+
+# Show key readiness, model, switch and local budget. This does not call TypeSafe.
 lk ai jev status
+
+# Pause Jev automation without changing other LK AI settings or native commands.
 lk ai jev off
 
-# Optional: set a smaller/larger local request cap, up to 24 requests per device-local day.
+# Remove the saved key; this does not unset TYPESAFE_API_KEY if you set it yourself.
+lk ai jev remove-key
+```
+
+Optional controls:
+
+```bash
+# Change the local guard to at most six provider attempts per device-local day.
 lk ai jev on --daily-limit 6
 
-# Only choose standard when your configured provider plan supports the larger requests.
+# Disable Lowkey's local request/context guard only if you've decided to do so.
 lk ai jev on --tier standard
 
-# Pause automation but keep explicit AI requests guarded by the free-tier budget.
+# Pause Jev and retain guarded usage settings.
 lk ai jev off
 
-# Turn off the local free-tier request/context/output caps while leaving Jev automation off.
+# Pause Jev and explicitly turn the local guard off too.
 lk ai jev off --tier standard
 ```
 
-Run `lk ai status` for provider readiness and `lk ai test` for a small connectivity probe.
+The API key is saved separately in Lowkey's private configuration directory (mode-restricted files), unless `TYPESAFE_API_KEY` is set. The key value is never printed by status. `lk ai jev setup` does not send a request. `lk ai jev test` sends a small fixed state and one typed question, with no project source or captured command output.
 
-## What turns on
+## What autonomous mode does
 
-`lk ai jev on` enables the existing AI extension and coordinates the established automatic settings:
+When `lk ai jev on` is enabled and a TypeSafe key is available, Lowkey sends a **bounded, redacted snapshot of selected command arguments and captured output** to Jev after eligible native workflows. Jev returns structured classifications, including:
+- What the result most resembles: ordinary output, failure, test failure, security signal, target/runtime mismatch, incomplete evidence, state change, or unclear.
+- A review priority and model confidence where the selected question type provides one.
+- Whether an extra explanation seems useful and the safe response category to consider.
 
-- Automatic protocol/lab review when Lowkey's existing complexity check says it is useful.
-- Post-command guidance for build/doctor, audit and verification, recon/probe/trace/state-diff, test generation, mutation checks, project/system summaries, and other explicitly eligible workflows. Project cloning is explained after onboarding; the native clone command itself is unchanged.
-- Automatic explanations after eligible command failures.
-- Import intelligence gets extra explanation after an `lk import --install` attempt or a failed import-browser command. Ordinary symbol lookups remain deterministic and do not make AI calls.
-- Optional learner-first recommendations. On the free-tier guard, these are limited to selected high-value learning/audit commands (such as `lk ask`, `lk functions`, `lk findings`, `lk focus`, and selected `lk q` investigation views); they are skipped after failures and after workflows that already receive AI command guidance, avoiding duplicate calls. Routine deterministic commands and state-changing commands do not trigger this extra recommendation call in Jev's guarded mode.
+The current triggers include successful build/test/scan/audit workflows, selected verification and fuzz/invariant/mutation operations, diagnostics and project summaries, successful project onboarding, selected question/investigation views, plus failed non-AI CLI commands. Routine successful read operations do not trigger a Jev API call. Machine-readable JSON/help output is not appended to or sent for autonomous classification. `lk import` uses Jev after an install attempt or failed lookup; ordinary symbol lookup remains native and local.
 
-Each feature still uses its existing context gathering, validation, and output rules. Static/native recommendations are preserved. Jev suggestions remain hypotheses, not verified findings, and are never executed. Jev does not edit files, install dependencies, choose a new target or RPC, deploy, sign, or send transactions.
+Jev's result is a routing hint, **not a security verdict**. Its probability or confidence must not mark a finding confirmed, replace actual test evidence, or override human disposition. Lowkey never executes Jev's suggested response. The classifier does not run commands, change targets or RPC endpoints, edit files, install dependencies, deploy, sign or send transactions.
 
-`lk ai jev off` turns off those automatic behaviors. It does not uninstall AI, remove commands, erase model profiles, delete API keys, or remove existing project/evidence data. Explicit requests such as `lk ai security-review` remain available.
+## Low-key usage guard
 
-Individual settings (`lk ai mode`, `lk ai errors`, and `lk ai recommendations`) remain supported. Jev's master switch turns those existing settings on or off together.
+The guard is enabled by default when `lk ai jev setup` or `lk ai jev on` is used, unless you explicitly choose `--tier standard`.
 
-## Free-tier safeguards
-
-When enabled, the local guard defaults to:
-
-| Guard | Default |
+| Local guard | Default |
 |---|---:|
-| Provider requests per device-local day | 8 |
-| Context sent per request | 16,000 bytes maximum |
-| Generated output requested per call | 650 tokens maximum |
-| Request timeout | 30 seconds maximum |
+| Total TypeSafe and text-AI provider attempts per device-local day | 8 |
+| Jev request body | 16,000 bytes maximum |
+| Separate text-AI response limit | 650 output tokens |
+| Separate text-AI request timeout | 30 seconds maximum |
+| Exact-match response cache | 30 minutes; up to 40 entries |
 
-Lowkey trims large context before sending it and counts each provider attempt before the request, including attempts that fail and may have consumed quota. After the daily cap, background automation stops quietly; explicit AI requests return an actionable message. The counter resets at the next local-device calendar day. Use `lk ai jev status` to check usage.
+The daily count is shared by TypeSafe Jev calls and the existing text-AI harness while the guard is active. A failed provider attempt counts because it may have consumed quota. TypeSafe requests are not retried automatically on 429/529 responses. After the local cap is spent, background Jev triage quietly stops; a direct AI request reports that the guard is exhausted. The counter resets at the next local-device calendar day. Check `lk ai jev status` to see current usage.
 
-These are **local safety limits**, not the provider's published free quota. Providers differ by account, model, region and time; a provider may impose stricter rate limits or have different billing terms. The local counter cannot guarantee zero charges. Keep the guard on for a free provider account and choose a daily limit deliberately.
+Exact repeat TypeSafe decision requests can be reused from a private, bounded local cache for 30 minutes. The cache key is a digest of the model and request; it does not persist the input state or API key. Cached results do not spend another provider request. Lowkey's text-AI harness has a separate exact-match cache for its own structured responses.
 
-The free-tier guard also applies to explicit AI requests while it is on, so automatic and manual AI use share one budget. Turning Jev automation off preserves that guard. Use `lk ai jev off --tier standard` only when you intentionally want to remove local context/output/request caps; provider-side limits still apply.
+These are local safeguards, not TypeSafe's published quota, and **not evidence that an API account is free**. The actual input-token bill depends on the request tokenization and your account's billing terms. Status and other deterministic native commands remain available if the guard is exhausted. `--tier standard` removes Lowkey's local caps, not TypeSafe's account limits or price.
 
-Exact repeat requests are cached locally for 30 minutes under a hash of provider/model, purpose, task, required output fields and context. The cache stores the structured result, not the source context or credentials, and is bounded to 40 entries. Cache hits do not spend a provider request or increment the local daily counter.
+## Jev and existing Lowkey AI are separate
 
-## Evidence and safety boundaries
+- `lk ai jev on/off` controls the direct TypeSafe Jev decision layer.
+- `lk ai mode`, `lk ai errors`, and `lk ai recommendations` keep their existing independent behavior. They use Lowkey's configured text-AI provider, not TypeSafe Jev, and are not silently toggled by the Jev master switch.
+- All existing Lowkey commands, evidence stores, native recommendations, local analyzers and test execution remain in place.
+- Explicit tasks such as `lk ai security-review`, `lk ai test-plan`, `lk ai run`, and `lk ai explain-error --last` remain available when their own provider is configured.
 
-Lowkey remains the source of truth for whether a command ran, what its output was, which tests passed, and whether a finding has reproducible evidence. Jev can compare hypotheses, classify a failure, explain missing evidence, and recommend the next safe read-only step. It cannot elevate a probability score into a confirmed diagnosis without supporting evidence.
+This separation avoids silently using a second model or double-spending a small request budget. Use `--ai` or an existing `lk ai ...` task when you want the configured text model to produce a natural-language explanation.
 
-AI context continues through the existing redaction and bounded-context pipeline. Review sensitive projects before sharing source with an external provider using `lk ai preview --show-context`. The budget file lives in Lowkey's private user state directory and contains only the local day, request count, last request purpose and timestamp—not API key values or source excerpts.
+## Privacy and evidence
+
+Lowkey applies its existing argument redaction plus URL/bearer-token and 32-byte-hex redaction to the bounded command snapshot. Redaction is best effort, not a guarantee that arbitrary secrets can always be recognized. Keep sensitive projects off external providers unless you are comfortable sending the selected command output; command output can include source snippets or addresses. Review text-AI source context separately with `lk ai preview --show-context`.
+
+The request-budget file and caches live outside the audited repository, under the user's private Lowkey state directory. Budget records keep the local day, request count, last request purpose and timestamp; they do not contain API key values or complete input states.
