@@ -234,6 +234,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/solidity_connect_data.py
   - $TARGET_LOWKEY_DIR/ai_harness.py
   - $TARGET_LOWKEY_DIR/ai_workflow.py
+  - $TARGET_LOWKEY_DIR/jev_engine.py
   - $TARGET_LOWKEY_DIR/experience_memory.py
   - $TARGET_LOWKEY_DIR/walkthrough.py
   - $TARGET_LOWKEY_DIR/walkthrough_benchmarks.py
