@@ -358,7 +358,7 @@ def _clean_context(command: str, arguments: list[str], exit_code: int, output: s
     # Apply the same URL, bearer-token and secret-flag redaction as Lowkey's text-AI
     # pipeline, then redact 32-byte hex values before the snapshot leaves the machine.
     safe_output = ai_workflow._redact_text(str(output or ""))
-    safe_output = re.sub(r"(?i)\\b0x[a-f0-9]{64}\\b", "[REDACTED 32-BYTE HEX]", safe_output)
+    safe_output = re.sub(r"(?i)\b0x[a-f0-9]{64}\b", "[REDACTED 32-BYTE HEX]", safe_output)
     safe_output = safe_output[-4_000:]
     return {
         "native_command": str(command or "")[:100],
