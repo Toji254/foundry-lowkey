@@ -4,7 +4,7 @@ Jev is Lowkey's **structured decision layer**. It answers typed Choice, Score an
 
 ## Pick a Jev endpoint
 
-A fresh setup defaults to **JevModel**, an independent hosted service that currently advertises 100,000 starter input tokens after email verification. The allowance is an account balance, **not a daily quota**, and the provider's terms or availability can change. JevModel uses its own API key and endpoint, so a TypeSafe key will not work there.
+A fresh setup defaults to **JevModel**, an independent hosted service that currently advertises 100,000 starter input tokens after email verification and five successful free runs per UTC day, subject to service capacity. The run allowance resets daily; the 100,000-token grant is a separate shared balance. Provider terms or availability can change. JevModel uses its own API key and endpoint, so a TypeSafe key will not work there.
 
 The official **TypeSafe API** is also supported. TypeSafe's published price is $0.042 per million input tokens, with output tokens free; check its current account terms before using it. Lowkey will preserve an existing TypeSafe setup/key rather than silently redirecting it to JevModel.
 
@@ -33,7 +33,7 @@ lk ai jev remove-key
 Optional local-budget controls:
 
 ```bash
-# Cap provider attempts at six per local device day.
+# Cap provider attempts at four per UTC day.
 lk ai jev on --daily-limit 6
 
 # Use the conservative local request guard (default).
@@ -64,17 +64,17 @@ When Jev setup or autonomy is enabled, Lowkey defaults to a conservative local g
 
 | Local guard | Default |
 |---|---:|
-| Combined Jev/text-AI provider attempts | 8 per device-local day |
+| Combined Jev/text-AI provider attempts | 5 per UTC day |
 | TypeSafe Jev request size | 16,000 bytes maximum |
 | JevModel request size | 7,500 bytes maximum |
 | Optional text-AI response cap | 650 output tokens |
 | Exact-match Jev response cache | 30 minutes; up to 40 entries |
 
-The daily count is shared by Jev and the existing text-AI harness while the guard is on. Failed attempts count because they may consume provider quota. Jev requests are not automatically retried after rate limits or overload errors. After the cap is spent, background triage stops quietly. The counter resets at the next local-device calendar day; inspect `lk ai jev status` to check usage.
+The daily count is shared by Jev and the existing text-AI harness while the guard is on. It resets at 00:00 UTC to align with JevModel's advertised free-run window. Lowkey counts every provider attempt—including errors—so it may stop earlier than JevModel's five successful free runs. JevModel says failed requests are not charged and successful requests after the daily free allowance draw from the shared token balance; check the live account balance in its console. Jev requests are not automatically retried after rate limits or overload errors. After the local cap is spent, background triage stops quietly. Inspect `lk ai jev status` to check usage.
 
 Exact-repeat decision requests can be reused from a private, bounded local cache for 30 minutes. The cache key is a digest of the provider/model and request; it does not store the original input state or API key. Cache hits do not spend another provider attempt.
 
-These are **local safeguards**, not an entitlement from JevModel or TypeSafe and not a zero-cost guarantee. JevModel advertises 100,000 starter input tokens after email verification; verify your account balance and current terms. TypeSafe uses its own published input-token pricing. `--tier standard` removes Lowkey's local guard, not provider limits or prices. Deterministic Lowkey commands remain usable even when the guard is exhausted.
+These are **local safeguards**, not an entitlement from JevModel or TypeSafe and not a zero-cost guarantee. JevModel advertises five successful free runs per UTC day plus 100,000 starter input tokens after email verification; verify your account balance and current terms. TypeSafe uses its own published input-token pricing. `--tier standard` removes Lowkey's local guard, not provider limits or prices. Deterministic Lowkey commands remain usable even when the guard is exhausted.
 
 ## Jev and existing Lowkey AI stay separate
 
