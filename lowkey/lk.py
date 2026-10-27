@@ -14923,6 +14923,49 @@ def run_context(config):
     shared = shared_command_context(config, root, max_events=8)
     recent = shared.get("events", []) if isinstance(shared, dict) else []
     print("")
+    knowledge = shared.get("project_knowledge", {}) if isinstance(shared, dict) else {}
+    audit_knowledge = knowledge.get("audit_context", {}) if isinstance(knowledge, dict) else {}
+    system_knowledge = knowledge.get("system_model", {}) if isinstance(knowledge, dict) else {}
+    ledger_knowledge = knowledge.get("evidence_ledger", {}) if isinstance(knowledge, dict) else {}
+    print("")
+    print("SHARED PROJECT KNOWLEDGE")
+    print("========================")
+    active_target = audit_knowledge.get("target", {}) if isinstance(audit_knowledge, dict) else {}
+    if isinstance(active_target, dict) and (active_target.get("contract") or active_target.get("address")):
+        print(f"Target     : {active_target.get('contract') or 'unknown'} ({active_target.get('address') or 'address unknown'})")
+    model_contracts = system_knowledge.get("contracts", []) if isinstance(system_knowledge, dict) else []
+    model_deployments = system_knowledge.get("deployments", []) if isinstance(system_knowledge, dict) else []
+    if model_contracts:
+        print("Contracts  : " + ", ".join(str(item.get("name") or "unnamed") for item in model_contracts[:8] if isinstance(item, dict)))
+    if model_deployments:
+        print("Deployments:")
+        for item in model_deployments[:8]:
+            if isinstance(item, dict):
+                live = "live" if item.get("live") is True else ("no runtime code confirmed" if item.get("live") is False else "runtime unverified")
+                print(f"  - {item.get('contract') or 'unknown'}: {item.get('address') or 'address unknown'} ({live})")
+    patterns = audit_knowledge.get("signals", []) if isinstance(audit_knowledge, dict) else []
+    if patterns:
+        print("Audit signals:")
+        for item in patterns[:8]:
+            if not isinstance(item, dict):
+                continue
+            location = str(item.get("file") or "unknown file")
+            if item.get("line") is not None:
+                location += ":" + str(item["line"])
+            severity = str(item.get("severity") or "severity unknown")
+            status = str(item.get("verification_status") or item.get("status") or "unreviewed")
+            print(f"  - {item.get('id') or 'SIGNAL'} [{severity}/{status}] {item.get('title') or 'untitled'} — {location}")
+    ledger_findings = ledger_knowledge.get("findings", []) if isinstance(ledger_knowledge, dict) else []
+    ledger_count = ledger_knowledge.get("event_count", 0) if isinstance(ledger_knowledge, dict) else 0
+    if ledger_count or ledger_findings:
+        print(f"Evidence ledger: {ledger_count} event(s), {len(ledger_findings)} recent finding(s)")
+        for item in ledger_findings[:6]:
+            if isinstance(item, dict):
+                verification = "verified" if item.get("verified") else "not verified"
+                print(f"  - {item.get('id') or 'FINDING'} [{item.get('status') or 'candidate'}; {verification}] {item.get('title') or 'untitled'}")
+    if not any([active_target.get("contract") if isinstance(active_target, dict) else None, model_contracts, model_deployments, patterns, ledger_findings]):
+        print("No saved target, deployment graph, audit signals, or evidence-ledger findings are available yet.")
+    print("")
     print("RECENT SHARED COMMAND EVIDENCE")
     print("==============================")
     if not recent:
