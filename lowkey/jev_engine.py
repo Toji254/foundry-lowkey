@@ -18,7 +18,8 @@ from urllib.request import Request, urlopen
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
 JEVMODEL_API_URL = "https://jevmodel.app/api/v1/systemone"
-DEFAULT_PROVIDER = "jevmodel"  # Fresh CLI installs use the provider advertising starter tokens; old TypeSafe keys are detected below.
+JEVOS_API_URL = "http://127.0.0.1:8017/v1/systemone"
+DEFAULT_PROVIDER = "jevmodel"  # Preserve the existing hosted Jev default; Jevos-v5 is an opt-in local provider.
 DEFAULT_MODEL = "jev-latest"
 PROVIDERS = {
     "typesafe": {
@@ -32,6 +33,13 @@ PROVIDERS = {
         "key_env": "JEVMODEL_API_KEY",
         "label": "JevModel hosted API (independent third-party service)",
         "model_in_request": False,
+    },
+    "jevos": {
+        "endpoint": JEVOS_API_URL,
+        "key_env": "",
+        "label": "Jevos-v5 local CPU model (no API key)",
+        "model_in_request": True,
+        "local": True,
     },
 }
 DEFAULT_TIMEOUT = 18
@@ -109,9 +117,14 @@ def load_settings() -> dict[str, Any]:
     model = value.get("model", DEFAULT_MODEL)
     timeout = value.get("timeout_seconds", DEFAULT_TIMEOUT)
     if provider not in PROVIDERS:
-        raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
-    if not isinstance(model, str) or not re.fullmatch(r"jev-(?:latest|preview|[0-9]+\.[0-9]+\.[0-9]+)", model):
-        raise JevError("Jev model must be jev-latest, jev-preview, or a version such as jev-1.14.0.")
+        raise JevError("Jev provider must be 'jevmodel', 'typesafe', or 'jevos'.")
+    valid_model = (
+        isinstance(model, str) and model in {"jev-latest", "jevos-v5"}
+        if provider == "jevos"
+        else isinstance(model, str) and bool(re.fullmatch(r"jev-(?:latest|preview|[0-9]+\.[0-9]+\.[0-9]+)", model))
+    )
+    if not valid_model:
+        raise JevError("Jev model must be jev-latest, jev-preview, or a version such as jev-1.14.0; Jevos accepts jev-latest or jevos-v5.")
     if type(timeout) is not int or not 5 <= timeout <= 60:
         raise JevError("Jev timeout must be an integer from 5 to 60 seconds.")
     return {"schema_version": 1, "provider": provider, "model": model, "timeout_seconds": timeout}
@@ -145,6 +158,8 @@ def _api_key(provider: str | None = None) -> tuple[str | None, str | None]:
     selected = provider or load_settings()["provider"]
     if selected not in PROVIDERS:
         raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
+    if PROVIDERS[selected].get("local"):
+        return None, "not required (local Jevos-v5 endpoint)"
     env_name = PROVIDERS[selected]["key_env"]
     env_key = os.environ.get(env_name, "").strip()
     if env_key:
@@ -166,6 +181,8 @@ def configure(
         raise JevError("Jev model must be jev-latest, jev-preview, or a version such as jev-1.14.0.")
     if type(timeout_seconds) is not int or not 5 <= timeout_seconds <= 60:
         raise JevError("Jev timeout must be an integer from 5 to 60 seconds.")
+    if provider == "jevos" and api_key is not None:
+        raise JevError("Jevos-v5 is local and does not accept or need an API key.")
     if api_key is not None:
         clean = api_key.strip()
         if len(clean) < 12 or any(character.isspace() for character in clean):
@@ -189,16 +206,18 @@ def status() -> dict[str, Any]:
     key, source = _api_key(provider)
     meta = PROVIDERS[provider]
     return {
-        "configured": bool(key),
+        "configured": True if meta.get("local") else bool(key),
         "key_source": source,
         "provider": provider,
         "provider_label": meta["label"],
-        "model": settings["model"] if meta["model_in_request"] else "fixed by JevModel service",
+        "model": "jevos-v5 (local model; readiness checked by lk ai jev test)" if meta.get("local") else (settings["model"] if meta["model_in_request"] else "fixed by JevModel service"),
         "timeout_seconds": settings["timeout_seconds"],
         "endpoint": meta["endpoint"],
         "key_values_displayed": False,
         "local_budget_guard": "managed by lk ai jev",
         "starter_allowance_note": (
+            "Local inference: no hosted API key or provider token allowance is used. The Jevos server must be running at 127.0.0.1:8017; use 'lk ai jev test' to check it."
+            if provider == "jevos" else
             "JevModel advertises 100,000 starter input tokens after email verification and five successful free runs per UTC day "
             "(subject to service capacity); check your account for current balance and terms."
             if provider == "jevmodel" else
@@ -336,7 +355,7 @@ def evaluate(
     provider_meta = PROVIDERS[provider]
     selected_model = model or current["model"]
     key, _ = _api_key(provider)
-    if not key:
+    if not provider_meta.get("local") and not key:
         raise JevError(
             f"Jev needs an API key for {provider_meta['label']}. "
             f"Run 'lk ai jev setup --provider {provider}' or export {provider_meta['key_env']}."
@@ -348,6 +367,7 @@ def evaluate(
     except ImportError:
         import ai_harness
     cfg = ai_harness.load_config()
+    cache_enabled = bool(cfg.get("jev_free_tier_mode")) or bool(provider_meta.get("local"))
     body = {"state": state, "questions": questions}
     if provider_meta["model_in_request"]:
         body["model"] = selected_model
@@ -363,7 +383,7 @@ def evaluate(
             "Narrow the command output or reduce the context; no request was sent."
         )
     # Scope cached answers to the active credential without persisting the secret itself.
-    key_fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    key_fingerprint = hashlib.sha256((key or "local-no-api-key").encode("utf-8")).hexdigest()
     cache_key = hashlib.sha256(
         json.dumps({
             "endpoint": provider_meta["endpoint"],
@@ -374,18 +394,21 @@ def evaluate(
         }, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
     required = set(str(k) for k in questions)
-    if cfg.get("jev_free_tier_mode"):
+    if cache_enabled:
         cached = _read_cached(cache_key, required)
         if cached is not None:
             return cached
+    if cfg.get("jev_free_tier_mode") and not provider_meta.get("local"):
         ai_harness._reserve_jev_request(cfg, "jev-systemone")
     payload = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
-    request = Request(provider_meta["endpoint"], data=payload, headers={
-        "Authorization": f"Bearer {key}",
+    headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "LowkeyCast-Jev/1.0",
-    }, method="POST")
+    }
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = Request(provider_meta["endpoint"], data=payload, headers=headers, method="POST")
     started = time.monotonic()
     try:
         with opener(request, timeout=current["timeout_seconds"]) as response:
@@ -460,7 +483,7 @@ def evaluate(
             "elapsed_ms": round((time.monotonic() - started) * 1000),
         },
     }
-    if cfg.get("jev_free_tier_mode"):
+    if cache_enabled:
         _write_cached(cache_key, result)
     return result
 
