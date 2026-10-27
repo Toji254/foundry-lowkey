@@ -11,6 +11,7 @@ import math
 import os
 import sys
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -566,7 +567,7 @@ def run(args: list[str] | tuple[str, ...] | None = None, *, prog: str = "lk jev"
         with_jev=parsed.with_jev,
         timeout_seconds=parsed.timeout,
     )
-    output = __import__("pathlib").Path(parsed.output).expanduser()
+    output = Path(parsed.output).expanduser()
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
