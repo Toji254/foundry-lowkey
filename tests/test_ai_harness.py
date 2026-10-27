@@ -36,7 +36,7 @@ class AIHarnessTests(unittest.TestCase):
         for command in (
             "status", "preview", "mode", "setup", "enable", "disable", "test",
             "keys", "list", "add", "remove", "clear", "explain-error",
-            "errors", "test-plan", "security-review", "ledger", "verify",
+            "errors", "project", "test-plan", "security-review", "ledger", "verify",
             "disposition", "runtime", "recommendations",
         ):
             with self.subTest(command=command):
@@ -157,6 +157,7 @@ class AIHarnessTests(unittest.TestCase):
             (["keys", "clear", "--help"], ["--provider"]),
             (["explain-error", "--help"], ["--last", "--text", "--command"]),
             (["errors", "--help"], ["auto", "manual", "status", "--json"]),
+            (["project", "--help"], ["--root", "--contract", "--json", "does not start a local lab"]),
             (["test-plan", "--help"], ["--root", "--contract", "--json"]),
             (["security-review", "--help"], ["--root", "--contract", "--json"]),
             (["ledger", "--help"], ["--root", "--json"]),
@@ -174,6 +175,53 @@ class AIHarnessTests(unittest.TestCase):
                 rendered = output.getvalue()
                 for flag in expected:
                     self.assertIn(flag, rendered)
+
+    def test_project_review_is_standalone_and_does_not_start_lab(self):
+        project_root = self.tmp.name
+        review = {
+            "summary": "Factory creates deterministic pools and relies on agreement ownership.",
+            "contract_roles": [{
+                "name": "ConfidencePoolFactory",
+                "purpose": "Creates confidence-pool instances.",
+                "evidence": "src/ConfidencePoolFactory.sol:createPool",
+            }],
+            "invariants": [{
+                "statement": "Only an authorized agreement owner can create a pool.",
+                "rationale": "Pool creation is restricted to an agreement owner.",
+                "source": "src/ConfidencePoolFactory.sol:createPool",
+            }],
+            "open_questions": ["Does the registry reject invalid agreements consistently?"],
+            "deployment_considerations": ["Confirm the registry address for each network."],
+            "ai_generated": True,
+            "origin": "configured-model",
+            "_lowkey_meta": {"source_files_included": 3, "context_sha256": "abc123"},
+        }
+        output = io.StringIO()
+        with patch.object(ai, "review_project_protocol", return_value=review) as request:
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main(["project", "--root", project_root, "--contract", "Vault"]), 0)
+        request.assert_called_once_with(Path(project_root), "Vault")
+        rendered = output.getvalue()
+        self.assertIn("PROJECT PROTOCOL REVIEW (UNVERIFIED)", rendered)
+        self.assertIn("Factory creates deterministic pools", rendered)
+        self.assertIn("Candidate invariants:", rendered)
+        self.assertIn("No local lab was started", rendered)
+
+    def test_project_review_supports_json_output(self):
+        review = {
+            "summary": "Project summary",
+            "contract_roles": [],
+            "invariants": [],
+            "open_questions": [],
+            "deployment_considerations": [],
+            "_lowkey_meta": {"source_files_included": 1},
+        }
+        output = io.StringIO()
+        with patch.object(ai, "review_project_protocol", return_value=review) as request:
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main(["project", "--root", self.tmp.name, "--json"]), 0)
+        request.assert_called_once()
+        self.assertEqual(json.loads(output.getvalue())["summary"], "Project summary")
 
     def test_ai_recommendations_are_off_by_default_and_setting_is_independent(self):
         value = ai.status()
