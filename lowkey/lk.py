@@ -10595,16 +10595,30 @@ def run_lab(config,args):
         print("  lk lab [Contract]")
         print("  lk lab --generic [Contract]")
         print("  lk lab --artifact <Contract>")
-        print("  lk lab --ai-review  # optional unverified protocol review")
+        print("  lk lab [Contract] --ai-review")
         print("  lk lab stop")
         print("")
         print("MODES")
-        print("  auto      Let Lowkey choose the easiest way to build a working local lab.")
-        print("            It reuses the project's own setup when possible, then deploys directly.")
-        print("  --generic Start from a contract and enter its constructor values yourself.")
+        print("  auto       Let Lowkey choose the easiest way to build a working local lab.")
+        print("             It reuses the project's own setup when possible, then deploys directly.")
+        print("  --generic  Start from a contract and enter its constructor values yourself.")
         print("             Optional Contract chooses which contract to deploy.")
         print("  --artifact Deploy the exact compiled contract you name.")
         print("             Useful when a project has several contracts with similar names.")
+        print("")
+        print("OPTIONS / AI ASSISTANCE")
+        print("  --ai-review")
+        print("      Ask the configured AI provider for a protocol overview, candidate invariants,")
+        print("      open questions, and deployment considerations before native lab setup continues.")
+        print("      Requires AI to be configured and enabled. Lowkey continues native lab setup if")
+        print("      the optional review is unavailable; AI output is unverified and never chooses")
+        print("      a target, deploys, signs, or runs tests. Selected source may be sent to the provider.")
+        print("      Example: lk lab Vault --ai-review")
+        print("")
+        print("  Automatic reviews are a separate opt-in:")
+        print("      lk ai mode auto       Allow complexity-triggered reviews for eligible labs.")
+        print("      lk ai mode manual     Only review when you explicitly use --ai-review.")
+        print("      lk ai status          Check configuration and current review mode.")
         print("")
         print("EXAMPLES")
         print("  lk lab")
@@ -17135,6 +17149,7 @@ PROJECT / TARGET SETUP
   lk projects                       Show projects found inside the current workspace.
   lk project [number|path]          Show the human-readable project map.
   lk lab [Contract]                 Set up a realistic local lab automatically.
+  lk lab [Contract] --ai-review     Add an optional source-grounded AI protocol review.
   lk lab --generic [Contract]      Deploy a contract directly and enter constructor values.
   lk lab --artifact <Contract>     Deploy this exact compiled contract.
   lk lab stop                      Stop the local Anvil instance started by Lowkey.
