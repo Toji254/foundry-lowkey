@@ -288,6 +288,30 @@ class JevEngineTests(unittest.TestCase):
         # Preserve the existing TypeSafe credential if the user switches provider.
         self.assertEqual(jev_engine._saved_key("typesafe"), "typesafe_test_key_0123456789")
 
+    def test_jevmodel_question_and_choice_limits_are_rejected_before_network(self):
+        def never_call(*args, **kwargs):
+            self.fail("Invalid JevModel request must not make a provider request")
+
+        with self.assertRaises(jev_engine.JevError):
+            jev_engine.evaluate(
+                state="test",
+                questions={
+                    f"q{i}": {"type": "noul", "instructions": "Is this a probe?"}
+                    for i in range(9)
+                },
+                opener=never_call,
+            )
+        with self.assertRaises(jev_engine.JevError):
+            jev_engine.evaluate(
+                state="test",
+                questions={"choice": {
+                    "type": "choice",
+                    "instructions": "Pick a label.",
+                    "criteria": {"only-one": "An invalid single option."},
+                }},
+                opener=never_call,
+            )
+
     def test_bad_question_is_rejected_before_network_call(self):
         def never_call(*args, **kwargs):
             self.fail("Invalid question must not make a provider request")
