@@ -50,22 +50,20 @@ class ImportHelperTests(unittest.TestCase):
         return tmp, root
 
     def test_jev_only_guides_import_installs_and_keeps_native_output(self):
-        ai = SimpleNamespace(status=lambda: {
-            "jev_autonomous": True,
-            "enabled": True,
-            "usable": True,
-            "jev_free_tier_mode": False,
-            "jev_calls_remaining": None,
-        })
-        workflow = SimpleNamespace(
-            guide_command=lambda **kwargs: {
+        ai = SimpleNamespace(
+            load_config=lambda: {"jev_autonomous": True},
+            autonomy_budget_status=lambda: {"free_tier_guard": False, "remaining": None},
+        )
+        jev = SimpleNamespace(
+            status=lambda: {"configured": True},
+            classify_command=lambda **kwargs: {
                 "command": kwargs["command"],
-                "summary": "Import outcome explained from captured output.",
+                "outcome": "actionable_failure",
             },
-            render_guidance=lambda report: "JEV IMPORT GUIDANCE: " + report["summary"],
+            render_classification=lambda report, command: "JEV IMPORT TRIAGE: " + report["outcome"],
         )
         output = io.StringIO()
-        with patch.dict(sys.modules, {"ai_harness": ai, "ai_workflow": workflow}):
+        with patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}):
             with patch.object(helper, "main", side_effect=lambda args: print("native import output") or 0) as native:
                 with contextlib.redirect_stdout(output):
                     self.assertEqual(helper.main_with_jev(["--install", "ERC20"]), 0)
@@ -74,18 +72,16 @@ class ImportHelperTests(unittest.TestCase):
         self.assertIn("JEV IMPORT GUIDANCE", output.getvalue())
 
     def test_jev_does_not_request_guidance_for_ordinary_import_lookup(self):
-        ai = SimpleNamespace(status=lambda: {
-            "jev_autonomous": True,
-            "enabled": True,
-            "usable": True,
-            "jev_free_tier_mode": False,
-            "jev_calls_remaining": None,
-        })
-        workflow = SimpleNamespace(
-            guide_command=lambda **kwargs: self.fail("ordinary symbol lookup must not call Jev"),
-            render_guidance=lambda report: "unexpected",
+        ai = SimpleNamespace(
+            load_config=lambda: {"jev_autonomous": True},
+            autonomy_budget_status=lambda: {"free_tier_guard": False, "remaining": None},
         )
-        with patch.dict(sys.modules, {"ai_harness": ai, "ai_workflow": workflow}):
+        jev = SimpleNamespace(
+            status=lambda: {"configured": True},
+            classify_command=lambda **kwargs: self.fail("ordinary symbol lookup must not call Jev"),
+            render_classification=lambda report, command: "unexpected",
+        )
+        with patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}):
             with patch.object(helper, "main", return_value=0) as native:
                 self.assertEqual(helper.main_with_jev(["ERC20"]), 0)
                 native.assert_called_once_with(["ERC20"])
