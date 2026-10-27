@@ -315,11 +315,15 @@ def evaluate(
             if question.get("type") == "choice":
                 criteria = question["criteria"]
                 if any(
-                    not isinstance(label, str) or not isinstance(description, str)
-                    or not 2 <= len(description) <= 350
+                    not isinstance(label, str) or not label
+                    or not isinstance(description, str) or not 2 <= len(description) <= 350
                     for label, description in criteria.items()
                 ):
-                    raise JevError(f"JevModel Choice descriptions for {name!r} must each be 2–350 characters.")
+                    raise JevError(f"JevModel Choice labels must be non-empty and descriptions for {name!r} must each be 2–350 characters.")
+            if question.get("type") == "score":
+                criteria = question["criteria"]
+                if any(not isinstance(level, str) or not 2 <= len(level) <= 350 for level in criteria):
+                    raise JevError(f"JevModel Score levels for {name!r} must each be 2–350 characters.")
             if question.get("type") == "noul":
                 criteria = question.get("criteria")
                 if (
