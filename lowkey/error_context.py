@@ -221,6 +221,69 @@ def _event_signals(output: Any) -> list[str]:
     return list(dict.fromkeys(item[:500] for item in signals))[:12]
 
 
+def _append_project_event(path: Path, root: Path, event: dict[str, Any]) -> dict[str, Any]:
+    """Append history under a process lock so parallel lk commands do not lose events."""
+    import tempfile
+
+    lock_path = path.with_suffix(".lock")
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    lock_module = None
+    try:
+        os.fchmod(lock_fd, 0o600)
+        try:
+            import fcntl as lock_module
+            lock_module.flock(lock_fd, lock_module.LOCK_EX)
+        except ImportError:
+            lock_module = None
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+                payload = {}
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+
+        # Never merge history that belongs to another canonical project root.
+        if payload.get("project_identity") != str(root):
+            payload = {}
+        events = payload.get("events")
+        if not isinstance(events, list):
+            events = []
+        events.append(event)
+        payload = {
+            "schema_version": 1,
+            "project_identity": str(root),
+            "project_label": root.name or "project",
+            "updated_at": event["timestamp"],
+            "events": events[-30:],
+        }
+
+        fd, temp_name = tempfile.mkstemp(prefix=".command-context.", dir=str(path.parent))
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, path)
+            os.chmod(path, 0o600)
+        except Exception:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+            raise
+        return event
+    finally:
+        if lock_module is not None:
+            try:
+                lock_module.flock(lock_fd, lock_module.LOCK_UN)
+            except OSError:
+                pass
+        os.close(lock_fd)
+
+
 def record_command_event(
     *,
     project_root: str | os.PathLike[str] | None,
@@ -262,46 +325,7 @@ def record_command_event(
             "diagnostic_excerpt": excerpt,
         }
 
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-                payload = {}
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-
-        # Do not let a hashed path collision mix two project histories.
-        if payload.get("project_identity") not in (None, str(root)):
-            payload = {}
-        events = payload.get("events")
-        if not isinstance(events, list):
-            events = []
-        events.append(event)
-        payload = {
-            "schema_version": 1,
-            "project_identity": str(root),
-            "project_label": root.name or "project",
-            "updated_at": event["timestamp"],
-            "events": events[-30:],
-        }
-
-        import tempfile
-        fd, temp_name = tempfile.mkstemp(prefix=".command-context.", dir=str(path.parent))
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, sort_keys=True)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_name, path)
-            os.chmod(path, 0o600)
-        except Exception:
-            try:
-                os.unlink(temp_name)
-            except OSError:
-                pass
-            raise
-        return event
+        return _append_project_event(path, root, event)
     except (OSError, TypeError, ValueError):
         # Context capture is advisory and must never break the native command.
         return None
