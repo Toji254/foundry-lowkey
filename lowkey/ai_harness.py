@@ -2106,17 +2106,23 @@ QUICK START
 
 JEV AUTONOMY & FREE-TIER SAFETY
 ------------------------------
-  lk ai jev on [--tier free|standard] [--daily-limit 1..24]
-      Enables the existing automatic lab review, command guidance, error diagnoses,
-      and learner recommendations together. Free tier is the default and locally caps
-      requests/day, context size and output tokens. This is a local safeguard, not a
-      guarantee that a provider will never charge or rate-limit you.
+  lk ai jev setup [--model jev-latest]
+      Save a TypeSafe Jev API key securely (hidden input) or use TYPESAFE_API_KEY.
+      This configures the decision model; it does not configure a text-generating LLM.
+  lk ai jev on [--tier guarded|standard] [--daily-limit 1..24]
+      Enable Jev's structured triage on selected Lowkey command results. Guarded mode
+      defaults to 8 provider attempts/day, 16,000 request bytes and 650 tokens for the
+      separate optional text-LLM layer; these are local limits, not an official free plan.
   lk ai jev off
-      Stops Jev's automatic behaviors while leaving explicit 'lk ai ...' tasks available.
-      The free-tier request cap remains active unless '--tier standard' is selected.
+      Stop Jev's automatic triage without uninstalling or disabling other AI features.
+      The local budget guard remains active unless '--tier standard' is selected.
   lk ai jev status
-      Show automation settings and today's local request-budget usage without contacting
-      the provider. Jev never executes suggestions, edits files, deploys, signs or sends.
+      Show Jev key readiness, mode and local request usage; no provider request is made.
+  lk ai jev test
+      Send one small, source-free typed decision to check the Jev API. This uses quota.
+  lk ai jev remove-key
+      Remove the key saved in Lowkey's private settings; environment keys are not changed.
+      Jev classifies evidence only. It does not generate prose or execute suggestions.
 
 SETUP & CONNECTION
 ------------------
@@ -3132,9 +3138,11 @@ def main(argv: list[str] | None = None) -> int:
     mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
     mode.add_argument("value", choices=("manual", "auto"), help="manual = only on request (default); auto = opt in to complexity-triggered review")
     jev = sub.add_parser("jev", aliases=("autonomy", "autonomous"), help="turn coordinated Jev automation on, off, or inspect it")
-    jev.add_argument("value", nargs="?", choices=("on", "off", "status"), default="status", help="on enables existing AI automations; off pauses them without removing features")
-    jev.add_argument("--tier", choices=("free", "standard"), default=None, help="free (default on enable) applies a local request/context/output cap; standard removes these local caps")
-    jev.add_argument("--daily-limit", type=int, help=f"free-tier local AI request limit per device day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
+    jev.add_argument("value", nargs="?", choices=("setup", "on", "off", "status", "test", "remove-key"), default="status", help="configure Jev, run its structured triage, or inspect/pause autonomous mode")
+    jev.add_argument("--tier", choices=("guarded", "standard"), default=None, help="guarded applies local daily/context/output request caps; standard removes the local caps")
+    jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per device day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
+    jev.add_argument("--model", default="jev-latest", help="TypeSafe Jev model ID or alias (setup only; default: jev-latest)")
+    jev.add_argument("--timeout", type=int, default=18, help="Jev API timeout in seconds (setup only; 5–60)")
     jev.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable status")
     recommendations_cmd = sub.add_parser("recommendations", help="show native next commands plus optional AI-generated suggestions")
     recommendations_cmd.add_argument("mode", choices=("manual", "auto", "status"), help="auto adds source-grounded AI suggestions after eligible successful commands; manual disables them; status shows the setting")
@@ -3216,10 +3224,10 @@ def main(argv: list[str] | None = None) -> int:
     status_cmd.epilog = "WHEN: run this before an AI task. Example: lk ai status"
     preview.description = "Inspect the selected, redacted project context locally. No provider request is made."
     preview.epilog = "WHEN: review this before sending source to a provider. Example: lk ai preview --contract ConfidencePool"
-    mode.description = "Choose manual mode or opt in to automatic guidance for eligible workflows and failures."
-    mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to your provider after eligible commands. Charges may apply. Example: lk ai mode manual"
-    jev.description = "Jev coordinates Lowkey's existing AI assistance features. It does not replace native tools or gain execution authority."
-    jev.epilog = "WHEN: enable coordinated assistance with a free-tier guard. Examples: lk ai jev on; lk ai jev status; lk ai jev off"
+    mode.description = "Choose manual mode or opt in to automatic text-LLM guidance for eligible workflows and failures."
+    mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to the configured text provider after eligible commands. Jev structured triage is controlled separately. Example: lk ai mode manual"
+    jev.description = "Connect TypeSafe Jev's typed decisions to Lowkey command triage. Prose generation remains with Lowkey's separate optional AI harness."
+    jev.epilog = "WHEN: run 'lk ai jev setup', then 'lk ai jev test', 'lk ai jev on', or 'lk ai jev off'. This API is metered by input tokens; guarded mode limits use but does not guarantee zero charges."
     run_cmd.description = "Plan a source-grounded investigation and optionally execute only validated read-oriented Lowkey commands."
     run_cmd.epilog = "WHEN: investigate a multi-step question. Commands are shown first; approval is required unless --yes is supplied. Example: lk ai run \"investigate why withdrawal reverts\" --plan-only"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
