@@ -519,6 +519,11 @@ class AIHarnessTests(unittest.TestCase):
             self.assertEqual(report["recommendations"][0]["command"], "lk fn isAgreementValid")
             context = request.call_args.kwargs["context"]
             self.assertEqual(context["active_contract"], "Registry")
+            self.assertTrue(any(item.startswith("lk target ") for item in context["allowed_recommendation_command_forms"]))
+            self.assertFalse(any(
+                item.startswith(("lk target ", "lk lab --generic "))
+                for item in context["allowed_read_only_command_forms"]
+            ))
             self.assertIn("Do not abstain merely because a function needs input values", request.call_args.kwargs["task"])
             self.assertTrue(report["ai_generated"])
 
