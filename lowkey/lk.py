@@ -17737,8 +17737,9 @@ def _print_ai_recommendations(command, native_items, config=None, args=None, res
             children = entry.get("children", {}) if isinstance(entry, dict) else {}
             key = HELP_ALIASES.get(str(token).strip().lower(), str(token).strip().lower())
             if key not in children:
-                if token:
-                    unknown = key if entry and children else unknown
+                # Most arguments are values (contract names, function names, addresses),
+                # not subcommands. The captured command output is the authority on whether
+                # an attempted argument was actually rejected.
                 break
             help_path.append(key)
             entry, resolved, unknown = _help_entry_for_path(help_path)
