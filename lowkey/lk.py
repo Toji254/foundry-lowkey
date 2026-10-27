@@ -18659,9 +18659,10 @@ def _print_jev_command_classification(command, args, result_code, command_output
             from lowkey import ai_harness, jev_engine
         jev_state = jev_engine.status()
         if not jev_state.get("configured"):
+            provider = jev_state.get("provider", "jevmodel")
             print(
-                "\n@ JEV TRIAGE SKIPPED — TypeSafe API key is unavailable. "
-                "Run 'lk ai jev setup'; the native command already completed.",
+                "\n@ JEV TRIAGE SKIPPED — the selected Jev provider API key is unavailable. "
+                f"Run 'lk ai jev setup --provider {provider}'; the native command already completed.",
                 file=sys.stderr,
             )
             return
