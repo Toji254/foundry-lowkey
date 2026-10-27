@@ -3310,6 +3310,24 @@ contract Pool {
                 os.chdir(old)
             self.assertEqual(code, 2)
 
+    def test_lab_help_explains_ai_review_flag_and_automatic_mode(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = lk.run_lab({}, ["--help"])
+        self.assertEqual(code, 0)
+        rendered = output.getvalue()
+        for expected in (
+            "OPTIONS / AI ASSISTANCE",
+            "--ai-review",
+            "lk lab Vault --ai-review",
+            "lk ai mode auto",
+            "lk ai mode manual",
+            "does not choose",
+            "provider",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, rendered)
+
     def test_lab_generic_refuses_noninteractive_constructor_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -3518,6 +3536,7 @@ contract Pool {
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("LOWKEY", result.stdout)
         self.assertIn("lk actor 0 Alice", result.stdout)
+        self.assertIn("lk lab [Contract] --ai-review", result.stdout)
 
     def test_cli_failure_exit_codes(self):
         cases = [
