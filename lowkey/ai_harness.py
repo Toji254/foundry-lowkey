@@ -2099,9 +2099,8 @@ JEV AUTONOMY & LOCAL BUDGET GUARD
       typesafe = official hosted API.
   lk ai jev setup --provider jevos
       Local Jevos-v5 at 127.0.0.1:8017; no key or hosted token usage.
-  lk ai jev start / lk ai jev stop / lk ai jev restart
-      Start Jevos-v5 in the background, inspect it, restart it, or stop it.
-      Works with the local Jevos provider selected; no API key is needed.
+  lk ai jev start|stop|restart
+      Manage local Jevos-v5; start runs it in the background without an API key.
   lk ai jev test / lk ai jev on [options] / lk ai jev off / lk ai jev status
   lk ai jev remove-key
       test sends a source-free probe; Jev never executes suggestions.
