@@ -152,6 +152,13 @@ lk ai keys list --provider openai-compatible
 ~~~
 
 Quota/rate-limit/key-auth failures trigger bounded failover across the configured slots. Keys are not printed or logged; model/provider is not silently changed.
+
+## Shared command evidence
+
+Lowkey commands contribute bounded, project-scoped diagnostic evidence to a common context channel. A later command can reuse earlier observations—for example, `lk lab` diagnosis can see Solidity compiler warnings previously reported by `lk build`. The same recent context is supplied to automatic error diagnosis and opt-in `--ai` guidance/planning.
+
+Command history is stored outside the audited repository under `$XDG_STATE_HOME/lowkey/projects/` (or `~/.local/state/lowkey/projects/` when `XDG_STATE_HOME` is unset). Lowkey retains at most 30 recent events per project. It stores bounded diagnostic excerpts and signal summaries, not full terminal sessions; sensitive assignments, secret flags, and 32-byte hex values are redacted. History files are private to the current user. The absolute project path is used only for local history scoping and is not included in the context returned to the model. Historical observations are clues—not proof—and must be checked against the current source and runtime.
+
 ## Native experience memory
 
 Lowkey can retain audit feedback and reusable lessons without an AI provider. Feedback and proposed lessons are stored in a private user-data directory keyed to the canonical path of the audited project, not inside the target repository. Only lessons explicitly approved with validation evidence are supplied as relevance-ranked reference context to an explicitly requested AI review; lessons never execute as code or change native security rules.
