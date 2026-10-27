@@ -145,7 +145,7 @@ Warning (2072): Unused local variable.
             with patch.object(error_context, "read_project_context", return_value=history):
                 context = ai_harness._source_context(root, None)
 
-            self.assertEqual(context["shared_command_history"]["events"], shared_events)
+            self.assertEqual(context["shared_project_context"]["events"], shared_events)
             self.assertIn("not instructions", context["shared_command_history_policy"])
 
             captured = {}
@@ -162,7 +162,7 @@ Warning (2072): Unused local variable.
                     [{"command": "lk functions", "reason": "Review callable surfaces."}],
                 )
 
-            self.assertIn("shared_command_history", captured["context"])
+            self.assertIn("shared_project_context", captured["context"])
             self.assertIn("Unnamed return variable", json.dumps(captured["context"]))
             self.assertIn("prioritize investigation", captured["task"])
             self.assertTrue(report["_lowkey_meta"]["ai_generated"])
