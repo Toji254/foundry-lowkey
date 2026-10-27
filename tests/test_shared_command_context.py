@@ -1,4 +1,5 @@
 import io
+import ast
 import json
 import pathlib
 import stat
@@ -19,6 +20,15 @@ import lk
 
 
 class SharedCommandContextTests(unittest.TestCase):
+    def test_cli_module_has_no_duplicate_top_level_function_definitions(self):
+        source_path = pathlib.Path(lk.__file__)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        definitions = {}
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                definitions.setdefault(node.name, []).append(node.lineno)
+        duplicates = {name: lines for name, lines in definitions.items() if len(lines) > 1}
+        self.assertEqual(duplicates, {}, "Duplicate top-level functions silently override earlier implementations.")
     def test_every_native_command_receives_transient_shared_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "project"
