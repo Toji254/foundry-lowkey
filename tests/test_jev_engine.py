@@ -80,6 +80,74 @@ class JevEngineTests(unittest.TestCase):
         self.assertFalse(value["configured"])
         self.assertIsNone(value["key_source"])
 
+    def test_jevos_local_provider_needs_no_key_and_status_marks_it_local(self):
+        settings = jev_engine.configure(provider="jevos", model="jev-latest")
+        status = jev_engine.status()
+        self.assertEqual(settings["provider"], "jevos")
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["key_source"], "not required (local Jevos-v5 endpoint)")
+        self.assertEqual(status["endpoint"], "http://127.0.0.1:8017/v1/systemone")
+        self.assertIn("jevos-v5", status["model"])
+        self.assertIn("no hosted API key", status["starter_allowance_note"])
+
+    def test_jevos_local_request_has_no_auth_and_does_not_consume_hosted_budget(self):
+        jev_engine.configure(provider="jevos", model="jev-latest", timeout_seconds=10)
+        config = ai_harness.load_config()
+        config["jev_free_tier_mode"] = True
+        config["jev_daily_call_limit"] = 1
+        ai_harness.save_config(config)
+        seen = {}
+
+        def opener(request, timeout):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["authorization"] = request.get_header("Authorization")
+            seen["timeout"] = timeout
+            return FakeResponse({
+                "model": "jevos-v5",
+                "answers": {
+                    "root_cause": {
+                        "type": "choice",
+                        "choice": "missing_dependency",
+                        "probabilities": {"missing_dependency": 0.97, "unknown": 0.03},
+                        "confidence": 0.96,
+                    }
+                },
+                "usage": {"input_tokens": 1101, "output_tokens": 0},
+            })
+
+        result = jev_engine.evaluate(
+            state="forge build could not find forge-std/Test.sol",
+            questions={"root_cause": {
+                "type": "choice",
+                "instructions": "What is the likely underlying cause?",
+                "criteria": {
+                    "missing_dependency": "A required dependency or import is missing",
+                    "solidity_error": "Solidity syntax or typing is invalid",
+                    "unknown": "There is not enough evidence to decide",
+                },
+            }},
+            opener=opener,
+        )
+        self.assertEqual(seen["url"], jev_engine.JEVOS_API_URL)
+        self.assertEqual(seen["timeout"], 10)
+        self.assertIsNone(seen["authorization"])
+        self.assertEqual(seen["body"]["model"], "jev-latest")
+        self.assertEqual(result["model"], "jevos-v5")
+        self.assertEqual(result["answers"]["root_cause"]["choice"], "missing_dependency")
+        self.assertEqual(result["usage"]["input_tokens"], 1101)
+        self.assertEqual(ai_harness.autonomy_budget_status()["calls_today"], 0)
+
+    def test_jevos_setup_does_not_prompt_for_a_key(self):
+        output = io.StringIO()
+        with patch("getpass.getpass", side_effect=AssertionError("local provider must not ask for a key")) as prompt:
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai_harness.main(["jev", "setup", "--provider", "jevos"]), 0)
+        prompt.assert_not_called()
+        self.assertEqual(jev_engine.load_settings()["provider"], "jevos")
+        self.assertIn("no hosted API key", output.getvalue().lower())
+        self.assertIn("No request was sent", output.getvalue())
+
     def test_setup_stores_key_in_private_file_and_status_never_exposes_it(self):
         key_path = jev_engine.credentials_path()
         self.assertTrue(key_path.is_file())
