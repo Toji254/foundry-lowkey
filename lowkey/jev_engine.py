@@ -234,8 +234,15 @@ def evaluate(
             f"Jev request is {len(encoded):,} bytes, above the local {limit:,}-byte cap. "
             "Narrow the command output or reduce the context; no request was sent."
         )
+    # Scope cached answers to the active credential without persisting the secret itself.
+    key_fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()
     cache_key = hashlib.sha256(
-        json.dumps({"endpoint": API_URL, "model": selected_model, "body": body}, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        json.dumps({
+            "endpoint": API_URL,
+            "model": selected_model,
+            "credential_fingerprint": key_fingerprint,
+            "body": body,
+        }, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
     required = set(str(k) for k in questions)
     if cfg.get("jev_free_tier_mode"):
@@ -371,7 +378,7 @@ def _clean_context(command: str, arguments: list[str], exit_code: int, output: s
     safe_output = re.sub(r"(?i)\b(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED URL]", safe_output)
     # Hex-looking 32-byte values can be transaction hashes or private keys; mask them
     # because classification does not require their full value.
-    safe_output = re.sub(r"(?i)\b0x[a-f0-9]{64}\b", "[REDACTED 32-BYTE HEX]", safe_output)
+    safe_output = re.sub(r"(?i)\b(?:0x)?[a-f0-9]{64,}\b", "[REDACTED 32-BYTE HEX]", safe_output)
     safe_output = safe_output[-4_000:]
     return {
         "native_command": str(command or "")[:100],
