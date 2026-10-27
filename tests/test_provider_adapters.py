@@ -5,10 +5,10 @@ from lowkey import provider_adapters as adapters
 
 class ProviderAdapterRegistryTests(unittest.TestCase):
     def test_builtin_providers_are_replaceable_transport_slots(self):
-        for name in ("deepseek", "gemini", "ollama", "openai", "openai-compatible"):
+        for name in ("deepseek", "gemini", "nvidia", "ollama", "openai", "openai-compatible", "openrouter", "orcarouter"):
             self.assertIsNotNone(adapters.get_provider_adapter(name))
         self.assertEqual(adapters.provider_adapter_status()["registered_providers"], [
-            "deepseek", "gemini", "ollama", "openai", "openai-compatible"
+            "deepseek", "gemini", "nvidia", "ollama", "openai", "openai-compatible", "openrouter", "orcarouter"
         ])
 
     def test_custom_adapter_can_be_registered_without_changing_review_agent(self):
