@@ -1259,99 +1259,260 @@ def automatic_review_reason(
 AI_HELP_GUIDE = r'''COMMAND FORMS & OPTIONS
 =======================
 
-SETUP & CONNECTION
-------------------
-lk ai status [--json]
-lk ai setup --provider {deepseek|gemini|openai|openai-compatible|ollama} --model MODEL
-     [--base-url URL] [--api-key-env ENV] [--timeout SECONDS] [--max-output-tokens COUNT]
-lk ai enable
-lk ai disable
-lk ai test
-lk ai runtime [--json]
-
-KEY MANAGEMENT
---------------
-lk ai keys list [--provider PROVIDER] [--json]
-lk ai keys add --provider PROVIDER --slot {1|2|3}
-lk ai keys remove --provider PROVIDER [--slot {1|2|3}]
-lk ai keys clear --provider PROVIDER
-
-REVIEW & EVIDENCE
------------------
-lk ai preview [--root DIR] [--contract NAME] [--show-context | --json-context]
-lk ai project [--root DIR] [--contract NAME] [--json]
-lk ai security-review [--root DIR] [--contract NAME] [--json]
-lk ai test-plan [--root DIR] [--contract NAME] [--json]
-lk ai ledger [--root DIR] [--json]
-lk ai verify FINDING_ID --test FILE --match-test FUNCTION [--run] [--root DIR] [--json]
-lk ai disposition FINDING_ID --status {confirmed|rejected|needs-review} --reviewer NAME
-     --reason TEXT [--evidence-id EVENT_ID] [--root DIR] [--json]
-
-AUTOMATION SETTINGS
--------------------
-lk ai mode {manual|auto}
-lk ai recommendations {status|auto|manual} [--json]
-lk ai errors {status|auto|manual} [--json]
-
-TROUBLESHOOTING
----------------
-lk ai explain-error --last
-lk ai explain-error --text "ERROR TEXT" [MORE_WORDS ...] [--command "ORIGINAL COMMAND"]
-
-WHAT DOES "AUTO" MEAN?
-----------------------
-auto is a value after a setting command, not a standalone command. Choose the setting you want:
-
-  lk ai mode auto
-      Allow complexity-triggered protocol reviews from eligible Lowkey workflows.
-  lk ai recommendations auto
-      Add model-generated, source-cited read-only suggestions after eligible successful commands.
-  lk ai errors auto
-      Request an AI explanation after supported Lowkey command failures.
-
-Turn each setting off with its matching "manual" form. Check each setting with its matching "status" form where available.
-Manual mode is the default; these settings are independent of one another.
-
-COMMON WORKFLOWS
-----------------
-  Configure, then test the connection:
-    lk ai setup --provider gemini --model MODEL
+PICK THE TASK
+-------------
+  Configure a model / check whether AI is ready:
+    lk ai setup --provider gemini --model YOUR_MODEL
+    lk ai status
     lk ai test
 
-  Review the whole project's protocol design without starting a local lab:
-    lk ai project
+  Understand contracts before a hands-on lab:
     lk ai project --contract Vault
+    lk lab Vault --ai-review
 
-  Inspect what would be sent, then run a focused security review:
+  Look for possible vulnerabilities:
     lk ai preview --contract Vault --show-context
     lk ai security-review --contract Vault
 
-  Generate suggested tests (does not write or run tests):
+  Turn a source observation into test ideas:
     lk ai test-plan --contract Vault
 
-  Explain a failure without running a suggested command:
+  Understand a failed command:
     lk ai explain-error --last
-    lk ai explain-error --text "Forge test failed: expected 1, got 0" --command "lk test"
+
+  Review saved findings and test evidence:
+    lk ai ledger
+
+QUICK START
+-----------
+1. Configure the provider and exact model name. For most hosted providers, Lowkey
+   prompts for the API key privately. Ollama uses a local model endpoint.
+     lk ai setup --provider gemini --model YOUR_MODEL
+
+2. Check the settings, then test provider connectivity. The test sends a fixed probe,
+   not your source code; your provider may still charge for the request.
+     lk ai status
+     lk ai test
+
+3. Inspect the context before a source-based review:
+     lk ai preview --contract Vault --show-context
+   This preview is local-only. It does not contact a provider.
+
+4. Run the task you need, for example:
+     lk ai security-review --contract Vault
+
+SETUP & CONNECTION
+------------------
+  lk ai status
+      Show configuration/readiness. This is local-only; it does not test connectivity.
+      Example: lk ai status
+
+  lk ai setup --provider PROVIDER --model MODEL [options]
+      Configure the provider and exact model identifier. Hosted providers usually
+      need an API key; Ollama is for a local model server. Setup also enables the
+      optional extension, but does not test the connection.
+      Example: lk ai setup --provider gemini --model YOUR_MODEL
+
+  lk ai enable / lk ai disable
+      Turn the optional AI extension on/off. Native Lowkey commands keep working.
+      Example: lk ai enable
+
+  lk ai test
+      Send a small, fixed connectivity test without project source. A request may
+      incur provider charges.
+      Example: lk ai test
+
+  lk ai runtime
+      Show the native helper roles, provider adapter readiness, and safety limits.
+      Example: lk ai runtime
+
+  lk ai status --json / lk ai runtime --json
+      Print machine-readable JSON for scripts.
+      Example: lk ai runtime --json
+
+KEY MANAGEMENT
+--------------
+  lk ai keys list [--provider PROVIDER] [--json]
+      Show available saved-key slots without revealing key values.
+      Example: lk ai keys list --provider gemini
+
+  lk ai keys add --provider PROVIDER --slot 1|2|3
+      Save or replace a key. Terminal input is hidden while you type.
+      Example: lk ai keys add --provider gemini --slot 1
+
+  lk ai keys remove --provider PROVIDER --slot N
+      Remove just one saved slot.
+      Example: lk ai keys remove --provider gemini --slot 2
+
+  lk ai keys remove --provider PROVIDER
+  lk ai keys clear --provider PROVIDER
+      Remove all saved keys for that provider. Use clear when you intend to remove
+      every slot.
+      Example: lk ai keys clear --provider gemini
+
+REVIEW & EVIDENCE
+-----------------
+  lk ai preview [--root DIR] [--contract NAME] [--show-context | --json-context]
+      Inspect the selected redacted source locally before sharing it. No provider
+      request is made.
+      Example: lk ai preview --contract Vault --show-context
+
+  lk ai project [--root DIR] [--contract NAME] [--json]
+      Explain contract roles, invariants, open questions, and deployment considerations.
+      It does not start a local lab or deploy anything.
+      Example: lk ai project --contract Vault
+
+  lk ai security-review [--root DIR] [--contract NAME] [--json]
+      Ask for source-grounded vulnerability leads. Findings remain candidates, not
+      confirmed bugs.
+      Example: lk ai security-review --contract Vault
+
+  lk ai test-plan [--root DIR] [--contract NAME] [--json]
+      Propose focused unit/fuzz/invariant/regression/integration/fork test ideas.
+      It never writes Solidity tests or runs them.
+      Example: lk ai test-plan --contract Vault
+
+  lk ai ledger [--root DIR] [--json]
+      Show saved review history, candidate findings, test evidence, and decisions.
+      Example: lk ai ledger
+
+  lk ai verify FINDING_ID --test FILE --match-test FUNCTION [--run]
+      Preview how one existing local test will check a candidate finding. Without
+      --run, the test is NOT executed. Add --run only after inspecting the test.
+      Example: lk ai verify F-0123456789ab --test test/Vault.t.sol --match-test testWithdraw
+
+  lk ai disposition FINDING_ID --status STATUS --reviewer NAME --reason TEXT
+      Record your decision after reviewing source/evidence. Confirmed/rejected
+      decisions require linked test evidence. The model cannot choose the decision.
+      Example: lk ai disposition F-0123456789ab --status needs-review --reviewer rogue --reason "Need to inspect the state transition."
+
+AUTOMATION SETTINGS
+-------------------
+  lk ai mode {manual|auto}
+      Control complexity-triggered protocol reviews, principally in lk lab.
+      Example: lk ai mode auto
+
+  lk ai recommendations {status|auto|manual}
+      Add or remove extra source-cited, read-only AI next-step suggestions after
+      eligible successful commands. Lowkey's native suggestions remain available.
+      Example: lk ai recommendations auto
+
+  lk ai errors {status|auto|manual}
+      Choose whether supported Lowkey command failures can trigger an automatic
+      AI explanation. Suggested fixes are printed, never executed.
+      Example: lk ai errors auto
+
+WHAT DOES "AUTO" MEAN?
+----------------------
+"auto" is a value after a setting command, not a standalone command. The three
+settings are independent:
+
+  lk ai mode auto
+      Let local complexity checks request a protocol review when the project looks
+      complex and the configured provider is ready. It does not run on every command.
+  lk ai recommendations auto
+      Allow an extra AI suggestion request after eligible successful commands.
+  lk ai errors auto
+      Request an AI explanation after supported routed Lowkey command failures.
+
+Turn each setting off with its matching "manual" form. Use "status" for the settings
+that support it. Keep them manual if you want every model request to be explicit.
+
+AI INSIDE EXISTING LK WORKFLOWS
+-------------------------------
+  lk lab --ai-review
+      Ask for a protocol review before Lowkey continues its normal lab setup.
+      Example: lk lab Vault --ai-review
+
+  lk ai mode auto
+      Allow the local complexity detector to request that review for eligible labs.
+      A simple project may not trigger a request.
+
+  lk ai recommendations auto
+      Add separate AI suggestions alongside Lowkey's normal next-command menu.
+
+  lk ai errors auto
+      Explain supported failures after they happen. This does not rerun the command.
+
+OPTIONS / MODES
+---------------
+  --root DIR
+      Choose the project folder; normally you can run the command from inside it.
+      Example: lk ai security-review --root ./my-project --contract Vault
+
+  --contract NAME
+      Prioritize source related to this contract name. It is not always an exclusive
+      filter; inspect the preview to see the source actually selected.
+      Example: lk ai preview --contract Vault
+
+  --show-context / --json-context
+      Show the exact selected context as readable text or JSON. Both are local-only.
+      Use --json-context when piping the preview into a JSON parser.
+      Example: lk ai preview --contract Vault --json-context
+
+  --json
+      Print structured output on commands that list this option.
+      Example: lk ai test-plan --contract Vault --json
+
+  --run
+      Execute only the selected existing test in lk ai verify. Without it, verify
+      prints a plan and does not run a test.
+      Example: lk ai verify F-0123456789ab --test test/Vault.t.sol --match-test testWithdraw --run
+
+  --status / status
+      Some settings use the word status as a value; it is not a general flag.
+      Example: lk ai recommendations status
+
+COMMON WORKFLOWS
+----------------
+  Configure or change a provider:
+    lk ai setup --provider deepseek --model YOUR_MODEL
+    lk ai status
+    lk ai test
+
+  Understand the protocol without starting a lab:
+    lk ai project --contract Vault
+
+  Review context before sending source to a provider:
+    lk ai preview --contract Vault --show-context
+    lk ai security-review --contract Vault
+
+  Get AI assistance when starting a local lab:
+    lk lab Vault --ai-review
+
+  Propose tests, then implement and run them yourself:
+    lk ai test-plan --contract Vault
+    lk test
+
+  Explain an error from a command Lowkey did not capture:
+    lk ai explain-error --text "failed to retrieve chain ID from fork endpoint: connection timed out" --command "forge test"
+
+  Continue an investigation:
+    lk ai ledger
+    lk ai disposition FINDING_ID --status needs-review --reviewer YOUR_NAME --reason "Explain what still needs checking."
 
 HELP FOR A SPECIFIC COMMAND
 ---------------------------
-  lk ai --help
-  lk ai <command> --help
-  lk ai keys --help
-  lk ai keys add --help
-  lk ai recommendations --help
+  lk ai --h
+      Show this task guide.
+  lk ai <command> --h
+      Show usage, options, when to use the command, and an example.
+  lk ai keys --h
+  lk ai keys add --h
+  lk ai recommendations --h
 
 OUTPUT & SAFETY
 ---------------
-- "AI OUTPUT" is unverified advice, not proof of a vulnerability or a test result.
+- AI output is unverified advice, not proof of a vulnerability or a test result.
+- Source-based reviews/test plans send selected source to your configured provider and may incur charges.
+- Preview is local-only; redaction is best-effort. Inspect the exact context before sharing.
+- AI never gets authority to choose deployment targets, sign/broadcast transactions, or run tools.
 - The test planner proposes ideas; it never writes or runs Solidity tests.
 - "lk ai verify" previews by default. A local test runs only with the explicit --run flag.
-- Review and test-plan requests send selected source to the provider and may incur charges.
-- Preview redaction is best-effort; inspect the selected context before sharing.
-- Use --json only on commands that list it. Use --json-context for the complete machine-readable preview.
 - Lowkey's native recommendations stay separate from optional AI recommendations.
-- Help aliases: --h, --help, -h, and help. Use 'lk ai --help' for the overview or 'lk ai <command> --help' for details.
-''' 
+- Use --json only on commands that list it. Use --json-context for the full machine-readable preview.
+- Help forms: --h, --help, -h, and help. For any command, use '<command> --h' to discover it.
+'''  
 
 
 def render_ai_help(parser: Any = None) -> str:
