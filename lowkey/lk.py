@@ -18602,6 +18602,89 @@ def _ai_auto_mode_enabled():
     return bool(state.get("enabled") and state.get("usable") and state.get("auto_assist"))
 
 
+def _jev_auto_mode_enabled():
+    """Check Jev's local switch and credentials without contacting TypeSafe."""
+    state = _ai_status_safely()
+    if not state.get("jev_autonomous"):
+        return False
+    try:
+        try:
+            import jev_engine
+        except ImportError:
+            from lowkey import jev_engine
+        return bool(jev_engine.status().get("configured"))
+    except Exception:
+        return False
+
+
+def _jev_command_eligible(command, arguments, exit_code=None):
+    """Run Jev only after useful outcomes, never for help/JSON or routine read noise."""
+    root = str(command or "").strip().lower()
+    args = [str(item).strip().lower() for item in (arguments or [])]
+    if root in {"ai", "memory", "raw", "batch"}:
+        return False
+    if any(item in {"--json", "--json-context", "--show-context"} for item in args):
+        return False
+    if any(item in HELP_FLAGS for item in args) or root in HELP_FLAGS:
+        return False
+    # Failed commands are useful diagnostic evidence. Avoid recursively classifying
+    # Jev/AI helper failures and status/probe commands that should stay predictable.
+    if exit_code is not None and int(exit_code) != 0:
+        return root not in {"ai", "memory"}
+    if root == "verification":
+        return bool(args and args[0] in {"run", "investigate"})
+    if root == "matrix":
+        return bool(args and args[0] == "test")
+    if root == "q":
+        return bool(args and args[0] in {"why", "next", "evidence", "path"})
+    return root in {
+        "build", "doctor", "test", "scan", "audit", "audit-checks", "break",
+        "walkthrough", "walk", "fuzz", "invariant", "mutate", "symbolic",
+        "slither", "recon", "probe", "trace", "state-diff", "project", "projects",
+        "system", "changes", "risk", "poc", "test-gen", "mutation-check", "lab",
+        "clone", "seams", "findings", "focus", "questions", "ask", "functions",
+    }
+
+
+def _print_jev_command_classification(command, args, result_code, command_output=""):
+    """Display Jev's typed assessment after the native command; never retry or execute it."""
+    state = _ai_status_safely()
+    if not state.get("jev_autonomous"):
+        return
+    try:
+        try:
+            import ai_harness
+            import jev_engine
+        except ImportError:
+            from lowkey import ai_harness, jev_engine
+        jev_state = jev_engine.status()
+        if not jev_state.get("configured"):
+            print(
+                "\\n@ JEV TRIAGE SKIPPED — TypeSafe API key is unavailable. "
+                "Run 'lk ai jev setup'; the native command already completed.",
+                file=sys.stderr,
+            )
+            return
+        budget = ai_harness.autonomy_budget_status()
+        if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
+            return
+        report = jev_engine.classify_command(
+            command="lk " + str(command or "").strip(),
+            arguments=[str(value) for value in (args or [])],
+            exit_code=int(result_code),
+            command_output=str(command_output or ""),
+        )
+        print()
+        print(jev_engine.render_classification(report, "lk " + str(command or "").strip()))
+    except Exception as exc:
+        # Native command success/failure is authoritative; optional triage is non-blocking.
+        print(
+            f"\\n@ JEV TRIAGE UNAVAILABLE ({type(exc).__name__}). "
+            "The native Lowkey command kept its original result.",
+            file=sys.stderr,
+        )
+
+
 def _dispatch_command_captured(command, args, config):
     stdout_capture = _TeeCapture(sys.stdout)
     stderr_capture = _TeeCapture(sys.stderr)
