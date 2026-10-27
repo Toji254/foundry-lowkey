@@ -23,7 +23,7 @@ MAX_SOURCE_CONTEXT_BYTES = 32_000
 MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
-JEV_DEFAULT_DAILY_LIMIT = 8
+JEV_DEFAULT_DAILY_LIMIT = 5
 JEV_DEFAULT_CONTEXT_LIMIT_BYTES = 16_000
 JEV_DEFAULT_OUTPUT_TOKENS = 650
 JEV_MAX_DAILY_LIMIT = 24
@@ -365,8 +365,9 @@ def _jev_budget_path() -> Path:
 
 
 def _jev_budget_day() -> str:
-    # Use the machine's local day so the displayed reset matches the user's device.
-    return datetime.now().astimezone().date().isoformat()
+    # JevModel's documented free-run allowance resets on a UTC calendar day.
+    # A shared UTC boundary also avoids a local-time window spanning two quotas.
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def autonomy_budget_status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -391,7 +392,7 @@ def autonomy_budget_status(config: Mapping[str, Any] | None = None) -> dict[str,
         "remaining": max(0, limit - calls) if enabled else None,
         "context_limit_bytes": int(cfg.get("jev_context_limit_bytes", JEV_DEFAULT_CONTEXT_LIMIT_BYTES)),
         "max_output_tokens": int(cfg.get("jev_max_output_tokens", JEV_DEFAULT_OUTPUT_TOKENS)),
-        "reset": "at the next local-device calendar day",
+        "reset": "at the next UTC calendar day",
     }
 
 
@@ -404,7 +405,7 @@ def _reserve_jev_request(config: Mapping[str, Any], purpose: str) -> None:
         raise AIUnavailable(
             "Jev's local free-tier request cap has been reached "
             f"({budget['calls_today']}/{budget['daily_limit']} requests today). "
-            "Native Lowkey commands still work. Check 'lk ai jev status'; the counter resets on the next local day."
+            "Native Lowkey commands still work. Check 'lk ai jev status'; the counter resets at 00:00 UTC."
         )
     path = _jev_budget_path()
     _atomic_json(path, {
@@ -2115,7 +2116,7 @@ JEV AUTONOMY & LOCAL BUDGET GUARD
       API keys are separate between providers; use hidden input or the matching env var.
   lk ai jev on [--tier guarded|standard] [--daily-limit 1..24] [--with-text-ai]
       Enable Jev's typed triage on selected Lowkey command results. Guarded mode
-      defaults to 8 provider attempts/day and a 7,500-byte JevModel request cap.
+      defaults to 5 provider attempts per UTC day and a 7,500-byte JevModel request cap.
       --with-text-ai additionally uses an existing text provider for natural-language
       explanations, and may use a separate provider request.
   lk ai jev off
