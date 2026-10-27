@@ -3945,6 +3945,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         parser.print_help()
         return 2
+    except KeyboardInterrupt:
+        # getpass raises KeyboardInterrupt when the user presses Ctrl+C. Treat that
+        # as a normal cancellation, not a configuration/runtime traceback.
+        print("Cancelled by user; no further AI action was taken.", file=sys.stderr)
+        return 130
     except (AIHarnessError, OSError, ValueError, RuntimeError) as exc:
         try:
             import error_context
