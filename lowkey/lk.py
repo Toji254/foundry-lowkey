@@ -18362,7 +18362,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
         # A few commands intentionally exit from inside their handler. Do not
         # discard diagnostics just because the handler uses SystemExit.
         diagnostic = captured_stderr.getvalue()
-        code = exc.code if isinstance(exc.code, int) else 2
+        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
         root = None
         try:
             root = audit_context.foundry_project_root()
