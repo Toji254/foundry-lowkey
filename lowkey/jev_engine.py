@@ -356,7 +356,7 @@ def _clean_context(command: str, arguments: list[str], exit_code: int, output: s
         import ai_harness, ai_workflow
     safe_args = ai_workflow._safe_arguments([str(item) for item in arguments])
     safe_output = ai_harness._redact_sensitive_source(str(output or ""))
-    safe_output = re.sub(r"(?i)(--(?:private-key|mnemonic|seed(?:-phrase)?|password|api-key|token|secret)(?:=|\s+))\\S+", r"\1[REDACTED]", safe_output)
+    safe_output = re.sub(r"(?i)(--(?:private-key|mnemonic|seed(?:-phrase)?|password|api-key|token|secret)(?:=|\s+))\S+", r"\1[REDACTED]", safe_output)
     safe_output = safe_output[-4_000:]
     return {
         "native_command": str(command or "")[:100],
