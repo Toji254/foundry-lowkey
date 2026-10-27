@@ -2231,18 +2231,15 @@ def main_with_jev(argv=None) -> int:
     try:
         try:
             import ai_harness
-            import ai_workflow
+            import jev_engine
         except ImportError:
-            from lowkey import ai_harness, ai_workflow
-        state = ai_harness.status()
+            from lowkey import ai_harness, jev_engine
+        config = ai_harness.load_config()
+        state = jev_engine.status()
     except Exception:
-        # AI setup problems never block the native import browser.
+        # Jev setup problems never block the native import browser.
         return main(args)
-    if not (
-        state.get("jev_autonomous")
-        and state.get("enabled")
-        and state.get("usable")
-    ):
+    if not (config.get("jev_autonomous") and state.get("configured")):
         return main(args)
 
     stdout_capture = _JevTeeCapture(sys.stdout)
@@ -2254,29 +2251,22 @@ def main_with_jev(argv=None) -> int:
     if code == 0 and not install_requested:
         return code
 
-    if state.get("jev_free_tier_mode") and int(state.get("jev_calls_remaining") or 0) <= 0:
+    budget = ai_harness.autonomy_budget_status()
+    if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
         return code
     captured = stdout_capture.getvalue()
     errors = stderr_capture.getvalue()
     if errors:
         captured += "\n[LOWKEY STDERR]\n" + errors
     try:
-        root = root_for()
-        report = ai_workflow.guide_command(
-            root=root,
+        report = jev_engine.classify_command(
             command="lk import",
             arguments=args,
             exit_code=code,
             command_output=captured,
-            project_config={},
-            task_note=(
-                "Interpret the completed import-browser lookup/install result. Explain whether a component was resolved, "
-                "whether an install actually succeeded, and any evidenced dependency/configuration issue. Never recommend "
-                "running an install automatically; suggestions are display-only."
-            ),
         )
         print()
-        print(ai_workflow.render_guidance(report))
+        print(jev_engine.render_classification(report, "lk import"))
     except Exception as exc:
         print(
             f"\n@ JEV IMPORT GUIDANCE UNAVAILABLE ({type(exc).__name__}). "
