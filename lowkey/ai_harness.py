@@ -1299,7 +1299,7 @@ lk ai explain-error --text "ERROR TEXT" [MORE_WORDS ...] [--command "ORIGINAL CO
 
 WHAT DOES "AUTO" MEAN?
 ----------------------
-"auto" is a value after a setting command, not a standalone command. Choose the setting you want:
+auto is a value after a setting command, not a standalone command. Choose the setting you want:
 
   lk ai mode auto
       Allow complexity-triggered protocol reviews from eligible Lowkey workflows.
