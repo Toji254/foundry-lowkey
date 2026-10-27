@@ -224,9 +224,26 @@ def _process_matches_jevos(pid: int, executable: str) -> bool:
     if len(argv) < 2 or "serve" not in argv[1:]:
         return False
     try:
-        return Path(argv[0]).resolve() == Path(executable).resolve()
+        argument_path = Path(argv[0])
+        if not argument_path.is_absolute():
+            process_cwd = Path(f"/proc/{pid}/cwd").resolve()
+            argument_path = process_cwd / argument_path
+        return argument_path.resolve() == Path(executable).resolve()
     except OSError:
         return False
+
+
+def _find_running_jevos_process(executable: Path) -> int | None:
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if _process_matches_jevos(pid, str(executable)):
+            return pid
+    return None
 
 
 def server_status() -> dict[str, Any]:
@@ -256,9 +273,22 @@ def start_server(timeout_seconds: int = JEVOS_START_TIMEOUT_SECONDS) -> str:
     if status["ready"]:
         if status["managed_by_lowkey"]:
             return f"Jevos-v5 is already running and managed by Lowkey (PID {status['pid']})."
+        # If the user already started ./jev serve manually, adopt only a process
+        # whose executable and "serve" argument can be verified under /proc.
+        try:
+            executable = _find_jevos_executable()
+        except JevError:
+            executable = None
+        running_pid = _find_running_jevos_process(executable) if executable else None
+        if running_pid is not None and executable is not None:
+            _write_service_record(running_pid, executable)
+            return (
+                f"Jevos-v5 was already running (PID {running_pid}); Lowkey adopted it. "
+                "You can now use 'lk ai jev stop' or 'lk ai jev restart'."
+            )
         raise JevError(
-            "Jevos-v5 is already responding at 127.0.0.1:8017 but was started outside Lowkey. "
-            "Stop it with Ctrl+C in its original terminal, then run 'lk ai jev start' to manage it in the background."
+            "Jevos-v5 is already responding at 127.0.0.1:8017, but Lowkey could not verify its process. "
+            "For safety, Lowkey will not terminate it. Keep using it as-is or stop it manually."
         )
     if status["running"]:
         raise JevError(
