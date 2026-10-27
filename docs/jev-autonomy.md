@@ -8,7 +8,7 @@ A fresh setup defaults to **JevModel**, an independent hosted service that curre
 
 The official **TypeSafe API** is also supported. TypeSafe's published price is $0.042 per million input tokens, with output tokens free; check its current account terms before using it. Lowkey will preserve an existing TypeSafe setup/key rather than silently redirecting it to JevModel.
 
-**Jevos-v5** is supported as an optional local provider. It uses the Jev-compatible API at `http://127.0.0.1:8017/v1/systemone`, requires no API key, and runs on your own CPU. Keep its `jev serve` process running while Lowkey uses it. `lk ai jev status` does not probe the server; `lk ai jev test` does. Local requests do not consume the hosted-provider daily request allowance. The existing JevModel hosted default is intentionally unchanged.
+**Jevos-v5** is supported as an optional local provider. It uses the Jev-compatible API at `http://127.0.0.1:8017/v1/systemone`, requires no API key, and runs on your own CPU. Lowkey can start it as a background process, so you do not have to keep a terminal open. `lk ai jev status` checks the local health endpoint when Jevos is selected; `lk ai jev test` sends a fixed, source-free model request. Local requests do not consume the hosted-provider daily request allowance. The existing JevModel hosted default is intentionally unchanged.
 
 ## Set up and control Jev
 
@@ -20,6 +20,12 @@ lk ai jev setup
 lk ai jev setup --provider jevmodel
 lk ai jev setup --provider typesafe
 lk ai jev setup --provider jevos     # select local Jevos-v5; no key prompt
+
+# Start/stop the local Jevos server in the background (Linux/macOS):
+lk ai jev start
+lk ai jev status
+lk ai jev restart
+lk ai jev stop
 
 # Switch back to the existing hosted default (or the official hosted endpoint):
 lk ai jev setup --provider jevmodel
@@ -37,6 +43,15 @@ lk ai jev off
 lk ai jev remove-key
 ```
 
+For the custom `lh` shell toolbox menu, run this once from the Lowkey repository checkout. It backs up the matching Bash config file, adds menu entries when it finds the existing toolbox menu, and installs shell shortcuts:
+
+```bash
+bash scripts/install-lh-jev-shortcuts.sh
+source ~/.bashrc
+```
+
+Then use `jevup`, `jevstat`, `jevrestart`, or `jevdn` from any Bash terminal.
+
 Optional local-budget controls:
 
 ```bash
@@ -51,7 +66,7 @@ lk ai jev on --tier standard
 lk ai jev off --tier standard
 ```
 
-You can also set `JEVMODEL_API_KEY` or `TYPESAFE_API_KEY` in your environment. Choose the variable that belongs to the selected hosted provider. Jevos does not use an API key. Status never prints key values. `lk ai jev setup` saves the selected endpoint/model/key source without sending a request. `lk ai jev test` makes one real, source-free request: hosted Jev may consume tokens or incur usage; Jevos runs locally.
+You can also set `JEVMODEL_API_KEY` or `TYPESAFE_API_KEY` in your environment. Choose the variable that belongs to the selected hosted provider. Jevos does not use an API key. Status never prints key values. `lk ai jev setup` saves the selected endpoint/model/key source without sending a request. `lk ai jev start` locates `~/tools/jev/jev` (or `JEVOS_BIN` / `jev` on `PATH`), launches `jev serve` detached from the terminal, writes a private PID record and log under the Lowkey state directory, then waits for `/health`. `lk ai jev stop` only signals a process whose PID and command are verified as the Jevos server; it will not kill a server that was started manually in another terminal. `lk ai jev restart` stops and starts a Lowkey-managed process. `lk ai jev test` makes one real, source-free request: hosted Jev may consume tokens or incur usage; Jevos runs locally.
 
 ## What autonomous mode does
 

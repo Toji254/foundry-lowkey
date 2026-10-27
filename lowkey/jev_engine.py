@@ -10,6 +10,9 @@ import json
 import math
 import os
 import re
+import shutil
+import signal
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -89,6 +92,328 @@ def _atomic_json(path: Path, data: Mapping[str, Any]) -> None:
         except ImportError as exc:
             raise JevError("Lowkey's secure settings helper is unavailable.") from exc
     atomic(path, data)
+
+
+
+
+# Local Jevos-v5 process controls. These helpers manage only the local server;
+# they never start it automatically from ordinary Lowkey commands.
+JEVOS_BASE_URL = "http://127.0.0.1:8017"
+JEVOS_HEALTH_URL = JEVOS_BASE_URL + "/health"
+JEVOS_START_TIMEOUT_SECONDS = 30
+JEVOS_STOP_TIMEOUT_SECONDS = 5
+
+
+def service_state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME")
+    return (Path(base).expanduser() if base else Path.home() / ".local" / "state") / "lowkey"
+
+
+def service_pid_path() -> Path:
+    return service_state_dir() / "jevos-server.json"
+
+
+def service_log_path() -> Path:
+    return service_state_dir() / "jevos-server.log"
+
+
+def _find_jevos_executable() -> Path:
+    candidates: list[Path] = []
+    configured = os.environ.get("JEVOS_BIN", "").strip()
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.extend([
+        Path.home() / "tools" / "jev" / "jev",
+        Path.home() / ".local" / "bin" / "jev",
+        Path.home() / ".foundry" / "bin" / "jev",
+        Path.home() / "bin" / "jev",
+    ])
+    discovered = shutil.which("jev")
+    if discovered:
+        candidates.append(Path(discovered).expanduser())
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            if resolved.is_file() and os.access(resolved, os.X_OK):
+                return resolved
+        except OSError:
+            continue
+    raise JevError(
+        "Could not find the Jevos executable. Expected ~/tools/jev/jev or a 'jev' command on PATH. "
+        "Set JEVOS_BIN to its full path if it is installed elsewhere."
+    )
+
+
+def _health_payload(timeout: float = 0.5) -> dict[str, Any] | None:
+    try:
+        with urlopen(JEVOS_HEALTH_URL, timeout=timeout) as response:
+            if not 200 <= int(getattr(response, "status", 200)) < 300:
+                return None
+            body = response.read(8192)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"status": "reachable"}
+        return payload if isinstance(payload, dict) else {"status": "reachable"}
+    except Exception:
+        return None
+
+
+def _read_service_record() -> dict[str, Any] | None:
+    try:
+        value = json.loads(service_pid_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    pid = value.get("pid")
+    executable = value.get("executable")
+    if type(pid) is not int or pid <= 1 or not isinstance(executable, str):
+        return None
+    return {"pid": pid, "executable": executable}
+
+
+def _write_service_record(pid: int, executable: Path) -> None:
+    path = service_pid_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
+    _atomic_json(path, {"pid": pid, "executable": str(executable), "endpoint": JEVOS_BASE_URL})
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _remove_service_record() -> None:
+    try:
+        service_pid_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _process_matches_jevos(pid: int, executable: str) -> bool:
+    # On Linux, verify both the executable and the "serve" argument before
+    # sending a signal; this prevents acting on a recycled PID.
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part]
+    if len(argv) < 2 or "serve" not in argv[1:]:
+        return False
+    try:
+        argument_path = Path(argv[0])
+        if not argument_path.is_absolute():
+            process_cwd = Path(f"/proc/{pid}/cwd").resolve()
+            argument_path = process_cwd / argument_path
+        return argument_path.resolve() == Path(executable).resolve()
+    except OSError:
+        return False
+
+
+def _find_running_jevos_process(executable: Path) -> int | None:
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if _process_matches_jevos(pid, str(executable)):
+            return pid
+    return None
+
+
+def server_status() -> dict[str, Any]:
+    payload = _health_payload()
+    record = _read_service_record()
+    managed = bool(
+        record
+        and _pid_exists(record["pid"])
+        and _process_matches_jevos(record["pid"], record["executable"])
+    )
+    if record and not managed and payload is None:
+        _remove_service_record()
+        record = None
+    return {
+        "endpoint": JEVOS_BASE_URL,
+        "running": payload is not None or managed,
+        "ready": payload is not None,
+        "managed_by_lowkey": managed,
+        "pid": record["pid"] if managed and record else None,
+        "health": payload.get("status", "reachable") if payload is not None else ("starting" if managed else "unavailable"),
+        "log_path": str(service_log_path()),
+    }
+
+
+def _adopt_running_jevos() -> dict[str, Any] | None:
+    try:
+        executable = _find_jevos_executable()
+    except JevError:
+        return None
+    running_pid = _find_running_jevos_process(executable)
+    if running_pid is None:
+        return None
+    _write_service_record(running_pid, executable)
+    return {"pid": running_pid, "executable": str(executable)}
+
+
+def start_server(timeout_seconds: int = JEVOS_START_TIMEOUT_SECONDS) -> str:
+    status = server_status()
+    if status["ready"]:
+        if status["managed_by_lowkey"]:
+            return f"Jevos-v5 is already running and managed by Lowkey (PID {status['pid']})."
+        # Adopt only a process whose executable and "serve" argument verify under /proc.
+        adopted = _adopt_running_jevos()
+        if adopted:
+            return (
+                f"Jevos-v5 was already running (PID {adopted['pid']}); Lowkey registered it for control. "
+                "It remains attached to the terminal that launched it; run 'lk ai jev restart' once "
+                "to relaunch it in the background."
+            )
+        raise JevError(
+            "Jevos-v5 is already responding at 127.0.0.1:8017, but Lowkey could not verify its process. "
+            "For safety, Lowkey will not terminate it. Keep using it as-is or stop it manually."
+        )
+    if status["running"]:
+        raise JevError(
+            f"Jevos-v5 is starting but is not ready yet. Check the server log: {status['log_path']}"
+        )
+
+    executable = _find_jevos_executable()
+    service_state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+    log_path = service_log_path()
+    try:
+        with log_path.open("ab", buffering=0) as log_handle:
+            process = subprocess.Popen(
+                [str(executable), "serve"],
+                cwd=str(executable.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+    except OSError as exc:
+        raise JevError(f"Could not start Jevos-v5 using {executable}: {exc}") from exc
+
+    _write_service_record(process.pid, executable)
+    deadline = time.monotonic() + max(1, min(timeout_seconds, 90))
+    while time.monotonic() < deadline:
+        if _health_payload(timeout=0.5) is not None:
+            return (
+                f"Jevos-v5 is ready at {JEVOS_BASE_URL} (PID {process.pid}). "
+                f"It is running in the background; log: {log_path}"
+            )
+        exit_code = process.poll()
+        if exit_code is not None:
+            _remove_service_record()
+            try:
+                tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]
+            except OSError:
+                tail = []
+            detail = "\n".join(tail)
+            suffix = f"\nLast log lines:\n{detail}" if detail else ""
+            raise JevError(f"Jevos-v5 exited during startup (exit code {exit_code}).{suffix}")
+        time.sleep(0.25)
+
+    raise JevError(
+        f"Jevos-v5 process started (PID {process.pid}) but did not become ready within "
+        f"{timeout_seconds} seconds. It may still be loading; check {log_path} and run 'lk ai jev status'."
+    )
+
+
+def stop_server(timeout_seconds: int = JEVOS_STOP_TIMEOUT_SECONDS) -> str:
+    record = _read_service_record()
+    if not record:
+        if _health_payload() is not None:
+            # A manually started instance is safe to stop only if its exact
+            # executable and serve command can be verified.
+            record = _adopt_running_jevos()
+            if not record:
+                raise JevError(
+                    "Jevos-v5 is running but Lowkey could not verify its process. "
+                    "For safety, stop it with Ctrl+C in the terminal running 'jev serve'."
+                )
+        else:
+            _remove_service_record()
+            return "Jevos-v5 is already stopped."
+
+    pid = record["pid"]
+    executable = record["executable"]
+    if not _pid_exists(pid) or not _process_matches_jevos(pid, executable):
+        _remove_service_record()
+        if _health_payload() is not None:
+            raise JevError(
+                "The saved Lowkey PID no longer matches the Jevos process, but the endpoint still responds. "
+                "For safety, Lowkey did not stop an unverified process."
+            )
+        return "Removed a stale Jevos PID record; the server is not running."
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        _remove_service_record()
+        return "Jevos-v5 is already stopped."
+    except OSError as exc:
+        raise JevError(f"Could not stop Lowkey-managed Jevos-v5 process {pid}: {exc}") from exc
+
+    deadline = time.monotonic() + max(1, min(timeout_seconds, 30))
+    while time.monotonic() < deadline:
+        if not _pid_exists(pid) or not _process_matches_jevos(pid, executable):
+            _remove_service_record()
+            if _health_payload() is not None:
+                return f"Stopped Jevos PID {pid}, but port 8017 still responds to a health check."
+            return f"Jevos-v5 stopped (PID {pid})."
+        time.sleep(0.1)
+
+    # Escalate only after re-checking the PID still belongs to our Jevos command.
+    if _pid_exists(pid) and _process_matches_jevos(pid, executable):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError as exc:
+            raise JevError(f"Jevos-v5 did not exit after SIGTERM; could not force-stop PID {pid}: {exc}") from exc
+    _remove_service_record()
+    return f"Jevos-v5 stopped (PID {pid})."
+
+
+def restart_server() -> str:
+    stopped_message = stop_server()
+    # Give the old listener time to release port 8017 before launching a new process.
+    deadline = time.monotonic() + 6
+    while _health_payload() is not None and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if _health_payload() is not None:
+        raise JevError(
+            "The previous Jevos process was signalled, but port 8017 is still responding. "
+            "For safety, Lowkey did not launch a second server; inspect the running process and try again."
+        )
+    started_message = start_server()
+    if "already stopped" in stopped_message or "Removed a stale" in stopped_message:
+        return started_message
+    return stopped_message + "\n" + started_message
 
 
 def _default_provider() -> str:

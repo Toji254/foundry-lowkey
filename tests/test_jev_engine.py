@@ -55,6 +55,83 @@ def classification_response():
 
 
 class JevEngineTests(unittest.TestCase):
+    def test_server_status_reports_local_health_without_claiming_lowkey_ownership(self):
+        with patch.object(jev_engine, "_health_payload", return_value={"status": "ready"}), \
+             patch.object(jev_engine, "_read_service_record", return_value=None):
+            value = jev_engine.server_status()
+        self.assertTrue(value["running"])
+        self.assertTrue(value["ready"])
+        self.assertFalse(value["managed_by_lowkey"])
+        self.assertEqual(value["endpoint"], "http://127.0.0.1:8017")
+
+    def test_start_server_adopts_verified_manual_jev_process(self):
+        executable = Path(self.tmp.name) / "jev"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        with patch.object(jev_engine, "server_status", return_value={
+            "ready": True, "running": True, "managed_by_lowkey": False,
+            "pid": None, "log_path": str(jev_engine.service_log_path()),
+        }), patch.object(jev_engine, "_find_jevos_executable", return_value=executable), \
+             patch.object(jev_engine, "_find_running_jevos_process", return_value=4567), \
+             patch.object(jev_engine, "_write_service_record") as write_record:
+            message = jev_engine.start_server()
+        self.assertIn("Lowkey registered it for control", message)
+        write_record.assert_called_once_with(4567, executable.resolve())
+
+    def test_start_server_spawns_detached_process_and_waits_for_health(self):
+        executable = Path(self.tmp.name) / "jev"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        process = unittest.mock.Mock()
+        process.pid = 8123
+        process.poll.return_value = None
+        with patch.object(jev_engine, "server_status", return_value={
+            "ready": False, "running": False, "managed_by_lowkey": False,
+            "pid": None, "log_path": str(jev_engine.service_log_path()),
+        }), patch.object(jev_engine, "_find_jevos_executable", return_value=executable), \
+             patch.object(jev_engine.subprocess, "Popen", return_value=process) as popen, \
+             patch.object(jev_engine, "_health_payload", return_value={"status": "ready"}), \
+             patch.object(jev_engine, "_write_service_record") as write_record:
+            message = jev_engine.start_server()
+        self.assertIn("Jevos-v5 is ready", message)
+        self.assertIn("PID 8123", message)
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0], [str(executable.resolve()), "serve"])
+        self.assertEqual(kwargs["cwd"], str(executable.resolve().parent))
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(kwargs["stdin"], jev_engine.subprocess.DEVNULL)
+        write_record.assert_called_once_with(8123, executable.resolve())
+
+    def test_stop_server_refuses_to_kill_a_server_not_started_by_lowkey(self):
+        with patch.object(jev_engine, "_read_service_record", return_value=None), \
+             patch.object(jev_engine, "_health_payload", return_value={"status": "ready"}):
+            with patch.object(jev_engine, "_adopt_running_jevos", return_value=None):
+                with self.assertRaisesRegex(jev_engine.JevError, "could not verify its process"):
+                    jev_engine.stop_server()
+
+    def test_stop_server_sends_term_only_to_verified_managed_jev_process(self):
+        record = {"pid": 8123, "executable": "/opt/jev/jev"}
+        with patch.object(jev_engine, "_read_service_record", return_value=record), \
+             patch.object(jev_engine, "_pid_exists", side_effect=[True, False]), \
+             patch.object(jev_engine, "_process_matches_jevos", return_value=True), \
+             patch.object(jev_engine.os, "kill") as kill, \
+             patch.object(jev_engine, "_health_payload", return_value=None), \
+             patch.object(jev_engine, "_remove_service_record") as remove:
+            message = jev_engine.stop_server()
+        self.assertIn("Jevos-v5 stopped", message)
+        kill.assert_called_once_with(8123, jev_engine.signal.SIGTERM)
+        remove.assert_called_once()
+
+    def test_jev_start_command_routes_to_local_server_manager(self):
+        jev_engine.configure(provider="jevos", model="jev-latest")
+        output = io.StringIO()
+        with patch.object(jev_engine, "start_server", return_value="Jevos test server started") as start, \
+             contextlib.redirect_stdout(output):
+            result = ai_harness.main(["jev", "start"])
+        self.assertEqual(result, 0)
+        start.assert_called_once_with()
+        self.assertIn("Jevos test server started", output.getvalue())
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
