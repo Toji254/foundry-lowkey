@@ -173,8 +173,25 @@ class AIHarnessTests(unittest.TestCase):
                         ai.main(args)
                 self.assertEqual(help_exit.exception.code, 0)
                 rendered = output.getvalue()
+                normalized = " ".join(rendered.split())
                 for flag in expected:
-                    self.assertIn(flag, rendered)
+                    with self.subTest(expected=flag):
+                        self.assertIn(" ".join(flag.split()), normalized)
+
+    def test_project_help_uses_stable_lowkey_renderer_and_spaced_options(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            with self.assertRaises(SystemExit) as help_exit:
+                ai.main(["project", "--help"])
+        self.assertEqual(help_exit.exception.code, 0)
+        rendered = output.getvalue()
+        normalized = " ".join(rendered.split())
+        self.assertTrue(rendered.startswith("LOWKEY HELP  •  lk ai project"))
+        self.assertIn("--root ROOT", rendered)
+        self.assertIn("--contract CONTRACT", rendered)
+        self.assertIn("--json", rendered)
+        self.assertIn("does not start a local lab", normalized)
+        self.assertNotIn("usage: lk ai project", rendered.lower())
 
     def test_project_review_is_standalone_and_does_not_start_lab(self):
         project_root = self.tmp.name
