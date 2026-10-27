@@ -348,80 +348,85 @@ class AIHarnessTests(unittest.TestCase):
         self.assertEqual(result["origin"], "configured-model")
         self.assertEqual(result["recommendations"][0]["source"]["symbol"], "withdraw")
 
-    def test_recommendations_accept_a_source_grounded_multi_contract_learning_workflow(self):
-        token_source = (
-            "contract Token { "
-            "function balanceOf(address account) external view returns (uint256) { return _balances[account]; } "
-            "}"
-        )
-        sale_source = (
-            "contract TokenSaleContract { "
-            "mapping(address => uint256) public balances; "
-            "}"
-        )
-        sale_address = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
-        actor_address = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+    def test_recommendations_are_optional_contextual_learning_nudges_not_workflows(self):
         context = {
             "source_files": [
-                {"path": "src/token.sol", "source_excerpt": token_source},
-                {"path": "src/Token Sale Contract.sol", "source_excerpt": sale_source},
+                {
+                    "path": "src/Token.sol",
+                    "source_excerpt": (
+                        "contract Token { "
+                        "function balanceOf(address account) external view returns (uint256) { return _balances[account]; } "
+                        "}"
+                    ),
+                },
+                {
+                    "path": "lowkey-command-reference",
+                    "source_excerpt": (
+                        "COMMAND CONTEXT\n"
+                        "Attempted invocation: lk target\n"
+                        "Command summary: Select which contract Lowkey uses for later ABI-aware reads.\n"
+                    ),
+                },
             ],
-            "current_command_evidence": {
-                "excerpt": f"TokenSaleContract {sale_address}; Anvil account #0 {actor_address}"
+            "current_lowkey_command": {
+                "invocation": "lk target",
+                "arguments": [],
+                "exit_code": 0,
+                "summary": "Select which contract Lowkey uses for later ABI-aware reads.",
             },
-            "shared_project_context": {"project_knowledge": {"system_model": {"contracts": [
-                {"name": "Token"}, {"name": "TokenSaleContract"}
-            ]}}},
         }
         raw = {
-            "recommendations": [{
-                "title": "Check token inventory and sale accounting",
-                "why": "Compare the token contract's balance with the sale contract's own accounting.",
-                "steps": [
-                    {
-                        "command": "lk target Token",
-                        "purpose": "Select the ERC-20 token contract because it owns balanceOf.",
-                        "expected_result": "The active target becomes Token.",
-                        "source": {"path": "src/token.sol", "symbol": "Token"},
-                    },
-                    {
-                        "command": f"lk read balanceOf {sale_address}",
-                        "purpose": "Read how many ERC-20 tokens the sale contract currently holds.",
-                        "expected_result": "A zero result means it currently holds no units of this token.",
-                        "source": {"path": "src/token.sol", "symbol": "balanceOf"},
-                    },
-                    {
-                        "command": "lk target TokenSaleContract",
-                        "purpose": "Switch back to the sale contract to inspect its own accounting.",
-                        "expected_result": "The active target becomes TokenSaleContract.",
-                        "source": {"path": "src/Token Sale Contract.sol", "symbol": "TokenSaleContract"},
-                    },
-                    {
-                        "command": f"lk read balances {actor_address}",
-                        "purpose": "Read the sale contract's mapping entry for Anvil account zero.",
-                        "expected_result": "This is sale accounting and is not the same as the ERC-20 balance.",
-                        "source": {"path": "src/Token Sale Contract.sol", "symbol": "balances"},
-                    },
-                ],
-            }]
+            "recommendations": [
+                {
+                    "title": "The target controls how reads are interpreted",
+                    "why": "You just used target selection, so this explains an important Lowkey behavior.",
+                    "learning_point": (
+                        "The target is Lowkey's current contract context: commands such as lk read use that contract's "
+                        "ABI and address. Switching the target is not a deployment or transaction."
+                    ),
+                    "what_to_notice": "The displayed target changes, while the chain state does not.",
+                    "optional_command": "lk target",
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                },
+                {
+                    "title": "Do not turn a learning note into a sequence",
+                    "why": "Multiple commands would prescribe a workflow instead of helping the user understand Lowkey.",
+                    "learning_point": "This multi-step sequence should be rejected.",
+                    "steps": [
+                        {
+                            "command": "lk target Token",
+                            "purpose": "Select token.",
+                            "expected_result": "Token is selected.",
+                            "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                        },
+                        {
+                            "command": "lk read balanceOf",
+                            "purpose": "Read the balance.",
+                            "expected_result": "A balance is printed.",
+                            "source": {"path": "src/Token.sol", "symbol": "balanceOf"},
+                        },
+                    ],
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                },
+            ]
         }
         result = ai.validate_ai_recommendations(raw, context, [])
         self.assertEqual(len(result["recommendations"]), 1)
-        steps = result["recommendations"][0]["steps"]
-        self.assertEqual(len(steps), 4)
-        self.assertEqual(steps[0]["command"], "lk target Token")
-        self.assertEqual(steps[-1]["command"], f"lk read balances {actor_address}")
+        tip = result["recommendations"][0]
+        self.assertEqual(tip["optional_command"], "lk target")
+        self.assertIn("target is Lowkey's current contract context", tip["learning_point"])
+        self.assertEqual(tip["source"]["path"], "lowkey-command-reference")
 
     def test_recommendation_allowlist_rejects_transaction_and_shell_commands(self):
         for command in (
             "lk send pay",
             "lk wizard pay",
             "lk read balanceOf 0x" + "1" * 40 + " && whoami",
-            "lk lab TokenSaleContract",
+            "lk lab --generic TokenSaleContract",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(ai._safe_ai_recommendation_command(command))
-        self.assertEqual(ai._safe_ai_recommendation_command("lk target Token"), "lk target Token")
+        self.assertEqual(ai._safe_ai_recommendation_command("lk target"), "lk target")
         self.assertEqual(
             ai._safe_ai_recommendation_command("lk lab --generic TokenSaleContract"),
             "lk lab --generic TokenSaleContract",
@@ -454,85 +459,39 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("auto_selected", source["source_excerpt"])
         self.assertIn("scores[key] += 70", source["source_excerpt"])
 
-    def test_renderer_explains_workflow_steps_in_plain_language(self):
+    def test_renderer_explains_optional_learning_notes_without_directing_a_workflow(self):
         rendered = ai.render_ai_recommendations({
+            "current_lowkey_command": {"invocation": "lk target", "exit_code": 0},
             "recommendations": [{
-                "title": "Compare token inventory to sale accounting",
-                "why": "The two values answer different questions.",
-                "command": "lk target Token",
-                "source": {"path": "src/token.sol", "symbol": "Token"},
-                "steps": [
-                    {
-                        "command": "lk target Token",
-                        "purpose": "Choose the ERC-20 contract.",
-                        "expected_result": "Token is now the active target.",
-                        "source": {"path": "src/token.sol", "symbol": "Token"},
-                    },
-                    {
-                        "command": "lk read balanceOf 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-                        "purpose": "Read the sale contract's ERC-20 token balance.",
-                        "expected_result": "Zero means no tokens are currently held.",
-                        "source": {"path": "src/token.sol", "symbol": "balanceOf"},
-                    },
-                ],
+                "title": "The selected target controls later reads",
+                "why": "You just changed or inspected the target.",
+                "learning_point": "Lowkey uses its selected target to choose the address and ABI for later reads.",
+                "what_to_notice": "The selected target is shown; chain state is unchanged.",
+                "optional_command": "lk target",
+                "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
             }],
             "diagnosis": {
-                "summary": "The lab auto-selector calculated its choice before stale-target cleanup and prefers contracts ending in token.",
+                "summary": "Lowkey's lab selection happens before stale-target cleanup.",
                 "evidence": [
                     {"path": "lowkey-runtime/lk.py", "symbol": "run_lab"},
                     {"path": "lowkey-runtime/lk.py", "symbol": "discover_audit_target_contract"},
                 ],
             },
         })
-        self.assertIn("WHAT LOWKEY LIKELY DID", rendered)
-        self.assertIn("Suggested workflow (run each command separately)", rendered)
-        self.assertIn("What it does: Choose the ERC-20 contract.", rendered)
-        self.assertIn("What to look for: Zero means no tokens are currently held.", rendered)
-
-    def test_recommend_next_steps_requests_a_concrete_source_grounded_command(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "src").mkdir()
-            (root / "src" / "Registry.sol").write_text(
-                "contract Registry { "
-                "function isAgreementValid(address agreement) external view returns (bool) { return true; } "
-                "function owner() external view returns (address) { return msg.sender; } "
-                "}",
-                encoding="utf-8",
-            )
-            model_result = {
-                "recommendations": [{
-                    "title": "Inspect the agreement validity check",
-                    "why": "See the function signature and review the validity rule before relying on it.",
-                    "command": "lk fn isAgreementValid",
-                    "source": {"path": "src/Registry.sol", "symbol": "isAgreementValid"},
-                }]
-            }
-            with patch.object(ai, "request_structured", return_value=model_result) as request:
-                report = ai.recommend_next_steps(
-                    root,
-                    command="status",
-                    native_recommendations=[{"command": "lk functions", "reason": "List ABI functions."}],
-                    contract_name="Registry",
-                )
-            self.assertEqual(len(report["recommendations"]), 1)
-            self.assertEqual(report["recommendations"][0]["command"], "lk fn isAgreementValid")
-            context = request.call_args.kwargs["context"]
-            self.assertEqual(context["active_contract"], "Registry")
-            self.assertTrue(any(item.startswith("lk target ") for item in context["allowed_recommendation_command_forms"]))
-            self.assertFalse(any(
-                item.startswith(("lk target ", "lk lab --generic "))
-                for item in context["allowed_read_only_command_forms"]
-            ))
-            self.assertIn("Do not abstain merely because a function needs input values", request.call_args.kwargs["task"])
-            self.assertTrue(report["ai_generated"])
+        self.assertIn("WHAT LOWKEY APPEARS TO HAVE DONE", rendered)
+        self.assertIn("Why this relates: You just changed or inspected the target.", rendered)
+        self.assertIn("How Lowkey works: Lowkey uses its selected target", rendered)
+        self.assertIn("Optional experiment (not a task)", rendered)
+        self.assertIn("Command you tried: lk target", rendered)
+        self.assertNotIn("Suggested workflow", rendered)
+        self.assertNotIn("first do this, then do that", rendered)
 
     def test_empty_ai_recommendations_explain_abstention_or_filtered_candidates(self):
         no_candidates = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 0, "discarded_count": 0})
         filtered = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 2, "discarded_count": 2})
-        self.assertIn("no extra command", no_candidates)
-        self.assertIn("none passed Lowkey's source and command checks", filtered)
-        self.assertIn("No rejected command was shown", filtered)
+        self.assertIn("No additional learning note", no_candidates)
+        self.assertIn("none passed Lowkey's evidence and safety checks", filtered)
+        self.assertIn("No rejected command or workflow was shown", filtered)
 
     def test_model_derived_text_renderers_have_visible_ai_watermarks(self):
         from lowkey import error_advisor, security_review, test_planner
