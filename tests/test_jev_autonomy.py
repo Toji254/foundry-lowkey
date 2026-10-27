@@ -19,6 +19,7 @@ class JevAutonomyTests(unittest.TestCase):
             "XDG_CONFIG_HOME": str(Path(self.tmp.name) / "config"),
             "XDG_DATA_HOME": str(Path(self.tmp.name) / "data"),
             "XDG_STATE_HOME": str(Path(self.tmp.name) / "state"),
+            "TYPESAFE_API_KEY": "",
         })
         env.start()
         self.addCleanup(env.stop)
