@@ -2090,46 +2090,19 @@ AI_HELP_GUIDE = r'''COMMAND FORMS & OPTIONS
 
 QUICK START
 -----------
-  1. Run the guided provider/model setup:
-       lk ai setup
-     Choose a service, accept the suggested model or enter another, then add your key.
-     Use --provider and --model for advanced setup.
-  2. Check readiness and test connectivity (the probe sends no project source):
-       lk ai status
-       lk ai test
-  3. Add more models, then switch without re-entering settings:
-       lk ai switch
-  4. Inspect selected source locally before a source-based request:
-       lk ai preview --contract Vault --show-context
-  5. Run the focused task you need:
-       lk ai security-review --contract Vault
-  6. Turn Jev on for coordinated, opt-in guidance across LK:
-       lk ai jev on
-       lk ai jev status
-       lk ai jev off
+  Configure/test: lk ai setup → lk ai status → lk ai test.
+  Inspect before sharing: lk ai preview --contract NAME --show-context.
+  Review or enable Jev: lk ai security-review --contract NAME; lk ai jev on/status/off.
 
 JEV AUTONOMY & LOCAL BUDGET GUARD
-------------------------------
-  lk ai jev setup [--provider jevmodel|typesafe] [--model jev-latest]
-      Fresh setup defaults to JevModel, which advertises 100,000 starter input tokens
-      after email verification. Use --provider typesafe for the official TypeSafe API.
-      API keys are separate between providers; use hidden input or the matching env var.
-  lk ai jev on [--tier guarded|standard] [--daily-limit 1..24] [--with-text-ai]
-      Enable Jev's typed triage on selected Lowkey command results. Guarded mode
-      defaults to 5 provider attempts per UTC day and a 7,500-byte JevModel request cap.
-      --with-text-ai additionally uses an existing text provider for natural-language
-      explanations, and may use a separate provider request.
-  lk ai jev off
-      Stop Jev's automatic triage without disabling other AI features.
-      The local budget guard remains active unless '--tier standard' is selected.
-  lk ai jev status
-      Show endpoint, key readiness, mode and local request usage; no provider request is made.
-  lk ai jev test
-      Send one small, source-free typed decision to check the selected Jev API. This uses tokens.
-  lk ai jev remove-key
-      Remove the saved key for the active provider; environment keys are not changed.
-      Jev classifies evidence only. It does not generate prose or execute suggestions.
-
+--------------------------------
+  lk ai jev setup [--provider jevmodel|typesafe]
+      Fresh setup uses JevModel's advertised 100,000 starter input tokens after email verification.
+      Use --provider typesafe for the official TypeSafe endpoint; keys are provider-specific.
+  lk ai jev test | on | off | status | remove-key
+      test sends one fixed source-free request; status is local-only; Jev never executes suggestions.
+      on options: --tier guarded|standard, --daily-limit 1..24, --with-text-ai (separate text provider).
+      Guarded default: 5 attempted requests per UTC day; JevModel request cap: 7,500 bytes.
 SETUP & CONNECTION
 ------------------
   lk ai status
@@ -3234,8 +3207,8 @@ def main(argv: list[str] | None = None) -> int:
     preview.epilog = "WHEN: review this before sending source to a provider. Example: lk ai preview --contract ConfidencePool"
     mode.description = "Choose manual mode or opt in to automatic text-LLM guidance for eligible workflows and failures."
     mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to the configured text provider after eligible commands. Jev structured triage is controlled separately. Example: lk ai mode manual"
-    jev.description = "Connect Jev's typed decisions to Lowkey command triage. JevModel starter tokens and the official TypeSafe API are separate providers; prose generation remains a separate optional AI feature."
-    jev.epilog = "WHEN: run 'lk ai jev setup' for the advertised JevModel starter-token endpoint, or add '--provider typesafe' for the official API. Guarded mode limits local usage but cannot guarantee zero charges."
+    jev.description = "Structured Jev triage; prose generation stays in the separate optional text-AI feature."
+    jev.epilog = "Run 'lk ai jev setup' and 'lk ai jev test'. Fresh setup uses JevModel; '--provider typesafe' selects the official endpoint. The local guard is not a free-plan guarantee."
     run_cmd.description = "Plan a source-grounded investigation and optionally execute only validated read-oriented Lowkey commands."
     run_cmd.epilog = "WHEN: investigate a multi-step question. Commands are shown first; approval is required unless --yes is supplied. Example: lk ai run \"investigate why withdrawal reverts\" --plan-only"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
