@@ -3763,7 +3763,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Jev model: {parsed.model if provider == 'typesafe' else 'fixed by JevModel service'}.")
                 print(f"API key source: {source}; key values are never displayed.")
                 if provider == "jevmodel":
-                    print("JevModel advertises 100,000 starter input tokens after email verification; check your account for current balance and terms.")
+                    print("JevModel advertises 100,000 starter input tokens after email verification plus five successful free runs per UTC day, subject to service capacity; check your account for current balance and terms.")
                 else:
                     print("TypeSafe's official API has separate account pricing/limits; check the official console.")
                 effective_context_cap = min(
