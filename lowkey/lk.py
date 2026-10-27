@@ -18182,7 +18182,519 @@ def _ensure_error_context(output, command=None, code=None):
     return text
 
 
+def _attach_shared_command_context(config, project_root=None, max_events=8):
+    """Make the same recent project evidence available to every native handler.
+
+    The value is transient (its config key starts with "_") and save_config
+    deliberately excludes it from persistent RPC/actor/target configuration.
+    AI entry points separately whitelist which fields reach a provider.
+    """
+    root = None
+    if project_root is not None:
+        try:
+            root = Path(project_root).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            root = None
+    if root is None:
+        try:
+            root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+        except Exception:
+            root = Path.cwd().resolve()
+    context = {"project_label": root.name or "project", "events": []}
+    try:
+        try:
+            import error_context
+        except ImportError:
+            from lowkey import error_context
+        loaded = error_context.read_project_context(root, max_events=max_events)
+        if isinstance(loaded, dict):
+            context = loaded
+    except Exception:
+        pass
+    if isinstance(config, dict):
+        config["_shared_command_context"] = context
+    return context
+
+
+def shared_command_context(config=None, project_root=None, max_events=8):
+    """Read shared evidence or reuse the context attached for this command."""
+    if isinstance(config, dict):
+        existing = config.get("_shared_command_context")
+        if isinstance(existing, dict) and isinstance(existing.get("events"), list):
+            return existing
+    return _attach_shared_command_context(config, project_root, max_events)
+
+
 def _record_shared_command_event(project_root, cmd, args, exit_code, output):
+    """Feed the per-project evidence channel used by every Lowkey command."""
+    try:
+        try:
+            import error_context
+        except ImportError:
+            from lowkey import error_context
+        error_context.record_command_event(
+            project_root=str(project_root) if project_root else None,
+            command=[str(cmd or ""), *list(args or [])],
+            exit_code=exit_code if isinstance(exit_code, int) else None,
+            output=output,
+            source="dispatcher",
+        )
+    except Exception:
+        # Shared memory is advisory; never break the native command path.
+        return None
+    return None
+
+
+def dispatch_command(cmd, args, config, from_batch=False):
+    """Dispatch a command, capture bounded output, and share project evidence.
+
+    Stdout is teed rather than swallowed, so interactive prompts and normal
+    command output remain visible. Every command contributes bounded evidence
+    to a private project-scoped history before an optional AI diagnosis runs.
+    """
+    status_before = _COMMAND_STATUS
+    # Attach the same recent project evidence to every command handler before
+    # it runs, not just to commands that later request AI advice.
+    _attach_shared_command_context(config)
+    captured_stdout = _TeeCapture(sys.stdout)
+    captured_stderr = io.StringIO()
+    try:
+        with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
+            result = _dispatch_command_impl(cmd, args, config, from_batch=from_batch)
+    except SystemExit as exc:
+        # A few commands intentionally exit from inside their handler. Do not
+        # discard diagnostics just because the handler uses SystemExit.
+        diagnostic = captured_stderr.getvalue()
+        code = exc.code if isinstance(exc.code, int) else 2
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = Path.cwd()
+        _record_shared_command_event(
+            root, cmd, args, code,
+            captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else ""),
+        )
+        if diagnostic:
+            code = exc.code if isinstance(exc.code, int) and exc.code else 2
+            if _is_error_diagnostic(diagnostic):
+                rendered = (
+                    diagnostic.strip()
+                    if _has_standard_error_shape(diagnostic)
+                    else _format_cli_error(
+                        diagnostic.strip(),
+                        code=code,
+                        command=cmd,
+                        config=config,
+                        source="lowkey",
+                    )
+                )
+                print(_ensure_error_context(rendered, cmd, code), file=sys.stderr)
+                record_status(code)
+                record = _record_last_error(rendered, code=code, source="dispatcher")
+                _maybe_explain_error(record)
+            else:
+                sys.stderr.write(diagnostic)
+        raise
+
+    diagnostic = captured_stderr.getvalue()
+    returned_code = result if isinstance(result, int) else getattr(result, "code", None)
+    if returned_code is None and _COMMAND_STATUS != status_before and _COMMAND_STATUS != 0:
+        returned_code = _COMMAND_STATUS
+
+    has_error_text = _is_error_diagnostic(diagnostic)
+    is_failure = (isinstance(returned_code, int) and returned_code != 0) or has_error_text
+    root = None
+    try:
+        root = audit_context.foundry_project_root()
+    except Exception:
+        root = Path.cwd()
+    event_code = returned_code if isinstance(returned_code, int) else (2 if is_failure else 0)
+    event_output = captured_stdout.getvalue()
+    if diagnostic:
+        event_output += "\n[LOWKEY STDERR]\n" + diagnostic
+    if not event_output and getattr(result, "output", None):
+        event_output = str(result.output)
+    _record_shared_command_event(root, cmd, args, event_code, event_output)
+
+    if not is_failure:
+        if diagnostic:
+            sys.stderr.write(diagnostic)
+        return result
+
+    error_code = returned_code if isinstance(returned_code, int) and returned_code != 0 else 2
+    recorded_text = diagnostic.strip() or getattr(result, "output", None) or f"Command returned exit code {error_code} without detailed diagnostic output."
+    record = _record_last_error(recorded_text, code=error_code, source="dispatcher")
+    if diagnostic.strip():
+        rendered = (
+            diagnostic.strip()
+            if _has_standard_error_shape(diagnostic)
+            else _format_cli_error(
+                diagnostic.strip(),
+                code=error_code,
+                command=cmd,
+                config=config,
+                source="lowkey",
+            )
+        )
+        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
+    else:
+        rendered = _format_cli_error(
+            (
+                f"Command returned exit code {error_code}; no Python-level stderr was captured. "
+                "An external tool may have written its detailed diagnostic directly to the terminal."
+            ),
+            code=error_code,
+            command=cmd,
+            config=config,
+            source="lowkey",
+        )
+        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
+
+    # Keep the primary failure first in the terminal output. Optional AI
+    # explanations are secondary context and must never obscure the Error line.
+    _maybe_explain_error(record)
+    record_status(error_code)
+    if isinstance(returned_code, int) and returned_code != 0:
+        return result
+    return error_code
+
+
+def _running_from_source_checkout() -> bool:
+    """Whether this CLI is running from a recognized Lowkey source checkout."""
+    try:
+        source_root = Path(__file__).resolve().parents[1]
+        return bool(_is_lowkey_source_checkout and _is_lowkey_source_checkout(source_root))
+    except OSError:
+        return False
+
+
+def _warn_if_help_runtime_is_stale() -> None:
+    """Warn when help comes from an old installed copy, without blocking help."""
+    runtime = runtime_sync_status()
+    if runtime.get("status") not in {"stale", "corrupt"} or _running_from_source_checkout():
+        return
+    print("LOWKEY HELP MAY BE OUT OF DATE", file=sys.stderr)
+    print(f"  {runtime.get('detail', 'installed runtime verification failed')}", file=sys.stderr)
+    source_repo = runtime.get("source_repo")
+    if source_repo:
+        print(f"  FIX: cd {source_repo} && bash install.sh", file=sys.stderr)
+    else:
+        print("  FIX: run bash install.sh from the Lowkey source checkout used for installation.", file=sys.stderr)
+    print("  Help will still be shown, but recent commands may be missing until Lowkey is reinstalled.", file=sys.stderr)
+
+
+def _extract_universal_ai_flag(argv):
+    """Extract --ai from native commands without changing the dedicated lk ai CLI."""
+    values = list(argv or [])
+    if not values or str(values[0]).strip().lower() == "ai":
+        return False, values
+    requested = "--ai" in values
+    return requested, [value for value in values if value != "--ai"] if requested else values
+
+
+class _TeeCapture:
+    """Pass output straight through while retaining a bounded tail for optional AI context."""
+    def __init__(self, stream, limit=24000):
+        self.stream = stream
+        self.limit = int(limit)
+        self.parts = []
+        self.size = 0
+
+    def write(self, value):
+        written = self.stream.write(value)
+        if isinstance(value, str) and value:
+            self.parts.append(value)
+            self.size += len(value)
+            while self.size > self.limit and self.parts:
+                excess = self.size - self.limit
+                first = self.parts[0]
+                if len(first) <= excess:
+                    self.parts.pop(0)
+                    self.size -= len(first)
+                else:
+                    self.parts[0] = first[excess:]
+                    self.size -= excess
+        return written
+
+    def flush(self):
+        return self.stream.flush()
+
+    def getvalue(self):
+        return "".join(self.parts)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def _ai_status_safely():
+    try:
+        try:
+            import ai_harness
+        except ImportError:
+            from lowkey import ai_harness
+        return ai_harness.status()
+    except Exception:
+        return {}
+
+
+def _ai_auto_mode_enabled():
+    state = _ai_status_safely()
+    return bool(state.get("enabled") and state.get("usable") and state.get("auto_assist"))
+
+
+def _dispatch_command_captured(command, args, config):
+    stdout_capture = _TeeCapture(sys.stdout)
+    stderr_capture = _TeeCapture(sys.stderr)
+    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+        result = dispatch_command(command, args, config)
+    captured = stdout_capture.getvalue()
+    errors = stderr_capture.getvalue()
+    if errors:
+        captured += "\n[LOWKEY STDERR]\n" + errors
+    return result, captured
+
+
+def _print_ai_command_guidance(command, args, result_code, config, command_output=""):
+    """Optional post-command guidance must never change native execution success."""
+    try:
+        try:
+            import ai_workflow
+        except ImportError:
+            from lowkey import ai_workflow
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = Path.cwd()
+        report = ai_workflow.guide_command(
+            root=root,
+            command="lk " + str(command or "").strip(),
+            arguments=args or [],
+            exit_code=int(result_code),
+            command_output=command_output,
+            project_config=config if isinstance(config, dict) else {},
+        )
+        print("")
+        print(ai_workflow.render_guidance(report))
+    except Exception as exc:
+        print(
+            f"\n@ AI GUIDANCE UNAVAILABLE ({type(exc).__name__}). "
+            "The native command already ran with its normal behavior; run 'lk ai status' for setup details.",
+            file=sys.stderr,
+        )
+
+
+def main():
+    global _COMMAND_STATUS
+    _COMMAND_STATUS = 0
+    ai_requested, cleaned_args = _extract_universal_ai_flag(sys.argv[1:])
+    if ai_requested:
+        sys.argv = [sys.argv[0], *cleaned_args]
+    config=load_config()
+    if len(sys.argv)<2:
+        print_help()
+        return
+
+    command = sys.argv[1]
+    if command.lower() in HELP_FLAGS or any(
+        str(argument).strip().lower() in HELP_FLAGS for argument in sys.argv[2:]
+    ):
+        _warn_if_help_runtime_is_stale()
+        result = dispatch_command(command, sys.argv[2:], config)
+        if isinstance(result, int):
+            raise SystemExit(result)
+        return
+
+    if command.lower() in {"cheat", "cheats", "cheatsheet"}:
+        if ai_requested:
+            stdout_capture = _TeeCapture(sys.stdout)
+            stderr_capture = _TeeCapture(sys.stderr)
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                result = run_cheat(sys.argv[2:])
+            ai_output = stdout_capture.getvalue() + ("\n[LOWKEY STDERR]\n" + stderr_capture.getvalue() if stderr_capture.getvalue() else "")
+        else:
+            result = run_cheat(sys.argv[2:])
+            ai_output = ""
+        footer_status = result
+        if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
+            footer_status = _COMMAND_STATUS
+        _print_recommended_next_commands(command, sys.argv[2:], footer_status, config)
+        if ai_requested:
+            _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_output)
+        if isinstance(result, int):
+            raise SystemExit(result)
+        return
+
+    root = audit_context.foundry_project_root()
+    _sync_audit_context(config, root)
+
+    runtime = runtime_sync_status()
+    runtime_safe_commands = {
+        "--h", "--help", "-h", "help", "--version", "-V", "version",
+        "doctor", "self-test",
+    }
+    running_from_source_checkout = _running_from_source_checkout()
+
+    if (
+        runtime.get("status") in {"stale", "corrupt"}
+        and command not in runtime_safe_commands
+        and not running_from_source_checkout
+    ):
+        print("LOWKEY RUNTIME OUT OF SYNC", file=sys.stderr)
+        print(f"  {runtime.get('detail', 'installed runtime verification failed')}", file=sys.stderr)
+        source_repo = runtime.get("source_repo")
+        if source_repo:
+            print(f"  FIX: cd {source_repo} && bash install.sh", file=sys.stderr)
+        else:
+            print("  FIX: reinstall Lowkey with bash install.sh", file=sys.stderr)
+        return fail("Refusing to run with a mismatched Lowkey installation.", 3)
+
+    auto_capture = command.lower() != "ai" and _ai_auto_mode_enabled()
+    if ai_requested or auto_capture:
+        result, ai_command_output = _dispatch_command_captured(command, sys.argv[2:], config)
+    else:
+        result = dispatch_command(command,sys.argv[2:],config)
+        ai_command_output = ""
+    result_code = result if isinstance(result, int) else getattr(result, "code", 0)
+    if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
+        result_code = _COMMAND_STATUS
+    evidence_commands={
+        "scan","slither","changes","state-diff","trace","logs","tx","receipt",
+        "send","probe","test-gen","mutation-check","verification-benchmark","fuzz","invariant","mutate","symbolic","brutalize",
+        "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
+        "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
+    }
+    if config.pop("_config_dirty",False):
+        save_config(config)
+    final_root = audit_context.foundry_project_root()
+    _sync_audit_context(config, final_root)
+    footer_status = result_code
+    # Machine-readable engine inventory must be valid JSON without Lowkey's
+    # normal recommendation footer appended to stdout.
+    machine_readable_verification = (
+        _canonical_help_command(command) == "verification"
+        and len(sys.argv) > 2
+        and str(sys.argv[2]).strip().lower() == "engines"
+        and "--json" in sys.argv[3:]
+    )
+    if not machine_readable_verification:
+        _print_recommended_next_commands(
+            command_name if 'command_name' in locals() else command,
+            sys.argv[2:],
+            footer_status,
+            config,
+        )
+    if ai_requested:
+        if machine_readable_verification:
+            # Preserve the machine-readable stdout contract when --ai is explicit.
+            with redirect_stdout(sys.stderr):
+                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+        else:
+            _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+    elif auto_capture:
+        try:
+            import ai_workflow
+        except ImportError:
+            from lowkey import ai_workflow
+        if ai_workflow.should_auto_guide(command, sys.argv[2:], footer_status, _ai_status_safely()):
+            if machine_readable_verification:
+                with redirect_stdout(sys.stderr):
+                    _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+            else:
+                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+    command_name = str(sys.argv[1] or "").strip().lower()
+    first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
+    nested_commands = {
+        "audit": {"run", "pipeline"},
+        "verification": {"engines", "run", "correlate", "investigate"},
+        "walkthrough": {"test", "seed"},
+        "walk": {"test", "seed"},
+        "generate": {"test", "poc", "deployment"},
+        "project": {"--workspace"},
+        "projects": {"reset"},
+        "target": {"list", "auto", "reset"},
+        "rpc": {"set", "use", "reset"},
+        "wallet": {"list", "set", "set-env", "use", "remove"},
+        "session": {"start", "resume", "end"},
+        "fork": {"status", "stop", "dump", "load"},
+        "matrix": {"init", "actor", "state", "add", "list", "test"},
+        "finding": {"add", "list", "ls"},
+        "checklist": {"done", "reset"},
+        "actor": {"reset"},
+        "q": {"current", "next", "why", "evidence", "path", "done", "note", "skip", "na", "not-applicable", "source", "reset"},
+    }
+    command_path = command_name
+    if first_arg and first_arg in nested_commands.get(command_name, set()):
+        command_path = f"{command_name} {first_arg}"
+    audit_context.emit(
+        "lk-command",
+        final_root,
+        tool="lk",
+        status="completed" if (not isinstance(result,int) or result == 0) else "failed",
+        summary=command_path,
+        data={
+            "command": command_name,
+            "command_path": command_path,
+            "subcommand": first_arg if command_path != command_name else None,
+            "exit_code": result if isinstance(result,int) else 0,
+        },
+    )
+    if isinstance(result,int): raise SystemExit(result)
+    if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
+
+def _safe_main() -> int:
+    """Never expose a Python traceback for a CLI-level repository/runtime failure."""
+    try:
+        result = main()
+        return int(result) if isinstance(result, int) else 0
+    except KeyboardInterrupt:
+        print("\nLOWKEY: interrupted.", file=sys.stderr)
+        return 130
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else 0
+    except Exception as exc:
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = None
+
+        formatted_error = _format_cli_error(
+            f"{type(exc).__name__}: {exc}",
+            code=2,
+            command=sys.argv[1] if len(sys.argv) > 1 else None,
+            source="runtime",
+        )
+        print(formatted_error, file=sys.stderr)
+        record = _record_last_error(formatted_error, code=2, source="runtime")
+        _maybe_explain_error(record)
+        if root:
+            print(f"  project: {root}", file=sys.stderr)
+            try:
+                evidence = Path(root) / ".audit" / "evidence"
+                evidence.mkdir(parents=True, exist_ok=True)
+                (evidence / "lk-runtime-error.json").write_text(
+                    json.dumps({
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "project": str(root),
+                        "command": sys.argv[1:],
+                        "status": "blocked",
+                    }, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                print("  evidence: .audit/evidence/lk-runtime-error.json", file=sys.stderr)
+            except Exception as evidence_error:
+                print(f"  evidence: unavailable ({evidence_error})", file=sys.stderr)
+        print("  RESULT: REVIEW NEEDED — Lowkey could not complete this command.", file=sys.stderr)
+        print("  No security conclusion should be inferred from this failure.", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_safe_main())
+
     """Feed the per-project evidence channel used by every Lowkey command."""
     try:
         try:
