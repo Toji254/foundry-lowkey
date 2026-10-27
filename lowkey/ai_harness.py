@@ -3144,7 +3144,8 @@ def main(argv: list[str] | None = None) -> int:
     jev.add_argument("--tier", choices=("guarded", "standard"), default=None, help="guarded applies local daily/context/output request caps; standard removes the local caps")
     jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per device day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
     jev.add_argument("--with-text-ai", action="store_true", help="also request optional text-AI explanations when Jev says they are useful; requires enabled text AI and may use extra provider calls")
-    jev.add_argument("--model", default="jev-latest", help="TypeSafe Jev model ID or alias (setup only; default: jev-latest)")
+    jev.add_argument("--provider", choices=("jevmodel", "typesafe"), default=None, help="jevmodel = hosted endpoint advertising starter tokens; typesafe = official TypeSafe endpoint (setup only)")
+    jev.add_argument("--model", default="jev-latest", help="TypeSafe Jev model ID or alias (setup only; JevModel fixes its model server-side)")
     jev.add_argument("--timeout", type=int, default=18, help="Jev API timeout in seconds (setup only; 5–60)")
     jev.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable status")
     recommendations_cmd = sub.add_parser("recommendations", help="show native next commands plus optional AI-generated suggestions")
@@ -3672,9 +3673,12 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print("JEV / LOWKEY AUTONOMY STATUS")
                     print("============================")
-                    print(f"TypeSafe API key: {'configured' if jev_state['configured'] else 'not configured'}")
+                    print(f"Provider: {jev_state.get('provider_label', jev_state.get('provider', 'TypeSafe Jev'))}")
+                    print(f"API key: {'configured' if jev_state['configured'] else 'not configured'}")
                     print(f"Key source: {jev_state['key_source'] or 'none'}")
                     print(f"Jev model: {jev_state['model']}")
+                    print(f"Endpoint: {jev_state['endpoint']}")
+                    print(jev_state.get("starter_allowance_note", ""))
                     print(f"Jev autonomous triage: {'ON' if cfg.get('jev_autonomous') else 'OFF'}")
                     print(f"Local request guard: {'ON' if budget['free_tier_guard'] else 'OFF'}")
                     if budget["free_tier_guard"]:
@@ -3698,18 +3702,34 @@ def main(argv: list[str] | None = None) -> int:
             if selected == "setup":
                 if not 5 <= parsed.timeout <= 60:
                     raise AIHarnessError("--timeout must be from 5 to 60 seconds.")
-                env_key = os.environ.get("TYPESAFE_API_KEY", "").strip()
+                existing_jev_settings = jev_engine.load_settings()
+                provider = parsed.provider
+                if provider is None:
+                    # Preserve an existing provider/key pairing. Fresh setup uses
+                    # JevModel, which advertises starter tokens; existing TypeSafe
+                    # environment keys still select the official endpoint.
+                    if os.environ.get("TYPESAFE_API_KEY", "").strip():
+                        provider = "typesafe"
+                    elif os.environ.get("JEVMODEL_API_KEY", "").strip():
+                        provider = "jevmodel"
+                    else:
+                        provider = existing_jev_settings.get("provider", "jevmodel")
+                if provider not in jev_engine.PROVIDERS:
+                    raise AIHarnessError("Choose a Jev provider: jevmodel or typesafe.")
+                env_name = jev_engine.PROVIDERS[provider]["key_env"]
+                env_key = os.environ.get(env_name, "").strip()
                 try:
-                    saved_key, _ = jev_engine._api_key()
+                    saved_key, _ = jev_engine._api_key(provider)
                 except Exception:
                     saved_key = None
                 key = None
                 if not env_key and not saved_key:
-                    key = getpass.getpass("TypeSafe Jev API key (input hidden): ").strip()
+                    key = getpass.getpass(f"{jev_engine.PROVIDERS[provider]['label']} API key (input hidden): ").strip()
                     if not key:
                         raise AIHarnessError("No API key entered; Jev settings were not changed.")
                 jev_engine.configure(
                     api_key=key,
+                    provider=provider,
                     model=parsed.model,
                     timeout_seconds=parsed.timeout,
                 )
@@ -3719,11 +3739,16 @@ def main(argv: list[str] | None = None) -> int:
                 if parsed.daily_limit is not None:
                     cfg["jev_daily_call_limit"] = parsed.daily_limit
                 save_config(cfg)
-                source = "TYPESAFE_API_KEY environment variable" if env_key else (
+                source = env_name + " environment variable" if env_key else (
                     "existing private saved key" if saved_key else "private local credential file"
                 )
-                print(f"Jev configured: {parsed.model}.")
+                print(f"Jev provider configured: {jev_engine.PROVIDERS[provider]['label']}.")
+                print(f"Jev model: {parsed.model if provider == 'typesafe' else 'fixed by JevModel service'}.")
                 print(f"API key source: {source}; key values are never displayed.")
+                if provider == "jevmodel":
+                    print("JevModel advertises 100,000 starter input tokens after email verification; check your account for current balance and terms.")
+                else:
+                    print("TypeSafe's official API has separate account pricing/limits; check the official console.")
                 print(
                     f"Local request guard: {'ON' if cfg['jev_free_tier_mode'] else 'OFF'} "
                     f"(daily limit {cfg['jev_daily_call_limit']}; context cap {cfg['jev_context_limit_bytes']:,} bytes)."
@@ -3732,11 +3757,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if selected == "remove-key":
-                jev_engine.clear_saved_key()
-                if os.environ.get("TYPESAFE_API_KEY"):
-                    print("Removed the saved key. TYPESAFE_API_KEY is still set in your environment and remains active.")
+                current_provider = jev_engine.load_settings().get("provider", "typesafe")
+                jev_engine.clear_saved_key(current_provider)
+                env_name = jev_engine.PROVIDERS[current_provider]["key_env"]
+                if os.environ.get(env_name):
+                    print(f"Removed the saved {current_provider} key. {env_name} is still set in your environment and remains active.")
                 else:
-                    print("Removed the saved TypeSafe key. Jev is not configured until a key is provided.")
+                    print(f"Removed the saved {current_provider} key. Jev is not configured until a key is provided.")
                 return 0
 
             if selected == "test":
@@ -3750,22 +3777,29 @@ def main(argv: list[str] | None = None) -> int:
                     },
                 )
                 answer = probe["answers"].get("probe_ok", {})
-                print("TYPESAFE JEV CONNECTIVITY PROBE")
-                print("===============================")
-                print(f"Endpoint: {jev_engine.API_URL}")
+                provider_state = jev_engine.status()
+                print("JEV CONNECTIVITY PROBE")
+                print("=====================")
+                print(f"Provider: {provider_state.get('provider_label', provider_state.get('provider'))}")
+                print(f"Endpoint: {provider_state['endpoint']}")
                 print(f"Model: {probe.get('model')}")
                 print(f"Probe answer: {answer.get('noul', 'unknown')}")
                 usage = probe.get("usage", {})
                 if isinstance(usage.get("input_tokens"), int):
                     print(f"Input tokens: {usage['input_tokens']:,}")
-                    print(f"Estimated input cost: ${usage.get('estimated_input_cost_usd'):.8f} at published list price.")
+                    if isinstance(usage.get("estimated_input_cost_usd"), (int, float)):
+                        print(f"Estimated input cost: ${usage['estimated_input_cost_usd']:.8f} at published TypeSafe list price.")
+                    elif provider_state.get("provider") == "jevmodel":
+                        print("JevModel's reported token usage is shown above; check your account for current starter-token usage.")
                 print("Only a fixed probe was sent; no source code, project output, wallet or RPC data was included.")
                 return 0
 
             if selected == "on":
                 jev_state = jev_engine.status()
                 if not jev_state.get("configured"):
-                    raise AIHarnessError("Configure Jev first with 'lk ai jev setup' or export TYPESAFE_API_KEY.")
+                    provider = jev_engine.load_settings().get("provider", "jevmodel")
+                    env_name = jev_engine.PROVIDERS[provider]["key_env"]
+                    raise AIHarnessError(f"Configure Jev first with 'lk ai jev setup --provider {provider}' or export {env_name}.")
                 if parsed.with_text_ai:
                     text_cfg = dict(cfg)
                     text_cfg["enabled"] = True
@@ -3790,9 +3824,13 @@ def main(argv: list[str] | None = None) -> int:
                         f"Local usage guard: ON — up to {cfg['jev_daily_call_limit']} provider attempts per local day "
                         f"and {cfg['jev_context_limit_bytes']:,} request bytes."
                     )
-                    print("The guard is not an official free plan or a zero-cost guarantee; TypeSafe charges for input tokens.")
+                    print("This is a local usage cap, not the provider's own allowance or a zero-cost guarantee. Failed provider attempts count.")
                 else:
-                    print("Local usage guard: OFF. TypeSafe list pricing and account-level limits apply.")
+                    print("Local usage guard: OFF. Provider/account billing and rate limits still apply.")
+                if jev_state.get("provider") == "jevmodel":
+                    print("JevModel advertises 100,000 starter input tokens after email verification; check the current account balance.")
+                else:
+                    print("TypeSafe's official endpoint uses separate account pricing and limits.")
                 print("Jev never executes commands, edits files, changes targets, deploys, signs or sends transactions.")
                 return 0
 
