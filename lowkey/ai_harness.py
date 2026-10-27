@@ -1300,11 +1300,11 @@ SETUP & CONNECTION
       Example: lk ai switch
 
   lk ai profile delete PROFILE_ID
-      Delete one inactive profile. The active profile is protected.
+      Delete an inactive profile; active is protected.
 
-  lk ai profile prune [--keep PROFILE_ID]... [--yes]
-      Keep the active profile and each --keep ID; preview and confirm removal of the rest.
-      API keys and active settings are never deleted.
+  lk ai profile prune [--keep ID]... [--yes]
+      Keep active and --keep IDs; confirm removal of all others.
+      Keys/settings are preserved.
 
   lk ai enable / lk ai disable
       Enable or pause optional AI. Native Lowkey commands still work.
@@ -1425,6 +1425,7 @@ COMMON WORKFLOWS
   Propose tests or explain an error:
     lk ai test-plan --contract Vault
     lk ai explain-error --last
+    lk ai explain-error --text "error" --command "forge test"
 
 HELP FOR A SPECIFIC COMMAND
 ---------------------------
