@@ -18182,22 +18182,53 @@ def _ensure_error_context(output, command=None, code=None):
     return text
 
 
-def dispatch_command(cmd, args, config, from_batch=False):
-    """Dispatch a command and normalize direct stderr errors through one renderer.
+def _record_shared_command_event(project_root, cmd, args, exit_code, output):
+    """Feed the per-project evidence channel used by every Lowkey command."""
+    try:
+        try:
+            import error_context
+        except ImportError:
+            from lowkey import error_context
+        error_context.record_command_event(
+            project_root=str(project_root) if project_root else None,
+            command=[str(cmd or ""), *list(args or [])],
+            exit_code=exit_code if isinstance(exit_code, int) else None,
+            output=output,
+            source="dispatcher",
+        )
+    except Exception:
+        # Shared memory is advisory; never break the native command path.
+        return None
+    return None
 
-    Many legacy handlers print directly to stderr. Capturing that stream at the
-    dispatcher means they receive the same classification as fail() and Cast
-    failures, without capturing stdout (which would hide interactive prompts).
+
+def dispatch_command(cmd, args, config, from_batch=False):
+    """Dispatch a command, capture bounded output, and share project evidence.
+
+    Stdout is teed rather than swallowed, so interactive prompts and normal
+    command output remain visible. Every command contributes bounded evidence
+    to a private project-scoped history before an optional AI diagnosis runs.
     """
     status_before = _COMMAND_STATUS
+    captured_stdout = _TeeCapture(sys.stdout)
     captured_stderr = io.StringIO()
     try:
-        with redirect_stderr(captured_stderr):
+        with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
             result = _dispatch_command_impl(cmd, args, config, from_batch=from_batch)
     except SystemExit as exc:
         # A few commands intentionally exit from inside their handler. Do not
         # discard diagnostics just because the handler uses SystemExit.
         diagnostic = captured_stderr.getvalue()
+        code = exc.code if isinstance(exc.code, int) else 2
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = Path.cwd()
+        _record_shared_command_event(
+            root, cmd, args, code,
+            captured_stdout.getvalue() + ("\\n" + diagnostic if diagnostic else ""),
+        )
         if diagnostic:
             code = exc.code if isinstance(exc.code, int) and exc.code else 2
             if _is_error_diagnostic(diagnostic):
@@ -18227,6 +18258,18 @@ def dispatch_command(cmd, args, config, from_batch=False):
 
     has_error_text = _is_error_diagnostic(diagnostic)
     is_failure = (isinstance(returned_code, int) and returned_code != 0) or has_error_text
+    root = None
+    try:
+        root = audit_context.foundry_project_root()
+    except Exception:
+        root = Path.cwd()
+    event_code = returned_code if isinstance(returned_code, int) else (2 if is_failure else 0)
+    event_output = captured_stdout.getvalue()
+    if diagnostic:
+        event_output += "\\n[LOWKEY STDERR]\\n" + diagnostic
+    if not event_output and getattr(result, "output", None):
+        event_output = str(result.output)
+    _record_shared_command_event(root, cmd, args, event_code, event_output)
 
     if not is_failure:
         if diagnostic:
