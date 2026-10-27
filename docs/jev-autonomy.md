@@ -29,9 +29,10 @@ Run `lk ai status` for provider readiness and `lk ai test` for a small connectiv
 `lk ai jev on` enables the existing AI extension and coordinates the established automatic settings:
 
 - Automatic protocol/lab review when Lowkey's existing complexity check says it is useful.
-- Post-command guidance after the eligible native workflows already supported by Lowkey.
+- Post-command guidance for build/doctor, audit and verification, recon/probe/trace/state-diff, test generation, mutation checks, project/system summaries, and other explicitly eligible workflows. Project cloning is explained after onboarding; the native clone command itself is unchanged.
 - Automatic explanations after eligible command failures.
-- Optional learner-first recommendations. On the free-tier guard, these are limited to selected high-value learning/audit commands; they are skipped after failures and after workflows that already receive AI command guidance, avoiding duplicate calls. Routine deterministic commands and state-changing commands do not trigger this extra recommendation call in Jev's guarded mode.
+- Import intelligence gets extra explanation after an `lk import --install` attempt or a failed import-browser command. Ordinary symbol lookups remain deterministic and do not make AI calls.
+- Optional learner-first recommendations. On the free-tier guard, these are limited to selected high-value learning/audit commands (such as `lk ask`, `lk functions`, `lk findings`, `lk focus`, and selected `lk q` investigation views); they are skipped after failures and after workflows that already receive AI command guidance, avoiding duplicate calls. Routine deterministic commands and state-changing commands do not trigger this extra recommendation call in Jev's guarded mode.
 
 Each feature still uses its existing context gathering, validation, and output rules. Static/native recommendations are preserved. Jev suggestions remain hypotheses, not verified findings, and are never executed. Jev does not edit files, install dependencies, choose a new target or RPC, deploy, sign, or send transactions.
 
