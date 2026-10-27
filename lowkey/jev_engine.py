@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
 JEVMODEL_API_URL = "https://jevmodel.app/api/v1/systemone"
-DEFAULT_PROVIDER = "typesafe"  # API-library default; the CLI defaults to JevModel for its advertised starter-token allowance.
+DEFAULT_PROVIDER = "jevmodel"  # Fresh CLI installs use the provider advertising starter tokens; old TypeSafe keys are detected below.
 DEFAULT_MODEL = "jev-latest"
 PROVIDERS = {
     "typesafe": {
@@ -157,7 +157,7 @@ def configure(
     api_key: str | None = None,
     model: str = DEFAULT_MODEL,
     timeout_seconds: int = DEFAULT_TIMEOUT,
-    provider: str = DEFAULT_PROVIDER,
+    provider: str = "typesafe",
 ) -> dict[str, Any]:
     if provider not in PROVIDERS:
         raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
@@ -285,7 +285,7 @@ def evaluate(
     model: str | None = None,
     opener=urlopen,
 ) -> dict[str, Any]:
-    """Evaluate validated typed questions through TypeSafe's official HTTP API."""
+    """Evaluate validated typed questions through the selected Jev-compatible API."""
     if not isinstance(state, (str, Mapping, list)):
         raise JevError("Jev state must be text or structured JSON.")
     if not isinstance(questions, Mapping) or not questions:
@@ -382,7 +382,7 @@ def evaluate(
     except TimeoutError as exc:
         raise JevError(f"{provider_meta['label']} request timed out. The native Lowkey command remains unaffected.") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise JevError("TypeSafe Jev returned invalid JSON; the response was discarded.") from exc
+        raise JevError(f"{provider_meta['label']} returned invalid JSON; the response was discarded.") from exc
     if not isinstance(data, dict):
         raise JevError(f"{provider_meta['label']} returned an unexpected response shape; result discarded.")
     if provider == "jevmodel":
