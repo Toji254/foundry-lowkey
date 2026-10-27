@@ -3310,6 +3310,41 @@ contract Pool {
                 os.chdir(old)
             self.assertEqual(code, 2)
 
+    def test_auto_recommendations_run_after_a_failed_command_without_native_menu(self):
+        fake_ai = types.ModuleType("ai_harness")
+        captured = {}
+
+        def status():
+            return {"auto_recommendations": True, "enabled": True, "usable": True}
+
+        def recommend_next_steps(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return {
+                "recommendations": [],
+                "candidate_count": 0,
+                "discarded_count": 0,
+                "current_lowkey_command": kwargs.get("lowkey_command_context", {}),
+                "_lowkey_meta": {},
+            }
+
+        fake_ai.status = status
+        fake_ai.recommend_next_steps = recommend_next_steps
+        fake_ai.render_ai_recommendations = lambda report: "TEST LEARNING NOTE"
+        config = {"_last_command_output": "unknown Lowkey command 'nope'."}
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(sys.modules, {"ai_harness": fake_ai}), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(tmp)), \
+             patch.object(lk, "project_context_target", return_value=None), \
+             redirect_stdout(output):
+            lk._print_recommended_next_commands("nope", [], 2, config)
+
+        self.assertIn("TEST LEARNING NOTE", output.getvalue())
+        self.assertEqual(captured["kwargs"]["command_result"], 2)
+        self.assertIn("lk nope", captured["kwargs"]["lowkey_command_context"]["invocation"])
+        self.assertIn("Known top-level Lowkey commands", captured["kwargs"]["lowkey_command_context"]["source_excerpt"])
+
     def test_lab_preserves_remembered_contract_when_artifact_is_available(self):
         with patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)) as artifact, \
              patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic:
