@@ -24,7 +24,7 @@ _TASK_ROOTS = {
     "proxy", "recon", "questions",
 }
 _AUTO_GUIDANCE_COMMANDS = {
-    "audit", "audit-checks", "audit--checks", "verification", "test", "scan",
+    "audit", "audit-checks", "audit--checks", "test", "scan",
     "break", "walkthrough", "walk", "fuzz", "invariant", "mutate", "symbolic", "slither",
 }
 
