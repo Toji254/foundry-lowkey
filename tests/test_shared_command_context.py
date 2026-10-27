@@ -73,8 +73,8 @@ Warning (2072): Unused local variable.
             state_root = pathlib.Path(tmp) / "state" / "lowkey"
             secret = "sk-" + "A" * 24
             output = (
-                "Warning (6321): Unnamed return variable can remain unassigned.\\n"
-                "OPENAI_API_KEY=" + secret + "\\n"
+                "Warning (6321): Unnamed return variable can remain unassigned.\n"
+                "OPENAI_API_KEY=" + secret + "\n"
                 + str(root) + "/script/Deploy.s.sol:9:38"
             )
             with patch.object(error_context, "state_dir", return_value=state_root):
@@ -91,7 +91,6 @@ Warning (2072): Unused local variable.
             rendered = json.dumps(shared)
             self.assertNotIn(secret, saved)
             self.assertNotIn(str(root), rendered)
-            self.assertNotIn(str(root), rendered)
             self.assertIn("[REDACTED]", saved)
 
     def test_ai_diagnosis_receives_recent_project_history_without_absolute_path(self):
@@ -106,7 +105,7 @@ Warning (2072): Unused local variable.
                     "exit_code": 0,
                     "status": "completed",
                     "signals": ["Compiler warning: Unnamed return variable can remain unassigned (script/Deploy.s.sol:9:38)"],
-                    "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\\n --> script/Deploy.s.sol:9:38:",
+                    "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\n --> script/Deploy.s.sol:9:38:",
                 }],
             }
             captured = {}
