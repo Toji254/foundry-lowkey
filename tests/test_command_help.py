@@ -971,11 +971,12 @@ class CommandHelpTests(unittest.TestCase):
     def test_recommendations_do_not_fall_back_to_help_related_commands(self):
         self.assertEqual(lk._recommended_next_commands("some-new-command", []), [])
 
-    def test_recommendation_footer_skips_failed_commands(self):
+    def test_failed_commands_skip_native_menu_but_still_offer_optional_ai_note(self):
         output = io.StringIO()
-        with redirect_stdout(output):
+        with patch.object(lk, "_print_ai_recommendations") as ai_footer, redirect_stdout(output):
             lk._print_recommended_next_commands("functions", [], result=1)
         self.assertEqual(output.getvalue(), "")
+        ai_footer.assert_called_once_with("functions", [], None, args=[], result=1)
 
     def test_recommendation_footer_renders_for_successful_commands(self):
         previous_status = lk._COMMAND_STATUS

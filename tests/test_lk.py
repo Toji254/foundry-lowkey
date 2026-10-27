@@ -684,6 +684,50 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("provider rejected an unknown request", generic)
         self.assertNotIn("Exit code: 1", generic)
 
+    def test_unknown_command_error_points_to_general_help(self):
+        rendered = lk._format_cli_error(
+            "unknown Lowkey command 'no-such-command'",
+            code=2,
+            command="no-such-command",
+            source="lowkey",
+        )
+        self.assertIn("Run lk --help for the command list.", rendered)
+        self.assertNotIn("Run lk no-such-command --h", rendered)
+
+    def test_unknown_command_does_not_print_stale_generic_help_hint(self):
+        config = lk.fresh_config()
+        stream = io.StringIO()
+        with patch("sys.stderr", stream):
+            result = lk.dispatch_command("no-such-command", [], config)
+        self.assertEqual(result, 2)
+        self.assertIn("unknown Lowkey command", stream.getvalue())
+        self.assertNotIn("lk <command> --h", stream.getvalue())
+
+    def test_unknown_command_skips_duplicate_error_ai_when_learning_note_is_ready(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(return_value="duplicate diagnosis")
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {
+            "auto_recommendations": True,
+            "enabled": True,
+            "usable": True,
+        }
+        output = io.StringIO()
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "unknown Lowkey command 'no-such-command'"})
+
+        self.assertEqual(output.getvalue(), "")
+        fake_advisor.maybe_auto_explain.assert_not_called()
+
     def test_dispatcher_normalizes_direct_stderr_errors_and_sets_failure_status(self):
         output = io.StringIO()
 
@@ -3309,6 +3353,116 @@ contract Pool {
             finally:
                 os.chdir(old)
             self.assertEqual(code, 2)
+
+    def test_auto_recommendations_run_after_a_failed_command_without_native_menu(self):
+        fake_ai = types.ModuleType("ai_harness")
+        captured = {}
+
+        def status():
+            return {"auto_recommendations": True, "enabled": True, "usable": True}
+
+        def recommend_next_steps(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return {
+                "recommendations": [],
+                "candidate_count": 0,
+                "discarded_count": 0,
+                "current_lowkey_command": kwargs.get("lowkey_command_context", {}),
+                "_lowkey_meta": {},
+            }
+
+        fake_ai.status = status
+        fake_ai.recommend_next_steps = recommend_next_steps
+        fake_ai.render_ai_recommendations = lambda report: "TEST LEARNING NOTE"
+        config = {"_last_command_output": "unknown Lowkey command 'nope'."}
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(sys.modules, {"ai_harness": fake_ai}), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(tmp)), \
+             patch.object(lk, "project_context_target", return_value=None), \
+             redirect_stdout(output):
+            lk._print_recommended_next_commands("nope", [], 2, config)
+
+        self.assertIn("TEST LEARNING NOTE", output.getvalue())
+        self.assertEqual(captured["kwargs"]["command_result"], 2)
+        self.assertIn("lk nope", captured["kwargs"]["lowkey_command_context"]["invocation"])
+        self.assertIn("Known top-level Lowkey commands", captured["kwargs"]["lowkey_command_context"]["source_excerpt"])
+
+    def test_run_lab_passes_remembered_contract_to_native_script_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            script = root / "script" / "Deploy.s.sol"
+            script.parent.mkdir(parents=True)
+            script.write_text("contract Deploy {}", encoding="utf-8")
+            target = "0x" + "1" * 40
+            key = "0x" + "2" * 64
+            config = {
+                "target": target,
+                "target_contract": "TokenSaleContract",
+                "rpc": "http://127.0.0.1:8545",
+                "aliases": {},
+                "targets": {},
+                "abi_paths": {},
+                "wallets": {},
+                "labels": {},
+            }
+            output = io.StringIO()
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "project_tools", None), \
+                 patch.object(lk, "bootstrap_project", return_value=0), \
+                 patch.object(lk, "_lab_source_integrity_issue", return_value=None), \
+                 patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)), \
+                 patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic, \
+                 patch.object(lk, "discover_local_lab_script", return_value=str(script)), \
+                 patch.object(lk, "discover_local_lab_fixture", return_value=None), \
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk, "anvil_rpc_info", return_value={
+                     "url": "http://127.0.0.1:8545",
+                     "accounts": ["0x" + "3" * 40],
+                 }), \
+                 patch.object(lk, "_live_target_state", return_value={"status": "NOT_DEPLOYED"}), \
+                 patch.object(lk, "save_config"), \
+                 patch.object(lk.audit_context, "set_target"), \
+                 patch.object(lk, "derive_default_anvil_key", return_value=key), \
+                 patch.object(lk, "run_project_lab_script", return_value=0) as run_script, \
+                 redirect_stdout(output):
+                result = lk.run_lab(config, [])
+
+        self.assertEqual(result, 0)
+        self.assertIn("Target selection: preserving remembered contract TokenSaleContract.", output.getvalue())
+        self.assertIn("STALE TARGET", output.getvalue())
+        self.assertEqual(run_script.call_args.args[6], "TokenSaleContract")
+        heuristic.assert_not_called()
+
+    def test_lab_preserves_remembered_contract_when_artifact_is_available(self):
+        with patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)) as artifact, \
+             patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic:
+            result = lk._preferred_lab_contract(
+                pathlib.Path("/tmp/project"), None, "TokenSaleContract"
+            )
+        self.assertEqual(result, "TokenSaleContract")
+        artifact.assert_called_once_with(pathlib.Path("/tmp/project"), "TokenSaleContract")
+        heuristic.assert_not_called()
+
+    def test_lab_explicit_contract_overrides_remembered_contract(self):
+        with patch.object(lk, "discover_artifact_lab_contract") as artifact, \
+             patch.object(lk, "discover_audit_target_contract") as heuristic:
+            result = lk._preferred_lab_contract(
+                pathlib.Path("/tmp/project"), "TokenSaleContract", "Token"
+            )
+        self.assertEqual(result, "TokenSaleContract")
+        artifact.assert_not_called()
+        heuristic.assert_not_called()
+
+    def test_lab_falls_back_to_heuristic_when_remembered_artifact_is_missing(self):
+        with patch.object(lk, "discover_artifact_lab_contract", return_value=None), \
+             patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic:
+            result = lk._preferred_lab_contract(
+                pathlib.Path("/tmp/project"), None, "TokenSaleContract"
+            )
+        self.assertEqual(result, "Token")
+        heuristic.assert_called_once_with(pathlib.Path("/tmp/project"))
 
     def test_lab_help_explains_ai_review_flag_and_automatic_mode(self):
         output = io.StringIO()

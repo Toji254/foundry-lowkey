@@ -228,6 +228,36 @@ def _maybe_explain_error(record):
             from lowkey import error_context, error_advisor
         if not error_context.auto_error_explain_enabled():
             return
+        try:
+            import ai_harness
+        except ImportError:
+            from lowkey import ai_harness
+        ai_status = ai_harness.status()
+        if (
+            ai_status.get("jev_free_tier_mode")
+            and int(ai_status.get("jev_calls_remaining") or 0) <= 0
+        ):
+            # Do not repeatedly call an exhausted free-tier provider on every failure.
+            return
+        error_text = " ".join(
+            str(record.get(key) or "")
+            for key in ("error", "message", "diagnostic_excerpt")
+        )
+        if re.search(r"\bunknown Lowkey command\b", error_text, re.IGNORECASE):
+            # The native error already explains how to open help. When the
+            # learner note is enabled and usable, it provides the one contextual
+            # AI explanation; avoid printing a second, longer diagnosis for a typo.
+            try:
+                import ai_harness
+            except ImportError:
+                from lowkey import ai_harness
+            ai_status = ai_harness.status()
+            if (
+                ai_status.get("auto_recommendations")
+                and ai_status.get("enabled")
+                and ai_status.get("usable")
+            ):
+                return
         print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
         result = error_advisor.maybe_auto_explain(record)
         if result:
@@ -4258,7 +4288,11 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             return _friendly_error(
                 "Check the command syntax",
                 reason=_clean_error_detail(text),
-                next_step=(f"Run lk {command} --h for command usage." if command else "Run lk --help for the command list."),
+                next_step=(
+                    "Run lk --help for the command list."
+                    if "unknown lowkey command" in lowered or "unknown lk " in lowered
+                    else (f"Run lk {command} --h for command usage." if command else "Run lk --help for the command list.")
+                ),
             )
         if any(marker in lowered for marker in (
             "no target", "set target first", "no rpc", "rpc is not configured",
@@ -10585,6 +10619,18 @@ def run_native_lab(config, root, project):
     print("Ready   : native build/test state completed; EVM commands such as 'lk read' require an EVM lab target.")
     return 0
 
+
+def _preferred_lab_contract(root, requested=None, remembered_name=None):
+    """Prefer an explicit contract, then the remembered project target, then heuristics."""
+    explicit = str(requested or "").strip()
+    if explicit:
+        return explicit
+    remembered = str(remembered_name or "").strip()
+    if remembered and discover_artifact_lab_contract(root, remembered):
+        return remembered
+    return discover_audit_target_contract(root)
+
+
 def run_lab(config,args):
     args = list(args or [])
     ai_review_requested = "--ai-review" in args
@@ -10738,6 +10784,8 @@ def run_lab(config,args):
                     "INFO  Optional AI protocol review skipped "
                     f"({_ai_status.get('reason') or 'not available'}); native lab setup continues."
                 )
+            elif _ai_status.get("jev_free_tier_mode") and int(_ai_status.get("jev_calls_remaining") or 0) <= 0:
+                print("INFO  Optional Jev protocol review skipped (local free-tier AI request cap reached); native lab setup continues.")
             else:
                 review = _ai_harness.review_project_protocol(root, requested_contract)
                 meta = review.get("_lowkey_meta", {})
@@ -10869,7 +10917,17 @@ def run_lab(config,args):
                 "Run it from a terminal, or use 'lk lab --artifact <Contract>' for a non-interactive lab."
             )
     
-    auto_selected = requested or discover_audit_target_contract(root)
+    # Save the user's project target before stale-target cleanup clears runtime state.
+    # If its artifact still exists, rebuilding the local lab should preserve that intent
+    # instead of silently switching from e.g. TokenSaleContract to Token.
+    remembered_contract_name = str(config.get("target_contract") or "").strip()
+    if not remembered_contract_name:
+        remembered_project_target = project_context_target(root)
+        if isinstance(remembered_project_target, dict):
+            remembered_contract_name = str(remembered_project_target.get("contract") or "").strip()
+    auto_selected = _preferred_lab_contract(root, requested, remembered_contract_name)
+    if not requested and remembered_contract_name and auto_selected == remembered_contract_name:
+        print(f"Target selection: preserving remembered contract {remembered_contract_name}.")
     script = discover_local_lab_script(root, auto_selected) if mode == "auto" else None
     fixture = discover_local_lab_fixture(root, auto_selected) if mode == "auto" else None
 
@@ -10935,7 +10993,7 @@ def run_lab(config,args):
             rpc,
             accounts,
             key,
-            requested,
+            requested or auto_selected,
             explicit_requested=bool(args) and mode == "auto" and str(args[0]).strip().lower() not in {"", "auto"},
         )
         if script_code == 0:
@@ -10946,7 +11004,7 @@ def run_lab(config,args):
                 "Lowkey will try the discovered project test fixture."
             )
             fixture_code = run_test_fixture_lab(
-                config, root, fixture, rpc, accounts, key, requested
+                config, root, fixture, rpc, accounts, key, requested or auto_selected
             )
             if fixture_code == 0:
                 return 0
@@ -10974,10 +11032,10 @@ def run_lab(config,args):
             "falling back to generic artifact deployment."
         )
 
-    # No harness? Prefer the audit evidence; it usually points at the application's
-    # most security-relevant implementation contract.
+    # No harness? Keep an explicitly or previously selected project contract when
+    # its artifact remains deployable; only then fall back to the scoring heuristic.
     if not requested:
-        requested = discover_audit_target_contract(root)
+        requested = _preferred_lab_contract(root, None, remembered_contract_name)
 
     if not requested:
         context = audit_context.load(root)
@@ -16202,7 +16260,7 @@ COMMAND_HELP = {
         "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
         "lk functions [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
         "lk functions -v",
-        "Use it when starting an unfamiliar contract and you need its callable surface or a fast function-level audit inventory.",
+        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory.",
         options=[
             ("-v", "Verbose function metadata: source visibility, modifiers, storage refs, calls, ETH flow, selectors, and review flags.", "lk functions -v"),
             ("-V", "Filter by source visibility.", "lk functions -V external"),
@@ -17660,8 +17718,8 @@ def _recommended_next_commands(command, args=None, config=None):
     return rendered
 
 
-def _print_ai_recommendations(command, native_items, config=None):
-    """Print optional model advice beside (never instead of) Lowkey's native suggestions."""
+def _print_ai_recommendations(command, native_items, config=None, args=None, result=0):
+    """Print optional learner-first advice tied to the command just attempted."""
     try:
         try:
             import ai_harness
@@ -17672,6 +17730,54 @@ def _print_ai_recommendations(command, native_items, config=None):
             return
         if not current.get("enabled") or not current.get("usable"):
             return
+        # Once the local free-tier guard is exhausted, stop background calls quietly.
+        # Explicit AI requests still reach the provider guard and get an actionable error.
+        if current.get("jev_free_tier_mode") and int(current.get("jev_calls_remaining") or 0) <= 0:
+            return
+
+        # Batch/raw and JSON output must stay clean. A user setting or malformed
+        # subcommand should not recursively trigger another recommendation footer.
+        raw_args = [str(item) for item in (args or [])]
+        if (
+            str(command or "").strip().lower() in {"ai", "batch", "raw"}
+            or any(item.strip().lower() in {"--json", "json"} for item in raw_args)
+        ):
+            return
+
+        canonical = _canonical_help_command(command)
+        exit_code = result if isinstance(result, int) else getattr(result, "code", 0)
+        if not isinstance(exit_code, int):
+            exit_code = 0
+        if current.get("jev_autonomous") and current.get("jev_free_tier_mode"):
+            # The master Jev mode is deliberately selective on a free account:
+            # failures are handled by the automatic error adviser, and workflows
+            # receiving command guidance should not pay for a second AI footer.
+            if exit_code != 0:
+                return
+            try:
+                import ai_workflow as _jev_workflow
+            except ImportError:
+                from lowkey import ai_workflow as _jev_workflow
+            if _jev_workflow.should_auto_guide(command, raw_args, exit_code, current):
+                return
+            # Only high-value learning/audit decisions receive the additional
+            # recommendation note in guarded Jev mode. Routine read/balance/
+            # receipt/ABI operations and state-changing commands are excluded.
+            free_tier_recommendation_commands = {
+                "ask", "functions", "findings", "focus",
+            }
+            q_learning_action = bool(raw_args) and raw_args[0].strip().lower() in {
+                "why", "next", "evidence", "path",
+            }
+            if canonical not in free_tier_recommendation_commands and not (
+                canonical == "q" and q_learning_action
+            ):
+                return
+        # Once the local free-tier guard is exhausted, stop background calls quietly.
+        # Explicit AI requests still reach the provider guard and get an actionable error.
+        if current.get("jev_free_tier_mode") and int(current.get("jev_calls_remaining") or 0) <= 0:
+            return
+
         try:
             root = audit_context.foundry_project_root()
         except Exception:
@@ -17685,6 +17791,74 @@ def _print_ai_recommendations(command, native_items, config=None):
             contract_name = str(project_target.get("contract") or "").strip() or None
         if not contract_name and isinstance(config, dict):
             contract_name = str(config.get("target_contract") or "").strip() or None
+
+        # Reuse Lowkey's own argument redaction; command invocations can contain
+        # private-key flags or other values that must not be sent to a provider.
+        safe_args = raw_args
+        try:
+            try:
+                import ai_workflow
+            except ImportError:
+                from lowkey import ai_workflow
+            safe_args = ai_workflow._safe_arguments(raw_args)
+        except Exception:
+            safe_args = [str(value)[:160] for value in raw_args[:16]]
+
+        canonical = _canonical_help_command(command)
+        help_path = [canonical]
+        entry, resolved, unknown = _help_entry_for_path(help_path)
+        for token in safe_args:
+            children = entry.get("children", {}) if isinstance(entry, dict) else {}
+            key = HELP_ALIASES.get(str(token).strip().lower(), str(token).strip().lower())
+            if key not in children:
+                # Most arguments are values (contract names, function names, addresses),
+                # not subcommands. The captured command output is the authority on whether
+                # an attempted argument was actually rejected.
+                break
+            help_path.append(key)
+            entry, resolved, unknown = _help_entry_for_path(help_path)
+        entry = entry if isinstance(entry, dict) else {}
+        invocation = " ".join(["lk", str(command or "").strip(), *safe_args]).strip()[:360]
+        exit_code = result if isinstance(result, int) else getattr(result, "code", 0)
+        if not isinstance(exit_code, int):
+            exit_code = 0
+
+        # Give the model the relevant built-in help entry, not just Solidity source.
+        # This lets recommendation mode teach Lowkey even when the command failed or
+        # the project has no eligible contract source.
+        source_lines = [
+            "COMMAND CONTEXT",
+            f"Attempted invocation: {invocation}",
+            f"Resolved Lowkey help path: {'lk ' + ' '.join(resolved) if resolved else '(no exact built-in help entry)'}",
+            f"Attempted command exit code: {exit_code}",
+            "This excerpt is Lowkey's built-in command documentation and current invocation, not user contract source.",
+        ]
+        if entry:
+            source_lines.extend([
+                f"Command summary: {str(entry.get('summary') or '')[:650]}",
+                f"Command use case: {str(entry.get('use') or '')[:650]}",
+                f"Command usage: {str(entry.get('usage') or '')[:260]}",
+                f"Command example: {str(entry.get('example') or '')[:260]}",
+                "Related Lowkey commands: " + ", ".join(str(value)[:120] for value in (entry.get("related") or [])[:8]),
+                "Available subcommands: " + ", ".join(str(value)[:80] for value in list((entry.get("children") or {}).keys())[:20]),
+            ])
+        if unknown:
+            source_lines.append(f"Unknown subcommand or help segment: {str(unknown)[:100]}")
+        known_commands = sorted(str(value) for value in COMMAND_HELP)
+        source_lines.append("Known top-level Lowkey commands: " + ", ".join(known_commands[:80]))
+        command_context = {
+            "invocation": invocation,
+            "arguments": safe_args[:16],
+            "exit_code": exit_code,
+            "help_path": "lk " + " ".join(resolved) if resolved else "",
+            "summary": str(entry.get("summary") or "")[:650],
+            "use_case": str(entry.get("use") or "")[:650],
+            "example": str(entry.get("example") or "")[:260],
+            "related_commands": [str(value)[:120] for value in (entry.get("related") or [])[:8]],
+            "known_top_level_commands": known_commands[:80],
+            "unknown_subcommand": unknown,
+            "source_excerpt": "\n".join(source_lines)[:4500],
+        }
         native = [
             {"command": str(item[0]), "reason": str(item[1])}
             for item in native_items if isinstance(item, (tuple, list)) and len(item) == 2
@@ -17696,34 +17870,48 @@ def _print_ai_recommendations(command, native_items, config=None):
             native_recommendations=native,
             contract_name=contract_name,
             current_command_output=current_output,
+            command_args=[str(value) for value in safe_args],
+            command_result=exit_code,
+            lowkey_command_context=command_context,
         )
+        # Echo context metadata into the renderer without exposing private config values.
+        report["current_lowkey_command"] = {
+            "invocation": invocation,
+            "exit_code": exit_code,
+        }
         rendered = ai_harness.render_ai_recommendations(report)
         print("")
         print(rendered)
     except Exception as exc:
-        # An optional remote call must never break the native command that just succeeded.
+        # Optional advice must never break the native command that just ran.
         print(
             f"\n@ AI RECOMMENDATIONS UNAVAILABLE ({type(exc).__name__}). "
-            "Lowkey's native recommendations above remain available.",
+            "Lowkey's native command behavior remains unchanged.",
             file=sys.stderr,
         )
 
-
 def _print_recommended_next_commands(command, args=None, result=0, config=None):
-    """Render deterministic Lowkey suggestions and optional AI suggestions separately."""
+    """Render native suggestions on success and optional learning notes for any eligible attempt."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
-    if result_code not in {None, 0}:
+    canonical = _canonical_help_command(command)
+    raw_args = [str(item).strip().lower() for item in (args or [])]
+    machine_readable = any(item == "--json" or item == "json" for item in raw_args)
+    if machine_readable or canonical in {"raw", "batch", "ai"}:
         return
-    items = _recommended_next_commands(command, args, config)
-    if not items:
-        return
-    print("")
-    print("LOWKEY RECOMMENDED NEXT COMMANDS")
-    print("================================")
-    for index, (command_text, reason) in enumerate(items, 1):
-        print(f"  {index}. {command_text}")
-        print(f"     Why: {reason}")
-    _print_ai_recommendations(command, items, config)
+
+    items = []
+    if result_code in {None, 0}:
+        items = _recommended_next_commands(command, args, config)
+    if items:
+        print("")
+        print("LOWKEY RECOMMENDED NEXT COMMANDS")
+        print("================================")
+        for index, (command_text, reason) in enumerate(items, 1):
+            print(f"  {index}. {command_text}")
+            print(f"     Why: {reason}")
+    # Unlike the native task menu, the AI learning nudge is allowed after a
+    # failed/unknown command and when there is no static next-command menu.
+    _print_ai_recommendations(command, items, config, args=args, result=result_code)
 
 
 def _dispatch_command_impl(cmd,args,config,from_batch=False):
@@ -18220,8 +18408,8 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         return verification_cli.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
+        # The outer CLI formatter adds the correct general-help hint for unknown commands.
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
-        print("Run 'lk --help' for the command catalog or 'lk <command> --h' for command help.", file=sys.stderr)
         return 2
 
 
@@ -18414,6 +18602,104 @@ def _ai_auto_mode_enabled():
     return bool(state.get("enabled") and state.get("usable") and state.get("auto_assist"))
 
 
+def _jev_auto_mode_enabled():
+    """Check Jev's local switch and credentials without contacting TypeSafe."""
+    state = _ai_status_safely()
+    if not state.get("jev_autonomous"):
+        return False
+    try:
+        try:
+            import jev_engine
+        except ImportError:
+            from lowkey import jev_engine
+        return bool(jev_engine.status().get("configured"))
+    except Exception:
+        return False
+
+
+def _jev_command_eligible(command, arguments, exit_code=None):
+    """Run Jev only after useful outcomes, never for help/JSON or routine read noise."""
+    root = str(command or "").strip().lower()
+    args = [str(item).strip().lower() for item in (arguments or [])]
+    if root in {"ai", "memory", "raw", "batch"}:
+        return False
+    if any(item in {"--json", "--json-context", "--show-context"} for item in args):
+        return False
+    if any(item in HELP_FLAGS for item in args) or root in HELP_FLAGS:
+        return False
+    # Failed commands are useful diagnostic evidence. Avoid recursively classifying
+    # Jev/AI helper failures and status/probe commands that should stay predictable.
+    if exit_code is not None and int(exit_code) != 0:
+        return root not in {"ai", "memory"}
+    if root == "verification":
+        return bool(args and args[0] in {"run", "investigate"})
+    if root == "matrix":
+        return bool(args and args[0] == "test")
+    if root == "q":
+        return bool(args and args[0] in {"why", "next", "evidence", "path"})
+    return root in {
+        "build", "doctor", "test", "scan", "audit", "audit-checks", "break",
+        "walkthrough", "walk", "fuzz", "invariant", "mutate", "symbolic",
+        "slither", "recon", "probe", "trace", "state-diff", "project", "projects",
+        "system", "changes", "risk", "poc", "test-gen", "mutation-check", "lab",
+        "clone", "seams", "findings", "focus", "questions", "ask", "functions",
+    }
+
+
+def _print_jev_command_classification(command, args, result_code, command_output="", project_config=None):
+    """Display Jev's typed assessment after the native command; never retry or execute it."""
+    state = _ai_status_safely()
+    if not state.get("jev_autonomous"):
+        return
+    try:
+        try:
+            import ai_harness
+            import jev_engine
+        except ImportError:
+            from lowkey import ai_harness, jev_engine
+        jev_state = jev_engine.status()
+        if not jev_state.get("configured"):
+            provider = jev_state.get("provider", "jevmodel")
+            print(
+                "\n@ JEV TRIAGE SKIPPED — the selected Jev provider API key is unavailable. "
+                f"Run 'lk ai jev setup --provider {provider}'; the native command already completed.",
+                file=sys.stderr,
+            )
+            return
+        budget = ai_harness.autonomy_budget_status()
+        if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
+            return
+        report = jev_engine.classify_command(
+            command="lk " + str(command or "").strip(),
+            arguments=[str(value) for value in (args or [])],
+            exit_code=int(result_code),
+            command_output=str(command_output or ""),
+        )
+        print()
+        print(jev_engine.render_classification(report, "lk " + str(command or "").strip()))
+        # Optional prose is a separate model, and only runs when explicitly enabled.
+        if (
+            state.get("jev_use_text_ai")
+            and state.get("enabled")
+            and state.get("usable")
+            and report.get("needs_explanation") is True
+            and report.get("suggested_response") in {"explain_observation", "inspect_evidence"}
+            and not (int(result_code) != 0 and state.get("auto_explain_errors"))
+        ):
+            _print_ai_command_guidance(
+                command, args, result_code,
+                project_config if isinstance(project_config, dict) else {},
+                command_output, automatic=True,
+            )
+    except Exception as exc:
+        # Native command success/failure is authoritative; optional triage is non-blocking.
+        print(
+            f"\n@ JEV TRIAGE UNAVAILABLE ({type(exc).__name__}). "
+            "The native Lowkey command kept its original result.",
+            file=sys.stderr,
+        )
+
+
 def _dispatch_command_captured(command, args, config):
     stdout_capture = _TeeCapture(sys.stdout)
     stderr_capture = _TeeCapture(sys.stderr)
@@ -18426,13 +18712,16 @@ def _dispatch_command_captured(command, args, config):
     return result, captured
 
 
-def _print_ai_command_guidance(command, args, result_code, config, command_output=""):
+def _print_ai_command_guidance(command, args, result_code, config, command_output="", *, automatic=False):
     """Optional post-command guidance must never change native execution success."""
     try:
         try:
             import ai_workflow
         except ImportError:
             from lowkey import ai_workflow
+        state = _ai_status_safely()
+        if automatic and state.get("jev_free_tier_mode") and int(state.get("jev_calls_remaining") or 0) <= 0:
+            return
         try:
             root = audit_context.foundry_project_root()
         except Exception:
@@ -18534,7 +18823,9 @@ def main():
         )
         return fail("Refusing to run with a mismatched Lowkey installation.", 3)
 
-    auto_capture = command.lower() != "ai" and _ai_auto_mode_enabled()
+    jev_active = command.lower() != "ai" and _jev_auto_mode_enabled()
+    jev_capture = jev_active and command.lower() not in {"raw", "batch", "memory"}
+    auto_capture = command.lower() != "ai" and (_ai_auto_mode_enabled() or jev_capture)
     if ai_requested or auto_capture:
         result, ai_command_output = _dispatch_command_captured(command, sys.argv[2:], config)
     else:
@@ -18572,6 +18863,7 @@ def main():
             footer_status,
             config,
         )
+    text_guidance_ran = False
     if ai_requested:
         if machine_readable_verification:
             # Preserve the machine-readable stdout contract when --ai is explicit.
@@ -18579,6 +18871,7 @@ def main():
                 _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
         else:
             _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+        text_guidance_ran = True
     elif auto_capture:
         try:
             import ai_workflow
@@ -18587,9 +18880,14 @@ def main():
         if ai_workflow.should_auto_guide(command, sys.argv[2:], footer_status, _ai_status_safely()):
             if machine_readable_verification:
                 with redirect_stdout(sys.stderr):
-                    _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+                    _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
             else:
-                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output)
+                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
+            text_guidance_ran = True
+    # Do not spend a second model request on a result for which the user explicitly
+    # asked for text guidance or the configured automatic text helper already ran.
+    if jev_active and not text_guidance_ran and _jev_command_eligible(command, sys.argv[2:], footer_status):
+        _print_jev_command_classification(command, sys.argv[2:], footer_status, ai_command_output, config)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {

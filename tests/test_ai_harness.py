@@ -93,6 +93,10 @@ class AIHarnessTests(unittest.TestCase):
             "lk ai run",
             "AI INSIDE EXISTING LK WORKFLOWS",
             "lk lab Vault --ai-review",
+            "JEV AUTONOMY & LOCAL BUDGET GUARD",
+            "lk ai jev setup",
+            "--provider jevmodel|typesafe",
+            "100,000 starter input tokens",
             "Use --json only on commands that list it",
         ):
             self.assertIn(expected, help_text)
@@ -282,7 +286,7 @@ class AIHarnessTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(ai.main(["recommendations", "manual"]), 0)
         self.assertIn("native next-command suggestions.", output.getvalue())
-        self.assertIn("No automatic AI recommendation requests will be made.", output.getvalue())
+        self.assertIn("No automatic AI learning-note requests will be made.", output.getvalue())
         self.assertFalse(ai.load_config()["auto_recommendations"])
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -293,7 +297,7 @@ class AIHarnessTests(unittest.TestCase):
             self.assertEqual(ai.main(["recommendations", "status"]), 0)
         self.assertIn("MANUAL / OFF", output.getvalue())
 
-    def test_ai_recommendations_keep_only_source_grounded_read_only_commands(self):
+    def test_ai_recommendations_keep_source_grounded_notes_and_reject_unsafe_commands(self):
         context = {
             "source_files": [{
                 "path": "src/Vault.sol",
@@ -335,7 +339,11 @@ class AIHarnessTests(unittest.TestCase):
             ]
         }
         result = ai.validate_ai_recommendations(raw, context, [{"command": "lk read owner", "reason": "native"}])
-        self.assertEqual(result["recommendations"], [])
+        self.assertEqual(len(result["recommendations"]), 1)
+        # The native menu already has this command, so AI should teach the
+        # concept without duplicating the command as another recommendation.
+        self.assertEqual(result["recommendations"][0]["optional_command"], "")
+        self.assertIn("owner authorization rule", result["recommendations"][0]["learning_point"])
         raw["recommendations"] = [raw["recommendations"][0], raw["recommendations"][4]]
         result = ai.validate_ai_recommendations(raw, context, [])
         self.assertEqual(len(result["recommendations"]), 1)
@@ -348,7 +356,76 @@ class AIHarnessTests(unittest.TestCase):
         self.assertEqual(result["origin"], "configured-model")
         self.assertEqual(result["recommendations"][0]["source"]["symbol"], "withdraw")
 
-    def test_recommend_next_steps_requests_a_concrete_source_grounded_command(self):
+    def test_recommendations_are_optional_contextual_learning_nudges_not_workflows(self):
+        context = {
+            "source_files": [
+                {
+                    "path": "src/Token.sol",
+                    "source_excerpt": (
+                        "contract Token { "
+                        "function balanceOf(address account) external view returns (uint256) { return _balances[account]; } "
+                        "}"
+                    ),
+                },
+                {
+                    "path": "lowkey-command-reference",
+                    "source_excerpt": (
+                        "COMMAND CONTEXT\n"
+                        "Attempted invocation: lk target\n"
+                        "Command summary: Select which contract Lowkey uses for later ABI-aware reads.\n"
+                    ),
+                },
+            ],
+            "current_lowkey_command": {
+                "invocation": "lk target",
+                "arguments": [],
+                "exit_code": 0,
+                "summary": "Select which contract Lowkey uses for later ABI-aware reads.",
+            },
+        }
+        raw = {
+            "recommendations": [
+                {
+                    "title": "The target controls how reads are interpreted",
+                    "why": "You just used target selection, so this explains an important Lowkey behavior.",
+                    "learning_point": (
+                        "The target is Lowkey's current contract context: commands such as lk read use that contract's "
+                        "ABI and address. Switching the target is not a deployment or transaction."
+                    ),
+                    "what_to_notice": "The displayed target changes, while the chain state does not.",
+                    "optional_command": "lk target",
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                },
+                {
+                    "title": "Do not turn a learning note into a sequence",
+                    "why": "Multiple commands would prescribe a workflow instead of helping the user understand Lowkey.",
+                    "learning_point": "This multi-step sequence should be rejected.",
+                    "steps": [
+                        {
+                            "command": "lk target Token",
+                            "purpose": "Select token.",
+                            "expected_result": "Token is selected.",
+                            "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                        },
+                        {
+                            "command": "lk read balanceOf",
+                            "purpose": "Read the balance.",
+                            "expected_result": "A balance is printed.",
+                            "source": {"path": "src/Token.sol", "symbol": "balanceOf"},
+                        },
+                    ],
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                },
+            ]
+        }
+        result = ai.validate_ai_recommendations(raw, context, [])
+        self.assertEqual(len(result["recommendations"]), 1)
+        tip = result["recommendations"][0]
+        self.assertEqual(tip["optional_command"], "lk target")
+        self.assertIn("target is Lowkey's current contract context", tip["learning_point"])
+        self.assertEqual(tip["source"]["path"], "lowkey-command-reference")
+
+    def test_recommend_next_steps_requests_one_contextual_source_grounded_learning_note(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "src").mkdir()
@@ -361,32 +438,233 @@ class AIHarnessTests(unittest.TestCase):
             )
             model_result = {
                 "recommendations": [{
-                    "title": "Inspect the agreement validity check",
-                    "why": "See the function signature and review the validity rule before relying on it.",
-                    "command": "lk fn isAgreementValid",
+                    "title": "Function inspection does not require arguments",
+                    "why": "You are working with a contract function, and Lowkey separates inspection from calling it.",
+                    "learning_point": (
+                        "'lk fn' inspects the function's ABI-facing details without calling it. 'lk read' is for observing "
+                        "view/pure results, while 'lk send' would submit a transaction and is not an AI recommendation."
+                    ),
+                    "what_to_notice": "The function inputs and mutability help you decide what kind of inspection is possible.",
+                    "optional_command": "lk fn isAgreementValid",
                     "source": {"path": "src/Registry.sol", "symbol": "isAgreementValid"},
                 }]
             }
             with patch.object(ai, "request_structured", return_value=model_result) as request:
                 report = ai.recommend_next_steps(
                     root,
-                    command="status",
-                    native_recommendations=[{"command": "lk functions", "reason": "List ABI functions."}],
+                    command="read",
+                    native_recommendations=[{"command": "lk functions", "reason": "List callable functions."}],
                     contract_name="Registry",
+                    command_args=["isAgreementValid"],
+                    command_result=0,
+                    lowkey_command_context={
+                        "invocation": "lk read isAgreementValid",
+                        "arguments": ["isAgreementValid"],
+                        "exit_code": 0,
+                        "source_excerpt": "COMMAND CONTEXT\nAttempted invocation: lk read isAgreementValid",
+                    },
                 )
-            self.assertEqual(len(report["recommendations"]), 1)
-            self.assertEqual(report["recommendations"][0]["command"], "lk fn isAgreementValid")
             context = request.call_args.kwargs["context"]
-            self.assertEqual(context["active_contract"], "Registry")
-            self.assertIn("Do not abstain merely because a function needs input values", request.call_args.kwargs["task"])
-            self.assertTrue(report["ai_generated"])
+            self.assertEqual(context["current_lowkey_command"]["exit_code"], 0)
+            self.assertEqual(context["current_lowkey_command"]["arguments"], ["isAgreementValid"])
+            task_text = request.call_args.kwargs["task"]
+            self.assertIn("Do not abstain merely because a function needs input values", task_text)
+            self.assertIn("complete beginner", task_text)
+            self.assertIn("behind-the-scenes gossip", task_text)
+            self.assertIn("Be interesting, not annoying", task_text)
+            self.assertIn("2–4 short sentences", task_text)
+            self.assertIn("current_command_evidence", task_text)
+            self.assertEqual(report["recommendations"][0]["optional_command"], "lk fn isAgreementValid")
+            self.assertNotIn("steps", report["recommendations"][0])
+
+    def test_target_display_note_respects_unverified_bytecode_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Escrow.sol").write_text("contract Escrow {}", encoding="utf-8")
+            model_result = {
+                "recommendations": [{
+                    "title": "You selected a simulated contract",
+                    "why": "You chose the target for this run.",
+                    "learning_point": "The contract is live on a simulated network.",
+                    "what_to_notice": "The deployed contract is ready.",
+                    "optional_command": "lk target",
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                }]
+            }
+            output = (
+                "Current project target: Escrow -> Escrow (0x" + "5" * 40 + ")\\n"
+                "Deployment: UNVERIFIED\\n"
+                "WARNING: Lowkey cannot prove that contract bytecode exists on the current RPC."
+            )
+            with patch.object(ai, "request_structured", return_value=model_result):
+                report = ai.recommend_next_steps(
+                    root,
+                    command="target",
+                    native_recommendations=[{"command": "lk status", "reason": "Inspect current setup."}],
+                    contract_name="Escrow",
+                    current_command_output=output,
+                    command_args=[],
+                    command_result=0,
+                    lowkey_command_context={
+                        "invocation": "lk target",
+                        "arguments": [],
+                        "exit_code": 0,
+                        "source_excerpt": (
+                            "COMMAND CONTEXT\\n"
+                            "Attempted invocation: lk target\\n"
+                            "Command summary: Show the current saved target.\\n"
+                        ),
+                    },
+                )
+
+        note = report["recommendations"][0]
+        rendered = ai.render_ai_recommendations(report)
+        self.assertIn("did not choose a new one", note["why"])
+        self.assertIn("could not confirm code exists", note["learning_point"])
+        self.assertIn("saved target", note["title"].lower())
+        self.assertNotIn("simulated network", rendered.lower())
+        self.assertNotIn("You selected", rendered)
+        self.assertEqual(note["optional_command"], "")
+        self.assertEqual(note["source"]["path"], "lowkey-command-reference")
+
+    def test_recommendations_use_command_docs_after_failed_unknown_command_without_contract_source(self):
+        from lowkey import error_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            captured = {}
+            command_context = {
+                "invocation": "lk no-such-command",
+                "arguments": [],
+                "exit_code": 2,
+                "summary": "",
+                "source_excerpt": (
+                    "COMMAND CONTEXT\n"
+                    "Attempted invocation: lk no-such-command\n"
+                    "Attempted command exit code: 2\n"
+                    "Known top-level Lowkey commands: target, status, functions\n"
+                ),
+            }
+            model_result = {
+                "recommendations": [{
+                    "title": "Lowkey commands have a built-in help path",
+                    "why": "The command you tried was not recognized, so this is about discovering Lowkey's own command surface.",
+                    "learning_point": (
+                        "Lowkey checks command names against its own command catalog. Help is handled before a native "
+                        "command runs, so a help request is a safe way to learn available syntax."
+                    ),
+                    "what_to_notice": "Help output describes a command without running its normal action.",
+                    "optional_command": "lk --h",
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                }]
+            }
+            with patch.object(
+                ai,
+                "_source_context",
+                side_effect=ai.AIHarnessError("No eligible first-party contract source was found for protocol review."),
+            ), patch.object(error_context, "read_project_context", return_value={"project_label": root.name, "events": []}), \
+                 patch.object(ai, "request_structured", side_effect=lambda **kwargs: captured.update(kwargs) or model_result):
+                report = ai.recommend_next_steps(
+                    root,
+                    "no-such-command",
+                    [],
+                    current_command_output="unknown Lowkey command 'no-such-command'",
+                    command_args=[],
+                    command_result=2,
+                    lowkey_command_context=command_context,
+                )
+
+        self.assertEqual(report["current_lowkey_command"]["exit_code"], 2)
+        self.assertEqual(report["recommendations"][0]["optional_command"], "")
+        self.assertIn("current_command_evidence", captured["context"])
+        self.assertEqual(captured["context"]["source_files"][0]["path"], "lowkey-command-reference")
+        self.assertIn("Lowkey itself", captured["task"])
+        rendered = ai.render_ai_recommendations(report)
+        self.assertIn("Command you tried: lk no-such-command", rendered)
+        self.assertIn("Lowkey reported a problem (code 2)", rendered)
+        self.assertNotIn("Optional experiment", rendered)
+        self.assertIn("command list appears in help", report["recommendations"][0]["what_to_notice"])
+        self.assertIn("not in this error", rendered)
+
+    def test_recommendation_allowlist_rejects_transaction_and_shell_commands(self):
+        for command in (
+            "lk send pay",
+            "lk wizard pay",
+            "lk read balanceOf 0x" + "1" * 40 + " && whoami",
+            "lk lab --generic TokenSaleContract",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(ai._safe_ai_recommendation_command(command))
+        self.assertEqual(ai._safe_ai_recommendation_command("lk target"), "lk target")
+        self.assertEqual(
+            ai._safe_ai_recommendation_command("lk target --h"),
+            "lk target --h",
+        )
+
+    def test_stale_lab_target_output_adds_a_bounded_lowkey_runtime_excerpt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = root / "lk.py"
+            runtime.write_text(
+                "def discover_audit_target_contract(root):\n"
+                "    lowered = 'token'\n"
+                "    if lowered.endswith(('pool', 'escrow', 'token')):\n"
+                "        scores[key] += 70\n"
+                "    return 'Token'\n"
+                "\n"
+                "def run_lab(config, args):\n"
+                "    auto_selected = requested or discover_audit_target_contract(root)\n"
+                "    previous_target = config.get('target')\n"
+                "    print('STALE TARGET: clearing stale target')\n"
+                "    return auto_selected\n",
+                encoding="utf-8",
+            )
+            with patch.object(ai, "__file__", str(root / "ai_harness.py")):
+                source = ai._lowkey_lab_runtime_source(
+                    "STALE TARGET: TokenSaleContract is not a verified live contract; clearing stale target"
+                )
+        self.assertIsNotNone(source)
+        self.assertEqual(source["path"], "lowkey-runtime/lk.py")
+        self.assertIn("auto_selected", source["source_excerpt"])
+        self.assertIn("scores[key] += 70", source["source_excerpt"])
+
+    def test_renderer_explains_optional_learning_notes_without_directing_a_workflow(self):
+        rendered = ai.render_ai_recommendations({
+            "current_lowkey_command": {"invocation": "lk target", "exit_code": 0},
+            "recommendations": [{
+                "title": "The selected target controls later reads",
+                "why": "You just changed or inspected the target.",
+                "learning_point": "Lowkey uses its selected target to choose the address and ABI for later reads.",
+                "what_to_notice": "The selected target is shown; chain state is unchanged.",
+                "optional_command": "lk target",
+                "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+            }],
+            "diagnosis": {
+                "summary": "Lowkey's lab selection happens before stale-target cleanup.",
+                "evidence": [
+                    {"path": "lowkey-runtime/lk.py", "symbol": "run_lab"},
+                    {"path": "lowkey-runtime/lk.py", "symbol": "discover_audit_target_contract"},
+                ],
+            },
+        })
+        self.assertIn("THE SNEAKY BIT", rendered)
+        self.assertIn("Why this came up: You just changed or inspected the target.", rendered)
+        self.assertIn("The simple version: Lowkey uses its selected target", rendered)
+        self.assertIn("THE INTERESTING BIT: The selected target controls later reads", rendered)
+        self.assertIn("Optional experiment (not homework)", rendered)
+        self.assertIn("A tiny explanation of what you just tried. No homework.", rendered)
+        self.assertIn("Command you tried: lk target", rendered)
+        self.assertNotIn("Suggested workflow", rendered)
+        self.assertNotIn("first do this, then do that", rendered)
 
     def test_empty_ai_recommendations_explain_abstention_or_filtered_candidates(self):
         no_candidates = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 0, "discarded_count": 0})
         filtered = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 2, "discarded_count": 2})
-        self.assertIn("no extra command", no_candidates)
-        self.assertIn("none passed Lowkey's source and command checks", filtered)
-        self.assertIn("No rejected command was shown", filtered)
+        self.assertIn("No extra tip this time", no_candidates)
+        self.assertIn("filtered out the AI's tip", filtered)
+        self.assertIn("No rejected command is shown", filtered)
+        self.assertIn("not a safety check", no_candidates)
 
     def test_model_derived_text_renderers_have_visible_ai_watermarks(self):
         from lowkey import error_advisor, security_review, test_planner
@@ -507,6 +785,40 @@ class AIHarnessTests(unittest.TestCase):
         self.assertNotIn("example-secret", ai.config_path().read_text(encoding="utf-8"))
         self.assertEqual(json.loads(ai.credentials_path().read_text(encoding="utf-8"))["keys"]["deepseek"]["1"], "example-secret")
         self.assertEqual(ai.credentials_path().stat().st_mode & 0o777, 0o600)
+
+    def test_shared_ai_voice_uses_plain_beginner_friendly_language(self):
+        from lowkey import provider_adapters
+
+        ai.configure(
+            provider="openai-compatible",
+            model="fixture-model",
+            base_url="https://provider.example/v1",
+            api_key="voice-test-key",
+        )
+        adapter = provider_adapters.get_provider_adapter("openai-compatible")
+        sent_payloads = []
+        response = json.dumps({
+            "choices": [{"message": {"content": json.dumps({"facts": [], "hypotheses": ["ok"]})}}]
+        }).encode("utf-8")
+
+        def send(**kwargs):
+            sent_payloads.append(kwargs["payload"])
+            return response
+
+        with patch.object(adapter, "send", side_effect=send):
+            ai.request_structured(
+                purpose="protocol_analysis",
+                task="Explain this result.",
+                context={"safe": True},
+                required_fields=("facts", "hypotheses"),
+            )
+
+        system_message = sent_payloads[0]["messages"][0]["content"]
+        self.assertIn("complete beginner", system_message)
+        self.assertIn("ordinary words", system_message)
+        self.assertIn("behind-the-scenes", system_message)
+        self.assertIn("without talking down", system_message)
+        self.assertIn("never override evidence", system_message)
 
     def test_three_key_slots_fail_over_after_quota_and_never_log_key_values(self):
         from lowkey import provider_adapters
@@ -661,7 +973,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_explicit_protocol_review_receives_only_approved_memory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "src" / "Vault.sol").write_text(
                 "contract Vault { function withdraw() external {} } // factory registry",
@@ -771,7 +1083,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_large_source_and_approved_memory_fit_context_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
             (root / "src").mkdir()
             for index in range(18):
                 (root / "src" / f"Vault{index}.sol").write_text(

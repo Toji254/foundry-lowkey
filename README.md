@@ -97,6 +97,19 @@ The native command still runs with its normal behavior. In particular, `lk send 
 
 `lk ai mode auto` opts into guidance after eligible complex workflows or supported failures. It requires AI to be enabled and usable; `lk ai mode manual` turns that automatic behavior off. The independent `lk ai recommendations` and `lk ai errors` settings remain separate.
 
+Jev is integrated as a structured decision model, separate from the existing text-AI helper. It classifies selected Lowkey command outcomes and recommends a safe response category; it does not generate full explanations or execute commands.
+
+~~~bash
+lk ai jev setup                    # fresh setup defaults to JevModel's advertised starter-token endpoint
+lk ai jev setup --provider typesafe # choose the official TypeSafe API instead
+lk ai jev test                     # one source-free connectivity probe; may use tokens
+lk ai jev on                       # enable automatic Jev triage on eligible command results
+lk ai jev status                   # local-only status and request budget
+lk ai jev off                      # pause Jev without changing other AI features
+~~~
+
+JevModel advertises five successful free runs per UTC day plus 100,000 starter input tokens after email verification. The daily runs and token balance are separate; JevModel is independent from TypeSafe. The official TypeSafe endpoint has separate published input-token pricing. Lowkey defaults to a conservative local guard of 5 provider attempts per UTC day and applies a smaller request cap for JevModel. The shared guard also covers optional text-AI calls; exact cache hits do not spend another provider request. The existing `lk ai mode`, `lk ai errors`, and `lk ai recommendations` settings stay independent to avoid silently enabling a second model. See [Jev autonomy](docs/jev-autonomy.md).
+
 For a task spanning several checks, `lk ai run` makes a source-grounded plan and shows each proposed command:
 
 ~~~bash
