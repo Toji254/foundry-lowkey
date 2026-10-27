@@ -60,7 +60,7 @@ def _clean(value: Any, limit: int = 900) -> str:
         return ""
     text = " ".join(value.replace("\x00", "").split())
     try:
-        text = ai._redact_sensitive_source(text)
+        text = _redact_text(text)
     except Exception:
         pass
     return text[:limit]
@@ -71,9 +71,9 @@ def _redact_text(value: str) -> str:
     pattern = r"(?i)(--(?:private-key|mnemonic|seed(?:-phrase)?|password|api-key|token|secret|authorization|bearer-token)(?:=|\s+))\S+"
     text = re.sub(pattern, r"\1[REDACTED]", text)
     # Also scrub credentials embedded in RPC URLs and common query-string secrets.
-    text = re.sub(r"(?i)(https?://[^:/@\s]+:)[^/@\s]+@", r"\1[REDACTED]@", text)
+    text = re.sub(r"(?i)((?:https?|wss?)://[^:/@\s]+:)[^/@\s]+@", r"\1[REDACTED]@", text)
     text = re.sub(
-        r"(?i)([?&](?:api[_-]?key|access[_-]?token|token|secret|password|authorization)=)[^&#\s]+",
+        r"(?i)([?&](?:api[_-]?key|access[_-]?token|token|secret|password|authorization|auth|key)=)[^&#\s]+",
         r"\1[REDACTED]",
         text,
     )
