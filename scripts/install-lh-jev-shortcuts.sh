@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Optional per-user integration for the custom lh shell toolbox.
 # This does not run during Lowkey installation; the user opts in by invoking it.
-RC_FILE="\${HOME}/.bashrc"
+RC_FILE="${HOME}/.bashrc"
 if [[ ! -f "$RC_FILE" ]]; then
   touch "$RC_FILE"
 fi
@@ -19,7 +19,7 @@ CANDIDATES=(
   "$HOME/.config/lowkey/shell-toolbox.sh"
   "$HOME/.config/lowkey/lh.sh"
 )
-for candidate in "\${CANDIDATES[@]}"; do
+for candidate in "${CANDIDATES[@]}"; do
   if [[ -f "$candidate" ]] && grep -Fq "solfind PATTERN [DIR]" "$candidate"; then
     MENU_FILE="$candidate"
     break
@@ -27,7 +27,7 @@ for candidate in "\${CANDIDATES[@]}"; do
 done
 
 if [[ -n "$MENU_FILE" ]]; then
-  cp -p "$MENU_FILE" "\${MENU_FILE}.backup-jev-\${STAMP}"
+  cp -p "$MENU_FILE" "${MENU_FILE}.backup-jev-${STAMP}"
   python3 - "$MENU_FILE" <<'PY'
 import pathlib
 import sys
@@ -56,7 +56,7 @@ fi
 
 MARKER="# >>> Lowkey Jevos shell shortcuts >>>"
 if ! grep -Fq "$MARKER" "$RC_FILE"; then
-  cp -p "$RC_FILE" "\${RC_FILE}.backup-jev-\${STAMP}"
+  cp -p "$RC_FILE" "${RC_FILE}.backup-jev-${STAMP}"
   cat >> "$RC_FILE" <<'EOF'
 
 # >>> Lowkey Jevos shell shortcuts >>>
