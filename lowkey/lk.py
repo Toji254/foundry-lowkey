@@ -18564,6 +18564,9 @@ def main():
         save_config(config)
     final_root = audit_context.foundry_project_root()
     _sync_audit_context(config, final_root)
+    # A command may have changed target/actor/audit state after dispatch; refresh
+    # the common snapshot again before any post-command recommendation footer.
+    _attach_shared_command_context(config, final_root)
     footer_status = result_code
     # Machine-readable engine inventory must be valid JSON without Lowkey's
     # normal recommendation footer appended to stdout.
@@ -18716,7 +18719,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
         # A few commands intentionally exit from inside their handler. Do not
         # discard diagnostics just because the handler uses SystemExit.
         diagnostic = captured_stderr.getvalue()
-        code = exc.code if isinstance(exc.code, int) else 2
+        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
         root = None
         try:
             root = audit_context.foundry_project_root()
