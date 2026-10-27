@@ -1459,7 +1459,7 @@ def recommend_next_steps(
     contract_name: str | None = None,
     current_command_output: str | None = None,
 ) -> dict[str, Any]:
-    """Suggest source-grounded read-only commands using current and prior project evidence."""
+    """Suggest beginner-readable, source-grounded workflows using current and prior project evidence."""
     context = _source_context(
         Path(root),
         contract_name,
@@ -1485,6 +1485,8 @@ def recommend_next_steps(
     context["current_native_command"] = str(command or "").strip().lower()[:80]
     context["active_contract"] = str(contract_name or context.get("requested_contract") or "not supplied")
     context["native_recommendations"] = native
+    context["allowed_recommendation_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
+    # Keep the older field for compatibility with configured prompts and tests.
     context["allowed_read_only_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
     task = (
         "Help a learner make progress in the current Lowkey workflow, not merely browse function names. "
@@ -1497,7 +1499,7 @@ def recommend_next_steps(
         "Do not suggest unrelated generic 'lk fn' browsing when a direct workflow is supported by evidence. "
         "Distinguish native ETH balances from ERC-20 balances, ERC-20 balances from application accounting mappings, "
         "and read-only calls from transactions. "
-        "Allowed commands are listed in allowed_read_only_command_forms. 'lk target <known contract>' only switches the local "
+        "Allowed commands are listed in allowed_recommendation_command_forms. 'lk target <known contract>' only switches the local "
         "selected target; 'lk lab --generic <known contract>' deploys to the local Anvil lab and must be clearly labeled for "
         "review. Never suggest 'lk send', 'lk wizard', shell commands, command chaining, file edits or test execution. "
         "If lowkey-runtime/lk.py appears in source_files, diagnose Lowkey's own command behavior separately from the user's "
@@ -1595,6 +1597,13 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
                     lines.append(f"What it does: {step.get('purpose')}")
                 if step.get("expected_result"):
                     lines.append(f"What to look for: {step.get('expected_result')}")
+                command = str(step.get("command", "")).lower()
+                if command.startswith("lk target "):
+                    lines.append("Safety: changes Lowkey's selected target only; it does not send a transaction.")
+                elif command.startswith("lk lab --generic "):
+                    lines.append("Safety: deploys a contract to the local Anvil lab; review constructor inputs before running.")
+                elif command.startswith("lk read "):
+                    lines.append("Safety: performs a read-only call; it does not persist state changes.")
                 source = step.get("source") if isinstance(step.get("source"), Mapping) else {}
                 lines.append(f"Source to inspect: {source.get('path', 'not recorded')} — {source.get('symbol', 'not recorded')}")
             else:
@@ -1602,9 +1611,17 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
                 for step_index, step in enumerate(steps, 1):
                     if not isinstance(step, Mapping):
                         continue
-                    lines.append(f"  {step_index}. {step.get('command', '')}")
+                    command = str(step.get("command", ""))
+                    lines.append(f"  {step_index}. {command}")
                     lines.append(f"     What it does: {step.get('purpose', '')}")
                     lines.append(f"     What to look for: {step.get('expected_result', '')}")
+                    lowered_command = command.lower()
+                    if lowered_command.startswith("lk target "):
+                        lines.append("     Safety: changes Lowkey's selected target only; it does not send a transaction.")
+                    elif lowered_command.startswith("lk lab --generic "):
+                        lines.append("     Safety: deploys a contract to the local Anvil lab; review constructor inputs before running.")
+                    elif lowered_command.startswith("lk read "):
+                        lines.append("     Safety: performs a read-only call; it does not persist state changes.")
                     source = step.get("source") if isinstance(step.get("source"), Mapping) else {}
                     lines.append(f"     Source: {source.get('path', 'not recorded')} — {source.get('symbol', 'not recorded')}")
         else:
