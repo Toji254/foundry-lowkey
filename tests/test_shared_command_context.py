@@ -12,9 +12,33 @@ sys.path.insert(0, str(ROOT / "lowkey"))
 import error_advisor
 import error_context
 import ai_workflow
+import lk
 
 
 class SharedCommandContextTests(unittest.TestCase):
+    def test_every_native_command_receives_transient_shared_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "project"
+            root.mkdir()
+            history = {
+                "project_label": "project",
+                "events": [{"command": "build", "signals": ["Compiler warning: 6321"]}],
+            }
+            config = {}
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(error_context, "read_project_context", return_value=history), \
+                 patch.object(lk, "_dispatch_command_impl", return_value=0), \
+                 patch.object(lk, "_record_shared_command_event"):
+                result = lk.dispatch_command("status", [], config)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(config["_shared_command_context"], history)
+            self.assertEqual(
+                lk.shared_command_context(config)["events"][0]["command"],
+                "build",
+            )
+            self.assertNotIn("_shared_command_context", lk.fresh_config())
+
     def test_build_warnings_are_available_to_a_later_lab_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "ETH Escrow"
