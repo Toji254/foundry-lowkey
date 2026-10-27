@@ -16,7 +16,23 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
+JEVMODEL_API_URL = "https://jevmodel.app/api/v1/systemone"
+DEFAULT_PROVIDER = "typesafe"  # API-library default; the CLI defaults to JevModel for its advertised starter-token allowance.
 DEFAULT_MODEL = "jev-latest"
+PROVIDERS = {
+    "typesafe": {
+        "endpoint": API_URL,
+        "key_env": "TYPESAFE_API_KEY",
+        "label": "TypeSafe official API",
+        "model_in_request": True,
+    },
+    "jevmodel": {
+        "endpoint": JEVMODEL_API_URL,
+        "key_env": "JEVMODEL_API_KEY",
+        "label": "JevModel hosted API (independent third-party service)",
+        "model_in_request": False,
+    },
+}
 DEFAULT_TIMEOUT = 18
 MAX_REQUEST_BYTES = 32_000
 MAX_RESPONSE_BYTES = 48_000
@@ -66,40 +82,85 @@ def _atomic_json(path: Path, data: Mapping[str, Any]) -> None:
     atomic(path, data)
 
 
+def _default_provider() -> str:
+    """Keep existing TypeSafe setups working; fresh CLI setup can choose JevModel."""
+    if os.environ.get("TYPESAFE_API_KEY", "").strip():
+        return "typesafe"
+    credentials = _read_json(credentials_path(), None)
+    if isinstance(credentials, dict) and (
+        isinstance(credentials.get("api_key"), str) or
+        (isinstance(credentials.get("keys"), dict) and credentials["keys"].get("typesafe"))
+    ):
+        return "typesafe"
+    if os.environ.get("JEVMODEL_API_KEY", "").strip():
+        return "jevmodel"
+    return DEFAULT_PROVIDER
+
+
 def load_settings() -> dict[str, Any]:
-    value = _read_json(settings_path(), {"schema_version": 1, "model": DEFAULT_MODEL, "timeout_seconds": DEFAULT_TIMEOUT})
+    value = _read_json(settings_path(), {
+        "schema_version": 1, "provider": _default_provider(),
+        "model": DEFAULT_MODEL, "timeout_seconds": DEFAULT_TIMEOUT,
+    })
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise JevError("Jev settings file has an unsupported format; preserve a backup before editing it.")
+    provider = value.get("provider") or _default_provider()
     model = value.get("model", DEFAULT_MODEL)
     timeout = value.get("timeout_seconds", DEFAULT_TIMEOUT)
+    if provider not in PROVIDERS:
+        raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
     if not isinstance(model, str) or not re.fullmatch(r"jev-(?:latest|preview|[0-9]+\.[0-9]+\.[0-9]+)", model):
         raise JevError("Jev model must be jev-latest, jev-preview, or a version such as jev-1.14.0.")
     if type(timeout) is not int or not 5 <= timeout <= 60:
         raise JevError("Jev timeout must be an integer from 5 to 60 seconds.")
-    return {"schema_version": 1, "model": model, "timeout_seconds": timeout}
+    return {"schema_version": 1, "provider": provider, "model": model, "timeout_seconds": timeout}
 
 
-def _saved_key() -> str | None:
+def _saved_keys() -> dict[str, str]:
     value = _read_json(credentials_path(), None)
     if value is None:
-        return None
+        return {}
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise JevError("Jev credential file is invalid; preserve a backup before repairing it.")
-    key = value.get("api_key")
-    if key is not None and (not isinstance(key, str) or not key.strip()):
-        raise JevError("Jev credential file contains an invalid key.")
-    return key.strip() if isinstance(key, str) else None
+    result: dict[str, str] = {}
+    # Migrate/read the original key field as TypeSafe; never reinterpret that key
+    # as a JevModel key because the two services issue incompatible credentials.
+    if isinstance(value.get("api_key"), str) and value["api_key"].strip():
+        result["typesafe"] = value["api_key"].strip()
+    if isinstance(value.get("keys"), dict):
+        for name, secret in value["keys"].items():
+            if name in PROVIDERS and isinstance(secret, str) and secret.strip():
+                result[name] = secret.strip()
+    if isinstance(value.get("jevmodel_api_key"), str) and value["jevmodel_api_key"].strip():
+        result["jevmodel"] = value["jevmodel_api_key"].strip()
+    return result
 
 
-def _api_key() -> tuple[str | None, str | None]:
-    env_key = os.environ.get("TYPESAFE_API_KEY", "").strip()
+def _saved_key(provider: str = "typesafe") -> str | None:
+    return _saved_keys().get(provider)
+
+
+def _api_key(provider: str | None = None) -> tuple[str | None, str | None]:
+    selected = provider or load_settings()["provider"]
+    if selected not in PROVIDERS:
+        raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
+    env_name = PROVIDERS[selected]["key_env"]
+    env_key = os.environ.get(env_name, "").strip()
     if env_key:
-        return env_key, "TYPESAFE_API_KEY environment variable"
-    key = _saved_key()
+        return env_key, f"{env_name} environment variable"
+    key = _saved_key(selected)
     return (key, "private local credential file") if key else (None, None)
 
 
-def configure(*, api_key: str | None = None, model: str = DEFAULT_MODEL, timeout_seconds: int = DEFAULT_TIMEOUT) -> dict[str, Any]:
+def configure(
+    *,
+    api_key: str | None = None,
+    model: str = DEFAULT_MODEL,
+    timeout_seconds: int = DEFAULT_TIMEOUT,
+    provider: str = DEFAULT_PROVIDER,
+) -> dict[str, Any]:
+    if provider not in PROVIDERS:
+        raise JevError("Jev provider must be 'jevmodel' or 'typesafe'.")
     if not isinstance(model, str) or not re.fullmatch(r"jev-(?:latest|preview|[0-9]+\.[0-9]+\.[0-9]+)", model):
         raise JevError("Jev model must be jev-latest, jev-preview, or a version such as jev-1.14.0.")
     if type(timeout_seconds) is not int or not 5 <= timeout_seconds <= 60:
@@ -108,33 +169,61 @@ def configure(*, api_key: str | None = None, model: str = DEFAULT_MODEL, timeout
         clean = api_key.strip()
         if len(clean) < 12 or any(character.isspace() for character in clean):
             raise JevError("That API key does not look valid; no value was saved.")
-        _atomic_json(credentials_path(), {"schema_version": 1, "api_key": clean})
-    settings = {"schema_version": 1, "model": model, "timeout_seconds": timeout_seconds}
+        keys = _saved_keys()
+        keys[provider] = clean
+        saved: dict[str, Any] = {"schema_version": 1, "keys": keys}
+        if "typesafe" in keys:
+            saved["api_key"] = keys["typesafe"]  # backwards-compatible field for existing installations/tests
+        if "jevmodel" in keys:
+            saved["jevmodel_api_key"] = keys["jevmodel"]
+        _atomic_json(credentials_path(), saved)
+    settings = {"schema_version": 1, "provider": provider, "model": model, "timeout_seconds": timeout_seconds}
     _atomic_json(settings_path(), settings)
     return settings
 
 
 def status() -> dict[str, Any]:
     settings = load_settings()
-    key, source = _api_key()
+    provider = settings["provider"]
+    key, source = _api_key(provider)
+    meta = PROVIDERS[provider]
     return {
         "configured": bool(key),
         "key_source": source,
-        "model": settings["model"],
+        "provider": provider,
+        "provider_label": meta["label"],
+        "model": settings["model"] if meta["model_in_request"] else "fixed by JevModel service",
         "timeout_seconds": settings["timeout_seconds"],
-        "endpoint": API_URL,
+        "endpoint": meta["endpoint"],
         "key_values_displayed": False,
         "local_budget_guard": "managed by lk ai jev",
+        "starter_allowance_note": (
+            "JevModel advertises 100,000 starter input tokens after email verification; "
+            "check your account for current balance and terms."
+            if provider == "jevmodel" else
+            "TypeSafe pricing/account limits apply; check the official console."
+        ),
     }
 
 
-def clear_saved_key() -> None:
-    try:
-        credentials_path().unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise JevError(f"Could not remove the saved Jev key: {exc}") from exc
+def clear_saved_key(provider: str | None = None) -> None:
+    selected = provider or load_settings()["provider"]
+    keys = _saved_keys()
+    keys.pop(selected, None)
+    if not keys:
+        try:
+            credentials_path().unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise JevError(f"Could not remove the saved Jev key: {exc}") from exc
+        return
+    saved: dict[str, Any] = {"schema_version": 1, "keys": keys}
+    if "typesafe" in keys:
+        saved["api_key"] = keys["typesafe"]
+    if "jevmodel" in keys:
+        saved["jevmodel_api_key"] = keys["jevmodel"]
+    _atomic_json(credentials_path(), saved)
 
 
 def _safe_error_body(exc: HTTPError) -> str:
@@ -215,10 +304,15 @@ def evaluate(
         ):
             raise JevError(f"Jev Score question {name!r} needs 2–10 ordered levels.")
     current = load_settings()
+    provider = current["provider"]
+    provider_meta = PROVIDERS[provider]
     selected_model = model or current["model"]
-    key, _ = _api_key()
+    key, _ = _api_key(provider)
     if not key:
-        raise JevError("Jev needs a TypeSafe API key. Run 'lk ai jev setup' or export TYPESAFE_API_KEY.")
+        raise JevError(
+            f"Jev needs an API key for {provider_meta['label']}. "
+            f"Run 'lk ai jev setup --provider {provider}' or export {provider_meta['key_env']}."
+        )
     # Reserve from the same local budget as the legacy AI path. Failed calls still
     # count, and exact repeat requests are returned from the cache without a charge.
     try:
@@ -226,9 +320,15 @@ def evaluate(
     except ImportError:
         import ai_harness
     cfg = ai_harness.load_config()
-    body = {"model": selected_model, "state": state, "questions": questions}
+    body = {"state": state, "questions": questions}
+    if provider_meta["model_in_request"]:
+        body["model"] = selected_model
     encoded = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
-    limit = int(cfg.get("jev_context_limit_bytes", MAX_REQUEST_BYTES)) if cfg.get("jev_free_tier_mode") else MAX_REQUEST_BYTES
+    provider_limit = 7_500 if provider == "jevmodel" else MAX_REQUEST_BYTES
+    limit = min(
+        int(cfg.get("jev_context_limit_bytes", MAX_REQUEST_BYTES)) if cfg.get("jev_free_tier_mode") else MAX_REQUEST_BYTES,
+        provider_limit,
+    )
     if len(encoded) > limit:
         raise JevError(
             f"Jev request is {len(encoded):,} bytes, above the local {limit:,}-byte cap. "
@@ -238,8 +338,9 @@ def evaluate(
     key_fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()
     cache_key = hashlib.sha256(
         json.dumps({
-            "endpoint": API_URL,
-            "model": selected_model,
+            "endpoint": provider_meta["endpoint"],
+            "provider": provider,
+            "model": selected_model if provider_meta["model_in_request"] else "fixed-by-jevmodel",
             "credential_fingerprint": key_fingerprint,
             "body": body,
         }, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -251,7 +352,7 @@ def evaluate(
             return cached
         ai_harness._reserve_jev_request(cfg, "jev-systemone")
     payload = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
-    request = Request(API_URL, data=payload, headers={
+    request = Request(provider_meta["endpoint"], data=payload, headers={
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -266,37 +367,50 @@ def evaluate(
         data = json.loads(raw.decode("utf-8"))
     except HTTPError as exc:
         hint = _safe_error_body(exc)
-        if exc.code == 401:
-            raise JevError("TypeSafe rejected the Jev API key (401). Check the key in 'lk ai jev status'.") from exc
-        if exc.code == 422:
-            raise JevError(f"TypeSafe rejected the Jev request shape (422). Check the question types/criteria. {hint}") from exc
+        provider_name = provider_meta["label"]
+        if exc.code in {401, 403}:
+            raise JevError(f"{provider_name} rejected the API key/access (HTTP {exc.code}). Check 'lk ai jev status'.") from exc
+        if exc.code in {400, 413, 422}:
+            raise JevError(f"{provider_name} rejected the Jev request shape/size (HTTP {exc.code}). Check the question types and size. {hint}") from exc
         if exc.code == 429:
-            raise JevError("TypeSafe rate limit reached (429). Jev did not retry; try again after the provider's reset.") from exc
-        if exc.code == 529:
-            raise JevError("TypeSafe Jev is temporarily overloaded (529). No automatic retry was made.") from exc
-        raise JevError(f"TypeSafe Jev request failed (HTTP {exc.code}). {hint}") from exc
+            raise JevError(f"{provider_name} rate limit reached (429). Jev did not retry; check the provider's reset or token balance.") from exc
+        if exc.code in {502, 503, 529}:
+            raise JevError(f"{provider_name} is temporarily unavailable (HTTP {exc.code}). No automatic retry was made.") from exc
+        raise JevError(f"{provider_name} request failed (HTTP {exc.code}). {hint}") from exc
     except URLError as exc:
-        raise JevError("Could not reach TypeSafe Jev. Check the connection and try again.") from exc
+        raise JevError(f"Could not reach {provider_meta['label']}. Check the connection and try again.") from exc
     except TimeoutError as exc:
-        raise JevError("TypeSafe Jev request timed out. The native Lowkey command remains unaffected.") from exc
+        raise JevError(f"{provider_meta['label']} request timed out. The native Lowkey command remains unaffected.") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise JevError("TypeSafe Jev returned invalid JSON; the response was discarded.") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
-        raise JevError("TypeSafe Jev returned an unexpected response shape; result discarded.")
+    if not isinstance(data, dict):
+        raise JevError(f"{provider_meta['label']} returned an unexpected response shape; result discarded.")
+    if provider == "jevmodel":
+        if data.get("code") != 0 or not isinstance(data.get("data"), dict):
+            message = str(data.get("message") or "unknown provider error")[:220]
+            raise JevError(f"JevModel returned an error: {message}. Check the JevModel account/token balance.")
+        data = data["data"]
+    if not isinstance(data.get("answers"), dict):
+        raise JevError(f"{provider_meta['label']} response did not contain typed answers; result discarded.")
     missing = required - set(data["answers"])
     if missing:
-        raise JevError("TypeSafe Jev response omitted required answer(s): " + ", ".join(sorted(missing)))
+        raise JevError(f"{provider_meta['label']} response omitted required answer(s): " + ", ".join(sorted(missing)))
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
+    input_tokens = usage.get("inputTokens") if provider == "jevmodel" else usage.get("input_tokens")
+    output_tokens = usage.get("outputTokens") if provider == "jevmodel" else usage.get("output_tokens")
+    valid_input = input_tokens if type(input_tokens) is int and input_tokens >= 0 else None
+    valid_output = output_tokens if type(output_tokens) is int and output_tokens >= 0 else None
     result = {
-        "model": data.get("model", selected_model),
+        "provider": provider,
+        "model": data.get("model", selected_model if provider_meta["model_in_request"] else "fixed by JevModel service"),
         "answers": data["answers"],
         "usage": {
-            "input_tokens": input_tokens if type(input_tokens) is int and input_tokens >= 0 else None,
-            "output_tokens": output_tokens if type(output_tokens) is int and output_tokens >= 0 else None,
-            "estimated_input_cost_usd": round(input_tokens * INPUT_PRICE_USD_PER_MILLION / 1_000_000, 8)
-            if type(input_tokens) is int and input_tokens >= 0 else None,
+            "input_tokens": valid_input,
+            "output_tokens": valid_output,
+            "estimated_input_cost_usd": (
+                round(valid_input * INPUT_PRICE_USD_PER_MILLION / 1_000_000, 8)
+                if provider == "typesafe" and valid_input is not None else None
+            ),
             "elapsed_ms": round((time.monotonic() - started) * 1000),
         },
     }
