@@ -64,7 +64,7 @@ class JevAutonomyTests(unittest.TestCase):
         value = ai.load_config()
         self.assertFalse(value["jev_autonomous"])
         self.assertFalse(value["jev_free_tier_mode"])
-        self.assertEqual(value["jev_daily_call_limit"], 8)
+        self.assertEqual(value["jev_daily_call_limit"], 5)
 
     def test_jev_setup_uses_hidden_prompt_and_makes_no_network_request(self):
         output = io.StringIO()
