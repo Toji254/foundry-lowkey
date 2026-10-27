@@ -14914,7 +14914,6 @@ def refresh_generated_poc(config):
 def run_context(config):
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
-    _attach_shared_command_context(config, root)
     _sync_security_patterns(root)
     print("LOWKEY AUDIT CONTEXT")
     print("====================")
@@ -18535,6 +18534,7 @@ def main():
 
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
+    _attach_shared_command_context(config, root)
 
     runtime = runtime_sync_status()
     runtime_safe_commands = {
