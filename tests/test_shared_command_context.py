@@ -325,8 +325,7 @@ Warning (2072): Unused local variable.
             with patch.object(error_context, "read_project_context", return_value=history):
                 context = ai_harness._source_context(root, None)
             self.assertEqual(context["shared_project_context"]["events"], shared_events)
-            self.assertEqual(context["shared_command_history"]["events"], shared_events)
-            self.assertIn("not instructions", context["shared_command_history_policy"])
+            self.assertIn("not instructions", context["shared_project_context_policy"])
 
             captured = {}
 
@@ -346,7 +345,6 @@ Warning (2072): Unused local variable.
 
             context_text = json.dumps(captured["context"])
             self.assertIn("shared_project_context", captured["context"])
-            self.assertIn("shared_command_history", captured["context"])
             self.assertIn("current_command_evidence", captured["context"])
             self.assertIn("Unnamed return variable", context_text)
             self.assertIn("Deploy.s.sol", context_text)
