@@ -290,6 +290,8 @@ def evaluate(
         raise JevError("Jev state must be text or structured JSON.")
     if not isinstance(questions, Mapping) or not 1 <= len(questions) <= 8:
         raise JevError("Jev needs between 1 and 8 typed questions per request.")
+    current = load_settings()
+    provider = current["provider"]
     for name, question in questions.items():
         if not isinstance(name, str) or not name or not isinstance(question, Mapping):
             raise JevError("Jev questions must be a named map of question objects.")
@@ -304,8 +306,28 @@ def evaluate(
             not isinstance(question.get("criteria"), list) or not 2 <= len(question["criteria"]) <= 10
         ):
             raise JevError(f"Jev Score question {name!r} needs 2–10 ordered levels.")
-    current = load_settings()
-    provider = current["provider"]
+        if provider == "jevmodel":
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", name):
+                raise JevError(f"JevModel question ID {name!r} must start with a lowercase letter and use lowercase letters, digits or underscores (max 40 characters).")
+            instructions = question["instructions"]
+            if not 8 <= len(instructions) <= 600:
+                raise JevError(f"JevModel instructions for {name!r} must be 8–600 characters.")
+            if question.get("type") == "choice":
+                criteria = question["criteria"]
+                if any(
+                    not isinstance(label, str) or not isinstance(description, str)
+                    or not 2 <= len(description) <= 350
+                    for label, description in criteria.items()
+                ):
+                    raise JevError(f"JevModel Choice descriptions for {name!r} must each be 2–350 characters.")
+            if question.get("type") == "noul":
+                criteria = question.get("criteria")
+                if (
+                    not isinstance(criteria, Mapping)
+                    or not {"true", "false"} <= set(criteria)
+                    or any(not isinstance(criteria[key], str) or not 2 <= len(criteria[key]) <= 350 for key in ("true", "false"))
+                ):
+                    raise JevError(f"JevModel Noul question {name!r} must define true and false descriptions of 2–350 characters each.")
     provider_meta = PROVIDERS[provider]
     selected_model = model or current["model"]
     key, _ = _api_key(provider)
@@ -458,6 +480,10 @@ COMMAND_QUESTIONS: dict[str, dict[str, Any]] = {
             "Answer true for an error, security signal, target mismatch, test failure, incomplete coverage, or unclear state change; "
             "otherwise answer false."
         ),
+        "criteria": {
+            "true": "An explanation or evidence request would materially help.",
+            "false": "The result is already clear without extra explanation.",
+        },
     },
     "suggested_response": {
         "type": "choice",
