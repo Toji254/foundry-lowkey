@@ -210,6 +210,22 @@ class JevEngineTests(unittest.TestCase):
         self.assertNotIn("fixed data", cached_text)
         self.assertNotIn("typesafe_test_key_0123456789", cached_text)
 
+    def test_cli_setup_defaults_to_jevmodel_when_no_existing_provider_is_configured(self):
+        # Preserve old TypeSafe keys in real installations, but choose the advertised
+        # starter-token endpoint for a brand-new profile.
+        jev_engine.settings_path().unlink(missing_ok=True)
+        jev_engine.credentials_path().unlink(missing_ok=True)
+        output = io.StringIO()
+        with patch("getpass.getpass", return_value="jevmodel_test_key_0123456789"):
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai_harness.main(["jev", "setup"]), 0)
+        self.assertEqual(jev_engine.load_settings()["provider"], "jevmodel")
+        self.assertTrue(jev_engine.status()["configured"])
+        self.assertIn("JevModel", output.getvalue())
+        self.assertIn("100,000 starter input tokens", output.getvalue())
+        # Setup configures locally and must not contact the provider.
+        self.assertNotIn("CONNECTIVITY PROBE", output.getvalue())
+
     def test_fresh_install_defaults_to_jevmodel_starter_token_provider(self):
         # Simulate a genuinely fresh user profile with no old TypeSafe key to preserve.
         jev_engine.settings_path().unlink(missing_ok=True)
