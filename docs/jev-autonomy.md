@@ -8,6 +8,8 @@ A fresh setup defaults to **JevModel**, an independent hosted service that curre
 
 The official **TypeSafe API** is also supported. TypeSafe's published price is $0.042 per million input tokens, with output tokens free; check its current account terms before using it. Lowkey will preserve an existing TypeSafe setup/key rather than silently redirecting it to JevModel.
 
+**Jevos-v5** is supported as an optional local provider. It uses the Jev-compatible API at `http://127.0.0.1:8017/v1/systemone`, requires no API key, and runs on your own CPU. Keep its `jev serve` process running while Lowkey uses it. `lk ai jev status` does not probe the server; `lk ai jev test` does. Local requests do not consume the hosted-provider daily request allowance. The existing JevModel hosted default is intentionally unchanged.
+
 ## Set up and control Jev
 
 ```bash
@@ -17,6 +19,11 @@ lk ai jev setup
 # Choose a provider explicitly:
 lk ai jev setup --provider jevmodel
 lk ai jev setup --provider typesafe
+lk ai jev setup --provider jevos     # select local Jevos-v5; no key prompt
+
+# Switch back to the existing hosted default (or the official hosted endpoint):
+lk ai jev setup --provider jevmodel
+# or: lk ai jev setup --provider typesafe
 
 # Test connection with one fixed question and no project source.
 lk ai jev test
@@ -44,7 +51,7 @@ lk ai jev on --tier standard
 lk ai jev off --tier standard
 ```
 
-You can also set `JEVMODEL_API_KEY` or `TYPESAFE_API_KEY` in your environment. Choose the variable that belongs to the selected provider. Status never prints key values. `lk ai jev setup` saves the selected endpoint/model/key source without sending a request. `lk ai jev test` makes one real, source-free provider request and may consume starter tokens or incur usage.
+You can also set `JEVMODEL_API_KEY` or `TYPESAFE_API_KEY` in your environment. Choose the variable that belongs to the selected hosted provider. Jevos does not use an API key. Status never prints key values. `lk ai jev setup` saves the selected endpoint/model/key source without sending a request. `lk ai jev test` makes one real, source-free request: hosted Jev may consume tokens or incur usage; Jevos runs locally.
 
 ## What autonomous mode does
 
@@ -67,14 +74,15 @@ When Jev setup or autonomy is enabled, Lowkey defaults to a conservative local g
 | Combined Jev/text-AI provider attempts | 5 per UTC day |
 | TypeSafe Jev request size | 16,000 bytes maximum |
 | JevModel request size | 7,500 bytes maximum |
+| Jevos-v5 local request size | 32,000 bytes maximum (also subject to configured context cap) |
 | Optional text-AI response cap | 650 output tokens |
 | Exact-match Jev response cache | 30 minutes; up to 40 entries |
 
-The daily count is shared by Jev and the existing text-AI harness while the guard is on. It resets at 00:00 UTC to align with JevModel's advertised free-run window. Lowkey counts every provider attempt—including errors—so it may stop earlier than JevModel's five successful free runs. JevModel says failed requests are not charged and successful requests after the daily free allowance draw from the shared token balance; check the live account balance in its console. Jev requests are not automatically retried after rate limits or overload errors. After the local cap is spent, background triage stops quietly. Inspect `lk ai jev status` to check usage.
+The daily count applies to hosted Jev and the existing text-AI harness while the guard is on; **local Jevos-v5 inference does not consume this counter**. It resets at 00:00 UTC to align with JevModel's advertised free-run window. Lowkey counts every provider attempt—including errors—so it may stop earlier than JevModel's five successful free runs. JevModel says failed requests are not charged and successful requests after the daily free allowance draw from the shared token balance; check the live account balance in its console. Jev requests are not automatically retried after rate limits or overload errors. After the local cap is spent, background triage stops quietly. Inspect `lk ai jev status` to check usage.
 
 Exact-repeat decision requests can be reused from a private, bounded local cache for 30 minutes. The cache key is a digest of the provider/model and request; it does not store the original input state or API key. Cache hits do not spend another provider attempt.
 
-These are **local safeguards**, not an entitlement from JevModel or TypeSafe and not a zero-cost guarantee. JevModel advertises five successful free runs per UTC day plus 100,000 starter input tokens after email verification; verify your account balance and current terms. TypeSafe uses its own published input-token pricing. `--tier standard` removes Lowkey's local guard, not provider limits or prices. Deterministic Lowkey commands remain usable even when the guard is exhausted.
+These are **local safeguards**, not an entitlement from JevModel or TypeSafe and not a zero-cost guarantee. Jevos uses local compute instead of hosted inference, although your machine still spends CPU time and memory. JevModel advertises five successful free runs per UTC day plus 100,000 starter input tokens after email verification; verify your account balance and current terms. TypeSafe uses its own published input-token pricing. `--tier standard` removes Lowkey's local guard, not provider limits or prices. Deterministic Lowkey commands remain usable even when the guard is exhausted.
 
 ## Jev and existing Lowkey AI stay separate
 
