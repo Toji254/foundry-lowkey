@@ -268,22 +268,28 @@ def server_status() -> dict[str, Any]:
     }
 
 
+def _adopt_running_jevos() -> dict[str, Any] | None:
+    try:
+        executable = _find_jevos_executable()
+    except JevError:
+        return None
+    running_pid = _find_running_jevos_process(executable)
+    if running_pid is None:
+        return None
+    _write_service_record(running_pid, executable)
+    return {"pid": running_pid, "executable": str(executable)}
+
+
 def start_server(timeout_seconds: int = JEVOS_START_TIMEOUT_SECONDS) -> str:
     status = server_status()
     if status["ready"]:
         if status["managed_by_lowkey"]:
             return f"Jevos-v5 is already running and managed by Lowkey (PID {status['pid']})."
-        # If the user already started ./jev serve manually, adopt only a process
-        # whose executable and "serve" argument can be verified under /proc.
-        try:
-            executable = _find_jevos_executable()
-        except JevError:
-            executable = None
-        running_pid = _find_running_jevos_process(executable) if executable else None
-        if running_pid is not None and executable is not None:
-            _write_service_record(running_pid, executable)
+        # Adopt only a process whose executable and "serve" argument verify under /proc.
+        adopted = _adopt_running_jevos()
+        if adopted:
             return (
-                f"Jevos-v5 was already running (PID {running_pid}); Lowkey adopted it. "
+                f"Jevos-v5 was already running (PID {adopted['pid']}); Lowkey adopted it. "
                 "You can now use 'lk ai jev stop' or 'lk ai jev restart'."
             )
         raise JevError(
@@ -342,12 +348,17 @@ def stop_server(timeout_seconds: int = JEVOS_STOP_TIMEOUT_SECONDS) -> str:
     record = _read_service_record()
     if not record:
         if _health_payload() is not None:
-            raise JevError(
-                "Jevos-v5 is running but was started outside Lowkey, so Lowkey will not terminate it. "
-                "Press Ctrl+C in the terminal running 'jev serve'; future starts with 'lk ai jev start' can be stopped here."
-            )
-        _remove_service_record()
-        return "Jevos-v5 is already stopped."
+            # A manually started instance is safe to stop only if its exact
+            # executable and serve command can be verified.
+            record = _adopt_running_jevos()
+            if not record:
+                raise JevError(
+                    "Jevos-v5 is running but Lowkey could not verify its process. "
+                    "For safety, stop it with Ctrl+C in the terminal running 'jev serve'."
+                )
+        else:
+            _remove_service_record()
+            return "Jevos-v5 is already stopped."
 
     pid = record["pid"]
     executable = record["executable"]
