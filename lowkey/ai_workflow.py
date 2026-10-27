@@ -69,7 +69,16 @@ def _clean(value: Any, limit: int = 900) -> str:
 def _redact_text(value: str) -> str:
     text = ai._redact_sensitive_source(value)
     pattern = r"(?i)(--(?:private-key|mnemonic|seed(?:-phrase)?|password|api-key|token|secret|authorization|bearer-token)(?:=|\s+))\S+"
-    return re.sub(pattern, r"\1[REDACTED]", text)
+    text = re.sub(pattern, r"\1[REDACTED]", text)
+    # Also scrub credentials embedded in RPC URLs and common query-string secrets.
+    text = re.sub(r"(?i)(https?://[^:/@\s]+:)[^/@\s]+@", r"\1[REDACTED]@", text)
+    text = re.sub(
+        r"(?i)([?&](?:api[_-]?key|access[_-]?token|token|secret|password|authorization)=)[^&#\s]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+    return text
 
 
 def _safe_arguments(arguments: Sequence[str]) -> list[str]:
