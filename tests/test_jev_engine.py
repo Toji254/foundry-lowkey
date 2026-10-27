@@ -71,6 +71,7 @@ class JevEngineTests(unittest.TestCase):
         )
 
     def test_fresh_install_reports_missing_key_instead_of_invalid_credentials(self):
+        jev_engine.clear_saved_key()
         self.assertFalse(jev_engine.credentials_path().exists())
         value = jev_engine.status()
         self.assertFalse(value["configured"])
