@@ -387,13 +387,13 @@ Warning (2072): Unused local variable.
             self.assertNotIn(str(root), context_text)
             self.assertNotIn(secret, context_text)
             self.assertIn("current_command_evidence", captured["task"])
-            self.assertIn("prioritize investigation", captured["task"])
+            self.assertIn("explain that evidence before", captured["task"])
             self.assertTrue(report["_lowkey_meta"]["ai_generated"])
             self.assertTrue(report["_lowkey_meta"]["current_command_evidence_included"])
             self.assertEqual(report["_lowkey_meta"]["shared_command_events_included"], 1)
             rendered = ai_harness.render_ai_recommendations(report)
-            self.assertIn("Shared project command history considered: 1 recent event(s).", rendered)
-            self.assertIn("Current command's redacted output was supplied as direct evidence.", rendered)
+            self.assertIn("THE INTERESTING BIT", rendered)
+            self.assertIn("These notes are unverified.", rendered)
 
 
     def test_general_ai_guidance_receives_same_shared_project_context(self):
