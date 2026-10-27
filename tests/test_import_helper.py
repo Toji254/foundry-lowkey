@@ -4,6 +4,7 @@ import io
 import json
 import tempfile
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -47,6 +48,47 @@ class ImportHelperTests(unittest.TestCase):
             encoding="utf-8",
         )
         return tmp, root
+
+    def test_jev_only_guides_import_installs_and_keeps_native_output(self):
+        ai = SimpleNamespace(status=lambda: {
+            "jev_autonomous": True,
+            "enabled": True,
+            "usable": True,
+            "jev_free_tier_mode": False,
+            "jev_calls_remaining": None,
+        })
+        workflow = SimpleNamespace(
+            guide_command=lambda **kwargs: {
+                "command": kwargs["command"],
+                "summary": "Import outcome explained from captured output.",
+            },
+            render_guidance=lambda report: "JEV IMPORT GUIDANCE: " + report["summary"],
+        )
+        output = io.StringIO()
+        with patch.dict(sys.modules, {"ai_harness": ai, "ai_workflow": workflow}):
+            with patch.object(helper, "main", side_effect=lambda args: print("native import output") or 0) as native:
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(helper.main_with_jev(["--install", "ERC20"]), 0)
+                native.assert_called_once_with(["--install", "ERC20"])
+        self.assertIn("native import output", output.getvalue())
+        self.assertIn("JEV IMPORT GUIDANCE", output.getvalue())
+
+    def test_jev_does_not_request_guidance_for_ordinary_import_lookup(self):
+        ai = SimpleNamespace(status=lambda: {
+            "jev_autonomous": True,
+            "enabled": True,
+            "usable": True,
+            "jev_free_tier_mode": False,
+            "jev_calls_remaining": None,
+        })
+        workflow = SimpleNamespace(
+            guide_command=lambda **kwargs: self.fail("ordinary symbol lookup must not call Jev"),
+            render_guidance=lambda report: "unexpected",
+        )
+        with patch.dict(sys.modules, {"ai_harness": ai, "ai_workflow": workflow}):
+            with patch.object(helper, "main", return_value=0) as native:
+                self.assertEqual(helper.main_with_jev(["ERC20"]), 0)
+                native.assert_called_once_with(["ERC20"])
 
     def test_help(self):
         out = io.StringIO()
