@@ -2096,13 +2096,15 @@ JEV AUTONOMY & LOCAL BUDGET GUARD
 --------------------------------
   lk ai jev setup [--provider jevmodel|typesafe|jevos]
       Fresh setup keeps the existing JevModel hosted default; use --provider typesafe
-      for the official API or --provider jevos for local Jevos-v5 CPU inference.
-      Jevos requires no API key and sends requests only to 127.0.0.1:8017.
+      for the official API.
+  lk ai jev setup --provider jevos
+      Select local Jevos-v5 CPU inference; no API key is needed. Requests go to 127.0.0.1:8017.
   lk ai jev test / lk ai jev on [options]
   lk ai jev off / lk ai jev status / lk ai jev remove-key
       test sends one fixed source-free request; status is local-only. Jev never executes suggestions.
       on options: --tier guarded|standard, --daily-limit N, --with-text-ai (separate text provider).
-      Guarded default: 5 attempted requests per UTC day; JevModel body cap: 7,500 bytes.
+      Hosted Jev/text-AI guard: 5 attempted requests per UTC day; JevModel body cap: 7,500 bytes.
+      Local Jevos inference does not consume the hosted-provider request counter.
 SETUP & CONNECTION
 ------------------
   lk ai status
