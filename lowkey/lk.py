@@ -18227,7 +18227,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
             root = Path.cwd()
         _record_shared_command_event(
             root, cmd, args, code,
-            captured_stdout.getvalue() + ("\\n" + diagnostic if diagnostic else ""),
+            captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else ""),
         )
         if diagnostic:
             code = exc.code if isinstance(exc.code, int) and exc.code else 2
@@ -18266,7 +18266,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
     event_code = returned_code if isinstance(returned_code, int) else (2 if is_failure else 0)
     event_output = captured_stdout.getvalue()
     if diagnostic:
-        event_output += "\\n[LOWKEY STDERR]\\n" + diagnostic
+        event_output += "\n[LOWKEY STDERR]\n" + diagnostic
     if not event_output and getattr(result, "output", None):
         event_output = str(result.output)
     _record_shared_command_event(root, cmd, args, event_code, event_output)
