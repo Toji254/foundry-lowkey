@@ -5,9 +5,11 @@ change project state, execute suggested commands, or treat predictions as proof.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
@@ -500,3 +502,115 @@ def build_report(
         "summary": summarize(rows, jev_enabled=with_jev),
         "cases": rows,
     }
+
+
+def run(args: list[str] | tuple[str, ...] | None = None, *, prog: str = "lk jev") -> int:
+    """Native Lowkey command handler for the Jev benchmark.
+
+    Usage: lk jev benchmark [--with-jev] [--limit N] [--timeout SEC] [--output PATH]
+    The default run is local-only and never requires credentials or network access.
+    """
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Compare Lowkey's deterministic diagnostic rules with optional TypeSafe Jev decisions.",
+    )
+    subparsers = parser.add_subparsers(dest="action")
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Measure failure-stage and root-cause classification on labeled fixtures.",
+        description="Run the curated Foundry/Solidity diagnostic benchmark.",
+    )
+    benchmark_parser.add_argument(
+        "--with-jev",
+        action="store_true",
+        help="Call TypeSafe Direct Jev once per case (requires TYPESAFE_API_KEY).",
+    )
+    benchmark_parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Run only the first N cases; 0 means all cases (default: 0).",
+    )
+    benchmark_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"Per-request timeout in seconds, from 1 to 60 (default: {DEFAULT_TIMEOUT_SECONDS}).",
+    )
+    benchmark_parser.add_argument(
+        "--output",
+        default=".audit/jev-error-classifier-benchmark.json",
+        help="JSON report path (default: .audit/jev-error-classifier-benchmark.json).",
+    )
+    parsed = parser.parse_args(list(args or []))
+    if parsed.action is None:
+        parser.print_help()
+        return 0
+    if parsed.limit < 0:
+        print("ERROR: --limit must be zero (all cases) or a positive integer.", file=sys.stderr)
+        return 2
+    if not 1 <= parsed.timeout <= 60:
+        print("ERROR: --timeout must be between 1 and 60 seconds.", file=sys.stderr)
+        return 2
+    if parsed.with_jev and not os.environ.get("TYPESAFE_API_KEY", "").strip():
+        print(
+            "ERROR: --with-jev requires TYPESAFE_API_KEY. The offline rules benchmark needs no key.",
+            file=sys.stderr,
+        )
+        print("Get API-key access from your TypeSafe account; the public playground does not issue reusable keys.", file=sys.stderr)
+        return 2
+
+    selected_cases = CASES[:parsed.limit] if parsed.limit else CASES
+    report = build_report(
+        cases=selected_cases,
+        with_jev=parsed.with_jev,
+        timeout_seconds=parsed.timeout,
+    )
+    output = __import__("pathlib").Path(parsed.output).expanduser()
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"ERROR: Could not write benchmark report to {output}: {exc}", file=sys.stderr)
+        return 2
+
+    print("LOWKEY JEV ERROR-CLASSIFIER EXPERIMENT")
+    print("=====================================")
+    print(f"Cases evaluated: {report['summary']['case_count']}")
+    rules = report["summary"]["rules"]
+    print(
+        "Rules baseline: "
+        f"stage {rules['stage']['correct']}/{rules['stage']['total']} "
+        f"({(rules['stage']['accuracy'] or 0.0) * 100:.1f}%); "
+        f"root cause {rules['root_cause']['correct']}/{rules['root_cause']['total']} "
+        f"({(rules['root_cause']['accuracy'] or 0.0) * 100:.1f}%)"
+    )
+    if parsed.with_jev:
+        jev = report["summary"]["jev"]
+        print(
+            "Jev: "
+            f"stage {jev['stage']['correct']}/{jev['stage']['total']} "
+            f"({(jev['stage']['accuracy'] or 0.0) * 100:.1f}%); "
+            f"root cause {jev['root_cause']['correct']}/{jev['root_cause']['total']} "
+            f"({(jev['root_cause']['accuracy'] or 0.0) * 100:.1f}%); "
+            f"request errors {jev['request_errors']}; "
+            f"average latency {jev['average_latency_ms']} ms"
+        )
+        print(f"Jev token usage: input {jev['input_tokens']}, output {jev['output_tokens']}")
+        for row in report["cases"]:
+            if row.get("jev_error"):
+                print(f"  {row['id']}: REQUEST ERROR ({row['jev_error']['category']})")
+                continue
+            stage_mark = "PASS" if row.get("jev_stage") == row["expected_stage"] else "MISS"
+            cause_mark = "PASS" if row.get("jev_root_cause") == row["expected_cause"] else "MISS"
+            print(
+                f"  {row['id']}: stage={row.get('jev_stage') or 'UNANSWERED'} [{stage_mark}], "
+                f"root_cause={row.get('jev_root_cause') or 'UNANSWERED'} [{cause_mark}]"
+            )
+    else:
+        print("Mode: offline rules only (no network request, no API key required).")
+    print(f"Report: {output.resolve()}")
+    print("Caution: this curated smoke corpus is not a production-accuracy estimate.")
+    if parsed.with_jev and report["summary"]["jev"]["request_errors"]:
+        return 1
+    return 0
