@@ -69,7 +69,7 @@ class ImportHelperTests(unittest.TestCase):
                     self.assertEqual(helper.main_with_jev(["--install", "ERC20"]), 0)
                 native.assert_called_once_with(["--install", "ERC20"])
         self.assertIn("native import output", output.getvalue())
-        self.assertIn("JEV IMPORT GUIDANCE", output.getvalue())
+        self.assertIn("JEV IMPORT TRIAGE", output.getvalue())
 
     def test_jev_does_not_request_guidance_for_ordinary_import_lookup(self):
         ai = SimpleNamespace(
