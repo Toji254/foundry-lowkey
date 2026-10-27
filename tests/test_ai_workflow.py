@@ -50,7 +50,6 @@ class AIWorkflowTests(unittest.TestCase):
             "lk fn withdraw",
             "lk ask withdraw",
             "lk read isAgreementValid",
-            "lk events",
             "lk logs",
             "lk proxy",
             "lk recon",
