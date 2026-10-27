@@ -3743,7 +3743,7 @@ def main(argv: list[str] | None = None) -> int:
                     timeout_seconds=parsed.timeout,
                 )
                 # Guarded usage is the safe default. It limits Lowkey requests,
-                # not TypeSafe's billing rules or account-level quotas.
+                # not the selected provider's own balance, billing rules or quota.
                 cfg["jev_free_tier_mode"] = parsed.tier != "standard"
                 if parsed.daily_limit is not None:
                     cfg["jev_daily_call_limit"] = parsed.daily_limit
@@ -3758,9 +3758,13 @@ def main(argv: list[str] | None = None) -> int:
                     print("JevModel advertises 100,000 starter input tokens after email verification; check your account for current balance and terms.")
                 else:
                     print("TypeSafe's official API has separate account pricing/limits; check the official console.")
+                effective_context_cap = min(
+                    cfg["jev_context_limit_bytes"],
+                    7_500 if provider == "jevmodel" else jev_engine.MAX_REQUEST_BYTES,
+                )
                 print(
                     f"Local request guard: {'ON' if cfg['jev_free_tier_mode'] else 'OFF'} "
-                    f"(daily limit {cfg['jev_daily_call_limit']}; context cap {cfg['jev_context_limit_bytes']:,} bytes)."
+                    f"(daily limit {cfg['jev_daily_call_limit']}; effective request cap {effective_context_cap:,} bytes)."
                 )
                 print("No request was sent. Use 'lk ai jev test' for a small source-free API probe.")
                 return 0
