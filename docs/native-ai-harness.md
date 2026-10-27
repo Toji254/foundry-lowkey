@@ -91,6 +91,36 @@ lk lab --ai-review
 
 The preview is local-only. The explicit review sends the selected, redacted source excerpts and approved memory to the configured provider, and provider charges may apply. Inspect the result as unverified hypotheses; it is not proof of safety or a confirmed vulnerability report.
 
+## Universal command guidance and bounded task runs
+
+Append `--ai` to a native command to get a post-command explanation of the actual output, relevant risks, missing evidence, and next steps:
+
+~~~bash
+lk status --ai
+lk read isAgreementValid --ai
+lk send --ai
+lk test --ai
+~~~
+
+Lowkey removes the flag before native argument parsing, streams the native output as usual, and adds AI guidance afterward. The AI cannot change the target, RPC, actor, transaction arguments, or native command result. **The native action still happens normally**: `lk send --ai` can send a transaction when the underlying `lk send` invocation would send. Guidance is not a pre-transaction confirmation or a rollback.
+
+Use `lk ai mode auto` to opt into guidance for eligible workflow results and supported failures. It requires a configured, enabled, usable provider; `lk ai mode manual` disables automatic guidance. The existing `lk ai recommendations` and `lk ai errors` settings remain independent.
+
+For multi-step investigative work, `lk ai run` first creates a source-grounded plan:
+
+~~~bash
+lk ai run "investigate why withdrawal reverts" --plan-only
+lk ai run "investigate why withdrawal reverts"
+~~~
+
+The default flow shows the plan and asks before execution. `--plan-only` never runs commands. `--yes` approves only the displayed allowlisted read-oriented checks. The runner uses a strict command allowlist without a shell, stops at the first failed checkpoint, and interprets captured results. It will not run tests/builds, edit files, change targets/RPCs/actors, deploy, sign, or send transactions. If no safe plan can be grounded in the selected source, nothing is executed.
+
+The relevant regression coverage includes flag routing, credential redaction, plan validation, and the no-execution plan-only mode:
+
+~~~bash
+python3 -m unittest tests.test_ai_workflow tests.test_ai_harness tests.test_cli_consistency -v
+~~~
+
 ## Structured security review and evidence lifecycle
 
 The protocol overview (`lk lab --ai-review`) and the focused security-review task are separate jobs. The overview helps map a project; `lk ai security-review` asks for concrete candidate vulnerabilities and normalizes each item into a review record. Model confidence is descriptive only.
