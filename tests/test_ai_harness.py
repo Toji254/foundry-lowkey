@@ -473,6 +473,57 @@ class AIHarnessTests(unittest.TestCase):
             self.assertEqual(report["recommendations"][0]["optional_command"], "lk fn isAgreementValid")
             self.assertNotIn("steps", report["recommendations"][0])
 
+    def test_target_display_note_respects_unverified_bytecode_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Escrow.sol").write_text("contract Escrow {}", encoding="utf-8")
+            model_result = {
+                "recommendations": [{
+                    "title": "You selected a simulated contract",
+                    "why": "You chose the target for this run.",
+                    "learning_point": "The contract is live on a simulated network.",
+                    "what_to_notice": "The deployed contract is ready.",
+                    "optional_command": "lk target",
+                    "source": {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"},
+                }]
+            }
+            output = (
+                "Current project target: Escrow -> Escrow (0x" + "5" * 40 + ")\\n"
+                "Deployment: UNVERIFIED\\n"
+                "WARNING: Lowkey cannot prove that contract bytecode exists on the current RPC."
+            )
+            with patch.object(ai, "request_structured", return_value=model_result):
+                report = ai.recommend_next_steps(
+                    root,
+                    command="target",
+                    native_recommendations=[{"command": "lk status", "reason": "Inspect current setup."}],
+                    contract_name="Escrow",
+                    current_command_output=output,
+                    command_args=[],
+                    command_result=0,
+                    lowkey_command_context={
+                        "invocation": "lk target",
+                        "arguments": [],
+                        "exit_code": 0,
+                        "source_excerpt": (
+                            "COMMAND CONTEXT\\n"
+                            "Attempted invocation: lk target\\n"
+                            "Command summary: Show the current saved target.\\n"
+                        ),
+                    },
+                )
+
+        note = report["recommendations"][0]
+        rendered = ai.render_ai_recommendations(report)
+        self.assertIn("did not choose a new one", note["why"])
+        self.assertIn("could not confirm code exists", note["learning_point"])
+        self.assertIn("unverified", note["title"].lower())
+        self.assertNotIn("simulated network", rendered.lower())
+        self.assertNotIn("You selected", rendered)
+        self.assertEqual(note["optional_command"], "")
+        self.assertEqual(note["source"]["path"], "lowkey-command-reference")
+
     def test_recommendations_use_command_docs_after_failed_unknown_command_without_contract_source(self):
         from lowkey import error_context
 
