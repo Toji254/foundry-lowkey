@@ -134,6 +134,36 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertEqual(budget["calls_today"], 1)
         self.assertEqual(budget["remaining"], 0)
 
+    def test_exact_repeat_uses_private_response_cache_without_spending_budget_twice(self):
+        self._configure_local_provider()
+        cfg = ai.load_config()
+        cfg["jev_free_tier_mode"] = True
+        cfg["jev_daily_call_limit"] = 1
+        ai.save_config(cfg)
+        observed = []
+
+        def fake_send(**kwargs):
+            observed.append(kwargs)
+            return {"ok": True, "summary": "Same exact context and task."}
+
+        request = {
+            "purpose": "error_diagnosis",
+            "task": "Classify this exact diagnostic.",
+            "context": {"command": "build", "error": "missing import"},
+            "required_fields": ("ok", "summary"),
+        }
+        with patch.object(ai, "_send", side_effect=fake_send) as send:
+            first = ai.request_structured(**request)
+            second = ai.request_structured(**request)
+        self.assertEqual(first, second)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(ai.autonomy_budget_status()["calls_today"], 1)
+        cache_path = ai._jev_cache_path()
+        self.assertTrue(cache_path.exists())
+        cache_text = cache_path.read_text(encoding="utf-8")
+        self.assertNotIn("missing import", cache_text)
+        self.assertNotIn("api_key", cache_text.lower())
+
     def test_standard_tier_skips_local_free_tier_caps(self):
         self._configure_local_provider()
         cfg = ai.load_config()
