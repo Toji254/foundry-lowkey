@@ -3119,7 +3119,7 @@ def main(argv: list[str] | None = None) -> int:
     jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per UTC day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
     jev.add_argument("--with-text-ai", action="store_true", help="also request optional text-AI explanations when Jev says they are useful; requires enabled text AI and may use extra provider calls")
     jev.add_argument("--provider", choices=("jevmodel", "typesafe", "jevos"), default=None, help="jevmodel = existing hosted default; typesafe = official hosted API; jevos = local Jevos-v5 server at 127.0.0.1:8017 (setup only)")
-    jev.add_argument("--model", default="jev-latest", help="TypeSafe Jev model ID or alias (setup only; JevModel fixes its model server-side)")
+    jev.add_argument("--model", default="jev-latest", help="Hosted Jev model ID or alias; Jevos accepts jev-latest or jevos-v5 (setup only)")
     jev.add_argument("--timeout", type=int, default=18, help="Jev API timeout in seconds (setup only; 5–60)")
     jev.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable status")
     recommendations_cmd = sub.add_parser("recommendations", help="show native next commands plus optional AI-generated suggestions")
