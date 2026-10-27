@@ -426,9 +426,9 @@ def render_status(value: Mapping[str, Any]) -> str:
         else "Automatic error explanations: OFF — use 'lk ai explain-error --last' when needed."
     )
     lines.append(
-        "AI next-command recommendations: ON — eligible successful commands may send selected source to the provider."
+        "AI learning recommendations: ON — eligible command attempts, including failures, may send selected source and redacted output to the provider."
         if value.get("auto_recommendations")
-        else "AI next-command recommendations: OFF — Lowkey's native recommendations remain available."
+        else "AI learning recommendations: OFF — Lowkey's native recommendations remain available."
     )
     return "\n".join(lines)
 
@@ -441,11 +441,11 @@ def render_recommendation_status(value: Mapping[str, Any]) -> str:
         f"AI recommendations: {'AUTO' if automatic else 'MANUAL / OFF'}",
         "Lowkey native recommendations: Always shown when the command has a curated next-step menu.",
         (
-            "Provider requests: May be made after eligible successful commands; selected source may be sent and charges may apply."
+            "Provider requests: May be made after eligible command attempts, including failures and commands without a native menu; selected source and redacted output may be sent and charges may apply."
             if automatic
             else "Provider requests: No automatic next-command recommendation requests will be made."
         ),
-        "Safety: AI suggestions are labelled separately, restricted to an allowlist of read-only commands, and never executed by Lowkey.",
+        "Safety: AI notes are separate from native suggestions, may offer at most one optional help/read/target experiment per note, and are never executed by Lowkey. Transactions and shell commands are excluded.",
     ]
     return "\n".join(lines)
 
@@ -1875,7 +1875,7 @@ WHAT DOES "AUTO" MEAN?
 ----------------------
 auto is a value after a setting command, not a standalone command. Settings are independent:
   lk ai mode auto             Guide eligible command results and supported failures.
-  lk ai recommendations auto  Add source-cited suggestions after success.
+  lk ai recommendations auto  Add optional learning notes after eligible command attempts, including failures.
   lk ai errors auto           Explain supported failures without rerunning.
 Use "manual" to switch off; "status" shows the setting. Automatic requests may send selected source/error context and incur charges.
 
@@ -1896,7 +1896,7 @@ AI INSIDE EXISTING LK WORKFLOWS
   lk ai mode auto
       Complexity checks may request reviews for eligible labs.
   lk ai recommendations auto
-      Add source-cited suggestions beside native next steps.
+      Add optional Lowkey learning notes beside native suggestions.
   lk ai errors auto
       Explain supported failures without rerunning commands.
 
@@ -1950,7 +1950,7 @@ def render_ai_help(parser: Any = None) -> str:
         "LOWKEY HELP  •  lk ai",
         "=" * 72,
         "What it does: Optional AI helpers for source-grounded security leads, test ideas,",
-        "              error explanations, and extra next-command suggestions.",
+        "              error explanations, and contextual notes that explain Lowkey commands.",
         "When to use: When you want AI assistance without handing it control of Lowkey.",
         "Usage: lk ai <command> [options]",
         "Example: lk ai security-review --contract Vault",
@@ -2945,7 +2945,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Error: 'auto' is not a standalone 'lk ai' command.", file=sys.stderr)
             print("Choose the setting you want to enable:", file=sys.stderr)
             print("  lk ai mode auto              Complexity-triggered protocol review", file=sys.stderr)
-            print("  lk ai recommendations auto  Extra read-only AI suggestions", file=sys.stderr)
+            print("  lk ai recommendations auto  Optional Lowkey learning notes", file=sys.stderr)
             print("  lk ai errors auto            Automatic error explanations", file=sys.stderr)
             print("Run 'lk ai --help' for the organized command guide.", file=sys.stderr)
         elif args[0].startswith("-"):
