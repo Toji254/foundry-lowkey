@@ -1434,7 +1434,7 @@ def validate_ai_recommendations(
             "origin": "configured-model",
             "verified": False,
         })
-        if len(normalized) >= 2:
+        if len(normalized) >= 1:
             break
     diagnosis = None
     runtime_paths = {
@@ -1577,7 +1577,7 @@ def recommend_next_steps(
         if not item.startswith(("lk target ", "lk lab --generic "))
     ]
     task = (
-        "Give one or two SHORT, OPTIONAL LEARNING NUDGES about Lowkey itself, grounded in the command the user just tried. "
+        "Give ONE SHORT, OPTIONAL LEARNING NUDGE about Lowkey itself, grounded in the command the user just tried. "
         "The main goal is to help the user understand how Lowkey works while they use it, not to take over their task. "
         "Always inspect current_lowkey_command (the attempted command, arguments, exit code, relevant built-in help entry, "
         "and known command names) and current_command_evidence first, then the recent shared project history and selected "
@@ -1596,7 +1596,7 @@ def recommend_next_steps(
         "If lowkey-runtime/lk.py appears in source_files because a stale lab target was reported, explain what the actual "
         "Lowkey implementation did and cite run_lab or discover_audit_target_contract; do not convert that diagnosis into "
         "a deployment checklist. Historical output is not proof of current runtime state. "
-        "Return JSON with one key recommendations, an array of up to two objects with title, why (why this relates to the "
+        "Return JSON with one key recommendations, an array with zero or one object with title, why (why this relates to the "
         "attempted command), learning_point (the Lowkey concept in plain language), what_to_notice (optional; what the user "
         "can learn by observing the command's own result), optional_command (one safe Lowkey command or empty string), and "
         "source {path, symbol}. Source path must be exact in context.source_files and symbol must appear in its excerpt. "
