@@ -18660,7 +18660,7 @@ def _print_jev_command_classification(command, args, result_code, command_output
         jev_state = jev_engine.status()
         if not jev_state.get("configured"):
             print(
-                "\\n@ JEV TRIAGE SKIPPED — TypeSafe API key is unavailable. "
+                "\n@ JEV TRIAGE SKIPPED — TypeSafe API key is unavailable. "
                 "Run 'lk ai jev setup'; the native command already completed.",
                 file=sys.stderr,
             )
@@ -18679,7 +18679,7 @@ def _print_jev_command_classification(command, args, result_code, command_output
     except Exception as exc:
         # Native command success/failure is authoritative; optional triage is non-blocking.
         print(
-            f"\\n@ JEV TRIAGE UNAVAILABLE ({type(exc).__name__}). "
+            f"\n@ JEV TRIAGE UNAVAILABLE ({type(exc).__name__}). "
             "The native Lowkey command kept its original result.",
             file=sys.stderr,
         )
@@ -18808,7 +18808,9 @@ def main():
         )
         return fail("Refusing to run with a mismatched Lowkey installation.", 3)
 
-    auto_capture = command.lower() != "ai" and _ai_auto_mode_enabled()
+    jev_active = command.lower() != "ai" and _jev_auto_mode_enabled()
+    jev_capture = jev_active and command.lower() not in {"raw", "batch", "memory"}
+    auto_capture = command.lower() != "ai" and (_ai_auto_mode_enabled() or jev_capture)
     if ai_requested or auto_capture:
         result, ai_command_output = _dispatch_command_captured(command, sys.argv[2:], config)
     else:
@@ -18864,6 +18866,8 @@ def main():
                     _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
             else:
                 _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
+    if jev_active and _jev_command_eligible(command, sys.argv[2:], footer_status):
+        _print_jev_command_classification(command, sys.argv[2:], footer_status, ai_command_output)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
