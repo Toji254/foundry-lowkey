@@ -58,7 +58,11 @@ def should_auto_guide(command: str, arguments: Sequence[str], exit_code: int,
 def _clean(value: Any, limit: int = 900) -> str:
     if not isinstance(value, str):
         return ""
-    text = " ".join(value.replace("\x00", "").split())
+    text = value.replace("\x00", "")
+    # Model-controlled terminal control sequences must not alter the user's terminal.
+    text = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])", "", text)
+    text = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]", " ", text)
+    text = " ".join(text.split())
     try:
         text = _redact_text(text)
     except Exception:
