@@ -571,7 +571,7 @@ def render_status(value: Mapping[str, Any]) -> str:
         lines.append(
             f"Free-tier guard: ON — {value.get('jev_calls_today', 0)}/{value.get('jev_daily_call_limit', JEV_DEFAULT_DAILY_LIMIT)} "
             f"AI requests used today; {value.get('jev_calls_remaining', 0)} remain. "
-            f"Automatic free-tier context/output caps: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes / "
+            f"Per-request free-tier context/output caps: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes / "
             f"{value.get('jev_max_output_tokens', JEV_DEFAULT_OUTPUT_TOKENS)} tokens."
         )
     else:
