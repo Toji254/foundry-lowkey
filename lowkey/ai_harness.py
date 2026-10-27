@@ -3113,7 +3113,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
     mode.add_argument("value", choices=("manual", "auto"), help="manual = only on request (default); auto = opt in to complexity-triggered review")
     jev = sub.add_parser("jev", aliases=("autonomy", "autonomous"), help="turn coordinated Jev automation on, off, or inspect it")
-    jev.add_argument("value", nargs="?", choices=("setup", "on", "off", "status", "test", "remove-key"), default="status", help="configure Jev, run its structured triage, or inspect/pause autonomous mode")
+    jev.add_argument("value", nargs="?", choices=("setup", "start", "stop", "restart", "on", "off", "status", "test", "remove-key"), default="status", help="configure Jev, start/stop local Jevos, run triage, or inspect/pause autonomous mode")
     jev.add_argument("--tier", choices=("guarded", "standard"), default=None, help="guarded applies local daily/context/output request caps; standard removes the local caps")
     jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per UTC day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
     jev.add_argument("--with-text-ai", action="store_true", help="also request optional text-AI explanations when Jev says they are useful; requires enabled text AI and may use extra provider calls")
@@ -3204,7 +3204,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.description = "Choose manual mode or opt in to automatic text-LLM guidance for eligible workflows and failures."
     mode.epilog = "WHEN: use manual for full control; auto may send selected output/source to the configured text provider after eligible commands. Jev structured triage is controlled separately. Example: lk ai mode manual"
     jev.description = "Structured Jev triage; prose generation stays in the separate optional text-AI feature."
-    jev.epilog = "Run 'lk ai jev setup' and 'lk ai jev test'. Fresh setup keeps JevModel as the default; use '--provider typesafe' for official hosted Jev or '--provider jevos' for local Jevos-v5. Local Jevos does not need an API key."
+    jev.epilog = "Run 'lk ai jev setup' and 'lk ai jev test'. For local Jevos-v5 use 'lk ai jev start|stop|restart'; the server runs in the background and needs no API key. Fresh setup keeps JevModel as the default; use '--provider typesafe' for official hosted Jev or '--provider jevos' for local Jevos-v5."
     run_cmd.description = "Plan a source-grounded investigation and optionally execute only validated read-oriented Lowkey commands."
     run_cmd.epilog = "WHEN: investigate a multi-step question. Commands are shown first; approval is required unless --yes is supplied. Example: lk ai run \"investigate why withdrawal reverts\" --plan-only"
     recommendations_cmd.description = "Keep Lowkey's native recommendations and optionally add separate model-generated, source-cited read-only suggestions."
@@ -3625,11 +3625,29 @@ def main(argv: list[str] | None = None) -> int:
                     "this is a local usage cap, not the provider's own quota or account balance."
                 )
 
+            if selected in {"start", "stop", "restart"}:
+                current_provider = jev_engine.load_settings().get("provider")
+                if current_provider != "jevos":
+                    raise AIHarnessError(
+                        "Local server controls require Jevos-v5 to be selected first. "
+                        "Run 'lk ai jev setup --provider jevos'. Hosted-provider settings were not changed."
+                    )
+                if selected == "start":
+                    message = jev_engine.start_server()
+                elif selected == "stop":
+                    message = jev_engine.stop_server()
+                else:
+                    message = jev_engine.restart_server()
+                print(message)
+                return 0
+
             if selected == "status":
                 jev_state = jev_engine.status()
+                server_state = jev_engine.server_status() if jev_state.get("provider") == "jevos" else None
                 budget = autonomy_budget_status(cfg)
                 value = {
                     "jev": jev_state,
+                    "jevos_server": server_state,
                     "autonomous_mode": bool(cfg.get("jev_autonomous")),
                     "local_budget_guard": budget,
                     "text_ai": {
@@ -3651,6 +3669,15 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Key source: {jev_state['key_source'] or 'none'}")
                     print(f"Jev model: {jev_state['model']}")
                     print(f"Endpoint: {jev_state['endpoint']}")
+                    if server_state is not None:
+                        if server_state["ready"]:
+                            managed_note = f" (PID {server_state['pid']})" if server_state.get("pid") else " (started outside Lowkey)"
+                            print(f"Jevos server: READY{managed_note}")
+                        elif server_state["running"]:
+                            print(f"Jevos server: starting; check {server_state['log_path']}")
+                        else:
+                            print("Jevos server: STOPPED. Start it with 'lk ai jev start'.")
+                        print(f"Jevos log: {server_state['log_path']}")
                     print(jev_state.get("starter_allowance_note", ""))
                     print(f"Jev autonomous triage: {'ON' if cfg.get('jev_autonomous') else 'OFF'}")
                     print(f"Local request guard: {'ON' if budget['free_tier_guard'] else 'OFF'}")
@@ -3677,7 +3704,7 @@ def main(argv: list[str] | None = None) -> int:
                         + (f"{cfg.get('provider')} / {cfg.get('model')}" if cfg.get("enabled") else "disabled")
                         + " (separate from the Jev decision API)."
                     )
-                    print("Status is local-only; it does not contact the provider.")
+                    print("Status does not send any request to an external provider.")
                     print("Jev can classify evidence but cannot confirm findings or execute commands.")
                 return 0
 
