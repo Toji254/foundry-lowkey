@@ -123,6 +123,13 @@ class AIHarnessTests(unittest.TestCase):
             with self.subTest(action=action), contextlib.redirect_stdout(output):
                 self.assertEqual(ai.main([action]), 0)
             rendered = output.getvalue()
+            expected_heading = {
+                "mode": "LOWKEY AI PROTOCOL REVIEW MODE",
+                "recommendations": "LOWKEY AI NEXT-COMMAND RECOMMENDATIONS",
+                "errors": "LOWKEY AI AUTOMATIC ERROR EXPLANATIONS",
+            }[action]
+            self.assertIn(expected_heading, rendered)
+            self.assertNotIn("LOWKEY AI AI", rendered)
             self.assertIn("Current setting: MANUAL / OFF", rendered)
             for command in expected_commands:
                 self.assertIn(command, rendered)
