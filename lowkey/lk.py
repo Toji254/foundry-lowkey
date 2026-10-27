@@ -17554,6 +17554,37 @@ def _recommended_next_commands(command, args=None, config=None):
         items_override=None
     items = dynamic_items or (items_override if items_override is not None else list(_NEXT_COMMANDS.get(command_key, _NEXT_COMMANDS.get(canonical, []))))
 
+    # Native recommendations should also react to evidence from the command
+    # that just completed, not leave cross-command correlation to an LLM alone.
+    shared_history = config.get("_shared_command_context") if isinstance(config, dict) else None
+    history_events = shared_history.get("events", []) if isinstance(shared_history, dict) else []
+    if canonical == "build" and isinstance(history_events, list):
+        history_text = "\n".join(
+            " ".join([
+                str(event.get("command") or ""),
+                " ".join(str(signal) for signal in event.get("signals", []) if isinstance(signal, str)),
+                str(event.get("diagnostic_excerpt") or ""),
+            ])
+            for event in history_events[-8:] if isinstance(event, dict)
+        ).lower()
+        if (
+            "unnamed return variable can remain unassigned" in history_text
+            or "unused local variable" in history_text
+            or "compiler warning" in history_text
+        ):
+            warning_followup = (
+                "lk context",
+                "Review the build warnings Lowkey retained. The same evidence is available to subsequent lab and AI diagnosis workflows; a successful build can still contain defects worth addressing.",
+            )
+            items = [warning_followup] + [
+                item for item in items
+                if not (
+                    isinstance(item, (tuple, list)) and item
+                    and str(item[0]).strip().lower() == "lk context"
+                )
+                and not (isinstance(item, str) and item.strip().lower() == "lk context")
+            ]
+
     if canonical in {"fn", "ask"} and raw_args and not raw_args[0].startswith("-"):
         query = shlex.quote(raw_args[0])
         items = [
@@ -18296,6 +18327,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
             root, cmd, args, code,
             captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else ""),
         )
+        _attach_shared_command_context(config, root)
         if diagnostic:
             code = exc.code if isinstance(exc.code, int) and exc.code else 2
             if _is_error_diagnostic(diagnostic):
@@ -18342,6 +18374,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
         if native_output not in event_output:
             event_output += "\n[LOWKEY RESULT OUTPUT]\n" + native_output
     _record_shared_command_event(root, cmd, args, event_code, event_output)
+    _attach_shared_command_context(config, root)
 
     if not is_failure:
         if diagnostic:
@@ -18551,6 +18584,7 @@ def main():
             footer_status if isinstance(footer_status, int) else 0,
             ai_output,
         )
+        _attach_shared_command_context(config, shared_root)
         _print_recommended_next_commands(command, sys.argv[2:], footer_status, config)
         if ai_requested:
             _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_output)
