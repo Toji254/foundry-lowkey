@@ -33,7 +33,7 @@ lk ai jev remove-key
 Optional local-budget controls:
 
 ```bash
-# Cap provider attempts at four per UTC day.
+# Cap provider attempts at six per UTC day.
 lk ai jev on --daily-limit 6
 
 # Use the conservative local request guard (default).
