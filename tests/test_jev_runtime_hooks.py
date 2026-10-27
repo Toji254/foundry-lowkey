@@ -1,0 +1,70 @@
+import contextlib
+import io
+import sys
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from lowkey import lk
+
+
+class JevRuntimeHookTests(unittest.TestCase):
+    def test_success_triggers_are_selective_and_failures_remain_diagnostic(self):
+        self.assertTrue(lk._jev_command_eligible("build", [], 0))
+        self.assertTrue(lk._jev_command_eligible("verification", ["run", "campaign.json"], 0))
+        self.assertTrue(lk._jev_command_eligible("matrix", ["test"], 0))
+        self.assertTrue(lk._jev_command_eligible("clone", ["https://example.invalid/project"], 0))
+        self.assertFalse(lk._jev_command_eligible("read", ["balanceOf"], 0))
+        self.assertFalse(lk._jev_command_eligible("verification", ["engines", "--json"], 0))
+        self.assertFalse(lk._jev_command_eligible("matrix", ["list"], 0))
+        self.assertFalse(lk._jev_command_eligible("ai", ["jev", "status"], 1))
+        self.assertTrue(lk._jev_command_eligible("read", ["balanceOf"], 1))
+
+    def test_jev_triage_receives_only_completed_command_evidence_and_never_executes_actions(self):
+        captured = {}
+        ai = SimpleNamespace(
+            autonomy_budget_status=lambda: {"free_tier_guard": True, "remaining": 2},
+        )
+        jev = SimpleNamespace(
+            status=lambda: {"configured": True},
+            classify_command=lambda **kwargs: captured.update(kwargs) or {
+                "outcome": "actionable_failure",
+            },
+            render_classification=lambda report, command: "JEV TEST TRIAGE: " + report["outcome"],
+        )
+        output = io.StringIO()
+        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \
+             patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}), \
+             contextlib.redirect_stdout(output):
+            lk._print_jev_command_classification(
+                "build", ["--profile", "default"], 1, "Compiler failed: missing import"
+            )
+        self.assertEqual(captured["command"], "lk build")
+        self.assertEqual(captured["arguments"], ["--profile", "default"])
+        self.assertEqual(captured["exit_code"], 1)
+        self.assertIn("missing import", captured["command_output"])
+        self.assertIn("JEV TEST TRIAGE", output.getvalue())
+
+    def test_jev_does_not_call_provider_after_guard_is_exhausted(self):
+        ai = SimpleNamespace(
+            autonomy_budget_status=lambda: {"free_tier_guard": True, "remaining": 0},
+        )
+        jev = SimpleNamespace(
+            status=lambda: {"configured": True},
+            classify_command=lambda **kwargs: self.fail("exhausted budget must skip TypeSafe"),
+            render_classification=lambda report, command: "unexpected",
+        )
+        output = io.StringIO()
+        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \
+             patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}), \
+             contextlib.redirect_stdout(output):
+            lk._print_jev_command_classification("build", [], 0, "Build succeeded")
+        self.assertEqual(output.getvalue(), "")
+
+    def test_disabled_jev_returns_without_importing_provider_modules(self):
+        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": False}):
+            lk._print_jev_command_classification("build", [], 0, "Build succeeded")
+
+
+if __name__ == "__main__":
+    unittest.main()
