@@ -1126,12 +1126,8 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
 
 
 AI_RECOMMENDATION_COMMAND_FORMS = (
-    "lk target <known project contract>  (changes Lowkey's selected target; no transaction)",
-    "lk lab --generic <known project contract>  (deploys to the local Anvil lab; review first)",
-    "lk read <source-backed function> [known values...]",
-    "lk fn <source-backed function>",
-    "lk ask <short function or code question>",
-    "lk balance [known address or target]",
+    "lk <command> --h  (inspect Lowkey help without running the command)",
+    "lk target  (show the currently selected target)",
     "lk targets",
     "lk deployments",
     "lk actors",
@@ -1139,21 +1135,62 @@ AI_RECOMMENDATION_COMMAND_FORMS = (
     "lk status",
     "lk events",
     "lk logs",
+    "lk q current",
+    "lk read <source-backed function> [known values...]",
+    "lk fn <source-backed function>",
+    "lk ask <short function or code question>",
+    "lk balance [known address or target]",
     "lk changes <source-backed function> [known values...]",
     "lk proxy",
     "lk recon",
     "lk roles",
     "lk questions",
-    "lk q",
     "lk findings",
 )
 _AI_RECOMMENDATION_COMMAND_ROOTS = {
-    "target", "lab", "balance", "targets", "deployments", "actors",
+    "target", "balance", "targets", "deployments", "actors",
     "read", "fn", "ask", "functions", "status", "events", "logs",
     "changes", "proxy", "recon", "roles", "questions", "q", "findings",
 }
 _AI_RECOMMENDATION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./:=+\-\[\]\(\),]+$")
 
+
+def _safe_ai_recommendation_command(value: Any) -> str | None:
+    """Accept only optional, bounded Lowkey learning commands; never shell or transactions."""
+    if not isinstance(value, str):
+        return None
+    command = " ".join(value.strip().split())
+    if not command or len(command) > 300:
+        return None
+    if any(char in command for char in ("\r", "\n", ";", "|", "&", chr(96), "$", "<", ">", "\\", '"', "'")):
+        return None
+    tokens = command.split()
+    if len(tokens) < 2 or tokens[0] != "lk":
+        return None
+    if any(not _AI_RECOMMENDATION_TOKEN_RE.fullmatch(token) for token in tokens):
+        return None
+    # Help is side-effect free, including for an unknown command. This matters
+    # when the user is experimenting with a typo or undocumented subcommand.
+    if tokens == ["lk", "--h"] or tokens == ["lk", "--help"] or tokens == ["lk", "-h"] or tokens == ["lk", "help"]:
+        return command
+    if tokens[-1] in {"--h", "--help", "-h", "help"} and len(tokens) <= 5:
+        return command
+    root = tokens[1]
+    if root not in _AI_RECOMMENDATION_COMMAND_ROOTS:
+        return None
+    if root in {"read", "fn", "ask", "changes"} and len(tokens) < 3:
+        return None
+    if root in {"functions", "status", "proxy", "recon", "roles", "questions", "findings", "events", "logs", "targets", "deployments", "actors"} and len(tokens) != 2:
+        return None
+    if root == "target" and len(tokens) not in {2, 3}:
+        return None
+    if root == "target" and len(tokens) == 3 and tokens[2].lower() in {"reset", "remove", "clear"}:
+        return None
+    if root == "balance" and len(tokens) not in {2, 3}:
+        return None
+    if root == "q" and tokens[2:] != ["current"]:
+        return None
+    return command
 
 def _safe_ai_recommendation_command(value: Any) -> str | None:
     """Accept only explicitly allowlisted Lowkey commands; never accept shell syntax or writes."""
@@ -1276,6 +1313,10 @@ def _recommendation_step_is_supported(
     tokens = command.split()
     root = tokens[1]
     serialized_context = json.dumps(context, ensure_ascii=False, sort_keys=True).lower()
+    if tokens[-1] in {"--h", "--help", "-h", "help"}:
+        return True
+    if root == "target" and len(tokens) == 2:
+        return True
     for address in re.findall(r"\b0x[a-fA-F0-9]{40}\b", command):
         if address.lower() not in serialized_context:
             return False
@@ -1283,16 +1324,11 @@ def _recommendation_step_is_supported(
         target = tokens[2].split("(", 1)[0]
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", target):
             return False
-        # The command's function/getter must exist in the exact source cited for this step.
         if not re.search(r"\b" + re.escape(target) + r"\b", source_excerpt, re.IGNORECASE):
             return False
     elif root == "target":
         target = tokens[2]
-        if target.lower() != "auto" and target not in contract_names:
-            return False
-    elif root == "lab":
-        target = tokens[3]
-        if tokens[2] != "--generic" or target not in contract_names:
+        if target not in contract_names:
             return False
     elif root == "balance" and len(tokens) == 3:
         target = tokens[2]
@@ -1309,10 +1345,10 @@ def validate_ai_recommendations(
     context: Mapping[str, Any],
     native_recommendations: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Keep source-grounded, beginner-readable workflows within a safe command allowlist."""
+    """Keep contextual learning notes to one optional, source-grounded command each."""
     values = result.get("recommendations")
     if not isinstance(values, list) or len(values) > 10:
-        raise AIHarnessError("AI next-step recommendations must be a list of at most 10 items.")
+        raise AIHarnessError("AI learning recommendations must be a list of at most 10 items.")
     sources = context.get("source_files", [])
     if not isinstance(sources, list):
         raise AIHarnessError("Selected source context is malformed.")
@@ -1326,130 +1362,91 @@ def validate_ai_recommendations(
     }
     contract_names = _known_contract_names(context, known_sources)
     normalized = []
-    seen_workflows = set()
+    seen = set()
     for item in values:
-        if not isinstance(item, dict):
+        if not isinstance(item, Mapping):
             continue
         title = item.get("title")
         why = item.get("why")
-        if not isinstance(title, str) or not isinstance(why, str):
+        learning_point = item.get("learning_point") or item.get("what_to_learn") or item.get("why")
+        what_to_notice = item.get("what_to_notice") or item.get("look_for") or ""
+        source = item.get("source")
+        if not all(isinstance(value, str) for value in (title, why, learning_point, what_to_notice)):
             continue
         title = " ".join(title.split())[:220]
-        why = " ".join(why.split())[:900]
-        if not title or not why:
+        why = " ".join(why.split())[:650]
+        learning_point = " ".join(learning_point.split())[:900]
+        what_to_notice = " ".join(what_to_notice.split())[:600]
+        if not title or not why or not learning_point or not isinstance(source, Mapping):
+            continue
+        source_path = source.get("path")
+        symbol = source.get("symbol")
+        if not isinstance(source_path, str) or not isinstance(symbol, str):
+            continue
+        source_path = source_path.strip()
+        symbol = " ".join(symbol.split())[:180]
+        excerpt = known_sources.get(source_path)
+        if not excerpt or not symbol or symbol.casefold() not in excerpt.casefold():
             continue
 
+        # Accept the old single-command schema for model/provider compatibility, but
+        # deliberately reject multi-step lists: auto-recommendations are learning nudges,
+        # not instructions or an autonomous task plan.
         raw_steps = item.get("steps")
-        if not isinstance(raw_steps, list):
-            raw_steps = [{
-                "command": item.get("command"),
-                "purpose": item.get("purpose") or why,
-                "expected_result": item.get("expected_result") or "Use this result to decide the next investigation.",
-                "source": item.get("source"),
-            }]
-        if not raw_steps or len(raw_steps) > 4:
+        if isinstance(raw_steps, list):
+            if len(raw_steps) > 1:
+                continue
+            if raw_steps:
+                raw_step = raw_steps[0]
+                if not isinstance(raw_step, Mapping):
+                    continue
+                command_value = raw_step.get("command")
+                if not what_to_notice:
+                    what_to_notice = str(raw_step.get("expected_result") or raw_step.get("look_for") or "").strip()[:600]
+        else:
+            command_value = item.get("optional_command")
+            if command_value is None:
+                command_value = item.get("command", "")
+        command = _safe_ai_recommendation_command(command_value) if str(command_value or "").strip() else ""
+        if command_value and str(command_value).strip() and not command:
             continue
-
-        steps = []
-        command_keys = []
-        valid = True
-        for raw_step in raw_steps:
-            if not isinstance(raw_step, Mapping):
-                valid = False
-                break
-            command = _safe_ai_recommendation_command(raw_step.get("command"))
-            purpose = raw_step.get("purpose") or raw_step.get("what_this_does")
-            expected = raw_step.get("expected_result") or raw_step.get("look_for")
-            source = raw_step.get("source") or item.get("source")
-            if not isinstance(purpose, str) or not isinstance(expected, str) or not isinstance(source, Mapping):
-                valid = False
-                break
-            purpose = " ".join(purpose.split())[:500]
-            expected = " ".join(expected.split())[:500]
-            source_path = source.get("path")
-            symbol = source.get("symbol")
-            if not command or not purpose or not expected or not isinstance(source_path, str) or not isinstance(symbol, str):
-                valid = False
-                break
-            source_path = source_path.strip()
-            symbol = " ".join(symbol.split())[:180]
-            excerpt = known_sources.get(source_path)
-            if not excerpt or not symbol or symbol.casefold() not in excerpt.casefold():
-                valid = False
-                break
+        if command:
             if not _recommendation_step_is_supported(command, excerpt, context, known_sources, contract_names):
-                valid = False
-                break
+                continue
             normalized_command = " ".join(command.lower().split())
             if normalized_command in native_commands:
-                # Don't repeat a native item; a workflow can still be useful if
-                # this redundant step is simply omitted.
-                continue
-            if normalized_command in command_keys:
-                continue
-            command_keys.append(normalized_command)
-            steps.append({
-                "command": command,
-                "purpose": purpose,
-                "expected_result": expected,
-                "source": {"path": source_path, "symbol": symbol},
-            })
-        if not valid or not steps:
-            continue
-        key = tuple(step["command"].lower() for step in steps)
-        if key in seen_workflows:
-            continue
-        seen_workflows.add(key)
+                # Prefer the native list for concrete tasks; the AI should teach the
+                # underlying Lowkey concept instead of re-listing it.
+                command = ""
+            elif normalized_command in seen:
+                command = ""
+            else:
+                seen.add(normalized_command)
+
         normalized.append({
             "title": title,
             "why": why,
-            # Backwards-compatible first command for older integrations.
-            "command": steps[0]["command"],
-            "source": steps[0]["source"],
-            "steps": steps,
+            "learning_point": learning_point,
+            "what_to_notice": what_to_notice,
+            "optional_command": command,
+            # Backwards-compatible alias for callers that consumed the former shape.
+            "command": command,
+            "source": {"path": source_path, "symbol": symbol},
             "origin": "configured-model",
             "verified": False,
         })
-        if len(normalized) >= 3:
+        if len(normalized) >= 2:
             break
-
-    diagnosis = None
-    runtime_paths = {
-        path for path, source in known_sources.items()
-        if path.startswith("lowkey-runtime/") and "run_lab" in source
-    }
-    raw_diagnosis = result.get("diagnosis")
-    if runtime_paths and isinstance(raw_diagnosis, Mapping):
-        summary = raw_diagnosis.get("summary")
-        evidence_values = raw_diagnosis.get("evidence")
-        evidence = []
-        if isinstance(summary, str) and isinstance(evidence_values, list):
-            for item in evidence_values[:4]:
-                if not isinstance(item, Mapping):
-                    continue
-                path = item.get("path")
-                symbol = item.get("symbol")
-                if not isinstance(path, str) or not isinstance(symbol, str):
-                    continue
-                path = path.strip()
-                symbol = " ".join(symbol.split())[:180]
-                excerpt = known_sources.get(path, "")
-                if path in runtime_paths and symbol and symbol.casefold() in excerpt.casefold():
-                    evidence.append({"path": path, "symbol": symbol})
-        if isinstance(summary, str) and summary.strip() and evidence:
-            diagnosis = {"summary": " ".join(summary.split())[:1200], "evidence": evidence}
-    report = {
+    return {
         "recommendations": normalized,
         "candidate_count": len(values),
         "discarded_count": len(values) - len(normalized),
         "status": "unverified",
         "ai_generated": True,
         "origin": "configured-model",
-        "execution_policy": "Suggestions only; Lowkey never executes them. Local lab deployment steps are explicitly labeled for review.",
+        "execution_policy": "Optional learning notes only; Lowkey never executes recommendations.",
     }
-    if diagnosis:
-        report["diagnosis"] = diagnosis
-    return report
+
 
 
 def recommend_next_steps(
@@ -1458,13 +1455,41 @@ def recommend_next_steps(
     native_recommendations: list[Mapping[str, Any]],
     contract_name: str | None = None,
     current_command_output: str | None = None,
+    command_args: list[str] | None = None,
+    command_result: int | None = 0,
+    lowkey_command_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Suggest beginner-readable, source-grounded workflows using current and prior project evidence."""
-    context = _source_context(
-        Path(root),
-        contract_name,
-        current_command_output=current_command_output,
-    )
+    project_root = Path(root).expanduser().resolve()
+    try:
+        context = _source_context(
+            project_root,
+            contract_name,
+            current_command_output=current_command_output,
+        )
+    except AIHarnessError as exc:
+        if "No eligible first-party contract source" not in str(exc):
+            raise
+        try:
+            import error_context as shared_context_store
+        except ImportError:
+            from lowkey import error_context as shared_context_store
+        try:
+            shared_history = shared_context_store.read_project_context(project_root, max_events=6)
+        except Exception:
+            shared_history = {"project_label": project_root.name, "events": []}
+        context = {
+            "project_label": project_root.name,
+            "requested_contract": contract_name,
+            "source_files": [],
+            "source_files_included": 0,
+            "shared_project_context": shared_history,
+            "shared_project_context_policy": (
+                "This project has no eligible first-party contract source. Focus on Lowkey command semantics, "
+                "the current invocation and its output. Do not invent contract details."
+            ),
+            "source_context_note": "No eligible first-party contract source; use built-in Lowkey command reference and recent output.",
+        }
     runtime_source = None
     if str(command or "").strip().lower() == "lab":
         runtime_source = _lowkey_lab_runtime_source(current_command_output)
@@ -1482,7 +1507,33 @@ def recommend_next_steps(
                 "command": str(item.get("command") or "")[:240],
                 "reason": str(item.get("reason") or "")[:500],
             })
+    command_context = dict(lowkey_command_context or {})
     context["current_native_command"] = str(command or "").strip().lower()[:80]
+    context["current_lowkey_command"] = {
+        "invocation": str(command_context.get("invocation") or ("lk " + str(command or "").strip())).strip()[:360],
+        "arguments": list(command_context.get("arguments") or [])[:16],
+        "exit_code": command_context.get("exit_code"),
+        "help_path": str(command_context.get("help_path") or "")[:180],
+        "summary": str(command_context.get("summary") or "")[:700],
+        "use_case": str(command_context.get("use_case") or "")[:700],
+        "example": str(command_context.get("example") or "")[:300],
+        "related_commands": list(command_context.get("related_commands") or [])[:8],
+        "known_top_level_commands": list(command_context.get("known_top_level_commands") or [])[:80],
+        "unknown_subcommand": str(command_context.get("unknown_subcommand") or "")[:100],
+    }
+    reference_excerpt = str(command_context.get("source_excerpt") or "").strip()
+    if reference_excerpt:
+        existing_paths = {
+            str(entry.get("path") or "")
+            for entry in context.get("source_files", [])
+            if isinstance(entry, Mapping)
+        }
+        if "lowkey-command-reference" not in existing_paths:
+            context.setdefault("source_files", []).append({
+                "path": "lowkey-command-reference",
+                "source_excerpt": reference_excerpt[:4800],
+            })
+            context["source_files_included"] = len(context["source_files"])
     context["active_contract"] = str(contract_name or context.get("requested_contract") or "not supplied")
     context["native_recommendations"] = native
     context["allowed_recommendation_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
@@ -1493,29 +1544,29 @@ def recommend_next_steps(
         if not item.startswith(("lk target ", "lk lab --generic "))
     ]
     task = (
-        "Help a learner make progress in the current Lowkey workflow, not merely browse function names. "
-        "Inspect current_command_evidence first, then the shared project context, project_knowledge, saved target/deployment "
-        "relationships, current signals and the cited source. State the immediate goal in plain English. Prefer one connected "
-        "workflow of two to four steps when steps depend on each other; otherwise give one precise next step. "
-        "For each step provide a command, what it does in beginner-friendly language, what result to look for, and a source "
-        "path/symbol that proves the relevant command target exists. Use actual known contract names and addresses from context, "
-        "not placeholders when a known value is available. Do not abstain merely because a function needs input values; when inputs are unknown, use source-backed function inspection and explain what metadata it reveals. When current or recent output includes compiler warnings or a failed command, prioritize investigation over unrelated generic browsing. Explain how results guide the next decision. "
-        "Do not suggest unrelated generic 'lk fn' browsing when a direct workflow is supported by evidence. "
-        "Distinguish native ETH balances from ERC-20 balances, ERC-20 balances from application accounting mappings, "
-        "and read-only calls from transactions. "
-        "Allowed commands are listed in allowed_recommendation_command_forms. 'lk target <known contract>' only switches the local "
-        "selected target; 'lk lab --generic <known contract>' deploys to the local Anvil lab and must be clearly labeled for "
-        "review. Never suggest 'lk send', 'lk wizard', shell commands, command chaining, file edits or test execution. "
-        "If lowkey-runtime/lk.py appears in source_files, diagnose Lowkey's own command behavior separately from the user's "
-        "contract logic. When output shows a stale target and a different contract was deployed, inspect run_lab's selection "
-        "order and discover_audit_target_contract's name scoring, explain only what the included runtime excerpt supports, "
-        "and cite the exact runtime function(s). Do not just recommend inspecting the selected contract's metadata. "
-        "Return JSON with recommendations: an array of up to three objects with title, why, steps (one to four objects, each "
-        "with command, purpose, expected_result, and source {path, symbol}). The step source must be an exact path in "
-        "context.source_files, and its symbol must appear in that excerpt. For compatibility you may return a single command "
-        "and source at the recommendation level when one step is enough. If lowkey-runtime source is present, also return "
-        "diagnosis {summary, evidence:[{path,symbol}]} explaining the observed Lowkey behavior and citing runtime source. "
-        "Never infer live state from historical data. Suggestions are unverified and must not be executed."
+        "Give one or two SHORT, OPTIONAL LEARNING NUDGES about Lowkey itself, grounded in the command the user just tried. "
+        "The main goal is to help the user understand how Lowkey works while they use it, not to take over their task. "
+        "Always inspect current_lowkey_command (the attempted command, arguments, exit code, relevant built-in help entry, "
+        "and known command names) and current_command_evidence first, then the recent shared project history and selected "
+        "contract evidence when relevant. This still applies when the command failed, was misspelled, or seems unrelated. "
+        "Connect the attempted command to one useful Lowkey concept: target selection, ABI/function inspection, read versus "
+        "transaction behavior, project-local deployment, shared project context, actors, RPC, evidence, or another feature "
+        "that is actually relevant to this invocation. Explain the relationship in plain everyday language. "
+        "Do NOT give the user a required sequence, checklist, task plan, or a series of commands. Do NOT use imperative wording "
+        "such as 'first do this, then do that'. At most, offer ONE optional experiment the user may ignore; if an experiment "
+        "is not genuinely useful, leave optional_command empty. Prefer a Lowkey help command when the user is exploring the CLI. "
+        "Avoid generic contract-security advice unless the just-run Lowkey command or its output makes that connection relevant. "
+        "If the attempted command is unknown, use the built-in command catalog to explain how Lowkey help works and suggest "
+        "one relevant way to discover a valid command; do not pretend the invalid command ran. "
+        "If lowkey-runtime/lk.py appears in source_files because a stale lab target was reported, explain what the actual "
+        "Lowkey implementation did and cite run_lab or discover_audit_target_contract; do not convert that diagnosis into "
+        "a deployment checklist. Historical output is not proof of current runtime state. "
+        "Return JSON with one key recommendations, an array of up to two objects with title, why (why this relates to the "
+        "attempted command), learning_point (the Lowkey concept in plain language), what_to_notice (optional; what the user "
+        "can learn by observing the command's own result), optional_command (one safe Lowkey command or empty string), and "
+        "source {path, symbol}. Source path must be exact in context.source_files and symbol must appear in its excerpt. "
+        "Never recommend transaction submission, shell commands, command chaining, file edits, test execution or deployment. "
+        "Never imply that the user must run optional_command. AI output is advice, not verified fact."
     )
     result = request_structured(
         purpose="next_step_recommendations",
@@ -1545,98 +1596,74 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
     items = report.get("recommendations", [])
     if not isinstance(items, list):
         items = []
-    lines = [
-        "@ AI OUTPUT — LEARNER WORKFLOWS (UNVERIFIED)",
-        "============================================",
-        "These are extra model-generated suggestions. Lowkey has not run them.",
-        "Commands are shown one at a time; review each before running it.",
-    ]
     meta = report.get("_lowkey_meta") if isinstance(report.get("_lowkey_meta"), Mapping) else {}
+    current = report.get("current_lowkey_command") if isinstance(report.get("current_lowkey_command"), Mapping) else {}
+    lines = [
+        "@ LOWKEY LEARNING NUDGES — OPTIONAL AI NOTES (UNVERIFIED)",
+        "=========================================================",
+        "These notes connect what you just tried to how Lowkey works. They are not instructions or a required workflow.",
+        "Any command below is an optional experiment; Lowkey has not run it.",
+    ]
+    if current.get("invocation"):
+        lines.append(f"Command you tried: {current.get('invocation')}")
+    if current.get("exit_code") not in (None, 0):
+        lines.append(f"Result: Lowkey returned exit code {current.get('exit_code')}. The explanation uses captured evidence; it does not assume the command succeeded.")
     shared_count = meta.get("shared_command_events_included")
     if isinstance(shared_count, int) and shared_count > 0:
-        lines.append(f"Shared project command history considered: {shared_count} recent event(s).")
+        lines.append(f"Recent project history considered: {shared_count} event(s).")
     if meta.get("current_command_evidence_included") is True:
-        lines.append("Current command's redacted output was supplied as direct evidence.")
+        lines.append("The command's redacted output was included as evidence.")
     if meta.get("lowkey_runtime_source_included") is True:
-        lines.append("Lowkey's own lab-selection implementation was also inspected to diagnose its behavior.")
+        lines.append("Lowkey's own lab-selection code was included to help explain its behavior.")
     diagnosis = report.get("diagnosis")
     if isinstance(diagnosis, Mapping) and diagnosis.get("summary"):
-        lines.extend(["", "WHAT LOWKEY LIKELY DID", "----------------------", str(diagnosis.get("summary"))])
+        lines.extend(["", "WHAT LOWKEY APPEARS TO HAVE DONE", "--------------------------------"])
+        lines.append(str(diagnosis.get("summary")))
         evidence = diagnosis.get("evidence")
         if isinstance(evidence, list) and evidence:
-            lines.append("Runtime code to inspect:")
+            lines.append("Implementation evidence:")
             for item in evidence[:4]:
                 if isinstance(item, Mapping):
                     lines.append(f"  {item.get('path', 'unknown')} — {item.get('symbol', 'unknown')}")
-
     if not items:
-        lines.extend([""])
-        discarded = int(report.get("discarded_count") or 0)
-        candidates = int(report.get("candidate_count") or 0)
-        if discarded:
-            lines.append(
-                f"The model returned {candidates} candidate suggestion(s), but none passed Lowkey's source and command checks."
-            )
-            lines.append("No rejected command was shown. Lowkey's native recommendations remain available above.")
-        else:
-            lines.append(
-                "The model returned no extra command or workflow that clearly improves on Lowkey's native recommendations for this source context."
-            )
-            lines.append("This is not a conclusion that the contract is safe or that no useful investigation exists.")
-
+        lines.extend([
+            "",
+            "No additional learning note passed Lowkey's evidence checks for this command.",
+            "That does not mean the command, contract, or project is safe; it means no useful note was produced from the supplied context.",
+        ])
     for index, item in enumerate(items, 1):
         if not isinstance(item, Mapping):
             continue
         lines.extend([
             "",
-            f"Next move {index}: {item.get('title', 'Untitled suggestion')}",
-            f"Why now: {item.get('why', '')}",
+            f"LOWKEY CONCEPT {index}: {item.get('title', 'Related feature')}",
+            "-" * (len(f"LOWKEY CONCEPT {index}: ") + len(str(item.get('title', 'Related feature')))),
+            f"Why this relates: {item.get('why', '')}",
+            f"How Lowkey works: {item.get('learning_point', item.get('why', ''))}",
         ])
-        steps = item.get("steps")
-        if isinstance(steps, list) and steps:
-            if len(steps) == 1:
-                step = steps[0]
-                lines.append(f"Suggested command (review before running): {step.get('command', '')}")
-                if step.get("purpose"):
-                    lines.append(f"What it does: {step.get('purpose')}")
-                if step.get("expected_result"):
-                    lines.append(f"What to look for: {step.get('expected_result')}")
-                command = str(step.get("command", "")).lower()
-                if command.startswith("lk target "):
-                    lines.append("Safety: changes Lowkey's selected target only; it does not send a transaction.")
-                elif command.startswith("lk lab --generic "):
-                    lines.append("Safety: deploys a contract to the local Anvil lab; review constructor inputs before running.")
-                elif command.startswith("lk read "):
-                    lines.append("Safety: performs a read-only call; it does not persist state changes.")
-                source = step.get("source") if isinstance(step.get("source"), Mapping) else {}
-                lines.append(f"Source to inspect: {source.get('path', 'not recorded')} — {source.get('symbol', 'not recorded')}")
-            else:
-                lines.append("Suggested workflow (run each command separately):")
-                for step_index, step in enumerate(steps, 1):
-                    if not isinstance(step, Mapping):
-                        continue
-                    command = str(step.get("command", ""))
-                    lines.append(f"  {step_index}. {command}")
-                    lines.append(f"     What it does: {step.get('purpose', '')}")
-                    lines.append(f"     What to look for: {step.get('expected_result', '')}")
-                    lowered_command = command.lower()
-                    if lowered_command.startswith("lk target "):
-                        lines.append("     Safety: changes Lowkey's selected target only; it does not send a transaction.")
-                    elif lowered_command.startswith("lk lab --generic "):
-                        lines.append("     Safety: deploys a contract to the local Anvil lab; review constructor inputs before running.")
-                    elif lowered_command.startswith("lk read "):
-                        lines.append("     Safety: performs a read-only call; it does not persist state changes.")
-                    source = step.get("source") if isinstance(step.get("source"), Mapping) else {}
-                    lines.append(f"     Source: {source.get('path', 'not recorded')} — {source.get('symbol', 'not recorded')}")
-        else:
-            source = item.get("source") if isinstance(item.get("source"), Mapping) else {}
+        if item.get("what_to_notice"):
+            lines.append(f"What to notice: {item.get('what_to_notice')}")
+        command = str(item.get("optional_command") or item.get("command") or "").strip()
+        if command:
             lines.extend([
-                f"Suggested command (review before running): {item.get('command', '')}",
-                f"Source to inspect: {source.get('path', 'not recorded')} — {source.get('symbol', 'not recorded')}",
+                "Optional experiment (not a task):",
+                f"  {command}",
             ])
+            lowered = command.lower()
+            if lowered.startswith("lk target "):
+                lines.append("  This changes Lowkey's selected target only; it does not submit a transaction.")
+            elif lowered == "lk target":
+                lines.append("  This displays the selected target; it does not change it.")
+            elif lowered.startswith("lk read "):
+                lines.append("  This performs a read-only contract call; it does not persist a state change.")
+            elif lowered.endswith(("--h", "--help", "-h", " help")) or lowered in {"lk --h", "lk --help", "lk help"}:
+                lines.append("  This opens command help; it does not run the underlying command.")
+        source = item.get("source") if isinstance(item.get("source"), Mapping) else {}
+        if source:
+            lines.append(f"Grounding: {source.get('path', 'not recorded')} — {source.get('symbol', 'not recorded')}")
     lines.extend([
         "",
-        "Trust boundary: AI advice is unverified. It cannot prove a finding or run a command. Never use a suggested write command without reviewing its effects.",
+        "Use these notes to understand Lowkey, not as commands you are expected to follow. AI advice is unverified; Lowkey executes nothing from this section.",
     ])
     return "\n".join(lines)
 
@@ -1792,7 +1819,7 @@ AUTOMATION SETTINGS
       Example: lk ai mode auto
 
   lk ai recommendations {status|auto|manual}
-      Add/remove source-cited, learner-friendly workflows after eligible successful commands.
+      Add/remove contextual, optional learning notes after eligible command attempts.
       Lowkey's native next-step suggestions remain available.
       Example: lk ai recommendations auto
 
@@ -1919,7 +1946,7 @@ def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None)
         lines.extend([
             "  lk ai recommendations status   Show the current setting.",
             "  lk ai recommendations manual   Keep AI suggestions off.",
-            "  lk ai recommendations auto     Add optional model-generated next-step workflows.",
+            "  lk ai recommendations auto     Add optional model-generated explanations of relevant Lowkey concepts.",
         ])
     else:
         lines.extend([
