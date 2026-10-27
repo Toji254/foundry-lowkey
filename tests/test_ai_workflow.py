@@ -46,17 +46,24 @@ class AIWorkflowTests(unittest.TestCase):
 
     def test_read_only_task_allowlist_rejects_state_changes_and_shell_syntax(self):
         for command in (
-            "lk status",
             "lk functions",
             "lk fn withdraw",
             "lk ask withdraw",
             "lk read isAgreementValid",
-            "lk changes withdraw",
+            "lk events",
+            "lk logs",
+            "lk proxy",
+            "lk recon",
+            "lk questions",
         ):
             with self.subTest(command=command):
                 self.assertEqual(workflow._safe_task_command(command), command)
 
         for command in (
+            "lk status",
+            "lk changes withdraw",
+            "lk q",
+            "lk findings",
             "lk send withdraw 1",
             "lk deploy Vault",
             "lk test",
