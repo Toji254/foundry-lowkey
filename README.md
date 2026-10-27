@@ -108,7 +108,7 @@ lk ai jev status                   # local-only status and request budget
 lk ai jev off                      # pause Jev without changing other AI features
 ~~~
 
-JevModel advertises 100,000 starter input tokens after email verification; this is an account allowance, not a daily quota, and JevModel is a separate third-party service from TypeSafe. The official TypeSafe endpoint has separate published input-token pricing. Lowkey defaults to a local guard of 8 provider attempts per device-local day and applies a smaller request cap for JevModel. The shared guard also covers optional text-AI calls; exact cache hits do not spend another provider request. The existing `lk ai mode`, `lk ai errors`, and `lk ai recommendations` settings stay independent to avoid silently enabling a second model. See [Jev autonomy](docs/jev-autonomy.md).
+JevModel advertises five successful free runs per UTC day plus 100,000 starter input tokens after email verification. The daily runs and token balance are separate; JevModel is independent from TypeSafe. The official TypeSafe endpoint has separate published input-token pricing. Lowkey defaults to a conservative local guard of 5 provider attempts per UTC day and applies a smaller request cap for JevModel. The shared guard also covers optional text-AI calls; exact cache hits do not spend another provider request. The existing `lk ai mode`, `lk ai errors`, and `lk ai recommendations` settings stay independent to avoid silently enabling a second model. See [Jev autonomy](docs/jev-autonomy.md).
 
 For a task spanning several checks, `lk ai run` makes a source-grounded plan and shows each proposed command:
 
