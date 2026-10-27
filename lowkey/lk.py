@@ -16247,7 +16247,7 @@ COMMAND_HELP = {
         "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
         "lk functions [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
         "lk functions -v",
-        "Use it when starting an unfamiliar contract and you need its callable surface or a fast function-level audit inventory.",
+        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory.",
         options=[
             ("-v", "Verbose function metadata: source visibility, modifiers, storage refs, calls, ETH flow, selectors, and review flags.", "lk functions -v"),
             ("-V", "Filter by source visibility.", "lk functions -V external"),
@@ -18357,8 +18357,8 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         return verification_cli.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
+        # The outer CLI formatter adds the correct general-help hint for unknown commands.
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
-        print("Run 'lk --help' for the command catalog or 'lk <command> --h' for command help.", file=sys.stderr)
         return 2
 
 
