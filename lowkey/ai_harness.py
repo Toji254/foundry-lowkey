@@ -1686,7 +1686,7 @@ _SETUP_PRESETS = {
     "gemini": {
         "label": "Google Gemini",
         "base_url": DEFAULT_URLS["gemini"],
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.8-flash",
         "hint": "Google AI Studio API; account quotas apply.",
     },
     "nvidia": {
