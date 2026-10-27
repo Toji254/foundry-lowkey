@@ -50,8 +50,36 @@ PY
   printf 'Updated your lh menu in: %s\n' "$MENU_FILE"
   printf 'Backup: %s.backup-jev-%s\n' "$MENU_FILE" "$STAMP"
 else
-  printf 'Could not locate the lh menu text in common Bash config files.\n'
-  printf 'The shell shortcuts will still be installed; menu entries need to be added manually to the file defining lh.\n'
+  printf 'Could not locate the lh menu source file in common Bash config files.\n'
+  # Fallback: if lh is a Bash function loaded before the end of ~/.bashrc,
+  # extend its printed menu without modifying the original source file.
+  MENU_FALLBACK_MARKER="# >>> Lowkey Jevos lh menu fallback >>>"
+  if ! grep -Fq "$MENU_FALLBACK_MARKER" "$RC_FILE"; then
+    if [[ "$MENU_FILE" != "$RC_FILE" && ! -f "$RC_FILE.backup-jev-$STAMP" ]]; then
+      cp -p "$RC_FILE" "$RC_FILE.backup-jev-$STAMP"
+    fi
+    cat >> "$RC_FILE" <<'EOF'
+
+# >>> Lowkey Jevos lh menu fallback >>>
+# Append Jevos shortcuts to the existing lh menu if it is a Bash function.
+if declare -F lh >/dev/null 2>&1; then
+  if ! declare -F __lowkey_jev_original_lh >/dev/null 2>&1; then
+    eval "$(declare -f lh | sed '1s/^lh/__lowkey_jev_original_lh/')"
+  fi
+  lh() {
+    __lowkey_jev_original_lh "$@"
+    printf '\nJEVOS / LOWKEY AI SERVER\n'
+    printf '  jevup          Start Jevos-v5 in the background\n'
+    printf '  jevstat        Show Jevos and Jev provider status\n'
+    printf '  jevrestart     Restart Jevos-v5\n'
+    printf '  jevdn          Stop Jevos-v5\n'
+  }
+fi
+# <<< Lowkey Jevos lh menu fallback <<<
+EOF
+  fi
+  printf 'Added a fallback that appends Jevos entries when lh is a Bash function.\n'
+
 fi
 
 MARKER="# >>> Lowkey Jevos shell shortcuts >>>"
