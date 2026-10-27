@@ -192,8 +192,6 @@ def _prior_evidence_context(root: Path) -> dict[str, Any]:
             "reason": _clean(type(exc).__name__, 80),
             "candidate_findings": [],
             "historical_feedback": [],
-            "recent_command_events": [],
-            "recent_command_event_count": 0,
             "trust_boundary": "No historical evidence was supplied.",
         }
 
