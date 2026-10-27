@@ -1482,9 +1482,8 @@ def _ground_target_display_learning_note(
             "it did not choose a new one."
         ),
         "learning_point": (
-            "Think of it like a contact saved in your phone: the name and address can be there without proving "
-            "the person is home. Lowkey remembers the contract address, but it could not confirm code exists there "
-            "on the network it is checking."
+            "Think of it like a phone contact: saving someone's name and number doesn't mean they're home. "
+            "Lowkey remembers the contract address, but it could not confirm code exists there on the network it is checking."
             if deployment_unverified
             else
             "Think of the target as the contract tab Lowkey has open. It remembers the name and address; checking "
@@ -1532,6 +1531,10 @@ def _remove_duplicate_unknown_command_help(
         if isinstance(note, dict):
             note["optional_command"] = ""
             note["command"] = ""
+            note["what_to_notice"] = (
+                "The error says the command was not recognized and points to 'lk --help'. "
+                "The command list appears in help, not in this error."
+            )
 
 
 def recommend_next_steps(
