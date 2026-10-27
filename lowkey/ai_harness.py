@@ -2090,33 +2090,29 @@ AI_HELP_GUIDE = r'''COMMAND FORMS & OPTIONS
 
 QUICK START
 -----------
-  Configure/test: lk ai setup → lk ai status → lk ai test.
-  Inspect before sharing: lk ai preview --contract NAME --show-context.
-  Review or enable Jev: lk ai security-review --contract NAME; lk ai jev on/status/off.
+  Start with: lk ai setup → lk ai status → lk ai test.
 
 JEV AUTONOMY & LOCAL BUDGET GUARD
 --------------------------------
   lk ai jev setup [--provider jevmodel|typesafe]
-      Fresh setup uses JevModel's advertised 100,000 starter input tokens after email verification.
-      Use --provider typesafe for the official TypeSafe endpoint; keys are provider-specific.
-  lk ai jev test | on | off | status | remove-key
-      test sends one fixed source-free request; status is local-only; Jev never executes suggestions.
-      on options: --tier guarded|standard, --daily-limit 1..24, --with-text-ai (separate text provider).
-      Guarded default: 5 attempted requests per UTC day; JevModel request cap: 7,500 bytes.
+      Fresh setup defaults to JevModel: 100,000 starter input tokens after email verification.
+      Use --provider typesafe for the official endpoint; keys are provider-specific.
+  lk ai jev test / lk ai jev on [options]
+  lk ai jev off / lk ai jev status / lk ai jev remove-key
+      test sends one fixed source-free request; status is local-only. Jev never executes suggestions.
+      on options: --tier guarded|standard, --daily-limit N, --with-text-ai (separate text provider).
+      Guarded default: 5 attempted requests per UTC day; JevModel body cap: 7,500 bytes.
 SETUP & CONNECTION
 ------------------
   lk ai status
       Show configuration/readiness. Local-only; it does not contact the provider.
-      Example: lk ai status
 
   lk ai setup [--provider PROVIDER --model MODEL] [options]
       Run the guided setup when no provider/model is supplied, or configure directly.
       Options include --base-url, --api-key-env, --timeout, --max-output-tokens.
-      Example: lk ai setup
 
   lk ai switch [PROFILE|NUMBER] / lk ai switch list
       Select a saved provider/model configuration. Credentials stay in a separate private store.
-      Example: lk ai switch
 
   lk ai profile delete PROFILE_ID
       Delete an inactive profile; active is protected.
@@ -2127,12 +2123,10 @@ SETUP & CONNECTION
 
   lk ai enable / lk ai disable
       Enable or pause optional AI. Native Lowkey commands still work.
-      Example: lk ai enable
 
   lk ai test / lk ai runtime [--json]
       test sends a fixed probe without source; runtime explains helper roles,
       provider readiness and safety limits.
-      Example: lk ai test
 
 KEY MANAGEMENT
 --------------
