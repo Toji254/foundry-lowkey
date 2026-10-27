@@ -77,7 +77,7 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertTrue(ai.load_config()["jev_free_tier_mode"])
         self.assertIn("No request was sent", output.getvalue())
 
-    def test_jev_cannot_enable_autonomy_without_a_type_safe_key(self):
+    def test_jev_cannot_enable_autonomy_without_a_selected_provider_key(self):
         output = io.StringIO()
         with contextlib.redirect_stderr(output):
             self.assertEqual(ai.main(["jev", "on"]), 2)
