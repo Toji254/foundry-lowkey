@@ -3715,7 +3715,13 @@ def main(argv: list[str] | None = None) -> int:
                 if not jev_engine.PROVIDERS[provider].get("local") and not env_key and not saved_key:
                     key = getpass.getpass(f"{jev_engine.PROVIDERS[provider]['label']} API key (input hidden): ").strip()
                     if not key:
-                        raise AIHarnessError("No API key entered; Jev settings were not changed.")
+                        # A blank hidden-input response is an intentional cancellation,
+                        # not a failed command. Do not send it through auto-error advice.
+                        print(
+                            "Cancelled by user; no API key entered and Jev settings were not changed.",
+                            file=sys.stderr,
+                        )
+                        return 130
                 jev_engine.configure(
                     api_key=key,
                     provider=provider,
