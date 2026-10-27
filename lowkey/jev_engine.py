@@ -360,7 +360,11 @@ def _clean_context(command: str, arguments: list[str], exit_code: int, output: s
     # URL paths can carry API/RPC credentials, so omit every URL rather than trying
     # to guess whether a particular provider puts its token in the path or query.
     safe_args = [
-        re.sub(r"(?i)\b(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED URL]", value)
+        re.sub(
+            r"(?i)\b(?:https?|wss?)://[^\s\"'<>]+",
+            "[REDACTED URL]",
+            re.sub(r"(?i)\b(?:0x)?[a-f0-9]{64,}\b", "[REDACTED 32-BYTE HEX]", value),
+        )
         for value in safe_args
     ]
     safe_output = ai_workflow._redact_text(str(output or ""))
