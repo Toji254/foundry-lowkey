@@ -126,7 +126,7 @@ class JevEngineTests(unittest.TestCase):
             arguments=["--api-key", "should-never-be-sent"],
             exit_code=1,
             command_output=(
-                "build failed for https://example.invalid/?api_key=ultra-secret "
+                "build failed for https://example.invalid/v2/path-token-secret?api_key=ultra-secret "
                 "Authorization: Bearer bearer-secret "
                 "private key 0x" + "a" * 64
             ),
@@ -135,6 +135,8 @@ class JevEngineTests(unittest.TestCase):
         state_text = json.dumps(seen["body"]["state"])
         self.assertNotIn("should-never-be-sent", state_text)
         self.assertNotIn("ultra-secret", state_text)
+        self.assertNotIn("path-token-secret", state_text)
+        self.assertNotIn("example.invalid", state_text)
         self.assertNotIn("bearer-secret", state_text)
         self.assertNotIn("0x" + "a" * 64, state_text)
         self.assertEqual(report["outcome"], "actionable_failure")
