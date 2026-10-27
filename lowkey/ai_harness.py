@@ -1518,6 +1518,22 @@ def _ground_target_display_learning_note(
     report["discarded_count"] = 0
 
 
+def _remove_duplicate_unknown_command_help(
+    report: dict[str, Any],
+    command_result: int | None,
+    current_command_output: str | None,
+) -> None:
+    """Don't repeat the help hint already printed by Lowkey for an unknown command."""
+    if command_result in (None, 0):
+        return
+    if not re.search(r"\\bunknown Lowkey command\\b", str(current_command_output or ""), re.IGNORECASE):
+        return
+    for note in report.get("recommendations", []):
+        if isinstance(note, dict):
+            note["optional_command"] = ""
+            note["command"] = ""
+
+
 def recommend_next_steps(
     root: str | Path,
     command: str,
@@ -1660,6 +1676,7 @@ def recommend_next_steps(
     )
     normalized = validate_ai_recommendations(result, context, native_recommendations)
     _ground_target_display_learning_note(normalized, context, current_command_output)
+    _remove_duplicate_unknown_command_help(normalized, command_result, current_command_output)
     normalized["current_lowkey_command"] = context.get("current_lowkey_command", {})
     shared_history = context.get("shared_project_context")
     shared_events = shared_history.get("events", []) if isinstance(shared_history, Mapping) else []
