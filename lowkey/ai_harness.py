@@ -1526,7 +1526,7 @@ def _remove_duplicate_unknown_command_help(
     """Don't repeat the help hint already printed by Lowkey for an unknown command."""
     if command_result in (None, 0):
         return
-    if not re.search(r"\\bunknown Lowkey command\\b", str(current_command_output or ""), re.IGNORECASE):
+    if not re.search(r"\bunknown Lowkey command\b", str(current_command_output or ""), re.IGNORECASE):
         return
     for note in report.get("recommendations", []):
         if isinstance(note, dict):
