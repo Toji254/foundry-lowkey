@@ -3828,11 +3828,19 @@ def main(argv: list[str] | None = None) -> int:
                         cfg["jev_context_limit_bytes"],
                         7_500 if jev_state.get("provider") == "jevmodel" else jev_engine.MAX_REQUEST_BYTES,
                     )
-                    print(
-                        f"Local usage guard: ON — up to {cfg['jev_daily_call_limit']} provider attempts per UTC day "
-                        f"and {effective_context_cap:,} request bytes."
-                    )
-                    print("This is a local usage cap, not the provider's own allowance or a zero-cost guarantee. Failed provider attempts count.")
+                    if jev_state.get("provider") == "jevos":
+                        print(
+                            f"Hosted-provider guard: ON — up to {cfg['jev_daily_call_limit']} hosted/text-AI attempts per UTC day. "
+                            f"Jevos local requests are not counted; request cap is {effective_context_cap:,} bytes."
+                        )
+                    else:
+                        print(
+                            f"Local usage guard: ON — up to {cfg['jev_daily_call_limit']} provider attempts per UTC day "
+                            f"and {effective_context_cap:,} request bytes."
+                        )
+                        print("This is a local usage cap, not the provider's own allowance or a zero-cost guarantee. Failed provider attempts count.")
+                elif jev_state.get("provider") == "jevos":
+                    print("Hosted-provider guard: OFF for hosted/text-AI requests. Jevos inference remains local and requires no hosted API.")
                 else:
                     print("Local usage guard: OFF. Provider/account billing and rate limits still apply.")
                 if jev_state.get("provider") == "jevmodel":
@@ -3855,7 +3863,9 @@ def main(argv: list[str] | None = None) -> int:
             print("Jev autonomous triage: OFF.")
             print("Other Lowkey AI settings and native commands are unchanged.")
             if cfg.get("jev_free_tier_mode"):
-                print("The local request/context budget guard remains active for Jev and any configured text-AI requests.")
+                print("The local request/context budget guard remains active for hosted Jev and any configured text-AI requests; local Jevos inference does not consume the hosted request counter.")
+            elif jev_engine.load_settings().get("provider") == "jevos":
+                print("Hosted-provider budget guard: OFF. Jevos remains local and does not use hosted Jev inference.")
             else:
                 print("Local budget guard: OFF. Provider-side limits and charges still apply.")
             return 0
