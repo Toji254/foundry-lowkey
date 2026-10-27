@@ -104,9 +104,12 @@ Warning (2072): Unused local variable.
             root.mkdir()
             state_root = pathlib.Path(tmp) / "state" / "lowkey"
             secret = "sk-" + "A" * 24
+            bare_secret = "B" * 64
             output = (
                 "Warning (6321): Unnamed return variable can remain unassigned.\n"
                 "OPENAI_API_KEY=" + secret + "\n"
+                "RPC_URL=https://user:password@rpc.example/endpoint\n"
+                "unlabelled secret " + bare_secret + "\n"
                 + str(root) + "/script/Deploy.s.sol:9:38"
             )
             with patch.object(error_context, "state_dir", return_value=state_root):
@@ -122,6 +125,8 @@ Warning (2072): Unused local variable.
 
             rendered = json.dumps(shared)
             self.assertNotIn(secret, saved)
+            self.assertNotIn(bare_secret, saved)
+            self.assertNotIn("password@", saved)
             self.assertNotIn(str(root), rendered)
             self.assertIn("[REDACTED]", saved)
             self.assertEqual(stat.S_IMODE(state_root.stat().st_mode), 0o700)
