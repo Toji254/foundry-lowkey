@@ -18646,7 +18646,7 @@ def _jev_command_eligible(command, arguments, exit_code=None):
     }
 
 
-def _print_jev_command_classification(command, args, result_code, command_output=""):
+def _print_jev_command_classification(command, args, result_code, command_output="", project_config=None):
     """Display Jev's typed assessment after the native command; never retry or execute it."""
     state = _ai_status_safely()
     if not state.get("jev_autonomous"):
@@ -18872,7 +18872,7 @@ def main():
     # Do not spend a second model request on a result for which the user explicitly
     # asked for text guidance or the configured automatic text helper already ran.
     if jev_active and not text_guidance_ran and _jev_command_eligible(command, sys.argv[2:], footer_status):
-        _print_jev_command_classification(command, sys.argv[2:], footer_status, ai_command_output)
+        _print_jev_command_classification(command, sys.argv[2:], footer_status, ai_command_output, config)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
