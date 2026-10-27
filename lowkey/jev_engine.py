@@ -80,7 +80,9 @@ def load_settings() -> dict[str, Any]:
 
 
 def _saved_key() -> str | None:
-    value = _read_json(credentials_path(), {})
+    value = _read_json(credentials_path(), None)
+    if value is None:
+        return None
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise JevError("Jev credential file is invalid; preserve a backup before repairing it.")
     key = value.get("api_key")
