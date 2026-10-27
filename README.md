@@ -97,6 +97,16 @@ The native command still runs with its normal behavior. In particular, `lk send 
 
 `lk ai mode auto` opts into guidance after eligible complex workflows or supported failures. It requires AI to be enabled and usable; `lk ai mode manual` turns that automatic behavior off. The independent `lk ai recommendations` and `lk ai errors` settings remain separate.
 
+For one switch that coordinates the existing AI assists, use Jev autonomy:
+
+~~~bash
+lk ai jev on                 # turn on lab review, command guidance, error help and recommendations
+lk ai jev status             # show settings and today's local free-tier request budget
+lk ai jev off                # stop automatic AI behavior; keep explicit lk ai tasks
+~~~
+
+Jev defaults to a local free-tier guard when enabled: 8 AI requests per device-local day, up to 16,000 context bytes and 650 output tokens per request. Set `--daily-limit` to a deliberate local cap, or `--tier standard` only if your provider plan supports it. These safeguards do not guarantee a provider will never rate-limit or charge; provider-specific quotas still apply. The guard counts provider attempts and also applies to manual AI requests while enabled. See [Jev autonomy](docs/jev-autonomy.md).
+
 For a task spanning several checks, `lk ai run` makes a source-grounded plan and shows each proposed command:
 
 ~~~bash
