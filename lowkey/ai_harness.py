@@ -1272,8 +1272,8 @@ QUICK START
 -----------
   1. Run the guided provider/model setup:
        lk ai setup
-     Choose your provider, accept or edit the suggested model ID, and enter your key privately.
-     Advanced setup remains available with --provider and --model flags.
+     Choose a service, accept the suggested model or enter another, then add your key.
+     Use --provider and --model for advanced setup.
   2. Check readiness and test connectivity (the probe sends no project source):
        lk ai status
        lk ai test
