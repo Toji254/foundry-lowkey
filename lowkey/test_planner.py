@@ -148,6 +148,18 @@ def _store_report(root: Path, report: Mapping[str, Any]) -> dict[str, Any]:
     return {"plan_id": plan_id, "report_path": path.relative_to(root).as_posix()}
 
 
+def _is_retryable_structured_output_error(error: BaseException) -> bool:
+    """Retry malformed model output, but never retry provider/network/auth failures."""
+    if isinstance(error, ai_harness.AIUnavailable):
+        return False
+    message = str(error)
+    return message.startswith((
+        "Provider returned an invalid structured JSON response",
+        "Provider output must be a JSON object",
+        "Provider result is missing required field(s):",
+    ))
+
+
 def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict[str, Any]:
     project = Path(root).expanduser().resolve()
     runtime = AgentRuntime(project)
@@ -190,23 +202,39 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
             granted_permissions=grants,
         )
 
-    raw = request_plan(task)
     validation_retry_count = 0
     try:
+        raw = request_plan(task)
         normalized = validate_with_checker(raw)
-    except TestPlanError as first_error:
-        # One bounded retry gives the provider a clear schema correction opportunity.
-        # The second request may incur additional provider charges.
+    except (TestPlanError, ai_harness.AIHarnessError) as first_error:
+        # Retry only malformed structured output or a plan that fails local validation.
+        # Provider/network/auth failures are not retried. The correction request may incur
+        # an additional provider charge, and a failed retry never saves a plan.
+        if isinstance(first_error, ai_harness.AIHarnessError) and not _is_retryable_structured_output_error(first_error):
+            raise
         validation_retry_count = 1
+        failure_kind = (
+            "structured-output error"
+            if isinstance(first_error, ai_harness.AIHarnessError)
+            else "local validation error"
+        )
         correction_task = (
             task
-            + "\n\nCORRECTION REQUIRED: The previous response failed Lowkey's local validation: "
+            + f"\n\nCORRECTION REQUIRED: The previous response failed Lowkey's {failure_kind}: "
             + str(first_error)[:500]
-            + ". Generate a fresh, complete JSON object. Follow these hard limits: at most 8 test cases, "
-            "8 steps per case, 8 assertions per case, and 8 limitations. Include every required field, "
-            "copy source quotes only from the supplied source, and return JSON only without Markdown."
+            + ". Return a fresh, complete, compact JSON object. Reduce output size: at most 4 test cases, "
+            "5 steps per case, 5 assertions per case, and 4 limitations. Keep each field concise, include every "
+            "required field, copy source quotes only from supplied source, and return JSON only without Markdown."
         )
-        raw = request_plan(correction_task)
+        try:
+            raw = request_plan(correction_task)
+        except ai_harness.AIHarnessError as second_error:
+            if not _is_retryable_structured_output_error(second_error):
+                raise
+            raise TestPlanError(
+                "AI test plan could not produce a valid structured response after one correction attempt. "
+                f"Reason: {second_error} No plan was saved, and no test was written or run."
+            ) from second_error
         try:
             normalized = validate_with_checker(raw)
         except TestPlanError as second_error:
@@ -264,7 +292,7 @@ def render_test_plan(report: Mapping[str, Any]) -> str:
         "The source check only confirms whether a quoted snippet exists; it does not prove the test idea is correct.",
     ]
     if meta.get("validation_retry_count"):
-        lines.append("Format note: the first AI response failed validation; Lowkey requested one corrected response.")
+        lines.append("Format note: the first AI response did not pass Lowkey's output checks; one compact correction was requested.")
     if not cases:
         lines.extend([
             "",
