@@ -3846,7 +3846,7 @@ def main(argv: list[str] | None = None) -> int:
                         7_500 if jev_state.get("provider") == "jevmodel" else jev_engine.MAX_REQUEST_BYTES,
                     )
                     print(
-                        f"Local usage guard: ON — up to {cfg['jev_daily_call_limit']} provider attempts per local day "
+                        f"Local usage guard: ON — up to {cfg['jev_daily_call_limit']} provider attempts per UTC day "
                         f"and {effective_context_cap:,} request bytes."
                     )
                     print("This is a local usage cap, not the provider's own allowance or a zero-cost guarantee. Failed provider attempts count.")
