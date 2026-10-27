@@ -161,6 +161,11 @@ Warning (2072): Unused local variable.
             self.assertIn("Unnamed return variable", json.dumps(captured["context"]))
             self.assertIn("prioritize investigation", captured["task"])
             self.assertTrue(report["_lowkey_meta"]["ai_generated"])
+            self.assertEqual(report["_lowkey_meta"]["shared_command_events_included"], 1)
+            self.assertIn(
+                "Shared project command history considered: 1 recent event(s).",
+                ai_harness.render_ai_recommendations(report),
+            )
 
 
     def test_ai_diagnosis_receives_recent_project_history_without_absolute_path(self):
