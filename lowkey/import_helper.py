@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import difflib
-import io
 import json
 import re
 import subprocess
