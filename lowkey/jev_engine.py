@@ -198,8 +198,8 @@ def status() -> dict[str, Any]:
         "key_values_displayed": False,
         "local_budget_guard": "managed by lk ai jev",
         "starter_allowance_note": (
-            "JevModel advertises 100,000 starter input tokens after email verification; "
-            "check your account for current balance and terms."
+            "JevModel advertises 100,000 starter input tokens after email verification and five successful free runs per UTC day "
+            "(subject to service capacity); check your account for current balance and terms."
             if provider == "jevmodel" else
             "TypeSafe pricing/account limits apply; check the official console."
         ),
