@@ -574,7 +574,7 @@ def read_project_context(
         path, _ = _project_context_path(root)
         candidate = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(candidate, dict) and candidate.get("schema_version") == 1:
-            if candidate.get("project_identity") in (None, str(root)):
+            if candidate.get("project_identity") == str(root):
                 payload = candidate
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         payload = {}
@@ -592,15 +592,15 @@ def read_project_context(
             continue
         signals = item.get("signals")
         events.append({
-            "timestamp": str(item.get("timestamp") or "")[:40],
-            "command": str(item.get("command") or "")[:160],
+            "timestamp": _safe_project_text(root, item.get("timestamp"), 40),
+            "command": _safe_project_text(root, item.get("command"), 160),
             "exit_code": item.get("exit_code") if isinstance(item.get("exit_code"), int) else None,
             "status": "failed" if item.get("status") == "failed" else "completed",
             "signals": [
-                redact(value, limit=500).replace(str(root), ".")
+                _safe_project_text(root, value, 500)
                 for value in signals[:12] if isinstance(value, str)
             ] if isinstance(signals, list) else [],
-            "diagnostic_excerpt": redact(item.get("diagnostic_excerpt"), limit=2200).replace(str(root), "."),
+            "diagnostic_excerpt": _safe_project_text(root, item.get("diagnostic_excerpt"), 2200),
         })
     try:
         project_knowledge = _read_project_knowledge(root)
