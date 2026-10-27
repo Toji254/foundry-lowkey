@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lowkey import ai_harness as ai
+from lowkey import jev_engine
 
 
 class JevAutonomyTests(unittest.TestCase):
@@ -23,11 +24,18 @@ class JevAutonomyTests(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def _configure_local_provider(self):
-        return ai.configure(
+        # Preserve the separate text-AI configuration while using a fake local
+        # Jev credential; no network request is made by setup/status tests.
+        ai.configure(
             provider="ollama",
             model="test-model",
             base_url="http://127.0.0.1:11434/v1",
         )
+        jev_engine.configure(
+            api_key="typesafe_test_key_0123456789",
+            model="jev-latest",
+        )
+        return ai.load_config()
 
     def test_help_exposes_jev_switch_and_tier_controls(self):
         output = io.StringIO()
@@ -66,10 +74,12 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertTrue(cfg["enabled"])
         self.assertTrue(cfg["jev_autonomous"])
         self.assertTrue(cfg["jev_free_tier_mode"])
-        self.assertTrue(cfg["auto_assist"])
-        self.assertTrue(cfg["auto_explain_errors"])
-        self.assertTrue(cfg["auto_recommendations"])
-        self.assertIn("8 AI requests", output.getvalue())
+        # Jev's typed classifier is separate from the text-LLM automation toggles.
+        self.assertFalse(cfg["auto_assist"])
+        self.assertFalse(cfg["auto_explain_errors"])
+        self.assertFalse(cfg["auto_recommendations"])
+        self.assertIn("8 provider attempts", output.getvalue())
+        self.assertIn("TypeSafe charges for input tokens", output.getvalue())
 
     def test_jev_off_disables_automatic_features_but_preserves_manual_ai_and_guard(self):
         self._configure_local_provider()
@@ -84,7 +94,7 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertFalse(cfg["auto_explain_errors"])
         self.assertFalse(cfg["auto_recommendations"])
         self.assertTrue(cfg["jev_free_tier_mode"])
-        self.assertIn("explicit 'lk ai ...' requests remain available", output.getvalue())
+        self.assertIn("Other Lowkey AI settings and native commands are unchanged", output.getvalue())
 
     def test_jev_status_is_local_and_reports_budget(self):
         self._configure_local_provider()
@@ -93,9 +103,10 @@ class JevAutonomyTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(ai.main(["jev", "status", "--json"]), 0)
         value = json.loads(output.getvalue())
-        self.assertTrue(value["jev_autonomous"])
-        self.assertEqual(value["jev_daily_call_limit"], 3)
-        self.assertEqual(value["jev_calls_remaining"], 3)
+        self.assertTrue(value["autonomous_mode"])
+        self.assertTrue(value["jev"]["configured"])
+        self.assertEqual(value["local_budget_guard"]["daily_limit"], 3)
+        self.assertEqual(value["local_budget_guard"]["remaining"], 3)
 
     def test_invalid_daily_limit_does_not_change_existing_settings(self):
         self._configure_local_provider()
