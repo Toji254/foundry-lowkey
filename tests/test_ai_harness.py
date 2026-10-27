@@ -207,6 +207,18 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("Candidate invariants:", rendered)
         self.assertIn("No local lab was started", rendered)
 
+    def test_project_review_escapes_terminal_control_characters(self):
+        rendered = ai.render_project_protocol_review({
+            "summary": "before\x1b[31mred\x1b[0m",
+            "contract_roles": [],
+            "invariants": [],
+            "open_questions": [],
+            "deployment_considerations": [],
+            "_lowkey_meta": {"source_files_included": 1},
+        })
+        self.assertNotIn("\x1b", rendered)
+        self.assertIn(r"\x1b[31m", rendered)
+
     def test_project_review_supports_json_output(self):
         review = {
             "summary": "Project summary",
