@@ -802,7 +802,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_explicit_protocol_review_receives_only_approved_memory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "src" / "Vault.sol").write_text(
                 "contract Vault { function withdraw() external {} } // factory registry",
@@ -912,7 +912,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_large_source_and_approved_memory_fit_context_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
             (root / "src").mkdir()
             for index in range(18):
                 (root / "src" / f"Vault{index}.sol").write_text(
@@ -973,7 +973,7 @@ class AIHarnessTests(unittest.TestCase):
             )
             (root / "src" / "Signer.sol").write_text(
                 "contract Signer { string constant KEY = "
-                '"-----BEGIN PRIVATE KEY-----\nPEM_SECRET_DO_NOT_SEND\n-----END PRIVATE KEY-----"; }',
+                '"-----BEGIN PRIVATE KEY-----\\nPEM_SECRET_DO_NOT_SEND\\n-----END PRIVATE KEY-----"; }',
                 encoding="utf-8",
             )
             context = ai._source_context(root, None)
@@ -999,7 +999,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_ai_context_preview_is_local_and_shows_redacted_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "test").mkdir()
             (root / "src" / "Vault.sol").write_text(
