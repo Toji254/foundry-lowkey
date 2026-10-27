@@ -282,7 +282,7 @@ class AIHarnessTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(ai.main(["recommendations", "manual"]), 0)
         self.assertIn("native next-command suggestions.", output.getvalue())
-        self.assertIn("No automatic AI recommendation requests will be made.", output.getvalue())
+        self.assertIn("No automatic AI learning-note requests will be made.", output.getvalue())
         self.assertFalse(ai.load_config()["auto_recommendations"])
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -527,8 +527,8 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("Lowkey itself", captured["task"])
         rendered = ai.render_ai_recommendations(report)
         self.assertIn("Command you tried: lk no-such-command", rendered)
-        self.assertIn("returned exit code 2", rendered)
-        self.assertIn("Optional experiment (not a task)", rendered)
+        self.assertIn("Lowkey reported a problem (code 2)", rendered)
+        self.assertIn("Optional experiment (not homework)", rendered)
 
     def test_recommendation_allowlist_rejects_transaction_and_shell_commands(self):
         for command in (
