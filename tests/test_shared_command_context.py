@@ -62,9 +62,9 @@ class SharedCommandContextTests(unittest.TestCase):
                 return 0
 
             config = {}
-            with patch.object(error_context, "state_dir", return_value=state_root), \\
-                 patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
-                 patch.object(lk, "_dispatch_command_impl", side_effect=emit_build_output), \\
+            with patch.object(error_context, "state_dir", return_value=state_root), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "_dispatch_command_impl", side_effect=emit_build_output), \
                  patch.object(lk, "_COMMAND_STATUS", 0):
                 result = lk.dispatch_command("build", [], config)
 
@@ -280,8 +280,8 @@ Warning (2072): Unused local variable.
                 captured.update(kwargs)
                 return {"recommendations": []}
 
-            with patch.object(error_context, "read_project_context", return_value=history), \\
-                 patch.object(ai_harness, "request_structured", side_effect=capture_request), \\
+            with patch.object(error_context, "read_project_context", return_value=history), \
+                 patch.object(ai_harness, "request_structured", side_effect=capture_request), \
                  patch.object(ai_harness, "validate_ai_recommendations", return_value={"recommendations": []}):
                 report = ai_harness.recommend_next_steps(
                     root,
