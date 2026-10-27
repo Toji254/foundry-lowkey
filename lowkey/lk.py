@@ -18676,6 +18676,20 @@ def _print_jev_command_classification(command, args, result_code, command_output
         )
         print()
         print(jev_engine.render_classification(report, "lk " + str(command or "").strip()))
+        # Optional prose is a separate model, and only runs when explicitly enabled.
+        if (
+            state.get("jev_use_text_ai")
+            and state.get("enabled")
+            and state.get("usable")
+            and report.get("needs_explanation") is True
+            and report.get("suggested_response") in {"explain_observation", "inspect_evidence"}
+            and not (int(result_code) != 0 and state.get("auto_explain_errors"))
+        ):
+            _print_ai_command_guidance(
+                command, args, result_code,
+                project_config if isinstance(project_config, dict) else {},
+                command_output, automatic=True,
+            )
     except Exception as exc:
         # Native command success/failure is authoritative; optional triage is non-blocking.
         print(
