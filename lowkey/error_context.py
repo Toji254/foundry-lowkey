@@ -22,7 +22,7 @@ _SECRET_ASSIGNMENT = re.compile(
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")
 _GEMINI_KEY = re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b")
-_URL_QUERY = re.compile(r"(?i)(https?://[^\s?#]+)\?[^\s#]+")
+_URL_QUERY = re.compile(r"(?i)((?:https?|wss?)://[^\s?#]+)\?[^\s#]+")
 _URL_USERINFO = re.compile(r"(?i)((?:https?|wss?)://)[^/\s@]+@")
 
 
@@ -44,6 +44,8 @@ def redact(text: Any, *, limit: int = 6000) -> str:
     value = _GEMINI_KEY.sub("[REDACTED API KEY]", value)
     value = _URL_QUERY.sub(r"\1?[REDACTED QUERY]", value)
     value = _URL_USERINFO.sub(r"\1[REDACTED]@", value)
+    value = re.sub(r"\b0x[0-9a-fA-F]{64}\b", "[REDACTED PRIVATE KEY OR HASH]", value)
+    value = re.sub(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])", "[REDACTED 32-BYTE HEX VALUE]", value)
     value = value.replace("\x00", "")
     return value[:limit]
 
