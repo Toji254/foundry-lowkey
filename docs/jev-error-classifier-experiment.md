@@ -11,30 +11,34 @@ This separation is deliberate. A missing import can cause compilation to stop, b
 
 The current corpus is hand-curated and small. It is useful for exercising the request/response path and spotting obvious taxonomy mistakes; it is not a representative dataset and must not be described as demonstrating production accuracy.
 
-## Run the offline baseline
+## Run it through Lowkey
 
-From the repository root:
+After switching to this branch and reinstalling Lowkey:
 
+    lk jev benchmark
+
+This runs only local rules. It makes no network request and requires no key. It writes a machine-readable report to .audit/jev-error-classifier-benchmark.json. Use `lk jev --h` or `lk jev benchmark --h` for the command reference.
+
+The standalone script remains as a convenience wrapper, but the supported native entry point is `lk jev benchmark`:
+    
     python3 scripts/jev-error-classifier-benchmark.py
-
-This runs only local rules. It makes no network request and requires no key. It writes a machine-readable report to .audit/jev-error-classifier-benchmark.json.
 
 Run a small live smoke test after confirming that your TypeSafe account has API-key access:
 
     export TYPESAFE_API_KEY='your-key'
-    python3 scripts/jev-error-classifier-benchmark.py --with-jev --limit 3
+    lk jev benchmark --with-jev --limit 3
 
 The key is read from the environment and sent only in the Authorization header. Never commit it, paste it into issue text, or add it to the report. Jev receives only the fixed benchmark fixture, not your source tree, project files, environment, audit ledger, or live command history. The tool makes one request per selected fixture, asks for stage and root-cause choices in the same request, and does not retry provider errors automatically.
 
 To run the full corpus:
 
-    python3 scripts/jev-error-classifier-benchmark.py --with-jev
+    lk jev benchmark --with-jev
 
 The direct API endpoint and model are TypeSafe's documented POST https://api.typesafe.ai/v1/systemone endpoint and jev-latest model. Access depends on the TypeSafe account. The independent Jev Playground does not issue reusable API keys. See https://jevplayground.com/jev-api for current access, payload, typed response, pricing, and data-handling details.
 
 Use a custom report path or adjust the request timeout:
 
-    python3 scripts/jev-error-classifier-benchmark.py --with-jev --limit 5 --timeout 20 --output /tmp/jev-smoke.json
+    lk jev benchmark --with-jev --limit 5 --timeout 20 --output /tmp/jev-smoke.json
 
 ## Validate the local adapter and taxonomy
 
