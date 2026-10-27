@@ -23,6 +23,7 @@ _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")
 _GEMINI_KEY = re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b")
 _URL_QUERY = re.compile(r"(?i)(https?://[^\s?#]+)\?[^\s#]+")
+_URL_USERINFO = re.compile(r"(?i)((?:https?|wss?)://)[^/\s@]+@")
 
 
 def state_dir() -> Path:
@@ -42,6 +43,7 @@ def redact(text: Any, *, limit: int = 6000) -> str:
     value = _OPENAI_KEY.sub("[REDACTED API KEY]", value)
     value = _GEMINI_KEY.sub("[REDACTED API KEY]", value)
     value = _URL_QUERY.sub(r"\1?[REDACTED QUERY]", value)
+    value = _URL_USERINFO.sub(r"\1[REDACTED]@", value)
     value = value.replace("\x00", "")
     return value[:limit]
 
@@ -140,6 +142,7 @@ def _redact_diagnostic_output(value: Any, limit: int = 24000) -> str:
         text,
     )
     text = re.sub(r"\b0x[0-9a-fA-F]{64}\b", "[REDACTED PRIVATE KEY OR HASH]", text)
+    text = re.sub(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])", "[REDACTED 32-BYTE HEX VALUE]", text)
     return text
 
 
