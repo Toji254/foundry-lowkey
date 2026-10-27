@@ -31,7 +31,7 @@ _AUTO_GUIDANCE_COMMANDS = {
 _JEV_AUTO_GUIDANCE_COMMANDS = {
     # Wider automatic coverage is enabled only by the Jev master switch.
     "build", "doctor", "recon", "probe", "trace", "state-diff", "project", "system",
-    "changes", "risk", "poc", "test-gen", "mutation-check", "verification", "matrix", "seams",
+    "changes", "risk", "poc", "test-gen", "mutation-check", "verification", "matrix", "seams", "clone",
 }
 
 
