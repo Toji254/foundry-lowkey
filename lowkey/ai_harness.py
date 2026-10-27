@@ -1454,6 +1454,70 @@ def validate_ai_recommendations(
 
 
 
+def _ground_target_display_learning_note(
+    report: dict[str, Any],
+    context: Mapping[str, Any],
+    current_command_output: str | None,
+) -> None:
+    """Keep the no-argument target display note faithful to what Lowkey actually showed."""
+    current = context.get("current_lowkey_command")
+    if not isinstance(current, Mapping):
+        return
+    invocation = str(current.get("invocation") or "").strip().lower()
+    arguments = current.get("arguments") or []
+    if invocation != "lk target" or arguments:
+        return
+
+    output = str(current_command_output or "")
+    deployment_unverified = bool(re.search(
+        r"(?:cannot prove|could not confirm|cannot confirm).*bytecode|"
+        r"bytecode.*(?:cannot prove|could not confirm|cannot confirm)",
+        output,
+        re.IGNORECASE,
+    ))
+    note = {
+        "title": "A saved target is not proof the contract is there",
+        "why": (
+            "You ran 'lk target' without extra arguments, so Lowkey showed the target it already had saved; "
+            "it did not choose a new one."
+        ),
+        "learning_point": (
+            "Think of it like a contact saved in your phone: the name and address can be there without proving "
+            "the person is home. Lowkey remembers the contract address, but it could not confirm code exists there "
+            "on the network it is checking."
+            if deployment_unverified
+            else
+            "Think of the target as the contract tab Lowkey has open. It remembers the name and address; checking "
+            "whether contract code exists there is a separate thing."
+        ),
+        "what_to_notice": (
+            "Lowkey marked the deployment unverified because it could not confirm code at that address on the "
+            "current network."
+            if deployment_unverified
+            else
+            "The target shown is Lowkey's saved choice; deployment status is a separate check."
+        ),
+        "optional_command": "",
+        "command": "",
+        "origin": "context-grounded",
+        "verified": False,
+    }
+    sources = context.get("source_files")
+    if isinstance(sources, list):
+        for source in sources:
+            if not isinstance(source, Mapping):
+                continue
+            if (
+                source.get("path") == "lowkey-command-reference"
+                and "COMMAND CONTEXT" in str(source.get("source_excerpt") or "")
+            ):
+                note["source"] = {"path": "lowkey-command-reference", "symbol": "COMMAND CONTEXT"}
+                break
+    report["recommendations"] = [note]
+    report["candidate_count"] = max(1, int(report.get("candidate_count") or 0))
+    report["discarded_count"] = 0
+
+
 def recommend_next_steps(
     root: str | Path,
     command: str,
@@ -1566,6 +1630,9 @@ def recommend_next_steps(
         "Always inspect current_lowkey_command (the attempted command, arguments, exit code, relevant built-in help entry, "
         "and known command names) and current_command_evidence first, then recent shared project history and contract evidence "
         "when relevant. This still applies when the command failed, was misspelled, or seems unrelated. "
+        "Be exact about what the user did: 'lk target' with no arguments only displays the saved target; it does not choose or change it. "
+        "If output says Lowkey cannot confirm contract bytecode at the address, say that plainly and never claim the contract is live, deployed, "
+        "or on a simulated network. The saved name/address is not proof that code exists there. "
         "Connect the attempted command to one useful Lowkey concept that is actually relevant to this invocation. "
         "Do NOT give the user a required sequence, checklist, task plan, or a series of commands. Do NOT use imperative wording "
         "such as 'first do this, then do that'. At most, offer ONE optional experiment the user may ignore; if it is not genuinely "
@@ -1592,6 +1659,7 @@ def recommend_next_steps(
         required_fields=("recommendations",),
     )
     normalized = validate_ai_recommendations(result, context, native_recommendations)
+    _ground_target_display_learning_note(normalized, context, current_command_output)
     normalized["current_lowkey_command"] = context.get("current_lowkey_command", {})
     shared_history = context.get("shared_project_context")
     shared_events = shared_history.get("events", []) if isinstance(shared_history, Mapping) else []
