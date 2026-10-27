@@ -42,7 +42,7 @@ class JevAutonomyTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(ai.main(["--help"]), 0)
         help_text = output.getvalue()
-        self.assertIn("JEV AUTONOMY & FREE-TIER SAFETY", help_text)
+        self.assertIn("JEV AUTONOMY & LOCAL BUDGET GUARD", help_text)
         self.assertIn("lk ai jev on", help_text)
         self.assertIn("lk ai jev status", help_text)
         self.assertIn("lk ai jev off", help_text)
