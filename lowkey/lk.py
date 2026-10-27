@@ -6103,6 +6103,20 @@ def _live_target_artifact_match(config, address, artifact):
         implementation_runtime = _live_runtime(config, implementation)
         if implementation_runtime and _artifact_runtime_matches("", artifact, implementation_runtime):
             return "clone-or-proxy"
+
+        # The proxy may currently use a source-proven derived implementation (for
+        # example, a test fixture that upgrades to a V2 mock). Match its runtime
+        # to a compiled artifact and verify inheritance from the configured target.
+        root = configured_project_root(address, config)
+        target_name = artifact_contract_name("", artifact) or config.get("target_contract")
+        if (
+            root
+            and implementation_runtime
+            and _fixture_runtime_matches_target_or_upgrade(
+                root, target_name, implementation_runtime
+            )
+        ):
+            return "clone-or-proxy"
     return None
 
 
@@ -7324,6 +7338,210 @@ def _fixture_snapshot_implementation(address, account, runtime_code, code_by_add
     return None, None
 
 
+
+def _fixture_contract_base_names(source_path, contract_name):
+    """Read Solidity base-contract names from the named declaration in a source file."""
+    try:
+        source_text = Path(source_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    # Comments must not be allowed to manufacture an inheritance relationship.
+    source_text = re.sub(r"/\*.*?\*/|//[^\r\n]*", "", source_text, flags=re.S)
+    declaration = re.search(
+        r"\b(?:abstract\s+)?contract\s+" + re.escape(str(contract_name)) +
+        r"\b(?P<header>[^{};]*)\{",
+        source_text,
+        re.S,
+    )
+    if not declaration:
+        return []
+    inheritance = re.search(r"\bis\s+(?P<bases>.+)$", declaration.group("header"), re.S)
+    if not inheritance:
+        return []
+
+    # Split only at top-level commas (base constructors may contain commas).
+    entries, current, depth = [], [], 0
+    for char in inheritance.group("bases"):
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        if char == "," and depth == 0:
+            entries.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current:
+        entries.append("".join(current))
+
+    names = []
+    for entry in entries:
+        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", entry)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def _fixture_artifact_inherits_contract(root, artifact_path, artifact, ancestor_contract):
+    """Check source-backed Solidity inheritance, including transitive base contracts."""
+    root_path = Path(root).expanduser().resolve()
+    ancestor = str(ancestor_contract or "").strip().lower()
+    if not ancestor:
+        return False
+
+    initial_name = artifact_contract_name(artifact_path, artifact)
+    if initial_name.lower() == ancestor:
+        return True
+
+    source_name = artifact_source_name(artifact, artifact_path, root_path)
+    if not source_name:
+        source_name = source_contract_fallback(root_path, initial_name)
+    if not source_name:
+        return False
+    initial_path = Path(source_name)
+    if not initial_path.is_absolute():
+        initial_path = root_path / initial_path
+    if not initial_path.is_file():
+        return False
+
+    pending = [(initial_name, initial_path)]
+    visited = set()
+    while pending:
+        current_name, current_path = pending.pop()
+        try:
+            path_key = str(current_path.resolve()).lower()
+        except OSError:
+            path_key = str(current_path).lower()
+        visit_key = (str(current_name).lower(), path_key)
+        if visit_key in visited:
+            continue
+        visited.add(visit_key)
+
+        if str(current_name).lower() == ancestor:
+            return True
+
+        for base_name in _fixture_contract_base_names(current_path, current_name):
+            if base_name.lower() == ancestor:
+                return True
+            base_source = source_contract_fallback(root_path, base_name)
+            if not base_source:
+                continue
+            base_path = Path(base_source)
+            if not base_path.is_absolute():
+                base_path = root_path / base_path
+            if base_path.is_file():
+                pending.append((base_name, base_path))
+    return False
+
+
+def _fixture_target_artifact_for_runtime(root, target_contract, implementation_runtime):
+    """Return an artifact matching a target runtime or its source-proven derived contract."""
+    target_name = str(target_contract or "").strip().lower()
+    if not target_name or not implementation_runtime:
+        return None
+
+    matches = []
+    for artifact_path in local_artifact_paths(str(root)):
+        artifact = read_artifact(artifact_path) or {}
+        if not artifact_is_deployable(artifact):
+            continue
+        normalizer = _artifact_runtime_normalizer(artifact)
+        if normalizer is None or not normalizer(implementation_runtime):
+            continue
+
+        name = artifact_contract_name(artifact_path, artifact)
+        if name.lower() == target_name:
+            rank = 0
+        elif _fixture_artifact_inherits_contract(root, artifact_path, artifact, target_name):
+            # The implementation source explicitly derives from the requested
+            # contract. This includes legitimate test-only upgrade implementations.
+            rank = 1
+        else:
+            continue
+        matches.append((rank, str(artifact_path), artifact_path))
+
+    if not matches:
+        return None
+    matches.sort()
+    return matches[0][2]
+
+
+def _fixture_runtime_matches_target_or_upgrade(root, target_contract, implementation_runtime):
+    """Validate a deployed runtime against the target or a source-proven derived artifact."""
+    return _fixture_target_artifact_for_runtime(
+        root, target_contract, implementation_runtime
+    ) is not None
+
+
+def _find_fixture_operational_instance(root, state_path, target_contract, implementation_address, rpc):
+    """Recover an operational proxy/clone pointing to the target or a source-proven upgrade.
+
+    The candidate must exist in exported fixture state, point to a deployed runtime
+    matching the target artifact or a first-party derived artifact, and have live
+    non-empty runtime code on the configured local RPC.
+    """
+    try:
+        snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    accounts, _ = _fixture_accounts_map(snapshot)
+    if not isinstance(accounts, dict):
+        return None
+
+    accounts_by_lower = {
+        str(address).lower(): account
+        for address, account in accounts.items()
+        if isinstance(account, dict)
+    }
+    implementation_address = str(implementation_address or "").lower()
+    if not is_address(implementation_address):
+        return None
+
+    artifact_path, artifact = _fixture_target_artifact(root, target_contract)
+    normalizer = _artifact_runtime_normalizer(artifact)
+    if normalizer is None:
+        return None
+
+    code_by_address = {
+        address: str(account.get("code") or "0x").strip().lower()
+        for address, account in accounts_by_lower.items()
+        if str(account.get("code") or "0x").strip().lower() not in {"", "0x"}
+    }
+    candidates = []
+    for index, (address, account) in enumerate(accounts_by_lower.items()):
+        if address == implementation_address:
+            continue
+        snapshot_runtime = code_by_address.get(address, "")
+        if not snapshot_runtime or normalizer(snapshot_runtime):
+            continue
+
+        implementation, kind = _fixture_snapshot_implementation(
+            address, account, snapshot_runtime, code_by_address, rpc
+        )
+        if not implementation:
+            continue
+        implementation_runtime = code_by_address.get(implementation.lower(), "")
+        if not implementation_runtime or not _fixture_runtime_matches_target_or_upgrade(
+            root, target_contract, implementation_runtime
+        ):
+            continue
+
+        live = run_cast(["code", address, "--rpc-url", str(rpc)], config={}, capture=True)
+        live_runtime = str(live.text or "").strip().lower()
+        if live.code != 0 or live_runtime in {"", "0x", "0X"} or normalizer(live_runtime):
+            continue
+
+        rank = 0 if kind == "proxy" else 1 if kind == "clone" else 2
+        candidates.append((rank, index, address, kind or "proxy"))
+
+    if not candidates:
+        return None
+    candidates.sort()
+    _, _, address, kind = candidates[0]
+    return address, kind
+
+
 def _remember_fixture_application_targets(config, root, state_path, rpc, primary_contract, primary_address):
     """Remember additional live proxy/clone instances matching first-party app artifacts."""
     try:
@@ -7480,18 +7698,43 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         target_runtime = str(target_result.text or "").strip().lower()
         target_normalizer = _artifact_runtime_normalizer(target_artifact_data)
         if target_result.code == 0 and target_normalizer and target_normalizer(target_runtime):
-            return fail(
-                f"Error: fixture exposed only the initializer-locked {target_name} implementation. "
-                "It did not establish a proxy/clone as an operational target, so Lowkey will not mark the lab ready."
+            # Target selection can still land on the implementation when address
+            # ordering or RPC decoding obscures a proxy. The exported fixture state
+            # is authoritative: recover a proxy/clone that points to this exact
+            # implementation before refusing to promote the local lab.
+            recovered = _find_fixture_operational_instance(
+                root, state_path, target_name, target, rpc
             )
+            if recovered:
+                candidate, kind = recovered
+                candidate_result = run_cast(
+                    ["code", candidate, "--rpc-url", str(rpc)],
+                    config={}, capture=True,
+                )
+                candidate_runtime = str(candidate_result.text or "").strip().lower()
+                if (
+                    candidate_result.code == 0
+                    and candidate_runtime not in {"", "0x", "0X"}
+                    and not target_normalizer(candidate_runtime)
+                ):
+                    print(
+                        f"INFO  recovered operational {kind} target from fixture snapshot: "
+                        f"{candidate}"
+                    )
+                    target = candidate
+                else:
+                    recovered = None
+            if not recovered:
+                return fail(
+                    f"Error: fixture exposed the initializer-locked {target_name} implementation "
+                    "and Lowkey could not validate a proxy/clone pointing to it. "
+                    "The lab will not be marked ready without an operational target."
+                )
 
-    artifact = None
-    if target_name:
-        for candidate_path in local_artifact_paths(root):
-            candidate_artifact = read_artifact(candidate_path) or {}
-            if artifact_contract_name(candidate_path, candidate_artifact).lower() == target_name.lower():
-                artifact = candidate_path
-                break
+    # Use the requested contract's project artifact as the ABI. A test-only derived
+    # implementation is accepted by runtime verification without changing the target's
+    # persistent application identity or replacing its production ABI.
+    artifact = target_artifact_path
 
     contract_name = target_name or str(fixture.get("contract") or "auto-detected")
     _ensure_lab_deployer(config, accounts[0], 0)
@@ -7844,53 +8087,54 @@ def artifact_source_name(artifact, path, root=None):
         return str(artifact.get("sourceName")).replace("\\", "/").lstrip("./")
 
     metadata = artifact.get("metadata") if isinstance(artifact, dict) else None
-    if isinstance(metadata, str):
+    payload = None
+    if isinstance(metadata, dict):
+        # Foundry artifacts may decode metadata to an object instead of retaining
+        # the serialized JSON string. Both forms contain the same compiler source map.
+        payload = metadata
+    elif isinstance(metadata, str):
         try:
             payload = json.loads(metadata)
-            sources = payload.get("sources", {})
-            if isinstance(sources, dict):
-                contract_dir = Path(path).parent.name
-                contract_name = artifact_contract_name(path, artifact)
-                preferred = [
-                    name for name in sources
-                    if Path(name).name == contract_dir
-                    or Path(name).stem == contract_dir
-                    or Path(name).stem == contract_name
-                ]
-                if root is not None:
-                    src_prefix = _configured_src_prefix(root)
-                    root_path = Path(root).expanduser().resolve()
-                    for name in preferred:
-                        normalized = str(name).replace("\\", "/").lstrip("./")
-                        candidate = root_path / normalized
-                        if (normalized == src_prefix or normalized.startswith(src_prefix + "/")) and candidate.is_file():
-                            return normalized
-                if preferred:
-                    return str(preferred[0]).replace("\\", "/").lstrip("./")
-                if root is None and sources:
-                    return str(next(iter(sources))).replace("\\", "/").lstrip("./")
         except (json.JSONDecodeError, TypeError):
-            pass
+            payload = None
 
-    # When Foundry did not retain sourceName, recover the source only from
-    # the current project source tree. Never invent a source path from the
-    # artifact directory alone.
+    if isinstance(payload, dict):
+        sources = payload.get("sources", {})
+        if isinstance(sources, dict):
+            contract_dir = Path(path).parent.name
+            contract_name = artifact_contract_name(path, artifact)
+            preferred = [
+                name for name in sources
+                if Path(name).name == contract_dir
+                or Path(name).stem == contract_dir
+                or Path(name).stem == contract_name
+            ]
+            if root is not None:
+                src_prefix = _configured_src_prefix(root)
+                root_path = Path(root).expanduser().resolve()
+                for name in preferred:
+                    normalized = str(name).replace("\\", "/").lstrip("./")
+                    candidate = root_path / normalized
+                    # Metadata is authoritative for test-only upgrade artifacts too;
+                    # don't restrict its source paths to the production src directory.
+                    if candidate.is_file():
+                        return normalized
+            if preferred:
+                return str(preferred[0]).replace("\\", "/").lstrip("./")
+            if root is None and sources:
+                return str(next(iter(sources))).replace("\\", "/").lstrip("./")
+
+    # When Foundry did not retain sourceName/metadata source names, recover the
+    # source only from the current project tree. Never invent a source path from
+    # an artifact directory alone.
     if root is not None:
         root_path = Path(root).expanduser().resolve()
         src_prefix = _configured_src_prefix(root_path)
         src_root = root_path / src_prefix
         contract_dir = Path(path).parent.name
-
-        # When sourceName/metadata is absent, anchor the artifact to the source
-        # file represented by Foundry's artifact directory. Do not fall back to
-        # "find any source with the same contract name": tests/POCs can compile
-        # another artifact with an identical contractName.
         candidates = []
         if src_root.is_dir() and contract_dir:
-            candidates.extend(
-                sorted(src_root.rglob(contract_dir))
-            )
-
+            candidates.extend(sorted(src_root.rglob(contract_dir)))
         for candidate in candidates:
             try:
                 normalized = candidate.relative_to(root_path).as_posix()
@@ -7900,6 +8144,7 @@ def artifact_source_name(artifact, path, root=None):
                 return normalized
 
     return None
+
 
 def artifact_constructor_inputs(artifact):
     abi = artifact.get("abi", []) if isinstance(artifact, dict) else []
@@ -9464,9 +9709,9 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 def _decode_address_return_data(raw_value):
     """Decode a Cast address result without truncating its ABI-encoded word.
 
-    Cast can display a returned address as either a 20-byte address or as one
-    32-byte ABI word. For the latter, the address occupies the final 40 hex
-    characters and the leading 24 hex characters must be zero.
+    `cast call` can return an address as a 32-byte ABI word (0x + 64 hex
+    characters), not as a 20-byte display address. In that representation the
+    address is the final 40 hex characters; the first 24 must be zero.
     """
     raw = str(raw_value or "").strip()
     encoded_word = re.search(
@@ -9475,7 +9720,7 @@ def _decode_address_return_data(raw_value):
     )
     if encoded_word:
         word = encoded_word.group(1)
-        if word[:24] != "0" * 24:
+        if word[:24].lower() != "0" * 24:
             return None
         return "0x" + word[-40:]
 

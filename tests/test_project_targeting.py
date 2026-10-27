@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "lk.py"
@@ -198,9 +198,9 @@ class ProjectTargetingTests(unittest.TestCase):
                 "}\n",
                 encoding="utf-8",
             )
-            # An exported variable in the developer's shell must not make this
-            # missing-configuration test pass or fail nondeterministically.
-            with patch.dict(os.environ, {"SAFE_HARBOR_REGISTRY": ""}), \
+            # Keep this detector test independent of deployment variables exported
+            # in the developer shell (for example SAFE_HARBOR_REGISTRY).
+            with patch.dict(os.environ, {}, clear=True), \
                  patch.object(lk.audit_context, "foundry_project_root", side_effect=lambda value: str(value)):
                 self.assertEqual(
                     lk._lab_script_unresolved_env_names(script_dir / "Deploy.s.sol"),
@@ -1198,6 +1198,200 @@ if __name__ == "__main__":
 
             self.assertEqual(target, proxy.lower())
 
+    def test_fixture_promotion_recovers_proxy_when_target_selector_returns_locked_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "Template.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Template { "
+                "constructor() { _disableInitializers(); } "
+                "function _disableInitializers() internal {} "
+                "function initialize() external {} }",
+                encoding="utf-8",
+            )
+            artifact_path = root / "out" / "Template.sol" / "Template.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(json.dumps({
+                "contractName": "Template",
+                "sourceName": "src/Template.sol",
+                "abi": [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6001"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+
+            selected_implementation = "0x" + "1" * 40
+            actual_implementation = "0x" + "3" * 40
+            proxy = "0x" + "2" * 40
+            slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+            snapshot = {
+                selected_implementation: {"code": "0x6000", "storage": {}},
+                actual_implementation: {"code": "0x6000", "storage": {}},
+                proxy: {
+                    "code": "0x6001",
+                    "storage": {slot: "0x" + "0" * 24 + actual_implementation[2:]},
+                },
+            }
+            state_path = root / "out" / "lowkey" / "fixture_state_Template.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", selected_implementation]:
+                    return lk.CommandResult("0x6000", 0)
+                if args[:2] == ["code", actual_implementation]:
+                    return lk.CommandResult("0x6000", 0)
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x60016002600360046005", 0)
+                return lk.CommandResult("", 1)
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+                recovered = lk._find_fixture_operational_instance(
+                    root, state_path, "Template", selected_implementation,
+                    "http://127.0.0.1:8545",
+                )
+
+            self.assertEqual(recovered, (proxy.lower(), "proxy"))
+
+
+    def test_fixture_promotion_recovers_proxy_to_derived_implementation_and_rejects_unrelated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "Template.sol"
+            derived_source = root / "test" / "mocks" / "TemplateV2.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            derived_source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Template { "
+                "constructor() { _disableInitializers(); } "
+                "function _disableInitializers() internal {} function initialize() external {} }",
+                encoding="utf-8",
+            )
+            derived_source.write_text(
+                "pragma solidity ^0.8.20; contract TemplateV2 is Template { "
+                "function revision() external pure returns (uint256) { return 2; } }",
+                encoding="utf-8",
+            )
+
+            base_artifact = root / "out" / "Template.sol" / "Template.json"
+            derived_artifact = root / "out" / "TemplateV2.sol" / "TemplateV2.json"
+            base_artifact.parent.mkdir(parents=True)
+            derived_artifact.parent.mkdir(parents=True)
+            base_artifact.write_text(json.dumps({
+                "contractName": "Template",
+                "sourceName": "src/Template.sol",
+                "abi": [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6001"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+            derived_artifact.write_text(json.dumps({
+                "contractName": "TemplateV2",
+                "metadata": {"sources": {
+                    "test/mocks/TemplateV2.sol": {},
+                    "src/Template.sol": {},
+                }},
+                "abi": [
+                    {"type": "function", "name": "initialize", "inputs": [], "outputs": []},
+                    {"type": "function", "name": "revision", "inputs": [], "outputs": []},
+                ],
+                "bytecode": {"object": "0x6003"},
+                "deployedBytecode": {"object": "0x6002"},
+            }), encoding="utf-8")
+
+            selected_implementation = "0x" + "1" * 40
+            actual_implementation = "0x" + "3" * 40
+            proxy = "0x" + "2" * 40
+            slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+            snapshot = {
+                selected_implementation: {"code": "0x6000", "storage": {}},
+                actual_implementation: {"code": "0x6002", "storage": {}},
+                proxy: {
+                    "code": "0x6001",
+                    "storage": {slot: "0x" + "0" * 24 + actual_implementation[2:]},
+                },
+            }
+            state_path = root / "out" / "lowkey" / "fixture_state_Template.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", selected_implementation]:
+                    return lk.CommandResult("0x6000", 0)
+                if args[:2] == ["code", actual_implementation]:
+                    return lk.CommandResult("0x6002", 0)
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x6001", 0)
+                return lk.CommandResult("", 1)
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+                recovered = lk._find_fixture_operational_instance(
+                    root, state_path, "Template", selected_implementation,
+                    "http://127.0.0.1:8545",
+                )
+            self.assertEqual(recovered, (proxy.lower(), "proxy"))
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(
+                    lk, "_live_runtime",
+                    side_effect=lambda config, address: {
+                        proxy.lower(): "0x6001",
+                        actual_implementation.lower(): "0x6002",
+                    }.get(str(address).lower()),
+                ))
+                stack.enter_context(patch.object(lk, "_minimal_proxy_implementation", return_value=None))
+                stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"))
+                stack.enter_context(patch.object(
+                    lk, "cast_output", return_value=(0, actual_implementation, "")
+                ))
+                live_match = lk._live_target_artifact_match(
+                    {
+                        "target_contract": "Template",
+                        "rpc": "http://127.0.0.1:8545",
+                        "project_roots": {proxy.lower(): str(root)},
+                        "abi_paths": {proxy.lower(): str(base_artifact)},
+                    },
+                    proxy,
+                    json.loads(base_artifact.read_text(encoding="utf-8")),
+                )
+            self.assertEqual(live_match, "clone-or-proxy")
+
+            # Matching bytecode is not sufficient if the source does not inherit
+            # from the requested target.
+            derived_source.write_text(
+                "pragma solidity ^0.8.20; contract TemplateV2 { "
+                "function revision() external pure returns (uint256) { return 2; } }",
+                encoding="utf-8",
+            )
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+                rejected = lk._find_fixture_operational_instance(
+                    root, state_path, "Template", selected_implementation,
+                    "http://127.0.0.1:8545",
+                )
+            self.assertIsNone(rejected)
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(
+                    lk, "_live_runtime",
+                    side_effect=lambda config, address: {
+                        proxy.lower(): "0x6001",
+                        actual_implementation.lower(): "0x6002",
+                    }.get(str(address).lower()),
+                ))
+                stack.enter_context(patch.object(lk, "_minimal_proxy_implementation", return_value=None))
+                stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"))
+                stack.enter_context(patch.object(
+                    lk, "cast_output", return_value=(0, actual_implementation, "")
+                ))
+                rejected_live_match = lk._live_target_artifact_match(
+                    {
+                        "target_contract": "Template",
+                        "rpc": "http://127.0.0.1:8545",
+                        "project_roots": {proxy.lower(): str(root)},
+                        "abi_paths": {proxy.lower(): str(base_artifact)},
+                    },
+                    proxy,
+                    json.loads(base_artifact.read_text(encoding="utf-8")),
+                )
+            self.assertIsNone(rejected_live_match)
+
     def test_fixture_clone_implementation_parser(self):
         implementation = "1234567890abcdef1234567890abcdef12345678"
         runtime = "0x363d3d373d3d3d363d73" + implementation + "5af43d82803e903d91602b57fd5bf3"
@@ -1364,7 +1558,7 @@ if __name__ == "__main__":
                 "contractName": "Factory",
                 "abi": [{
                     "type": "function",
-                    "name": "poolImplementation",
+                    "name": "implementation",
                     "inputs": [],
                     "outputs": [{"name": "", "type": "address"}],
                     "stateMutability": "view",
@@ -1679,28 +1873,30 @@ class LocalTargetDependencyAddressTests(unittest.TestCase):
         self.assertEqual(lk._decode_address_return_data(address), address)
 
     def test_rejects_noncanonical_abi_address_word(self):
-        malformed = "0x" + ("1" * 24) + "5fbdb2315678afecb367f032d93f642f64180aa3"
+        malformed = "0x" + ("1" * 24) + ("5fbdb2315678afecb367f032d93f642f64180aa3")
         self.assertIsNone(lk._decode_address_return_data(malformed))
 
-    def test_validator_checks_code_at_full_decoded_address(self):
+    def test_validator_looks_up_code_at_full_decoded_dependency_address(self):
         dependency = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
         target = "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "project"
             root.mkdir()
-            artifact_path = root / "out" / "Factory.sol" / "Factory.json"
+            artifact_path = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
             artifact_path.parent.mkdir(parents=True)
             artifact_path.write_text(
                 json.dumps({
-                    "contractName": "Factory",
-                    "abi": [{
-                        "type": "function",
-                        "name": "implementation",
-                        "stateMutability": "view",
-                        "inputs": [],
-                        "outputs": [{"name": "", "type": "address"}],
-                    }],
+                    "contractName": "ConfidencePoolFactory",
+                    "abi": [
+                        {
+                            "type": "function",
+                            "name": "poolImplementation",
+                            "stateMutability": "view",
+                            "inputs": [],
+                            "outputs": [{"name": "", "type": "address"}],
+                        },
+                    ],
                 }),
                 encoding="utf-8",
             )
@@ -1709,6 +1905,7 @@ class LocalTargetDependencyAddressTests(unittest.TestCase):
 
             def fake_cast_output(command):
                 if command[1] == "call":
+                    # Raw cast call output is one ABI-encoded 32-byte word.
                     return 0, "0x" + ("0" * 24) + dependency[2:], ""
                 if command[1] == "code":
                     code_lookups.append(command[2])
@@ -1718,12 +1915,12 @@ class LocalTargetDependencyAddressTests(unittest.TestCase):
                 raise AssertionError(f"Unexpected Cast command: {command}")
 
             with patch.object(lk, "cast_output", side_effect=fake_cast_output):
-                error = lk._validate_local_target_dependency_code(
+                result = lk._validate_local_target_dependency_code(
                     root,
                     "http://127.0.0.1:8545",
                     target,
                     str(artifact_path),
                 )
 
-            self.assertIsNone(error)
+            self.assertIsNone(result)
             self.assertEqual(code_lookups, [dependency])
