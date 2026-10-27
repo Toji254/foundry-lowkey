@@ -716,10 +716,19 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
                         "quota": "provider quota/token allowance exhausted",
                         "rate-limit": "provider rate limit reached",
                     }.get(exc.category, "key request failed")
+                    if exc.category in {"quota", "rate-limit"}:
+                        recovery = (
+                            " Wait for the provider limit to reset or switch models with 'lk ai switch'. "
+                            "Another key helps only if it has a separate quota."
+                        )
+                    else:
+                        recovery = (
+                            f" Add or replace a key with 'lk ai keys add --provider {provider} --slot 1|2|3', "
+                            "then inspect 'lk ai keys list'."
+                        )
                     raise AIUnavailable(
                         f"All configured API-key slots for provider '{provider}' failed: {failure_reason} "
-                        f"(slots tried: {slots_tried}). Add or replace a key with 'lk ai keys add --provider {provider} --slot 1|2|3', "
-                        "then inspect 'lk ai keys list'. Keys were not printed."
+                        f"(slots tried: {slots_tried}).{recovery} Keys were not printed."
                     ) from exc
                 if exc.category == "authentication":
                     raise AIUnavailable("AI provider rejected the configured API key. Add another key with 'lk ai keys add'.") from exc
@@ -1812,6 +1821,8 @@ def _guided_setup(parsed: Any) -> int:
             if not key:
                 raise AIHarnessError("No API key entered; configuration was not changed.")
 
+    # Preserve the currently selected model before configure() replaces active settings.
+    _save_model_profile(load_config())
     config = configure(
         provider=provider,
         model=model,
@@ -2594,6 +2605,8 @@ def main(argv: list[str] | None = None) -> int:
                 key = getpass.getpass(f"{parsed.provider} API key (input hidden): ").strip()
                 if not key:
                     raise AIHarnessError("No API key entered; configuration was not changed.")
+            # Preserve the previous active model before making this one current.
+            _save_model_profile(load_config())
             cfg = configure(
                 provider=parsed.provider, model=parsed.model, base_url=parsed.base_url, api_key=key,
                 api_key_env=parsed.api_key_env, timeout_seconds=parsed.timeout,
