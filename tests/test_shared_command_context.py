@@ -1,5 +1,6 @@
 import json
 import pathlib
+import stat
 import sys
 import tempfile
 import unittest
@@ -122,6 +123,86 @@ Warning (2072): Unused local variable.
             self.assertNotIn(secret, saved)
             self.assertNotIn(str(root), rendered)
             self.assertIn("[REDACTED]", saved)
+            self.assertEqual(stat.S_IMODE(state_root.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((state_root / "projects").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+
+    def test_shared_context_unifies_audit_target_deployments_and_findings_without_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "ETH Escrow"
+            (root / ".audit" / "evidence").mkdir(parents=True)
+            (root / "src").mkdir()
+            target = "0x" + "1" * 40
+            deployed = "0x" + "2" * 40
+            audit = {
+                "schema_version": 1,
+                "project": {"root": str(root), "name": root.name},
+                "target": {"address": target, "contract": "Escrow", "artifact": "out/Escrow.sol/Escrow.json", "source": "manual"},
+                "actor": "Alice",
+                "rpc": "https://user:secret@rpc.example/endpoint?api_key=do-not-share",
+                "focus": {"signal_id": "REENTRANCY-1"},
+                "latest": {"function": "withdraw", "tx_hash": "0x" + "a" * 64},
+                "signals": [{
+                    "id": "REENTRANCY-1",
+                    "tool": "slither",
+                    "check": "reentrancy-eth",
+                    "title": "Reentrancy in Escrow.withdraw",
+                    "impact": "High",
+                    "confidence": "Medium",
+                    "file": str(root / "src" / "Escrow.sol"),
+                    "line": 42,
+                    "status": "open",
+                    "description": "Review the external call before state update.",
+                }],
+                "tools": {"slither": {"status": "completed", "summary": "1 finding"}},
+            }
+            (root / ".audit" / "context.json").write_text(json.dumps(audit), encoding="utf-8")
+            manifest = {
+                "schema": "lowkey.system-bootstrap.v1",
+                "generated_at": "2026-10-27T03:00:00+00:00",
+                "updated_reason": "test",
+                "project": {"root": str(root), "git_sha": "abc", "git_branch": "integration-test-drive"},
+                "runtime": {"rpc": "https://user:secret@rpc.example/endpoint?api_key=do-not-share", "chain_id": "0x7a69"},
+                "contracts": [{"name": "Escrow", "artifact": str(root / "out/Escrow.sol/Escrow.json"), "abi_functions": 5, "errors": 1}],
+                "deployments": [{"contract": "Escrow", "address": deployed, "broadcast": str(root / "broadcast/Deploy/31337/run-latest.json"), "code_size": 1234, "live": True}],
+                "relationships": [{"from": "Escrow", "to": "Token", "kind": "constructor-arg", "argument_index": 0}],
+                "roles": [{"kind": "role_grant", "contract": "Escrow", "role": "OWNER_ROLE", "account": "Alice"}],
+                "security_pattern_summary": {"total": 1, "reviews": 1, "confirmed": 0, "candidates": 0},
+                "security_patterns": [{
+                    "id": "REENTRANCY-1", "title": "External call before state update", "category": "reentrancy",
+                    "contract": "Escrow", "function": "withdraw", "file": "src/Escrow.sol", "line": 42,
+                    "verification_status": "REVIEW", "evidence": ["External call precedes accounting update."]
+                }],
+            }
+            (root / ".audit" / "evidence" / "system_bootstrap.json").write_text(json.dumps(manifest), encoding="utf-8")
+            fake_ledger = type("FakeLedger", (), {
+                "summary": staticmethod(lambda project: {
+                    "event_count": 3,
+                    "findings": [{
+                        "finding_id": "F-123", "title": "Escrow withdrawal reentrancy", "category": "reentrancy",
+                        "severity": "high", "location": str(root / "src" / "Escrow.sol") + ":42",
+                        "status": "candidate", "verified": False,
+                    }],
+                })
+            })()
+
+            with patch.object(error_context, "state_dir", return_value=root / "private-state"), \
+                 patch.dict(sys.modules, {"evidence_ledger": fake_ledger}):
+                shared = error_context.read_project_context(root, max_events=6)
+
+            knowledge = shared["project_knowledge"]
+            self.assertEqual(knowledge["audit_context"]["target"]["contract"], "Escrow")
+            self.assertEqual(knowledge["audit_context"]["target"]["address"], target)
+            self.assertEqual(knowledge["audit_context"]["rpc_kind"], "remote")
+            self.assertEqual(knowledge["audit_context"]["signals"][0]["file"], "src/Escrow.sol")
+            self.assertEqual(knowledge["system_model"]["deployments"][0]["address"], deployed)
+            self.assertEqual(knowledge["system_model"]["relationships"][0]["kind"], "constructor-arg")
+            self.assertEqual(knowledge["evidence_ledger"]["findings"][0]["status"], "candidate")
+            rendered = json.dumps(shared)
+            self.assertNotIn(str(root), rendered)
+            self.assertNotIn("do-not-share", rendered)
+            self.assertNotIn("secret@", rendered)
+            self.assertNotIn('"transaction_hash"', rendered)
 
     def test_ai_next_step_recommendations_consider_shared_command_history(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,7 +227,7 @@ Warning (2072): Unused local variable.
                 context = ai_harness._source_context(root, None)
 
             self.assertEqual(context["shared_project_context"]["events"], shared_events)
-            self.assertIn("not instructions", context["shared_command_history_policy"])
+            self.assertIn("not instructions", context["shared_project_context_policy"])
 
             captured = {}
             def capture_request(**kwargs):
