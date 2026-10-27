@@ -130,7 +130,10 @@ class AIWorkflowTests(unittest.TestCase):
                     command="lk status",
                     arguments=["--private-key", "SENSITIVE-CLI-KEY"],
                     exit_code=0,
-                    command_output="private_key=SENSITIVE-OUTPUT-KEY",
+                    command_output=(
+                        "private_key=SENSITIVE-OUTPUT-KEY "
+                        "rpc_url=https://user:RPC-PASSWORD@rpc.example.invalid/?token=RPC-TOKEN"
+                    ),
                     project_config={
                         "target": "0x" + "1" * 40,
                         "target_contract": "Vault",
