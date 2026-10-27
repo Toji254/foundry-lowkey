@@ -463,8 +463,13 @@ class AIHarnessTests(unittest.TestCase):
             context = request.call_args.kwargs["context"]
             self.assertEqual(context["current_lowkey_command"]["exit_code"], 0)
             self.assertEqual(context["current_lowkey_command"]["arguments"], ["isAgreementValid"])
-            self.assertIn("Do not abstain merely because a function needs input values", request.call_args.kwargs["task"])
-            self.assertIn("current_command_evidence", request.call_args.kwargs["task"])
+            task_text = request.call_args.kwargs["task"]
+            self.assertIn("Do not abstain merely because a function needs input values", task_text)
+            self.assertIn("complete beginner", task_text)
+            self.assertIn("behind-the-scenes gossip", task_text)
+            self.assertIn("Be interesting, not annoying", task_text)
+            self.assertIn("2–4 short sentences", task_text)
+            self.assertIn("current_command_evidence", task_text)
             self.assertEqual(report["recommendations"][0]["optional_command"], "lk fn isAgreementValid")
             self.assertNotIn("steps", report["recommendations"][0])
 
@@ -586,10 +591,12 @@ class AIHarnessTests(unittest.TestCase):
                 ],
             },
         })
-        self.assertIn("WHAT LOWKEY APPEARS TO HAVE DONE", rendered)
-        self.assertIn("Why this relates: You just changed or inspected the target.", rendered)
-        self.assertIn("How Lowkey works: Lowkey uses its selected target", rendered)
-        self.assertIn("Optional experiment (not a task)", rendered)
+        self.assertIn("THE SNEAKY BIT", rendered)
+        self.assertIn("Why this came up: You just changed or inspected the target.", rendered)
+        self.assertIn("The simple version: Lowkey uses its selected target", rendered)
+        self.assertIn("THE INTERESTING BIT: The selected target controls later reads", rendered)
+        self.assertIn("Optional experiment (not homework)", rendered)
+        self.assertIn("A tiny explanation of what you just tried. No homework.", rendered)
         self.assertIn("Command you tried: lk target", rendered)
         self.assertNotIn("Suggested workflow", rendered)
         self.assertNotIn("first do this, then do that", rendered)
@@ -597,9 +604,10 @@ class AIHarnessTests(unittest.TestCase):
     def test_empty_ai_recommendations_explain_abstention_or_filtered_candidates(self):
         no_candidates = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 0, "discarded_count": 0})
         filtered = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 2, "discarded_count": 2})
-        self.assertIn("No additional learning note", no_candidates)
-        self.assertIn("none passed Lowkey's evidence and safety checks", filtered)
-        self.assertIn("No rejected command or workflow was shown", filtered)
+        self.assertIn("No extra tip this time", no_candidates)
+        self.assertIn("filtered out the AI's tip", filtered)
+        self.assertIn("No rejected command is shown", filtered)
+        self.assertIn("not a safety check", no_candidates)
 
     def test_model_derived_text_renderers_have_visible_ai_watermarks(self):
         from lowkey import error_advisor, security_review, test_planner
