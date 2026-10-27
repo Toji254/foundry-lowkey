@@ -384,7 +384,15 @@ def _validate_plan(result: Mapping[str, Any], context: Mapping[str, Any]) -> dic
         command = _safe_task_command(item.get("command"))
         source = item.get("source") if isinstance(item.get("source"), dict) else {}
         path, symbol = _clean(source.get("path"), 260), _clean(source.get("symbol"), 160)
-        if not command or not path or not symbol or symbol.casefold() not in sources.get(path, "").casefold():
+        excerpt = sources.get(path, "")
+        symbol_present = bool(
+            symbol and re.search(
+                rf"(?<![A-Za-z0-9_$]){re.escape(symbol)}(?![A-Za-z0-9_$])",
+                excerpt,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not command or not path or not symbol_present:
             blocked += 1
             continue
         if command in seen:
