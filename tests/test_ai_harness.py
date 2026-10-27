@@ -432,17 +432,17 @@ class AIHarnessTests(unittest.TestCase):
             root = Path(tmp)
             runtime = root / "lk.py"
             runtime.write_text(
-                "def discover_audit_target_contract(root):\\n"
-                "    lowered = 'token'\\n"
-                "    if lowered.endswith(('pool', 'escrow', 'token')):\\n"
-                "        scores[key] += 70\\n"
-                "    return 'Token'\\n"
-                "\\n"
-                "def run_lab(config, args):\\n"
-                "    auto_selected = requested or discover_audit_target_contract(root)\\n"
-                "    previous_target = config.get('target')\\n"
-                "    print('STALE TARGET: clearing stale target')\\n"
-                "    return auto_selected\\n",
+                "def discover_audit_target_contract(root):\n"
+                "    lowered = 'token'\n"
+                "    if lowered.endswith(('pool', 'escrow', 'token')):\n"
+                "        scores[key] += 70\n"
+                "    return 'Token'\n"
+                "\n"
+                "def run_lab(config, args):\n"
+                "    auto_selected = requested or discover_audit_target_contract(root)\n"
+                "    previous_target = config.get('target')\n"
+                "    print('STALE TARGET: clearing stale target')\n"
+                "    return auto_selected\n",
                 encoding="utf-8",
             )
             with patch.object(ai, "__file__", str(root / "ai_harness.py")):
@@ -486,7 +486,7 @@ class AIHarnessTests(unittest.TestCase):
         })
         self.assertIn("WHAT LOWKEY LIKELY DID", rendered)
         self.assertIn("Suggested workflow (run each command separately)", rendered)
-        self.assertIn("What this does: Choose the ERC-20 contract.", rendered)
+        self.assertIn("What it does: Choose the ERC-20 contract.", rendered)
         self.assertIn("What to look for: Zero means no tokens are currently held.", rendered)
 
     def test_recommend_next_steps_requests_a_concrete_source_grounded_command(self):
@@ -973,7 +973,7 @@ class AIHarnessTests(unittest.TestCase):
             )
             (root / "src" / "Signer.sol").write_text(
                 "contract Signer { string constant KEY = "
-                '"-----BEGIN PRIVATE KEY-----\\nPEM_SECRET_DO_NOT_SEND\\n-----END PRIVATE KEY-----"; }',
+                '"-----BEGIN PRIVATE KEY-----\nPEM_SECRET_DO_NOT_SEND\n-----END PRIVATE KEY-----"; }',
                 encoding="utf-8",
             )
             context = ai._source_context(root, None)
@@ -999,7 +999,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_ai_context_preview_is_local_and_shows_redacted_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
+            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "test").mkdir()
             (root / "src" / "Vault.sol").write_text(
