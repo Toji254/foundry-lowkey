@@ -3,6 +3,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -10,6 +11,7 @@ sys.path.insert(0, str(ROOT / "lowkey"))
 
 import error_advisor
 import error_context
+import ai_workflow
 
 
 class SharedCommandContextTests(unittest.TestCase):
@@ -92,6 +94,34 @@ Warning (2072): Unused local variable.
             self.assertNotIn(secret, saved)
             self.assertNotIn(str(root), rendered)
             self.assertIn("[REDACTED]", saved)
+
+    def test_general_ai_workflows_include_shared_command_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "project"
+            root.mkdir()
+            shared_events = [{
+                "timestamp": "2026-10-27T03:00:00+00:00",
+                "command": "build",
+                "exit_code": 0,
+                "status": "completed",
+                "signals": ["Compiler warning: Unnamed return variable can remain unassigned (script/Deploy.s.sol:9:38)"],
+                "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\n --> script/Deploy.s.sol:9:38:",
+            }]
+            fake_ledger = SimpleNamespace(
+                summary=lambda project: {"event_count": 0, "findings": []},
+                historical_feedback_context=lambda project, limit=3: [],
+            )
+            with patch.dict(sys.modules, {"evidence_ledger": fake_ledger}), \
+                 patch.object(error_context, "read_project_context", return_value={
+                     "project_label": "project",
+                     "events": shared_events,
+                 }):
+                prior = ai_workflow._prior_evidence_context(root)
+
+            self.assertEqual(prior["recent_command_event_count"], 1)
+            self.assertEqual(prior["recent_command_events"][0]["command"], "build")
+            self.assertIn("Compiler warning", prior["recent_command_events"][0]["signals"][0])
+            self.assertNotIn(str(root), json.dumps(prior))
 
     def test_ai_diagnosis_receives_recent_project_history_without_absolute_path(self):
         with tempfile.TemporaryDirectory() as tmp:
