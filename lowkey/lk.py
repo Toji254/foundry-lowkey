@@ -17913,6 +17913,12 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
 
     # Resolve documented short forms before runtime dispatch as well as help lookup.
     cmd = HELP_ALIASES.get(lowered_cmd, lowered_cmd)
+    # This experiment is not project-target-specific. Keep it out of the target
+    # activation path so a benchmark cannot change the selected contract context.
+    if cmd == "jev":
+        if jev_error_benchmark is None:
+            return fail("Jev benchmark module is not installed. Re-run install.sh from this checkout.")
+        return jev_error_benchmark.run(args, prog="lk jev")
     activate_project_target(config)
     if cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
@@ -18248,10 +18254,6 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         if benchmark is None:
             return fail("Benchmark module is not installed. Re-run install.sh from this checkout.")
         return benchmark.run(args)
-    elif cmd=="jev":
-        if jev_error_benchmark is None:
-            return fail("Jev benchmark module is not installed. Re-run install.sh from this checkout.")
-        return jev_error_benchmark.run(args, prog="lk jev")
     elif cmd=="q":
         if question_engine is None:
             return fail("Question engine is not installed. Re-run install.sh from this checkout.")
