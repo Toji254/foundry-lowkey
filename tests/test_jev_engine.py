@@ -61,6 +61,7 @@ class JevEngineTests(unittest.TestCase):
             "XDG_DATA_HOME": str(Path(self.tmp.name) / "data"),
             "XDG_STATE_HOME": str(Path(self.tmp.name) / "state"),
             "TYPESAFE_API_KEY": "",
+            "JEVMODEL_API_KEY": "",
         })
         patcher.start()
         self.addCleanup(patcher.stop)
