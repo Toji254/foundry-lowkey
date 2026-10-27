@@ -24,8 +24,12 @@ _TASK_ROOTS = {
     "proxy", "recon", "questions",
 }
 _AUTO_GUIDANCE_COMMANDS = {
-    "audit", "audit-checks", "audit--checks", "test", "scan",
+    # Existing complex workflows plus the most useful setup/forensic command results.
+    # Free-tier Jev should interpret one result once, not emit duplicate AI footers.
+    "audit", "audit-checks", "audit--checks", "build", "doctor", "test", "scan",
     "break", "walkthrough", "walk", "fuzz", "invariant", "mutate", "symbolic", "slither",
+    "recon", "probe", "trace", "state-diff", "project", "system", "changes", "risk",
+    "poc", "test-gen", "mutation-check", "verification", "matrix", "seams",
 }
 
 
