@@ -13949,17 +13949,6 @@ def run_batch(config,args):
             command_args.append("--confirm")
         if command=="raw": run_raw(config,command_args)
         else: dispatch_command(command,command_args,config,from_batch=True)
-def _full_evidence_pass(config):
-    """Run the extended audit pass and source triage as one investigation action."""
-    root = audit_context.foundry_project_root()
-    try:
-        scan_code = run_scan([])
-    except Exception as exc:
-        print(f"Warning: source triage failed: {exc}", file=sys.stderr)
-        scan_code = 1
-    audit_code = run_audit(config, ["--checks"])
-    return audit_code if audit_code != 0 else scan_code
-
 
 def _generate_connected_poc(config):
     """Interactively collect the missing concrete call and impact before generating a PoC."""
