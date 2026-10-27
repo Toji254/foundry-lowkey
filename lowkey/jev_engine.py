@@ -288,17 +288,18 @@ def evaluate(
     """Evaluate validated typed questions through the selected Jev-compatible API."""
     if not isinstance(state, (str, Mapping, list)):
         raise JevError("Jev state must be text or structured JSON.")
-    if not isinstance(questions, Mapping) or not questions:
-        raise JevError("Jev needs at least one typed question.")
+    if not isinstance(questions, Mapping) or not 1 <= len(questions) <= 8:
+        raise JevError("Jev needs between 1 and 8 typed questions per request.")
     for name, question in questions.items():
         if not isinstance(name, str) or not name or not isinstance(question, Mapping):
             raise JevError("Jev questions must be a named map of question objects.")
         if question.get("type") not in {"choice", "score", "noul"} or not isinstance(question.get("instructions"), str):
             raise JevError(f"Jev question {name!r} must have a supported type and instructions.")
         if question.get("type") == "choice" and (
-            not isinstance(question.get("criteria"), Mapping) or not question["criteria"]
+            not isinstance(question.get("criteria"), Mapping)
+            or not 2 <= len(question["criteria"]) <= 12
         ):
-            raise JevError(f"Jev Choice question {name!r} needs non-empty criteria.")
+            raise JevError(f"Jev Choice question {name!r} needs 2–12 allowed options.")
         if question.get("type") == "score" and (
             not isinstance(question.get("criteria"), list) or not 2 <= len(question["criteria"]) <= 10
         ):
