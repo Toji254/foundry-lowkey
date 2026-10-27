@@ -1449,7 +1449,7 @@ def render_project_protocol_review(review: Mapping[str, Any]) -> str:
         "No local lab was started and no Solidity test was written or run by this command.",
         "Selected source was sent to the configured AI provider; treat all output as unverified and review the code yourself.",
     ])
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def _safe_terminal_text(value: str) -> str:
