@@ -17700,11 +17700,13 @@ def _print_ai_recommendations(command, native_items, config=None):
             {"command": str(item[0]), "reason": str(item[1])}
             for item in native_items if isinstance(item, (tuple, list)) and len(item) == 2
         ]
+        current_output = str(config.get("_last_command_output") or "") if isinstance(config, dict) else ""
         report = ai_harness.recommend_next_steps(
             root,
             command=str(command or "").strip().lower(),
             native_recommendations=native,
             contract_name=contract_name,
+            current_command_output=current_output,
         )
         rendered = ai_harness.render_ai_recommendations(report)
         print("")
@@ -18366,9 +18368,12 @@ def dispatch_command(cmd, args, config, from_batch=False):
             root = audit_context.foundry_project_root()
         except Exception:
             root = Path.cwd()
+        current_output = captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else "")
+        if isinstance(config, dict):
+            config["_last_command_output"] = current_output[-24000:]
         _record_shared_command_event(
             root, cmd, args, code,
-            captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else ""),
+            current_output,
         )
         _attach_shared_command_context(config, root)
         if diagnostic:
@@ -18416,6 +18421,10 @@ def dispatch_command(cmd, args, config, from_batch=False):
         native_output = str(native_output)
         if native_output not in event_output:
             event_output += "\n[LOWKEY RESULT OUTPUT]\n" + native_output
+    # Make this command's own output available to its immediate AI footer.
+    # save_config excludes this transient underscore-prefixed field.
+    if isinstance(config, dict):
+        config["_last_command_output"] = event_output[-24000:]
     _record_shared_command_event(root, cmd, args, event_code, event_output)
     _attach_shared_command_context(config, root)
 
@@ -18628,6 +18637,7 @@ def main():
             ai_output,
         )
         _attach_shared_command_context(config, shared_root)
+        config["_last_command_output"] = ai_output[-24000:]
         _print_recommended_next_commands(command, sys.argv[2:], footer_status, config)
         if ai_requested:
             _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_output)
@@ -18815,28 +18825,6 @@ def _safe_main() -> int:
         return 2
 
 
-if __name__ == "__main__":
-    raise SystemExit(_safe_main())
-
-    """Feed the per-project evidence channel used by every Lowkey command."""
-    try:
-        try:
-            import error_context
-        except ImportError:
-            from lowkey import error_context
-        error_context.record_command_event(
-            project_root=str(project_root) if project_root else None,
-            command=[str(cmd or ""), *list(args or [])],
-            exit_code=exit_code if isinstance(exit_code, int) else None,
-            output=output,
-            source="dispatcher",
-        )
-    except Exception:
-        # Shared memory is advisory; never break the native command path.
-        return None
-    return None
-
-
 def dispatch_command(cmd, args, config, from_batch=False):
     """Dispatch a command, capture bounded output, and share project evidence.
 
@@ -18863,9 +18851,12 @@ def dispatch_command(cmd, args, config, from_batch=False):
             root = audit_context.foundry_project_root()
         except Exception:
             root = Path.cwd()
+        current_output = captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else "")
+        if isinstance(config, dict):
+            config["_last_command_output"] = current_output[-24000:]
         _record_shared_command_event(
             root, cmd, args, code,
-            captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else ""),
+            current_output,
         )
         if diagnostic:
             code = exc.code if isinstance(exc.code, int) and exc.code else 2
@@ -18912,6 +18903,10 @@ def dispatch_command(cmd, args, config, from_batch=False):
         native_output = str(native_output)
         if native_output not in event_output:
             event_output += "\n[LOWKEY RESULT OUTPUT]\n" + native_output
+    # Make this command's own output available to its immediate AI footer.
+    # save_config excludes this transient underscore-prefixed field.
+    if isinstance(config, dict):
+        config["_last_command_output"] = event_output[-24000:]
     _record_shared_command_event(root, cmd, args, event_code, event_output)
 
     if not is_failure:
@@ -19295,7 +19290,6 @@ def _safe_main() -> int:
         print("  RESULT: REVIEW NEEDED — Lowkey could not complete this command.", file=sys.stderr)
         print("  No security conclusion should be inferred from this failure.", file=sys.stderr)
         return 2
-
 
 if __name__ == "__main__":
     raise SystemExit(_safe_main())
