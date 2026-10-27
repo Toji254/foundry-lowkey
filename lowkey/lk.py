@@ -14920,7 +14920,7 @@ def run_context(config):
     print(audit_context.human_snapshot(root))
     print(f"Context : {audit_context.context_path(root)}")
     print(f"Events  : {audit_context.events_path(root)}")
-    shared = shared_command_context(config, root, max_events=8)
+    shared = _attach_shared_command_context(config, root, max_events=8)
     recent = shared.get("events", []) if isinstance(shared, dict) else []
     print("")
     knowledge = shared.get("project_knowledge", {}) if isinstance(shared, dict) else {}
