@@ -410,7 +410,6 @@ def _read_project_knowledge(root: Path) -> dict[str, Any]:
                 if re.search(r"(?i)(localhost|127\.0\.0\.1|\[::1\])", rpc_value)
                 else ("remote" if re.match(r"(?i)^(https?|wss?)://", rpc_value) else "none")
             )
-            tx_hash = latest.get("tx_hash")
             knowledge["audit_context"] = {
                 "updated_at": _safe_project_text(root, audit.get("updated_at"), 40) or None,
                 "target": safe_target,
@@ -419,7 +418,6 @@ def _read_project_knowledge(root: Path) -> dict[str, Any]:
                 "focus_signal_id": _safe_project_text(root, focus.get("signal_id"), 100) or None,
                 "latest": {
                     "function": _safe_project_text(root, latest.get("function"), 140) or None,
-                    "transaction_hash": tx_hash if isinstance(tx_hash, str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash) else None,
                 },
                 "signals": signal_items,
                 "tools": tool_states,
@@ -599,8 +597,20 @@ def read_project_context(
             ] if isinstance(signals, list) else [],
             "diagnostic_excerpt": redact(item.get("diagnostic_excerpt"), limit=2200).replace(str(root), "."),
         })
+    try:
+        project_knowledge = _read_project_knowledge(root)
+    except Exception as exc:
+        # Corrupt/stale project artifacts must never make an otherwise-native
+        # Lowkey command fail while assembling optional shared context.
+        project_knowledge = {
+            "audit_context": {},
+            "system_model": {},
+            "evidence_ledger": {"available": False, "findings": []},
+            "available": False,
+            "reason": type(exc).__name__,
+        }
     return {
         "project_label": _safe_project_text(root, payload.get("project_label") or root.name, 160),
         "events": events,
-        "project_knowledge": _read_project_knowledge(root),
+        "project_knowledge": project_knowledge,
     }
