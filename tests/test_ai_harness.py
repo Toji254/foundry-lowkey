@@ -93,6 +93,10 @@ class AIHarnessTests(unittest.TestCase):
             "lk ai run",
             "AI INSIDE EXISTING LK WORKFLOWS",
             "lk lab Vault --ai-review",
+            "JEV AUTONOMY & LOCAL BUDGET GUARD",
+            "lk ai jev setup",
+            "--provider jevmodel|typesafe",
+            "100,000 starter input tokens",
             "Use --json only on commands that list it",
         ):
             self.assertIn(expected, help_text)
