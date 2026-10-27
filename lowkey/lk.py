@@ -10957,7 +10957,7 @@ def run_lab(config,args):
             rpc,
             accounts,
             key,
-            requested,
+            requested or auto_selected,
             explicit_requested=bool(args) and mode == "auto" and str(args[0]).strip().lower() not in {"", "auto"},
         )
         if script_code == 0:
@@ -10968,7 +10968,7 @@ def run_lab(config,args):
                 "Lowkey will try the discovered project test fixture."
             )
             fixture_code = run_test_fixture_lab(
-                config, root, fixture, rpc, accounts, key, requested
+                config, root, fixture, rpc, accounts, key, requested or auto_selected
             )
             if fixture_code == 0:
                 return 0
