@@ -289,8 +289,9 @@ def start_server(timeout_seconds: int = JEVOS_START_TIMEOUT_SECONDS) -> str:
         adopted = _adopt_running_jevos()
         if adopted:
             return (
-                f"Jevos-v5 was already running (PID {adopted['pid']}); Lowkey adopted it. "
-                "You can now use 'lk ai jev stop' or 'lk ai jev restart'."
+                f"Jevos-v5 was already running (PID {adopted['pid']}); Lowkey registered it for control. "
+                "It remains attached to the terminal that launched it; run 'lk ai jev restart' once "
+                "to relaunch it in the background."
             )
         raise JevError(
             "Jevos-v5 is already responding at 127.0.0.1:8017, but Lowkey could not verify its process. "
@@ -400,6 +401,15 @@ def stop_server(timeout_seconds: int = JEVOS_STOP_TIMEOUT_SECONDS) -> str:
 
 def restart_server() -> str:
     stopped_message = stop_server()
+    # Give the old listener time to release port 8017 before launching a new process.
+    deadline = time.monotonic() + 6
+    while _health_payload() is not None and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if _health_payload() is not None:
+        raise JevError(
+            "The previous Jevos process was signalled, but port 8017 is still responding. "
+            "For safety, Lowkey did not launch a second server; inspect the running process and try again."
+        )
     started_message = start_server()
     if "already stopped" in stopped_message or "Removed a stale" in stopped_message:
         return started_message
