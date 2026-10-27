@@ -580,6 +580,8 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("Command you tried: lk no-such-command", rendered)
         self.assertIn("Lowkey reported a problem (code 2)", rendered)
         self.assertNotIn("Optional experiment", rendered)
+        self.assertIn("command list appears in help", report["recommendations"][0]["what_to_notice"])
+        self.assertIn("not in this error", rendered)
 
     def test_recommendation_allowlist_rejects_transaction_and_shell_commands(self):
         for command in (
