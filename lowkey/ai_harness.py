@@ -567,19 +567,20 @@ def render_status(value: Mapping[str, Any]) -> str:
     )
     lines.append(
         f"Jev autonomous triage: {'ON' if value.get('jev_autonomous') else 'OFF'} — "
-        + ("lab review, command guidance, error help, and learning recommendations are enabled together."
-           if value.get("jev_autonomous") else "the Jev master switch is off; individual settings shown above still apply.")
+        + ("typed triage runs after eligible Lowkey command results; text-AI features remain separately configured."
+           if value.get("jev_autonomous") else "the Jev master switch is off; individual text-AI settings above still apply.")
     )
     if value.get("jev_free_tier_mode"):
         lines.append(
             f"Free-tier guard: ON — {value.get('jev_calls_today', 0)}/{value.get('jev_daily_call_limit', JEV_DEFAULT_DAILY_LIMIT)} "
             f"AI requests used today; {value.get('jev_calls_remaining', 0)} remain. "
-            f"Local context cap (Jev) / text-AI output cap: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes / "
-            f"{value.get('jev_max_output_tokens', JEV_DEFAULT_OUTPUT_TOKENS)} tokens."
+            f"Configured context cap: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes; "
+            f"text-AI output cap: {value.get('jev_max_output_tokens', JEV_DEFAULT_OUTPUT_TOKENS)} tokens. "
+            "The selected Jev provider may enforce a smaller request limit."
         )
     else:
         lines.append("Free-tier guard: OFF — provider-side quotas/rate limits still apply.")
-    lines.append("Jev-triggered text explanations: " + ("ON (uses the configured text-AI provider when Jev requests an explanation)." if value.get("jev_use_text_ai") else "OFF (TypeSafe decisions only)."))
+    lines.append("Jev-triggered text explanations: " + ("ON (uses the configured text-AI provider when Jev requests an explanation)." if value.get("jev_use_text_ai") else "OFF (typed Jev decisions only)."))
     lines.append("Turn Jev automation on/off with 'lk ai jev on' / 'lk ai jev off'; status is local-only.")
     return "\n".join(lines)
 
@@ -3651,7 +3652,7 @@ def main(argv: list[str] | None = None) -> int:
             if parsed.daily_limit is not None and not 1 <= parsed.daily_limit <= JEV_MAX_DAILY_LIMIT:
                 raise AIHarnessError(
                     f"--daily-limit must be from 1 to {JEV_MAX_DAILY_LIMIT}; "
-                    "this is a local usage cap, not a TypeSafe plan setting."
+                    "this is a local usage cap, not the provider's own quota or account balance."
                 )
 
             if selected == "status":
@@ -3823,9 +3824,13 @@ def main(argv: list[str] | None = None) -> int:
                 print("Lowkey will classify selected build, test, audit, verification, diagnostic and import-install results.")
                 print("Classification is a structured Jev decision; existing text-AI explanation/recommendation settings remain independent.")
                 if cfg["jev_free_tier_mode"]:
+                    effective_context_cap = min(
+                        cfg["jev_context_limit_bytes"],
+                        7_500 if jev_state.get("provider") == "jevmodel" else jev_engine.MAX_REQUEST_BYTES,
+                    )
                     print(
                         f"Local usage guard: ON — up to {cfg['jev_daily_call_limit']} provider attempts per local day "
-                        f"and {cfg['jev_context_limit_bytes']:,} request bytes."
+                        f"and {effective_context_cap:,} request bytes."
                     )
                     print("This is a local usage cap, not the provider's own allowance or a zero-cost guarantee. Failed provider attempts count.")
                 else:
@@ -3848,7 +3853,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Jev autonomous triage: OFF.")
             print("Other Lowkey AI settings and native commands are unchanged.")
             if cfg.get("jev_free_tier_mode"):
-                print("The local request/context budget guard remains active for TypeSafe Jev and configured text-AI requests.")
+                print("The local request/context budget guard remains active for Jev and any configured text-AI requests.")
             else:
                 print("Local budget guard: OFF. Provider-side limits and charges still apply.")
             return 0
