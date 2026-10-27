@@ -20,8 +20,8 @@ _SECRET_FLAGS = {
 }
 _SHELL_META = {";", "|", "&", chr(96), "$", "<", ">", "\\", "\r", "\n", '"', "'"}
 _TASK_ROOTS = {
-    "read", "fn", "ask", "functions", "status", "events", "logs",
-    "changes", "proxy", "recon", "roles", "questions", "q", "findings",
+    "read", "fn", "ask", "functions", "events", "logs",
+    "proxy", "recon", "questions",
 }
 _AUTO_GUIDANCE_COMMANDS = {
     "audit", "audit-checks", "audit--checks", "verification", "test", "scan",
@@ -356,13 +356,13 @@ def _safe_task_command(value: Any) -> str | None:
     if any(token.startswith("--") or (token.startswith("-") and token != "-1") for token in tokens[2:]):
         return None
     root = tokens[1]
-    if root in {"status", "events", "logs", "proxy", "recon", "roles", "questions", "q", "findings"}:
+    if root in {"events", "logs", "proxy", "recon", "questions"}:
         if len(tokens) != 2:
             return None
     elif root == "functions":
-        if len(tokens) > 3:
+        if len(tokens) != 2:
             return None
-    elif root in {"fn", "ask", "changes", "read"}:
+    elif root in {"fn", "ask", "read"}:
         if len(tokens) != 3:
             return None
     return command
@@ -415,9 +415,9 @@ def _make_plan(root: Path, goal: str, contract_name: str | None,
         for item in list(previous_results or [])[-4:] if isinstance(item, Mapping)
     ]
     context["allowed_command_forms"] = [
-        "lk status", "lk functions", "lk fn FunctionName", "lk ask FunctionName",
+        "lk functions", "lk fn FunctionName", "lk ask FunctionName",
         "lk read ZeroArgumentViewName", "lk events", "lk logs", "lk proxy", "lk recon",
-        "lk roles", "lk questions", "lk q", "lk findings", "lk changes FunctionName",
+        "lk questions",
     ]
     context["execution_policy"] = (
         "Use only read-oriented forms from allowed_command_forms. No shell commands, chaining, file writes, tests/builds, "
