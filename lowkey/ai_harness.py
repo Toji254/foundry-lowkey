@@ -3794,6 +3794,10 @@ def main(argv: list[str] | None = None) -> int:
                         "probe_ok": {
                             "type": "noul",
                             "instructions": "Does the supplied state explicitly identify itself as a Lowkey Jev API connectivity probe?",
+                            "criteria": {
+                                "true": "The fixed probe explicitly identifies the Jev connectivity check.",
+                                "false": "The fixed probe does not identify the Jev connectivity check.",
+                            },
                         }
                     },
                 )
