@@ -937,6 +937,8 @@ def _jev_cache_key(config: Mapping[str, Any], purpose: str, task: str,
         "provider": config.get("provider"),
         "model": config.get("model"),
         "base_url": config.get("base_url"),
+        "jev_context_limit_bytes": config.get("jev_context_limit_bytes"),
+        "jev_max_output_tokens": config.get("jev_max_output_tokens"),
         "purpose": purpose,
         "task": task,
         "required_fields": list(required_fields),
@@ -961,7 +963,8 @@ def _read_jev_cached_response(cache_key: str, required_fields: tuple[str, ...]) 
             return None
         created_at = entry.get("created_at")
         result = entry.get("result")
-        if not isinstance(created_at, (int, float)) or time.time() - created_at > JEV_RESPONSE_CACHE_TTL_SECONDS:
+        age = time.time() - created_at if isinstance(created_at, (int, float)) else None
+        if age is None or age < 0 or age > JEV_RESPONSE_CACHE_TTL_SECONDS:
             return None
         if not isinstance(result, dict) or any(field not in result for field in required_fields):
             return None
