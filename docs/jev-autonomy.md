@@ -31,7 +31,7 @@ Run `lk ai status` for provider readiness and `lk ai test` for a small connectiv
 - Automatic protocol/lab review when Lowkey's existing complexity check says it is useful.
 - Post-command guidance after the eligible native workflows already supported by Lowkey.
 - Automatic explanations after eligible command failures.
-- Optional learner-first recommendations after command attempts.
+- Optional learner-first recommendations. On the free-tier guard, these are limited to selected high-value learning/audit commands; they are skipped after failures and after workflows that already receive AI command guidance, avoiding duplicate calls. Routine deterministic commands and state-changing commands do not trigger this extra recommendation call in Jev's guarded mode.
 
 Each feature still uses its existing context gathering, validation, and output rules. Static/native recommendations are preserved. Jev suggestions remain hypotheses, not verified findings, and are never executed. Jev does not edit files, install dependencies, choose a new target or RPC, deploy, sign, or send transactions.
 
@@ -55,6 +55,8 @@ Lowkey trims large context before sending it and counts each provider attempt be
 These are **local safety limits**, not the provider's published free quota. Providers differ by account, model, region and time; a provider may impose stricter rate limits or have different billing terms. The local counter cannot guarantee zero charges. Keep the guard on for a free provider account and choose a daily limit deliberately.
 
 The free-tier guard also applies to explicit AI requests while it is on, so automatic and manual AI use share one budget. Turning Jev automation off preserves that guard. Use `lk ai jev off --tier standard` only when you intentionally want to remove local context/output/request caps; provider-side limits still apply.
+
+Exact repeat requests are cached locally for 30 minutes under a hash of provider/model, purpose, task, required output fields and context. The cache stores the structured result, not the source context or credentials, and is bounded to 40 entries. Cache hits do not spend a provider request or increment the local daily counter.
 
 ## Evidence and safety boundaries
 
