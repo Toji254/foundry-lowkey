@@ -75,7 +75,7 @@ def credentials_path() -> Path:
 def _default_config() -> dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "enabled": False, "auto_assist": False,
             "auto_explain_errors": False, "auto_recommendations": False,
-            "jev_autonomous": False, "jev_free_tier_mode": False,
+            "jev_autonomous": False, "jev_use_text_ai": False, "jev_free_tier_mode": False,
             "jev_daily_call_limit": JEV_DEFAULT_DAILY_LIMIT,
             "jev_context_limit_bytes": JEV_DEFAULT_CONTEXT_LIMIT_BYTES,
             "jev_max_output_tokens": JEV_DEFAULT_OUTPUT_TOKENS,
@@ -110,7 +110,7 @@ def load_config() -> dict[str, Any]:
         raise AIHarnessError("AI configuration 'auto_assist' must be true or false.")
     if not isinstance(cfg.get("auto_explain_errors"), bool):
         raise AIHarnessError("AI configuration 'auto_explain_errors' must be true or false.")
-    for key in ("auto_recommendations", "jev_autonomous", "jev_free_tier_mode"):
+    for key in ("auto_recommendations", "jev_autonomous", "jev_use_text_ai", "jev_free_tier_mode"):
         if not isinstance(cfg.get(key), bool):
             raise AIHarnessError(f"AI configuration '{key}' must be true or false.")
     for key, minimum, maximum in (
@@ -487,6 +487,7 @@ def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
             "auto_assist": auto_assist, "auto_explain_errors": bool(cfg.get("auto_explain_errors", False)),
             "auto_recommendations": bool(cfg.get("auto_recommendations", False)),
             "jev_autonomous": bool(cfg.get("jev_autonomous", False)),
+            "jev_use_text_ai": bool(cfg.get("jev_use_text_ai", False)),
             "jev_free_tier_mode": bool(cfg.get("jev_free_tier_mode", False)),
             "jev_daily_call_limit": int(cfg.get("jev_daily_call_limit", JEV_DEFAULT_DAILY_LIMIT)),
             "jev_calls_today": budget["calls_today"], "jev_calls_remaining": budget["remaining"],
@@ -578,6 +579,7 @@ def render_status(value: Mapping[str, Any]) -> str:
         )
     else:
         lines.append("Free-tier guard: OFF — provider-side quotas/rate limits still apply.")
+    lines.append("Jev-triggered text explanations: " + ("ON (uses the configured text-AI provider when Jev requests an explanation)." if value.get("jev_use_text_ai") else "OFF (TypeSafe decisions only)."))
     lines.append("Turn Jev automation on/off with 'lk ai jev on' / 'lk ai jev off'; status is local-only.")
     return "\n".join(lines)
 
@@ -2109,10 +2111,10 @@ JEV AUTONOMY & LOCAL BUDGET GUARD
   lk ai jev setup [--model jev-latest]
       Save a TypeSafe Jev API key securely (hidden input) or use TYPESAFE_API_KEY.
       This configures the decision model; it does not configure a text-generating LLM.
-  lk ai jev on [--tier guarded|standard] [--daily-limit 1..24]
+  lk ai jev on [--tier guarded|standard] [--daily-limit 1..24] [--with-text-ai]
       Enable Jev's structured triage on selected Lowkey command results. Guarded mode
-      defaults to 8 provider attempts/day, 16,000 request bytes and 650 tokens for the
-      separate optional text-LLM layer; these are local limits, not an official free plan.
+      defaults to 8 provider attempts/day and 16,000 request bytes. Add --with-text-ai
+      to request optional natural-language explanations from an already configured text provider; it can use a second call.
   lk ai jev off
       Stop Jev's automatic triage without uninstalling or disabling other AI features.
       The local budget guard remains active unless '--tier standard' is selected.
@@ -3141,6 +3143,7 @@ def main(argv: list[str] | None = None) -> int:
     jev.add_argument("value", nargs="?", choices=("setup", "on", "off", "status", "test", "remove-key"), default="status", help="configure Jev, run its structured triage, or inspect/pause autonomous mode")
     jev.add_argument("--tier", choices=("guarded", "standard"), default=None, help="guarded applies local daily/context/output request caps; standard removes the local caps")
     jev.add_argument("--daily-limit", type=int, help=f"local guarded-mode request limit per device day (1–{JEV_MAX_DAILY_LIMIT}; default {JEV_DEFAULT_DAILY_LIMIT})")
+    jev.add_argument("--with-text-ai", action="store_true", help="also request optional text-AI explanations when Jev says they are useful; requires enabled text AI and may use extra provider calls")
     jev.add_argument("--model", default="jev-latest", help="TypeSafe Jev model ID or alias (setup only; default: jev-latest)")
     jev.add_argument("--timeout", type=int, default=18, help="Jev API timeout in seconds (setup only; 5–60)")
     jev.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable status")
@@ -3763,7 +3766,16 @@ def main(argv: list[str] | None = None) -> int:
                 jev_state = jev_engine.status()
                 if not jev_state.get("configured"):
                     raise AIHarnessError("Configure Jev first with 'lk ai jev setup' or export TYPESAFE_API_KEY.")
+                if parsed.with_text_ai:
+                    text_cfg = dict(cfg)
+                    text_cfg["enabled"] = True
+                    text_state = status(text_cfg)
+                    if not text_state.get("usable"):
+                        raise AIHarnessError("The --with-text-ai option requires a configured text-AI provider and available key. Set that up first, or omit --with-text-ai to use Jev triage only.")
+                    if not cfg.get("enabled"):
+                        raise AIHarnessError("The --with-text-ai option requires the existing text-AI extension to be enabled with 'lk ai enable'; no text-AI settings were changed.")
                 cfg["jev_autonomous"] = True
+                cfg["jev_use_text_ai"] = bool(parsed.with_text_ai)
                 tier = parsed.tier or "guarded"
                 cfg["jev_free_tier_mode"] = tier == "guarded"
                 cfg["jev_daily_call_limit"] = parsed.daily_limit or int(
@@ -3786,6 +3798,7 @@ def main(argv: list[str] | None = None) -> int:
 
             # Pause Jev only. Preserve every separate Lowkey AI feature and setting.
             cfg["jev_autonomous"] = False
+            cfg["jev_use_text_ai"] = False
             if parsed.tier == "standard":
                 cfg["jev_free_tier_mode"] = False
             elif parsed.tier == "guarded":
