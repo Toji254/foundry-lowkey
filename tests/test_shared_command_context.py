@@ -52,8 +52,8 @@ class SharedCommandContextTests(unittest.TestCase):
             root.mkdir()
             state_root = pathlib.Path(tmp) / "state" / "lowkey"
             build_output = (
-                "Compiler run successful with warnings:\\n"
-                "Warning (6321): Unnamed return variable can remain unassigned.\\n"
+                "Compiler run successful with warnings:\n"
+                "Warning (6321): Unnamed return variable can remain unassigned.\n"
                 " --> script/EthEscrow.s.sol:9:38:"
             )
 
@@ -256,15 +256,15 @@ Warning (2072): Unused local variable.
                 "exit_code": 0,
                 "status": "completed",
                 "signals": ["Compiler warning: Unnamed return variable can remain unassigned (script/Deploy.s.sol:9:38)"],
-                "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\\n --> script/Deploy.s.sol:9:38:",
+                "diagnostic_excerpt": "Warning (6321): Unnamed return variable can remain unassigned.\n --> script/Deploy.s.sol:9:38:",
             }]
             history = {"project_label": "project", "events": shared_events}
             secret = "sk-" + "A" * 24
             current_output = (
-                "Compiler run successful with warnings:\\n"
-                "Warning (6321): Unnamed return variable can remain unassigned.\\n"
-                " --> script/Deploy.s.sol:9:38:\\n"
-                "OPENAI_API_KEY=" + secret + "\\n"
+                "Compiler run successful with warnings:\n"
+                "Warning (6321): Unnamed return variable can remain unassigned.\n"
+                " --> script/Deploy.s.sol:9:38:\n"
+                "OPENAI_API_KEY=" + secret + "\n"
                 + str(root) + "/script/Deploy.s.sol:9:38"
             )
 
