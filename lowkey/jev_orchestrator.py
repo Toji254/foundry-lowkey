@@ -294,22 +294,30 @@ class _MCPStdioClient:
         if not self.command or not shutil.which(self.command[0]):
             name = self.command[0] if self.command else "(empty)"
             raise JevOrchestratorError(f"Browser MCP launcher {name} was not found. Install Node.js/npm or set JEV_BRAVE_MCP_COMMAND.")
-        self.process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
-        initialized = self._rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "jev-orchestrator", "version": "1.0.0"}})
-        if not isinstance(initialized, dict) or "protocolVersion" not in initialized:
-            raise JevOrchestratorError("Brave DevTools MCP returned an invalid initialize response.")
-        self._notify("notifications/initialized", {})
-        return self
+        try:
+            self.process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+            initialized = self._rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "jev-orchestrator", "version": "1.0.0"}})
+            if not isinstance(initialized, dict) or "protocolVersion" not in initialized:
+                raise JevOrchestratorError("Brave DevTools MCP returned an invalid initialize response.")
+            self._notify("notifications/initialized", {})
+            return self
+        except Exception:
+            # __exit__ is not called when __enter__ fails; reap the MCP process here.
+            self._stop()
+            raise
 
-    def __exit__(self, exc_type, exc, traceback):
+    def _stop(self):
         process = self.process
         if process is None:
-            return False
+            return
         try:
-            if process.stdin:
+            if process.stdin and not process.stdin.closed:
                 process.stdin.close()
+        except OSError:
+            pass
+        try:
             process.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
             process.terminate()
             try:
                 process.wait(timeout=2)
@@ -318,6 +326,9 @@ class _MCPStdioClient:
                 process.wait(timeout=2)
         finally:
             self.process = None
+
+    def __exit__(self, exc_type, exc, traceback):
+        self._stop()
         return False
 
     def _send(self, payload: Mapping[str, Any]) -> None:
