@@ -100,13 +100,14 @@ class JevOrchestratorTests(unittest.TestCase):
 
     def test_workspace_read_blocks_secrets_and_path_traversal(self):
         (self.root / ".env").write_text("SECRET=value", encoding="utf-8")
-        (self.root.parent / "outside-jev-test.txt").write_text("outside", encoding="utf-8")
+        outside = self.root.parent / f"{self.root.name}-outside-jev-test.txt"
+        outside.write_text("outside", encoding="utf-8")
         with patch.object(jev, "_safe_project_root", return_value=self.root):
             with self.assertRaises(jev.JevOrchestratorError):
                 jev._workspace_action("read file .env", "workspace.read")
             with self.assertRaises(jev.JevOrchestratorError):
-                jev._resolve_workspace_file(self.root, "../outside-jev-test.txt")
-        (self.root.parent / "outside-jev-test.txt").unlink()
+                jev._resolve_workspace_file(self.root, "../" + outside.name)
+        outside.unlink()
 
     def test_search_is_case_insensitive_and_skips_sensitive_files(self):
         (self.root / "src").mkdir()
