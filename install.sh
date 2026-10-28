@@ -49,13 +49,16 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py; do
+for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py jev_orchestrator.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
+cp "$REPO_DIR/bin/jev" "$STAGE_DIR/bin-jev"
+cp "$REPO_DIR/bin/jev-ask" "$STAGE_DIR/bin-jev-ask"
+bash -n "$REPO_DIR/bin/jev" "$REPO_DIR/bin/jev-ask"
 
-python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py"
+python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py" "$STAGE_DIR/jev_orchestrator.py"
 bash -n "$REPO_DIR/bin/lk"
 
 # Publish exactly the validated stage so the manifest always describes the
@@ -90,6 +93,7 @@ cp "$STAGE_DIR/solidity_connect_data.py" "$TARGET_LOWKEY_DIR/solidity_connect_da
 cp "$STAGE_DIR/ai_harness.py" "$TARGET_LOWKEY_DIR/ai_harness.py"
 cp "$STAGE_DIR/ai_workflow.py" "$TARGET_LOWKEY_DIR/ai_workflow.py"
 cp "$STAGE_DIR/jev_engine.py" "$TARGET_LOWKEY_DIR/jev_engine.py"
+cp "$STAGE_DIR/jev_orchestrator.py" "$TARGET_LOWKEY_DIR/jev_orchestrator.py"
 cp "$STAGE_DIR/provider_adapters.py" "$TARGET_LOWKEY_DIR/provider_adapters.py"
 cp "$STAGE_DIR/agent_runtime.py" "$TARGET_LOWKEY_DIR/agent_runtime.py"
 cp "$STAGE_DIR/evidence_ledger.py" "$TARGET_LOWKEY_DIR/evidence_ledger.py"
@@ -105,6 +109,38 @@ cp "$STAGE_DIR/break_playbook.py" "$TARGET_LOWKEY_DIR/break_playbook.py"
 cp "$STAGE_DIR/break_engine.py" "$TARGET_LOWKEY_DIR/break_engine.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
+
+# Keep the operator distinct from the Jevos server binary. Jevos discovery skips
+# this marked launcher if it sees it on PATH.
+if [ -e "$TARGET_BIN_DIR/jev" ] && ! grep -Fq "LOWKEY JEV ORCHESTRATOR" "$TARGET_BIN_DIR/jev" 2>/dev/null; then
+  echo "Error: preserving existing $TARGET_BIN_DIR/jev; it is not the Lowkey Jev launcher." >&2
+  echo "Set JEVOS_BIN to your Jevos server executable and resolve this name collision before reinstalling." >&2
+  exit 1
+fi
+cp "$STAGE_DIR/bin-jev" "$TARGET_BIN_DIR/jev"
+cp "$STAGE_DIR/bin-jev-ask" "$TARGET_BIN_DIR/jev-ask"
+chmod +x "$TARGET_BIN_DIR/jev" "$TARGET_BIN_DIR/jev-ask"
+
+# Replace only the known legacy Noul-classifier wrapper; preserve unrelated files.
+TARGET_LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$TARGET_LOCAL_BIN"
+LOCAL_JEV_ASK="$TARGET_LOCAL_BIN/jev-ask"
+if [ -f "$LOCAL_JEV_ASK" ]; then
+  if grep -Fq "jev_orchestrator.py" "$LOCAL_JEV_ASK"; then
+    cp "$STAGE_DIR/bin-jev-ask" "$LOCAL_JEV_ASK"
+    chmod +x "$LOCAL_JEV_ASK"
+  elif grep -Fq "127.0.0.1:8017/v1/systemone" "$LOCAL_JEV_ASK"; then
+    cp -p "$LOCAL_JEV_ASK" "$LOCAL_JEV_ASK.backup-jev-orchestrator-$STAMP"
+    cp "$STAGE_DIR/bin-jev-ask" "$LOCAL_JEV_ASK"
+    chmod +x "$LOCAL_JEV_ASK"
+    printf 'Backed up and replaced the legacy Jev classifier wrapper: %s\\n' "$LOCAL_JEV_ASK"
+  else
+    printf 'Preserved unrelated existing command: %s\\n' "$LOCAL_JEV_ASK"
+  fi
+else
+  cp "$STAGE_DIR/bin-jev-ask" "$LOCAL_JEV_ASK"
+  chmod +x "$LOCAL_JEV_ASK"
+fi
 
 # Reconcile the legacy ~/bin/lk location when it is an existing Lowkey install
 # or symlink, preventing PATH shadowing of the canonical ~/.foundry/bin/lk.
@@ -176,6 +212,9 @@ installed = {
     str(lowkey_dir / "ai_harness.py"): sha256(lowkey_dir / "ai_harness.py"),
     str(lowkey_dir / "ai_workflow.py"): sha256(lowkey_dir / "ai_workflow.py"),
     str(lowkey_dir / "jev_engine.py"): sha256(lowkey_dir / "jev_engine.py"),
+    str(lowkey_dir / "jev_orchestrator.py"): sha256(lowkey_dir / "jev_orchestrator.py"),
+    str(bin_dir / "jev"): sha256(bin_dir / "jev"),
+    str(bin_dir / "jev-ask"): sha256(bin_dir / "jev-ask"),
     str(lowkey_dir / "provider_adapters.py"): sha256(lowkey_dir / "provider_adapters.py"),
     str(lowkey_dir / "agent_runtime.py"): sha256(lowkey_dir / "agent_runtime.py"),
     str(lowkey_dir / "evidence_ledger.py"): sha256(lowkey_dir / "evidence_ledger.py"),
@@ -235,6 +274,9 @@ Files copied:
   - $TARGET_LOWKEY_DIR/ai_harness.py
   - $TARGET_LOWKEY_DIR/ai_workflow.py
   - $TARGET_LOWKEY_DIR/jev_engine.py
+  - $TARGET_LOWKEY_DIR/jev_orchestrator.py
+  - $TARGET_BIN_DIR/jev
+  - $TARGET_BIN_DIR/jev-ask
   - $TARGET_LOWKEY_DIR/experience_memory.py
   - $TARGET_LOWKEY_DIR/walkthrough.py
   - $TARGET_LOWKEY_DIR/walkthrough_benchmarks.py
