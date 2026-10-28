@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Legacy-compatible alias: natural-language requests now go to the Jev operator.
+exec "$HOME/.foundry/bin/jev" ask "$@"
