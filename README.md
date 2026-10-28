@@ -97,7 +97,23 @@ The native command still runs with its normal behavior. In particular, `lk send 
 
 `lk ai mode auto` opts into guidance after eligible complex workflows or supported failures. It requires AI to be enabled and usable; `lk ai mode manual` turns that automatic behavior off. The independent `lk ai recommendations` and `lk ai errors` settings remain separate.
 
-Jev is integrated as a structured decision model, separate from the existing text-AI helper. It classifies selected Lowkey command outcomes and recommends a safe response category; it does not generate full explanations or execute commands.
+Lowkey now has two deliberately separate Jev surfaces. The existing `lk ai jev` integration is still the structured Choice/Score/Noul decision layer; it continues to classify selected command outcomes and does not gain tool-execution authority. The new standalone `jev` command is the **operator/orchestrator**: it routes a request to registered code-owned capabilities, executes the selected operation, and reports its observed result. This adds capabilities without replacing the Jev decision engine, Lowkey's native commands, or the text-AI helpers.
+
+~~~bash
+jev help
+jev status
+jev capabilities
+jev ask list my open Brave tabs
+jev ask /read the current page
+jev ask show project status
+jev ask list files
+jev ask search files for 'onlyOwner'
+jev autonomy status
+~~~
+
+The slash prefix is optional. Browser operations use the configured Brave DevTools MCP connection to your already-running browser; Jev does not need to open a separate browser profile. Read-only requests are available by default. Browser navigation/clicking/scrolling and local build/test/scan/audit workflows require `jev ask --yes ...` or the standalone switch `jev autonomy on`. That switch is separate from `lk ai jev on/off`.
+
+The initial capability registry intentionally does not include arbitrary shell execution, signing/broadcasting transactions, real deployments, or destructive filesystem operations. If a request does not match a registered capability, Jev explains that it did not execute anything. `jev-ask` is a compatibility alias for `jev ask`; unlike the old Noul wrapper, it no longer returns a raw probability for an action request.
 
 ~~~bash
 lk ai jev setup                    # fresh setup defaults to JevModel's advertised starter-token endpoint
