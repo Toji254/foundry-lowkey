@@ -140,6 +140,15 @@ def _find_jevos_executable() -> Path:
                 continue
             seen.add(key)
             if resolved.is_file() and os.access(resolved, os.X_OK):
+                # The installed Jev operator also uses the command name "jev".
+                # Never mistake its launcher for the separate Jevos server binary.
+                if resolved.name == "jev":
+                    try:
+                        head = resolved.read_bytes()[:4096]
+                        if b"jev_orchestrator.py" in head or b"LOWKEY JEV ORCHESTRATOR" in head:
+                            continue
+                    except OSError:
+                        pass
                 return resolved
         except OSError:
             continue
