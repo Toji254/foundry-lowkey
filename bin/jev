@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# LOWKEY JEV ORCHESTRATOR
+exec python3 "$HOME/.lowkey/jev_orchestrator.py" "$@"
