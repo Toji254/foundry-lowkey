@@ -1,6 +1,27 @@
 # Jev integration and autonomy
 
-Jev is Lowkey's **structured decision layer**. It answers typed Choice, Score and Noul questions; it does not write natural-language explanations or code. Lowkey's existing optional text-AI provider remains separate and can be used explicitly for longer explanations, test plans and reviews.
+Lowkey now has two separate Jev surfaces:
+
+- **The standalone `jev` operator/orchestrator** accepts practical requests, selects a registered capability, executes its code-owned handler, and reports what happened. Its first capability groups are Brave browser operations (through Brave DevTools MCP), workspace file listing/search/read, and a fixed allowlist of native Lowkey commands and workflows.
+- **`lk ai jev` and `lowkey/jev_engine.py`** remain the existing typed Choice, Score and Noul decision layer. This implementation is preserved; the orchestrator does not replace its providers, result classification, request cache, local budget guard, or server controls.
+- **Lowkey's optional text-AI provider** remains a separate feature for longer explanations, test plans and reviews.
+
+The operator uses registered code-owned handlers rather than executing model-generated shell text. The slash prefix is optional. A read-only request such as `jev ask list my open Brave tabs` can run without enabling autonomy; requests that change browser state or run local workflows need `jev ask --yes ...` or `jev autonomy on`. The standalone autonomy switch is separate from `lk ai jev on/off`.
+
+Start with:
+
+```bash
+jev help
+jev status
+jev capabilities
+jev ask list my open Brave tabs
+jev ask /read file src/Vault.sol
+jev ask run the project tests       # preview only until approved
+jev ask --yes run the project tests
+jev autonomy on|off|status
+```
+
+The initial registry deliberately excludes arbitrary shell commands, signing or broadcasting transactions, real deployments, and destructive filesystem operations. If a request is not covered by a registered capability, Jev reports that it did not execute it. Browser requests start the configured Brave DevTools MCP client and discover its current tool registry for that request; connection success is only reported after tool discovery/call returns.
 
 ## Pick a Jev endpoint
 
