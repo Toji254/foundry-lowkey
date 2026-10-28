@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from lowkey import jev_orchestrator as jev
+from lowkey import jev_engine
 
 
 class FakeMCP:
@@ -152,6 +153,20 @@ class JevOrchestratorTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(jev.main(["autonomy", "off"]), 0)
         self.assertFalse(jev._read_config()["autonomy_enabled"])
+
+    def test_jev_cli_launcher_is_not_mistaken_for_jevos_server(self):
+        server = self.root / "tools" / "jev" / "jev"
+        launcher = self.root / ".foundry" / "bin" / "jev"
+        server.parent.mkdir(parents=True)
+        launcher.parent.mkdir(parents=True)
+        server.write_text("#!/bin/sh\nexec true\n", encoding="utf-8")
+        server.chmod(0o755)
+        launcher.write_text("# LOWKEY JEV ORCHESTRATOR\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        with patch.dict(os.environ, {"JEVOS_BIN": ""}):
+            with patch("lowkey.jev_engine.Path.home", return_value=self.root):
+                with patch("lowkey.jev_engine.shutil.which", return_value=None):
+                    self.assertEqual(jev_engine._find_jevos_executable(), server.resolve())
 
     def test_url_extraction_rejects_embedded_credentials(self):
         self.assertEqual(jev._extract_url("go to https://example.com/path."), "https://example.com/path")
