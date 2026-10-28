@@ -31,6 +31,14 @@ TARGET_BIN_DIR="$HOME/.foundry/bin"
 LEGACY_BIN="$HOME/bin/lk"
 STAGE_DIR="$TARGET_LOWKEY_DIR/.install-stage"
 
+# Detect the Jev CLI/server name collision before publishing any files.
+# Never overwrite an unrelated executable named "jev".
+if [ -e "$TARGET_BIN_DIR/jev" ] && ! grep -Fq "LOWKEY JEV ORCHESTRATOR" "$TARGET_BIN_DIR/jev" 2>/dev/null; then
+  echo "Error: preserving existing $TARGET_BIN_DIR/jev; it is not the Lowkey Jev launcher." >&2
+  echo "Set JEVOS_BIN to your Jevos server executable and resolve this name collision before reinstalling." >&2
+  exit 1
+fi
+
 mkdir -p "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
@@ -60,6 +68,8 @@ bash -n "$REPO_DIR/bin/jev" "$REPO_DIR/bin/jev-ask"
 
 python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py" "$STAGE_DIR/jev_orchestrator.py"
 bash -n "$REPO_DIR/bin/lk"
+bash -n "$REPO_DIR/bin/jev"
+bash -n "$REPO_DIR/bin/jev-ask"
 
 # Publish exactly the validated stage so the manifest always describes the
 # code that was syntax-checked.
@@ -110,13 +120,7 @@ cp "$STAGE_DIR/break_engine.py" "$TARGET_LOWKEY_DIR/break_engine.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
-# Keep the operator distinct from the Jevos server binary. Jevos discovery skips
-# this marked launcher if it sees it on PATH.
-if [ -e "$TARGET_BIN_DIR/jev" ] && ! grep -Fq "LOWKEY JEV ORCHESTRATOR" "$TARGET_BIN_DIR/jev" 2>/dev/null; then
-  echo "Error: preserving existing $TARGET_BIN_DIR/jev; it is not the Lowkey Jev launcher." >&2
-  echo "Set JEVOS_BIN to your Jevos server executable and resolve this name collision before reinstalling." >&2
-  exit 1
-fi
+# Jevos discovery skips this marked launcher if it sees it on PATH.
 cp "$STAGE_DIR/bin-jev" "$TARGET_BIN_DIR/jev"
 cp "$STAGE_DIR/bin-jev-ask" "$TARGET_BIN_DIR/jev-ask"
 chmod +x "$TARGET_BIN_DIR/jev" "$TARGET_BIN_DIR/jev-ask"
