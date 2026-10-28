@@ -165,10 +165,27 @@ def _extract_quoted_or_tail(text: str, prefixes: tuple[str, ...]) -> str:
 def _workspace_action(request: str, intent: str) -> str:
     root = _safe_project_root()
     if intent == "workspace.list":
-        items = sorted(root.iterdir(), key=lambda path: (not path.is_dir(), path.name.casefold()))
-        visible = [p for p in items if p.name not in _EXCLUDED_DIRS and not _blocked_file(p)]
-        lines = [f"{'DIR ' if item.is_dir() else 'FILE'}  {item.name}" for item in visible[:80]]
-        suffix = f"\nShowing 80 of {len(visible)} entries." if len(visible) > 80 else ""
+        entries: list[tuple[str, bool]] = []
+        for current, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = sorted(
+                name for name in dirs
+                if name not in _EXCLUDED_DIRS and not (Path(current) / name).is_symlink()
+                and not _blocked_file(Path(current) / name)
+            )
+            current_path = Path(current)
+            if current_path != root:
+                entries.append((current_path.relative_to(root).as_posix() + "/", True))
+            for name in sorted(files, key=str.casefold):
+                path = current_path / name
+                if path.is_symlink() or _blocked_file(path):
+                    continue
+                entries.append((path.relative_to(root).as_posix(), False))
+                if len(entries) >= 81:
+                    break
+            if len(entries) >= 81:
+                break
+        lines = [f"{'DIR ' if is_dir else 'FILE'}  {name}" for name, is_dir in entries[:80]]
+        suffix = "\nShowing the first 80 entries; excluded generated, dependency, and sensitive locations." if len(entries) > 80 else ""
         return f"Workspace: {root}\n" + ("\n".join(lines) if lines else "No visible project files were found.") + suffix
     if intent == "workspace.find":
         pattern = _extract_quoted_or_tail(request, ("find file", "find files named", "find files", "locate file"))
