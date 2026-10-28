@@ -117,7 +117,7 @@ def _blocked_file(path: Path) -> bool:
 
 
 def _resolve_workspace_file(root: Path, raw_path: str) -> Path:
-    relative = Path(raw_path.strip().strip("\\"'"))
+    relative = Path(raw_path.strip().strip("\"'"))
     if not str(relative).strip() or relative.is_absolute():
         raise JevOrchestratorError("Give a relative file path inside the current project.")
     candidate = root / relative
