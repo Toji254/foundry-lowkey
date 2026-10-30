@@ -4851,9 +4851,34 @@ def run_cast(args,config,capture=False):
                 f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
             )
 
+        # A named actor followed by an attached ETH value is an intentional
+        # direct payment recipient, not a Solidity function name. Preserve a
+        # real ABI function if the name is also present in the selected target.
+        if remaining and not is_address(remaining[0]) and _attached_value_argument(remaining):
+            recipient_name = next(
+                (
+                    name for name in (config.get("wallets") or {})
+                    if str(name).casefold() == str(remaining[0]).casefold()
+                ),
+                None,
+            )
+            if recipient_name:
+                function_matches = []
+                if target:
+                    try:
+                        function_matches = matching_functions(load_abi(target, config), remaining[0])
+                    except (OSError, TypeError, ValueError):
+                        function_matches = []
+                if not function_matches:
+                    recipient_address = actor_address(config, recipient_name)
+                    if is_address(recipient_address):
+                        remaining[0] = recipient_address
+
+    explicit_target = False
     if cast_cmd in {"call","send","storage"}:
         if remaining and is_address(remaining[0]):
             target=remaining.pop(0)
+            explicit_target = True
         elif len(remaining) >= 2:
             # The documented explicit-target form is: lk read <target> <function> [args].
             # Resolve a named/numbered project target before resolving the function.
@@ -4865,6 +4890,7 @@ def run_cast(args,config,capture=False):
             if named_target:
                 target=named_target
                 remaining.pop(0)
+                explicit_target = True
         if not target:
             return _lowkey_command_error(
                 "Error: no target set. Use lk target <address> or pass one explicitly.",
@@ -4873,18 +4899,31 @@ def run_cast(args,config,capture=False):
         cmd=["cast",cast_cmd,target]
     else: cmd=["cast",cast_cmd]
     function_item=None
-    if not capture:
+    function_argument = (
+        remaining[0]
+        if cast_cmd in {"call", "send"}
+        and remaining
+        and not str(remaining[0]).startswith("-")
+        else None
+    )
+    direct_eth_transfer = (
+        cast_cmd == "send"
+        and explicit_target
+        and function_argument is None
+        and _attached_value_argument(remaining)
+    )
+    if not capture and not direct_eth_transfer:
         guard = _target_health_block(
             config,
             target,
-            remaining[0] if cast_cmd in {"call", "send"} and remaining else None,
+            function_argument,
             cast_cmd,
             remaining,
             capture=False,
         )
         if guard is not None:
             return guard
-    if cast_cmd in {"call","send"} and remaining:
+    if cast_cmd in {"call","send"} and function_argument is not None:
         if "(" not in remaining[0] or ")" not in remaining[0]:
             try: remaining[0]=resolve_function(remaining[0],target,config)
             except ValueError as error:
