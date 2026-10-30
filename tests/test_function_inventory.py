@@ -167,9 +167,9 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("withdraw(uint256)", output)
         self.assertIn("↓ SENDS ETH", output)
         self.assertIn("attach value with --eth <amount>", output)
-        self.assertIn("ETH FLOW LEGEND", output)
-        self.assertIn("indirect flows may need manual review", output)
-        self.assertNotIn("OUTGOING ETH NOT ASSESSED", output)
+        self.assertIn("ETH FLOW", output)
+        self.assertIn("indirect flows need review", output)
+        self.assertNotIn("UNASSESSED", output)
         self.assertNotIn(chr(27), output)
 
     def test_default_inventory_shows_outflow_destination_and_amount_separately(self):
@@ -189,7 +189,7 @@ class FunctionInventoryTests(unittest.TestCase):
         code, output = self._run([])
         self.assertEqual(code, 0)
         getter_tail = output.split("STORAGE GETTERS: 1", 1)[1]
-        getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW LEGEND", 1)[0]
+        getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW", 1)[0]
         self.assertIn("balances(address)", getter_section)
         self.assertIn("[public storage getter]", getter_section)
         self.assertNotIn("NOT ASSESSED", getter_section)
@@ -262,7 +262,7 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("OUTGOING ETH NOT ASSESSED", rendered)
         getter_tail = rendered.split("STORAGE GETTERS: 1", 1)[1]
-        getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW LEGEND", 1)[0]
+        getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW", 1)[0]
         self.assertIn("balances(address)", getter_section)
         self.assertNotIn("NOT ASSESSED", getter_section)
 
@@ -296,7 +296,7 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("STORAGE GETTERS: 1", rendered)
         self.assertIn("balances(address)", rendered)
         getter_tail = rendered.split("STORAGE GETTERS: 1", 1)[1]
-        getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW LEGEND", 1)[0]
+        getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW", 1)[0]
         self.assertNotIn("NOT ASSESSED", getter_section)
 
     def test_function_without_eth_outflow_is_not_labelled_as_sending_eth(self):
@@ -324,7 +324,7 @@ class FunctionInventoryTests(unittest.TestCase):
             tmp.cleanup()
 
         rendered = output.getvalue()
-        function_section = rendered.split("ETH FLOW LEGEND", 1)[0]
+        function_section = rendered.split("ETH FLOW", 1)[0]
         self.assertEqual(code, 0)
         self.assertIn("setTreasury(address)", function_section)
         self.assertIn("NONPAYABLE", function_section)
