@@ -1462,6 +1462,35 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("100", cast.call_args.args[0])
         self.assertIn("--rpc-url", cast.call_args.args[0])
 
+    def test_creation_send_recommends_saved_identifier_lookup(self):
+        create = {
+            "type": "function",
+            "name": "createEscrow",
+            "inputs": [{"name": "recipient", "type": "address"}],
+            "outputs": [{"name": "escrowId", "type": "bytes32"}],
+            "stateMutability": "payable",
+        }
+        getter = {
+            "type": "function",
+            "name": "EscrowID",
+            "inputs": [{"name": "escrowId", "type": "bytes32"}],
+            "outputs": [{"name": "currentstatus", "type": "uint8", "internalType": "enum Escrow.Status"}],
+            "stateMutability": "view",
+        }
+        config = {"target": "0x" + "1" * 40}
+        with patch.object(
+            lk, "_function_item_for_command", return_value=(create, [create, getter])
+        ), patch.object(
+            lk, "_related_read_functions", return_value=[getter]
+        ):
+            recommendations = lk._function_interaction_recommendations(
+                "send", ["createEscrow", "0x" + "2" * 40, "--eth", "2"], config
+            )
+
+        commands = [command for command, _reason in recommendations]
+        self.assertEqual(commands[:3], ["lk receipt", "lk trace", "lk ids"])
+        self.assertIn("lk read EscrowID <escrowId>", commands)
+
     def test_transaction_argument_values_decode_receipt_calldata(self):
         item = {
             "type": "function",
