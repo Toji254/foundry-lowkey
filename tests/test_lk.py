@@ -1138,14 +1138,33 @@ class LowkeyCastTests(unittest.TestCase):
         emitter = "0x" + "2" * 40
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Main.sol").write_text(
+                "pragma solidity ^0.8.20; contract Main {}",
+                encoding="utf-8",
+            )
+            (root / "src" / "Emitter.sol").write_text(
+                "pragma solidity ^0.8.20; contract Emitter {}",
+                encoding="utf-8",
+            )
             selected_artifact = root / "Main.json"
             emitter_artifact = root / "Emitter.json"
             selected_artifact.write_text(
-                json.dumps({"contractName": "Main", "abi": []}),
+                json.dumps({
+                    "contractName": "Main",
+                    "sourceName": "src/Main.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
                 encoding="utf-8",
             )
             emitter_artifact.write_text(
-                json.dumps({"contractName": "Emitter", "abi": []}),
+                json.dumps({
+                    "contractName": "Emitter",
+                    "sourceName": "src/Emitter.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6001"},
+                }),
                 encoding="utf-8",
             )
             config = {
@@ -1229,9 +1248,10 @@ class LowkeyCastTests(unittest.TestCase):
                     )
 
         self.assertEqual(result[0], "RecordRegistered(bytes32,address)")
-        self.assertIn("Field recordKey: " + record_key, output.getvalue())
-        self.assertIn("Field owner: " + owner, output.getvalue())
-        self.assertIn("Identifier field (recordKey): " + record_key, output.getvalue())
+        rendered = result[1]
+        self.assertIn("Field recordKey: " + record_key, rendered)
+        self.assertIn("Field owner: " + owner, rendered)
+        self.assertIn("Identifier field (recordKey): " + record_key, rendered)
 
 
     def test_identifier_book_persists_generic_returned_ids_and_aliases(self):
@@ -1322,6 +1342,8 @@ class LowkeyCastTests(unittest.TestCase):
             for value in (1, 2, 3)
         ]
         with patch.object(lk, "run_cast", side_effect=results) as run_cast, patch(
+            "lowkeycast.format_storage_read", return_value=None
+        ), patch(
             "builtins.print"
         ) as printed:
             result = lk.run_storage_slots(config, ["0..2"])

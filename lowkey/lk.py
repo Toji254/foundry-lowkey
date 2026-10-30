@@ -1646,8 +1646,8 @@ def auto_abi_path(target,config,root=None):
     # token callback) can bind that address to an unrelated artifact.
     selected_target = config.get("target")
     is_selected_target = (
-        is_address(selected_target)
-        and selected_target.lower() == target.lower()
+        not is_address(selected_target)
+        or selected_target.lower() == target.lower()
     )
     preferred = config.get("target_contract") if is_selected_target else None
     candidate_addresses=[target]
@@ -4634,48 +4634,6 @@ def _trace_identifier_info(config, tx, trace_text):
             })
     return rendered, candidates
 
-def _record_identifier_candidates(root, tx_hash, candidates):
-    """Persist probable identifiers so repeated values become visible across traces."""
-    if not candidates:
-        return []
-    evidence_dir = Path(root) / ".audit" / "evidence"
-    try:
-        evidence_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return []
-    path = evidence_dir / "returned-identifiers.json"
-    registry = read_json_file(path, {})
-    if not isinstance(registry, dict):
-        registry = {}
-    warnings = []
-    for item in candidates:
-        key = str(item.get("value") or "").lower()
-        if not key:
-            continue
-        history = registry.get(key, [])
-        if not isinstance(history, list):
-            history = []
-        duplicate = next((entry for entry in history if entry.get("tx_hash") != tx_hash), None)
-        if duplicate:
-            warnings.append(
-                f"  Repeated {item.get('label') or 'contract identifier'}: "
-                f"{apply_labels(key, {})}"
-                f"\n    Previous transaction ID: {duplicate.get('tx_hash', '?')}"
-                f"\n    Current transaction ID:  {tx_hash}"
-                "\n    Review: check whether this should be unique and whether an existing record was overwritten."
-            )
-        if not any(entry.get("tx_hash") == tx_hash for entry in history if isinstance(entry, dict)):
-            history.append({
-                "tx_hash": tx_hash,
-                "function": item.get("function"),
-                "type": item.get("type"),
-            })
-        registry[key] = history[-8:]
-    try:
-        write_json_file(path, registry)
-    except OSError:
-        pass
-    return warnings
 def _record_identifier_candidates(root, tx_hash, candidates):
     """Persist identifier history and a project-local, human-addressable ID book."""
     if not candidates:
@@ -18770,7 +18728,19 @@ COMMAND_HELP = {
     "version": _help_entry("Show the installed Lowkey runtime version/status.", "lk version", "lk version", "Use it when checking which Lowkey runtime is installed."),
     "detect": _help_entry("Detect the current project/toolchain.", "lk detect", "lk detect", "Use it when you want Lowkey to explain which build/backend it sees.", related=["lk project", "lk doctor"]),
     "detect-project": _help_entry("Alias for project/toolchain detection.", "lk detect-project", "lk detect-project", "Use it as an explicit project-detection command.", related=["lk detect", "lk project"]),
-    "storage": _help_entry("Read one or more raw storage slots from the selected target.", "lk storage <slot> [slot ...] | lk storage <start>..<end>", "lk storage 0..5", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping", "lk array"]),
+    "storage": _help_entry(
+        "Read one or more raw storage slots from the selected target.",
+        "lk storage <slot> [slot ...] | lk storage <start>..<end>",
+        "lk storage 0..5",
+        "Use it for low-level storage reads when the higher-level wrappers are not enough.",
+        forms=[
+            ("lk storage <slot>", "Read one raw storage word.", "lk storage 0"),
+            ("lk storage <slot> [slot ...]", "Read several slots in one view.", "lk storage 0 1 2 3"),
+            ("lk storage <start>..<end>", "Read a consecutive range of slots (up to 256 words).", "lk storage 0..5"),
+            ("lk storage <slot> --block <block>", "Read a slot at a specific block.", "lk storage 3 --block latest"),
+        ],
+        related=["lk layout", "lk mapping", "lk array"],
+    ),
     "slots": _help_entry("Alias for reading one or more selected-target storage slots.", "lk slots <slot> [slot ...]", "lk slots 0 1 2 3", "Use it to compare raw storage words side by side.", related=["lk storage", "lk layout"]),
     "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c getValue 0x...", "Use it when you want the compact read form.", related=["lk read"]),
     "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s setValue 10 --preview", "Use it when you want the compact send form.", related=["lk send"]),
