@@ -5079,11 +5079,9 @@ def run_id(config, args=None):
             return fail("Usage: lk id alias <number> <name>")
         selector, alias = args[1], args[2]
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,47}", alias):
-            return fail("Error: alias must start with a letter or underscore and contain only letters, numbers, or underscores.")
+            return fail("Error: alias must start with a letter or underscore and contain only letters, numbers, and underscores.")
         if alias.lower() in {"last", "latest"}:
             return fail("Error: that alias is reserved; choose another name.")
-        if selector.startswith("@"):
-            selector = selector[1:]
         try:
             if selector.startswith("@"):
                 # Reuse the same selector rules as ABI arguments: @last,
