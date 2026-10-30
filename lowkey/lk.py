@@ -1918,8 +1918,14 @@ def _solidity_function_source_index(source):
                 modifiers.append(token)
 
         params = source[opening + 1:closing]
+        payable_names = sorted(set(re.findall(
+            r"\baddress\s+payable\s+(?:(?:public|private|internal|external|constant|immutable)\s+)*([A-Za-z_]\w*)",
+            masked,
+        )))
         declarations.append({
             "name": name,
+            "params": params,
+            "payable_names": payable_names,
             "param_count": len(_split_top_level(params)),
             "visibility": visibility_match.group(1) if visibility_match else "unknown",
             "mutability": mutability_match.group(1) if mutability_match else None,
@@ -2060,6 +2066,210 @@ def _function_storage_refs(body, storage_labels):
                 reads.add(name)
     return sorted(reads), sorted(writes)
 
+def _compact_source_expression(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _solidity_expression_is_payable(destination, source_decl, body):
+    destination = _compact_source_expression(destination)
+    if re.match(r"^payable\s*\(", destination):
+        return True
+
+    known = set((source_decl or {}).get("payable_names") or [])
+    declaration_text = " ".join([
+        str((source_decl or {}).get("params") or ""),
+        str(body or ""),
+    ])
+    known.update(re.findall(
+        r"\baddress\s+payable\s+(?:(?:public|private|internal|external|constant|immutable)\s+)*([A-Za-z_]\w*)",
+        declaration_text,
+    ))
+    root = destination.split(".", 1)[0].split("[", 1)[0].strip()
+    return root in known
+
+
+def _value_from_call_options(options):
+    for part in _split_top_level(str(options or "")):
+        key, separator, value = part.partition(":")
+        if separator and key.strip() == "value":
+            return _compact_source_expression(value)
+    return None
+
+
+def _extract_native_eth_outflows(body, source_decl=None):
+    """Find common native-ETH transfer patterns and retain their source expressions.
+
+    This is static source evidence, not symbolic execution. It deliberately avoids
+    treating arbitrary ERC20 transfer methods as native ETH transfers.
+    """
+    if not body:
+        return []
+
+    masked = _strip_scan_comments(body, "solidity")
+    identifier = r"[A-Za-z_]\w*"
+    call_atom = rf"{identifier}\s*\((?:[^()]|\([^()]*\))*\)"
+    receiver = rf"(?:{call_atom}|{identifier})(?:\s*(?:\.\s*{identifier}|\[[^\]\n]*\]))*"
+    findings = []
+
+    def add(destination, amount, mechanism):
+        destination = _compact_source_expression(destination)
+        amount = _compact_source_expression(amount)
+        if not destination or not amount:
+            return
+        if amount.lower() in {"0", "0x0", "0 wei"}:
+            return
+        item = {
+            "destination": destination,
+            "amount": amount,
+            "mechanism": mechanism,
+        }
+        key = (item["destination"], item["amount"], item["mechanism"])
+        if not any(
+            (entry["destination"], entry["amount"], entry["mechanism"]) == key
+            for entry in findings
+        ):
+            findings.append(item)
+
+    # Low-level Solidity CALL with an explicit value option.
+    call_pattern = re.compile(rf"(?P<destination>{receiver})\s*\.\s*call\s*\{{")
+    for match in call_pattern.finditer(masked):
+        opening = masked.find("{", match.start(), match.end())
+        closing = _matching_delimiter(masked, opening, "{", "}")
+        if closing is None:
+            continue
+        amount = _value_from_call_options(body[opening + 1:closing])
+        if amount:
+            add(body[match.start("destination"):match.end("destination")], amount, "call{value}")
+
+    # address payable .transfer(amount) / .send(amount). Require evidence that
+    # the receiver is payable so ERC20/token transfer methods are not mislabeled.
+    transfer_pattern = re.compile(
+        rf"(?P<destination>{receiver})\s*\.\s*(?P<method>transfer|send)\s*\(",
+        re.IGNORECASE,
+    )
+    for match in transfer_pattern.finditer(masked):
+        destination = body[match.start("destination"):match.end("destination")]
+        if not _solidity_expression_is_payable(destination, source_decl, body):
+            continue
+        opening = masked.find("(", match.start("method"), match.end())
+        closing = _matching_delimiter(masked, opening, "(", ")")
+        if closing is None:
+            continue
+        arguments = _split_top_level(body[opening + 1:closing])
+        if arguments:
+            add(destination, arguments[0], match.group("method").lower())
+
+    # ETH supplied to newly-created contracts.
+    create_pattern = re.compile(rf"\bnew\s+(?P<contract>{identifier})\s*\{{")
+    for match in create_pattern.finditer(masked):
+        opening = masked.find("{", match.start(), match.end())
+        closing = _matching_delimiter(masked, opening, "{", "}")
+        if closing is None:
+            continue
+        amount = _value_from_call_options(body[opening + 1:closing])
+        if amount:
+            add(
+                f"new {match.group('contract')} (created contract address)",
+                amount,
+                "CREATE with value",
+            )
+
+    # SELFDESTRUCT transfers the contract's remaining ETH balance.
+    for match in re.finditer(r"\b(?:selfdestruct|suicide)\s*\(", masked):
+        opening = masked.find("(", match.start(), match.end())
+        closing = _matching_delimiter(masked, opening, "(", ")")
+        if closing is None:
+            continue
+        arguments = _split_top_level(body[opening + 1:closing])
+        if arguments:
+            add(arguments[0], "address(this).balance", "selfdestruct")
+
+    # Inspect Yul assembly CALL / CREATE / CREATE2 / SELFDESTRUCT separately.
+    assembly_pattern = re.compile(r"\bassembly\b(?:\s*\([^)]*\))?\s*\{")
+    for assembly_match in assembly_pattern.finditer(masked):
+        opening = masked.find("{", assembly_match.start(), assembly_match.end())
+        closing = _matching_delimiter(masked, opening, "{", "}")
+        if closing is None:
+            continue
+        block = body[opening + 1:closing]
+        block_masked = masked[opening + 1:closing]
+
+        for match in re.finditer(r"\bcall\s*\(", block_masked):
+            call_open = block_masked.find("(", match.start(), match.end())
+            call_close = _matching_delimiter(block_masked, call_open, "(", ")")
+            if call_close is None:
+                continue
+            args = _split_top_level(block[call_open + 1:call_close])
+            if len(args) >= 3:
+                add(args[1], args[2], "assembly CALL")
+
+        for method in ("create", "create2"):
+            for match in re.finditer(r"\b" + method + r"\s*\(", block_masked):
+                call_open = block_masked.find("(", match.start(), match.end())
+                call_close = _matching_delimiter(block_masked, call_open, "(", ")")
+                if call_close is None:
+                    continue
+                args = _split_top_level(block[call_open + 1:call_close])
+                if args:
+                    add(
+                        f"new contract address ({method.upper()})",
+                        args[0],
+                        f"assembly {method.upper()}",
+                    )
+
+        for match in re.finditer(r"\bselfdestruct\s*\(", block_masked):
+            call_open = block_masked.find("(", match.start(), match.end())
+            call_close = _matching_delimiter(block_masked, call_open, "(", ")")
+            if call_close is None:
+                continue
+            args = _split_top_level(block[call_open + 1:call_close])
+            if args:
+                add(args[0], "address(this).balance", "assembly SELFDESTRUCT")
+
+    return findings
+
+
+def _collect_native_eth_outflows(source_decl, source_decls, seen=None):
+    """Include direct transfers from same-file private/internal helpers."""
+    if not source_decl:
+        return []
+    seen = set(seen or ())
+    identity = (source_decl.get("name"), source_decl.get("line"))
+    if identity in seen:
+        return []
+    seen.add(identity)
+
+    body = source_decl.get("body", "")
+    findings = _extract_native_eth_outflows(body, source_decl)
+    masked = _strip_scan_comments(body, "solidity")
+
+    for helper in source_decls or []:
+        if helper is source_decl or helper.get("visibility") not in {"internal", "private"}:
+            continue
+        helper_name = str(helper.get("name") or "")
+        if not helper_name or not re.search(r"\b" + re.escape(helper_name) + r"\s*\(", masked):
+            continue
+        nested = _collect_native_eth_outflows(helper, source_decls, seen)
+        for entry in nested:
+            propagated = dict(entry)
+            previous = propagated.get("via")
+            propagated["via"] = f"{helper_name}()" + (f" -> {previous}" if previous else "")
+            key = (
+                propagated["destination"],
+                propagated["amount"],
+                propagated["mechanism"],
+                propagated["via"],
+            )
+            if not any(
+                (
+                    item["destination"], item["amount"], item["mechanism"], item.get("via")
+                ) == key
+                for item in findings
+            ):
+                findings.append(propagated)
+    return findings
+
+
 def _function_modifier_text(record):
     modifiers = record.get("modifiers", [])
     return ", ".join(modifiers) if modifiers else "—"
@@ -2144,9 +2354,8 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
         reads = sorted(set(reads + [name]))
 
     events = sorted(set(re.findall(r"\bemit\s+([A-Za-z_]\w*)\s*(?:\(|;)", body)))
-    sends_eth = bool(re.search(r"\.\s*call\s*\{\s*value\s*:", body)) or bool(
-        re.search(r"\.\s*(?:send|transfer)\s*\(", body)
-    )
+    eth_outflows = _collect_native_eth_outflows(source, source_decls) if source else []
+    sends_eth = bool(eth_outflows)
     calls = [
         method for method in ("delegatecall", "staticcall", "call", "send", "transfer")
         if re.search(r"\.\s*" + method + r"\s*(?:\{|\()", body)
@@ -2173,7 +2382,7 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
     record = {
         "item": item, "name": name, "signature": signature, "visibility": visibility, "mutability": mutability,
         "modifiers": (source or {}).get("modifiers", []), "inputs": item.get("inputs", []), "outputs": item.get("outputs", []),
-        "reads": reads, "writes": writes, "events": events, "calls": calls, "eth": eth, "creates": creates,
+        "reads": reads, "writes": writes, "events": events, "calls": calls, "eth": eth, "eth_outflows": eth_outflows, "creates": creates,
         "assembly": assembly, "getter": name in getter_names, "admin": admin, "asset_action": asset_action,
         "callback": callback, "upgrade": upgrade, "source": source_label, "_source": source,
         "selector": (
@@ -2252,6 +2461,13 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
             print(f"  emits      : {', '.join(record['events']) if record['events'] else '—'}")
             print(f"  calls      : {', '.join(record['calls']) if record['calls'] else '—'}")
             print(f"  ether      : {record['eth'] or '—'}")
+            if record.get("eth_outflows"):
+                for outflow_index, outflow in enumerate(record["eth_outflows"], 1):
+                    via = f" via {outflow['via']}" if outflow.get("via") else ""
+                    print(
+                        f"  ETH OUT {outflow_index}: {outflow['mechanism']} | "
+                        f"to: {outflow['destination']} | amount: {outflow['amount']}{via}"
+                    )
             print(f"  creates    : {'YES' if record['creates'] else '—'}")
             print(f"  assembly   : {'YES' if record['assembly'] else '—'}")
             print(f"  selector   : {record['selector'] or '—'}")
@@ -2393,13 +2609,39 @@ def run_functions(config, args=None):
             suffix = "  [public storage getter]" if title == "STORAGE GETTERS" else ""
             annotation = _function_default_eth_annotation(record)
             print(f"  {index:>2}. {record['signature']}  [{annotation}]{suffix}")
+            for outflow_index, outflow in enumerate(record.get("eth_outflows") or [], 1):
+                via = f" | via: {outflow['via']}" if outflow.get("via") else ""
+                print(
+                    f"       ETH OUT {outflow_index}: {outflow['mechanism']} | "
+                    f"to: {outflow['destination']} | amount: {outflow['amount']}{via}"
+                )
+
+    entrypoints = [
+        entry for entry in abi
+        if isinstance(entry, dict) and entry.get("type") in {"receive", "fallback"}
+    ]
+    if entrypoints:
+        print("\nETH ENTRYPOINTS:")
+        for entry in entrypoints:
+            kind = str(entry.get("type"))
+            mutability = str(entry.get("stateMutability") or "unknown").upper()
+            if mutability == "PAYABLE":
+                detail = "CAN RECEIVE ETH • attach with --eth <amount>"
+            else:
+                detail = "cannot receive attached ETH"
+            print(f"  {kind}()  [{mutability} • {detail}]")
 
     print("\nETH FLOW NOTES:")
     print("  PAYABLE = this function can receive ETH; attach ETH separately from the function arguments.")
     print("  Example: lk send <function> [args...] --eth 2  (attaches 2 ETH; --value is an alias).")
     print("  NONPAYABLE / VIEW / PURE = this function cannot receive attached ETH.")
-    print("  SENDS ETH = a direct native-ETH send pattern was detected in the available source.")
-    print("  Outgoing-ETH detection is source-based; indirect/dynamic flows may need manual review.")
+    print("  SENDS ETH = a native-ETH transfer pattern was detected in the available source.")
+    print("  ETH OUT shows the detected mechanism, destination expression and amount expression.")
+    print("  Detection covers common Solidity CALL/value, payable transfer/send, CREATE value,")
+    print("  SELFDESTRUCT and Yul CALL/CREATE patterns, plus same-file private/internal helpers.")
+    print("  This is source evidence, not a proof of every possible ETH flow; inherited,")
+    print("  modifier-driven, proxy/delegatecall, dynamic and other indirect paths may need review.")
+    print("  ERC20/token transfers are not classified as native ETH merely because they use transfer().")
     return 0
 
 def run_info(config):
