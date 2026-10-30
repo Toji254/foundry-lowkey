@@ -191,6 +191,12 @@ class FunctionInventoryTests(unittest.TestCase):
                 "payable(recipient)", "amount", "call{value}",
             ),
             (
+                'payable(EscrowID[escrowId].recipient).call{value: EscrowID[escrowId].amount}("");',
+                "payable(EscrowID[escrowId].recipient)",
+                "EscrowID[escrowId].amount",
+                "call{value}",
+            ),
+            (
                 "recipient.transfer(amount);",
                 "recipient", "amount", "transfer",
             ),
