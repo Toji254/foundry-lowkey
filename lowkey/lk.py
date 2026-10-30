@@ -4001,13 +4001,19 @@ def _send_preview_recommendations(args, config):
 
     current, abi = _function_item_for_command("send", raw, config)
     if current:
-        for item in _related_read_functions(current, abi)[:1]:
+        # Only suggest pre-submit reads that can be run without inventing values.
+        # A mapping getter such as EscrowID(uint256 id) needs an ID that will
+        # not exist until after the create transaction has been submitted.
+        for item in _related_read_functions(current, abi):
+            if item.get("inputs"):
+                continue
             command_text = _function_recommendation_command("read", item, abi)
             if command_text:
                 recommendations.append((
                     command_text,
-                    "Check related contract state before submitting the transaction.",
+                    "Check existing contract state before creating the new record.",
                 ))
+                break
 
     submission = _preview_submission_command(raw)
     if submission:
