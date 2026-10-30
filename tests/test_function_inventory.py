@@ -172,7 +172,7 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("NEXT COMMANDS", output)
         self.assertIn("lk fn --verbose", output)
         self.assertNotIn("OUTGOING ETH NOT ASSESSED", output)
-        self.assertNotIn("\\033[", output)
+        self.assertNotIn(chr(27), output)
 
     def test_default_inventory_shows_outflow_destination_and_amount_separately(self):
         code, output = self._run([])
@@ -212,9 +212,12 @@ class FunctionInventoryTests(unittest.TestCase):
         finally:
             os.chdir(old)
             tmp.cleanup()
+        rendered = output.getvalue()
         self.assertEqual(code, 0)
-        self.assertIn("ETH ENTRYPOINTS:", output.getvalue())
-        self.assertIn("receive()  [PAYABLE • CAN RECEIVE ETH", output.getvalue())
+        self.assertIn("ETH ENTRYPOINTS (1)", rendered)
+        self.assertIn("receive()", rendered)
+        self.assertIn("↑ RECEIVES ETH", rendered)
+
 
     def test_multiple_native_eth_outflows_are_displayed_individually(self):
         tmp, root, config = self._fixture()
@@ -305,8 +308,8 @@ class FunctionInventoryTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"TERM": "xterm"}, clear=True):
             styled = lk._function_terminal_style("heading", "title", stream)
-            self.assertTrue(styled.startswith("\\033[1m"))
-            self.assertTrue(styled.endswith("\\033[0m"))
+            self.assertTrue(styled.startswith(chr(27) + "[1m"))
+            self.assertTrue(styled.endswith(chr(27) + "[0m"))
 
         self.assertEqual(lk._function_terminal_style("plain", "title", io.StringIO()), "plain")
 
@@ -318,7 +321,9 @@ class FunctionInventoryTests(unittest.TestCase):
                 lk._function_print_wrapped("        recipient ", expression)
         rendered = output.getvalue()
         self.assertIn("destination expression with several parts", rendered)
-        self.assertEqual("".join(rendered.split()), "".join(("        recipient " + expression + "\\n").split()))
+        expected = "        recipient " + expression + "\n"
+        self.assertEqual("".join(rendered.split()), "".join(expected.split()))
+
 
     def test_native_eth_outflow_detector_covers_common_solidity_patterns(self):
         payable_source = {
