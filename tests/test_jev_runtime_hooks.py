@@ -143,7 +143,7 @@ class JevRuntimeHookTests(unittest.TestCase):
 
         self.assertIn("JEV TRIAGE UNAVAILABLE (RuntimeError)", stderr.getvalue())
         self.assertIn("Could not reach local Jevos-v5", stderr.getvalue())
-        self.assertIn("native command kept its original result", stderr.getvalue())
+        self.assertIn("native Lowkey command kept its original result", stderr.getvalue())
 
     def test_disabled_jev_returns_without_importing_provider_modules(self):
         with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": False}):
