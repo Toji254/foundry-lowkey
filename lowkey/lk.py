@@ -3116,7 +3116,7 @@ def _wizard_transaction_return(config, tx_hash, item):
     }
 
 
-def _transaction_return_report(config, tx_hash, function_item, abi=None, result=None):
+def _transaction_return_report(config, tx_hash, function_item, abi=None, result=None, target=None):
     """Render ABI-declared top-level return values recovered from a transaction trace.
 
     Return values are optional RPC evidence: providers that disable tracing do
@@ -3147,10 +3147,20 @@ def _transaction_return_report(config, tx_hash, function_item, abi=None, result=
     if decoded:
         candidates = _identifier_candidates_from_decoded(function_item, decoded)
         if candidates:
-            target = config.get("target")
+            candidate_target = target or config.get("target")
+            selected_target = config.get("target")
+            selected_contract = (
+                config.get("target_contract")
+                if not is_address(candidate_target)
+                or (
+                    is_address(selected_target)
+                    and selected_target.lower() == candidate_target.lower()
+                )
+                else ""
+            )
             for candidate in candidates:
-                candidate["target"] = target
-                candidate["contract"] = config.get("target_contract")
+                candidate["target"] = candidate_target
+                candidate["contract"] = selected_contract
             try:
                 _record_identifier_candidates(
                     audit_context.foundry_project_root(),
@@ -3356,9 +3366,9 @@ def _transaction_execution_report(
             abi = inferred_abi
 
     receipt_status = receipt.get("status") if isinstance(receipt, dict) else None
-    reverted = receipt_status in ("0x0", 0)
+    successful = receipt_status in ("0x1", 1)
     return_result = None
-    if not reverted and function_item and function_item.get("outputs"):
+    if successful and function_item and function_item.get("outputs"):
         return_result = _wizard_transaction_return(config, tx_hash, function_item)
         return_lines = _transaction_return_report(
             config,
@@ -3366,11 +3376,12 @@ def _transaction_execution_report(
             function_item,
             abi,
             result=return_result,
+            target=str((tx or {}).get("to") or config.get("target") or ""),
         )
         if return_lines:
             sections.append("\n".join(return_lines))
 
-    if not reverted and function_item:
+    if successful and function_item:
         state_lines = _post_transaction_state_report(
             config,
             str((tx or {}).get("to") or config.get("target") or ""),
@@ -3452,6 +3463,28 @@ def run_tx(config,args):
             print(f"Selector: {selector} (unknown to loaded ABI)")
             _,fourbyte,_=cast_output(["cast","4byte",selector])
             if fourbyte: print(f"4byte:   {fourbyte}")
+
+
+def _transaction_argument_values(function_item, tx):
+    """Decode transaction calldata into one value per ABI input when available."""
+    inputs = function_item.get("inputs", []) if isinstance(function_item, dict) else []
+    if not inputs:
+        return []
+    if not isinstance(tx, dict):
+        return None
+    calldata = tx.get("input") or tx.get("data")
+    if not isinstance(calldata, str) or not calldata.startswith("0x") or len(calldata) < 10:
+        return None
+    try:
+        decoded = decode_abi_input(format_signature(function_item), calldata)
+    except Exception:
+        return None
+    if not decoded or str(decoded).lower().startswith(("error:", "failed", "unable")):
+        return None
+    values = _decoded_abi_output_values(decoded, inputs)
+    return values if len(values) == len(inputs) else None
+
+
 def run_receipt(config, tx_hash=None, args=None):
     values = list(args or [])
     raw = "--raw" in values
@@ -3563,15 +3596,34 @@ def run_receipt(config, tx_hash=None, args=None):
         lines.append("")
         lines.append("Events:    none")
 
-    if status == "SUCCESS" and function_item and function_item.get("outputs"):
-        return_lines = _transaction_return_report(
+    return_result = None
+    argument_values = None
+    if status == "SUCCESS" and function_item:
+        argument_values = _transaction_argument_values(function_item, tx)
+        if function_item.get("outputs"):
+            return_result = _wizard_transaction_return(config, tx_hash, function_item)
+            return_lines = _transaction_return_report(
+                config,
+                tx_hash,
+                function_item,
+                abi,
+                result=return_result,
+                target=str(tx.get("to") or config.get("target") or ""),
+            )
+            if return_lines:
+                lines.extend(["", *return_lines])
+
+        state_lines = _post_transaction_state_report(
             config,
-            tx_hash,
-            function_item,
+            str(tx.get("to") or config.get("target") or ""),
             abi,
+            function_item,
+            argument_values,
+            return_result,
+            sender=tx.get("from"),
         )
-        if return_lines:
-            lines.extend(["", *return_lines])
+        if state_lines:
+            lines.extend(["", *state_lines])
 
     print("\n".join(lines))
     audit_context.record_tool(

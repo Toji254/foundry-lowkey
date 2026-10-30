@@ -1341,8 +1341,8 @@ class LowkeyCastTests(unittest.TestCase):
             lk.CommandResult("0x" + format(value, "064x"), 0)
             for value in (1, 2, 3)
         ]
-        with patch.object(lk, "run_cast", side_effect=results) as run_cast, patch(
-            "lowkeycast.format_storage_read", return_value=None
+        with patch.object(lk, "run_cast", side_effect=results) as run_cast, patch.object(
+            lk, "format_storage_read", return_value=None
         ), patch(
             "builtins.print"
         ) as printed:
@@ -1396,6 +1396,74 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(rpc.call_args.args[1], "eth_call")
         self.assertEqual(rpc.call_args.args[2][0]["from"], caller)
         self.assertEqual(rpc.call_args.args[2][0]["to"], target)
+
+
+    def test_post_transaction_state_report_reads_generic_enum_getter(self):
+        target = "0x" + "1" * 40
+        sender = "0x" + "2" * 40
+        record_id = "0x" + "a" * 64
+        write_item = {
+            "type": "function",
+            "name": "registerRecord",
+            "inputs": [{"name": "recordId", "type": "bytes32"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }
+        getter = {
+            "type": "function",
+            "name": "records",
+            "inputs": [{"name": "recordId", "type": "bytes32"}],
+            "outputs": [
+                {
+                    "name": "currentState",
+                    "type": "uint8",
+                    "internalType": "enum Registry.RecordState",
+                },
+                {"name": "owner", "type": "address"},
+            ],
+            "stateMutability": "view",
+        }
+        config = {"target": target, "rpc": "http://127.0.0.1:8545"}
+        with patch.object(lk, "effective_rpc", return_value=config["rpc"]), patch.object(
+            lk, "cast_output", return_value=(0, "0x" + "01" * 64, "")
+        ) as cast, patch.object(
+            lk, "decode_abi_output", return_value=("1\n" + sender, None)
+        ), patch.object(
+            lk, "format_human_abi_return",
+            return_value="Returns:\n  current state = accepted (enum value 1) [uint8]\n  owner = " + sender + " [address]",
+        ):
+            report = lk._post_transaction_state_report(
+                config,
+                target,
+                [write_item, getter],
+                write_item,
+                [record_id],
+                None,
+                sender=sender,
+            )
+
+        rendered = "\n".join(report)
+        self.assertIn("POST-TRANSACTION STATE", rendered)
+        self.assertIn("accepted (enum value 1)", rendered)
+        self.assertEqual(cast.call_args.args[0][:5], [
+            "cast", "call", target, "records(bytes32)", record_id,
+        ])
+        self.assertIn("--from", cast.call_args.args[0])
+        self.assertIn("--rpc-url", cast.call_args.args[0])
+
+    def test_transaction_argument_values_decode_receipt_calldata(self):
+        item = {
+            "type": "function",
+            "name": "acceptRecord",
+            "inputs": [{"name": "recordId", "type": "bytes32"}],
+            "outputs": [],
+        }
+        tx = {"input": "0x" + "12345678" + "a" * 64}
+        with patch.object(lk, "decode_abi_input", return_value="0x" + "a" * 64):
+            self.assertEqual(
+                lk._transaction_argument_values(item, tx),
+                ["0x" + "a" * 64],
+            )
 
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
         config = {
