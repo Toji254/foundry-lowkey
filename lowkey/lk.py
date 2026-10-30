@@ -5076,7 +5076,7 @@ def run_id(config, args=None):
     action = args[0].lower()
     if action == "alias":
         if len(args) != 3:
-            return fail("Usage: lk id alias <number> <name>")
+            return fail("Usage: lk id alias <number|@alias|@last> <name>")
         selector, alias = args[1], args[2]
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,47}", alias):
             return fail("Error: alias must start with a letter or underscore and contain only letters, numbers, and underscores.")
