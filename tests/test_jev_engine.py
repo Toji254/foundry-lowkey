@@ -314,7 +314,7 @@ class JevEngineTests(unittest.TestCase):
         self.assertEqual(report["suggested_response"], "explain_observation")
         self.assertEqual(report["provider"], "typesafe")
         self.assertFalse(report["cache_hit"])
-        self.assertEqual(report["source"], "jev-systemone")
+        self.assertEqual(report["source"], "typesafe-jev")
         self.assertEqual(report["usage"]["input_tokens"], 500)
         rendered = jev_engine.render_classification(report, "lk build")
         self.assertIn("JEV DECISION", rendered)
