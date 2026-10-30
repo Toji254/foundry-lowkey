@@ -1352,6 +1352,14 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Slot 2:", "\n".join(str(c.args[0]) for c in printed.call_args_list if c.args))
 
 
+
+    def test_send_value_as_wei_parses_decimal_eth_and_gwei_without_assuming_units(self):
+        self.assertEqual(lk._send_value_as_wei(["send", "--value", "2 ether"]), 2 * 10**18)
+        self.assertEqual(lk._send_value_as_wei(["send", "--value", "0.25 ETH"]), 25 * 10**16)
+        self.assertEqual(lk._send_value_as_wei(["send", "--value=150 gwei"]), 150 * 10**9)
+        self.assertEqual(lk._send_value_as_wei(["send", "--value", "200"]), 200)
+        self.assertIsNone(lk._send_value_as_wei(["send", "--value", "0.1 wei"]))
+
     def test_rpc_error_hex_values_recovers_nested_custom_error_data(self):
         payload = "0x" + "12345678" + f"{17:064x}"
         error = {

@@ -474,7 +474,7 @@ def _send_value_as_wei(command):
         return 0
 
     normalized = raw_value.lower().replace(",", "")
-    match = re.fullmatch(r"([0-9]+(?:\\.[0-9]+)?)\\s*(ether|eth|gwei|wei)?", normalized)
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(ether|eth|gwei|wei)?", normalized)
     if match:
         amount = Decimal(match.group(1))
         unit = match.group(2) or "wei"
