@@ -1699,6 +1699,10 @@ def _function_usage():
         "  -m, --mutability VALUE     Filter by mutability (pure/view/nonpayable/payable).\n"
         "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
         "  -r, --risk                 Show compact audit-review flags.\n"
+        "  Default output labels function mutability and detected native-ETH flow.\n"
+        "  PAYABLE means the function can receive ETH; attach it with --eth <amount> or --value <amount>.\n"
+        "  SENDS ETH means a direct native-ETH send pattern was found in available source.\n"
+        "  No SENDS ETH marker does not prove that no indirect ETH outflow exists.\n"
         "\n"
         "Examples:\n"
         "  lk fn\n"
@@ -2196,6 +2200,22 @@ def _function_matches_filter(record, options):
             return False
     return True
 
+def _function_default_eth_annotation(record):
+    """Explain ABI mutability and source-detected native-ETH flow in the default list."""
+    mutability = str(record.get("mutability") or "unknown").lower()
+    labels = [mutability.upper() if mutability in _FUNCTION_MUTABILITIES else "MUTABILITY UNKNOWN"]
+
+    if mutability == "payable":
+        labels.extend(["CAN RECEIVE ETH", "attach with --eth <amount>"])
+    eth_flow = str(record.get("eth") or "").upper()
+    if "SENDS" in eth_flow:
+        labels.append("SENDS ETH (source-detected)")
+    elif not record.get("_source"):
+        labels.append("outgoing ETH not assessed (source unavailable)")
+
+    return " • ".join(labels)
+
+
 def _print_function_inventory(records, contract=None, source_path=None, verbose=False, show_risk=False):
     title = "LOWKEY // FUNCTION INVENTORY"
     if verbose:
@@ -2358,9 +2378,9 @@ def run_functions(config, args=None):
         return 0
 
     groups = [
-        ("WRITE FUNCTIONS", [record["item"] for record in records if record["item"].get("stateMutability") not in {"view", "pure"}]),
-        ("READ FUNCTIONS", [record["item"] for record in records if record["item"].get("stateMutability") in {"view", "pure"} and record["name"] not in getter_names]),
-        ("STORAGE GETTERS", [record["item"] for record in records if record["name"] in getter_names]),
+        ("WRITE FUNCTIONS", [record for record in records if record["item"].get("stateMutability") not in {"view", "pure"}]),
+        ("READ FUNCTIONS", [record for record in records if record["item"].get("stateMutability") in {"view", "pure"} and record["name"] not in getter_names]),
+        ("STORAGE GETTERS", [record for record in records if record["name"] in getter_names]),
     ]
     if query:
         print(f"Function matches for '{query}':")
@@ -2368,9 +2388,16 @@ def run_functions(config, args=None):
         if not items:
             continue
         print(f"\n{title}:")
-        for index, item in enumerate(items, 1):
+        for index, record in enumerate(items, 1):
             suffix = "  [public storage getter]" if title == "STORAGE GETTERS" else ""
-            print(f"  {index:>2}. {format_signature(item)}{suffix}")
+            annotation = _function_default_eth_annotation(record)
+            print(f"  {index:>2}. {record['signature']}  [{annotation}]{suffix}")
+
+    print("\nETH FLOW NOTES:")
+    print("  PAYABLE = this function can receive ETH; attach it separately with --eth <amount> or --value <amount>.")
+    print("  NONPAYABLE / VIEW / PURE = this function cannot receive attached ETH.")
+    print("  SENDS ETH = a direct native-ETH send pattern was detected in the available source.")
+    print("  Outgoing-ETH detection is source-based; indirect/dynamic flows may need manual review.")
     return 0
 
 def run_info(config):
