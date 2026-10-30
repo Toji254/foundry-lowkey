@@ -505,6 +505,7 @@ jobs:
 
           lk actor 1 Alice
           lk actor 2 Bob
+          lk actor 1
           lk target "$TARGET"
 
           # Create two independent records. The ID book must capture contract IDs,
@@ -558,7 +559,15 @@ jobs:
           grep -q "escrows" /tmp/lowkey-escrow-mappings.txt
           lk mapping bytes32 0 @firstEscrow | tee /tmp/lowkey-escrow-mapping-read.txt
           lk array allEscrowIds 0..1 | tee /tmp/lowkey-escrow-array-read.txt
-          grep -q "firstEscrow" <(lk ids) || true
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          book = json.loads(Path(".audit/evidence/identifier-book.json").read_text())
+          values = [item["value"] for item in book["items"]]
+          array_output = Path("/tmp/lowkey-escrow-array-read.txt").read_text()
+          assert all(value in array_output for value in values), (values, array_output)
+          print("PASS: Lowkey read both saved IDs back from the on-chain array")
+          PY
           lk storage 0..2 | tee /tmp/lowkey-escrow-storage.txt
           grep -q "Slot 0:" /tmp/lowkey-escrow-storage.txt
           grep -q "Slot 2:" /tmp/lowkey-escrow-storage.txt
