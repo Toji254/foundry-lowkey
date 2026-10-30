@@ -2816,12 +2816,6 @@ def run_functions(config, args=None):
     print("  Inherited, modifier-driven, proxy/delegatecall and other indirect flows may need manual review.")
     print("  ERC20 transfers are not reported as native ETH. Use lk fn --verbose for full audit details.")
 
-    print()
-    print(_function_terminal_style("NEXT COMMANDS", "heading"))
-    print("  lk ask <function>       Understand inputs and function behaviour")
-    print("  lk read <function>      Read contract state")
-    print("  lk wizard <function>    Guided function interaction")
-    print("  lk changes <function>   Inspect the function's state effects")
     return 0
 
 def run_info(config):
@@ -18353,7 +18347,18 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     items = []
     if result_code in {None, 0}:
         items = _recommended_next_commands(command, args, config)
-    if items:
+    if items and canonical in {"fn", "functions"}:
+        print("")
+        print(_function_terminal_style("NEXT COMMANDS", "heading"))
+        try:
+            footer_width = shutil.get_terminal_size(fallback=(88, 24)).columns
+        except (OSError, AttributeError):
+            footer_width = 88
+        print(_function_terminal_style("─" * max(48, min(footer_width, 88)), "muted"))
+        for command_text, reason in items:
+            prefix = f"  {command_text}  — "
+            _function_print_wrapped(prefix, reason)
+    elif items:
         print("")
         print("LOWKEY RECOMMENDED NEXT COMMANDS")
         print("================================")
