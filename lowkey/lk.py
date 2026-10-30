@@ -6,6 +6,7 @@ import subprocess
 import sys
 import re
 import shlex
+import textwrap
 import io
 import shutil
 import socket
@@ -2445,20 +2446,75 @@ def _function_matches_filter(record, options):
             return False
     return True
 
+def _function_terminal_style(value, tone="muted", stream=None):
+    """Apply restrained ANSI styling only to interactive terminals."""
+    stream = stream or sys.stdout
+    try:
+        interactive = bool(stream.isatty())
+    except (AttributeError, OSError):
+        interactive = False
+    if not interactive or "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
+        return str(value)
+
+    codes = {
+        "title": "1",
+        "heading": "1",
+        "mutability": "1",
+        "muted": "2",
+        "receive": "32",
+        "send": "31",
+        "warning": "33",
+    }
+    code = codes.get(tone)
+    return f"\033[{code}m{value}\033[0m" if code else str(value)
+
+
+def _function_print_wrapped(prefix, value):
+    """Print a labelled value without needlessly truncating long signatures/expressions."""
+    try:
+        width = shutil.get_terminal_size(fallback=(88, 24)).columns
+    except (OSError, AttributeError):
+        width = 88
+    width = max(48, width)
+    prefix = str(prefix)
+    rendered = textwrap.wrap(
+        str(value),
+        width=width,
+        initial_indent=prefix,
+        subsequent_indent=" " * len(prefix),
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    print("\n".join(rendered) if rendered else prefix.rstrip())
+
+
 def _function_default_eth_annotation(record):
-    """Explain ABI mutability and source-detected native-ETH flow in the default list."""
+    """Return compact status labels without treating compiler-generated getters as source functions."""
     mutability = str(record.get("mutability") or "unknown").lower()
-    labels = [mutability.upper() if mutability in _FUNCTION_MUTABILITIES else "MUTABILITY UNKNOWN"]
+    mutability_label = (
+        mutability.upper()
+        if mutability in _FUNCTION_MUTABILITIES
+        else "MUTABILITY UNKNOWN"
+    )
+    labels = [(mutability_label, "mutability" if mutability == "payable" else "muted")]
+
+    if record.get("getter"):
+        labels.append(("PUBLIC GETTER", "muted"))
 
     if mutability == "payable":
-        labels.extend(["CAN RECEIVE ETH", "attach with --eth <amount>"])
+        labels.append(("↑ RECEIVES ETH", "receive"))
+
     eth_flow = str(record.get("eth") or "").upper()
     if "SENDS" in eth_flow:
-        labels.append("SENDS ETH (source-detected)")
-    elif not record.get("_source"):
-        labels.append("outgoing ETH not assessed (source unavailable)")
+        labels.append(("↓ SENDS ETH", "send"))
+    elif (
+        not record.get("_source")
+        and not record.get("getter")
+        and mutability not in {"view", "pure"}
+    ):
+        labels.append(("! OUTGOING ETH NOT ASSESSED", "warning"))
 
-    return " • ".join(labels)
+    return labels
 
 
 def _print_function_inventory(records, contract=None, source_path=None, verbose=False, show_risk=False):
@@ -2646,38 +2702,84 @@ def run_functions(config, args=None):
         )
         return 0
 
-    groups = [
-        ("WRITE FUNCTIONS", [record for record in records if record["item"].get("stateMutability") not in {"view", "pure"}]),
-        ("READ FUNCTIONS", [record for record in records if record["item"].get("stateMutability") in {"view", "pure"} and record["name"] not in getter_names]),
-        ("STORAGE GETTERS", [record for record in records if record["name"] in getter_names]),
+    write_records = [
+        record for record in records
+        if record["item"].get("stateMutability") not in {"view", "pure"}
+        and record["name"] not in getter_names
     ]
+    read_records = [
+        record for record in records
+        if record["item"].get("stateMutability") in {"view", "pure"}
+        and record["name"] not in getter_names
+    ]
+    getter_records = [record for record in records if record["name"] in getter_names]
+    groups = [
+        ("WRITE FUNCTIONS", write_records),
+        ("READ FUNCTIONS", read_records),
+        ("STORAGE GETTERS", getter_records),
+    ]
+    try:
+        terminal_width = shutil.get_terminal_size(fallback=(88, 24)).columns
+    except (OSError, AttributeError):
+        terminal_width = 88
+    rule_width = max(48, min(terminal_width, 88))
+
+    print(_function_terminal_style("LOWKEY  /  FUNCTION INVENTORY", "title"))
+    print(_function_terminal_style("━" * rule_width, "muted"))
     if query:
-        print(f"Function matches for '{query}':")
+        _function_print_wrapped("  MATCH     ", query)
+    if contract:
+        _function_print_wrapped("  CONTRACT  ", contract)
+    summary = (
+        f"{len(records)} functions · {len(write_records)} write · "
+        f"{len(read_records)} read · {len(getter_records)} getters"
+    )
+    _function_print_wrapped("  SUMMARY   ", summary)
+
+    function_numbers = {id(record): index for index, record in enumerate(records, 1)}
     for title, items in groups:
         if not items:
             continue
-        print(f"\n{title}:")
-        for index, record in enumerate(items, 1):
-            suffix = "  [public storage getter]" if title == "STORAGE GETTERS" else ""
-            annotation = _function_default_eth_annotation(record)
-            print(f"  {index:>2}. {record['signature']}{suffix}  [{annotation}]")
+        print()
+        print(_function_terminal_style(f"{title} ({len(items)})", "heading"))
+        print(_function_terminal_style("─" * rule_width, "muted"))
+        for record in items:
+            _function_print_wrapped(
+                f"  {function_numbers[id(record)]:02d}  ",
+                record["signature"],
+            )
+            labels = _function_default_eth_annotation(record)
+            status = " · ".join(
+                _function_terminal_style(label, tone) for label, tone in labels
+            )
+            _function_print_wrapped("      ", status)
+
             for outflow_index, outflow in enumerate(record.get("eth_outflows") or [], 1):
-                via = f" | via: {outflow['via']}" if outflow.get("via") else ""
-                print(
-                    f"       ETH OUT {outflow_index}: {outflow['mechanism']} | "
-                    f"to: {outflow['destination']} | amount: {outflow['amount']}{via}"
-                )
+                print(_function_terminal_style(f"      ETH OUT {outflow_index}", "send"))
+                mechanism = str(outflow["mechanism"])
+                if outflow.get("via"):
+                    mechanism += f" · helper: {outflow['via']}"
+                _function_print_wrapped("        via       ", mechanism)
+                _function_print_wrapped("        recipient ", outflow["destination"])
+                _function_print_wrapped("        amount    ", outflow["amount"])
 
     if abi_entrypoints:
-        print("\nETH ENTRYPOINTS:")
+        print()
+        print(_function_terminal_style(f"ETH ENTRYPOINTS ({len(abi_entrypoints)})", "heading"))
+        print(_function_terminal_style("─" * rule_width, "muted"))
         for entry in abi_entrypoints:
             kind = str(entry.get("type"))
-            mutability = str(entry.get("stateMutability") or "unknown").upper()
-            if mutability == "PAYABLE":
-                detail = "CAN RECEIVE ETH • attach with --eth <amount>"
+            mutability = str(entry.get("stateMutability") or "unknown").lower()
+            _function_print_wrapped("  ", f"{kind}()")
+            if mutability == "payable":
+                labels = [
+                    ("PAYABLE", "mutability"),
+                    ("↑ RECEIVES ETH", "receive"),
+                ]
             else:
-                detail = "cannot receive attached ETH"
-            print(f"  {kind}()  [{mutability} • {detail}]")
+                labels = [
+                    (mutability.upper() if mutability in _FUNCTION_MUTABILITIES else "MUTABILITY UNKNOWN", "muted")
+                ]
             entry_source = next(
                 (decl for decl in source_decls if decl.get("name") == kind),
                 None,
@@ -2686,24 +2788,38 @@ def run_functions(config, args=None):
                 _collect_native_eth_outflows(entry_source, source_decls)
                 if entry_source else []
             )
+            if entry_outflows:
+                labels.append(("↓ SENDS ETH", "send"))
+            elif not entry_source and mutability not in {"view", "pure"}:
+                labels.append(("! OUTGOING ETH NOT ASSESSED", "warning"))
+            _function_print_wrapped(
+                "      ",
+                " · ".join(_function_terminal_style(label, tone) for label, tone in labels),
+            )
             for outflow_index, outflow in enumerate(entry_outflows, 1):
-                via = f" | via: {outflow['via']}" if outflow.get("via") else ""
-                print(
-                    f"       ETH OUT {outflow_index}: {outflow['mechanism']} | "
-                    f"to: {outflow['destination']} | amount: {outflow['amount']}{via}"
-                )
+                print(_function_terminal_style(f"      ETH OUT {outflow_index}", "send"))
+                mechanism = str(outflow["mechanism"])
+                if outflow.get("via"):
+                    mechanism += f" · helper: {outflow['via']}"
+                _function_print_wrapped("        via       ", mechanism)
+                _function_print_wrapped("        recipient ", outflow["destination"])
+                _function_print_wrapped("        amount    ", outflow["amount"])
 
-    print("\nETH FLOW NOTES:")
-    print("  PAYABLE = this function can receive ETH; attach ETH separately from the function arguments.")
-    print("  Example: lk send <function> [args...] --eth 2  (attaches 2 ETH; --value is an alias).")
-    print("  NONPAYABLE / VIEW / PURE = this function cannot receive attached ETH.")
-    print("  SENDS ETH = a native-ETH transfer pattern was detected in the available source.")
-    print("  ETH OUT shows the detected mechanism, destination expression and amount expression.")
-    print("  Detection covers common Solidity CALL/value, payable transfer/send, CREATE value,")
-    print("  SELFDESTRUCT and Yul CALL/CREATE patterns, receive/fallback bodies, and same-file private/internal helpers.")
-    print("  This is source evidence, not a proof of every possible ETH flow; inherited,")
-    print("  modifier-driven, proxy/delegatecall, dynamic and other indirect paths may need review.")
-    print("  ERC20/token transfers are not classified as native ETH merely because they use transfer().")
+    print()
+    print(_function_terminal_style("ETH FLOW LEGEND", "heading"))
+    print("  ↑ RECEIVES ETH   Payable entrypoint; attach value with --eth <amount>.")
+    print("  ↓ SENDS ETH      A native-ETH outflow pattern was detected in source.")
+    print("  ! NOT ASSESSED   Source unavailable; outgoing ETH could not be inspected.")
+    print("  Source analysis covers common Solidity/Yul patterns and same-file private/internal helpers.")
+    print("  Inherited, modifier-driven, proxy/delegatecall and other indirect flows may need manual review.")
+    print("  ERC20 transfers are not reported as native ETH. Use lk fn --verbose for full audit details.")
+
+    print()
+    print(_function_terminal_style("NEXT COMMANDS", "heading"))
+    print("  lk ask <function>       Understand inputs and function behaviour")
+    print("  lk read <function>      Read contract state")
+    print("  lk wizard <function>    Guided function interaction")
+    print("  lk changes <function>   Inspect the function's state effects")
     return 0
 
 def run_info(config):
