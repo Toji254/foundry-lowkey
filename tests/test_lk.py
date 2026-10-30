@@ -1076,6 +1076,91 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(rendered, '[["alpha","beta"]]')
 
 
+
+    def test_transaction_return_report_decodes_generic_multiple_outputs(self):
+        tx_hash = "0x" + "1" * 64
+        item = {
+            "type": "function",
+            "name": "registerInvoice",
+            "inputs": [{"name": "payload", "type": "bytes"}],
+            "outputs": [
+                {"name": "invoiceKey", "type": "bytes32"},
+                {"name": "sequence", "type": "uint256"},
+            ],
+        }
+        raw = "0x" + "ab" * 32 + "0" * 63 + "7"
+        with patch.object(
+            lk,
+            "_wizard_transaction_return",
+            return_value={
+                "raw": raw,
+                "decoded": "0x" + "ab" * 32 + "\n7",
+                "decode_error": None,
+            },
+        ):
+            rendered = "\n".join(
+                lk._transaction_return_report(
+                    {"labels": {}},
+                    tx_hash,
+                    item,
+                    [item],
+                )
+            )
+
+        self.assertIn("CONTRACT RETURN VALUES", rendered)
+        self.assertIn("Function: registerInvoice(bytes)", rendered)
+        self.assertIn("invoice key = 0x" + "ab" * 32, rendered)
+        self.assertIn("sequence = 7", rendered)
+        self.assertNotIn("Escrow", rendered)
+
+    def test_transaction_return_report_explains_unavailable_tracing(self):
+        item = {
+            "type": "function",
+            "name": "createRecord",
+            "inputs": [],
+            "outputs": [{"name": "recordId", "type": "bytes32"}],
+        }
+        with patch.object(lk, "_wizard_transaction_return", return_value=None):
+            rendered = "\n".join(
+                lk._transaction_return_report(
+                    {},
+                    "0x" + "1" * 64,
+                    item,
+                    [item],
+                )
+            )
+        self.assertIn("Return data unavailable", rendered)
+        self.assertIn("debug_traceTransaction", rendered)
+
+    def test_event_decoder_uses_the_log_emitter_abi_not_selected_target(self):
+        selected_target = "0x" + "1" * 40
+        emitter = "0x" + "2" * 40
+        topic0 = "0x" + "a" * 64
+        event = {
+            "type": "event",
+            "name": "InvoiceRegistered",
+            "inputs": [
+                {"name": "invoiceKey", "type": "bytes32", "indexed": True},
+            ],
+        }
+        log = {
+            "address": emitter,
+            "topics": [topic0, "0x" + "b" * 64],
+            "data": "0x",
+        }
+        config = {"target": selected_target}
+        with patch.object(lk, "load_abi", return_value=[event]) as load_abi, patch.object(
+            lk,
+            "cast_output",
+            return_value=(0, topic0, ""),
+        ):
+            decoded = lk.decode_event_log(config, log)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded[0], "InvoiceRegistered(bytes32)")
+        self.assertEqual(load_abi.call_args.args[0], emitter)
+        self.assertNotEqual(load_abi.call_args.args[0], selected_target)
+
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
         config = {
             "target": "0x" + "1" * 40,

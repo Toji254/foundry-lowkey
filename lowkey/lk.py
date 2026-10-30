@@ -2917,7 +2917,7 @@ def _wizard_transaction_return(config, tx_hash, item):
 
     if isinstance(trace, dict) and isinstance(trace.get("result"), dict):
         trace = trace["result"]
-    if not isinstance(trace, dict):
+    if not isinstance(trace, dict) or trace.get("failed") is True:
         return None
 
     return_data = trace.get("returnValue")
@@ -2938,6 +2938,110 @@ def _wizard_transaction_return(config, tx_hash, item):
         "decoded": decoded if code == 0 and decoded else None,
         "decode_error": error if code != 0 else None,
     }
+
+
+def _transaction_return_report(config, tx_hash, function_item, abi=None):
+    """Render ABI-declared top-level return values recovered from a transaction trace.
+
+    Return values are optional RPC evidence: providers that disable tracing do
+    not make an otherwise successful transaction fail.
+    """
+    outputs = function_item.get("outputs") if isinstance(function_item, dict) else None
+    if not outputs:
+        return []
+
+    result = _wizard_transaction_return(config, tx_hash, function_item)
+    lines = [
+        "CONTRACT RETURN VALUES",
+        "======================",
+        f"Function: {format_signature(function_item)}",
+    ]
+    if not result:
+        lines.append(
+            "Return data unavailable: this RPC may not support or expose "
+            "debug_traceTransaction."
+        )
+        return lines
+
+    raw = result.get("raw")
+    if raw:
+        lines.extend(["Raw return data:", f"  {raw}"])
+
+    decoded = result.get("decoded")
+    if decoded:
+        rendered = format_human_abi_return(
+            function_item,
+            decoded,
+            config,
+            abi or [function_item],
+        )
+        for line in str(rendered or "").splitlines():
+            clean = line.strip()
+            if clean and clean != "Returns:":
+                lines.append(f"  {clean}")
+    elif result.get("decode_error"):
+        lines.append(f"Decoded values unavailable: {result['decode_error']}")
+    else:
+        lines.append("The RPC returned no decodable top-level output.")
+    return lines
+
+
+def _transaction_event_report(config, logs):
+    """Decode transaction logs against the ABI of each log's emitting address."""
+    rendered = []
+    for index, log in enumerate(logs or [], 1):
+        if not isinstance(log, dict):
+            continue
+        decoded = decode_event_log(config, log)
+        if not decoded:
+            continue
+        signature, details = decoded
+        rendered.append(f"  {index}. {signature}")
+        for detail in str(details or "").splitlines():
+            clean = detail.strip()
+            if not clean or clean.startswith("Event:"):
+                continue
+            clean = re.sub(r"^Indexed\s+", "", clean)
+            rendered.append(f"       {clean}")
+
+    if not rendered:
+        return []
+    return ["DECODED EVENTS", "==============", *rendered]
+
+
+def _transaction_execution_report(
+    config,
+    tx_hash,
+    tx=None,
+    receipt=None,
+    function_item=None,
+    abi=None,
+):
+    """Build contract-level event and return output without conflating it with a tx hash."""
+    sections = []
+    logs = receipt.get("logs") if isinstance(receipt, dict) else []
+    event_lines = _transaction_event_report(config, logs)
+    if event_lines:
+        sections.append("\n".join(event_lines))
+
+    if function_item is None and isinstance(tx, dict):
+        function_item, inferred_abi = _trace_function_item(config, tx)
+        if abi is None:
+            abi = inferred_abi
+
+    receipt_status = receipt.get("status") if isinstance(receipt, dict) else None
+    reverted = receipt_status in ("0x0", 0)
+    if not reverted and function_item and function_item.get("outputs"):
+        return_lines = _transaction_return_report(
+            config,
+            tx_hash,
+            function_item,
+            abi,
+        )
+        if return_lines:
+            sections.append("\n".join(return_lines))
+
+    return "\n\n".join(sections)
 
 
 def run_decode_error(config,args):
@@ -3117,6 +3221,16 @@ def run_receipt(config, tx_hash=None, args=None):
         lines.append("")
         lines.append("Events:    none")
 
+    if status == "SUCCESS" and function_item and function_item.get("outputs"):
+        return_lines = _transaction_return_report(
+            config,
+            tx_hash,
+            function_item,
+            abi,
+        )
+        if return_lines:
+            lines.extend(["", *return_lines])
+
     print("\n".join(lines))
     audit_context.record_tool(
         "receipt",
@@ -3187,12 +3301,20 @@ def run_trace(config,args=None):
         data={"tx_hash":tx_hash, "returned_values": returned_lines or []},
     )
     return result_code
-def decode_event_log(config,log):
-    topics=log.get("topics",[]) if isinstance(log,dict) else []
-    data=log.get("data","0x") if isinstance(log,dict) else "0x"
-    if not topics: return None
-    topic0=topics[0].lower()
-    for item in [x for x in load_abi(config.get("target"),config) if x.get("type")=="event" and not x.get("anonymous")]:
+def decode_event_log(config, log, target=None):
+    topics = log.get("topics", []) if isinstance(log, dict) else []
+    data = log.get("data", "0x") if isinstance(log, dict) else "0x"
+    if not topics:
+        return None
+
+    # Receipt logs identify the contract that emitted them. Prefer that
+    # address over the selected target so multi-contract transactions decode
+    # against the correct ABI.
+    emitter = log.get("address") if isinstance(log, dict) else None
+    event_target = emitter if is_address(emitter) else target or config.get("target")
+    event_abi = load_abi(event_target, config) if event_target else []
+    topic0 = str(topics[0]).lower()
+    for item in [x for x in event_abi if x.get("type") == "event" and not x.get("anonymous")]:
         signature=format_signature(item)
         event_topic=cast_output(["cast","sig-event",signature])[1]
         if event_topic.lower().strip()==topic0:
@@ -4066,10 +4188,6 @@ def _identifier_name(name):
         or value.endswith("id")
         or value.endswith("key")
         or value.endswith("hash")
-        or "tokenid" in value
-        or "requestid" in value
-        or "orderid" in value
-        or "escrowid" in value
     )
 
 def _creation_function_name(name):
@@ -4993,6 +5111,7 @@ def run_cast(args,config,capture=False):
         cmd=["cast",cast_cmd,target]
     else: cmd=["cast",cast_cmd]
     function_item=None
+    abi=[]
     function_argument = (
         remaining[0]
         if cast_cmd in {"call", "send"}
@@ -5072,6 +5191,9 @@ def run_cast(args,config,capture=False):
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
         if answer not in {"y","yes"}: print("Transaction cancelled."); return 0
+    send_tx_hash = None
+    send_receipt = None
+    send_transaction = None
     try:
         code,out,err=cast_output(cmd)
         if (
@@ -5127,7 +5249,13 @@ def run_cast(args,config,capture=False):
                 root=audit_context.foundry_project_root()
                 audit_context.set_latest(root,tx_hash=tx_hash,function=call)
                 rpc = effective_rpc(config)
-                receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
+                send_tx_hash = tx_hash
+                send_receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
+                send_transaction = (
+                    rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
+                    if rpc else None
+                )
+                receipt = send_receipt
                 step = walkthrough.Step(
                     0,
                     str(config.get("actor") or "Caller"),
@@ -5152,7 +5280,21 @@ def run_cast(args,config,capture=False):
         if out:
             if cast_cmd=="send":
                 call=remaining[0] if remaining and "(" in remaining[0] else None
-                print(format_send_summary(out,config,call))
+                summary = format_send_summary(out, config, call)
+                if send_tx_hash:
+                    contract_report = _transaction_execution_report(
+                        config,
+                        send_tx_hash,
+                        tx=send_transaction,
+                        receipt=send_receipt,
+                        function_item=function_item,
+                        abi=abi,
+                    )
+                    if contract_report:
+                        summary = summary.rstrip() + "
+
+" + contract_report
+                print(summary)
             elif cast_cmd=="storage" and len(remaining) >= 1:
                 explained = format_storage_read(config, remaining[0], out)
                 print(explained if explained else humanize_value(apply_labels(out,config)))
