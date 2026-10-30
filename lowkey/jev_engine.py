@@ -537,6 +537,7 @@ def status() -> dict[str, Any]:
     meta = PROVIDERS[provider]
     return {
         "configured": True if meta.get("local") else bool(key),
+        "local": bool(meta.get("local")),
         "key_source": source,
         "provider": provider,
         "provider_label": meta["label"],
