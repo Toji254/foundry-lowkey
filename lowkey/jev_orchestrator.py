@@ -884,7 +884,7 @@ def urls_match(first: str, second: str) -> bool:
 
 
 def cmd_open_new_tab(url: str) -> int:
-    """Open one new tab and confirm the requested URL appears in the page list."""
+    """Open a new tab only after inspecting and preserving the existing page set."""
     client = None
     try:
         client = MCPClient(brave_command()).start()
@@ -897,47 +897,56 @@ def cmd_open_new_tab(url: str) -> int:
             )
             return 1
 
+        before_result = client.call_tool("list_pages", {})
+        if before_result.get("isError"):
+            print(
+                "Could not inspect existing browser tabs; no new tab was opened.\\n"
+                + normalize_mcp_result(before_result).get("result", ""),
+                file=sys.stderr,
+            )
+            return 1
+        before_listing = normalize_mcp_result(before_result).get("result", "")
+
         opened = client.call_tool("new_page", {
             "url": url,
             "background": False,
         })
         if opened.get("isError"):
             print(
-                "Brave MCP reported an error opening the new tab:\n"
+                "Brave MCP reported an error opening the new tab:\\n"
                 + normalize_mcp_result(opened).get("result", ""),
                 file=sys.stderr,
             )
             return 1
 
-        pages = client.call_tool("list_pages", {})
-        if pages.get("isError"):
+        after_result = client.call_tool("list_pages", {})
+        if after_result.get("isError"):
             print(
-                f"The new-page request returned without an MCP error, but verification "
-                f"failed. The tab may have opened; Jev cannot confirm it.\n"
-                f"{normalize_mcp_result(pages).get('result', '')}",
+                "The new-page request returned without an MCP error, but follow-up "
+                "inspection failed. The tab may have opened; Jev cannot confirm it.\\n"
+                + normalize_mcp_result(after_result).get("result", ""),
                 file=sys.stderr,
             )
             return 1
 
-        listing = normalize_mcp_result(pages).get("result", "")
-        found_urls = re.findall(r"https?://[^\s<>\"]+", listing, re.IGNORECASE)
-        matching = next(
-            (candidate.rstrip(".,!?;:)]}") for candidate in found_urls
-             if urls_match(candidate.rstrip(".,!?;:)]}"), url)),
-            None,
+        after_listing = normalize_mcp_result(after_result).get("result", "")
+        verified, detail, matching_url = verify_new_page_opened(
+            requested_url=url,
+            before_listing=before_listing,
+            after_listing=after_listing,
         )
-
-        if matching is None:
+        if not verified:
             print(
-                "Brave MCP accepted the new-page request, but the subsequent page list "
-                "did not show the requested URL. Jev cannot verify success.\n"
-                f"Requested: {url}\nPage listing:\n{listing}",
+                "New-tab effect unconfirmed: " + detail + "\\n"
+                f"Requested: {url}\\n"
+                f"Before:\\n{before_listing}\\n"
+                f"After:\\n{after_listing}",
                 file=sys.stderr,
             )
             return 1
 
-        print(f"Opened and verified: {matching}")
-        print("Verification: the URL appeared in Brave MCP's subsequent page listing.")
+        print(f"Opened and verified: {matching_url}")
+        print(f"Verification: {detail}")
         return 0
 
     except Exception as exc:
