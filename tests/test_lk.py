@@ -1522,7 +1522,11 @@ class LowkeyCastTests(unittest.TestCase):
         }
         topic0 = "0x" + "a" * 64
         record_id = "0x" + "b" * 64
-        with patch.object(lk, "cast_output", return_value=(0, record_id, "")):
+        def fake_cast(args, input_text=None):
+            if len(args) > 1 and args[1] == "sig-event":
+                return 0, topic0, ""
+            return 0, record_id, ""
+        with patch.object(lk, "cast_output", side_effect=fake_cast):
             with patch("builtins.print") as printed:
                 result = lk.decode_event_values(event, "0x", [topic0, record_id])
         rendered = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)

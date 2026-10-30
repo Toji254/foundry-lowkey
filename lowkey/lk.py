@@ -3218,7 +3218,7 @@ def _record_event_identifiers(config, tx_hash, log, signature, details):
         if not field_name or not _identifier_name(field_name):
             continue
         match = re.search(
-            rf"(?m)^Identifier field \\({re.escape(field_name)}\\):\\s*(.+?)\\s*$",
+            rf"(?m)^Identifier field \({re.escape(field_name)}\):\s*(.+?)\s*$",
             detail_text,
         )
         if not match:
