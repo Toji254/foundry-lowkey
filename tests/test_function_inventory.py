@@ -193,7 +193,7 @@ class FunctionInventoryTests(unittest.TestCase):
         getter_tail = output.split("STORAGE GETTERS: 1", 1)[1]
         getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW LEGEND", 1)[0]
         self.assertIn("balances(address)", getter_section)
-        self.assertIn("PUBLIC GETTER", getter_section)
+        self.assertIn("[public storage getter]", getter_section)
         self.assertNotIn("NOT ASSESSED", getter_section)
 
     def test_inventory_supports_contracts_with_only_receive_or_fallback(self):
