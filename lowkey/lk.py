@@ -4991,7 +4991,7 @@ def run_ids(config, args=None):
     entries = _identifier_book_entries(config, include_all=include_all)
     if not entries:
         print("No saved contract identifiers yet.")
-        print("Successful transactions that return ABI-named IDs or bytes32 keys are recorded automatically.")
+        print("Successful transactions with ABI-named IDs in function returns or decoded events are recorded automatically.")
         return 0
 
     print("KNOWN CONTRACT IDENTIFIERS")
@@ -5011,7 +5011,8 @@ def run_ids(config, args=None):
         print(f"   Use as:     @{alias or index}")
     print("")
     print("Assign a readable name: lk id alias <number> <name>")
-    print("Use it in any compatible ABI argument: lk read <getter> @<name>")
+    print("Use it in compatible ABI arguments: lk read <getter> @<name>")
+    print("Use it as a mapping key: lk mapping <slot> @<name>")
     return 0
 
 
@@ -6349,7 +6350,7 @@ def run_mapping(config,*args):
             try:
                 record=_identifier_reference_record(config,key)
                 key_type=str(record.get("type") or "")
-                key=_resolve_identifier_reference(config,"@"+str(record.get("alias") or args[1][1:]),key_type)
+                key=_resolve_identifier_reference(config,key,key_type)
             except ValueError as error:
                 return fail(f"Error: {error}")
         else:
@@ -18326,14 +18327,15 @@ COMMAND_HELP = {
         related=["lk ids", "lk read", "lk send"],
     ),
     "mapping": _help_entry(
-        "Index the selected contract's mappings and arrays, or calculate/read one mapping entry's storage location.",
+        "Index the selected contract's mappings and arrays, or calculate/read one mapping entry's storage location. Saved identifier references such as @invoiceId can be used as typed mapping keys.",
         "lk mapping | lk mapping <slot> <key> | lk mapping <key_type> <slot> <key>",
         "lk mapping",
         "Run it with no arguments to see every detected mapping/array, its storage slot, types, and the exact lookup command to use. Pass a slot and key when you want one mapping entry.",
         forms=[
             ("lk mapping", "List detected mappings and arrays in the selected target's compiled storage layout.", "lk mapping"),
             ("lk mapping <slot> <key>", "Let Lowkey infer the mapping key type from the key value.", "lk mapping 0 0x1111111111111111111111111111111111111111"),
-            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly.", "lk mapping address 0 0x1111111111111111111111111111111111111111"),
+            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly; a saved identifier such as @firstRecord is accepted when its type matches.", "lk mapping bytes32 0 @firstRecord"),
+            ("lk mapping <slot> @<alias>", "Use a saved identifier and let Lowkey infer its storage-key type.", "lk mapping 0 @firstRecord"),
         ],
         related=["lk layout", "lk storage", "lk snapshot"]),
     "array": _help_entry(
