@@ -152,37 +152,48 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("risk flags : STATE-WRITE", output)
         self.assertIn("selector   : 0x2e1a7d4d", output)
 
-    def test_default_inventory_explains_payable_and_native_eth_outflow(self):
+    def test_default_inventory_is_a_compact_dashboard(self):
         code, output = self._run([])
         self.assertEqual(code, 0)
-        self.assertIn(
-            "deposit()  [PAYABLE • CAN RECEIVE ETH • attach with --eth <amount>]",
-            output,
-        )
-        self.assertIn(
-            "withdraw(uint256)  [NONPAYABLE • SENDS ETH (source-detected)]",
-            output,
-        )
-        self.assertIn("setTreasury(address)  [NONPAYABLE]", output)
-        self.assertIn("ETH FLOW NOTES:", output)
-        self.assertIn("attach ETH separately from the function arguments", output)
-        self.assertIn("lk send <function> [args...] --eth 2", output)
-        self.assertIn("proxy/delegatecall, dynamic and other indirect paths may need review", output)
+        self.assertIn("LOWKEY  /  FUNCTION INVENTORY", output)
+        self.assertIn("CONTRACT  Foo", output)
+        self.assertIn("SUMMARY   5 functions · 3 write · 1 read · 1 getters", output)
+        self.assertIn("WRITE FUNCTIONS (3)", output)
+        self.assertIn("READ FUNCTIONS (1)", output)
+        self.assertIn("STORAGE GETTERS (1)", output)
+        self.assertIn("deposit()", output)
+        self.assertIn("PAYABLE", output)
+        self.assertIn("↑ RECEIVES ETH", output)
+        self.assertIn("withdraw(uint256)", output)
+        self.assertIn("↓ SENDS ETH", output)
+        self.assertIn("attach value with --eth <amount>", output)
+        self.assertIn("ETH FLOW LEGEND", output)
+        self.assertIn("indirect flows may need manual review", output)
+        self.assertIn("NEXT COMMANDS", output)
+        self.assertIn("lk fn --verbose", output)
+        self.assertNotIn("OUTGOING ETH NOT ASSESSED", output)
+        self.assertNotIn("\\033[", output)
 
-    def test_default_inventory_shows_outflow_destination_and_amount(self):
+    def test_default_inventory_shows_outflow_destination_and_amount_separately(self):
         code, output = self._run([])
         self.assertEqual(code, 0)
-        self.assertIn(
-            "ETH OUT 1: call{value} | to: msg.sender | amount: amount",
-            output,
-        )
-        self.assertIn("ETH ENTRYPOINTS:", output)
-        self.assertIn("receive()  [PAYABLE • CAN RECEIVE ETH", output)
-        self.assertIn("fallback()  [NONPAYABLE • cannot receive attached ETH]", output)
-        self.assertIn(
-            "ETH OUT 1: call{value} | to: payable(treasury) | amount: msg.value",
-            output,
-        )
+        self.assertIn("ETH OUT 1", output)
+        self.assertIn("via       call{value}", output)
+        self.assertIn("recipient msg.sender", output)
+        self.assertIn("amount    amount", output)
+        self.assertIn("ETH ENTRYPOINTS (2)", output)
+        self.assertIn("receive()", output)
+        self.assertIn("fallback()", output)
+        self.assertIn("recipient payable(treasury)", output)
+        self.assertIn("amount    msg.value", output)
+
+    def test_generated_public_getter_is_not_marked_source_unavailable(self):
+        code, output = self._run([])
+        self.assertEqual(code, 0)
+        getter_section = output.split("STORAGE GETTERS (1)", 1)[1].split("ETH FLOW LEGEND", 1)[0]
+        self.assertIn("balances(address)", getter_section)
+        self.assertIn("PUBLIC GETTER", getter_section)
+        self.assertNotIn("NOT ASSESSED", getter_section)
 
     def test_inventory_supports_contracts_with_only_receive_or_fallback(self):
         tmp, root, config = self._fixture()
@@ -204,6 +215,110 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("ETH ENTRYPOINTS:", output.getvalue())
         self.assertIn("receive()  [PAYABLE • CAN RECEIVE ETH", output.getvalue())
+
+    def test_multiple_native_eth_outflows_are_displayed_individually(self):
+        tmp, root, config = self._fixture()
+        old = os.getcwd()
+        output = io.StringIO()
+        try:
+            source = root / "src" / "Foo.sol"
+            content = source.read_text(encoding="utf-8")
+            content = content.replace(
+                'msg.sender.call{value: amount}("");',
+                'msg.sender.call{value: amount}("");\\n'
+                '                    payable(treasury).call{value: amount}("");',
+            )
+            source.write_text(content, encoding="utf-8")
+            os.chdir(root)
+            with patch.object(lk, "cast_output", return_value=(1, "", "")), contextlib.redirect_stdout(output):
+                code = lk.run_functions(config, [])
+        finally:
+            os.chdir(old)
+            tmp.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ETH OUT 1", rendered)
+        self.assertIn("ETH OUT 2", rendered)
+        self.assertIn("recipient msg.sender", rendered)
+        self.assertIn("recipient payable(treasury)", rendered)
+
+    def test_source_unavailable_is_explicit_for_write_functions_but_not_getters(self):
+        tmp, root, config = self._fixture()
+        old = os.getcwd()
+        output = io.StringIO()
+        try:
+            (root / "src" / "Foo.sol").unlink()
+            os.chdir(root)
+            with patch.object(lk, "cast_output", return_value=(1, "", "")), contextlib.redirect_stdout(output):
+                code = lk.run_functions(config, [])
+        finally:
+            os.chdir(old)
+            tmp.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("OUTGOING ETH NOT ASSESSED", rendered)
+        getter_section = rendered.split("STORAGE GETTERS (1)", 1)[1].split("ETH FLOW LEGEND", 1)[0]
+        self.assertIn("balances(address)", getter_section)
+        self.assertNotIn("NOT ASSESSED", getter_section)
+
+    def test_contract_with_only_public_getters_has_clean_inventory(self):
+        tmp, root, config = self._fixture()
+        old = os.getcwd()
+        output = io.StringIO()
+        try:
+            artifact_path = pathlib.Path(config["abi_paths"][config["target"]])
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            artifact["abi"] = [
+                {
+                    "type": "function",
+                    "name": "balances",
+                    "inputs": [{"name": "", "type": "address"}],
+                    "outputs": [{"name": "", "type": "uint256"}],
+                    "stateMutability": "view",
+                },
+            ]
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            os.chdir(root)
+            with patch.object(lk, "cast_output", return_value=(1, "", "")), contextlib.redirect_stdout(output):
+                code = lk.run_functions(config, [])
+        finally:
+            os.chdir(old)
+            tmp.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("SUMMARY   1 functions · 0 write · 0 read · 1 getters", rendered)
+        self.assertIn("STORAGE GETTERS (1)", rendered)
+        self.assertIn("balances(address)", rendered)
+        self.assertNotIn("NOT ASSESSED", rendered)
+
+    def test_terminal_styling_respects_no_color_and_non_tty_output(self):
+        class TTYStream(io.StringIO):
+            def isatty(self):
+                return True
+
+        stream = TTYStream()
+        with patch.dict(os.environ, {"NO_COLOR": "1", "TERM": "xterm"}):
+            self.assertEqual(lk._function_terminal_style("heading", "title", stream), "heading")
+
+        with patch.dict(os.environ, {"TERM": "xterm"}, clear=True):
+            styled = lk._function_terminal_style("heading", "title", stream)
+            self.assertTrue(styled.startswith("\\033[1m"))
+            self.assertTrue(styled.endswith("\\033[0m"))
+
+        self.assertEqual(lk._function_terminal_style("plain", "title", io.StringIO()), "plain")
+
+    def test_wrapped_function_details_keep_the_full_expression(self):
+        output = io.StringIO()
+        expression = "destination expression with several parts " * 3
+        with patch.object(lk.shutil, "get_terminal_size", return_value=os.terminal_size((52, 24))):
+            with contextlib.redirect_stdout(output):
+                lk._function_print_wrapped("        recipient ", expression)
+        rendered = output.getvalue()
+        self.assertIn("destination expression with several parts", rendered)
+        self.assertEqual("".join(rendered.split()), "".join(("        recipient " + expression + "\\n").split()))
 
     def test_native_eth_outflow_detector_covers_common_solidity_patterns(self):
         payable_source = {
