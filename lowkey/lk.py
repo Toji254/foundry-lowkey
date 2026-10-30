@@ -3948,6 +3948,75 @@ def _function_recommendation_reason(item):
         return f"Inspect {display} without changing contract state."
     return f"Use it to inspect the state related to {display}."
 
+_SEND_PREVIEW_CREDENTIAL_OPTIONS = {
+    "--flashbots-auth", "--keystore", "--keystore-dir", "--mnemonic",
+    "--mnemonic-passphrase", "--password", "--password-file",
+    "--private-key", "--rpc-url", "--verifier-api-key",
+}
+
+
+def _preview_submission_command(args):
+    """Rebuild a safe, explicitly confirmed version of a send preview."""
+    cleaned = []
+    for raw in args or []:
+        token = str(raw).strip()
+        option = token.split("=", 1)[0].lower()
+        if option in _SEND_PREVIEW_CREDENTIAL_OPTIONS:
+            # Never echo explicit credentials or credential-bearing endpoints.
+            return None
+        if token.lower() in {"--preview", "--dry-run", "--confirm", "--yes"}:
+            continue
+        cleaned.append(token)
+    cleaned.append("--confirm")
+    return "lk send " + shlex.join(cleaned)
+
+
+def _send_preview_recommendations(args, config):
+    """Suggest safe preflight checks and a human-confirmed path after a preview."""
+    recommendations = [
+        ("lk status", "Verify the active target, RPC network, and selected sender."),
+    ]
+
+    actor_name = str(config.get("actor") or "").strip()
+    raw = [str(value).strip() for value in (args or [])]
+    for index, token in enumerate(raw[:-1]):
+        if token.lower() in {"--as", "--actor"}:
+            actor_name = raw[index + 1]
+            break
+
+    wallets = config.get("wallets") if isinstance(config.get("wallets"), dict) else {}
+    balance_ref = actor_name if actor_name in wallets else None
+    if not balance_ref and actor_name:
+        try:
+            address = actor_address(config, actor_name)
+        except Exception:
+            address = None
+        if is_address(address):
+            balance_ref = address
+    if balance_ref:
+        recommendations.append((
+            "lk balance " + shlex.quote(str(balance_ref)),
+            "Check the sender has enough ETH for the attached value and gas.",
+        ))
+
+    current, abi = _function_item_for_command("send", raw, config)
+    if current:
+        for item in _related_read_functions(current, abi)[:1]:
+            command_text = _function_recommendation_command("read", item, abi)
+            if command_text:
+                recommendations.append((
+                    command_text,
+                    "Check related contract state before submitting the transaction.",
+                ))
+
+    submission = _preview_submission_command(raw)
+    if submission:
+        recommendations.append((
+            submission,
+            "Submit this same call with a final confirmation prompt; nothing is sent until you approve it.",
+        ))
+    return recommendations[:4]
+
 
 def humanize_value(text, assume_wei=False):
     if text is None:
@@ -18221,12 +18290,12 @@ def _recommended_next_commands(command, args=None, config=None):
     if canonical in {"raw", "batch"}:
         return []
 
-    # A preview/dry-run has not created a transaction. Do not recommend receipt,
-    # trace, or state reads that depend on a transaction result/returned ID.
+    # A preview/dry-run has not created a transaction. Offer preflight steps
+    # and a confirmed submission path instead of post-transaction follow-ups.
     if canonical == "send" and any(
         item.lower() in {"--preview", "--dry-run"} for item in raw_args
     ):
-        return []
+        return _send_preview_recommendations(raw_args, config or {})
 
     command_key = canonical
     nested = {
