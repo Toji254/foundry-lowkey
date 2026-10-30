@@ -1476,6 +1476,41 @@ class LowkeyCastTests(unittest.TestCase):
                 ["0x" + "a" * 64],
             )
 
+
+    def test_mapping_accepts_saved_identifier_alias_as_bytes32_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_root = lk.audit_context.foundry_project_root
+            lk.audit_context.foundry_project_root = lambda: pathlib.Path(tmp)
+            try:
+                identifier = "0x" + "a" * 64
+                target = "0x" + "1" * 40
+                lk._record_identifier_candidates(
+                    pathlib.Path(tmp),
+                    "0x" + "2" * 64,
+                    [{
+                        "value": identifier,
+                        "type": "bytes32",
+                        "label": "Record ID",
+                        "function": "createRecord()",
+                        "target": target,
+                        "alias": "firstRecord",
+                    }],
+                )
+                config = {"target": target}
+                computed_slot = "0x" + "b" * 64
+                with patch.object(
+                    lk, "run_cast",
+                    side_effect=[lk.CommandResult(computed_slot, 0), 0],
+                ) as run_cast, patch.object(lk, "run_mapping_human_view", return_value=False):
+                    result = lk.run_mapping(config, "5", "@firstRecord")
+                self.assertEqual(result, 0)
+                self.assertEqual(
+                    run_cast.call_args_list[0].args[0],
+                    ["index", "bytes32", identifier, "5"],
+                )
+            finally:
+                lk.audit_context.foundry_project_root = old_root
+
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
         config = {
             "target": "0x" + "1" * 40,

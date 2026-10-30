@@ -4863,11 +4863,11 @@ def _identifier_book_entries(config=None, include_all=False):
     return filtered
 
 
-def _resolve_identifier_reference(config, token, expected_type=None):
-    """Resolve @1, @last, or @alias to a saved identifier with ABI type checking."""
+def _identifier_reference_record(config, token):
+    """Resolve an @number/@last/@alias token to its saved metadata record."""
     raw = str(token or "").strip()
     if not raw.startswith("@"):
-        return raw
+        raise ValueError("identifier references must start with @")
     selector = raw[1:].strip()
     if not selector:
         raise ValueError("identifier reference is empty; use @1, @last, or @yourAlias")
@@ -4893,7 +4893,16 @@ def _resolve_identifier_reference(config, token, expected_type=None):
         raise ValueError(f"saved identifier '@{selector}' was not found; run lk ids or lk id alias")
     if len(selected) > 1:
         raise ValueError(f"identifier alias '@{selector}' is ambiguous; assign a unique alias with lk id alias")
-    record = selected[0]
+    return selected[0]
+
+
+def _resolve_identifier_reference(config, token, expected_type=None):
+    """Resolve @1, @last, or @alias to a saved identifier with ABI type checking."""
+    raw = str(token or "").strip()
+    if not raw.startswith("@"):
+        return raw
+    record = _identifier_reference_record(config, raw)
+    selector = raw[1:].strip()
     actual_type = str(record.get("type") or "").lower()
     wanted_type = str(expected_type or "").lower()
     if wanted_type and actual_type and wanted_type != actual_type:
@@ -6261,9 +6270,26 @@ def run_mapping(config,*args):
                     print("   Elements: fixed-array elements are laid out from the base slot according to the element size.")
             print("")
         return 0
-    if len(args)==2: slot,key=args; key_type="address" if is_address(key) else "uint256"
-    elif len(args)==3: key_type,slot,key=args
-    else: return fail("Usage: lk mapping [key_type] <slot> <key>")
+    if len(args)==2:
+        slot,key=args
+        if str(key).startswith("@"):
+            try:
+                record=_identifier_reference_record(config,key)
+                key_type=str(record.get("type") or "")
+                key=_resolve_identifier_reference(config,"@"+str(record.get("alias") or args[1][1:]),key_type)
+            except ValueError as error:
+                return fail(f"Error: {error}")
+        else:
+            key_type="address" if is_address(key) else "bytes32" if re.fullmatch(r"0x[0-9a-fA-F]{64}",str(key)) else "uint256"
+    elif len(args)==3:
+        key_type,slot,key=args
+        if str(key).startswith("@"):
+            try:
+                key=_resolve_identifier_reference(config,key,key_type)
+            except ValueError as error:
+                return fail(f"Error: {error}")
+    else:
+        return fail("Usage: lk mapping [key_type] <slot> <key>")
     if not re.fullmatch(r"(?:0x)?[0-9a-fA-F]+",str(slot)):
         return fail(f"Error: invalid storage slot: {slot}")
     if key_type=="address" and not is_address(key):
