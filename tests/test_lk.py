@@ -4581,6 +4581,39 @@ contract Pool {
         self.assertEqual(result, 0)
         self.assertIn("Released (enum value 2)", output.getvalue())
 
+
+    def test_run_array_reads_bounded_element_ranges(self):
+        types = {
+            "t_array": {
+                "label": "uint256[]",
+                "encoding": "dynamic_array",
+                "base": "t_uint256",
+            },
+            "t_uint256": {
+                "label": "uint256",
+                "encoding": "inplace",
+                "numberOfBytes": "32",
+            },
+        }
+        storage = [{"label": "values", "slot": "5", "type": "t_array"}]
+        config = {"target": "0x" + "1" * 40}
+        reads = [
+            lk.CommandResult("0x" + format(4, "064x"), 0),
+            lk.CommandResult("0x" + format(20, "064x"), 0),
+            lk.CommandResult("0x" + format(30, "064x"), 0),
+        ]
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)), patch.object(
+            lk, "run_cast", side_effect=reads
+        ), patch.object(
+            lk, "cast_output", return_value=(0, "0x" + "a" * 64, "")
+        ), redirect_stdout(io.StringIO()) as output:
+            result = lk.run_array(config, ["values", "1..2"])
+        self.assertEqual(result, 0)
+        self.assertIn("Element [1]", output.getvalue())
+        self.assertIn("Element [2]", output.getvalue())
+        self.assertIn("Value:       20", output.getvalue())
+        self.assertIn("Value:       30", output.getvalue())
+
     def test_human_abi_return_resolves_enum_member_names_from_source(self):
         item = {
             "type": "function",

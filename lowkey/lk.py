@@ -6343,6 +6343,11 @@ def run_mapping(config,*args):
                 else:
                     print("   Elements: fixed-array elements are laid out from the base slot according to the element size.")
             print("")
+        print("MAPPING KEY LIMITATION")
+        print("======================")
+        print("Solidity mappings do not store an enumerable list of keys.")
+        print("Use a key you already know (for example, from lk ids, decoded events, an array, or transaction calldata).")
+        print("Then inspect its entry with: lk mapping <slot> @<identifier-alias>")
         return 0
     if len(args)==2:
         slot,key=args
@@ -6427,7 +6432,7 @@ def run_storage_slots(config, args):
 
 
 def run_array(config, args=None):
-    """Inspect one array element from compiler storage metadata."""
+    """List storage arrays or inspect one element/range using compiler layout metadata."""
     values = list(args or [])
     types, storage = storage_layout_details(config)
     arrays = []
@@ -6449,12 +6454,15 @@ def run_array(config, args=None):
             length = "dynamic" if info.get("encoding") == "dynamic_array" else info.get("length", "fixed")
             print(f"{label}: slot {entry.get('slot')} · {length} elements")
             print(f"  Element type: {storage_type_expression(types, info.get('base'))}")
-            print(f"  Inspect: lk array {label} <index>")
+            print(f"  Inspect preview: lk array {label}")
+            print(f"  Inspect range:   lk array {label} 0..9")
         return 0
 
-    if len(values) != 2 or not str(values[1]).isdigit():
-        return fail("Usage: lk array <array-name> <index>")
-    name, index = values[0], int(values[1])
+    if len(values) not in {1, 2}:
+        return fail("Usage: lk array <array-name> [<index>|<start>..<end>]")
+
+    name = values[0]
+    requested_range = values[1] if len(values) == 2 else None
     matches = [
         (entry, info) for entry, info in arrays
         if str(entry.get("label") or "").casefold() == str(name).casefold()
@@ -6477,18 +6485,44 @@ def run_array(config, args=None):
         if not re.fullmatch(r"0x[0-9a-fA-F]{64}", length_raw):
             return fail("Error: dynamic array length slot did not contain a storage word.")
         length = int(length_raw, 16)
-        if index >= length:
-            return fail(f"Error: index {index} is outside this array's current length ({length}).")
-        hash_input = "0x" + format(base_slot, "064x")
-        hash_code, hash_output, hash_error = cast_output(["cast", "keccak", hash_input])
-        if hash_code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(hash_output).strip()):
-            return fail(f"Error: could not calculate the dynamic array data slot: {hash_error or hash_output}")
-        data_start = int(hash_output.strip(), 16)
+        if length:
+            hash_input = "0x" + format(base_slot, "064x")
+            hash_code, hash_output, hash_error = cast_output(["cast", "keccak", hash_input])
+            if hash_code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(hash_output).strip()):
+                return fail(f"Error: could not calculate the dynamic array data slot: {hash_error or hash_output}")
+            data_start = int(hash_output.strip(), 16)
+        else:
+            data_start = 0
     else:
-        length = int(str(array_info.get("length") or "0"), 0)
-        if index >= length:
-            return fail(f"Error: index {index} is outside this fixed array's length ({length}).")
+        try:
+            length = int(str(array_info.get("length") or "0"), 0)
+        except (TypeError, ValueError):
+            return fail("Error: fixed array length is missing from the compiled storage layout.")
         data_start = base_slot
+
+    if requested_range is None:
+        if length == 0:
+            indices = []
+        else:
+            preview_end = min(length - 1, 9)
+            indices = list(range(0, preview_end + 1))
+            if length > 10:
+                print(f"Showing first 10 of {length} elements. Use lk array {name} 10..{length - 1} for the rest.")
+    else:
+        match = re.fullmatch(r"([0-9]+)\.\.([0-9]+)", str(requested_range))
+        if match:
+            first, last = int(match.group(1)), int(match.group(2))
+        elif str(requested_range).isdigit():
+            first = last = int(requested_range)
+        else:
+            return fail("Usage: lk array <array-name> [<index>|<start>..<end>]")
+        if last < first:
+            return fail("Error: array index range must be ascending.")
+        if last - first + 1 > 100:
+            return fail("Error: one array read is limited to 100 elements. Split it into smaller ranges.")
+        if last >= length:
+            return fail(f"Error: index {last} is outside this array's current length ({length}).")
+        indices = list(range(first, last + 1))
 
     try:
         element_size = int(str(element_info.get("numberOfBytes") or "32"), 0)
@@ -6498,58 +6532,68 @@ def run_array(config, args=None):
         return fail("Error: array element size is missing from the compiled storage layout.")
 
     print(f"Array:       {entry.get('label')}")
-    print(f"Index:       {index}")
     print(f"Length:      {length}")
     print(f"Element:     {storage_type_expression(types, base_type_id)}")
-
-    members = element_info.get("members", []) if isinstance(element_info, dict) else []
-    if members:
-        stride = max(1, (element_size + 31) // 32)
-        element_base = data_start + index * stride
-        print("Fields:")
-        for member in members:
-            try:
-                member_slot = element_base + int(str(member.get("slot") or "0"), 0)
-            except (TypeError, ValueError):
-                continue
-            raw = run_cast(["st", "0x" + format(member_slot, "064x")], config, capture=True)
-            if getattr(raw, "code", 0) != 0:
-                print(f"  {member.get('label')}: <unreadable>")
-                continue
-            value = format_mapping_member(config, str(raw), member, types)
-            print(f"  {member.get('label')}: {value}")
+    if not indices:
+        print("Elements:    empty")
         return 0
 
-    if element_size <= 32:
-        per_slot = max(1, 32 // element_size)
-        slot_number = data_start + index // per_slot
-        offset = (index % per_slot) * element_size
-    else:
-        stride = max(1, (element_size + 31) // 32)
-        slot_number = data_start + index * stride
-        offset = 0
-    raw = run_cast(["st", "0x" + format(slot_number, "064x")], config, capture=True)
-    if getattr(raw, "code", 0) != 0:
-        return fail(f"Error: could not read array element slot {slot_number}.")
-    decoded = decode_storage_member(str(raw), base_type_id, types, offset)
-    if is_address(decoded):
-        actor_name = assigned_anvil_address(config, decoded)
-        if actor_name:
-            decoded = f"{actor_name} ({decoded})"
-    else:
-        enum_value = _humanize_storage_enum(decoded, base_type_id, types, entry.get("label"))
-        if enum_value:
-            decoded = enum_value
-        elif str(decoded).isdigit() and (
-            "uint" in storage_type_label(types, base_type_id).lower()
-            or "int" in storage_type_label(types, base_type_id).lower()
-        ):
-            decoded = _humanize_abi_scalar(decoded, storage_type_label(types, base_type_id), "", config)
-    print(f"Slot:        0x{slot_number:064x}")
-    print(f"Byte offset: {offset}")
-    print(f"Raw word:    {raw}")
-    print(f"Value:       {decoded}")
+    members = element_info.get("members", []) if isinstance(element_info, dict) else []
+    for index in indices:
+        print(f"Element [{index}]:")
+        if members:
+            stride = max(1, (element_size + 31) // 32)
+            element_base = data_start + index * stride
+            for member in members:
+                try:
+                    member_slot = element_base + int(str(member.get("slot") or "0"), 0)
+                except (TypeError, ValueError):
+                    continue
+                raw = run_cast(["st", "0x" + format(member_slot, "064x")], config, capture=True)
+                if getattr(raw, "code", 0) != 0:
+                    print(f"  {member.get('label')}: <unreadable>")
+                    continue
+                value = format_mapping_member(config, str(raw), member, types)
+                print(f"  {member.get('label')}: {value}")
+            continue
+
+        if element_size <= 32:
+            per_slot = max(1, 32 // element_size)
+            slot_number = data_start + index // per_slot
+            offset = (index % per_slot) * element_size
+        else:
+            stride = max(1, (element_size + 31) // 32)
+            slot_number = data_start + index * stride
+            offset = 0
+        raw = run_cast(["st", "0x" + format(slot_number, "064x")], config, capture=True)
+        if getattr(raw, "code", 0) != 0:
+            print(f"  <unreadable: could not read slot {slot_number}>")
+            continue
+        decoded = decode_storage_member(str(raw), base_type_id, types, offset)
+        if is_address(decoded):
+            actor_name = assigned_anvil_address(config, decoded)
+            if actor_name:
+                decoded = f"{actor_name} ({decoded})"
+        else:
+            enum_value = _humanize_storage_enum(decoded, base_type_id, types, entry.get("label"))
+            if enum_value:
+                decoded = enum_value
+            elif str(decoded).isdigit() and (
+                "uint" in storage_type_label(types, base_type_id).lower()
+                or "int" in storage_type_label(types, base_type_id).lower()
+            ):
+                decoded = _humanize_abi_scalar(
+                    decoded,
+                    storage_type_label(types, base_type_id),
+                    "",
+                    config,
+                )
+        print(f"  Slot:        0x{slot_number:064x}")
+        print(f"  Byte offset: {offset}")
+        print(f"  Raw word:    {raw}")
+        print(f"  Value:       {decoded}")
     return 0
+
 
 def snapshot_path(config,chain=None):
     target=config.get("target") or "no-target"
@@ -18365,10 +18409,16 @@ COMMAND_HELP = {
         ],
         related=["lk layout", "lk storage", "lk snapshot"]),
     "array": _help_entry(
-        "Read one element from a detected fixed or dynamic storage array.",
-        "lk array [<array-name> <index>]",
-        "lk array owners 0",
+        "List detected arrays, show a short preview, or read one element/a bounded range.",
+        "lk array [<array-name> [<index>|<start>..<end>]]",
+        "lk array owners 0..9",
         "Use it to inspect arrays using the selected target's compiled storage layout.",
+        forms=[
+            ("lk array", "List fixed and dynamic arrays discovered in the selected target's compiled storage layout.", "lk array"),
+            ("lk array <array-name>", "Preview the first 10 elements, or all elements when the array is shorter.", "lk array owners"),
+            ("lk array <array-name> <index>", "Read one specific element.", "lk array owners 2"),
+            ("lk array <array-name> <start>..<end>", "Read up to 100 consecutive elements in one view.", "lk array owners 0..9"),
+        ],
         related=["lk mapping", "lk storage", "lk layout"],
     ),
     "namespace": _help_entry("Calculate an ERC-7201 namespaced storage slot.", "lk namespace <erc7201-namespace-id>", "lk namespace example.storage", "Use it when auditing namespaced storage.", related=["lk layout", "lk mapping"]),
