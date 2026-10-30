@@ -66,6 +66,13 @@ class CliConsistencyTests(unittest.TestCase):
                 "inputs": [],
                 "outputs": [{"name": "", "type": "uint256"}],
             },
+            {
+                "type": "function",
+                "name": "EscrowID",
+                "stateMutability": "view",
+                "inputs": [{"name": "ID", "type": "uint256"}],
+                "outputs": [{"name": "beneficiary", "type": "address"}],
+            },
         ]
         config = {
             "target": target,
@@ -85,6 +92,7 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertEqual(commands[0], "lk status")
         self.assertIn("lk balance Alice", commands)
         self.assertIn("lk read escrowCount", commands)
+        self.assertFalse(any(command.startswith("lk read EscrowID ") for command in commands))
         self.assertIn("lk send createEscrow Bob --eth 2 --confirm", commands)
         self.assertFalse(any(command in {"lk receipt", "lk trace"} for command in commands))
         self.assertEqual(
