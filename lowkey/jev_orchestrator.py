@@ -433,30 +433,36 @@ LOCAL_HANDLERS = {
 
 
 def is_inspection_tool(tool: dict[str, Any]) -> bool:
-    name = str(tool.get("name", "")).lower()
-    desc = str(tool.get("description", "")).lower()
+    """Identify known read-only browser tools; unknown MCP tools are treated as mutations."""
+    name = str(tool.get("name", "")).strip().lower()
+    desc = str(tool.get("description", "")).strip().lower()
     combined = f"{name} {desc}"
 
-    if any(word in name for word in (
+    mutation_markers = (
+        "click", "navigate", "open_url", "open url", "new_page", "new page",
+        "open a new tab", "close tab", "submit", "download", "upload",
+        "type into", "fill form", "scroll", "refresh", "create page",
+        "create a new page", "write", "delete", "press",
+    )
+    if any(marker in combined for marker in mutation_markers):
+        return False
+
+    known_read_markers = (
         "list_tabs", "get_tabs", "list_pages", "get_page",
-        "get_snapshot", "get_current_tab", "list_targets",
-    )):
+        "get_snapshot", "take_snapshot", "get_current_tab", "list_targets",
+    )
+    if any(marker in name for marker in known_read_markers):
         return True
 
-    has_read_word = any(word in combined for word in (
-        "list", "inspect", "get", "read", "snapshot", "current",
-        "state", "title", "url", "tabs", "targets", "session",
+    read_prefix = name.startswith((
+        "list_", "get_", "read_", "inspect_", "snapshot_", "take_snapshot",
+        "browser_list_", "browser_get_", "browser_read_", "browser_inspect_",
     ))
-    has_browser_word = any(word in combined for word in (
+    has_browser_resource = any(word in combined for word in (
         "browser", "tab", "page", "window", "target", "session",
         "webpage", "website",
     ))
-    has_mutation_word = any(word in combined for word in (
-        "click", "navigate", "open_url", "open url", "new_page", "new page",
-        "open a new tab", "close tab", "submit", "download", "upload",
-        "type into", "fill form", "scroll", "refresh",
-    ))
-    return has_read_word and has_browser_word and not has_mutation_word
+    return read_prefix and has_browser_resource
 
 
 def is_browser_change_tool(tool: dict[str, Any]) -> bool:
