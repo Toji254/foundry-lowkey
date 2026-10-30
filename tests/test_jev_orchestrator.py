@@ -112,10 +112,10 @@ class JevOrchestratorTests(unittest.TestCase):
         verified, message, url = verify_new_page_opened(
             requested_url="https://example.com/docs",
             before_listing=(
-                "Pages\\n1: Existing (https://existing.example/) [selected]"
+                "Pages\n1: Existing (https://existing.example/) [selected]"
             ),
             after_listing=(
-                "Pages\\n1: Existing (https://existing.example/)\\n"
+                "Pages\n1: Existing (https://existing.example/)\n"
                 "2: Docs (https://example.com/docs) [selected]"
             ),
         )
@@ -126,8 +126,8 @@ class JevOrchestratorTests(unittest.TestCase):
     def test_new_tab_verification_rejects_preexisting_url_without_new_page(self):
         verified, message, url = verify_new_page_opened(
             requested_url="https://example.com",
-            before_listing="Pages\\n1: Existing (https://example.com) [selected]",
-            after_listing="Pages\\n1: Existing (https://example.com) [selected]",
+            before_listing="Pages\n1: Existing (https://example.com) [selected]",
+            after_listing="Pages\n1: Existing (https://example.com) [selected]",
         )
         self.assertFalse(verified)
         self.assertIsNone(url)
@@ -136,8 +136,8 @@ class JevOrchestratorTests(unittest.TestCase):
     def test_new_tab_verification_rejects_disappearing_existing_page(self):
         verified, message, url = verify_new_page_opened(
             requested_url="https://example.com",
-            before_listing="Pages\\n1: Existing (https://existing.example) [selected]",
-            after_listing="Pages\\n2: Docs (https://example.com) [selected]",
+            before_listing="Pages\n1: Existing (https://existing.example) [selected]",
+            after_listing="Pages\n2: Docs (https://example.com) [selected]",
         )
         self.assertFalse(verified)
         self.assertIsNone(url)
