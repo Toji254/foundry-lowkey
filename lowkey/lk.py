@@ -2736,7 +2736,8 @@ def run_functions(config, args=None):
     )
     _function_print_wrapped("  SUMMARY   ", summary)
 
-    function_numbers = {id(record): index for index, record in enumerate(records, 1)}
+    display_records = [record for _, items in groups for record in items]
+    function_numbers = {id(record): index for index, record in enumerate(display_records, 1)}
     for title, items in groups:
         if not items:
             continue
