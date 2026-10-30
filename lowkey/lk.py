@@ -2728,8 +2728,9 @@ def run_functions(config, args=None):
     print(_function_terminal_style("━" * rule_width, "muted"))
     if query:
         _function_print_wrapped("  MATCH     ", query)
-    if contract:
-        _function_print_wrapped("  CONTRACT  ", contract)
+    contract_label = artifact.get("contractName") or config.get("target_contract")
+    if contract_label:
+        _function_print_wrapped("  CONTRACT  ", contract_label)
     summary = (
         f"{len(records)} functions · {len(write_records)} write · "
         f"{len(read_records)} read · {len(getter_records)} getters"
