@@ -1970,7 +1970,7 @@ def _solidity_function_source_index(source):
         })
     return declarations
 
-def _function_source_file(artifact, root):
+def _function_source_file(artifact, root, contract_name=None):
     if not isinstance(artifact, dict):
         return None, []
     root_path = Path(root).expanduser().resolve()
@@ -1981,7 +1981,7 @@ def _function_source_file(artifact, root):
         if candidate.is_file():
             candidates.append(candidate)
 
-    contract = str(artifact.get("contractName") or "")
+    contract = str(artifact.get("contractName") or contract_name or "").strip()
     if not candidates and contract:
         try:
             discovered = source_sol_files(str(root_path))
@@ -2599,7 +2599,8 @@ def run_functions(config, args=None):
     getter_names = storage_getter_names(target, config, functions)
     artifact_path, artifact = _function_inventory_artifact(target, config)
     source_root = Path(root).resolve()
-    source_path, source_decls = _function_source_file(artifact, source_root)
+    source_contract = artifact.get("contractName") or config.get("target_contract")
+    source_path, source_decls = _function_source_file(artifact, source_root, source_contract)
     storage_labels = _function_storage_labels(target, config, artifact)
     method_ids = artifact.get("methodIdentifiers") or (
         artifact.get("evm", {}).get("methodIdentifiers") if isinstance(artifact.get("evm"), dict) else {}
