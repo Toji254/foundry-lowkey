@@ -5768,6 +5768,16 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                 reason=_clean_error_detail(text),
                 next_step="Set the required target, RPC endpoint, or actor, then repeat the command.",
             )
+        if (
+            "saved identifier" in lowered
+            or ("identifier alias" in lowered and "not found" in lowered)
+        ):
+            return _friendly_error(
+                "Saved contract identifier wasn't found",
+                reason=_clean_error_detail(text),
+                what="Lowkey could not resolve that @reference from the identifier book for this project and target. No transaction was sent.",
+                next_step="Run lk ids to list saved IDs. Use lk id alias <number> <name> to create the name, or rerun lk trace <tx> to recover an ID from an older creation transaction.",
+            )
         if any(marker in lowered for marker in (
             "not found", "could not resolve", "unavailable", "not installed",
         )):
@@ -18274,12 +18284,14 @@ COMMAND_HELP = {
         forms=[
             ("lk read <function>", "Read a getter with no arguments.", "lk read getValue"),
             ("lk read <function> <args...>", "Pass the real values the getter expects. Lowkey uses the ABI to interpret their types.", "lk read getValue"),
+            ("lk read <getter> @<alias>", "Use a saved identifier instead of copying its full bytes32 value; Lowkey checks that the saved type matches the ABI input.", "lk read EscrowID @firstEscrow"),
             ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x1111111111111111111111111111111111111111 getValue"),
         ],
         options=[
             ("address", "Pass an Ethereum address directly, a configured actor name such as Alice or Bob, or a project target name such as Fallback.", "lk read contributions Fallback"),
             ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read getValue"),
-            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as a record ID.", "lk read getValue"),
+            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, or use a saved reference such as @firstEscrow.", "lk read EscrowID @firstEscrow"),
+            ("@identifier", "Use @number, @last, or @alias in any ABI argument whose type matches the saved identifier.", "lk read EscrowID @last"),
         ],
         related=["lk ask", "lk send", "lk changes"],
     ),
@@ -18294,6 +18306,7 @@ COMMAND_HELP = {
             ("lk send <function> [args...] --eth <amount>", "Another spelling of --value. A unitless amount such as 0.001 means 0.001 ETH.", "lk send contribute --eth 0.001"),
             ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send release 0xd9c5... --actor Alice"),
             ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send release 0xd9c5... --as attacker"),
+            ("lk send <function> @<alias>", "Use a saved contract ID as a function argument without copying its full hash; the ABI type must match.", "lk send acceptEscrow @firstEscrow --as Bob"),
             ("lk send <function> [args...] --actors", "Send the same call from each detected Anvil account, up to 10 accounts. Each account uses a separate transaction, so msg.sender changes between calls.", "lk send contribute --eth 0.001 --actors"),
         ],
         options=[
