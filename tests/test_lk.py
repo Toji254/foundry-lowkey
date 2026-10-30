@@ -4335,7 +4335,7 @@ contract Pool {
         self.assertEqual(result, 0)
         rendered = output.getvalue()
         self.assertIn("'createEscrow(uint256,address)'", rendered)
-        self.assertIn("'1 ether'", rendered)
+        self.assertIn("1000000000000000000", rendered)
         self.assertIn(recipient, rendered)
         self.assertIn("--value '2 ether'", rendered)
         self.assertNotIn(" Bob ", rendered)
