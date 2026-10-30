@@ -2659,7 +2659,7 @@ def run_functions(config, args=None):
         for index, record in enumerate(items, 1):
             suffix = "  [public storage getter]" if title == "STORAGE GETTERS" else ""
             annotation = _function_default_eth_annotation(record)
-            print(f"  {index:>2}. {record['signature']}  [{annotation}]{suffix}")
+            print(f"  {index:>2}. {record['signature']}{suffix}  [{annotation}]")
             for outflow_index, outflow in enumerate(record.get("eth_outflows") or [], 1):
                 via = f" | via: {outflow['via']}" if outflow.get("via") else ""
                 print(
