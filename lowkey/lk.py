@@ -11839,6 +11839,8 @@ def decode_event_values(event,data,topics):
             if len(decoded_values) == len(non_indexed):
                 for field, field_value in zip(non_indexed, decoded_values):
                     field_name = str(field.get("name") or "").strip()
+                    if field_name:
+                        print(f"Field {field_name}: {field_value}")
                     if field_name and _identifier_name(field_name):
                         print(f"Identifier field ({field_name}): {field_value}")
     return record_status(status)

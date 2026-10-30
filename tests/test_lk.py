@@ -1229,6 +1229,8 @@ class LowkeyCastTests(unittest.TestCase):
                     )
 
         self.assertEqual(result[0], "RecordRegistered(bytes32,address)")
+        self.assertIn("Field recordKey: " + record_key, output.getvalue())
+        self.assertIn("Field owner: " + owner, output.getvalue())
         self.assertIn("Identifier field (recordKey): " + record_key, output.getvalue())
 
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
