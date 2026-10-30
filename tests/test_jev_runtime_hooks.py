@@ -60,8 +60,8 @@ class JevRuntimeHookTests(unittest.TestCase):
                 "JEV TEST TRIAGE: " + report["outcome"],
         )
         output = io.StringIO()
-        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \\
-             patch.dict(sys.modules, {"jev_engine": jev}), \\
+        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \
+             patch.dict(sys.modules, {"jev_engine": jev}), \
              contextlib.redirect_stdout(output):
             lk._print_jev_command_classification("build", [], 0, "Build succeeded")
 
