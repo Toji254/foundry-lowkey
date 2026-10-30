@@ -1506,6 +1506,90 @@ class LowkeyCastTests(unittest.TestCase):
             )
 
 
+    def test_id_alias_can_name_the_latest_saved_identifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            old_root = lk.audit_context.foundry_project_root
+            lk.audit_context.foundry_project_root = lambda: root
+            try:
+                target = "0x" + "1" * 40
+                first = "0x" + "a" * 64
+                second = "0x" + "b" * 64
+                lk._record_identifier_candidates(
+                    root,
+                    "0x" + "2" * 64,
+                    [{"value": first, "type": "bytes32", "label": "Escrow ID", "target": target}],
+                )
+                lk._record_identifier_candidates(
+                    root,
+                    "0x" + "3" * 64,
+                    [{"value": second, "type": "bytes32", "label": "Escrow ID", "target": target}],
+                )
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    result = lk.run_id({"target": target}, ["alias", "@last", "latestEscrow"])
+
+                self.assertEqual(result, 0)
+                entries = lk._identifier_book_entries({"target": target})
+                self.assertEqual(entries[-1]["value"], second)
+                self.assertEqual(entries[-1]["alias"], "latestEscrow")
+                self.assertIn("@latestEscrow", output.getvalue())
+            finally:
+                lk.audit_context.foundry_project_root = old_root
+
+    def test_trace_identifier_is_saved_and_visible_to_lk_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = "0x" + "1" * 40
+            tx_hash = "0x" + "2" * 64
+            identifier = "0x" + "a" * 64
+            config = {"target": target, "wallets": {}, "labels": {}}
+            item = {
+                "type": "function",
+                "name": "createEscrow",
+                "stateMutability": "payable",
+                "inputs": [{"name": "recipient", "type": "address"}],
+                "outputs": [{"name": "escrowId", "type": "bytes32"}],
+            }
+            trace_result = lk.CommandResult(
+                f"    └─ ← [Return] {identifier}",
+                0,
+            )
+            old_root = lk.audit_context.foundry_project_root
+            lk.audit_context.foundry_project_root = lambda: root
+            try:
+                with patch.object(lk, "run_cast", return_value=trace_result), patch.object(
+                    lk, "effective_rpc", return_value="http://127.0.0.1:8545"
+                ), patch.object(
+                    lk, "rpc_json", return_value={
+                        "to": target,
+                        "from": "0x" + "3" * 40,
+                        "input": "0x12345678" + "0" * 64,
+                    }
+                ), patch.object(
+                    lk, "_trace_function_item", return_value=(item, [item])
+                ), patch.object(
+                    lk.audit_context, "set_latest"
+                ), patch.object(
+                    lk.audit_context, "record_tool"
+                ), patch.object(
+                    lk.walkthrough, "_transaction_link", return_value=tx_hash
+                ):
+                    trace_output = io.StringIO()
+                    with redirect_stdout(trace_output):
+                        result = lk.run_trace(config, [tx_hash])
+
+                self.assertEqual(result, 0)
+                self.assertTrue((root / ".audit" / "evidence" / "identifier-book.json").is_file())
+                ids_output = io.StringIO()
+                with redirect_stdout(ids_output):
+                    ids_result = lk.run_ids(config)
+                self.assertEqual(ids_result, 0)
+                self.assertIn(identifier, ids_output.getvalue())
+                self.assertIn("Escrow ID", ids_output.getvalue())
+            finally:
+                lk.audit_context.foundry_project_root = old_root
+
     def test_mapping_accepts_saved_identifier_alias_as_bytes32_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_root = lk.audit_context.foundry_project_root
