@@ -2509,7 +2509,7 @@ def _function_default_eth_annotation(record):
         and not record.get("getter")
         and mutability not in {"view", "pure"}
     ):
-        labels.append(("! OUTGOING ETH NOT ASSESSED", "warning"))
+        labels.append(("! UNASSESSED", "warning"))
 
     return labels
 
@@ -2793,7 +2793,7 @@ def run_functions(config, args=None):
             if entry_outflows:
                 labels.append(("↓ SENDS ETH", "send"))
             elif not entry_source and mutability not in {"view", "pure"}:
-                labels.append(("! OUTGOING ETH NOT ASSESSED", "warning"))
+                labels.append(("! UNASSESSED", "warning"))
             _function_print_wrapped(
                 "      ",
                 " · ".join(_function_terminal_style(label, tone) for label, tone in labels),
