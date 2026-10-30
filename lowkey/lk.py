@@ -18666,17 +18666,9 @@ def _print_jev_command_classification(command, args, result_code, command_output
                 file=sys.stderr,
             )
             return
-        # The daily allowance tracks hosted requests only. Local Jevos inference
-        # does not consume it and must not be blocked by it.
-        if not jev_state.get("local", False):
-            budget = ai_harness.autonomy_budget_status()
-            if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
-                print(
-                    "\n@ JEV TRIAGE SKIPPED — the hosted Jev request allowance is exhausted. "
-                    "The native command already completed; no hosted classification request was sent.",
-                    file=sys.stderr,
-                )
-                return
+        # Provider quota and cache policy belong in jev_engine.evaluate().
+        # In particular, it checks the private exact-repeat cache before it
+        # reserves a hosted request, and local Jevos bypasses hosted accounting.
         report = jev_engine.classify_command(
             command="lk " + str(command or "").strip(),
             arguments=[str(value) for value in (args or [])],
