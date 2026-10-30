@@ -215,6 +215,7 @@ class JevEngineTests(unittest.TestCase):
         self.assertEqual(result["model"], "jevos-v5")
         self.assertEqual(result["answers"]["root_cause"]["choice"], "missing_dependency")
         self.assertEqual(result["usage"]["input_tokens"], 1101)
+        self.assertFalse(result["cache_hit"])
         self.assertEqual(ai_harness.autonomy_budget_status()["calls_today"], 0)
 
     def test_jevos_setup_does_not_prompt_for_a_key(self):
@@ -312,12 +313,31 @@ class JevEngineTests(unittest.TestCase):
         self.assertTrue(report["needs_explanation"])
         self.assertEqual(report["suggested_response"], "explain_observation")
         self.assertEqual(report["provider"], "typesafe")
+        self.assertFalse(report["cache_hit"])
         self.assertEqual(report["source"], "jev-systemone")
         self.assertEqual(report["usage"]["input_tokens"], 500)
         rendered = jev_engine.render_classification(report, "lk build")
         self.assertIn("JEV DECISION", rendered)
+        self.assertIn("TypeSafe hosted", rendered)
+        self.assertIn("fresh provider inference", rendered)
+        self.assertIn("Provider response time:", rendered)
         self.assertIn("not a verdict", rendered.lower())
         self.assertIn("Estimated Jev input cost", rendered)
+
+    def test_cached_jev_classification_reports_no_new_inference(self):
+        rendered = jev_engine.render_classification({
+            "provider": "jevos",
+            "model": "jevos-v5",
+            "cache_hit": True,
+            "outcome": "normal",
+            "attention": "routine",
+            "suggested_response": "no_extra_guidance",
+            "needs_explanation": False,
+            "usage": {"input_tokens": 100, "output_tokens": 4, "elapsed_ms": 900},
+        }, "lk build")
+        self.assertIn("Jevos-v5 local", rendered)
+        self.assertIn("exact-repeat cache", rendered)
+        self.assertNotIn("Provider response time:", rendered)
 
     def test_local_guard_counts_provider_failures_and_stops_after_daily_limit(self):
         config = ai_harness.load_config()
@@ -369,7 +389,9 @@ class JevEngineTests(unittest.TestCase):
         }
         first = jev_engine.evaluate(**request)
         second = jev_engine.evaluate(**request)
-        self.assertEqual(first, second)
+        self.assertFalse(first["cache_hit"])
+        self.assertTrue(second["cache_hit"])
+        self.assertEqual(first["answers"], second["answers"])
         self.assertEqual(len(calls), 1)
         budget = ai_harness.autonomy_budget_status()
         self.assertEqual(budget["calls_today"], 1)
