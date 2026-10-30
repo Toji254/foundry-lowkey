@@ -155,6 +155,7 @@ class JevEngineTests(unittest.TestCase):
         self.assertFalse(jev_engine.credentials_path().exists())
         value = jev_engine.status()
         self.assertFalse(value["configured"])
+        self.assertFalse(value["local"])
         self.assertIsNone(value["key_source"])
 
     def test_jevos_local_provider_needs_no_key_and_status_marks_it_local(self):
@@ -162,6 +163,7 @@ class JevEngineTests(unittest.TestCase):
         status = jev_engine.status()
         self.assertEqual(settings["provider"], "jevos")
         self.assertTrue(status["configured"])
+        self.assertTrue(status["local"])
         self.assertEqual(status["key_source"], "not required (local Jevos-v5 endpoint)")
         self.assertEqual(status["endpoint"], "http://127.0.0.1:8017/v1/systemone")
         self.assertIn("jevos-v5", status["model"])
