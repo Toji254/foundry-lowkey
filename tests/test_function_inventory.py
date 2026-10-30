@@ -301,6 +301,39 @@ class FunctionInventoryTests(unittest.TestCase):
         getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW LEGEND", 1)[0]
         self.assertNotIn("NOT ASSESSED", getter_section)
 
+    def test_function_without_eth_outflow_is_not_labelled_as_sending_eth(self):
+        tmp, root, config = self._fixture()
+        old = os.getcwd()
+        output = io.StringIO()
+        try:
+            artifact_path = pathlib.Path(config["abi_paths"][config["target"]])
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            artifact["abi"] = [
+                {
+                    "type": "function",
+                    "name": "setTreasury",
+                    "inputs": [{"name": "next", "type": "address"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+            ]
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            os.chdir(root)
+            with patch.object(lk, "cast_output", return_value=(1, "", "")), contextlib.redirect_stdout(output):
+                code = lk.run_functions(config, [])
+        finally:
+            os.chdir(old)
+            tmp.cleanup()
+
+        rendered = output.getvalue()
+        function_section = rendered.split("ETH FLOW LEGEND", 1)[0]
+        self.assertEqual(code, 0)
+        self.assertIn("setTreasury(address)", function_section)
+        self.assertIn("NONPAYABLE", function_section)
+        self.assertNotIn("↓ SENDS ETH", function_section)
+        self.assertNotIn("ETH OUT", function_section)
+
+
     def test_terminal_styling_respects_no_color_and_non_tty_output(self):
         class TTYStream(io.StringIO):
             def isatty(self):
