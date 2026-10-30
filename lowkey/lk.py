@@ -18487,7 +18487,7 @@ COMMAND_HELP = {
         forms=[
             ("lk mapping", "List detected mappings and arrays with their slots and types.", "lk mapping"),
             ("lk mapping <slot> <key>", "Read one entry and infer the key type from the value you supplied.", "lk mapping 0 0x1111111111111111111111111111111111111111"),
-            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly when inference is ambiguous.", "lk mapping bytes32 5 @firstEscrow"),
+            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly. This is useful when inference is ambiguous.", "lk mapping bytes32 5 @firstEscrow"),
             ("lk mapping <slot> @<alias>", "Use a saved identifier and let Lowkey infer its key type.", "lk mapping 5 @firstEscrow"),
         ],
         options=[
