@@ -901,7 +901,7 @@ def cmd_open_new_tab(url: str) -> int:
         before_result = client.call_tool("list_pages", {})
         if before_result.get("isError"):
             print(
-                "Could not inspect existing browser tabs; no new tab was opened.\\n"
+                "Could not inspect existing browser tabs; no new tab was opened.\n"
                 + normalize_mcp_result(before_result).get("result", ""),
                 file=sys.stderr,
             )
@@ -914,7 +914,7 @@ def cmd_open_new_tab(url: str) -> int:
         })
         if opened.get("isError"):
             print(
-                "Brave MCP reported an error opening the new tab:\\n"
+                "Brave MCP reported an error opening the new tab:\n"
                 + normalize_mcp_result(opened).get("result", ""),
                 file=sys.stderr,
             )
@@ -924,7 +924,7 @@ def cmd_open_new_tab(url: str) -> int:
         if after_result.get("isError"):
             print(
                 "The new-page request returned without an MCP error, but follow-up "
-                "inspection failed. The tab may have opened; Jev cannot confirm it.\\n"
+                "inspection failed. The tab may have opened; Jev cannot confirm it.\n"
                 + normalize_mcp_result(after_result).get("result", ""),
                 file=sys.stderr,
             )
@@ -938,10 +938,10 @@ def cmd_open_new_tab(url: str) -> int:
         )
         if not verified:
             print(
-                "New-tab effect unconfirmed: " + detail + "\\n"
-                f"Requested: {url}\\n"
-                f"Before:\\n{before_listing}\\n"
-                f"After:\\n{after_listing}",
+                "New-tab effect unconfirmed: " + detail + "\n"
+                f"Requested: {url}\n"
+                f"Before:\n{before_listing}\n"
+                f"After:\n{after_listing}",
                 file=sys.stderr,
             )
             return 1
