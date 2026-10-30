@@ -169,7 +169,9 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("use --eth <amount>", output)
         self.assertIn("ETH FLOW", output)
         self.assertIn("indirect flows need review", output)
-        self.assertNotIn("UNASSESSED", output)
+        function_section = output.split("ETH FLOW", 1)[0]
+        self.assertNotIn("! UNASSESSED", function_section)
+        self.assertIn("! UNASSESSED", output)
         self.assertNotIn(chr(27), output)
 
     def test_default_inventory_shows_outflow_destination_and_amount_separately(self):
