@@ -3236,8 +3236,9 @@ def _post_transaction_state_report(
     argument_values,
     return_result,
     sender=None,
+    block_number=None,
 ):
-    """Read a likely linked public getter after a write, using ABI types and names."""
+    """Read a likely linked public getter at the block containing the write."""
     if not target or not function_item or not isinstance(abi, list):
         return []
     source_inputs = function_item.get("inputs", []) or []
@@ -3316,6 +3317,10 @@ def _post_transaction_state_report(
     command = ["cast", "call", target, format_signature(getter), *getter_values]
     if is_address(sender):
         command.extend(["--from", sender])
+    if block_number is not None:
+        block_value = _hex_to_int(block_number)
+        if block_value is not None:
+            command.extend(["--block", str(block_value)])
     if rpc:
         command.extend(["--rpc-url", rpc])
     code, raw, error = cast_output(command)
@@ -3390,6 +3395,7 @@ def _transaction_execution_report(
             argument_values,
             return_result,
             sender=sender or (tx or {}).get("from"),
+            block_number=(receipt or {}).get("blockNumber") if isinstance(receipt, dict) else None,
         )
         if state_lines:
             sections.append("\n".join(state_lines))
@@ -3621,6 +3627,7 @@ def run_receipt(config, tx_hash=None, args=None):
             argument_values,
             return_result,
             sender=tx.get("from"),
+            block_number=receipt.get("blockNumber"),
         )
         if state_lines:
             lines.extend(["", *state_lines])

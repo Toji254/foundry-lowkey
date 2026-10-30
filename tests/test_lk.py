@@ -1448,6 +1448,7 @@ class LowkeyCastTests(unittest.TestCase):
                 [record_id],
                 None,
                 sender=sender,
+                block_number="0x64",
             )
 
         rendered = "\n".join(report)
@@ -1457,6 +1458,8 @@ class LowkeyCastTests(unittest.TestCase):
             "cast", "call", target, "records(bytes32)", record_id,
         ])
         self.assertIn("--from", cast.call_args.args[0])
+        self.assertIn("--block", cast.call_args.args[0])
+        self.assertIn("100", cast.call_args.args[0])
         self.assertIn("--rpc-url", cast.call_args.args[0])
 
     def test_transaction_argument_values_decode_receipt_calldata(self):
