@@ -1700,7 +1700,8 @@ def _function_usage():
         "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
         "  -r, --risk                 Show compact audit-review flags.\n"
         "  Default output labels function mutability and detected native-ETH flow.\n"
-        "  PAYABLE means the function can receive ETH; attach it with --eth <amount> or --value <amount>.\n"
+        "  PAYABLE means the function can receive ETH; attach it separately from its arguments.\n"
+        "  Example: lk send <function> [args...] --eth 2  (attaches 2 ETH).\n"
         "  SENDS ETH means a direct native-ETH send pattern was found in available source.\n"
         "  No SENDS ETH marker does not prove that no indirect ETH outflow exists.\n"
         "\n"
@@ -2394,7 +2395,8 @@ def run_functions(config, args=None):
             print(f"  {index:>2}. {record['signature']}  [{annotation}]{suffix}")
 
     print("\nETH FLOW NOTES:")
-    print("  PAYABLE = this function can receive ETH; attach it separately with --eth <amount> or --value <amount>.")
+    print("  PAYABLE = this function can receive ETH; attach ETH separately from the function arguments.")
+    print("  Example: lk send <function> [args...] --eth 2  (attaches 2 ETH; --value is an alias).")
     print("  NONPAYABLE / VIEW / PURE = this function cannot receive attached ETH.")
     print("  SENDS ETH = a direct native-ETH send pattern was detected in the available source.")
     print("  Outgoing-ETH detection is source-based; indirect/dynamic flows may need manual review.")
