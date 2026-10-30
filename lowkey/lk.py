@@ -2948,7 +2948,7 @@ def _wizard_transaction_return(config, tx_hash, item):
     }
 
 
-def _transaction_return_report(config, tx_hash, function_item, abi=None):
+def _transaction_return_report(config, tx_hash, function_item, abi=None, result=None):
     """Render ABI-declared top-level return values recovered from a transaction trace.
 
     Return values are optional RPC evidence: providers that disable tracing do
@@ -2958,7 +2958,7 @@ def _transaction_return_report(config, tx_hash, function_item, abi=None):
     if not outputs:
         return []
 
-    result = _wizard_transaction_return(config, tx_hash, function_item)
+    result = result or _wizard_transaction_return(config, tx_hash, function_item)
     lines = [
         "CONTRACT RETURN VALUES",
         "======================",
@@ -2977,6 +2977,20 @@ def _transaction_return_report(config, tx_hash, function_item, abi=None):
 
     decoded = result.get("decoded")
     if decoded:
+        candidates = _identifier_candidates_from_decoded(function_item, decoded)
+        if candidates:
+            target = config.get("target")
+            for candidate in candidates:
+                candidate["target"] = target
+                candidate["contract"] = config.get("target_contract")
+            try:
+                _record_identifier_candidates(
+                    audit_context.foundry_project_root(),
+                    tx_hash,
+                    candidates,
+                )
+            except Exception:
+                pass
         rendered = format_human_abi_return(
             function_item,
             decoded,
@@ -3017,6 +3031,140 @@ def _transaction_event_report(config, logs):
     return ["DECODED EVENTS", "==============", *rendered]
 
 
+
+
+def _abi_function_has_state_output(item):
+    for output in item.get("outputs", []) if isinstance(item, dict) else []:
+        name = re.sub(r"[^a-z0-9]", "", str(output.get("name") or "").lower())
+        internal_type = str(output.get("internalType") or "").lower()
+        if internal_type.startswith("enum ") or name in {
+            "status", "state", "currentstatus", "currentstate", "recordstatus",
+            "orderstatus", "escrowstatus", "requeststatus",
+        }:
+            return True
+    return False
+
+
+def _transaction_return_values(function_item, decoded):
+    outputs = function_item.get("outputs", []) if isinstance(function_item, dict) else []
+    return _decoded_abi_output_values(decoded, outputs)
+
+
+def _post_transaction_state_report(
+    config,
+    target,
+    abi,
+    function_item,
+    argument_values,
+    return_result,
+    sender=None,
+):
+    """Read a likely linked public getter after a write, using ABI types and names."""
+    if not target or not function_item or not isinstance(abi, list):
+        return []
+    source_inputs = function_item.get("inputs", []) or []
+    source_values = list(argument_values or [])
+    if len(source_values) != len(source_inputs):
+        source_values = source_values[:len(source_inputs)]
+
+    returned_values = _transaction_return_values(
+        function_item,
+        (return_result or {}).get("decoded"),
+    )
+    return_outputs = function_item.get("outputs", []) or []
+    available = []
+    for item, value in zip(source_inputs, source_values):
+        item_type = canonical_type(item).lower()
+        name = str(item.get("name") or "")
+        if _identifier_name(name) or item_type == "bytes32":
+            available.append((item_type, str(value), name, 3))
+    for index, (item, value) in enumerate(zip(return_outputs, returned_values)):
+        item_type = canonical_type(item).lower()
+        name = str(item.get("name") or "")
+        if _identifier_name(name) or (
+            len(return_outputs) == 1 and item_type == "bytes32"
+            and _creation_function_name(function_item.get("name"))
+        ):
+            available.append((item_type, str(value), name, 5))
+
+    if not available:
+        return []
+
+    candidates = []
+    for getter in abi_functions(abi):
+        if getter is function_item:
+            continue
+        if str(getter.get("stateMutability") or "").lower() not in {"view", "pure"}:
+            continue
+        if not getter.get("outputs") or not _abi_function_has_state_output(getter):
+            continue
+        getter_inputs = getter.get("inputs", []) or []
+        if not getter_inputs:
+            continue
+        getter_values = []
+        score = 0
+        used = set()
+        valid = True
+        for getter_input in getter_inputs:
+            wanted_type = canonical_type(getter_input).lower()
+            getter_name = str(getter_input.get("name") or "")
+            matching = [
+                (index, entry) for index, entry in enumerate(available)
+                if index not in used and entry[0] == wanted_type
+            ]
+            if _identifier_name(getter_name):
+                named = [pair for pair in matching if _identifier_name(pair[1][2])]
+                if named:
+                    matching = named
+                    score += 4
+            if len(matching) != 1:
+                valid = False
+                break
+            index, entry = matching[0]
+            used.add(index)
+            getter_values.append(entry[1])
+            score += entry[3]
+        if valid:
+            candidates.append((score, getter, getter_values))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        return []
+
+    _score, getter, getter_values = candidates[0]
+    rpc = effective_rpc(config)
+    command = ["cast", "call", target, format_signature(getter), *getter_values]
+    if is_address(sender):
+        command.extend(["--from", sender])
+    if rpc:
+        command.extend(["--rpc-url", rpc])
+    code, raw, error = cast_output(command)
+    if code != 0 or not raw:
+        return [
+            "POST-TRANSACTION STATE",
+            "======================",
+            f"Read: {format_signature(getter)}",
+            f"State refresh unavailable: {error or 'the linked getter could not be read'}",
+        ]
+    decoded, decode_error = decode_abi_output(format_output_signature(getter), raw)
+    if decode_error:
+        return [
+            "POST-TRANSACTION STATE",
+            "======================",
+            f"Read: {format_signature(getter)}",
+            f"State refresh could not be decoded: {decode_error}",
+            f"Raw return data: {raw}",
+        ]
+    rendered = format_human_abi_return(getter, decoded, config, abi)
+    return [
+        "POST-TRANSACTION STATE",
+        "======================",
+        f"Read: {format_signature(getter)}",
+        *[f"  {line.strip()}" for line in str(rendered).splitlines() if line.strip()],
+    ]
+
 def _transaction_execution_report(
     config,
     tx_hash,
@@ -3024,8 +3172,10 @@ def _transaction_execution_report(
     receipt=None,
     function_item=None,
     abi=None,
+    argument_values=None,
+    sender=None,
 ):
-    """Build contract-level event and return output without conflating it with a tx hash."""
+    """Build contract-level event, return, and linked-state output for one transaction."""
     sections = []
     logs = receipt.get("logs") if isinstance(receipt, dict) else []
     event_lines = _transaction_event_report(config, logs)
@@ -3039,15 +3189,31 @@ def _transaction_execution_report(
 
     receipt_status = receipt.get("status") if isinstance(receipt, dict) else None
     reverted = receipt_status in ("0x0", 0)
+    return_result = None
     if not reverted and function_item and function_item.get("outputs"):
+        return_result = _wizard_transaction_return(config, tx_hash, function_item)
         return_lines = _transaction_return_report(
             config,
             tx_hash,
             function_item,
             abi,
+            result=return_result,
         )
         if return_lines:
             sections.append("\n".join(return_lines))
+
+    if not reverted and function_item:
+        state_lines = _post_transaction_state_report(
+            config,
+            str((tx or {}).get("to") or config.get("target") or ""),
+            abi or [],
+            function_item,
+            argument_values,
+            return_result,
+            sender=sender or (tx or {}).get("from"),
+        )
+        if state_lines:
+            sections.append("\n".join(state_lines))
 
     return "\n\n".join(sections)
 
@@ -4296,6 +4462,7 @@ def _trace_identifier_info(config, tx, trace_text):
                 "type": type_name,
                 "label": label,
                 "function": format_signature(function_item),
+                "target": tx.get("to") if isinstance(tx, dict) else None,
             })
     return rendered, candidates
 
@@ -4341,6 +4508,316 @@ def _record_identifier_candidates(root, tx_hash, candidates):
     except OSError:
         pass
     return warnings
+def _record_identifier_candidates(root, tx_hash, candidates):
+    """Persist identifier history and a project-local, human-addressable ID book."""
+    if not candidates:
+        return []
+
+    evidence_dir = Path(root) / ".audit" / "evidence"
+    try:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return []
+
+    path = evidence_dir / "returned-identifiers.json"
+    registry = read_json_file(path, {})
+    if not isinstance(registry, dict):
+        registry = {}
+    warnings = []
+
+    book_path = evidence_dir / "identifier-book.json"
+    book = read_json_file(book_path, {})
+    if not isinstance(book, dict):
+        book = {}
+    book_items = book.get("items", [])
+    if not isinstance(book_items, list):
+        book_items = []
+
+    for item in candidates:
+        key = str(item.get("value") or "").lower()
+        if not key:
+            continue
+        history = registry.get(key, [])
+        if not isinstance(history, list):
+            history = []
+        duplicate = next(
+            (entry for entry in history if isinstance(entry, dict) and entry.get("tx_hash") != tx_hash),
+            None,
+        )
+        if duplicate:
+            warnings.append(
+                f"  Repeated {item.get('label') or 'contract identifier'}: "
+                f"{apply_labels(key, {})}"
+                f"\n    Previous transaction ID: {duplicate.get('tx_hash', '?')}"
+                f"\n    Current transaction ID:  {tx_hash}"
+                "\n    Review: check whether this should be unique and whether an existing record was overwritten."
+            )
+        if not any(
+            isinstance(entry, dict) and entry.get("tx_hash") == tx_hash
+            for entry in history
+        ):
+            history.append({
+                "tx_hash": tx_hash,
+                "function": item.get("function"),
+                "type": item.get("type"),
+            })
+        registry[key] = history[-8:]
+
+        record = {
+            "value": key,
+            "type": str(item.get("type") or "bytes32"),
+            "label": str(item.get("label") or "Returned identifier"),
+            "field": str(item.get("field") or ""),
+            "function": str(item.get("function") or ""),
+            "target": str(item.get("target") or "").lower(),
+            "contract": str(item.get("contract") or ""),
+            "tx_hash": str(tx_hash),
+            "alias": str(item.get("alias") or ""),
+        }
+        existing = next(
+            (
+                entry for entry in book_items
+                if isinstance(entry, dict)
+                and str(entry.get("value", "")).lower() == key
+                and entry.get("tx_hash") == tx_hash
+                and str(entry.get("target", "")).lower() == record["target"]
+            ),
+            None,
+        )
+        if existing:
+            saved_alias = existing.get("alias")
+            existing.update({k: v for k, v in record.items() if k != "alias"})
+            if saved_alias:
+                existing["alias"] = saved_alias
+        else:
+            book_items.append(record)
+
+    book["schema_version"] = 1
+    book["items"] = book_items[-500:]
+    try:
+        write_json_file(path, registry)
+        write_json_file(book_path, book)
+    except OSError:
+        pass
+    return warnings
+
+
+def _decoded_abi_output_values(decoded, outputs):
+    """Split Cast's decoded ABI output into one value per declared output."""
+    if not outputs:
+        return []
+    rendered = str(decoded or "").strip()
+    if not rendered:
+        return []
+    lines = [line.strip() for line in rendered.splitlines() if line.strip()]
+    if len(outputs) == 1:
+        return [rendered]
+    if len(lines) == len(outputs):
+        return lines
+    if len(lines) == 1:
+        # Cast versions differ in whether multiple top-level values are printed
+        # on separate lines or comma-separated. Only split a plain flat tuple.
+        candidate = [part.strip() for part in lines[0].split(",")]
+        if len(candidate) == len(outputs):
+            return candidate
+    return []
+
+
+def _identifier_candidates_from_decoded(function_item, decoded):
+    """Extract identifier-like return values using ABI names and types, not protocol names."""
+    outputs = function_item.get("outputs", []) if isinstance(function_item, dict) else []
+    values = _decoded_abi_output_values(decoded, outputs)
+    if len(values) != len(outputs):
+        return []
+
+    candidates = []
+    identifier_number = 0
+    for output, value in zip(outputs, values):
+        field_name = str(output.get("name") or "").strip()
+        type_name = canonical_type(output)
+        looks_like_id = _identifier_name(field_name) or (
+            len(outputs) == 1
+            and type_name.lower() == "bytes32"
+            and _creation_function_name(function_item.get("name"))
+        )
+        if not looks_like_id:
+            continue
+        identifier_number += 1
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", value):
+            continue
+        candidates.append({
+            "value": value.lower(),
+            "type": type_name,
+            "field": field_name,
+            "label": _trace_identifier_label(function_item, output, identifier_number),
+            "function": format_signature(function_item),
+        })
+    return candidates
+
+
+def _identifier_book_path(root=None):
+    try:
+        project_root = Path(root) if root is not None else Path(audit_context.foundry_project_root())
+    except Exception:
+        project_root = Path.cwd()
+    return project_root / ".audit" / "evidence" / "identifier-book.json"
+
+
+def _identifier_book_entries(config=None, include_all=False):
+    config = config if isinstance(config, dict) else {}
+    payload = read_json_file(_identifier_book_path(), {})
+    entries = payload.get("items", []) if isinstance(payload, dict) else []
+    if not isinstance(entries, list):
+        return []
+    target = str(config.get("target") or "").lower()
+    filtered = [
+        item for item in entries
+        if isinstance(item, dict)
+        and (include_all or not target or not item.get("target") or str(item.get("target")).lower() == target)
+    ]
+    return filtered
+
+
+def _resolve_identifier_reference(config, token, expected_type=None):
+    """Resolve @1, @last, or @alias to a saved identifier with ABI type checking."""
+    raw = str(token or "").strip()
+    if not raw.startswith("@"):
+        return raw
+    selector = raw[1:].strip()
+    if not selector:
+        raise ValueError("identifier reference is empty; use @1, @last, or @yourAlias")
+
+    entries = _identifier_book_entries(config)
+    selected = []
+    if selector.lower() in {"last", "latest"}:
+        selected = entries[-1:]
+    elif selector.isdigit():
+        index = int(selector)
+        if index < 1 or index > len(entries):
+            raise ValueError(f"saved identifier @{selector} does not exist; run lk ids to list known identifiers")
+        selected = [entries[index - 1]]
+    elif selector.lower().startswith("0x"):
+        selected = [item for item in entries if str(item.get("value", "")).lower() == selector.lower()]
+    else:
+        selected = [
+            item for item in entries
+            if str(item.get("alias") or "").casefold() == selector.casefold()
+        ]
+
+    if not selected:
+        raise ValueError(f"saved identifier '@{selector}' was not found; run lk ids or lk id alias")
+    if len(selected) > 1:
+        raise ValueError(f"identifier alias '@{selector}' is ambiguous; assign a unique alias with lk id alias")
+    record = selected[0]
+    actual_type = str(record.get("type") or "").lower()
+    wanted_type = str(expected_type or "").lower()
+    if wanted_type and actual_type and wanted_type != actual_type:
+        raise ValueError(
+            f"@{selector} is {actual_type}, but this function expects {wanted_type}"
+        )
+    return str(record.get("value") or "")
+
+
+def run_ids(config, args=None):
+    args = list(args or [])
+    include_all = "--all" in args
+    entries = _identifier_book_entries(config, include_all=include_all)
+    if not entries:
+        print("No saved contract identifiers yet.")
+        print("Successful transactions that return ABI-named IDs or bytes32 keys are recorded automatically.")
+        return 0
+
+    print("KNOWN CONTRACT IDENTIFIERS")
+    print("==========================")
+    for index, item in enumerate(entries, 1):
+        label = item.get("label") or "Returned identifier"
+        alias = item.get("alias")
+        print(f"{index}. {label}" + (f"  [{alias}]" if alias else ""))
+        print(f"   Value:      {item.get('value')}")
+        print(f"   Type:       {item.get('type')}")
+        if item.get("function"):
+            print(f"   Created by: {item.get('function')}")
+        if item.get("contract"):
+            print(f"   Contract:   {item.get('contract')}")
+        if item.get("tx_hash"):
+            print(f"   Tx:         {item.get('tx_hash')}")
+        print(f"   Use as:     @{alias or index}")
+    print("")
+    print("Assign a readable name: lk id alias <number> <name>")
+    print("Use it in any compatible ABI argument: lk read <getter> @<name>")
+    return 0
+
+
+def run_id(config, args=None):
+    args = list(args or [])
+    entries = _identifier_book_entries(config)
+    if not args or args[0].lower() in {"list", "ls"}:
+        return run_ids(config, args[1:] if args else [])
+
+    action = args[0].lower()
+    if action == "alias":
+        if len(args) != 3:
+            return fail("Usage: lk id alias <number> <name>")
+        selector, alias = args[1], args[2]
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,47}", alias):
+            return fail("Error: alias must start with a letter or underscore and contain only letters, numbers, or underscores.")
+        if alias.lower() in {"last", "latest"}:
+            return fail("Error: that alias is reserved; choose another name.")
+        if selector.startswith("@"):
+            selector = selector[1:]
+        try:
+            if selector.isdigit():
+                index = int(selector)
+                record = entries[index - 1] if 1 <= index <= len(entries) else None
+            else:
+                matches = [
+                    item for item in entries
+                    if str(item.get("value", "")).lower() == selector.lower()
+                    or str(item.get("alias") or "").casefold() == selector.casefold()
+                ]
+                record = matches[0] if len(matches) == 1 else None
+        except (IndexError, TypeError):
+            record = None
+        if record is None:
+            return fail(f"Error: identifier '{args[1]}' was not found or is ambiguous. Run lk ids.")
+        if any(
+            item is not record and str(item.get("alias") or "").casefold() == alias.casefold()
+            for item in entries
+        ):
+            return fail(f"Error: alias '{alias}' is already in use.")
+        book_path = _identifier_book_path()
+        payload = read_json_file(book_path, {})
+        all_items = payload.get("items", []) if isinstance(payload, dict) else []
+        for item in all_items:
+            if (
+                isinstance(item, dict)
+                and item.get("tx_hash") == record.get("tx_hash")
+                and str(item.get("value", "")).lower() == str(record.get("value", "")).lower()
+                and str(item.get("target", "")).lower() == str(record.get("target", "")).lower()
+            ):
+                item["alias"] = alias
+        payload["schema_version"] = 1
+        payload["items"] = all_items
+        write_json_file(book_path, payload)
+        print(f"Identifier alias saved: @{alias} -> {record.get('value')}")
+        return 0
+
+    selector = action[5:] if action.startswith("show:") else args[0].lstrip("@")
+    try:
+        value = _resolve_identifier_reference(config, "@" + selector)
+    except ValueError as error:
+        return fail(f"Error: {error}")
+    record = next((item for item in entries if str(item.get("value", "")).lower() == value.lower()), None)
+    if not record:
+        return fail("Error: saved identifier metadata could not be found.")
+    print(f"{record.get('label') or 'Identifier'}: {record.get('value')}")
+    print(f"Type:      {record.get('type')}")
+    print(f"Function:  {record.get('function') or 'unknown'}")
+    print(f"Tx:        {record.get('tx_hash') or 'unknown'}")
+    if record.get("alias"):
+        print(f"Alias:     @{record['alias']}")
+    return 0
+
 def is_address(value):
     return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}",value))
 def is_nonzero_slot(value):
@@ -5156,7 +5633,45 @@ def run_cast(args,config,capture=False):
             matches=matching_functions(abi,remaining[0]) if abi else []
             if len(matches)==1:
                 function_item=matches[0]
-                remaining[1:]=prepare_cast_call_arguments(config,matches[0],remaining[1:])
+                raw_call_values = list(remaining[1:])
+                parsed_arguments = _cast_call_argument_positions(function_item, raw_call_values)
+                if parsed_arguments is not None:
+                    positions, extra_values = parsed_arguments
+                    argument_error = _function_argument_error(
+                        function_item,
+                        positions,
+                        extra_values,
+                    )
+                    if argument_error:
+                        return _lowkey_command_error(
+                            f"Error: {argument_error}",
+                            2,
+                            capture=capture,
+                            command=cast_cmd,
+                            config=config,
+                            target=target,
+                        )
+                    raw_call_values, identifier_error = _resolve_saved_identifier_arguments(
+                        config,
+                        function_item,
+                        raw_call_values,
+                    )
+                    if identifier_error:
+                        return _lowkey_command_error(
+                            f"Error: {identifier_error}",
+                            2,
+                            capture=capture,
+                            command=cast_cmd,
+                            config=config,
+                            target=target,
+                        )
+                    remaining[1:] = prepare_cast_call_arguments(
+                        config,
+                        function_item,
+                        raw_call_values,
+                    )
+                else:
+                    remaining[1:]=prepare_cast_call_arguments(config,matches[0],remaining[1:])
         except ValueError as error:
             return _lowkey_command_error(
                 f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
@@ -5202,6 +5717,16 @@ def run_cast(args,config,capture=False):
     send_tx_hash = None
     send_receipt = None
     send_transaction = None
+    send_argument_values = []
+    if cast_cmd == "send" and function_item:
+        parsed = _cast_call_argument_positions(function_item, remaining[1:])
+        if parsed is not None:
+            positions, _extras = parsed
+            send_argument_values = [
+                remaining[1:][position]
+                for position in positions
+                if position < len(remaining[1:])
+            ]
     try:
         code,out,err=cast_output(cmd)
         if (
@@ -5297,6 +5822,8 @@ def run_cast(args,config,capture=False):
                         receipt=send_receipt,
                         function_item=function_item,
                         abi=abi,
+                        argument_values=send_argument_values,
+                        sender=(send_transaction or {}).get("from"),
                     )
                     if contract_report:
                         summary = summary.rstrip() + "\n\n" + contract_report
@@ -5553,6 +6080,171 @@ def run_mapping(config,*args):
         return 0
     print(f"Mapping slot: {computed}")
     return run_cast(["st",computed],config)
+
+
+def run_storage_slots(config, args):
+    """Read one or more arbitrary storage words without requiring a known layout."""
+    values = list(args or [])
+    if not values:
+        return fail("Usage: lk storage <slot> [slot ...] [--block <block>]")
+    block_args = []
+    if "--block" in values:
+        position = values.index("--block")
+        if position + 1 >= len(values):
+            return fail("Usage: lk storage <slot> [slot ...] [--block <block>]")
+        block_args = ["--block", values[position + 1]]
+        del values[position:position + 2]
+    slots = []
+    for value in values:
+        match = re.fullmatch(r"([0-9]+)\\.\\.([0-9]+)", str(value))
+        if match:
+            start, end = int(match.group(1)), int(match.group(2))
+            if end < start or end - start > 255:
+                return fail("Error: slot ranges must be ascending and contain at most 256 slots.")
+            slots.extend(str(number) for number in range(start, end + 1))
+        else:
+            if not re.fullmatch(r"(?:0x)?[0-9a-fA-F]+", str(value)):
+                return fail(f"Error: invalid storage slot '{value}'.")
+            slots.append(str(value))
+    if len(slots) == 1:
+        return run_cast(["storage", slots[0], *block_args], config)
+
+    if not config.get("target"):
+        return fail("Error: Set target first.")
+    print("STORAGE SLOTS")
+    print("=============")
+    for slot in slots:
+        result = run_cast(["storage", slot, *block_args], config, capture=True)
+        code = getattr(result, "code", 0)
+        raw = str(result or "").strip()
+        print(f"Slot {slot}:")
+        if code != 0:
+            print(f"  <unreadable: {raw or 'storage read failed'}>")
+            continue
+        explained = format_storage_read(config, slot, raw)
+        for line in str(explained or raw).splitlines():
+            print(f"  {line}")
+    return 0
+
+
+def run_array(config, args=None):
+    """Inspect one array element from compiler storage metadata."""
+    values = list(args or [])
+    types, storage = storage_layout_details(config)
+    arrays = []
+    for entry in storage:
+        info = types.get(entry.get("type"), {}) if isinstance(entry, dict) else {}
+        if info.get("encoding") == "dynamic_array" or (
+            info.get("encoding") == "inplace" and info.get("base") is not None
+        ):
+            arrays.append((entry, info))
+
+    if not values:
+        print("STORAGE ARRAYS")
+        print("==============")
+        if not arrays:
+            print("No arrays were found in the selected target's compiled storage layout.")
+            return 0
+        for entry, info in arrays:
+            label = entry.get("label") or "unnamed"
+            length = "dynamic" if info.get("encoding") == "dynamic_array" else info.get("length", "fixed")
+            print(f"{label}: slot {entry.get('slot')} · {length} elements")
+            print(f"  Element type: {storage_type_expression(types, info.get('base'))}")
+            print(f"  Inspect: lk array {label} <index>")
+        return 0
+
+    if len(values) != 2 or not str(values[1]).isdigit():
+        return fail("Usage: lk array <array-name> <index>")
+    name, index = values[0], int(values[1])
+    matches = [
+        (entry, info) for entry, info in arrays
+        if str(entry.get("label") or "").casefold() == str(name).casefold()
+    ]
+    if len(matches) != 1:
+        return fail(f"Error: array '{name}' was not found or is ambiguous. Run lk array to list arrays.")
+    entry, array_info = matches[0]
+    base_type_id = array_info.get("base")
+    element_info = types.get(base_type_id, {}) if isinstance(base_type_id, str) else {}
+    base_slot = storage_slot_int(entry.get("slot"))
+    if base_slot is None:
+        return fail("Error: compiled array base slot is invalid.")
+
+    dynamic = array_info.get("encoding") == "dynamic_array"
+    if dynamic:
+        length_result = run_cast(["st", str(base_slot)], config, capture=True)
+        if getattr(length_result, "code", 0) != 0:
+            return fail("Error: could not read the dynamic array length slot.")
+        length_raw = str(length_result).strip()
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", length_raw):
+            return fail("Error: dynamic array length slot did not contain a storage word.")
+        length = int(length_raw, 16)
+        if index >= length:
+            return fail(f"Error: index {index} is outside this array's current length ({length}).")
+        hash_input = "0x" + format(base_slot, "064x")
+        hash_code, hash_output, hash_error = cast_output(["cast", "keccak", hash_input])
+        if hash_code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(hash_output).strip()):
+            return fail(f"Error: could not calculate the dynamic array data slot: {hash_error or hash_output}")
+        data_start = int(hash_output.strip(), 16)
+    else:
+        length = int(str(array_info.get("length") or "0"), 0)
+        if index >= length:
+            return fail(f"Error: index {index} is outside this fixed array's length ({length}).")
+        data_start = base_slot
+
+    try:
+        element_size = int(str(element_info.get("numberOfBytes") or "32"), 0)
+    except (TypeError, ValueError):
+        element_size = 32
+    if element_size < 1:
+        return fail("Error: array element size is missing from the compiled storage layout.")
+
+    print(f"Array:       {entry.get('label')}")
+    print(f"Index:       {index}")
+    print(f"Length:      {length}")
+    print(f"Element:     {storage_type_expression(types, base_type_id)}")
+
+    members = element_info.get("members", []) if isinstance(element_info, dict) else []
+    if members:
+        stride = max(1, (element_size + 31) // 32)
+        element_base = data_start + index * stride
+        print("Fields:")
+        for member in members:
+            try:
+                member_slot = element_base + int(str(member.get("slot") or "0"), 0)
+            except (TypeError, ValueError):
+                continue
+            raw = run_cast(["st", "0x" + format(member_slot, "064x")], config, capture=True)
+            if getattr(raw, "code", 0) != 0:
+                print(f"  {member.get('label')}: <unreadable>")
+                continue
+            value = format_mapping_member(config, str(raw), member, types)
+            print(f"  {member.get('label')}: {value}")
+        return 0
+
+    if element_size <= 32:
+        per_slot = max(1, 32 // element_size)
+        slot_number = data_start + index // per_slot
+        offset = (index % per_slot) * element_size
+    else:
+        stride = max(1, (element_size + 31) // 32)
+        slot_number = data_start + index * stride
+        offset = 0
+    raw = run_cast(["st", "0x" + format(slot_number, "064x")], config, capture=True)
+    if getattr(raw, "code", 0) != 0:
+        return fail(f"Error: could not read array element slot {slot_number}.")
+    decoded = decode_storage_member(str(raw), base_type_id, types, offset)
+    if is_address(decoded):
+        actor_name = assigned_anvil_address(config, decoded)
+        if actor_name:
+            decoded = f"{actor_name} ({decoded})"
+    elif str(decoded).isdigit() and "uint" in storage_type_label(types, base_type_id).lower():
+        decoded = _humanize_abi_scalar(decoded, storage_type_label(types, base_type_id), "", config)
+    print(f"Slot:        0x{slot_number:064x}")
+    print(f"Byte offset: {offset}")
+    print(f"Raw word:    {raw}")
+    print(f"Value:       {decoded}")
+    return 0
+
 def snapshot_path(config,chain=None):
     target=config.get("target") or "no-target"
     chain=chain or run_cast(["chain-id"],config,capture=True) or "unknown-chain"
@@ -12309,6 +13001,101 @@ def _cast_option_end(values, index):
     return None
 
 
+
+
+def _cast_call_argument_positions(function_item, raw_values):
+    """Locate positional ABI arguments while leaving recognized Cast options intact.
+
+    Returns (positions, extras). None means an unknown option made safe parsing
+    impossible, in which case the caller should preserve Cast's own diagnostics.
+    """
+    inputs = function_item.get("inputs", []) if isinstance(function_item, dict) else []
+    raw = list(raw_values or [])
+    positions = []
+    cursor = 0
+
+    for item in inputs:
+        item_type = canonical_type(item).lower()
+        while cursor < len(raw):
+            token = str(raw[cursor]).strip()
+            negative_integer = item_type.startswith("int") and bool(re.fullmatch(r"-[0-9]+", token))
+            if not token.startswith("-") or negative_integer:
+                break
+            option_end = _cast_option_end(raw, cursor)
+            if option_end is None:
+                return None
+            cursor = option_end
+        if cursor >= len(raw):
+            return positions, []
+        token = str(raw[cursor]).strip()
+        if token.startswith("-") and not (
+            item_type.startswith("int") and re.fullmatch(r"-[0-9]+", token)
+        ):
+            return None
+        positions.append(cursor)
+        cursor += 1
+        if (
+            (item_type.startswith("uint") or item_type.startswith("int"))
+            and cursor < len(raw)
+            and str(raw[cursor]).lower() in {"wei", "gwei", "ether"}
+        ):
+            cursor += 1
+
+    extras = []
+    while cursor < len(raw):
+        option_end = _cast_option_end(raw, cursor)
+        if option_end is None:
+            extras.extend(raw[cursor:])
+            break
+        cursor = option_end
+    return positions, extras
+
+
+def _resolve_saved_identifier_arguments(config, function_item, raw_values):
+    values = list(raw_values or [])
+    parsed = _cast_call_argument_positions(function_item, values)
+    if parsed is None:
+        return values, None
+    positions, _extras = parsed
+    inputs = function_item.get("inputs", []) if isinstance(function_item, dict) else []
+    for position, item in zip(positions, inputs):
+        token = str(values[position]).strip()
+        if not token.startswith("@"):
+            continue
+        expected_type = canonical_type(item)
+        try:
+            values[position] = _resolve_identifier_reference(config, token, expected_type)
+        except ValueError as error:
+            return values, str(error)
+    return values, None
+
+
+def _function_argument_error(function_item, positions, extras):
+    inputs = function_item.get("inputs", []) if isinstance(function_item, dict) else []
+    signature = format_signature(function_item)
+    actual = len(positions)
+    expected = len(inputs)
+    if actual < expected:
+        missing = inputs[actual]
+        label = str(missing.get("name") or f"argument {actual + 1}")
+        return (
+            f"Function {signature} expects {expected} argument(s), but {actual} were provided.\n"
+            f"Missing: {label} ({canonical_type(missing)}).\n"
+            f"Run lk ask {function_item.get('name')} to inspect its inputs, or supply the missing value."
+        )
+    if extras:
+        unexpected = ", ".join(repr(str(value)) for value in extras[:3])
+        hint = (
+            "\nIt looks like a second command may have been pasted as an argument."
+            if any(str(value).lower() in {"lk", "receipt", "trace", "read", "send"} for value in extras)
+            else ""
+        )
+        return (
+            f"Function {signature} expects {expected} argument(s), but extra value(s) were supplied: {unexpected}."
+            f"{hint}\nCheck the function's ABI inputs with lk ask {function_item.get('name')}."
+        )
+    return None
+
 def prepare_cast_call_arguments(config, function_item, values):
     """Resolve ABI arguments without treating Cast options as function values.
 
@@ -16141,6 +16928,23 @@ def run_as(config,args):
     previous=config.get("actor")
     config["actor"]=actor
     try:
+        subcommand = str(args[1]).lower()
+        if subcommand not in COMMAND_HELP and config.get("target"):
+            try:
+                matches = matching_functions(load_abi(config.get("target"), config), args[1])
+            except Exception:
+                matches = []
+            if len(matches) == 1:
+                item = matches[0]
+                mode = (
+                    "call"
+                    if str(item.get("stateMutability") or "").lower() in {"view", "pure"}
+                    else "send"
+                )
+                return run_cast(
+                    [mode, format_signature(item), *args[2:]],
+                    config,
+                )
         return dispatch_command(args[1],args[2:],config,from_batch=True)
     finally:
         config["actor"]=previous
@@ -17017,7 +17821,10 @@ COMMAND_HELP = {
     ),
     "actors": _help_entry("List available local Anvil accounts.", "lk actors", "lk actors", "Use it when you need to know which local addresses are available.", related=["lk actor", "lk impersonate"]),
     "impersonate": _help_entry("Impersonate an address on local Anvil/a fork.", "lk impersonate <address> [name]", "lk impersonate 0x... Whale", "Use it when the account you care about already exists on a local fork.", related=["lk fork", "lk actor"]),
-    "as": _help_entry("Run one command as another configured actor, then restore your previous actor.", "lk as <actor> <command> [args...]", "lk as Bob send setValue 10", "Use it when one investigation needs several protocol roles.", related=["lk actor", "lk wallet"]),
+    "as": _help_entry("Run a command as another configured actor, then restore your previous actor. A state-changing ABI function can also be used directly as a send shorthand.", "lk as <actor> <command> [args...] | lk as <actor> <function> [args...]", "lk as Bob acceptEscrow @firstRecord", "Use it when one investigation needs several protocol roles.", forms=[
+        ("lk as <actor> send <function> [args...]", "Run an explicit transaction as that actor.", "lk as Bob send acceptEscrow @firstRecord"),
+        ("lk as <actor> <function> [args...]", "Shorthand: Lowkey resolves the ABI function and sends it when it changes state.", "lk as Bob acceptEscrow @firstRecord"),
+    ], related=["lk actor", "lk wallet"]),
     "abi": _help_entry(
         "Show or set the ABI Lowkey should use for the current target.",
         "lk abi | lk abi auto | lk abi <file>",
@@ -17204,6 +18011,18 @@ COMMAND_HELP = {
     ),    "seams": _help_entry("Show audit hotspots where protocol boundaries and assumptions deserve extra scrutiny.", "lk seams", "lk seams", "Use it to decide where manual review should start.", related=["lk project", "lk risk", "lk walkthrough"]),
     "deps": _help_entry("Show imports, inheritance, and source dependencies.", "lk deps [src]", "lk deps src", "Use it to separate application logic from libraries, interfaces, and dependency code.", related=["lk project", "lk layout"]),
     "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout MyContract", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
+    "ids": _help_entry("List identifiers discovered from successful contract transactions.", "lk ids [--all]", "lk ids", "Use it to find returned IDs/keys without copying long hashes.", related=["lk id", "lk read", "lk send"]),
+    "id": _help_entry(
+        "Show a saved contract identifier or assign it a readable alias.",
+        "lk id <number> | lk id alias <number> <name>",
+        "lk id alias 1 firstRecord",
+        "Use aliases such as @firstRecord anywhere a compatible ABI argument expects that identifier.",
+        forms=[
+            ("lk id <number>", "Show one saved identifier.", "lk id 1"),
+            ("lk id alias <number> <name>", "Give an identifier a memorable reusable name.", "lk id alias 1 firstRecord"),
+        ],
+        related=["lk ids", "lk read", "lk send"],
+    ),
     "mapping": _help_entry(
         "Index the selected contract's mappings and arrays, or calculate/read one mapping entry's storage location.",
         "lk mapping | lk mapping <slot> <key> | lk mapping <key_type> <slot> <key>",
@@ -17215,6 +18034,13 @@ COMMAND_HELP = {
             ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly.", "lk mapping address 0 0x1111111111111111111111111111111111111111"),
         ],
         related=["lk layout", "lk storage", "lk snapshot"]),
+    "array": _help_entry(
+        "Read one element from a detected fixed or dynamic storage array.",
+        "lk array [<array-name> <index>]",
+        "lk array owners 0",
+        "Use it to inspect arrays using the selected target's compiled storage layout.",
+        related=["lk mapping", "lk storage", "lk layout"],
+    ),
     "namespace": _help_entry("Calculate an ERC-7201 namespaced storage slot.", "lk namespace <erc7201-namespace-id>", "lk namespace example.storage", "Use it when auditing namespaced storage.", related=["lk layout", "lk mapping"]),
     "proof": _help_entry("Read an account/storage proof for a slot.", "lk proof <slot> [block]", "lk proof 3 21000000", "Use it when you need storage evidence tied to a specific block.", related=["lk mapping", "lk snapshot"]),
     "snapshot": _help_entry(
@@ -17762,8 +18588,8 @@ COMMAND_HELP = {
     "version": _help_entry("Show the installed Lowkey runtime version/status.", "lk version", "lk version", "Use it when checking which Lowkey runtime is installed."),
     "detect": _help_entry("Detect the current project/toolchain.", "lk detect", "lk detect", "Use it when you want Lowkey to explain which build/backend it sees.", related=["lk project", "lk doctor"]),
     "detect-project": _help_entry("Alias for project/toolchain detection.", "lk detect-project", "lk detect-project", "Use it as an explicit project-detection command.", related=["lk detect", "lk project"]),
-    "storage": _help_entry("Read a raw storage slot from the selected target.", "lk storage <slot>", "lk storage 0", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping"]),
-    "slots": _help_entry("Alias for selected-target storage inspection.", "lk slots <slot>", "lk slots 0", "Use it for direct slot inspection.", related=["lk storage", "lk layout"]),
+    "storage": _help_entry("Read one or more raw storage slots from the selected target.", "lk storage <slot> [slot ...] | lk storage <start>..<end>", "lk storage 0..5", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping", "lk array"]),
+    "slots": _help_entry("Alias for reading one or more selected-target storage slots.", "lk slots <slot> [slot ...]", "lk slots 0 1 2 3", "Use it to compare raw storage words side by side.", related=["lk storage", "lk layout"]),
     "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c getValue 0x...", "Use it when you want the compact read form.", related=["lk read"]),
     "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s setValue 10 --preview", "Use it when you want the compact send form.", related=["lk send"]),
     "st": _help_entry("Short low-level/state helper alias.", "lk st ...", "lk st storage 0", "Use it when you want the compact forensic form.", related=["lk raw", "lk state-diff"]),
@@ -19180,7 +20006,10 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="proxy": run_proxy(config)
     elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
     elif cmd=="admin": run_cast(["admin",config.get("target")],config)
-    elif cmd in {"mapping","map"}: run_mapping(config,*args)
+    elif cmd in {"mapping","map"}: return run_mapping(config,*args)
+    elif cmd in {"ids","identifiers"}: return run_ids(config,args)
+    elif cmd=="id": return run_id(config,args)
+    elif cmd=="array": return run_array(config,args)
     elif cmd=="namespace": run_namespace(config,args)
     elif cmd=="proof": run_proof(config,args)
     elif cmd=="selectors": return run_selectors(config,args)
@@ -19255,7 +20084,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": return run_raw(config,args)
-    elif cmd in {"storage","slots"}: return run_cast(["storage",*args],config)
+    elif cmd in {"storage","slots"}: return run_storage_slots(config,args)
     elif cmd=="batch": return run_batch(config,args)
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()

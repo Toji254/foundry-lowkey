@@ -1233,6 +1233,102 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Field owner: " + owner, output.getvalue())
         self.assertIn("Identifier field (recordKey): " + record_key, output.getvalue())
 
+
+    def test_identifier_book_persists_generic_returned_ids_and_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            candidates = [{
+                "value": "0x" + "a" * 64,
+                "type": "bytes32",
+                "label": "Invoice ID",
+                "field": "invoiceId",
+                "function": "registerInvoice(bytes)",
+                "target": "0x" + "1" * 40,
+                "contract": "InvoiceRegistry",
+            }]
+            lk._record_identifier_candidates(root, "0x" + "2" * 64, candidates)
+            payload = lk.read_json_file(root / ".audit" / "evidence" / "identifier-book.json", {})
+            self.assertEqual(payload["items"][0]["label"], "Invoice ID")
+            self.assertEqual(payload["items"][0]["target"], "0x" + "1" * 40)
+
+    def test_identifier_alias_resolution_is_target_scoped_and_type_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = lk.audit_context.foundry_project_root
+            lk.audit_context.foundry_project_root = lambda: pathlib.Path(tmp)
+            try:
+                lk._record_identifier_candidates(
+                    pathlib.Path(tmp),
+                    "0x" + "2" * 64,
+                    [{
+                        "value": "0x" + "a" * 64,
+                        "type": "bytes32",
+                        "label": "Invoice ID",
+                        "function": "registerInvoice(bytes)",
+                        "target": "0x" + "1" * 40,
+                    }],
+                )
+                config = {"target": "0x" + "1" * 40}
+                self.assertEqual(
+                    lk._resolve_identifier_reference(config, "@last", "bytes32"),
+                    "0x" + "a" * 64,
+                )
+                with self.assertRaisesRegex(ValueError, "expects address"):
+                    lk._resolve_identifier_reference(config, "@last", "address")
+            finally:
+                lk.audit_context.foundry_project_root = old
+
+    def test_cast_call_argument_positions_detect_missing_and_extra_values(self):
+        item = {
+            "type": "function",
+            "name": "acceptRecord",
+            "inputs": [{"name": "recordId", "type": "bytes32"}],
+        }
+        self.assertEqual(lk._cast_call_argument_positions(item, []), ([], []))
+        self.assertEqual(lk._cast_call_argument_positions(item, ["0x" + "a" * 64, "lk", "receipt"]),
+                         ([0], ["lk", "receipt"]))
+        message = lk._function_argument_error(item, [0], ["lk", "receipt"])
+        self.assertIn("second command may have been pasted", message)
+
+    def test_as_accepts_direct_state_changing_function_shorthand(self):
+        address = "0x" + "1" * 40
+        identifier = "0x" + "a" * 64
+        item = {
+            "type": "function",
+            "name": "acceptEscrow",
+            "inputs": [{"name": "escrowId", "type": "bytes32"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }
+        config = {
+            "actor": "Alice",
+            "target": address,
+            "wallets": {"Alice": {"address": address}, "Bob": {"address": "0x" + "2" * 40}},
+        }
+        with patch.object(lk, "load_abi", return_value=[item]), patch.object(
+            lk, "run_cast", return_value=0
+        ) as run_cast:
+            result = lk.run_as(config, ["Bob", "acceptEscrow", identifier])
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(
+            ["send", "acceptEscrow(bytes32)", identifier],
+            config,
+        )
+        self.assertEqual(config["actor"], "Alice")
+
+    def test_storage_slot_range_expands_and_reads_each_slot(self):
+        config = {"target": "0x" + "1" * 40}
+        results = [
+            lk.CommandResult("0x" + format(value, "064x"), 0)
+            for value in (1, 2, 3)
+        ]
+        with patch.object(lk, "run_cast", side_effect=results) as run_cast, patch(
+            "builtins.print"
+        ) as printed:
+            result = lk.run_storage_slots(config, ["0..2"])
+        self.assertEqual(result, 0)
+        self.assertEqual(run_cast.call_count, 3)
+        self.assertIn("Slot 2:", "\n".join(str(c.args[0]) for c in printed.call_args_list if c.args))
+
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
         config = {
             "target": "0x" + "1" * 40,
