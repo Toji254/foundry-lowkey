@@ -2498,9 +2498,6 @@ def _function_default_eth_annotation(record):
     )
     labels = [(mutability_label, "mutability" if mutability == "payable" else "muted")]
 
-    if record.get("getter"):
-        labels.append(("PUBLIC GETTER", "muted"))
-
     if mutability == "payable":
         labels.append(("↑ RECEIVES ETH", "receive"))
 
@@ -2746,9 +2743,12 @@ def run_functions(config, args=None):
         print(_function_terminal_style(f"{title}: {len(items)}", "heading"))
         print(_function_terminal_style("─" * rule_width, "muted"))
         for record in items:
+            signature = record["signature"]
+            if record.get("getter"):
+                signature += "  [public storage getter]"
             _function_print_wrapped(
                 f"  {function_numbers[id(record)]:02d}  ",
-                record["signature"],
+                signature,
             )
             labels = _function_default_eth_annotation(record)
             status = " · ".join(
