@@ -135,7 +135,7 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("ETH FLOW NOTES:", output)
         self.assertIn("attach ETH separately from the function arguments", output)
         self.assertIn("lk send <function> [args...] --eth 2", output)
-        self.assertIn("indirect/dynamic flows may need manual review", output)
+        self.assertIn("proxy/delegatecall, dynamic and other indirect paths may need review", output)
 
     def test_default_inventory_shows_outflow_destination_and_amount(self):
         code, output = self._run([])
