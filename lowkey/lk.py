@@ -398,6 +398,174 @@ def normalize_private_key(value):
 
 DEFAULT_ANVIL_MNEMONIC = "test test test test test test test test test test test junk"
 
+
+def _rpc_json_response(url, method, params=None, timeout=1.5):
+    """Return a full JSON-RPC response, including the error.data field."""
+    if not url:
+        return None
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params or [],
+    }).encode()
+    request = urllib_request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    raw = b""
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except Exception as error:
+        reader = getattr(error, "read", None)
+        if callable(reader):
+            try:
+                raw = reader()
+            except Exception:
+                raw = b""
+        if not raw:
+            return {"transport_error": str(error)}
+    try:
+        body = json.loads(raw.decode("utf-8", errors="replace"))
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return {"transport_error": "RPC returned a non-JSON response"}
+    return body if isinstance(body, dict) else {"transport_error": "RPC returned an invalid response"}
+
+
+def _rpc_error_hex_values(value):
+    """Collect revert byte strings from nested client/provider error objects."""
+    found = []
+    seen = set()
+
+    def visit(node, key_name=""):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                visit(child, str(key).lower())
+        elif isinstance(node, list):
+            for child in node:
+                visit(child, key_name)
+        elif isinstance(node, str):
+            text_value = node.strip()
+            if key_name in {"data", "result", "return", "returnvalue", "output", "revertdata"}:
+                if re.fullmatch(r"0x[0-9a-fA-F]{8,}", text_value) and len(text_value[2:]) % 2 == 0:
+                    marker = text_value.lower()
+                    if marker not in seen:
+                        seen.add(marker)
+                        found.append(text_value)
+
+    visit(value)
+    return found
+
+
+def _send_value_as_wei(command):
+    """Read Cast's --value option without assuming every contract amount is ETH."""
+    raw_value = None
+    values = list(command or [])
+    for index, token in enumerate(values):
+        if token == "--value" and index + 1 < len(values):
+            raw_value = str(values[index + 1]).strip()
+            break
+        if str(token).startswith("--value="):
+            raw_value = str(token).split("=", 1)[1].strip()
+            break
+    if not raw_value:
+        return 0
+
+    normalized = raw_value.lower().replace(",", "")
+    match = re.fullmatch(r"([0-9]+(?:\\.[0-9]+)?)\\s*(ether|eth|gwei|wei)?", normalized)
+    if match:
+        amount = Decimal(match.group(1))
+        unit = match.group(2) or "wei"
+        multiplier = {
+            "ether": Decimal(10) ** 18,
+            "eth": Decimal(10) ** 18,
+            "gwei": Decimal(10) ** 9,
+            "wei": Decimal(1),
+        }[unit]
+        scaled = amount * multiplier
+        if scaled == scaled.to_integral_value():
+            return int(scaled)
+        return None
+    try:
+        return int(normalized, 16) if normalized.startswith("0x") else int(normalized)
+    except (TypeError, ValueError):
+        return None
+
+
+def _simulate_failed_send_revert(config, target, function_item, raw_values, command):
+    """Repeat a failed send as eth_call to recover revert bytes hidden by Cast.
+
+    This is read-only: it does not submit a transaction or change chain state.
+    """
+    rpc = effective_rpc(config)
+    if not rpc or not target or not function_item:
+        return None
+    parsed = _cast_call_argument_positions(function_item, raw_values)
+    if parsed is None:
+        return None
+    positions, extras = parsed
+    if extras or len(positions) != len(function_item.get("inputs", []) or []):
+        return None
+
+    arguments = []
+    raw_values = list(raw_values or [])
+    inputs = function_item.get("inputs", []) or []
+    for item, position in zip(inputs, positions):
+        value = str(raw_values[position])
+        item_type = canonical_type(item).lower()
+        if (
+            (item_type.startswith("uint") or item_type.startswith("int"))
+            and position + 1 < len(raw_values)
+            and str(raw_values[position + 1]).lower() in {"wei", "gwei", "ether"}
+        ):
+            value += " " + str(raw_values[position + 1])
+        arguments.append(value)
+
+    code, calldata, _error = cast_output([
+        "cast", "calldata", format_signature(function_item), *arguments
+    ])
+    if code != 0 or not isinstance(calldata, str) or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
+        return None
+
+    sender = None
+    values = list(command or [])
+    for index, token in enumerate(values):
+        if token == "--from" and index + 1 < len(values):
+            sender = values[index + 1]
+            break
+        if str(token).startswith("--from="):
+            sender = str(token).split("=", 1)[1]
+            break
+    if not is_address(sender):
+        actor = str(config.get("actor") or "")
+        try:
+            sender = actor_address(config, actor) if actor else None
+        except Exception:
+            sender = None
+
+    tx = {"to": target, "data": calldata}
+    if is_address(sender):
+        tx["from"] = sender
+    value_wei = _send_value_as_wei(command)
+    if value_wei is None:
+        return None
+    tx["value"] = hex(value_wei)
+
+    response = _rpc_json_response(rpc, "eth_call", [tx, "latest"])
+    if not isinstance(response, dict):
+        return None
+    error = response.get("error")
+    if not isinstance(error, dict):
+        return None
+    error_data = _rpc_error_hex_values(error)
+    if error_data:
+        return "Lowkey read-only eth_call recovered revert data: " + error_data[0]
+    message = str(error.get("message") or "").strip()
+    return ("Lowkey read-only eth_call: " + message) if message else None
+
+
 def rpc_json(url, method, params=None):
     if not url: return None
     try:
@@ -5746,6 +5914,20 @@ def run_cast(args,config,capture=False):
         # otherwise provider error text written to stdout can look like success.
         if code != 0:
             raw_error = err or out or final
+            if (
+                cast_cmd == "send"
+                and function_item
+                and any(token in str(raw_error).lower() for token in ("revert", "estimate"))
+            ):
+                recovered = _simulate_failed_send_revert(
+                    config,
+                    target,
+                    function_item,
+                    remaining[1:],
+                    cmd,
+                )
+                if recovered:
+                    raw_error = str(raw_error) + "\n" + recovered
             tx_match = re.search(r"(?i)transactionHash(?:\s|:)+([0-9a-fx]{66})", out or "")
             failed_tx_hash = tx_match.group(1) if tx_match else None
             if cast_cmd == "send" and failed_tx_hash:
@@ -6096,7 +6278,7 @@ def run_storage_slots(config, args):
         del values[position:position + 2]
     slots = []
     for value in values:
-        match = re.fullmatch(r"([0-9]+)\\.\\.([0-9]+)", str(value))
+        match = re.fullmatch(r"([0-9]+)\.\.([0-9]+)", str(value))
         if match:
             start, end = int(match.group(1)), int(match.group(2))
             if end < start or end - start > 255:

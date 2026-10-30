@@ -1329,6 +1329,52 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(run_cast.call_count, 3)
         self.assertIn("Slot 2:", "\n".join(str(c.args[0]) for c in printed.call_args_list if c.args))
 
+
+    def test_rpc_error_hex_values_recovers_nested_custom_error_data(self):
+        payload = "0x" + "12345678" + f"{17:064x}"
+        error = {
+            "code": 3,
+            "message": "execution reverted",
+            "data": {"originalError": {"data": payload}},
+        }
+        self.assertEqual(lk._rpc_error_hex_values(error), [payload])
+
+    def test_failed_send_simulation_recovers_custom_error_payload_without_broadcast(self):
+        target = "0x" + "1" * 40
+        caller = "0x" + "2" * 40
+        payload = "0x" + "12345678" + f"{17:064x}"
+        item = {
+            "type": "function",
+            "name": "release",
+            "inputs": [{"name": "recordId", "type": "bytes32"}],
+            "outputs": [],
+        }
+        config = {"target": target, "rpc": "http://127.0.0.1:8545", "actor": "Alice"}
+        command = ["cast", "send", target, "release(bytes32)", "0x" + "a" * 64]
+        with patch.object(lk, "effective_rpc", return_value=config["rpc"]), patch.object(
+            lk, "actor_address", return_value=caller
+        ), patch.object(
+            lk, "cast_output", return_value=(0, "0x" + "ab" * 4, "")
+        ) as cast_output, patch.object(
+            lk,
+            "_rpc_json_response",
+            return_value={"error": {"code": 3, "message": "execution reverted", "data": payload}},
+        ) as rpc:
+            diagnostic = lk._simulate_failed_send_revert(
+                config,
+                target,
+                item,
+                ["0x" + "a" * 64],
+                command,
+            )
+        self.assertIn(payload, diagnostic)
+        self.assertEqual(cast_output.call_args.args[0][:3], [
+            "cast", "calldata", "release(bytes32)"
+        ])
+        self.assertEqual(rpc.call_args.args[1], "eth_call")
+        self.assertEqual(rpc.call_args.args[2][0]["from"], caller)
+        self.assertEqual(rpc.call_args.args[2][0]["to"], target)
+
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
         config = {
             "target": "0x" + "1" * 40,
