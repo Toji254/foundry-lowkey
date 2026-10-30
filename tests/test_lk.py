@@ -1489,7 +1489,7 @@ class LowkeyCastTests(unittest.TestCase):
 
         commands = [command for command, _reason in recommendations]
         self.assertEqual(commands[:3], ["lk receipt", "lk trace", "lk ids"])
-        self.assertIn("lk read EscrowID <escrowId>", commands)
+        self.assertIn("lk read EscrowID @last", commands)
 
     def test_transaction_argument_values_decode_receipt_calldata(self):
         item = {
