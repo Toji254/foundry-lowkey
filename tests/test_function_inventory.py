@@ -131,7 +131,8 @@ class FunctionInventoryTests(unittest.TestCase):
         )
         self.assertIn("setTreasury(address)  [NONPAYABLE]", output)
         self.assertIn("ETH FLOW NOTES:", output)
-        self.assertIn("attach it separately with --eth <amount> or --value <amount>", output)
+        self.assertIn("attach ETH separately from the function arguments", output)
+        self.assertIn("lk send <function> [args...] --eth 2", output)
         self.assertIn("indirect/dynamic flows may need manual review", output)
 
     def test_visibility_short_filter(self):
