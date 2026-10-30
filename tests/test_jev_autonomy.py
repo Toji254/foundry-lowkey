@@ -129,6 +129,30 @@ class JevAutonomyTests(unittest.TestCase):
         self.assertEqual(value["local_budget_guard"]["daily_limit"], 3)
         self.assertEqual(value["local_budget_guard"]["remaining"], 3)
 
+    def test_shared_text_ai_budget_is_explained_when_jev_is_off(self):
+        rendered = ai.render_status({
+            "provider": "gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "model": "test-model",
+            "enabled": True,
+            "configured": True,
+            "key_slots_configured": 1,
+            "auto_assist": True,
+            "auto_explain_errors": True,
+            "auto_recommendations": True,
+            "jev_autonomous": False,
+            "jev_free_tier_mode": True,
+            "jev_calls_today": 5,
+            "jev_daily_call_limit": 5,
+            "jev_calls_remaining": 0,
+            "jev_context_limit_bytes": 16000,
+            "jev_max_output_tokens": 650,
+            "jev_use_text_ai": False,
+        })
+        self.assertIn("Shared local AI request cap: ON — 5/5 AI requests used today; 0 remain.", rendered)
+        self.assertIn("independently of the Jev autonomous-triage switch", rendered)
+        self.assertNotIn("selected Jev provider", rendered)
+
     def test_invalid_daily_limit_does_not_change_existing_settings(self):
         self._configure_local_provider()
         output = io.StringIO()
