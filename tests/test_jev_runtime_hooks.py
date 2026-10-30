@@ -82,8 +82,8 @@ class JevRuntimeHookTests(unittest.TestCase):
                 "JEV TEST TRIAGE: " + report["outcome"],
         )
         output = io.StringIO()
-        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \\
-             patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}), \\
+        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \
+             patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}), \
              contextlib.redirect_stdout(output):
             lk._print_jev_command_classification("build", [], 0, "Build succeeded")
 
@@ -102,7 +102,7 @@ class JevRuntimeHookTests(unittest.TestCase):
         with patch.object(
             lk, "_ai_status_safely",
             return_value={"jev_free_tier_mode": True, "jev_calls_remaining": 0},
-        ), patch.dict(sys.modules, {"ai_workflow": workflow}), \\
+        ), patch.dict(sys.modules, {"ai_workflow": workflow}), \
              contextlib.redirect_stdout(output):
             attempted = lk._print_ai_command_guidance(
                 "build", [], 0, {}, "Build succeeded", automatic=True
