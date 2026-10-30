@@ -67,6 +67,8 @@ class FunctionInventoryTests(unittest.TestCase):
                 {"type": "function", "name": "setTreasury", "inputs": [{"name": "next", "type": "address"}], "outputs": [], "stateMutability": "nonpayable"},
                 {"type": "function", "name": "balanceOf", "inputs": [{"name": "who", "type": "address"}], "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view"},
                 {"type": "function", "name": "balances", "inputs": [{"name": "", "type": "address"}], "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view"},
+                {"type": "receive", "stateMutability": "payable"},
+                {"type": "fallback", "stateMutability": "nonpayable"},
             ],
             "storageLayout": {"storage": [
                 {"label": "balances", "slot": "0", "type": "t_mapping(t_address,t_uint256)"},
@@ -134,6 +136,103 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("attach ETH separately from the function arguments", output)
         self.assertIn("lk send <function> [args...] --eth 2", output)
         self.assertIn("indirect/dynamic flows may need manual review", output)
+
+    def test_default_inventory_shows_outflow_destination_and_amount(self):
+        code, output = self._run([])
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "ETH OUT 1: call{value} | to: msg.sender | amount: amount",
+            output,
+        )
+        self.assertIn("ETH ENTRYPOINTS:", output)
+        self.assertIn("receive()  [PAYABLE • CAN RECEIVE ETH", output)
+        self.assertIn("fallback()  [NONPAYABLE • cannot receive attached ETH]", output)
+
+    def test_native_eth_outflow_detector_covers_common_solidity_patterns(self):
+        payable_source = {
+            "params": "address payable recipient, uint256 amount",
+            "payable_names": ["recipient"],
+        }
+        cases = [
+            (
+                'payable(recipient).call{value: amount, gas: 50000}("");',
+                "payable(recipient)", "amount", "call{value}",
+            ),
+            (
+                "recipient.transfer(amount);",
+                "recipient", "amount", "transfer",
+            ),
+            (
+                "recipient.send(amount);",
+                "recipient", "amount", "send",
+            ),
+            (
+                "new Child{value: amount}(recipient);",
+                "new Child (created contract address)", "amount", "CREATE with value",
+            ),
+            (
+                "selfdestruct(payable(recipient));",
+                "payable(recipient)", "address(this).balance", "selfdestruct",
+            ),
+        ]
+        for body, destination, amount, mechanism in cases:
+            with self.subTest(body=body):
+                findings = lk._extract_native_eth_outflows(body, payable_source)
+                self.assertTrue(findings)
+                self.assertEqual(findings[0]["destination"], destination)
+                self.assertEqual(findings[0]["amount"], amount)
+                self.assertEqual(findings[0]["mechanism"], mechanism)
+
+    def test_native_eth_outflow_detector_covers_yul_call_and_create(self):
+        body = """
+            assembly {
+                pop(call(gas(), recipient, amount, 0, 0, 0, 0))
+                pop(create(amount, codeOffset, codeSize))
+                pop(create2(amount, codeOffset, codeSize, salt))
+            }
+        """
+        findings = lk._extract_native_eth_outflows(body)
+        self.assertEqual(
+            [(item["destination"], item["amount"], item["mechanism"]) for item in findings],
+            [
+                ("recipient", "amount", "assembly CALL"),
+                ("new contract address (CREATE)", "amount", "assembly CREATE"),
+                ("new contract address (CREATE2)", "amount", "assembly CREATE2"),
+            ],
+        )
+
+    def test_native_eth_outflow_detector_does_not_mislabel_erc20_transfer(self):
+        body = """
+            token.transfer(recipient, amount);
+            IERC20(token).transfer(recipient, amount);
+        """
+        self.assertEqual(lk._extract_native_eth_outflows(body), [])
+
+    def test_native_eth_outflow_detector_follows_same_file_internal_helpers(self):
+        external_function = {
+            "name": "withdraw",
+            "line": 10,
+            "visibility": "external",
+            "params": "address payable recipient, uint256 amount",
+            "payable_names": ["recipient"],
+            "body": "_pay(recipient, amount);",
+        }
+        helper = {
+            "name": "_pay",
+            "line": 20,
+            "visibility": "private",
+            "params": "address payable recipient, uint256 amount",
+            "payable_names": ["recipient"],
+            "body": 'recipient.call{value: amount}("");',
+        }
+        findings = lk._collect_native_eth_outflows(
+            external_function,
+            [external_function, helper],
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["destination"], "recipient")
+        self.assertEqual(findings[0]["amount"], "amount")
+        self.assertEqual(findings[0]["via"], "_pay()")
 
     def test_visibility_short_filter(self):
         code, output = self._run(["-V", "external"])
