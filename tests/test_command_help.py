@@ -988,10 +988,11 @@ class CommandHelpTests(unittest.TestCase):
             rendered = output.getvalue()
         finally:
             lk._COMMAND_STATUS = previous_status
-        self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertEqual(rendered.count("NEXT COMMANDS"), 1)
         self.assertIn("lk ask buyNft", rendered)
         self.assertIn("lk wizard buyNft [values...]", rendered)
-        self.assertIn("Use it before read/send/changes when you are unsure what values a function expects.", rendered)
 
     def test_main_appends_recommendations_after_successful_command(self):
         original_argv = lk.sys.argv
@@ -1010,7 +1011,8 @@ class CommandHelpTests(unittest.TestCase):
             lk.sys.argv = original_argv
 
         rendered = output.getvalue()
-        self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
         self.assertIn("lk ask buyNft", rendered)
 
 
