@@ -728,6 +728,8 @@ def evaluate(
     if cache_enabled:
         cached = _read_cached(cache_key, required)
         if cached is not None:
+            cached = dict(cached)
+            cached["cache_hit"] = True
             return cached
     if cfg.get("jev_free_tier_mode") and not provider_meta.get("local"):
         ai_harness._reserve_jev_request(cfg, "jev-systemone")
@@ -805,6 +807,7 @@ def evaluate(
     result = {
         "provider": provider,
         "model": data.get("model", selected_model if provider_meta["model_in_request"] else "fixed by JevModel service"),
+        "cache_hit": False,
         "answers": data["answers"],
         "usage": {
             "input_tokens": valid_input,
@@ -955,6 +958,7 @@ def classify_command(
         "attention_confidence": attention_confidence,
         "model": raw.get("model"),
         "provider": raw.get("provider", "unknown"),
+        "cache_hit": bool(raw.get("cache_hit", False)),
         "usage": raw.get("usage", {}),
         "source": "jev-systemone",
         "verified": False,
@@ -986,11 +990,23 @@ def render_classification(report: Mapping[str, Any], command: str) -> str:
         "human_review": "Human review needed",
         "no_extra_guidance": "No extra guidance suggested",
     }
+    provider_labels = {
+        "jevos": "Jevos-v5 local",
+        "typesafe": "TypeSafe hosted",
+        "jevmodel": "JevModel hosted",
+    }
     usage = report.get("usage") if isinstance(report.get("usage"), Mapping) else {}
+    cache_hit = bool(report.get("cache_hit"))
+    provider = str(report.get("provider") or "unknown")
+    model = str(report.get("model") or "unknown")
     lines = [
         "@ JEV DECISION — STRUCTURED TRIAGE, NOT A VERDICT",
         "=================================================",
         f"Command: {command}",
+        f"Provider: {provider_labels.get(provider, provider)}",
+        f"Model: {model}",
+        "Decision source: exact-repeat cache (no new inference request)" if cache_hit
+        else "Decision source: fresh provider inference",
         f"Outcome: {outcome_labels.get(str(report.get('outcome')), 'Unclear from available evidence')}",
         f"Review priority: {attention_labels.get(str(report.get('attention')), 'Unknown')}",
         f"Suggested response: {response_labels.get(str(report.get('suggested_response')), 'Human review')}",
@@ -1001,12 +1017,19 @@ def render_classification(report: Mapping[str, Any], command: str) -> str:
     if isinstance(confidence, (int, float)):
         lines.append(f"Outcome confidence: {confidence:.0%} (a model estimate, not proof)")
     tokens = usage.get("input_tokens")
-    cost = usage.get("estimated_input_cost_usd")
+    output_tokens = usage.get("output_tokens")
     if isinstance(tokens, int):
         lines.append(f"Jev input tokens: {tokens:,}")
-        if isinstance(cost, (int, float)):
-            lines.append(f"Estimated Jev input cost: ${cost:.8f} at published list price; actual billing may differ.")
+    if isinstance(output_tokens, int):
+        lines.append(f"Jev output tokens: {output_tokens:,}")
+    cost = usage.get("estimated_input_cost_usd")
+    if isinstance(cost, (int, float)):
+        lines.append(f"Estimated Jev input cost: ${cost:.8f} at published list price; actual billing may differ.")
+    elapsed = usage.get("elapsed_ms")
+    if not cache_hit and isinstance(elapsed, int):
+        lines.append(f"Provider response time: {elapsed:,} ms")
     return "\n".join(lines)
+
 
 
 __all__ = [
