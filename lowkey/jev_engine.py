@@ -954,8 +954,9 @@ def classify_command(
         "outcome_confidence": outcome_confidence,
         "attention_confidence": attention_confidence,
         "model": raw.get("model"),
+        "provider": raw.get("provider", "unknown"),
         "usage": raw.get("usage", {}),
-        "source": "typesafe-jev",
+        "source": "jev-systemone",
         "verified": False,
         "executed_by_ai": False,
     }
