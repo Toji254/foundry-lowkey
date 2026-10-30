@@ -3186,7 +3186,77 @@ def _transaction_return_report(config, tx_hash, function_item, abi=None, result=
     return lines
 
 
-def _transaction_event_report(config, logs):
+
+
+def _record_event_identifiers(config, tx_hash, log, signature, details):
+    """Save statically decoded, ABI-named event identifiers for later @alias lookups."""
+    if not is_tx_hash(tx_hash) or not isinstance(log, dict):
+        return []
+    emitter = log.get("address")
+    if not is_address(emitter):
+        return []
+    try:
+        abi = load_abi(emitter, config)
+    except Exception:
+        return []
+    event = next(
+        (
+            item for item in abi
+            if isinstance(item, dict)
+            and item.get("type") == "event"
+            and format_signature(item) == signature
+        ),
+        None,
+    )
+    if not event:
+        return []
+
+    candidates = []
+    detail_text = str(details or "")
+    for index, field in enumerate(event.get("inputs", []) or [], 1):
+        field_name = str(field.get("name") or "").strip()
+        if not field_name or not _identifier_name(field_name):
+            continue
+        match = re.search(
+            rf"(?m)^Identifier field \\({re.escape(field_name)}\\):\\s*(.+?)\\s*$",
+            detail_text,
+        )
+        if not match:
+            # Dynamic indexed values are hashes of their encoded contents, not
+            # the original identifier value. Do not pretend the topic is the ID.
+            continue
+        value = match.group(1).strip()
+        if not value or value.startswith("<"):
+            continue
+        label = _trace_identifier_label(
+            {"name": event.get("name") or "event"},
+            field,
+            index,
+        )
+        candidates.append({
+            "value": value.lower() if value.startswith("0x") else value,
+            "type": canonical_type(field),
+            "field": field_name,
+            "label": label,
+            "function": "event " + signature,
+            "target": emitter,
+            "contract": (
+                config.get("target_contract")
+                if is_address(config.get("target"))
+                and config.get("target", "").lower() == emitter.lower()
+                else ""
+            ),
+        })
+    if not candidates:
+        return []
+    try:
+        root = audit_context.foundry_project_root()
+        return _record_identifier_candidates(root, tx_hash, candidates)
+    except Exception:
+        return []
+
+
+def _transaction_event_report(config, logs, tx_hash=None):
     """Decode transaction logs against the ABI of each log's emitting address."""
     rendered = []
     for index, log in enumerate(logs or [], 1):
@@ -3196,6 +3266,8 @@ def _transaction_event_report(config, logs):
         if not decoded:
             continue
         signature, details = decoded
+        if tx_hash:
+            _record_event_identifiers(config, tx_hash, log, signature, details)
         rendered.append(f"  {index}. {signature}")
         for detail in str(details or "").splitlines():
             clean = detail.strip()
@@ -3361,7 +3433,7 @@ def _transaction_execution_report(
     """Build contract-level event, return, and linked-state output for one transaction."""
     sections = []
     logs = receipt.get("logs") if isinstance(receipt, dict) else []
-    event_lines = _transaction_event_report(config, logs)
+    event_lines = _transaction_event_report(config, logs, tx_hash=tx_hash)
     if event_lines:
         sections.append("\n".join(event_lines))
 
@@ -3587,6 +3659,7 @@ def run_receipt(config, tx_hash=None, args=None):
             decoded = decode_event_log(config, log) if isinstance(log, dict) else None
             if decoded:
                 signature, details = decoded
+                _record_event_identifiers(config, tx_hash, log, signature, details)
                 lines.append(f"  {index}. {signature}")
                 for detail in str(details or "").splitlines():
                     clean = detail.strip()
@@ -12733,14 +12806,18 @@ def decode_event_values(event,data,topics):
     for item,topic in zip(indexed,topics[1:]):
         value=topic
         item_type=canonical_type(item)
-        if not any(token in item_type for token in ("bytes", "string", "[", "tuple")):
+        is_hashed_topic = (
+            item.get("type") in {"bytes", "string", "tuple"}
+            or "[" in item_type
+        )
+        if not is_hashed_topic:
             code,decoded,error=cast_output(["cast","decode-abi",f"value()({item_type})",topic])
             if code==0 and decoded: value=decoded
             elif code!=0: status=code
         field_name = str(item.get("name") or "").strip()
         print(f"Indexed {field_name or '<anonymous>'}: {value}")
         if field_name and _identifier_name(field_name):
-            if any(token in item_type for token in ("bytes", "string", "[", "tuple")):
+            if is_hashed_topic:
                 print(f"Identifier topic hash ({field_name}): {value}")
             else:
                 print(f"Identifier field ({field_name}): {value}")

@@ -1511,6 +1511,59 @@ class LowkeyCastTests(unittest.TestCase):
             finally:
                 lk.audit_context.foundry_project_root = old_root
 
+
+    def test_indexed_bytes32_identifier_is_not_mislabelled_as_topic_hash(self):
+        event = {
+            "type": "event",
+            "name": "RecordCreated",
+            "inputs": [
+                {"name": "recordId", "type": "bytes32", "indexed": True},
+            ],
+        }
+        topic0 = "0x" + "a" * 64
+        record_id = "0x" + "b" * 64
+        with patch.object(lk, "cast_output", return_value=(0, record_id, "")):
+            with patch("builtins.print") as printed:
+                result = lk.decode_event_values(event, "0x", [topic0, record_id])
+        rendered = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertEqual(result, 0)
+        self.assertIn("Identifier field (recordId): " + record_id, rendered)
+        self.assertNotIn("Identifier topic hash", rendered)
+
+    def test_event_identifier_values_are_saved_for_alias_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = "0x" + "1" * 40
+            tx_hash = "0x" + "2" * 64
+            record_id = "0x" + "b" * 64
+            event = {
+                "type": "event",
+                "name": "RecordCreated",
+                "inputs": [{"name": "recordId", "type": "bytes32", "indexed": True}],
+            }
+            config = {
+                "target": target,
+                "target_contract": "RecordRegistry",
+                "abi_paths": {target: str(root / "abi.json")},
+            }
+            (root / "abi.json").write_text(json.dumps({"abi": [event]}), encoding="utf-8")
+            details = "Indexed recordId: " + record_id + "\nIdentifier field (recordId): " + record_id
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), patch.object(
+                lk, "load_abi", return_value=[event]
+            ):
+                warnings = lk._record_event_identifiers(
+                    config,
+                    tx_hash,
+                    {"address": target},
+                    "RecordCreated(bytes32)",
+                    details,
+                )
+                self.assertEqual(warnings, [])
+                self.assertEqual(
+                    lk._resolve_identifier_reference(config, "@last", "bytes32"),
+                    record_id,
+                )
+
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
         config = {
             "target": "0x" + "1" * 40,
