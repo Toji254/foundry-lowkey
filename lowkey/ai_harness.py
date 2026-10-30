@@ -403,9 +403,11 @@ def _reserve_jev_request(config: Mapping[str, Any], purpose: str) -> None:
         return
     if int(budget.get("remaining") or 0) <= 0:
         raise AIUnavailable(
-            "Jev's local free-tier request cap has been reached "
-            f"({budget['calls_today']}/{budget['daily_limit']} requests today). "
-            "Native Lowkey commands still work. Check 'lk ai jev status'; the counter resets at 00:00 UTC."
+            "Lowkey's shared local AI request cap has been reached "
+            f"({budget['calls_today']}/{budget['daily_limit']} AI requests today). "
+            "This cap applies to text-AI requests, including 'lk ai test', "
+            "even when Jev autonomous triage is OFF. No provider request was sent. "
+            "Native Lowkey commands still work; the counter resets at 00:00 UTC."
         )
     path = _jev_budget_path()
     _atomic_json(path, {
@@ -573,14 +575,18 @@ def render_status(value: Mapping[str, Any]) -> str:
     )
     if value.get("jev_free_tier_mode"):
         lines.append(
-            f"Free-tier guard: ON — {value.get('jev_calls_today', 0)}/{value.get('jev_daily_call_limit', JEV_DEFAULT_DAILY_LIMIT)} "
+            f"Shared local AI request cap: ON — {value.get('jev_calls_today', 0)}/{value.get('jev_daily_call_limit', JEV_DEFAULT_DAILY_LIMIT)} "
             f"AI requests used today; {value.get('jev_calls_remaining', 0)} remain. "
             f"Configured context cap: {value.get('jev_context_limit_bytes', JEV_DEFAULT_CONTEXT_LIMIT_BYTES):,} bytes; "
-            f"text-AI output cap: {value.get('jev_max_output_tokens', JEV_DEFAULT_OUTPUT_TOKENS)} tokens. "
-            "The selected Jev provider may enforce a smaller request limit."
+            f"text-AI output cap: {value.get('jev_max_output_tokens', JEV_DEFAULT_OUTPUT_TOKENS)} tokens."
         )
+        lines.append(
+            "This cap applies to text-AI requests (including connectivity tests and optional AI notes) "
+            "independently of the Jev autonomous-triage switch."
+        )
+        lines.append("Provider-side quotas/rate limits may impose a lower limit.")
     else:
-        lines.append("Free-tier guard: OFF — provider-side quotas/rate limits still apply.")
+        lines.append("Shared local AI request cap: OFF — provider-side quotas/rate limits still apply.")
     lines.append("Jev-triggered text explanations: " + ("ON (uses the configured text-AI provider when Jev requests an explanation)." if value.get("jev_use_text_ai") else "OFF (typed Jev decisions only)."))
     lines.append("Turn Jev automation on/off with 'lk ai jev on' / 'lk ai jev off'; status is local-only.")
     return "\n".join(lines)
