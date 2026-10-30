@@ -1934,6 +1934,40 @@ def _solidity_function_source_index(source):
             "body": body,
             "line": source.count("\n", 0, match.start()) + 1,
         })
+    # Solidity receive/fallback entrypoints are separate ABI item types, not
+    # ordinary ABI functions. Index their bodies too so ETH entering through
+    # them can be reviewed for any immediate outgoing native-ETH flow.
+    payable_names = sorted(set(re.findall(
+        r"\baddress\s+payable\s+(?:(?:public|private|internal|external|constant|immutable)\s+)*([A-Za-z_]\w*)",
+        masked,
+    )))
+    for match in re.finditer(r"\b(receive|fallback)\s*\(", masked):
+        name = match.group(1)
+        opening = masked.find("(", match.start(), match.end())
+        closing = _matching_delimiter(masked, opening, "(", ")")
+        if closing is None:
+            continue
+        boundary = masked.find("{", closing + 1)
+        if boundary < 0:
+            continue
+        end = _matching_delimiter(masked, boundary, "{", "}")
+        if end is None:
+            continue
+        header = source[closing + 1:boundary]
+        params = source[opening + 1:closing]
+        visibility_match = re.search(r"\b(external|public|internal|private)\b", header)
+        mutability_match = re.search(r"\b(pure|view|payable|nonpayable)\b", header)
+        declarations.append({
+            "name": name,
+            "params": params,
+            "payable_names": payable_names,
+            "param_count": len(_split_top_level(params)),
+            "visibility": visibility_match.group(1) if visibility_match else "unknown",
+            "mutability": mutability_match.group(1) if mutability_match else None,
+            "modifiers": [],
+            "body": source[boundary + 1:end],
+            "line": source.count("\n", 0, match.start()) + 1,
+        })
     return declarations
 
 def _function_source_file(artifact, root):
@@ -2555,8 +2589,12 @@ def run_functions(config, args=None):
 
     abi = load_abi(target, config)
     functions = abi_functions(abi)
-    if not functions:
-        return fail("Error: No ABI functions loaded for the current target.")
+    abi_entrypoints = [
+        entry for entry in abi
+        if isinstance(entry, dict) and entry.get("type") in {"receive", "fallback"}
+    ]
+    if not functions and not abi_entrypoints:
+        return fail("Error: No ABI functions or receive/fallback entrypoints loaded for the current target.")
 
     getter_names = storage_getter_names(target, config, functions)
     artifact_path, artifact = _function_inventory_artifact(target, config)
@@ -2584,6 +2622,18 @@ def run_functions(config, args=None):
             source_path=source_path,
             verbose=True,
         )
+        for entry in abi_entrypoints:
+            kind = str(entry.get("type"))
+            source_entry = next((decl for decl in source_decls if decl.get("name") == kind), None)
+            outflows = _collect_native_eth_outflows(source_entry, source_decls) if source_entry else []
+            print(f"\n[{kind}()]")
+            print(f"  mutability : {entry.get('stateMutability') or 'unknown'}")
+            print(f"  ether      : {'RECEIVES' if entry.get('stateMutability') == 'payable' else '—'}")
+            for outflow_index, outflow in enumerate(outflows, 1):
+                print(
+                    f"  ETH OUT {outflow_index}: {outflow['mechanism']} | "
+                    f"to: {outflow['destination']} | amount: {outflow['amount']}"
+                )
         return 0
 
     if options.get("visibility") or options.get("mutability") or options.get("class") or options.get("risk"):
@@ -2617,13 +2667,9 @@ def run_functions(config, args=None):
                     f"to: {outflow['destination']} | amount: {outflow['amount']}{via}"
                 )
 
-    entrypoints = [
-        entry for entry in abi
-        if isinstance(entry, dict) and entry.get("type") in {"receive", "fallback"}
-    ]
-    if entrypoints:
+    if abi_entrypoints:
         print("\nETH ENTRYPOINTS:")
-        for entry in entrypoints:
+        for entry in abi_entrypoints:
             kind = str(entry.get("type"))
             mutability = str(entry.get("stateMutability") or "unknown").upper()
             if mutability == "PAYABLE":
@@ -2631,6 +2677,20 @@ def run_functions(config, args=None):
             else:
                 detail = "cannot receive attached ETH"
             print(f"  {kind}()  [{mutability} • {detail}]")
+            entry_source = next(
+                (decl for decl in source_decls if decl.get("name") == kind),
+                None,
+            )
+            entry_outflows = (
+                _collect_native_eth_outflows(entry_source, source_decls)
+                if entry_source else []
+            )
+            for outflow_index, outflow in enumerate(entry_outflows, 1):
+                via = f" | via: {outflow['via']}" if outflow.get("via") else ""
+                print(
+                    f"       ETH OUT {outflow_index}: {outflow['mechanism']} | "
+                    f"to: {outflow['destination']} | amount: {outflow['amount']}{via}"
+                )
 
     print("\nETH FLOW NOTES:")
     print("  PAYABLE = this function can receive ETH; attach ETH separately from the function arguments.")
@@ -2639,7 +2699,7 @@ def run_functions(config, args=None):
     print("  SENDS ETH = a native-ETH transfer pattern was detected in the available source.")
     print("  ETH OUT shows the detected mechanism, destination expression and amount expression.")
     print("  Detection covers common Solidity CALL/value, payable transfer/send, CREATE value,")
-    print("  SELFDESTRUCT and Yul CALL/CREATE patterns, plus same-file private/internal helpers.")
+    print("  SELFDESTRUCT and Yul CALL/CREATE patterns, receive/fallback bodies, and same-file private/internal helpers.")
     print("  This is source evidence, not a proof of every possible ETH flow; inherited,")
     print("  modifier-driven, proxy/delegatecall, dynamic and other indirect paths may need review.")
     print("  ERC20/token transfers are not classified as native ETH merely because they use transfer().")
