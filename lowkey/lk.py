@@ -18646,6 +18646,11 @@ def _jev_command_eligible(command, arguments, exit_code=None):
     }
 
 
+def _jev_should_classify(command, arguments, exit_code, active):
+    """Share one eligibility decision between capture, text guidance and Jev triage."""
+    return bool(active and _jev_command_eligible(command, arguments, exit_code))
+
+
 def _print_jev_command_classification(command, args, result_code, command_output="", project_config=None):
     """Display Jev's typed assessment after the native command; never retry or execute it."""
     state = _ai_status_safely()
@@ -18684,7 +18689,6 @@ def _print_jev_command_classification(command, args, result_code, command_output
             and state.get("usable")
             and report.get("needs_explanation") is True
             and report.get("suggested_response") in {"explain_observation", "inspect_evidence"}
-            and not (int(result_code) != 0 and state.get("auto_explain_errors"))
         ):
             _print_ai_command_guidance(
                 command, args, result_code,
@@ -18869,6 +18873,9 @@ def main():
             footer_status,
             config,
         )
+    jev_should_run = _jev_should_classify(
+        command, sys.argv[2:], footer_status, jev_active
+    )
     text_guidance_ran = False
     if ai_requested:
         if machine_readable_verification:
@@ -18883,7 +18890,14 @@ def main():
             import ai_workflow
         except ImportError:
             from lowkey import ai_workflow
-        if ai_workflow.should_auto_guide(command, sys.argv[2:], footer_status, _ai_status_safely()):
+        # Eligible Jev decisions take precedence over generic automatic prose.
+        # Jev may request the separate text explanation after its typed decision.
+        if (
+            not jev_should_run
+            and ai_workflow.should_auto_guide(
+                command, sys.argv[2:], footer_status, _ai_status_safely()
+            )
+        ):
             if machine_readable_verification:
                 with redirect_stdout(sys.stderr):
                     text_guidance_ran = _print_ai_command_guidance(
@@ -18897,8 +18911,10 @@ def main():
                 )
     # Do not spend a second model request after explicit text guidance or an
     # automatic text-AI attempt. A budget-skipped text helper is not an attempt.
-    if jev_active and not text_guidance_ran and _jev_command_eligible(command, sys.argv[2:], footer_status):
-        _print_jev_command_classification(command, sys.argv[2:], footer_status, ai_command_output, config)
+    if jev_should_run and not text_guidance_ran:
+        _print_jev_command_classification(
+            command, sys.argv[2:], footer_status, ai_command_output, config
+        )
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
