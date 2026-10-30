@@ -420,6 +420,167 @@ jobs:
           grep -Eq "unrecognized subcommand 'debug'|Usage: forge" /tmp/lowkey-forge-debug-help.txt
 
 
+      - name: Exercise saved escrow identifiers and state transitions on Anvil
+        run: |
+          set -euo pipefail
+          ESCROW_ROOT=/tmp/lowkey-escrow-flow
+          rm -rf "$ESCROW_ROOT"
+          mkdir -p "$ESCROW_ROOT/src"
+          cat > "$ESCROW_ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          out = "out"
+          solc_version = "0.8.20"
+          extra_output = ["storageLayout"]
+          EOF
+          cat > "$ESCROW_ROOT/src/EscrowFlow.sol" <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+
+          contract EscrowFlow {
+              enum Status { Created, Accepted, Released }
+
+              struct Escrow {
+                  address creator;
+                  address recipient;
+                  uint256 amount;
+                  Status currentStatus;
+              }
+
+              // Keep the event signature aligned with the existing ETH Escrow flow.
+              event CreateEscrow(address recipient, uint256 amount);
+
+              mapping(bytes32 => Escrow) public escrows;
+              bytes32[] public allEscrowIds;
+              uint256 private nonce;
+
+              function createEscrow(address recipient) external payable returns (bytes32 escrowId) {
+                  require(recipient != address(0));
+                  require(msg.value > 0);
+                  escrowId = keccak256(abi.encode(msg.sender, block.timestamp, ++nonce));
+                  escrows[escrowId] = Escrow(msg.sender, recipient, msg.value, Status.Created);
+                  allEscrowIds.push(escrowId);
+                  emit CreateEscrow(recipient, msg.value);
+              }
+
+              function acceptEscrow(bytes32 escrowId) external {
+                  Escrow storage item = escrows[escrowId];
+                  require(item.recipient == msg.sender);
+                  require(item.currentStatus == Status.Created);
+                  item.currentStatus = Status.Accepted;
+              }
+
+              function release(bytes32 escrowId) external {
+                  Escrow storage item = escrows[escrowId];
+                  require(item.creator == msg.sender);
+                  require(item.currentStatus == Status.Accepted);
+                  item.currentStatus = Status.Released;
+                  (bool sent,) = payable(item.recipient).call{value: item.amount}("");
+                  require(sent);
+              }
+
+              function getEscrow(bytes32 escrowId)
+                  external
+                  view
+                  returns (address creator, address recipient, uint256 amount, Status currentStatus)
+              {
+                  Escrow storage item = escrows[escrowId];
+                  return (item.creator, item.recipient, item.amount, item.currentStatus);
+              }
+          }
+          EOF
+
+          cd "$ESCROW_ROOT"
+          export LOWKEY_RPC_URL=http://127.0.0.1:8545
+          forge build
+
+          # This is Anvil's documented deterministic test key for account zero.
+          ANVIL_KEY0=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+          forge create src/EscrowFlow.sol:EscrowFlow \
+            --rpc-url "$LOWKEY_RPC_URL" \
+            --private-key "$ANVIL_KEY0" \
+            --json > /tmp/lowkey-escrow-deployment.json
+          TARGET=$(python3 -c 'import json; print(json.load(open("/tmp/lowkey-escrow-deployment.json"))["deployedTo"])')
+          test -n "$TARGET"
+
+          lk actor 1 Alice
+          lk actor 2 Bob
+          lk target "$TARGET"
+
+          # Create two independent records. The ID book must capture contract IDs,
+          # not confuse them with the transaction hashes.
+          lk send createEscrow Bob --eth 2 | tee /tmp/lowkey-escrow-create-1.txt
+          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-1.txt
+          grep -q "POST-TRANSACTION STATE" /tmp/lowkey-escrow-create-1.txt
+          grep -q "Created (enum value 0)" /tmp/lowkey-escrow-create-1.txt
+          lk ids | tee /tmp/lowkey-escrow-ids-1.txt
+          grep -q "Escrow ID" /tmp/lowkey-escrow-ids-1.txt
+          lk id alias @last firstEscrow
+
+          lk send createEscrow Bob --eth 1 | tee /tmp/lowkey-escrow-create-2.txt
+          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-2.txt
+          lk id alias @last secondEscrow
+          lk ids | tee /tmp/lowkey-escrow-ids.txt
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          book = json.loads(Path(".audit/evidence/identifier-book.json").read_text())
+          items = book["items"]
+          assert len(items) == 2, items
+          assert len({item["value"] for item in items}) == 2, items
+          assert len({item["tx_hash"] for item in items}) == 2, items
+          assert all(item["value"] != item["tx_hash"] for item in items), items
+          assert {item.get("alias") for item in items} == {"firstEscrow", "secondEscrow"}, items
+          assert all(item["type"] == "bytes32" for item in items), items
+          print("PASS: two unique contract IDs were saved separately from their transaction hashes")
+          PY
+
+          FIRST_TX=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          book = json.loads(Path(".audit/evidence/identifier-book.json").read_text())
+          print(next(item["tx_hash"] for item in book["items"] if item.get("alias") == "firstEscrow"))
+          PY
+          )
+          lk receipt "$FIRST_TX" | tee /tmp/lowkey-escrow-receipt.txt
+          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-receipt.txt
+          lk trace "$FIRST_TX" | tee /tmp/lowkey-escrow-trace.txt
+          grep -q "Escrow ID:" /tmp/lowkey-escrow-trace.txt
+          lk ids | grep -q "firstEscrow"
+
+          # Reuse named IDs in ABI arguments; then inspect the mapping, array,
+          # and arbitrary raw storage words through Lowkey's own commands.
+          lk read getEscrow @firstEscrow | tee /tmp/lowkey-escrow-read.txt
+          grep -q "Created (enum value 0)" /tmp/lowkey-escrow-read.txt
+          lk read getEscrow @secondEscrow | grep -q "Created (enum value 0)"
+          lk mapping | tee /tmp/lowkey-escrow-mappings.txt
+          grep -q "escrows" /tmp/lowkey-escrow-mappings.txt
+          lk mapping bytes32 0 @firstEscrow | tee /tmp/lowkey-escrow-mapping-read.txt
+          lk array allEscrowIds 0..1 | tee /tmp/lowkey-escrow-array-read.txt
+          grep -q "firstEscrow" <(lk ids) || true
+          lk storage 0..2 | tee /tmp/lowkey-escrow-storage.txt
+          grep -q "Slot 0:" /tmp/lowkey-escrow-storage.txt
+          grep -q "Slot 2:" /tmp/lowkey-escrow-storage.txt
+          lk slots 0 >/tmp/lowkey-escrow-slots-alias.txt
+
+          # Bob is the recipient: he may accept, but he must not release.
+          lk as Bob acceptEscrow @firstEscrow | tee /tmp/lowkey-escrow-accept.txt
+          grep -q "Accepted (enum value 1)" /tmp/lowkey-escrow-accept.txt
+          set +e
+          lk as Bob release @firstEscrow > /tmp/lowkey-escrow-unauthorized-release.txt 2>&1
+          UNAUTHORIZED_EXIT=$?
+          set -e
+          test "$UNAUTHORIZED_EXIT" -ne 0
+          lk read getEscrow @firstEscrow | tee /tmp/lowkey-escrow-after-rejected-release.txt
+          grep -q "Accepted (enum value 1)" /tmp/lowkey-escrow-after-rejected-release.txt
+
+          # Alice created the escrow, so she is the only actor allowed to release it.
+          lk as Alice release @firstEscrow | tee /tmp/lowkey-escrow-release.txt
+          grep -q "Released (enum value 2)" /tmp/lowkey-escrow-release.txt
+          lk read getEscrow @firstEscrow | tee /tmp/lowkey-escrow-final-state.txt
+          grep -q "Released (enum value 2)" /tmp/lowkey-escrow-final-state.txt
+          echo "PASS: live escrow flow covered receipt, trace, ID aliases, typed reads, mapping, array, storage, actor permissions, and enum state transitions"
       - name: Exercise generic protocol-aware local lab setup
         run: python3 scripts/project-lab-protocol-e2e.py
 
