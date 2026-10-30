@@ -63,9 +63,10 @@ SECRET_SUFFIXES = {
     ".pem", ".key", ".p12", ".pfx", ".keystore",
 }
 SKIP_DIRS = {
-    ".git", ".venv", "venv", "node_modules", "__pycache__",
+    ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
     ".pytest_cache", ".mypy_cache",
 }
+WORKSPACE_METADATA_DIRS = {".git", ".hg", ".svn"}
 
 SAFE_LK_ROOTS = {
     "help", "--help", "-h", "doctor", "status", "balance",
@@ -209,6 +210,10 @@ def resolve_workspace_path(root: Path, raw: str) -> Path:
         candidate.relative_to(root)
     except ValueError as exc:
         raise ValueError("That path is outside the active workspace.") from exc
+
+    relative_parts = {part.lower() for part in candidate.relative_to(root).parts}
+    if relative_parts & WORKSPACE_METADATA_DIRS:
+        raise ValueError("Jev's workspace tools cannot access version-control metadata.")
 
     if is_secret_path(candidate):
         raise ValueError("JeV's workspace tools do not read or write secret-looking paths.")
@@ -454,18 +459,8 @@ def is_inspection_tool(tool: dict[str, Any]) -> bool:
 
 
 def is_browser_change_tool(tool: dict[str, Any]) -> bool:
-    name = str(tool.get("name", "")).lower()
-    desc = str(tool.get("description", "")).lower()
-    return any(word in f"{name} {desc}" for word in (
-        "click an element", "click the", "navigate to", "open url",
-        "open a new tab", "close tab", "type into", "fill a form",
-        "submit form", "download file", "upload file", "scroll page",
-        "refresh the page",
-    )) or any(word in name for word in (
-        "browser_click", "navigate", "open_url", "open_tab",
-        "close_tab", "submit", "download", "upload", "type_text",
-        "fill_form", "scroll",
-    ))
+    """Fail closed: only positively identified inspection tools are read-only."""
+    return not is_inspection_tool(tool)
 
 
 class MCPClient:
