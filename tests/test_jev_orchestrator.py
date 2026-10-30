@@ -9,6 +9,7 @@ from lowkey.jev_orchestrator import (
     parse_new_tab_request,
     urls_match,
     verify_click_effect,
+    verify_new_page_opened,
     is_browser_change_tool,
     is_inspection_tool,
     resolve_workspace_path,
@@ -107,6 +108,41 @@ class JevOrchestratorTests(unittest.TestCase):
         self.assertFalse(verified)
         self.assertIn("no action-specific outcome", message)
 
+    def test_new_tab_verification_requires_new_page_and_preserves_existing_tabs(self):
+        verified, message, url = verify_new_page_opened(
+            requested_url="https://example.com/docs",
+            before_listing=(
+                "Pages\\n1: Existing (https://existing.example/) [selected]"
+            ),
+            after_listing=(
+                "Pages\\n1: Existing (https://existing.example/)\\n"
+                "2: Docs (https://example.com/docs) [selected]"
+            ),
+        )
+        self.assertTrue(verified, message)
+        self.assertEqual(url, "https://example.com/docs")
+        self.assertIn("existing page IDs were preserved", message)
+
+    def test_new_tab_verification_rejects_preexisting_url_without_new_page(self):
+        verified, message, url = verify_new_page_opened(
+            requested_url="https://example.com",
+            before_listing="Pages\\n1: Existing (https://example.com) [selected]",
+            after_listing="Pages\\n1: Existing (https://example.com) [selected]",
+        )
+        self.assertFalse(verified)
+        self.assertIsNone(url)
+        self.assertIn("newly created tab", message)
+
+    def test_new_tab_verification_rejects_disappearing_existing_page(self):
+        verified, message, url = verify_new_page_opened(
+            requested_url="https://example.com",
+            before_listing="Pages\\n1: Existing (https://existing.example) [selected]",
+            after_listing="Pages\\n2: Docs (https://example.com) [selected]",
+        )
+        self.assertFalse(verified)
+        self.assertIsNone(url)
+        self.assertIn("disappeared", message)
+
     def test_link_navigation_is_confirmed_by_url_change(self):
         verified, message = verify_click_effect(
             target={"label": "Use Classic Chat", "role": "link",
@@ -172,6 +208,10 @@ class JevOrchestratorTests(unittest.TestCase):
         self.assertTrue(is_browser_change_tool({
             "name": "browser_unknown_action",
             "description": "Operate on the current browser page",
+        }))
+        self.assertFalse(is_inspection_tool({
+            "name": "get_browser_state",
+            "description": "Inspect current browser state and navigate to a URL",
         }))
 
 
