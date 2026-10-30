@@ -18435,42 +18435,67 @@ COMMAND_HELP = {
     ),    "seams": _help_entry("Show audit hotspots where protocol boundaries and assumptions deserve extra scrutiny.", "lk seams", "lk seams", "Use it to decide where manual review should start.", related=["lk project", "lk risk", "lk walkthrough"]),
     "deps": _help_entry("Show imports, inheritance, and source dependencies.", "lk deps [src]", "lk deps src", "Use it to separate application logic from libraries, interfaces, and dependency code.", related=["lk project", "lk layout"]),
     "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout MyContract", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
-    "ids": _help_entry("List identifiers discovered from successful contract transactions.", "lk ids [--all]", "lk ids", "Use it to find returned IDs/keys without copying long hashes.", related=["lk id", "lk read", "lk send"]),
-    "id": _help_entry(
-        "Show a saved contract identifier or assign it a readable alias.",
-        "lk id <number> | lk id alias <number> <name>",
-        "lk id alias 1 firstRecord",
-        "Use aliases such as @firstRecord anywhere a compatible ABI argument expects that identifier.",
+    "ids": _help_entry(
+        "List contract-level identifiers that Lowkey recovered from transaction return values or decoded event fields. These are record IDs/keys, not transaction hashes.",
+        "lk ids [--all]",
+        "lk ids",
+        "Use it after a create/register/open transaction or trace when you need to find the record key again without copying a 32-byte hash.",
         forms=[
-            ("lk id <number>", "Show one saved identifier.", "lk id 1"),
-            ("lk id alias <number> <name>", "Give an identifier a memorable reusable name.", "lk id alias 1 firstRecord"),
+            ("lk ids", "List identifiers belonging to the currently selected target in this Foundry project.", "lk ids"),
+            ("lk ids --all", "Include identifiers saved for other targets in this same project.", "lk ids --all"),
         ],
-        related=["lk ids", "lk read", "lk send"],
+        options=[
+            ("--all", "Do not filter the project-local identifier list to the currently selected target.", "lk ids --all"),
+            ("No saved IDs yet", "For an older transaction, replay its trace so Lowkey can inspect the ABI return again: lk trace <tx>. An ID is saved only when it can be identified from ABI return data or a decoded event field.", "lk trace 0x871f..."),
+        ],
+        related=["lk trace", "lk receipt", "lk id", "lk read", "lk send"],
+    ),
+    "id": _help_entry(
+        "Inspect one saved contract identifier or give it a short name you can reuse in later reads, sends, and mapping lookups.",
+        "lk id <number|@alias|@last> | lk id alias <number|@alias> <name>",
+        "lk id alias 1 firstEscrow",
+        "Use aliases such as @firstEscrow instead of repeatedly copying the full identifier hash. @last means the newest saved identifier for the selected target.",
+        forms=[
+            ("lk id <number>", "Show one identifier by its position in lk ids.", "lk id 1"),
+            ("lk id @last", "Show the newest saved identifier.", "lk id @last"),
+            ("lk id @firstEscrow", "Show an identifier by its saved alias.", "lk id @firstEscrow"),
+            ("lk id alias <number> <name>", "Assign a memorable name to an identifier.", "lk id alias 1 firstEscrow"),
+            ("lk id alias @last <name>", "Name the newest identifier without looking up its list number.", "lk id alias @last firstEscrow"),
+        ],
+        related=["lk ids", "lk read", "lk send", "lk mapping"],
     ),
     "mapping": _help_entry(
-        "Index the selected contract's mappings and arrays, or calculate/read one mapping entry's storage location. Saved identifier references such as @invoiceId can be used as typed mapping keys.",
+        "List mapping variables and their storage layout, or calculate/read one mapping entry. Saved identifiers such as @firstEscrow can be used as typed mapping keys.",
         "lk mapping | lk mapping <slot> <key> | lk mapping <key_type> <slot> <key>",
         "lk mapping",
-        "Run it with no arguments to see every detected mapping/array, its storage slot, types, and the exact lookup command to use. Pass a slot and key when you want one mapping entry.",
+        "Start with lk mapping to find each mapping's base slot and key type. Then supply a key you already know. Solidity mappings do not keep an enumerable list of keys, so Lowkey cannot list every mapping entry unless the contract separately stores those keys in an array or another index.",
         forms=[
-            ("lk mapping", "List detected mappings and arrays in the selected target's compiled storage layout.", "lk mapping"),
-            ("lk mapping <slot> <key>", "Let Lowkey infer the mapping key type from the key value.", "lk mapping 0 0x1111111111111111111111111111111111111111"),
-            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly. A saved identifier such as @firstRecord is accepted when its type matches.", "lk mapping bytes32 0 @firstRecord"),
-            ("lk mapping <slot> @<alias>", "Use a saved identifier and let Lowkey infer its storage-key type.", "lk mapping 0 @firstRecord"),
+            ("lk mapping", "List detected mappings and arrays with their slots and types.", "lk mapping"),
+            ("lk mapping <slot> <key>", "Read one entry and infer the key type from the value you supplied.", "lk mapping 0 0x1111111111111111111111111111111111111111"),
+            ("lk mapping <key_type> <slot> <key>", "Choose the exact Solidity key type when inference is ambiguous.", "lk mapping bytes32 5 @firstEscrow"),
+            ("lk mapping <slot> @<alias>", "Use a saved identifier and let Lowkey infer its key type.", "lk mapping 5 @firstEscrow"),
         ],
-        related=["lk layout", "lk storage", "lk snapshot"]),
+        options=[
+            ("Mapping keys", "A mapping does not expose its keys. Find keys from known IDs, decoded events, transaction calldata, or a separate on-chain array/index.", "lk ids"),
+            ("Storage position", "The slot shown by lk mapping is the mapping's base slot; the entry itself is stored at a hash-derived slot.", "lk storage 0"),
+        ],
+        related=["lk ids", "lk array", "lk layout", "lk storage", "lk snapshot"]),
     "array": _help_entry(
-        "List detected arrays, show a short preview, or read one element/a bounded range.",
+        "List fixed/dynamic arrays found in the selected contract's compiler storage layout, then inspect individual elements or a bounded range.",
         "lk array [<array-name> [<index>|<start>..<end>]]",
         "lk array owners 0..9",
-        "Use it to inspect arrays using the selected target's compiled storage layout.",
+        "Use it when a contract stores records or keys in an array and you want to see the actual indexed values. Lowkey needs matching compiled storage-layout metadata for the selected target.",
         forms=[
-            ("lk array", "List fixed and dynamic arrays discovered in the selected target's compiled storage layout.", "lk array"),
-            ("lk array <array-name>", "Preview the first 10 elements, or all elements when the array is shorter.", "lk array owners"),
-            ("lk array <array-name> <index>", "Read one specific element.", "lk array owners 2"),
-            ("lk array <array-name> <start>..<end>", "Read up to 100 consecutive elements in one view.", "lk array owners 0..9"),
+            ("lk array", "List arrays with their storage slot, element type, and current length when known.", "lk array"),
+            ("lk array <array-name>", "Preview up to the first 10 elements.", "lk array owners"),
+            ("lk array <array-name> <index>", "Read one element by its zero-based index.", "lk array owners 2"),
+            ("lk array <array-name> <start>..<end>", "Read up to 100 consecutive elements; split larger reads into smaller ranges.", "lk array owners 0..9"),
         ],
-        related=["lk mapping", "lk storage", "lk layout"],
+        options=[
+            ("Array support", "Reads fixed and dynamic arrays using the selected artifact's storage layout; structs are shown by member where metadata is available.", "lk array escrows 0..4"),
+            ("Out-of-range index", "An index must be smaller than the array's current length.", "lk array owners 2"),
+        ],
+        related=["lk mapping", "lk storage", "lk layout", "lk ids"],
     ),
     "namespace": _help_entry("Calculate an ERC-7201 namespaced storage slot.", "lk namespace <erc7201-namespace-id>", "lk namespace example.storage", "Use it when auditing namespaced storage.", related=["lk layout", "lk mapping"]),
     "proof": _help_entry("Read an account/storage proof for a slot.", "lk proof <slot> [block]", "lk proof 3 21000000", "Use it when you need storage evidence tied to a specific block.", related=["lk mapping", "lk snapshot"]),
@@ -19020,19 +19045,34 @@ COMMAND_HELP = {
     "detect": _help_entry("Detect the current project/toolchain.", "lk detect", "lk detect", "Use it when you want Lowkey to explain which build/backend it sees.", related=["lk project", "lk doctor"]),
     "detect-project": _help_entry("Alias for project/toolchain detection.", "lk detect-project", "lk detect-project", "Use it as an explicit project-detection command.", related=["lk detect", "lk project"]),
     "storage": _help_entry(
-        "Read one or more raw storage slots from the selected target.",
-        "lk storage <slot> [slot ...] | lk storage <start>..<end>",
-        "lk storage 0..5",
-        "Use it for low-level storage reads when the higher-level wrappers are not enough.",
+        "Read raw 32-byte storage words from the selected contract, including slots that do not have a public getter.",
+        "lk storage <slot> [slot ...] | lk storage <start>..<end> [--block <block>]",
+        "lk storage 0..15",
+        "Use it when you want to inspect exactly what is stored at slot 0, 1, 2, and onward. Lowkey adds compiler-layout labels/decoding where it can; the raw word remains the underlying evidence.",
         forms=[
             ("lk storage <slot>", "Read one raw storage word.", "lk storage 0"),
-            ("lk storage <slot> [slot ...]", "Read several slots in one view.", "lk storage 0 1 2 3"),
-            ("lk storage <start>..<end>", "Read a consecutive range of slots (up to 256 words).", "lk storage 0..5"),
-            ("lk storage <slot> --block <block>", "Read a slot at a specific block.", "lk storage 3 --block latest"),
+            ("lk storage <slot> [slot ...]", "Read selected slots side by side.", "lk storage 0 1 2 3"),
+            ("lk storage <start>..<end>", "Read a consecutive range of up to 256 slots.", "lk storage 0..15"),
+            ("lk storage <slot> --block <block>", "Read the slot as it existed at a specific block.", "lk storage 3 --block 10"),
         ],
-        related=["lk layout", "lk mapping", "lk array"],
+        options=[
+            ("--block <block>", "Read historical storage at a block number or supported block tag.", "lk storage 3 --block latest"),
+            ("Raw word", "Every slot is a 32-byte word. Solidity may pack several small variables into one word, and mappings/arrays may use hash-derived locations.", "lk layout"),
+        ],
+        related=["lk layout", "lk mapping", "lk array", "lk slots"],
     ),
-    "slots": _help_entry("Alias for reading one or more selected-target storage slots.", "lk slots <slot> [slot ...]", "lk slots 0 1 2 3", "Use it to compare raw storage words side by side.", related=["lk storage", "lk layout"]),
+    "slots": _help_entry(
+        "Alias for lk storage. Read one slot, selected slots, or a consecutive range from the current target.",
+        "lk slots <slot> [slot ...] | lk slots <start>..<end> [--block <block>]",
+        "lk slots 0..15",
+        "Use it as a shorter spelling when comparing raw storage words side by side.",
+        forms=[
+            ("lk slots <slot>", "Read one storage word.", "lk slots 0"),
+            ("lk slots <slot> [slot ...]", "Read selected slots side by side.", "lk slots 0 1 2 3"),
+            ("lk slots <start>..<end>", "Read up to 256 consecutive slots.", "lk slots 0..15"),
+        ],
+        related=["lk storage", "lk layout", "lk mapping"],
+    ),
     "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c getValue 0x...", "Use it when you want the compact read form.", related=["lk read"]),
     "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s setValue 10 --preview", "Use it when you want the compact send form.", related=["lk send"]),
     "st": _help_entry("Short low-level/state helper alias.", "lk st ...", "lk st storage 0", "Use it when you want the compact forensic form.", related=["lk raw", "lk state-diff"]),
@@ -19404,6 +19444,7 @@ PROJECT / TARGET SETUP
   lk actors                         List available Anvil actors.
   lk impersonate <address> [name]   Use an existing account on a local fork.
   lk as <actor> <command> [args]    Run one command as another actor.
+                                   ABI functions can be used directly, e.g. lk as Bob acceptEscrow @firstEscrow.
 
 UNDERSTAND THE PROJECT
   lk project [json]                Explain the project and dependency graph in plain English.
@@ -19428,7 +19469,8 @@ UNDERSTAND THE PROJECT
   lk rg <pattern> [path]           Search source and save evidence. Example: lk rg "delegatecall" src
 
 INTERACT WITH CONTRACTS
-  lk read <function> [args]        Read without changing state. Example: lk read balanceOf <address>
+  lk read <function> [args]        Read without changing state; @savedId works for matching ABI inputs.
+                                   Example: lk read EscrowID @firstEscrow
   lk balance [address|name]        Check native ETH held by a contract or wallet. Example: lk balance vault
   lk send <function> [args]        Send a transaction. Example: lk send withdraw --preview
   lk send ... --preview            Encode/check without sending.
@@ -19442,9 +19484,25 @@ INTERACT WITH CONTRACTS
   lk event <sig> <data> [topics]   Decode event data.
   lk raw <cast-command> [args]     Run a raw Cast command when Lowkey has no nicer wrapper.
 
+CONTRACT IDENTIFIERS
+  lk ids [--all]                   List record IDs recovered from successful calls/events.
+  lk id <number|@alias>            Inspect one saved contract ID.
+  lk id alias <number> <name>      Give a long ID a reusable name, e.g. firstEscrow.
+                                   Use @firstEscrow, @last, or @1 in compatible ABI arguments.
+  Note: a contract record ID is different from the transaction hash that created it.
+  lk trace <tx>                    Replay an older transaction to recover its ABI return ID.
+
 STORAGE / STATE FORENSICS
-  lk mapping <slot> <key>          Calculate/read a mapping slot. Example: lk mapping 3 0x...
-  lk mapping <type> <slot> <key>   Explicitly choose the mapping key type.
+  lk layout <Contract>             Show compiler storage layout, including variable slots and types.
+  lk mapping                        List mapping/array variables and their base slots.
+  lk mapping <slot> <key>          Read one mapping entry using a known key.
+  lk mapping <type> <slot> <key>   Explicitly choose the Solidity mapping key type.
+  Note: mappings do not expose an enumerable list of keys; use known IDs, events, calldata, or an array index.
+  lk array                         List detected fixed/dynamic arrays.
+  lk array <name> [index|start..end] Read array elements (up to 100 per range).
+  lk storage <slot> [slot ...]     Read raw storage words, e.g. lk storage 0 1 2.
+  lk storage <start>..<end>        Read a consecutive range, e.g. lk storage 0..15.
+  lk slots <slot> [slot ...]       Short alias for lk storage.
   lk namespace <id>                Calculate an ERC-7201 namespace slot.
   lk proof <slot> [block]          Read a storage proof.
   lk snapshot [slot ...]           Save selected storage slots.
