@@ -604,6 +604,70 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("lk send", output)
         self.assertIn("--value 1ether", output)
 
+    def test_identifier_and_storage_commands_have_complete_help(self):
+        cases = {
+            "ids": (
+                "LOWKEY HELP  •  lk ids",
+                "lk ids --all",
+                "lk trace 0x871f...",
+                "transaction hashes",
+            ),
+            "id": (
+                "LOWKEY HELP  •  lk id",
+                "lk id @last",
+                "lk id alias @last <name>",
+                "@firstEscrow",
+            ),
+            "mapping": (
+                "LOWKEY HELP  •  lk mapping",
+                "Solidity mappings do not keep an enumerable list of keys",
+                "lk ids",
+            ),
+            "array": (
+                "LOWKEY HELP  •  lk array",
+                "compiled storage layout",
+                "lk array owners 0..9",
+            ),
+            "storage": (
+                "LOWKEY HELP  •  lk storage",
+                "32-byte storage words",
+                "lk storage 0..15",
+                "--block <block>",
+            ),
+            "slots": (
+                "LOWKEY HELP  •  lk slots",
+                "Alias for lk storage",
+                "lk slots 0..15",
+            ),
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                for item in expected:
+                    self.assertIn(item, output)
+
+    def test_full_help_menu_lists_identifier_and_storage_workflows(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        for item in (
+            "CONTRACT IDENTIFIERS",
+            "lk ids [--all]",
+            "lk id <number|@alias>",
+            "lk id alias <number> <name>",
+            "lk read EscrowID @firstEscrow",
+            "STORAGE / STATE FORENSICS",
+            "lk mapping <type> <slot> <key>",
+            "lk array <name> [index|start..end]",
+            "lk storage <slot> [slot ...]",
+            "lk storage <start>..<end>",
+            "lk slots <slot> [slot ...]",
+            "mappings do not expose an enumerable list of keys",
+        ):
+            self.assertIn(item, rendered)
+
     def test_main_help_defines_beginner_transaction_terms(self):
         output = io.StringIO()
         with redirect_stdout(output):
