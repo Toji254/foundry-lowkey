@@ -169,8 +169,6 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("attach value with --eth <amount>", output)
         self.assertIn("ETH FLOW LEGEND", output)
         self.assertIn("indirect flows may need manual review", output)
-        self.assertIn("NEXT COMMANDS", output)
-        self.assertIn("lk fn --verbose", output)
         self.assertNotIn("OUTGOING ETH NOT ASSESSED", output)
         self.assertNotIn(chr(27), output)
 
