@@ -1199,6 +1199,38 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(load_abi.call_args.args[0], emitter)
         self.assertNotEqual(load_abi.call_args.args[0], selected_target)
 
+
+    def test_event_decoder_identifies_generic_identifier_fields(self):
+        event = {
+            "type": "event",
+            "name": "RecordRegistered",
+            "inputs": [
+                {"name": "recordKey", "type": "bytes32", "indexed": False},
+                {"name": "owner", "type": "address", "indexed": False},
+            ],
+        }
+        topic0 = "0x" + "a" * 64
+        record_key = "0x" + "b" * 64
+        owner = "0x" + "2" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            abi_path = pathlib.Path(tmp) / "abi.json"
+            abi_path.write_text(json.dumps({"abi": [event]}), encoding="utf-8")
+            config = {"target": "0x" + "1" * 40, "abi_paths": {"0x" + "1" * 40: str(abi_path)}}
+            def fake_cast(args, input_text=None):
+                if args[1] == "sig-event":
+                    return 0, topic0, ""
+                return 0, record_key + "\n" + owner, ""
+            output = io.StringIO()
+            with patch.object(lk, "cast_output", side_effect=fake_cast):
+                with redirect_stdout(output):
+                    result = lk.decode_event_log(
+                        config,
+                        {"address": config["target"], "topics": [topic0], "data": "0x" + "00" * 64},
+                    )
+
+        self.assertEqual(result[0], "RecordRegistered(bytes32,address)")
+        self.assertIn("Identifier field (recordKey): " + record_key, output.getvalue())
+
     def test_wizard_extracts_and_decodes_transaction_return_value(self):
         config = {
             "target": "0x" + "1" * 40,

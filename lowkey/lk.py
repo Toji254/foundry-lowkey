@@ -11820,7 +11820,13 @@ def decode_event_values(event,data,topics):
             code,decoded,error=cast_output(["cast","decode-abi",f"value()({item_type})",topic])
             if code==0 and decoded: value=decoded
             elif code!=0: status=code
-        print(f"Indexed {item.get('name') or '<anonymous>'}: {value}")
+        field_name = str(item.get("name") or "").strip()
+        print(f"Indexed {field_name or '<anonymous>'}: {value}")
+        if field_name and _identifier_name(field_name):
+            if any(token in item_type for token in ("bytes", "string", "[", "tuple")):
+                print(f"Identifier topic hash ({field_name}): {value}")
+            else:
+                print(f"Identifier field ({field_name}): {value}")
     if non_indexed:
         output_types=",".join(canonical_type(item) for item in non_indexed)
         code,decoded,error=cast_output(["cast","decode-abi",f"event()({output_types})",data])
@@ -11829,6 +11835,12 @@ def decode_event_values(event,data,topics):
             status=code
         elif decoded:
             print(f"Data: {decoded}")
+            decoded_values = [part.strip() for part in str(decoded).splitlines() if part.strip()]
+            if len(decoded_values) == len(non_indexed):
+                for field, field_value in zip(non_indexed, decoded_values):
+                    field_name = str(field.get("name") or "").strip()
+                    if field_name and _identifier_name(field_name):
+                        print(f"Identifier field ({field_name}): {field_value}")
     return record_status(status)
 
 def run_event(config,args):
