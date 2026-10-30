@@ -124,6 +124,27 @@ class JevRuntimeHookTests(unittest.TestCase):
         self.assertFalse(attempted)
         self.assertEqual(output.getvalue(), "")
 
+    def test_jev_engine_error_detail_is_reported_without_changing_native_result(self):
+        jev = SimpleNamespace(
+            JevError=RuntimeError,
+            status=lambda: {"configured": True, "local": True},
+            classify_command=lambda **kwargs: (_ for _ in ()).throw(
+                RuntimeError("Could not reach local Jevos-v5 at 127.0.0.1:8017.")
+            ),
+        )
+        stderr = io.StringIO()
+        with patch.object(
+            lk, "_ai_status_safely", return_value={"jev_autonomous": True}
+        ), patch.dict(sys.modules, {"jev_engine": jev}), \
+             contextlib.redirect_stderr(stderr):
+            lk._print_jev_command_classification(
+                "build", [], 0, "Compiler run successful"
+            )
+
+        self.assertIn("JEV TRIAGE UNAVAILABLE (RuntimeError)", stderr.getvalue())
+        self.assertIn("Could not reach local Jevos-v5", stderr.getvalue())
+        self.assertIn("native command kept its original result", stderr.getvalue())
+
     def test_disabled_jev_returns_without_importing_provider_modules(self):
         with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": False}):
             lk._print_jev_command_classification("build", [], 0, "Build succeeded")
