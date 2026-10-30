@@ -18666,9 +18666,17 @@ def _print_jev_command_classification(command, args, result_code, command_output
                 file=sys.stderr,
             )
             return
-        budget = ai_harness.autonomy_budget_status()
-        if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
-            return
+        # The daily allowance tracks hosted requests only. Local Jevos inference
+        # does not consume it and must not be blocked by it.
+        if not jev_state.get("local", False):
+            budget = ai_harness.autonomy_budget_status()
+            if budget.get("free_tier_guard") and int(budget.get("remaining") or 0) <= 0:
+                print(
+                    "\n@ JEV TRIAGE SKIPPED — the hosted Jev request allowance is exhausted. "
+                    "The native command already completed; no hosted classification request was sent.",
+                    file=sys.stderr,
+                )
+                return
         report = jev_engine.classify_command(
             command="lk " + str(command or "").strip(),
             arguments=[str(value) for value in (args or [])],
@@ -18721,7 +18729,9 @@ def _print_ai_command_guidance(command, args, result_code, config, command_outpu
             from lowkey import ai_workflow
         state = _ai_status_safely()
         if automatic and state.get("jev_free_tier_mode") and int(state.get("jev_calls_remaining") or 0) <= 0:
-            return
+            # No text-model request was attempted. Let an independent local Jev
+            # classifier handle the completed command when one is enabled.
+            return False
         try:
             root = audit_context.foundry_project_root()
         except Exception:
@@ -18736,12 +18746,16 @@ def _print_ai_command_guidance(command, args, result_code, config, command_outpu
         )
         print("")
         print(ai_workflow.render_guidance(report))
+        return True
     except Exception as exc:
         print(
             f"\n@ AI GUIDANCE UNAVAILABLE ({type(exc).__name__}). "
             "The native command already ran with its normal behavior; run 'lk ai status' for setup details.",
             file=sys.stderr,
         )
+        # Preserve the no-double-request policy after any attempted text-AI
+        # guidance, including failures. A budget skip above returns False.
+        return True
 
 
 def main():
@@ -18880,12 +18894,17 @@ def main():
         if ai_workflow.should_auto_guide(command, sys.argv[2:], footer_status, _ai_status_safely()):
             if machine_readable_verification:
                 with redirect_stdout(sys.stderr):
-                    _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
+                    text_guidance_ran = _print_ai_command_guidance(
+                        command, sys.argv[2:], footer_status, config,
+                        ai_command_output, automatic=True,
+                    )
             else:
-                _print_ai_command_guidance(command, sys.argv[2:], footer_status, config, ai_command_output, automatic=True)
-            text_guidance_ran = True
-    # Do not spend a second model request on a result for which the user explicitly
-    # asked for text guidance or the configured automatic text helper already ran.
+                text_guidance_ran = _print_ai_command_guidance(
+                    command, sys.argv[2:], footer_status, config,
+                    ai_command_output, automatic=True,
+                )
+    # Do not spend a second model request after explicit text guidance or an
+    # automatic text-AI attempt. A budget-skipped text helper is not an attempt.
     if jev_active and not text_guidance_ran and _jev_command_eligible(command, sys.argv[2:], footer_status):
         _print_jev_command_classification(command, sys.argv[2:], footer_status, ai_command_output, config)
     command_name = str(sys.argv[1] or "").strip().lower()
