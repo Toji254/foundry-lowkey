@@ -48,6 +48,13 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("Why: List contract functions.", rendered)
         ai_footer.assert_called_once_with("status", native, {}, args=[], result=0)
 
+    def test_send_preview_does_not_recommend_transaction_followups(self):
+        args = ["createEscrow", "Bob", "--eth", "2", "--preview"]
+        self.assertEqual(lk._recommended_next_commands("send", args, {}), [])
+
+        dry_run_args = ["createEscrow", "Bob", "--eth", "2", "--dry-run"]
+        self.assertEqual(lk._recommended_next_commands("send", dry_run_args, []), [])
+
     def test_named_actor_resolves_for_address_argument(self):
         alice = "0x" + "1" * 40
         deployer = "0x" + "2" * 40

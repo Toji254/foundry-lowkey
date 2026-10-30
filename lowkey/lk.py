@@ -4989,7 +4989,9 @@ def run_cast(args,config,capture=False):
     safe_cmd=redact_secrets(shlex.join(cmd))
     if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
     if cast_cmd=="send" and preview:
-        print(f"Preview: {safe_cmd}"); return 0
+        print(f"Preview: {safe_cmd}")
+        print("Preview only: no transaction was broadcast. Remove --preview/--dry-run to submit; add --confirm to review once more before sending.")
+        return 0
     if cast_cmd=="send" and (confirm or (config.get("confirm_sends") and not bypass)):
         print(f"Preview: {safe_cmd}")
         try: answer=input("Send transaction? [y/N] ").strip().lower()
@@ -18217,6 +18219,13 @@ def _recommended_next_commands(command, args=None, config=None):
     if any(item.lower() == "--json" or item.lower() == "json" for item in raw_args):
         return []
     if canonical in {"raw", "batch"}:
+        return []
+
+    # A preview/dry-run has not created a transaction. Do not recommend receipt,
+    # trace, or state reads that depend on a transaction result/returned ID.
+    if canonical == "send" and any(
+        item.lower() in {"--preview", "--dry-run"} for item in raw_args
+    ):
         return []
 
     command_key = canonical
