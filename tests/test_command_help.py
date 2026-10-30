@@ -612,6 +612,14 @@ class CommandHelpTests(unittest.TestCase):
                 "lk trace 0x871f...",
                 "transaction hashes",
             ),
+            "read": (
+                "lk read EscrowID @firstEscrow",
+                "saved reference such as @firstEscrow",
+            ),
+            "send": (
+                "lk send acceptEscrow @firstEscrow --as Bob",
+                "saved contract ID",
+            ),
             "id": (
                 "LOWKEY HELP  •  lk id",
                 "lk id @last",
