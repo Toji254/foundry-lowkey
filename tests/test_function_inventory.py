@@ -118,6 +118,22 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("risk flags : STATE-WRITE", output)
         self.assertIn("selector   : 0x2e1a7d4d", output)
 
+    def test_default_inventory_explains_payable_and_native_eth_outflow(self):
+        code, output = self._run([])
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "deposit()  [PAYABLE • CAN RECEIVE ETH • attach with --eth <amount>]",
+            output,
+        )
+        self.assertIn(
+            "withdraw(uint256)  [NONPAYABLE • SENDS ETH (source-detected)]",
+            output,
+        )
+        self.assertIn("setTreasury(address)  [NONPAYABLE]", output)
+        self.assertIn("ETH FLOW NOTES:", output)
+        self.assertIn("attach it separately with --eth <amount> or --value <amount>", output)
+        self.assertIn("indirect/dynamic flows may need manual review", output)
+
     def test_visibility_short_filter(self):
         code, output = self._run(["-V", "external"])
         self.assertEqual(code, 0)
