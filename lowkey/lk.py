@@ -18334,7 +18334,7 @@ COMMAND_HELP = {
         forms=[
             ("lk mapping", "List detected mappings and arrays in the selected target's compiled storage layout.", "lk mapping"),
             ("lk mapping <slot> <key>", "Let Lowkey infer the mapping key type from the key value.", "lk mapping 0 0x1111111111111111111111111111111111111111"),
-            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly; a saved identifier such as @firstRecord is accepted when its type matches.", "lk mapping bytes32 0 @firstRecord"),
+            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly. A saved identifier such as @firstRecord is accepted when its type matches.", "lk mapping bytes32 0 @firstRecord"),
             ("lk mapping <slot> @<alias>", "Use a saved identifier and let Lowkey infer its storage-key type.", "lk mapping 0 @firstRecord"),
         ],
         related=["lk layout", "lk storage", "lk snapshot"]),
