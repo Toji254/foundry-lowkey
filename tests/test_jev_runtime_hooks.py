@@ -45,22 +45,35 @@ class JevRuntimeHookTests(unittest.TestCase):
         self.assertIn("missing import", captured["command_output"])
         self.assertIn("JEV TEST TRIAGE", output.getvalue())
 
-    def test_jev_does_not_call_provider_after_guard_is_exhausted(self):
-        ai = SimpleNamespace(
-            autonomy_budget_status=lambda: {"free_tier_guard": True, "remaining": 0},
-        )
+    def test_runtime_delegates_provider_quota_and_cache_policy_to_jev_engine(self):
+        captured = {}
         jev = SimpleNamespace(
-            status=lambda: {"configured": True},
-            classify_command=lambda **kwargs: self.fail("exhausted budget must skip TypeSafe"),
-            render_classification=lambda report, command: "unexpected",
+            status=lambda: {
+                "configured": True,
+                "provider": "typesafe",
+                "local": False,
+            },
+            classify_command=lambda **kwargs: captured.update(kwargs) or {
+                "outcome": "cached_or_engine_classified",
+            },
+            render_classification=lambda report, command:
+                "JEV TEST TRIAGE: " + report["outcome"],
         )
         output = io.StringIO()
-        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \
-             patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}), \
+        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \\
+             patch.dict(sys.modules, {"jev_engine": jev}), \\
              contextlib.redirect_stdout(output):
             lk._print_jev_command_classification("build", [], 0, "Build succeeded")
-        self.assertEqual(output.getvalue(), "")
 
+        self.assertEqual(captured["command"], "lk build")
+        self.assertIn("JEV TEST TRIAGE: cached_or_engine_classified", output.getvalue())
+
+    def test_jev_eligibility_prevents_generic_auto_guidance_from_preempting_triage(self):
+        self.assertTrue(lk._jev_should_classify("build", [], 0, True))
+        self.assertTrue(lk._jev_should_classify("test", [], 0, True))
+        self.assertFalse(lk._jev_should_classify("build", [], 0, False))
+        self.assertFalse(lk._jev_should_classify("read", ["balanceOf"], 0, True))
+        self.assertTrue(lk._jev_should_classify("read", ["balanceOf"], 1, True))
 
     def test_local_jevos_classifies_when_hosted_budget_is_exhausted(self):
         captured = {}
