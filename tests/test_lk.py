@@ -1132,6 +1132,44 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Return data unavailable", rendered)
         self.assertIn("debug_traceTransaction", rendered)
 
+
+    def test_auto_abi_path_does_not_reuse_selected_contract_for_other_emitter(self):
+        selected_target = "0x" + "1" * 40
+        emitter = "0x" + "2" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            selected_artifact = root / "Main.json"
+            emitter_artifact = root / "Emitter.json"
+            selected_artifact.write_text(
+                json.dumps({"contractName": "Main", "abi": []}),
+                encoding="utf-8",
+            )
+            emitter_artifact.write_text(
+                json.dumps({"contractName": "Emitter", "abi": []}),
+                encoding="utf-8",
+            )
+            config = {
+                "target": selected_target,
+                "target_contract": "Main",
+                "abi_paths": {},
+                "rpc": None,
+            }
+            deployments = [
+                {"address": selected_target, "contract": "Main"},
+                {"address": emitter, "contract": "Emitter"},
+            ]
+            with patch.object(
+                lk, "local_artifact_paths",
+                return_value=[str(selected_artifact), str(emitter_artifact)],
+            ), patch.object(
+                lk, "discover_deployments", return_value=deployments
+            ), patch.object(lk, "effective_rpc", return_value=None):
+                resolved = lk.auto_abi_path(emitter, config, root=root)
+
+        self.assertEqual(resolved, str(emitter_artifact))
+        self.assertEqual(config["target_contract"], "Main")
+        self.assertEqual(config["abi_paths"].get(emitter), str(emitter_artifact))
+
     def test_event_decoder_uses_the_log_emitter_abi_not_selected_target(self):
         selected_target = "0x" + "1" * 40
         emitter = "0x" + "2" * 40

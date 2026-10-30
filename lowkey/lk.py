@@ -1473,7 +1473,15 @@ def auto_abi_path(target,config,root=None):
     for search_root in search_roots:
         paths.extend(local_artifact_paths(search_root))
 
-    preferred=config.get("target_contract")
+    # target_contract describes the selected target only. Reusing it while
+    # resolving another emitter (for example, a factory-created child or a
+    # token callback) can bind that address to an unrelated artifact.
+    selected_target = config.get("target")
+    is_selected_target = (
+        is_address(selected_target)
+        and selected_target.lower() == target.lower()
+    )
+    preferred = config.get("target_contract") if is_selected_target else None
     candidate_addresses=[target]
     deployment_root = project_root if root is not None else Path(".")
 
@@ -1481,7 +1489,7 @@ def auto_abi_path(target,config,root=None):
         for record in discover_deployments(str(deployment_root)):
             if str(record.get("address","")).lower()==target.lower():
                 preferred=record.get("contract")
-                if preferred:
+                if preferred and is_selected_target:
                     config["target_contract"]=preferred
                 break
 
@@ -1499,7 +1507,7 @@ def auto_abi_path(target,config,root=None):
                     for record in discover_deployments(str(deployment_root)):
                         if str(record.get("address","")).lower()==implementation.lower():
                             preferred=record.get("contract")
-                            if preferred:
+                            if preferred and is_selected_target:
                                 config["target_contract"]=preferred
                             break
 
