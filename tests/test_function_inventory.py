@@ -166,7 +166,7 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("↑ RECEIVES ETH", output)
         self.assertIn("withdraw(uint256)", output)
         self.assertIn("↓ SENDS ETH", output)
-        self.assertIn("attach value with --eth <amount>", output)
+        self.assertIn("use --eth <amount>", output)
         self.assertIn("ETH FLOW", output)
         self.assertIn("indirect flows need review", output)
         self.assertNotIn("UNASSESSED", output)
@@ -260,11 +260,12 @@ class FunctionInventoryTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(code, 0)
-        self.assertIn("OUTGOING ETH NOT ASSESSED", rendered)
+        self.assertIn("PAYABLE · ↑ RECEIVES ETH · ! UNASSESSED", rendered)
+        self.assertIn("NONPAYABLE · ! UNASSESSED", rendered)
         getter_tail = rendered.split("STORAGE GETTERS: 1", 1)[1]
         getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW", 1)[0]
         self.assertIn("balances(address)", getter_section)
-        self.assertNotIn("NOT ASSESSED", getter_section)
+        self.assertNotIn("UNASSESSED", getter_section)
 
     def test_contract_with_only_public_getters_has_clean_inventory(self):
         tmp, root, config = self._fixture()
