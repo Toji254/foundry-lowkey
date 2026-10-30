@@ -5085,7 +5085,11 @@ def run_id(config, args=None):
         if selector.startswith("@"):
             selector = selector[1:]
         try:
-            if selector.isdigit():
+            if selector.startswith("@"):
+                # Reuse the same selector rules as ABI arguments: @last,
+                # @number, @alias, or @0x... all resolve through one path.
+                record = _identifier_reference_record(config, selector)
+            elif selector.isdigit():
                 index = int(selector)
                 record = entries[index - 1] if 1 <= index <= len(entries) else None
             else:
@@ -5095,7 +5099,7 @@ def run_id(config, args=None):
                     or str(item.get("alias") or "").casefold() == selector.casefold()
                 ]
                 record = matches[0] if len(matches) == 1 else None
-        except (IndexError, TypeError):
+        except (IndexError, TypeError, ValueError):
             record = None
         if record is None:
             return fail(f"Error: identifier '{args[1]}' was not found or is ambiguous. Run lk ids.")
