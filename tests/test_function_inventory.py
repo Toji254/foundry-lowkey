@@ -54,6 +54,13 @@ class FunctionInventoryTests(unittest.TestCase):
                 function balanceOf(address who) external view returns (uint256) {
                     return balances[who];
                 }
+
+                receive() external payable {
+                    (bool ok, ) = payable(treasury).call{value: msg.value}("");
+                    require(ok);
+                }
+
+                fallback() external {}
             }
             """,
             encoding="utf-8",
@@ -147,6 +154,31 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("ETH ENTRYPOINTS:", output)
         self.assertIn("receive()  [PAYABLE • CAN RECEIVE ETH", output)
         self.assertIn("fallback()  [NONPAYABLE • cannot receive attached ETH]", output)
+        self.assertIn(
+            "ETH OUT 1: call{value} | to: payable(treasury) | amount: msg.value",
+            output,
+        )
+
+    def test_inventory_supports_contracts_with_only_receive_or_fallback(self):
+        tmp, root, config = self._fixture()
+        old = os.getcwd()
+        output = io.StringIO()
+        try:
+            artifact_path = pathlib.Path(config["abi_paths"][config["target"]])
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            artifact["abi"] = [
+                {"type": "receive", "stateMutability": "payable"},
+            ]
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            os.chdir(root)
+            with patch.object(lk, "cast_output", return_value=(1, "", "")), contextlib.redirect_stdout(output):
+                code = lk.run_functions(config, [])
+        finally:
+            os.chdir(old)
+            tmp.cleanup()
+        self.assertEqual(code, 0)
+        self.assertIn("ETH ENTRYPOINTS:", output.getvalue())
+        self.assertIn("receive()  [PAYABLE • CAN RECEIVE ETH", output.getvalue())
 
     def test_native_eth_outflow_detector_covers_common_solidity_patterns(self):
         payable_source = {
