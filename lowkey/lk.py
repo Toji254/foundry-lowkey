@@ -18701,6 +18701,11 @@ def _print_jev_command_classification(command, args, result_code, command_output
             "The native Lowkey command kept its original result.",
             file=sys.stderr,
         )
+        jev_error_type = getattr(locals().get("jev_engine"), "JevError", None)
+        if isinstance(jev_error_type, type) and isinstance(exc, jev_error_type):
+            detail = " ".join(str(exc).split())[:320]
+            if detail:
+                print(f"  Reason: {detail}", file=sys.stderr)
 
 
 def _dispatch_command_captured(command, args, config):
