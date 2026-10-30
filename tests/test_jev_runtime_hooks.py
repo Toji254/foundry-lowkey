@@ -61,6 +61,56 @@ class JevRuntimeHookTests(unittest.TestCase):
             lk._print_jev_command_classification("build", [], 0, "Build succeeded")
         self.assertEqual(output.getvalue(), "")
 
+
+    def test_local_jevos_classifies_when_hosted_budget_is_exhausted(self):
+        captured = {}
+        ai = SimpleNamespace(
+            autonomy_budget_status=lambda: self.fail(
+                "local Jevos must not consult the hosted request allowance"
+            ),
+        )
+        jev = SimpleNamespace(
+            status=lambda: {
+                "configured": True,
+                "provider": "jevos",
+                "local": True,
+            },
+            classify_command=lambda **kwargs: captured.update(kwargs) or {
+                "outcome": "local_classification",
+            },
+            render_classification=lambda report, command:
+                "JEV TEST TRIAGE: " + report["outcome"],
+        )
+        output = io.StringIO()
+        with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": True}), \\
+             patch.dict(sys.modules, {"ai_harness": ai, "jev_engine": jev}), \\
+             contextlib.redirect_stdout(output):
+            lk._print_jev_command_classification("build", [], 0, "Build succeeded")
+
+        self.assertEqual(captured["command"], "lk build")
+        self.assertEqual(captured["exit_code"], 0)
+        self.assertIn("JEV TEST TRIAGE: local_classification", output.getvalue())
+
+    def test_automatic_text_guidance_budget_skip_is_not_counted_as_a_run(self):
+        workflow = SimpleNamespace(
+            guide_command=lambda **kwargs: self.fail(
+                "the exhausted budget must prevent a text-AI request"
+            ),
+            render_guidance=lambda report: "unexpected guidance",
+        )
+        output = io.StringIO()
+        with patch.object(
+            lk, "_ai_status_safely",
+            return_value={"jev_free_tier_mode": True, "jev_calls_remaining": 0},
+        ), patch.dict(sys.modules, {"ai_workflow": workflow}), \\
+             contextlib.redirect_stdout(output):
+            attempted = lk._print_ai_command_guidance(
+                "build", [], 0, {}, "Build succeeded", automatic=True
+            )
+
+        self.assertFalse(attempted)
+        self.assertEqual(output.getvalue(), "")
+
     def test_disabled_jev_returns_without_importing_provider_modules(self):
         with patch.object(lk, "_ai_status_safely", return_value={"jev_autonomous": False}):
             lk._print_jev_command_classification("build", [], 0, "Build succeeded")
