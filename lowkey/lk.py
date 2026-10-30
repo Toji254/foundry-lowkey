@@ -18487,7 +18487,7 @@ COMMAND_HELP = {
         forms=[
             ("lk mapping", "List detected mappings and arrays with their slots and types.", "lk mapping"),
             ("lk mapping <slot> <key>", "Read one entry and infer the key type from the value you supplied.", "lk mapping 0 0x1111111111111111111111111111111111111111"),
-            ("lk mapping <key_type> <slot> <key>", "Choose the exact Solidity key type when inference is ambiguous.", "lk mapping bytes32 5 @firstEscrow"),
+            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly when inference is ambiguous.", "lk mapping bytes32 5 @firstEscrow"),
             ("lk mapping <slot> @<alias>", "Use a saved identifier and let Lowkey infer its key type.", "lk mapping 5 @firstEscrow"),
         ],
         options=[
@@ -18496,7 +18496,7 @@ COMMAND_HELP = {
         ],
         related=["lk ids", "lk array", "lk layout", "lk storage", "lk snapshot"]),
     "array": _help_entry(
-        "List fixed/dynamic arrays found in the selected contract's compiler storage layout, then inspect individual elements or a bounded range.",
+        "List fixed/dynamic arrays using the selected contract's compiled storage layout, then inspect individual elements or a bounded range.",
         "lk array [<array-name> [<index>|<start>..<end>]]",
         "lk array owners 0..9",
         "Use it when a contract stores records or keys in an array and you want to see the actual indexed values. Lowkey needs matching compiled storage-layout metadata for the selected target.",
