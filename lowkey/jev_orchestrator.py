@@ -451,9 +451,10 @@ def is_inspection_tool(tool: dict[str, Any]) -> bool:
         "browser", "tab", "page", "window", "target", "session",
         "webpage", "website",
     ))
-    has_mutation_word = any(word in name for word in (
-        "click", "navigate", "open_url", "open_tab", "close_tab",
-        "submit", "download", "upload", "type", "fill", "scroll",
+    has_mutation_word = any(word in combined for word in (
+        "click", "navigate", "open_url", "open url", "new_page", "new page",
+        "open a new tab", "close tab", "submit", "download", "upload",
+        "type into", "fill form", "scroll", "refresh",
     ))
     return has_read_word and has_browser_word and not has_mutation_word
 
