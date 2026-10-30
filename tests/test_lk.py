@@ -650,6 +650,18 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Contract call reverted", rendered)
         self.assertIn("Reason: custom error payload unavailable", rendered)
 
+    def test_missing_saved_identifier_gets_a_specific_recovery_hint(self):
+        rendered = lk._format_cli_error(
+            "Error: saved identifier '@firstEscrow' was not found; run lk ids or lk id alias",
+            code=2,
+            command="read",
+            source="lowkey",
+        )
+        self.assertIn("Saved contract identifier wasn't found", rendered)
+        self.assertIn("Run lk ids to list saved IDs", rendered)
+        self.assertIn("lk trace <tx>", rendered)
+        self.assertIn("No transaction was sent", rendered)
+
     def test_lowkey_validation_errors_use_shared_error_shape_and_keep_hints(self):
         message = "Error: No RPC is configured. Start Anvil or set an RPC with lk rpc <url>."
         rendered = lk._format_cli_error(message, code=2, command="balance", source="lowkey")
