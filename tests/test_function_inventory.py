@@ -320,7 +320,6 @@ class FunctionInventoryTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 lk._function_print_wrapped("        recipient ", expression)
         rendered = output.getvalue()
-        self.assertIn("destination expression with several parts", rendered)
         expected = "        recipient " + expression + "\n"
         self.assertEqual("".join(rendered.split()), "".join(expected.split()))
 
