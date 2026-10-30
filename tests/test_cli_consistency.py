@@ -402,8 +402,8 @@ class CliConsistencyTests(unittest.TestCase):
             "wallets": {},
         }
         output = io.StringIO()
-        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
-             patch.object(lk, "cast_output") as cast_output, \\
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "cast_output") as cast_output, \
              redirect_stdout(output):
             result = lk.run_cast(
                 ["send", recipient, "--eth", "2", "--preview"],
@@ -430,9 +430,9 @@ class CliConsistencyTests(unittest.TestCase):
             },
         }
         output = io.StringIO()
-        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
-             patch.object(lk, "load_abi", return_value=[]), \\
-             patch.object(lk, "cast_output") as cast_output, \\
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "load_abi", return_value=[]), \
+             patch.object(lk, "cast_output") as cast_output, \
              redirect_stdout(output):
             result = lk.run_cast(
                 ["send", "Alice", "--eth", "2", "--preview"],
@@ -451,9 +451,9 @@ class CliConsistencyTests(unittest.TestCase):
             "wallets": {},
         }
         error_output = io.StringIO()
-        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
-             patch.object(lk, "rpc_json", return_value="0x"), \\
-             patch.object(lk, "cast_output") as cast_output, \\
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "rpc_json", return_value="0x"), \
+             patch.object(lk, "cast_output") as cast_output, \
              patch("sys.stderr", error_output):
             result = lk.run_cast(
                 ["send", "--eth", "2", "--preview"],
