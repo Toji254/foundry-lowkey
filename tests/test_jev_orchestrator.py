@@ -138,6 +138,14 @@ class JevOrchestratorTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 resolve_workspace_path(root, "private/key.pem")
 
+    def test_version_control_metadata_paths_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".git").mkdir()
+            (root / ".git" / "config").write_text("[remote]", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                resolve_workspace_path(root, ".git/config")
+
     def test_lk_tool_rejects_unsafe_commands(self):
         self.assertEqual(validate_lk_argv(["read", "balanceOf"]), ["read", "balanceOf"])
         with self.assertRaises(ValueError):
@@ -157,6 +165,14 @@ class JevOrchestratorTests(unittest.TestCase):
         self.assertTrue(is_inspection_tool(inspect_tool))
         self.assertFalse(is_inspection_tool(click_tool))
         self.assertTrue(is_browser_change_tool(click_tool))
+        self.assertTrue(is_browser_change_tool({
+            "name": "new_page",
+            "description": "Create a new browser page",
+        }))
+        self.assertTrue(is_browser_change_tool({
+            "name": "browser_unknown_action",
+            "description": "Operate on the current browser page",
+        }))
 
 
 if __name__ == "__main__":
