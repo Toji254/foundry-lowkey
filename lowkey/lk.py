@@ -2808,13 +2808,13 @@ def run_functions(config, args=None):
                 _function_print_wrapped("        amount    ", outflow["amount"])
 
     print()
-    print(_function_terminal_style("ETH FLOW LEGEND", "heading"))
-    print("  ↑ RECEIVES ETH   Payable entrypoint; attach value with --eth <amount>.")
-    print("  ↓ SENDS ETH      A native-ETH outflow pattern was detected in source.")
-    print("  ! NOT ASSESSED   Source unavailable; outgoing ETH could not be inspected.")
-    print("  Source analysis covers common Solidity/Yul patterns and same-file private/internal helpers.")
-    print("  Inherited, modifier-driven, proxy/delegatecall and other indirect flows may need manual review.")
-    print("  ERC20 transfers are not reported as native ETH. Use lk fn --verbose for full audit details.")
+    print(_function_terminal_style("ETH FLOW", "heading"))
+    print("  ↑ RECEIVES   Accepts attached ETH; use --eth <amount>.")
+    print("  ↓ SENDS      Native-ETH outflow detected in source.")
+    print("  ! UNASSESSED Source unavailable; outgoing flow could not be inspected.")
+    print("  Common Solidity/Yul patterns and same-file helpers are checked; indirect flows need review.")
+    print("  Inheritance, modifiers and proxies/delegatecall may hide flows. ERC20 transfers are excluded.")
+    print("  Use lk fn --verbose for full audit details.")
 
     return 0
 
@@ -18355,9 +18355,25 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
         except (OSError, AttributeError):
             footer_width = 88
         print(_function_terminal_style("─" * max(48, min(footer_width, 88)), "muted"))
+        short_reasons = {
+            "lk ask": "Understand the function's inputs",
+            "lk read": "Read current contract state",
+            "lk wizard": "Run with guided prompts",
+            "lk changes": "Review state effects",
+        }
+        command_width = min(max(len(command_text) for command_text, _ in items), 42)
         for command_text, reason in items:
-            prefix = f"  {command_text}  — "
-            _function_print_wrapped(prefix, reason)
+            command_key = " ".join(command_text.split()[:2])
+            short_reason = short_reasons.get(command_key)
+            if short_reason is None:
+                short_reason = str(reason).split(". ", 1)[0].strip()
+                if len(short_reason) > 54:
+                    short_reason = short_reason[:51].rstrip() + "..."
+            if len(command_text) <= command_width:
+                print(f"  {command_text:<{command_width}}  {short_reason}")
+            else:
+                _function_print_wrapped("  ", command_text)
+                print(f"  {' ' * command_width}  {short_reason}")
     elif items:
         print("")
         print("LOWKEY RECOMMENDED NEXT COMMANDS")
