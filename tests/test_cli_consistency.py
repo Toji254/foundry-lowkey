@@ -394,6 +394,77 @@ class CliConsistencyTests(unittest.TestCase):
             ["contribute", "--value", "100 gwei"],
         )
 
+    def test_explicit_eoa_eth_transfer_preview_is_not_treated_as_contract_call(self):
+        recipient = "0x" + "1" * 40
+        config = {
+            "target": "0x" + "2" * 40,
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+        }
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
+             patch.object(lk, "cast_output") as cast_output, \\
+             redirect_stdout(output):
+            result = lk.run_cast(
+                ["send", recipient, "--eth", "2", "--preview"],
+                config,
+            )
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn(f"Preview: cast send {recipient} --value '2 ether'", rendered)
+        self.assertIn("--rpc-url http://127.0.0.1:8545", rendered)
+        cast_output.assert_not_called()
+
+    def test_actor_name_with_eth_value_resolves_as_direct_transfer_recipient(self):
+        recipient = "0x" + "1" * 40
+        config = {
+            "target": "0x" + "2" * 40,
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 1,
+                    "address": recipient,
+                },
+            },
+        }
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
+             patch.object(lk, "load_abi", return_value=[]), \\
+             patch.object(lk, "cast_output") as cast_output, \\
+             redirect_stdout(output):
+            result = lk.run_cast(
+                ["send", "Alice", "--eth", "2", "--preview"],
+                config,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIn(f"Preview: cast send {recipient} --value '2 ether'", output.getvalue())
+        cast_output.assert_not_called()
+
+    def test_unqualified_eth_send_to_stale_selected_target_remains_blocked(self):
+        target = "0x" + "2" * 40
+        config = {
+            "target": target,
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+        }
+        error_output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
+             patch.object(lk, "rpc_json", return_value="0x"), \\
+             patch.object(lk, "cast_output") as cast_output, \\
+             patch("sys.stderr", error_output):
+            result = lk.run_cast(
+                ["send", "--eth", "2", "--preview"],
+                config,
+            )
+
+        self.assertEqual(result, 2)
+        self.assertIn("LOWKEY TARGET SAFETY CHECK", error_output.getvalue())
+        self.assertIn("NOT DEPLOYED", error_output.getvalue())
+        cast_output.assert_not_called()
+
     def test_send_repeat_rejects_multi_call_without_changing_msg_sender(self):
         with self.assertRaisesRegex(ValueError, r"cannot repeat an exact call"):
             lk.normalize_send_options(["contribute", "--repeat", "2"])
