@@ -48,12 +48,65 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("Why: List contract functions.", rendered)
         ai_footer.assert_called_once_with("status", native, {}, args=[], result=0)
 
-    def test_send_preview_does_not_recommend_transaction_followups(self):
+    def test_send_preview_recommends_preflight_and_confirmed_submission(self):
+        target = "0x" + "9" * 40
+        sender = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "createEscrow",
+                "stateMutability": "payable",
+                "inputs": [{"name": "beneficiary", "type": "address"}],
+                "outputs": [],
+            },
+            {
+                "type": "function",
+                "name": "escrowCount",
+                "stateMutability": "view",
+                "inputs": [],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+        ]
+        config = {
+            "target": target,
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": sender}},
+        }
         args = ["createEscrow", "Bob", "--eth", "2", "--preview"]
-        self.assertEqual(lk._recommended_next_commands("send", args, {}), [])
+        with patch.object(lk, "load_abi", return_value=abi):
+            recommendations = lk._recommended_next_commands("send", args, config)
+            dry_run = lk._recommended_next_commands(
+                "send",
+                ["createEscrow", "Bob", "--eth", "2", "--dry-run"],
+                config,
+            )
 
-        dry_run_args = ["createEscrow", "Bob", "--eth", "2", "--dry-run"]
-        self.assertEqual(lk._recommended_next_commands("send", dry_run_args, []), [])
+        commands = [command for command, _reason in recommendations]
+        self.assertEqual(commands[0], "lk status")
+        self.assertIn("lk balance Alice", commands)
+        self.assertIn("lk read escrowCount", commands)
+        self.assertIn("lk send createEscrow Bob --eth 2 --confirm", commands)
+        self.assertFalse(any(command in {"lk receipt", "lk trace"} for command in commands))
+        self.assertEqual(
+            [command for command, _reason in dry_run],
+            commands,
+        )
+
+    def test_send_preview_never_echoes_explicit_credentials_in_submission_hint(self):
+        secret = "0x" + "a" * 64
+        args = [
+            "createEscrow", "Bob", "--private-key", secret, "--preview",
+        ]
+        with patch.object(lk, "load_abi", return_value=[]):
+            recommendations = lk._recommended_next_commands("send", args, {
+                "target": "0x" + "9" * 40,
+                "actor": "Alice",
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            })
+
+        rendered = "\n".join(command + " " + reason for command, reason in recommendations)
+        self.assertNotIn(secret, rendered)
+        self.assertFalse(any(command.startswith("lk send ") for command, _reason in recommendations))
 
     def test_named_actor_resolves_for_address_argument(self):
         alice = "0x" + "1" * 40
