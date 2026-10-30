@@ -549,6 +549,20 @@ class LowkeyCastTests(unittest.TestCase):
             "  Next step: Check the number you passed and the function's input checks.",
         )
 
+    def test_cast_argument_parser_error_is_reported_as_not_sent_input_error(self):
+        rendered = lk._format_cli_error(
+            "parser error:\n  Bob\n  ^\n  odd number of digits",
+            code=1,
+            command="send",
+            source="cast",
+        )
+
+        self.assertIn("Invalid command input", rendered)
+        self.assertIn("odd number of digits", rendered.lower())
+        self.assertIn("no transaction was broadcast", rendered.lower())
+        self.assertIn("Not sent; Cast rejected the arguments before broadcasting.", rendered)
+        self.assertNotIn("sender nonce", rendered.lower())
+
     def test_legacy_machine_style_revert_is_reformatted_for_people(self):
         legacy = (
             "ERROR [REVERT]\n"
@@ -4289,6 +4303,76 @@ contract Pool {
         sent=cast.call_args.args[0]
         self.assertIn("sendTo(address)",sent)
         self.assertIn("0x"+"2"*40,sent)
+
+    def test_run_cast_resolves_actor_name_for_payable_call_with_eth_option(self):
+        target = "0x" + "1" * 40
+        recipient = "0x" + "2" * 40
+        config = {
+            "target": target,
+            "wallets": {"Bob": {"address": recipient}},
+            "rpc": "http://127.0.0.1:8545",
+        }
+        abi = [{
+            "type": "function",
+            "name": "createEscrow",
+            "inputs": [
+                {"name": "amount", "type": "uint256"},
+                {"name": "recipient", "type": "address"},
+            ],
+            "stateMutability": "payable",
+        }]
+        output = io.StringIO()
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "cast_output") as cast_output, \
+             redirect_stdout(output):
+            result = lk.run_cast(
+                ["send", "createEscrow", "1", "ether", "Bob", "--eth", "2", "--confirm", "--preview"],
+                config,
+            )
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("'createEscrow(uint256,address)'", rendered)
+        self.assertIn("'1 ether'", rendered)
+        self.assertIn(recipient, rendered)
+        self.assertIn("--value '2 ether'", rendered)
+        self.assertNotIn(" Bob ", rendered)
+        cast_output.assert_not_called()
+
+    def test_run_cast_resolves_actor_name_when_value_option_precedes_argument(self):
+        target = "0x" + "1" * 40
+        recipient = "0x" + "2" * 40
+        config = {
+            "target": target,
+            "wallets": {"Bob": {"address": recipient}},
+            "rpc": "http://127.0.0.1:8545",
+        }
+        abi = [{
+            "type": "function",
+            "name": "createEscrow",
+            "inputs": [{"name": "recipient", "type": "address"}],
+            "stateMutability": "payable",
+        }]
+        output = io.StringIO()
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "cast_output") as cast_output, \
+             redirect_stdout(output):
+            result = lk.run_cast(
+                ["send", "createEscrow", "--value", "2 ether", "Bob", "--preview"],
+                config,
+            )
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("'createEscrow(address)'", rendered)
+        self.assertIn(recipient, rendered)
+        self.assertIn("--value '2 ether'", rendered)
+        self.assertNotIn(" Bob ", rendered)
+        cast_output.assert_not_called()
 
     def test_encode_target_call_normalizes_ether_argument(self):
         config={

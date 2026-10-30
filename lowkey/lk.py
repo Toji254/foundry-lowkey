@@ -4696,12 +4696,31 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         "unexpected argument", "unknown argument", "unknown option",
         "unrecognized option", "invalid value", "invalid type",
         "missing required argument", "could not parse argument",
+        "parser error", "odd number of digits", "invalid checksum",
+        "invalid address", "invalid hex string",
     )):
+        is_parser_error = any(marker in lowered for marker in (
+            "parser error", "odd number of digits", "invalid checksum",
+            "invalid address", "invalid hex string",
+        ))
         return _friendly_error(
             "Invalid command input",
             reason=_clean_error_detail(text),
-            next_step=(f"Run lk {command} --h to see accepted arguments and examples." if command else "Check the command's help for accepted arguments and examples."),
-            transaction="Not sent; the command input was rejected." if is_send else None,
+            what=(
+                "Cast could not parse the supplied arguments, so no transaction was broadcast."
+                if is_send and is_parser_error
+                else None
+            ),
+            next_step=(
+                "Check that the values match the selected function's ABI. For address inputs, use a full 0x address or a registered actor/target name."
+                if is_parser_error
+                else (f"Run lk {command} --h to see accepted arguments and examples." if command else "Check the command's help for accepted arguments and examples.")
+            ),
+            transaction=(
+                "Not sent; Cast rejected the arguments before broadcasting."
+                if is_send and is_parser_error
+                else "Not sent; the command input was rejected." if is_send else None
+            ),
         )
 
     if any(marker in lowered for marker in (
@@ -4935,7 +4954,7 @@ def run_cast(args,config,capture=False):
             matches=matching_functions(abi,remaining[0]) if abi else []
             if len(matches)==1:
                 function_item=matches[0]
-                remaining[1:]=prepare_argument_values(config,matches[0],remaining[1:])
+                remaining[1:]=prepare_cast_call_arguments(config,matches[0],remaining[1:])
         except ValueError as error:
             return _lowkey_command_error(
                 f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
@@ -12018,6 +12037,112 @@ def prepare_argument_values(config, function_item, values):
     if index != len(raw):
         return raw
     return resolve_argument_aliases(config, function_item, prepared)
+
+
+_CAST_ARGUMENT_OPTIONS_WITH_VALUES = {
+    "--access-list", "--account", "--auth", "--blob-gas-price",
+    "--block", "--chain", "--confirmations", "--data",
+    "--flashbots-auth", "--flashbots-relay", "--from",
+    "--gas-limit", "--gas-price", "--keystore", "--keystore-dir",
+    "--mnemonic", "--mnemonic-derivation-path", "--mnemonic-index",
+    "--mnemonic-passphrase", "--nonce", "--password", "--password-file",
+    "--poll-interval", "--priority-gas-price", "--private-key",
+    "--rpc-url", "--timeout", "--value", "--verifier",
+    "--verifier-api-key", "--verifier-url",
+}
+_CAST_ARGUMENT_SWITCHES = {
+    "--async", "--blob", "--confirm", "--create2-deployer", "--dry-run",
+    "--interactive", "--legacy", "--offline", "--preview", "--resend",
+    "--skip-simulation", "--slow", "--unlocked", "--yes",
+}
+
+
+def _cast_option_end(values, index):
+    """Return the index after a recognized Cast/Lowkey option, or None."""
+    token = str(values[index]).strip()
+    option, has_inline_value, _inline_value = token.partition("=")
+    if option in _CAST_ARGUMENT_OPTIONS_WITH_VALUES:
+        if has_inline_value:
+            return index + 1
+        return index + 2 if index + 1 < len(values) else None
+    if option in _CAST_ARGUMENT_SWITCHES:
+        return index + 1
+    return None
+
+
+def prepare_cast_call_arguments(config, function_item, values):
+    """Resolve ABI arguments without treating Cast options as function values.
+
+    Cast accepts transaction options alongside positional ABI arguments. Keep
+    those options in their original order, but pass only ABI values through
+    prepare_argument_values(). Unknown options fail closed: leave the original
+    arguments untouched rather than risk rewriting the wrong token.
+    """
+    raw = list(values or [])
+    inputs = function_item.get("inputs", []) if isinstance(function_item, dict) else []
+    if not inputs:
+        return raw
+
+    positional = []
+    rebuilt = []
+    argument_slots = []
+    cursor = 0
+
+    for item in inputs:
+        item_type = canonical_type(item)
+        while cursor < len(raw):
+            token = str(raw[cursor]).strip()
+            is_negative_integer = (
+                item_type.startswith("int")
+                and bool(re.fullmatch(r"-[0-9]+", token))
+            )
+            if not token.startswith("-") or is_negative_integer:
+                break
+            option_end = _cast_option_end(raw, cursor)
+            if option_end is None:
+                return raw
+            rebuilt.extend(raw[cursor:option_end])
+            cursor = option_end
+
+        if cursor >= len(raw):
+            return raw
+
+        token = str(raw[cursor]).strip()
+        if token.startswith("-") and not (
+            item_type.startswith("int")
+            and re.fullmatch(r"-[0-9]+", token)
+        ):
+            return raw
+
+        argument_slots.append(len(rebuilt))
+        positional.append(raw[cursor])
+        rebuilt.append(None)
+        cursor += 1
+
+        if (
+            (item_type.startswith("uint") or item_type.startswith("int"))
+            and cursor < len(raw)
+            and str(raw[cursor]).lower() in {"wei", "gwei", "ether"}
+        ):
+            positional.append(raw[cursor])
+            cursor += 1
+
+    # Any remaining tokens must be recognized options. Extra positional values
+    # or unknown options keep the old fail-safe behavior: do not rewrite them.
+    while cursor < len(raw):
+        option_end = _cast_option_end(raw, cursor)
+        if option_end is None:
+            return raw
+        rebuilt.extend(raw[cursor:option_end])
+        cursor = option_end
+
+    prepared = prepare_argument_values(config, function_item, positional)
+    if len(prepared) != len(inputs):
+        return raw
+
+    for slot, value in zip(argument_slots, prepared):
+        rebuilt[slot] = value
+    return rebuilt
 
 
 def split_grouped_argument_values(values, expected_count, inputs=None):
