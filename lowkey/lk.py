@@ -5291,9 +5291,7 @@ def run_cast(args,config,capture=False):
                         abi=abi,
                     )
                     if contract_report:
-                        summary = summary.rstrip() + "
-
-" + contract_report
+                        summary = summary.rstrip() + "\n\n" + contract_report
                 print(summary)
             elif cast_cmd=="storage" and len(remaining) >= 1:
                 explained = format_storage_read(config, remaining[0], out)
