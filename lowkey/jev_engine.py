@@ -960,7 +960,7 @@ def classify_command(
         "provider": raw.get("provider", "unknown"),
         "cache_hit": bool(raw.get("cache_hit", False)),
         "usage": raw.get("usage", {}),
-        "source": "jev-systemone",
+        "source": f"{raw.get('provider', 'unknown')}-jev",
         "verified": False,
         "executed_by_ai": False,
     }
