@@ -18658,10 +18658,9 @@ def _print_jev_command_classification(command, args, result_code, command_output
         return
     try:
         try:
-            import ai_harness
             import jev_engine
         except ImportError:
-            from lowkey import ai_harness, jev_engine
+            from lowkey import jev_engine
         jev_state = jev_engine.status()
         if not jev_state.get("configured"):
             provider = jev_state.get("provider", "jevmodel")
