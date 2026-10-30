@@ -190,7 +190,7 @@ class FunctionInventoryTests(unittest.TestCase):
     def test_generated_public_getter_is_not_marked_source_unavailable(self):
         code, output = self._run([])
         self.assertEqual(code, 0)
-        getter_section = output.split("STORAGE GETTERS (1)", 1)[1].split("ETH FLOW LEGEND", 1)[0]
+        getter_section = output.split("STORAGE GETTERS: 1", 1)[1].split("ETH FLOW LEGEND", 1)[0]
         self.assertIn("balances(address)", getter_section)
         self.assertIn("PUBLIC GETTER", getter_section)
         self.assertNotIn("NOT ASSESSED", getter_section)
@@ -262,7 +262,7 @@ class FunctionInventoryTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("OUTGOING ETH NOT ASSESSED", rendered)
-        getter_section = rendered.split("STORAGE GETTERS (1)", 1)[1].split("ETH FLOW LEGEND", 1)[0]
+        getter_section = rendered.split("STORAGE GETTERS: 1", 1)[1].split("ETH FLOW LEGEND", 1)[0]
         self.assertIn("balances(address)", getter_section)
         self.assertNotIn("NOT ASSESSED", getter_section)
 
@@ -295,7 +295,9 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("SUMMARY   1 functions · 0 write · 0 read · 1 getters", rendered)
         self.assertIn("STORAGE GETTERS (1)", rendered)
         self.assertIn("balances(address)", rendered)
-        self.assertNotIn("NOT ASSESSED", rendered)
+        getter_tail = rendered.split("STORAGE GETTERS: 1", 1)[1]
+        getter_section = getter_tail.split("ETH ENTRYPOINTS", 1)[0].split("ETH FLOW LEGEND", 1)[0]
+        self.assertNotIn("NOT ASSESSED", getter_section)
 
     def test_terminal_styling_respects_no_color_and_non_tty_output(self):
         class TTYStream(io.StringIO):
