@@ -4499,6 +4499,88 @@ contract Pool {
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
+
+    def test_mapping_storage_member_decodes_solidity_enum_name(self):
+        item = {"label": "currentStatus", "type": "t_enum", "offset": 0}
+        types = {
+            "t_enum": {
+                "label": "enum Escrow.Status",
+                "encoding": "inplace",
+                "numberOfBytes": "1",
+            },
+        }
+        raw = "0x" + format(2, "064x")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "Escrow.sol"
+            source.write_text(
+                "contract Escrow { enum Status { Created, Accepted, Released } }",
+                encoding="utf-8",
+            )
+            with patch.object(lk, "source_sol_files", return_value=[str(source)]), patch.object(
+                lk.audit_context, "foundry_project_root", return_value=str(tmp)
+            ):
+                rendered = lk.format_mapping_member({}, raw, item, types)
+        self.assertEqual(rendered, "Released (enum value 2)")
+
+    def test_raw_storage_slot_decodes_solidity_enum_name(self):
+        types = {
+            "t_enum": {
+                "label": "enum Escrow.Status",
+                "encoding": "inplace",
+                "numberOfBytes": "1",
+            },
+        }
+        storage = [{"label": "currentStatus", "slot": "0", "offset": 0, "type": "t_enum"}]
+        raw = "0x" + format(1, "064x")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "Escrow.sol"
+            source.write_text(
+                "contract Escrow { enum Status { Created, Accepted, Released } }",
+                encoding="utf-8",
+            )
+            with patch.object(lk, "storage_layout_details", return_value=(types, storage)), patch.object(
+                lk, "source_sol_files", return_value=[str(source)]
+            ), patch.object(lk.audit_context, "foundry_project_root", return_value=str(tmp)):
+                rendered = lk.format_storage_read({"labels": {}}, "0", raw)
+        self.assertIn("Accepted (enum value 1)", rendered)
+
+    def test_array_storage_enum_uses_shared_enum_humanizer(self):
+        types = {
+            "t_array": {
+                "label": "enum Escrow.Status[]",
+                "encoding": "dynamic_array",
+                "base": "t_enum",
+            },
+            "t_enum": {
+                "label": "enum Escrow.Status",
+                "encoding": "inplace",
+                "numberOfBytes": "1",
+            },
+        }
+        storage = [{"label": "statuses", "slot": "5", "type": "t_array"}]
+        word = "0x" + format(2, "064x")
+        data_slot = "0x" + "a" * 64
+        config = {"target": "0x" + "1" * 40}
+        reads = [
+            lk.CommandResult("0x" + format(1, "064x"), 0),
+            lk.CommandResult(word, 0),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "Escrow.sol"
+            source.write_text(
+                "contract Escrow { enum Status { Created, Accepted, Released } }",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with patch.object(lk, "storage_layout_details", return_value=(types, storage)), patch.object(
+                lk, "run_cast", side_effect=reads
+            ), patch.object(lk, "cast_output", return_value=(0, data_slot, "")), patch.object(
+                lk, "source_sol_files", return_value=[str(source)]
+            ), patch.object(lk.audit_context, "foundry_project_root", return_value=str(tmp)), redirect_stdout(output):
+                result = lk.run_array(config, ["statuses", "0"])
+        self.assertEqual(result, 0)
+        self.assertIn("Released (enum value 2)", output.getvalue())
+
     def test_human_abi_return_resolves_enum_member_names_from_source(self):
         item = {
             "type": "function",

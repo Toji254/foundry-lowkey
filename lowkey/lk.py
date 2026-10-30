@@ -6536,8 +6536,15 @@ def run_array(config, args=None):
         actor_name = assigned_anvil_address(config, decoded)
         if actor_name:
             decoded = f"{actor_name} ({decoded})"
-    elif str(decoded).isdigit() and "uint" in storage_type_label(types, base_type_id).lower():
-        decoded = _humanize_abi_scalar(decoded, storage_type_label(types, base_type_id), "", config)
+    else:
+        enum_value = _humanize_storage_enum(decoded, base_type_id, types, entry.get("label"))
+        if enum_value:
+            decoded = enum_value
+        elif str(decoded).isdigit() and (
+            "uint" in storage_type_label(types, base_type_id).lower()
+            or "int" in storage_type_label(types, base_type_id).lower()
+        ):
+            decoded = _humanize_abi_scalar(decoded, storage_type_label(types, base_type_id), "", config)
     print(f"Slot:        0x{slot_number:064x}")
     print(f"Byte offset: {offset}")
     print(f"Raw word:    {raw}")
@@ -14011,6 +14018,17 @@ def decode_storage_member(raw, type_id, types, offset=0):
     return "0x"+format(value_int,"064x")
 
 
+
+def _humanize_storage_enum(value, type_id, types, field_name=""):
+    """Use Solidity source enum members when a storage-layout type is an enum."""
+    type_label = storage_type_label(types, type_id)
+    output = {
+        "name": str(field_name or ""),
+        "internalType": type_label if str(type_label).lower().startswith("enum ") else "",
+    }
+    return _humanize_enum_scalar(value, output)
+
+
 def format_mapping_member(config, raw, member, types):
     value=decode_storage_member(
         raw,
@@ -14020,6 +14038,9 @@ def format_mapping_member(config, raw, member, types):
     )
     if value=="none":
         return value
+    enum_value = _humanize_storage_enum(value, member.get("type"), types, member.get("label"))
+    if enum_value:
+        return enum_value
     if is_address(value):
         name=assigned_anvil_address(config,value)
         return f"{name} ({value})" if name else value
@@ -15883,6 +15904,8 @@ def format_storage_read(config, slot, raw):
             decoded = "0x" + f"{decoded_int:040x}"
         elif lowered == "bool" and number_of_bytes == 1:
             decoded = "true" if decoded_int else "false"
+        elif lowered.startswith("enum "):
+            decoded = str(decoded_int)
         elif lowered.startswith("uint") or lowered.startswith("int"):
             decoded = str(decoded_int)
         elif lowered == "bytes32" and number_of_bytes == 32:
@@ -15892,7 +15915,10 @@ def format_storage_read(config, slot, raw):
         lines.append(f"{prefix}:")
         lines.append(f"    Type:  {type_label}")
         if decoded is not None:
-            rendered_decoded = apply_labels(decoded, config) if lowered == "address" and is_address(decoded) else decoded
+            enum_rendered = _humanize_storage_enum(decoded, entry.get("type"), types, label)
+            rendered_decoded = enum_rendered or (
+                apply_labels(decoded, config) if lowered == "address" and is_address(decoded) else decoded
+            )
             lines.append(f"    Value: {rendered_decoded}")
         else:
             lines.append("    Value: raw 32-byte storage word (type not safely decoded)")
