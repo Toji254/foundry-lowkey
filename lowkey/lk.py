@@ -2743,7 +2743,7 @@ def run_functions(config, args=None):
         if not items:
             continue
         print()
-        print(_function_terminal_style(f"{title} ({len(items)})", "heading"))
+        print(_function_terminal_style(f"{title}: {len(items)}", "heading"))
         print(_function_terminal_style("─" * rule_width, "muted"))
         for record in items:
             _function_print_wrapped(
