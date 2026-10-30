@@ -114,6 +114,31 @@ class FunctionInventoryTests(unittest.TestCase):
             tmp.cleanup()
         return code, output.getvalue()
 
+    def test_source_resolution_uses_selected_contract_when_artifact_metadata_is_missing(self):
+        tmp, root, config = self._fixture()
+        old = os.getcwd()
+        output = io.StringIO()
+        try:
+            artifact_path = pathlib.Path(config["abi_paths"][config["target"]])
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            artifact.pop("contractName", None)
+            artifact.pop("sourceName", None)
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+            os.chdir(root)
+            with patch.object(lk, "cast_output", return_value=(1, "", "")), contextlib.redirect_stdout(output):
+                code = lk.run_functions(config, ["--verbose"])
+        finally:
+            os.chdir(old)
+            tmp.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn(f"Source   : {root / 'src' / 'Foo.sol'}", rendered)
+        self.assertIn("withdraw(uint256)", rendered)
+        self.assertIn("ether      : SENDS", rendered)
+        self.assertIn("ETH OUT 1: call{value} | to: msg.sender | amount: amount", rendered)
+
     def test_verbose_inventory_shows_audit_metadata(self):
         code, output = self._run(["-v"])
         self.assertEqual(code, 0)
