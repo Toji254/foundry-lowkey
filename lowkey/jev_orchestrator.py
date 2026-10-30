@@ -1057,6 +1057,48 @@ def parse_page_entries(listing: str) -> list[dict[str, Any]]:
     return entries
 
 
+def verify_new_page_opened(
+    *,
+    requested_url: str,
+    before_listing: str,
+    after_listing: str,
+) -> tuple[bool, str, str | None]:
+    """Require a new matching page ID while preserving all previously listed pages."""
+    before = parse_page_entries(before_listing)
+    after = parse_page_entries(after_listing)
+    before_ids = {page["page_id"] for page in before}
+    after_ids = {page["page_id"] for page in after}
+
+    missing = before_ids - after_ids
+    if missing:
+        return (
+            False,
+            "one or more pre-existing browser tabs disappeared during navigation",
+            None,
+        )
+
+    created_match = next(
+        (
+            page for page in after
+            if page["page_id"] not in before_ids
+            and urls_match(page["url"], requested_url)
+        ),
+        None,
+    )
+    if created_match is None:
+        return (
+            False,
+            "the subsequent page list did not show a newly created tab at the requested URL",
+            None,
+        )
+
+    return (
+        True,
+        f"new page ID {created_match['page_id']} appeared and existing page IDs were preserved",
+        created_match["url"],
+    )
+
+
 def snapshot_root_details(snapshot: str) -> tuple[str, str]:
     match = re.search(
         r'RootWebArea\s+"([^"]*)"(?:\s+url="([^"]*)")?',
