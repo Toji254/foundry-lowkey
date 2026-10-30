@@ -4493,16 +4493,18 @@ def _function_interaction_recommendations(command,args,config):
         # identifies the new record. Make the local identifier registry an
         # explicit next step instead of making users discover "lk ids" alone.
         outputs = current.get("outputs") or []
-        returns_identifier = any(
-            _identifier_name(output.get("name"))
-            for output in outputs
-            if isinstance(output, dict)
-        ) or (
+        identifier_outputs = [
+            output for output in outputs
+            if isinstance(output, dict) and _identifier_name(output.get("name"))
+        ]
+        if (
             len(outputs) == 1
             and canonical_type(outputs[0]).lower() == "bytes32"
             and _creation_function_name(current.get("name"))
-        )
-        if returns_identifier:
+            and not identifier_outputs
+        ):
+            identifier_outputs = [outputs[0]]
+        if identifier_outputs:
             rendered.append((
                 "lk ids",
                 "Find the contract ID saved from this transaction; use @last or assign it a readable alias.",
@@ -4510,8 +4512,37 @@ def _function_interaction_recommendations(command,args,config):
 
         for item in related_reads[:2]:
             command_text=_function_recommendation_command("read",item,abi)
-            if command_text:
-                rendered.append((command_text,_function_recommendation_reason(item)))
+            if not command_text:
+                continue
+
+            # When a related getter accepts the ID this transaction returns,
+            # make the suggested read immediately usable. @last resolves to
+            # the latest saved contract identifier and remains ABI type-checked.
+            matching_inputs = []
+            for input_index, parameter in enumerate(item.get("inputs") or [], 1):
+                parameter_type = canonical_type(parameter).lower()
+                matching_outputs = [
+                    output for output in identifier_outputs
+                    if canonical_type(output).lower() == parameter_type
+                ]
+                if (
+                    _identifier_name(parameter.get("name"))
+                    and len(matching_outputs) == 1
+                ):
+                    matching_inputs.append((input_index, parameter))
+            if len(matching_inputs) == 1:
+                _input_index, parameter = matching_inputs[0]
+                parameter_name = str(parameter.get("name") or "").strip()
+                if parameter_name:
+                    command_text = command_text.replace(
+                        f"<{parameter_name}>", "@last", 1
+                    )
+            reason = (
+                "Read the newly created record using its saved ID."
+                if "@last" in command_text
+                else _function_recommendation_reason(item)
+            )
+            rendered.append((command_text,reason))
         return rendered[:4]
 
     if canonical=="wizard":
