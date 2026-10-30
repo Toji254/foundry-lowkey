@@ -4488,6 +4488,26 @@ def _function_interaction_recommendations(command,args,config):
     if canonical in {"send","wizard"} and current.get("stateMutability") not in {"view","pure"}:
         rendered=[("lk receipt","Confirm the transaction status and decoded receipt."),
                    ("lk trace","See what the transaction actually executed and which contracts it touched.")]
+
+        # A successful creation call may return the contract-level key that
+        # identifies the new record. Make the local identifier registry an
+        # explicit next step instead of making users discover "lk ids" alone.
+        outputs = current.get("outputs") or []
+        returns_identifier = any(
+            _identifier_name(output.get("name"))
+            for output in outputs
+            if isinstance(output, dict)
+        ) or (
+            len(outputs) == 1
+            and canonical_type(outputs[0]).lower() == "bytes32"
+            and _creation_function_name(current.get("name"))
+        )
+        if returns_identifier:
+            rendered.append((
+                "lk ids",
+                "Find the contract ID saved from this transaction; use @last or assign it a readable alias.",
+            ))
+
         for item in related_reads[:2]:
             command_text=_function_recommendation_command("read",item,abi)
             if command_text:
