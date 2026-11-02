@@ -214,6 +214,32 @@ class CommandHelpTests(unittest.TestCase):
                 for item in expected:
                     self.assertIn(item, output)
 
+    def test_send_help_documents_solidity_abi_argument_types(self):
+        code, output = self.capture_dispatch("send", "--h")
+        self.assertEqual(code, 0)
+        for item in (
+            "SOLIDITY ABI ARGUMENT TYPES",
+            "address / address payable / contract",
+            "bool",
+            "uint<M> / int<M>",
+            "enum",
+            "string",
+            "bytes",
+            "bytes1 ... bytes32",
+            "T[] (dynamic array)",
+            "T[N] (fixed-size array)",
+            "T[][] (nested arrays)",
+            "tuple / struct",
+            "tuple[] (array of structs)",
+            "function",
+            "user-defined value type",
+            "mapping (not passed directly)",
+            """lk send createBounty "description of the bounty" '["defi","solidity"]' --eth 2 --preview""",
+            "Arrays and tuples are each ONE argument",
+        ):
+            with self.subTest(item=item):
+                self.assertIn(item, output)
+
     def test_read_help_explains_common_argument_types(self):
         code, output = self.capture_dispatch("read", "--h")
         self.assertEqual(code, 0)
