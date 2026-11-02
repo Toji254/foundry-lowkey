@@ -18324,7 +18324,8 @@ COMMAND_HELP = {
         argument_types=[
             ("address / address payable / contract", "Pass a 0x-prefixed 20-byte address. Solidity address payable and contract-typed parameters use the same ABI address representation.", "lk send transfer 0x1111111111111111111111111111111111111111 100"),
             ("bool", "Pass true or false. Do not use Solidity words such as yes/no.", "lk send setEnabled true"),
-            ("uint<M> / int<M>", "Unsigned and signed integers use widths 8, 16, 24, ... 256. Pass decimal or 0x-prefixed hex; signed integers may be negative. For wei-denominated amounts, Cast also understands units such as 1ether or 5gwei.", "lk send setAmount 1ether"),
+            ("uint<M> / int<M> / uint / int", "Unsigned and signed integers use widths 8, 16, 24, ... 256. Bare uint means uint256; bare int means int256. Pass decimal or 0x-prefixed hex; signed integers may be negative. For wei-denominated values, Cast understands units such as 1ether or 5gwei.", "lk send setAmount 1ether"),
+            ("fixed<M>x<N> / ufixed<M>x<N> / fixed / ufixed", "Fixed-point ABI forms are defined, and fixed/ufixed alias fixed128x18/ufixed128x18. Solidity fixed-point types are not fully supported for normal assignments and arithmetic, so most contracts will not expose them as usable parameters.", "ABI form: fixed128x18 (rare; compiler support is incomplete)"),
             ("enum", "A Solidity enum is encoded as an unsigned integer (normally uint8). Pass its zero-based member index: the first enum member is 0, the second is 1, and so on.", "lk send setStatus 2"),
             ("string", "Pass text as one shell argument. Put quotes around text containing spaces so the shell keeps it together.", 'lk send setDescription "hello bounty hunters"'),
             ("bytes", "Pass dynamic bytes as 0x-prefixed hex with an even number of hex digits. The length can vary.", "lk send setData 0xdeadbeef"),
@@ -18334,9 +18335,9 @@ COMMAND_HELP = {
             ("T[][] (nested arrays)", "Nest square brackets to match the array dimensions. Keep the complete expression as one quoted shell argument.", "lk send setGrid '[[1,2],[3,4]]'"),
             ("tuple / struct", "A Solidity struct parameter is ABI-encoded as a tuple. Use parentheses and provide each component in the struct's declared field order.", "lk send updatePosition '(0x1111111111111111111111111111111111111111,100)'"),
             ("tuple[] (array of structs)", "Use square brackets around tuples; each tuple uses parentheses. Supply fields in order for every struct.", "lk send setPositions '[(0x1111111111111111111111111111111111111111,100),(0x2222222222222222222222222222222222222222,200)]'"),
-            ("function", "An external function value is encoded as 24 bytes: a 20-byte contract address followed by a 4-byte function selector.", "lk send setCallback 0x1111111111111111111111111111111111111111a9059cbb"),
+            ("function (external only)", "An external function value is encoded as 24 bytes: a 20-byte contract address followed by a 4-byte function selector. Internal function pointers are not part of the external ABI.", "lk send setCallback 0x1111111111111111111111111111111111111111a9059cbb"),
             ("user-defined value type", "A type declared with type Name is UnderlyingType uses its underlying ABI type. Pass the same kind of value you would pass for that underlying type.", "lk send setPrice 100"),
-            ("mapping (not passed directly)", "A mapping is storage, not an ABI argument type. A public mapping getter exposes its key as a normal function argument; use lk read for that getter.", "lk read balances 0x1111111111111111111111111111111111111111"),
+            ("mapping / storage-only references (not passed directly)", "Mappings cannot be parameters of externally visible contract functions. Storage references and data-location keywords (memory, calldata, storage) are not separate ABI value types. A public mapping getter exposes its key as an ordinary parameter; use lk read for that getter.", "lk read balances 0x1111111111111111111111111111111111111111"),
         ],
         related=["lk changes", "lk trace", "lk receipt"],
     ),    "import": _help_entry(
