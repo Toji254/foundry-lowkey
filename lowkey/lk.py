@@ -17908,7 +17908,7 @@ def run_break(config, args):
 
 HELP_FLAGS = {"--h", "--help", "-h", "help"}
 
-def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None):
+def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None, argument_types=None):
     return {
         "summary": summary,
         "usage": usage,
@@ -17918,13 +17918,14 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
         "options": options or [],
         "forms": forms or [],
         "related": related or [],
+        "argument_types": argument_types or [],
     }
 
 def _validate_help_variations(entries):
     """Validate structured help variants without changing runtime behavior."""
     problems = []
     for command, entry in entries.items():
-        for field_name in ("forms", "options"):
+        for field_name in ("forms", "options", "argument_types"):
             for index, item in enumerate(entry.get(field_name) or [], 1):
                 if not isinstance(item, (list, tuple)) or len(item) != 3:
                     problems.append(f"lk {command}: {field_name}[{index}] must be (command, description, example)")
@@ -18319,6 +18320,23 @@ COMMAND_HELP = {
             ("--repeat <N>", "Accepted only as 1. A generic EOA transaction cannot repeat the exact target call N times without changing msg.sender or creating separate transactions. Use --actors to test multiple Anvil identities.", "lk send setValue 10 --repeat 1"),
             ("--times <N>", "Another spelling of --repeat; values above 1 are rejected rather than silently changing transaction semantics.", "lk send setValue 10 --times 1"),
             ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send release 0xd9c5... --yes"),
+        ],
+        argument_types=[
+            ("address / address payable / contract", "Pass a 0x-prefixed 20-byte address. Solidity address payable and contract-typed parameters use the same ABI address representation.", "lk send transfer 0x1111111111111111111111111111111111111111 100"),
+            ("bool", "Pass true or false. Do not use Solidity words such as yes/no.", "lk send setEnabled true"),
+            ("uint<M> / int<M>", "Unsigned and signed integers use widths 8, 16, 24, ... 256. Pass decimal or 0x-prefixed hex; signed integers may be negative. For wei-denominated amounts, Cast also understands units such as 1ether or 5gwei.", "lk send setAmount 1ether"),
+            ("enum", "A Solidity enum is encoded as an unsigned integer (normally uint8). Pass its zero-based member index: the first enum member is 0, the second is 1, and so on.", "lk send setStatus 2"),
+            ("string", "Pass text as one shell argument. Put quotes around text containing spaces so the shell keeps it together.", 'lk send setDescription "hello bounty hunters"'),
+            ("bytes", "Pass dynamic bytes as 0x-prefixed hex with an even number of hex digits. The length can vary.", "lk send setData 0xdeadbeef"),
+            ("bytes1 ... bytes32", "Pass exactly the fixed number of bytes required by the parameter. Example: bytes4 needs 8 hex digits after 0x; bytes32 needs 64.", "lk send setMagic 0x12345678"),
+            ("T[] (dynamic array)", "Use square brackets with comma-separated elements. For string arrays, quote each string inside the array and quote the complete array for the shell.", """lk send createBounty "description of the bounty" '["defi","solidity"]' --eth 2 --preview"""),
+            ("T[N] (fixed-size array)", "Use the same square-bracket form, with exactly N elements. The number of values must match the declared array length.", "lk send setMilestones '[10,20,30]'"),
+            ("T[][] (nested arrays)", "Nest square brackets to match the array dimensions. Keep the complete expression as one quoted shell argument.", "lk send setGrid '[[1,2],[3,4]]'"),
+            ("tuple / struct", "A Solidity struct parameter is ABI-encoded as a tuple. Use parentheses and provide each component in the struct's declared field order.", "lk send updatePosition '(0x1111111111111111111111111111111111111111,100)'"),
+            ("tuple[] (array of structs)", "Use square brackets around tuples; each tuple uses parentheses. Supply fields in order for every struct.", "lk send setPositions '[(0x1111111111111111111111111111111111111111,100),(0x2222222222222222222222222222222222222222,200)]'"),
+            ("function", "An external function value is encoded as 24 bytes: a 20-byte contract address followed by a 4-byte function selector.", "lk send setCallback 0x1111111111111111111111111111111111111111a9059cbb"),
+            ("user-defined value type", "A type declared with type Name is UnderlyingType uses its underlying ABI type. Pass the same kind of value you would pass for that underlying type.", "lk send setPrice 100"),
+            ("mapping (not passed directly)", "A mapping is storage, not an ABI argument type. A public mapping getter exposes its key as a normal function argument; use lk read for that getter.", "lk read balances 0x1111111111111111111111111111111111111111"),
         ],
         related=["lk changes", "lk trace", "lk receipt"],
     ),    "import": _help_entry(
@@ -19310,6 +19328,18 @@ def _render_command_help(path):
             print("----------")
             print(f"  lk {parent_shown} --h")
             print("      Go back to the parent command and see its available subcommands.")
+
+    argument_types = entry.get("argument_types") or []
+    if argument_types:
+        print("")
+        print("SOLIDITY ABI ARGUMENT TYPES")
+        print("---------------------------")
+        print("Use one value per ABI parameter, in the exact function-input order.")
+        print("Arrays and tuples are each ONE argument; quote the whole bracket/tuple value in your shell.")
+        for abi_type, description, example in argument_types:
+            print(f"  {abi_type}")
+            print(f"      {description}")
+            print(f"      Example: {example}")
 
     options = entry.get("options") or []
     if options:
