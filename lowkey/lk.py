@@ -18330,7 +18330,7 @@ COMMAND_HELP = {
             ("string", "Pass text as one shell argument. Put quotes around text containing spaces so the shell keeps it together.", 'lk send setDescription "hello bounty hunters"'),
             ("bytes", "Pass dynamic bytes as 0x-prefixed hex with an even number of hex digits. The length can vary.", "lk send setData 0xdeadbeef"),
             ("bytes1 ... bytes32", "Pass exactly the fixed number of bytes required by the parameter. Example: bytes4 needs 8 hex digits after 0x; bytes32 needs 64.", "lk send setMagic 0x12345678"),
-            ("T[] (dynamic array)", "Use square brackets with comma-separated elements. For string arrays, quote each string inside the array and quote the complete array for the shell.", """lk send createBounty "description of the bounty" '["defi","solidity"]' --eth 2 --preview"""),
+            ("T[] (dynamic array)", "Use square brackets with comma-separated elements. For string arrays, quote each string inside the array and quote the complete array for the shell.", """lk send createRecord "description of the record" '["defi","solidity"]' --eth 2 --preview"""),
             ("T[N] (fixed-size array)", "Use the same square-bracket form, with exactly N elements. The number of values must match the declared array length.", "lk send setMilestones '[10,20,30]'"),
             ("T[][] (nested arrays)", "Nest square brackets to match the array dimensions. Keep the complete expression as one quoted shell argument.", "lk send setGrid '[[1,2],[3,4]]'"),
             ("tuple / struct", "A Solidity struct parameter is ABI-encoded as a tuple. Use parentheses and provide each component in the struct's declared field order.", "lk send updatePosition '(0x1111111111111111111111111111111111111111,100)'"),
