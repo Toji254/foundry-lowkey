@@ -235,7 +235,7 @@ class CommandHelpTests(unittest.TestCase):
             "function (external only)",
             "user-defined value type",
             "mapping / storage-only references (not passed directly)",
-            """lk send createBounty "description of the bounty" '["defi","solidity"]' --eth 2 --preview""",
+            """lk send createRecord "description of the record" '["defi","solidity"]' --eth 2 --preview""",
             "Arrays and tuples are each ONE argument",
         ):
             with self.subTest(item=item):
