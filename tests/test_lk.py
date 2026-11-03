@@ -4575,7 +4575,7 @@ contract Pool {
             item, decoded, {"labels": {}}, abi
         )
         self.assertIn(
-            "  amount = 2,000,000,000,000,000,000 [uint256]",
+            "  amount = 2000000000000000000 [uint256]",
             rendered,
         )
         self.assertIn("Human-readable equivalent: 2 ETH", rendered)
@@ -4612,7 +4612,7 @@ contract Pool {
         )
 
         self.assertIn(
-            "get contribution = 1,700,000,000,000,000 [uint256]",
+            "get contribution = 1700000000000000 [uint256]",
             rendered,
         )
         self.assertIn("Human-readable equivalent: 0.0017 ETH", rendered)
