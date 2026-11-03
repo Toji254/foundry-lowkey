@@ -18000,7 +18000,7 @@ def run_break(config, args):
 
 HELP_FLAGS = {"--h", "--help", "-h", "help"}
 
-def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None, argument_types=None):
+def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None, argument_types=None, notes=None):
     return {
         "summary": summary,
         "usage": usage,
@@ -18011,13 +18011,14 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
         "forms": forms or [],
         "related": related or [],
         "argument_types": argument_types or [],
+        "notes": notes or [],
     }
 
 def _validate_help_variations(entries):
     """Validate structured help variants without changing runtime behavior."""
     problems = []
     for command, entry in entries.items():
-        for field_name in ("forms", "options", "argument_types"):
+        for field_name in ("forms", "options", "argument_types", "notes"):
             for index, item in enumerate(entry.get(field_name) or [], 1):
                 if not isinstance(item, (list, tuple)) or len(item) != 3:
                     problems.append(f"lk {command}: {field_name}[{index}] must be (command, description, example)")
@@ -19464,6 +19465,16 @@ def _render_command_help(path):
         print("Arrays and tuples are each ONE argument; quote the whole bracket/tuple value in your shell.")
         for abi_type, description, example in argument_types:
             print(f"  {abi_type}")
+            print(f"      {description}")
+            print(f"      Example: {example}")
+
+    notes = entry.get("notes") or []
+    if notes:
+        print("")
+        print("OUTPUT / HOW TO READ")
+        print("--------------------")
+        for label, description, example in notes:
+            print(f"  {label}")
             print(f"      {description}")
             print(f"      Example: {example}")
 
