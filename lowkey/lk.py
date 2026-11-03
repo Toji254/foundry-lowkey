@@ -15229,16 +15229,16 @@ def run_selector_compare(config,args):
     else:
         print("  No runtime selectors matched the loaded ABI.")
 
-    print("\nRUNTIME SELECTORS WITHOUT ABI MATCH")
-    print("-----------------------------------")
+    print("\nRUNTIME-ONLY: selectors found in runtime code without a matching ABI function")
+    print("---------------------------------------------------------------------------")
     if runtime_only:
         for selector in runtime_only:
             print(f"  {selector}  (no matching function in the loaded ABI)")
     else:
         print("  none")
 
-    print("\nABI FUNCTIONS NOT DETECTED IN RUNTIME")
-    print("-------------------------------------")
+    print("\nABI-ONLY: ABI functions whose selectors were not detected in runtime code")
+    print("------------------------------------------------------------------------")
     if abi_only:
         for selector in abi_only:
             print(f"  {selector}  {format_signature(abi_map[selector])}")
@@ -18971,8 +18971,12 @@ COMMAND_HELP = {
         "lk selectors [--compare|--raw] [bytecode]",
         "lk selectors",
         "Use it to see which ABI functions have matching selectors in the selected contract's deployed runtime bytecode.",
+        forms=[
+            ("Named function view", "With a selected target, match runtime selectors to ABI function names and signatures. This is the default.", "lk selectors"),
+            ("Raw selector view", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
+        ],
         options=[
-            ("--compare", "Show the runtime-to-ABI comparison explicitly. This is the default when a target is selected.", "lk selectors --compare"),
+            ("--compare", "Request the runtime-to-ABI comparison explicitly.", "lk selectors --compare"),
             ("--raw", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
         ],
         related=["lk functions", "lk sig", "lk calldata", "lk disasm"],
