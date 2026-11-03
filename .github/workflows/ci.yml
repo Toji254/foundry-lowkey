@@ -40,6 +40,31 @@ jobs:
           anvil --version
       - name: Install Lowkey
         run: ./install.sh
+      - name: Exercise project-aware Chisel contract preload
+        run: |
+          set -euo pipefail
+          CHISEL_ROOT=/tmp/lowkey-chisel-preload
+          rm -rf "$CHISEL_ROOT"
+          mkdir -p "$CHISEL_ROOT/src"
+          cat > "$CHISEL_ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cat > "$CHISEL_ROOT/src/Counter.sol" <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract Counter {
+              uint256 public value;
+              function increment() external returns (uint256) {
+                  return ++value;
+              }
+          }
+          EOF
+          CHISEL_OUTPUT="$(lk chisel --root "$CHISEL_ROOT" --contract Counter eval 'lowkeyTarget.increment() == 1' 2>&1)"
+          printf '%s\\n' "$CHISEL_OUTPUT"
+          grep -q "true" <<<"$CHISEL_OUTPUT"
       - name: Exercise installed native AI and memory commands
         run: bash scripts/test-native-ai-harness.sh
       - name: Compile standalone Solidity cheat labs
