@@ -3514,9 +3514,10 @@ contract Pool {
              redirect_stdout(output):
             lk.run_info(config)
         rendered = output.getvalue()
-        self.assertIn("UNVERIFIED", rendered)
-        self.assertIn("Code  UNVERIFIED", rendered)
-        self.assertNotIn("NO CODE", rendered)
+        normalized = " ".join(rendered.split())
+        self.assertIn("UNVERIFIED", normalized)
+        self.assertIn("Code UNVERIFIED", normalized)
+        self.assertNotIn("NO CODE", normalized)
 
     def test_info_reports_no_code_only_after_successful_empty_code_query(self):
         target = "0x" + "b" * 40
@@ -3530,8 +3531,9 @@ contract Pool {
              redirect_stdout(output):
             lk.run_info(config)
         rendered = output.getvalue()
-        self.assertIn("NO CODE", rendered)
-        self.assertIn("Code  NO", rendered)
+        normalized = " ".join(rendered.split())
+        self.assertIn("NO CODE", normalized)
+        self.assertIn("Code NO", normalized)
 
     def test_status_labels_target_with_contract_and_address(self):
         target="0x"+"3"*40
