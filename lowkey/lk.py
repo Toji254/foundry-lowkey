@@ -19435,10 +19435,12 @@ COMMAND_HELP.update({
             ("lk wizard <function> [values...] encode", "Only build the call data. Nothing is sent. Lowkey builds calldata without broadcasting a transaction.", "lk wizard setValue 10 encode"),
         ],
         options=[
+            ("TARGET", "A target must already be selected before the wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
+            ("ACTOR", "Transactions use the current actor. Select Anvil account 0 as Alice with this command.", "lk actor 0 Alice"),
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard setValue 10 send"),
             ("encode", "Only build the call data. Nothing is sent. Lowkey builds calldata without broadcasting a transaction.", "lk wizard setValue 10 encode"),
-            ("No ETH value option", "Wizard does not have an ETH-value flag or attach-ETH switch. Use lk send --value or lk probe --value to attach ETH.", "lk send contribute --value 1ether"),
+            ("No ETH value option", "Wizard does not have an ETH-value flag. It also has no attach-ETH switch. Use lk send --value or lk probe --value to attach ETH.", "lk send contribute --value 1ether"),
         ],
         argument_types=ABI_CALL_ARGUMENT_TYPES,
         related=["lk ask", "lk read", "lk send", "lk probe"],
