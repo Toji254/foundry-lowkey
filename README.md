@@ -259,6 +259,8 @@ lk as Bob read getContribution
 
 For `lk read` / `cast call`, Lowkey defaults `--from` to the active actor so view functions that inspect `msg.sender` return that actor's state. An explicit `--from <address>` overrides this. Sending a `view` or `pure` function is still possible for transaction-context experiments, but Lowkey warns that it mines a transaction and consumes gas; use `lk read` for an ordinary read.
 
+ABI return values keep the decoded integer visible. When the ABI provides a strong payable-inflow clue (for example `getContribution()` alongside `contribute() payable`), Lowkey adds a second-line ETH equivalent. That conversion is explicitly marked as inferred because `uint256` does not encode whether a value is wei, tokens, shares, or another unit. `lk trace` also shows the raw return word, decoded integer, and the inferred human-readable equivalent when available.
+
 "lk actor <index>" selects an actor profile already assigned to that Anvil account. "lk actor <index> <name>" assigns or rebinds a user-facing profile. Anvil account 0 is reserved for Lowkey's internal lab-deployer, so user actors should use account 1 or higher.
 
 The same Anvil account cannot be assigned to two actor names.
