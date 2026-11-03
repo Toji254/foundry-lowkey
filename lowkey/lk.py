@@ -305,6 +305,11 @@ def load_config():
     return config
 
 def save_config(config):
+    # Temporary actor contexts must never write their selected signer to the
+    # user's persistent config. The enclosing command saves its final state
+    # after restoring the previously active actor.
+    if isinstance(config, dict) and config.get("_ephemeral"):
+        return
     os.makedirs(CONFIG_DIR, exist_ok=True)
     tmp=CONFIG_FILE+".tmp"
     try:
@@ -18469,8 +18474,17 @@ def run_as(config,args):
         return fail(f"Error: unknown actor '{actor}'. Use lk actor to list actors.")
     if args[1]=="as":
         return fail("Error: nested actor switching is not supported.")
-    previous=config.get("actor")
-    config["actor"]=actor
+
+    # Execute against the requested actor without allowing an inner command
+    # (notably lk send) to persist that temporary selection. save_config()
+    # skips writes while _ephemeral is set; the final write below happens only
+    # after restoring the user's previously selected actor.
+    had_actor = "actor" in config
+    previous_actor = config.get("actor")
+    had_ephemeral = "_ephemeral" in config
+    previous_ephemeral = config.get("_ephemeral")
+    config["_ephemeral"] = True
+    config["actor"] = actor
     try:
         subcommand = str(args[1]).lower()
         if subcommand not in COMMAND_HELP and config.get("target"):
@@ -18491,7 +18505,16 @@ def run_as(config,args):
                 )
         return dispatch_command(args[1],args[2:],config,from_batch=True)
     finally:
-        config["actor"]=previous
+        if had_actor:
+            config["actor"] = previous_actor
+        else:
+            config.pop("actor", None)
+        if had_ephemeral:
+            config["_ephemeral"] = previous_ephemeral
+        else:
+            config.pop("_ephemeral", None)
+        if not previous_ephemeral:
+            save_config(config)
 
 def run_replay(config,args):
     if not args:
