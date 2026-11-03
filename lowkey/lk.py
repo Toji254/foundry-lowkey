@@ -3046,7 +3046,7 @@ def run_signature(config, args):
             signature = format_signature(matches[0])
             print(f"Resolved function: {signature}")
         elif len(matches) > 1:
-            suggestions = "\\n".join(
+            suggestions = "\n".join(
                 f"  lk sig '{format_signature(item)}'" for item in matches
             )
             return fail(
