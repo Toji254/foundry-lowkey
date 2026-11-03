@@ -349,7 +349,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(code, 0)
         for item in (
             "lk inspect [Contract] [section] [options]",
-            "lk inspect Escrow",
+            "lk inspect Vault",
             "--abi",
             "--functions",
             "--events",
