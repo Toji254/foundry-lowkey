@@ -20982,7 +20982,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd in {"targets","target-list"}:
         unknown = [value for value in args if value != "--all"]
         if unknown:
-            return fail(f"Usage: lk targets [--all]\\nUnknown option or argument: {unknown[0]}")
+            return fail(f"Usage: lk targets [--all]\nUnknown option or argument: {unknown[0]}")
         if args.count("--all") > 1:
             return fail("Error: --all may only be supplied once.")
         return run_targets(config, include_support="--all" in args)
