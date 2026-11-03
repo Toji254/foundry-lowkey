@@ -3124,15 +3124,19 @@ def run_info(config):
     target = config.get("target")
     if not target:
         return fail("Error: Set target first.")
-    code = run_cast(["code", target], config, capture=True) or ""
-    code_present = code.startswith("0x") and len(code) > 2
+    code_result = run_cast(["code", target], config, capture=True)
+    code_output = getattr(code_result, "text", str(code_result or ""))
+    code_ok = getattr(code_result, "code", 0) == 0
+    code_present = code_ok and code_output.startswith("0x") and len(code_output) > 2
+    code_state = "YES" if code_present else "NO" if code_ok else "UNVERIFIED"
+    header_state = "LIVE" if code_present else "NO CODE" if code_ok else "UNVERIFIED"
     abi_loaded = bool(load_abi(target, config))
     proxy = bool(inspect_proxy(config, quiet=True))
     contract = config.get("target_contract") or "CONTRACT"
-    _ui_heading(contract, "LIVE" if code_present else "NO CODE")
+    _ui_heading(contract, header_state)
     _ui_key_values([
         ("Address", apply_labels(target, config)),
-        ("Code", "YES" if code_present else "NO"),
+        ("Code", code_state),
         ("ABI", "LOADED" if abi_loaded else "NOT LOADED"),
         ("Proxy", "YES" if proxy else "NO"),
     ])

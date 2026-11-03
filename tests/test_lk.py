@@ -3501,6 +3501,38 @@ contract Pool {
         self.assertIn("CODE MISMATCH", lk._ui_status_marker("CODE MISMATCH"))
         self.assertIn("UNVERIFIED", lk._ui_status_marker("UNVERIFIED"))
 
+
+    def test_info_does_not_report_no_code_when_rpc_query_failed(self):
+        target = "0x" + "a" * 40
+        config = {"target": target, "target_contract": "Escrow", "labels": {}}
+        output = io.StringIO()
+        failed_code = lk.CommandResult("RPC unavailable", code=1)
+        with patch.object(lk, "run_cast", return_value=failed_code), \
+             patch.object(lk, "load_abi", return_value=[]), \
+             patch.object(lk, "inspect_proxy", return_value=False), \
+             patch.object(lk, "run_chain"), \
+             redirect_stdout(output):
+            lk.run_info(config)
+        rendered = output.getvalue()
+        self.assertIn("UNVERIFIED", rendered)
+        self.assertIn("Code  UNVERIFIED", rendered)
+        self.assertNotIn("NO CODE", rendered)
+
+    def test_info_reports_no_code_only_after_successful_empty_code_query(self):
+        target = "0x" + "b" * 40
+        config = {"target": target, "target_contract": "Escrow", "labels": {}}
+        output = io.StringIO()
+        empty_code = lk.CommandResult("0x", code=0)
+        with patch.object(lk, "run_cast", return_value=empty_code), \
+             patch.object(lk, "load_abi", return_value=[]), \
+             patch.object(lk, "inspect_proxy", return_value=False), \
+             patch.object(lk, "run_chain"), \
+             redirect_stdout(output):
+            lk.run_info(config)
+        rendered = output.getvalue()
+        self.assertIn("NO CODE", rendered)
+        self.assertIn("Code  NO", rendered)
+
     def test_status_labels_target_with_contract_and_address(self):
         target="0x"+"3"*40
         config={
