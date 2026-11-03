@@ -15724,7 +15724,7 @@ def _write_chisel_prelude(contract, directory):
     import_file = prelude_dir / "00-lowkey-import.sol"
     import_file.write_text(
         'import {Vm as LowkeyVm} from "forge-std/Vm.sol";\n'
-        f'import {{{contract["name"]} as LowkeyLoadedTarget}} from {import_path};\\n',
+        f'import {{{contract["name"]} as LowkeyLoadedTarget}} from {import_path};\n',
         encoding="utf-8",
     )
 
