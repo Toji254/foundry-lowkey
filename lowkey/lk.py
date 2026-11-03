@@ -22166,7 +22166,7 @@ FOUNDRY SHORTCUTS
   lk build                          Shortcut for forge build. Example: lk build
   lk test                           Shortcut for forge test. Example: lk test
   lk script <args>                  Shortcut for forge script.
-  lk inspect <args>                 Shortcut for forge inspect.
+  lk inspect [Contract]              Inspect compiled contracts with Lowkey's artifact engine.
   lk coverage [Forge options...]      Shortcut for forge coverage (alias: lk cov).
                                    Example: lk coverage --report lcov --lcov-version 1.0
   lk lint / geiger                  Run those Forge tools when installed.
