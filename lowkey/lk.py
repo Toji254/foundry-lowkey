@@ -20854,6 +20854,72 @@ COMMAND_HELP.update({
 def _apply_command_help_audit_catalog():
     """Give every help page a command-specific invocation form and document real modes."""
     details = {
+        "fuzz": {
+            "summary": "Run fuzz tests or inspect/replay cases saved by previous fuzz and invariant runs.",
+            "usage": "lk fuzz [Foundry test options] | replay | rerun | failures | corpus | watch",
+            "example": "lk fuzz --fuzz-runs 1000",
+            "use": "Use it when a behavior may appear only for unusual inputs or when you need to reproduce a saved failing case.",
+            "forms": [
+                ("lk fuzz", "Run the project's normal test suite; Forge discovers and runs fuzz tests as part of it.", "lk fuzz"),
+                ("lk fuzz [Foundry test options...]", "Pass test filters, fuzz-run counts and other supported test options to Forge.", "lk fuzz --fuzz-runs 1000"),
+                ("lk fuzz replay", "Replay persisted Forge fuzz/invariant failure cases.", "lk fuzz replay"),
+                ("lk fuzz rerun", "Alias for replaying persisted failure cases.", "lk fuzz rerun"),
+                ("lk fuzz failures", "List files saved in the known fuzz/invariant failure locations.", "lk fuzz failures"),
+                ("lk fuzz corpus", "Alias for listing saved failure/corpus files.", "lk fuzz corpus"),
+                ("lk fuzz watch", "Run the test suite in Forge watch mode and rerun it when watched files change.", "lk fuzz watch"),
+            ],
+            "options": [
+                ("--fuzz-runs <N>", "Choose how many random inputs Forge tries per fuzz test.", "lk fuzz --fuzz-runs 1000"),
+                ("Foundry test filters/options", "Options after lk fuzz are passed to Forge test; use the installed Forge help for the complete version-specific list.", "forge test --help"),
+            ],
+            "related": ["lk invariant", "lk brutalize", "lk symbolic", "lk test"],
+        },
+        "invariant": {
+            "summary": "Run stateful tests that check a property remains true across many contract actions, or create a starter invariant test.",
+            "usage": "lk invariant [new <Contract>] [Foundry test options...]",
+            "example": "lk invariant --match-test invariant_supply",
+            "use": "Use it when you can state a rule that must remain true after many different calls and state transitions.",
+            "forms": [
+                ("lk invariant", "Run tests whose names start with invariant_.", "lk invariant"),
+                ("lk invariant new <Contract>", "Generate a small invariant-test starter for the named contract and compile/run that generated test. Edit it to add the real invariant and handlers.", "lk invariant new Vault"),
+                ("lk invariant [Foundry test options...]", "Filter or configure the focused invariant test run.", "lk invariant --match-test invariant_supply"),
+            ],
+            "options": [
+                ("--match-test <pattern>", "Select invariant tests by test name. Without it, Lowkey defaults to the invariant_.* pattern.", "lk invariant --match-test invariant_supply"),
+                ("Foundry test options", "Other compatible test options are forwarded to Forge.", "forge test --help"),
+            ],
+            "related": ["lk fuzz", "lk matrix", "lk changes", "lk test"],
+        },
+        "mutate": {
+            "summary": "Run Foundry mutation testing so you can check whether the test suite notices meaningful code changes.",
+            "usage": "lk mutate [Foundry test options...]",
+            "example": "lk mutate --match-test testWithdraw",
+            "use": "Use it after you have tests for an important property and want to measure whether those tests detect changed behavior.",
+            "forms": [
+                ("lk mutate", "Run Foundry's mutation-testing mode against the project's tests.", "lk mutate"),
+                ("lk mutate [Foundry test options...]", "Pass supported test filters and configuration options to Forge's mutation runner.", "lk mutate --match-test testWithdraw"),
+            ],
+            "options": [
+                ("Foundry test options", "Arguments after lk mutate are forwarded to Forge test with mutation mode enabled.", "forge test --help"),
+            ],
+            "notes": [
+                ("Interpretation", "A mutation surviving the test suite means the current tests did not detect that particular change; it is a test-strength signal, not automatically a production vulnerability.", "lk test"),
+            ],
+            "related": ["lk test", "lk fuzz", "lk invariant"],
+        },
+        "replay": {
+            "forms": [
+                ("lk replay <transaction-hash>", "Replay/trace one recorded or supplied transaction.", "lk replay 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                ("lk replay <transaction-hash> [trace options...]", "Use the same trace filters and display options as lk trace.", "lk replay 0xaaaaaaaa... --grep withdraw"),
+            ],
+            "options": [
+                ("--grep <text>", "Show only trace lines that contain the supplied text.", "lk replay 0xaaaaaaaa... --grep withdraw"),
+                ("--quick", "Request a shorter trace when the full detail is not needed.", "lk replay 0xaaaaaaaa... --quick"),
+                ("--decode-internal", "Ask Cast to decode more data used by internal calls.", "lk replay 0xaaaaaaaa... --decode-internal"),
+                ("--trace-printer <value>", "Pass a trace display setting to Cast; see cast run --help for available values.", "lk replay 0xaaaaaaaa... --trace-printer <value>"),
+            ],
+            "related": ["lk trace", "lk receipt", "lk tx"],
+        },
         "inspect": {
             "summary": "Inspect compiled contract artifacts through Lowkey's own contract-aware view.",
             "usage": "lk inspect [Contract] [section] [options]",
@@ -21320,7 +21386,7 @@ def _apply_command_help_audit_catalog():
             "use": "Use it when you want to deploy a compiled contract directly through Forge. For Lowkey-managed local deployments and actor/target setup, prefer lk lab.",
             "forms": [
                 ("lk create <Contract>", "Deploy one compiled contract selected by its project-qualified contract identifier.", "lk create src/Vault.sol:Vault"),
-                ("lk create <Contract> [Forge deployment options...]", "Pass additional deployment options supported by the installed Forge version.", "lk create src/Vault.sol:Vault --help"),
+                ("lk create <Contract> [Forge deployment options...]", "Pass additional deployment options supported by the installed Forge version.", "lk create src/Vault.sol:Vault --rpc-url http://127.0.0.1:8545"),
             ],
             "options": [
                 ("Forge deployment options", "Arguments after the contract identifier are passed to the installed Forge create/deployment command.", "forge create --help"),
