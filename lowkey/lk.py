@@ -15550,11 +15550,13 @@ def run_chisel(args, config=None):
 
     native_commands = {"list", "load", "view", "clear-cache", "eval"}
     native_control_flags = {"-h", "--help", "-V", "--version"}
-    if (
-        (native_args and native_args[0] in native_commands)
-        or any(token in native_control_flags for token in native_args)
-    ):
+    if any(token in native_control_flags for token in native_args):
         return _launch_chisel(binary, native_args, cwd=root)
+    if native_args and native_args[0] in native_commands:
+        if contract_query and native_args[0] != "eval":
+            return fail("Error: --contract can only be combined with Chisel's eval command or an interactive REPL session.")
+        if native_args[0] != "eval" or not contract_query:
+            return _launch_chisel(binary, native_args, cwd=root)
 
     has_native_prelude = any(
         token == "--prelude" or token.startswith("--prelude=")
