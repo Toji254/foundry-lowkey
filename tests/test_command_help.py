@@ -31,7 +31,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(code, 0)
         for item in (
             "lk sig '<functionName>(<parameterTypes>)'",
-            "lk sig 'createBounty(string,string[])'",
+            "lk sig 'setValue(uint256)'",
             "Single quotes protect parentheses and array brackets from Bash.",
             "Parameter TYPES",
             "lk sig createBounty",
