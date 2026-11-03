@@ -156,7 +156,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("historical storage", output)
         self.assertIn("lk slots 3 --block latest", output)
 
-    def test_forwarded_tool_help_examples_call_the_upstream_binary(self):
+    def test_forwarded_tool_help_is_rendered_inside_lowkey(self):
         native_commands = (
             "bind", "bind-json", "cache", "clean", "compiler", "completions",
             "config", "doc", "eip712", "flatten", "init", "install", "lsp",
@@ -166,29 +166,82 @@ class CommandHelpTests(unittest.TestCase):
         for command in native_commands:
             with self.subTest(command=command):
                 entry = lk.COMMAND_HELP[command]
-                examples = [entry.get("example", "")]
-                examples.extend(row[2] for row in (entry.get("options") or []))
-                self.assertIn(f"forge {command} --help", " ".join(examples))
-                self.assertNotIn(f"lk {command} --help", " ".join(examples))
+                self.assertEqual(
+                    entry.get("native_help"),
+                    {"binary": "forge", "args": [command]},
+                )
+                self.assertTrue(entry.get("example", "").startswith("lk "))
 
-        chisel = lk.COMMAND_HELP["chisel"]
-        chisel_examples = [chisel.get("example", "")]
-        chisel_examples.extend(row[2] for row in (chisel.get("options") or []))
-        self.assertIn("chisel --help", " ".join(chisel_examples))
-        self.assertNotIn("lk chisel --help", " ".join(chisel_examples))
+        for command, expected in (
+            ("build", {"binary": "forge", "args": ["build"]}),
+            ("test", {"binary": "forge", "args": ["test"]}),
+            ("coverage", {"binary": "forge", "args": ["coverage"]}),
+            ("chisel", {"binary": "chisel", "args": []}),
+            ("raw", {"binary": "cast", "args": []}),
+            ("logs", {"binary": "cast", "args": ["logs"]}),
+            ("trace", {"binary": "cast", "args": ["run"]}),
+            ("slither", {"binary": "slither", "args": []}),
+            ("fork", {"binary": "anvil", "args": []}),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(lk.COMMAND_HELP[command].get("native_help"), expected)
 
-        raw = lk.COMMAND_HELP["raw"]
-        raw_examples = [raw.get("example", "")]
-        raw_examples.extend(row[2] for row in (raw.get("options") or []))
-        self.assertIn("cast storage --help", " ".join(raw_examples))
-        self.assertNotIn("lk raw storage --help", " ".join(raw_examples))
-
-        logs_examples = " ".join(
-            row[2]
-            for row in (lk.COMMAND_HELP["logs"].get("options") or [])
+        entry = lk.COMMAND_HELP["build"]
+        output = io.StringIO()
+        fake = SimpleNamespace(
+            returncode=0,
+            stdout="Usage: forge build [OPTIONS]\\nOptions:\\n  --skip <SKIP>  Skip build steps",
         )
-        self.assertIn("cast logs --help", logs_examples)
-        self.assertNotIn("lk raw logs --help", logs_examples)
+        with patch.object(lk.shutil, "which", return_value="/usr/bin/forge"), \\
+             patch.object(lk.subprocess, "run", return_value=fake) as run:
+            lk._NATIVE_HELP_OUTPUT_CACHE.clear()
+            with redirect_stdout(output):
+                lk._render_native_help_reference(entry)
+            self.assertEqual(
+                run.call_args.args[0],
+                ["/usr/bin/forge", "build", "--help"],
+            )
+        rendered = output.getvalue()
+        self.assertIn("INSTALLED TOOL OPTIONS", rendered)
+        self.assertIn("You do not need to leave the lk help menu", rendered)
+        self.assertIn("--skip <SKIP>", rendered)
+        run.assert_called_once()
+        lk._NATIVE_HELP_OUTPUT_CACHE.clear()
+
+    def test_native_help_falls_back_cleanly_when_tool_is_missing(self):
+        output = io.StringIO()
+        with patch.object(lk.shutil, "which", return_value=None):
+            lk._NATIVE_HELP_OUTPUT_CACHE.clear()
+            with redirect_stdout(output):
+                lk._render_native_help_reference(lk.COMMAND_HELP["build"])
+        self.assertIn("INSTALLED TOOL OPTIONS", output.getvalue())
+        self.assertIn("forge is not installed", output.getvalue())
+        lk._NATIVE_HELP_OUTPUT_CACHE.clear()
+
+    def test_help_catalog_has_no_upstream_help_menu_redirects(self):
+        import re
+
+        forbidden = re.compile(
+            r"\\b(?:forge|cast|anvil|chisel|slither)(?:\\s+[A-Za-z0-9_-]+)?\\s+--help\\b",
+            re.IGNORECASE,
+        )
+        lowkey_passthrough = re.compile(
+            r"\\blk\\s+(?:forge|raw)\\s+<[^>]+>\\s+--help\\b",
+            re.IGNORECASE,
+        )
+
+        def walk(entries, prefix=()):
+            problems = []
+            for name, entry in entries.items():
+                path = " ".join((*prefix, name))
+                for field in ("summary", "usage", "example", "use", "forms", "options", "notes", "related"):
+                    value = str(entry.get(field) or "")
+                    if forbidden.search(value) or lowkey_passthrough.search(value):
+                        problems.append(path + ": " + field)
+                problems.extend(walk(entry.get("children") or {}, (*prefix, name)))
+            return problems
+
+        self.assertEqual(walk(lk.COMMAND_HELP), [])
 
     def test_sig_help_shows_copyable_quoted_signature_and_explains_bash(self):
         code, output = self.capture_dispatch("sig", "--h")
@@ -326,23 +379,19 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
 
-    def test_every_root_and_nested_help_entry_has_an_explicit_invocation_form(self):
+    def test_help_variations_are_real_and_never_synthetic_filler(self):
         def walk(entries, prefix=()):
-            missing = []
             for name, entry in entries.items():
                 path = (*prefix, name)
-                forms = entry.get("forms") or []
-                if not forms:
-                    missing.append(" ".join(path))
-                for form in forms:
+                for form in (entry.get("forms") or []):
                     self.assertEqual(len(form), 3, f"invalid form for {' '.join(path)}")
                     self.assertTrue(str(form[0]).strip())
                     self.assertTrue(str(form[1]).strip())
                     self.assertTrue(str(form[2]).strip())
-                missing.extend(walk(entry.get("children") or {}, path))
-            return missing
+                    self.assertNotIn("Standard invocation:", str(form[1]))
+                walk(entry.get("children") or {}, path)
 
-        self.assertEqual(walk(lk.COMMAND_HELP), [])
+        walk(lk.COMMAND_HELP)
 
     def test_inspect_help_is_lowkey_owned_and_documents_supported_sections(self):
         code, output = self.capture_dispatch("inspect", "--h")
@@ -361,9 +410,9 @@ class CommandHelpTests(unittest.TestCase):
             "--all",
             "--json",
             "--no-build",
-            "lk forge inspect",
         ):
             self.assertIn(item, output)
+        self.assertNotIn("lk forge inspect", output)
         self.assertNotIn("Run forge inspect --help", output)
         self.assertNotIn("Forge inspect options", output)
 
