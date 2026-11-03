@@ -20465,7 +20465,7 @@ def _render_command_help(path):
         _function_print_wrapped("Unknown subcommand: ", f"'{unknown}' under 'lk {shown_path}'.")
         available = list((entry or {}).get("children", {}).keys())
         if available:
-            _ui_key_values([("Available next commands", ", ".join(available))])
+            _ui_key_values([("Available next commands:", ", ".join(available))])
         _ui_key_values([("Parent help", f"lk {shown_path} --h")])
         return 2
 
