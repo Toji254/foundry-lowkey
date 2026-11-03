@@ -420,7 +420,7 @@ class CommandHelpTests(unittest.TestCase):
             "probe": ("Default actor behavior", "--actor <name>", "lk changes"),
             "fuzz": ("lk fuzz replay", "lk fuzz failures", "lk fuzz watch"),
             "invariant": ("lk invariant new", "--match-test"),
-            "mutate": ("lk mutate", "mutation-testing"),
+            "mutate": ("lk mutate", "Foundry mutation testing"),
             "lab": ("--generic", "--artifact", "--forge", "--ai-review"),
             "walkthrough": ("lk walkthrough test", "lk walkthrough seed", "--static"),
             "verification-benchmark": ("lk vbench", "--min-mutation-score"),
