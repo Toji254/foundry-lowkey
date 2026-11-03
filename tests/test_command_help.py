@@ -26,6 +26,66 @@ class CommandHelpTests(unittest.TestCase):
             code = lk.dispatch_command(command, list(args), {})
         return code, output.getvalue()
 
+    def test_every_root_and_nested_help_page_uses_the_send_style_layout(self):
+        import re
+
+        pages = []
+
+        def collect(path, entry):
+            pages.append((list(path), entry))
+            for child_name, child_entry in (entry.get("children") or {}).items():
+                collect([*path, child_name], child_entry)
+
+        for command, entry in lk.COMMAND_HELP.items():
+            collect([command], entry)
+
+        required_sections = (
+            "COMMAND VARIATIONS",
+            "OPTIONS / MODES",
+            "RELATED COMMANDS",
+            "HELP TIP",
+        )
+        for path, entry in pages:
+            with self.subTest(command=" ".join(path)):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    code = lk._render_command_help(path)
+                rendered = output.getvalue()
+                self.assertEqual(code, 0)
+                self.assertIn("What it does:", rendered)
+                self.assertIn("When to use:", rendered)
+                self.assertIn("Usage:", rendered)
+                self.assertIn("Example:", rendered)
+                for section in required_sections:
+                    self.assertIn(section, rendered)
+                # Every flag printed in the usage line must have an explanation
+                # in COMMAND VARIATIONS or OPTIONS / MODES. Global help flags
+                # are described in HELP TIP instead.
+                usage_flags = set(re.findall(r"(?<![A-Za-z0-9_])--[A-Za-z][A-Za-z0-9-]*", entry.get("usage", "")))
+                documented_text = " ".join(
+                    str(value)
+                    for field in ("forms", "options")
+                    for row in (entry.get(field) or [])
+                    for value in row
+                )
+                undocumented = sorted(
+                    flag for flag in usage_flags
+                    if flag not in documented_text and flag not in {"--h", "--help"}
+                )
+                self.assertEqual(undocumented, [], f"undocumented usage flags for {' '.join(path)}")
+
+    def test_every_nested_help_entry_has_valid_structured_metadata(self):
+        def walk(entries, prefix=()):
+            for name, entry in entries.items():
+                path = (*prefix, name)
+                problems = lk._validate_help_variations({name: entry})
+                self.assertEqual(problems, [], f"invalid help metadata for {' '.join(path)}")
+                children = entry.get("children") or {}
+                self.assertIsInstance(children, dict, f"children must be a mapping for {' '.join(path)}")
+                walk(children, path)
+
+        walk(lk.COMMAND_HELP)
+
     def test_sig_help_shows_copyable_quoted_signature_and_explains_bash(self):
         code, output = self.capture_dispatch("sig", "--h")
         self.assertEqual(code, 0)
