@@ -1242,6 +1242,20 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Did you mean:", rendered)
         self.assertIn("balanceOf(address)", rendered)
 
+
+    def test_non_function_recommendations_use_compact_layout_without_losing_reasons(self):
+        items = lk._recommended_next_commands("audit", [])
+        self.assertTrue(items)
+        output = io.StringIO()
+        with patch.object(lk, "_print_ai_recommendations"), redirect_stdout(output):
+            lk._print_recommended_next_commands("audit", [], result=0)
+        rendered = output.getvalue()
+        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        for command, reason in items:
+            self.assertIn(command, rendered)
+            self.assertIn(reason, rendered)
+
     def test_recommendations_require_a_curated_workflow(self):
         audit_commands = [command for command, _ in lk._recommended_next_commands("audit", [])]
         self.assertIn("lk findings", audit_commands)

@@ -3480,6 +3480,25 @@ contract Pool {
         self.assertNotIn(actual, config["labels"])
         save_config.assert_called_once()
 
+
+    def test_compact_key_values_wrap_without_truncating_long_values(self):
+        output = io.StringIO()
+        rows = [
+            ("Address", "0x" + "a" * 64),
+            ("Deployment source", "/tmp/project/broadcast/LocalDeploy.s.sol/31337/run-2026-11-03.json"),
+        ]
+        with patch.object(lk.shutil, "get_terminal_size", return_value=lk.os.terminal_size((52, 24))):
+            lk._ui_key_values(rows, stream=output)
+        rendered = output.getvalue()
+        self.assertIn("0x" + "a" * 64, rendered)
+        self.assertIn("broadcast/LocalDeploy.s.sol/31337/run-2026-11-03.json", rendered)
+        self.assertIn("Deployment source", rendered)
+
+    def test_status_marker_keeps_explicit_state_text(self):
+        self.assertIn("LIVE", lk._ui_status_marker("LIVE"))
+        self.assertIn("CODE MISMATCH", lk._ui_status_marker("CODE MISMATCH"))
+        self.assertIn("UNVERIFIED", lk._ui_status_marker("UNVERIFIED"))
+
     def test_status_labels_target_with_contract_and_address(self):
         target="0x"+"3"*40
         config={
@@ -3495,8 +3514,9 @@ contract Pool {
 
         self.assertIsNone(result)
         rendered="\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
-        self.assertIn(f"Target : Fallback @ {target}", rendered)
-        self.assertIn("Contract: Fallback", rendered)
+        self.assertIn(f"Target", rendered)
+        self.assertIn(f"Fallback @ {target}", rendered)
+        self.assertIn("Contract", rendered)
 
     def test_generic_lab_labels_deployer_and_target_distinctly(self):
         target="0x"+"4"*40

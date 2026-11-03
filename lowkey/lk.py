@@ -1819,16 +1819,17 @@ def storage_getter_names(target,config,abi):
         and item.get("name") in labels
     }
 def run_chain(config):
-    rpc=effective_rpc(config)
+    rpc = effective_rpc(config)
     chain_id = run_cast(["chain-id"], config, capture=True)
     block = run_cast(["block-number"], config, capture=True)
-    print(f"Chain ID: {chain_id or 'Unknown'}")
-    print(f"Block:    {block or 'Unknown'}")
-    if rpc:
-        mode="manual" if config.get("rpc") else "auto Anvil"
-        print(f"RPC:      {rpc} ({mode})")
-    else:
-        print("RPC:      Not configured / no local Anvil detected")
+    mode = ("manual" if config.get("rpc") else "auto Anvil") if rpc else None
+    rows = [
+        ("Chain ID", chain_id or "Unknown"),
+        ("Block", block or "Unknown"),
+        ("RPC", f"{rpc} ({mode})" if rpc else "Not configured / no local Anvil detected"),
+    ]
+    _ui_heading("NETWORK")
+    _ui_key_values(rows)
 def run_abi(config):
     target = config.get("target")
     if not target:
@@ -2646,6 +2647,113 @@ def _function_terminal_style(value, tone="muted", stream=None):
     return f"\033[{code}m{value}\033[0m" if code else str(value)
 
 
+def _ui_terminal_width(stream=None):
+    """Return a safe terminal width without changing or truncating displayed data."""
+    try:
+        width = shutil.get_terminal_size(fallback=(88, 24)).columns
+    except (OSError, AttributeError):
+        width = 88
+    return max(40, int(width or 88))
+
+
+def _ui_status_marker(status):
+    """Render a compact status marker; status words remain explicit for screen readers."""
+    value = str(status or "").strip().upper()
+    if value in {"LIVE", "READY", "PASS", "PASSED", "SUCCESS", "COMPLETE", "UP-TO-DATE", "AVAILABLE", "LOADED", "MATCHED", "DEPLOYED"}:
+        tone = "receive"
+        marker = "●"
+    elif any(token in value for token in ("WARN", "REVIEW", "PENDING", "UNVERIFIED", "NOT DEPLOYED", "NO TARGET")):
+        tone = "warning"
+        marker = "!"
+    elif any(token in value for token in ("FAIL", "ERROR", "MISMATCH", "REVERT", "INVALID")):
+        tone = "send"
+        marker = "✗"
+    else:
+        tone = "muted"
+        marker = "·"
+    return _function_terminal_style(f"{marker} {value or 'UNKNOWN'}", tone)
+
+
+def _ui_heading(title, status=None, stream=None):
+    """Print the compact Lowkey heading used by project and workflow summaries."""
+    stream = stream or sys.stdout
+    title_text = _function_terminal_style(str(title), "heading", stream=stream)
+    if status is not None:
+        title_text = f"{title_text}  {_ui_status_marker(status)}"
+    print(title_text, file=stream)
+    width = min(_ui_terminal_width(stream), 88)
+    print(_function_terminal_style("─" * width, "muted", stream=stream), file=stream)
+
+
+def _ui_key_values(rows, *, indent=2, label_width=None, stream=None):
+    """Print aligned key/value rows, wrapping long values without dropping any content."""
+    stream = stream or sys.stdout
+    normalized = [
+        (str(label), "none" if value is None else str(value))
+        for label, value in rows
+    ]
+    if not normalized:
+        return
+    widest = max(len(label) for label, _value in normalized)
+    width = max(widest, int(label_width or 0))
+    prefix_indent = " " * max(0, int(indent))
+    value_width = max(16, _ui_terminal_width(stream) - len(prefix_indent) - width - 3)
+    for label, value in normalized:
+        prefix = f"{prefix_indent}{label:<{width}}  "
+        continuation = " " * len(prefix)
+        value_lines = value.splitlines() or [""]
+        for raw_line in value_lines:
+            wrapped = textwrap.wrap(
+                raw_line,
+                width=value_width,
+                break_long_words=False,
+                break_on_hyphens=False,
+                replace_whitespace=False,
+                drop_whitespace=True,
+            )
+            if not wrapped:
+                print(prefix, file=stream)
+                continue
+            print(prefix + wrapped[0], file=stream)
+            for part in wrapped[1:]:
+                print(continuation + part, file=stream)
+
+
+def _ui_print_next_commands(items, *, function_mode=False, stream=None):
+    """Render every recommendation and its full reason in a compact aligned list."""
+    stream = stream or sys.stdout
+    if not items:
+        return
+    print("", file=stream)
+    print(_function_terminal_style("NEXT COMMANDS", "heading", stream=stream), file=stream)
+    short_reasons = {
+        "lk ask": "Understand the function's inputs",
+        "lk read": "Read current contract state",
+        "lk wizard": "Run with guided prompts",
+        "lk changes": "Review state effects",
+    }
+    command_width = min(max(len(str(command)) for command, _reason in items), 42)
+    terminal_width = _ui_terminal_width(stream)
+    for command, reason in items:
+        command = str(command)
+        reason = str(reason).strip()
+        if function_mode:
+            key = " ".join(command.split()[:2])
+            reason = short_reasons.get(key, reason)
+        prefix = f"  → {command:<{command_width}}  "
+        available = max(16, terminal_width - len(prefix))
+        wrapped = textwrap.wrap(
+            reason,
+            width=available,
+            break_long_words=False,
+            break_on_hyphens=False,
+        ) or [""]
+        print(prefix + wrapped[0], file=stream)
+        continuation = " " * len(prefix)
+        for part in wrapped[1:]:
+            print(continuation + part, file=stream)
+
+
 def _function_print_wrapped(prefix, value):
     """Print a labelled value without needlessly truncating long signatures/expressions."""
     try:
@@ -2999,12 +3107,19 @@ def run_info(config):
     target = config.get("target")
     if not target:
         return fail("Error: Set target first.")
-    print(f"Target: {apply_labels(target, config)}")
-    run_chain(config)
     code = run_cast(["code", target], config, capture=True) or ""
-    print(f"Code:   {'YES' if code.startswith('0x') and len(code) > 2 else 'NO'}")
-    print(f"ABI:    {'LOADED' if load_abi(target, config) else 'NOT LOADED'}")
-    print(f"Proxy:  {'YES' if inspect_proxy(config, quiet=True) else 'NO'}")
+    code_present = code.startswith("0x") and len(code) > 2
+    abi_loaded = bool(load_abi(target, config))
+    proxy = bool(inspect_proxy(config, quiet=True))
+    contract = config.get("target_contract") or "CONTRACT"
+    _ui_heading(contract, "LIVE" if code_present else "NO CODE")
+    _ui_key_values([
+        ("Address", apply_labels(target, config)),
+        ("Code", "YES" if code_present else "NO"),
+        ("ABI", "LOADED" if abi_loaded else "NOT LOADED"),
+        ("Proxy", "YES" if proxy else "NO"),
+    ])
+    run_chain(config)
 
 def run_encode(config,args):
     if not args:
@@ -7866,9 +7981,8 @@ def run_targets(config, interactive=False, include_support=False):
         None,
     )
 
-    print("AUDIT TARGETS")
-    print("=============")
-    print(root)
+    _ui_heading("AUDIT TARGETS")
+    _ui_key_values([("Project", root)])
     for key in group_order:
         group = groups[key]
         timestamp = group[0].get("deployment_run_timestamp")
@@ -7876,8 +7990,8 @@ def run_targets(config, interactive=False, include_support=False):
         if key == latest_run_key:
             label += "  [LATEST]"
         print()
-        print(label)
-        print("-" * len(label))
+        print(_function_terminal_style(label, "heading"))
+        print(_function_terminal_style("─" * min(len(label), 88), "muted"))
         for index, entry in enumerate(visible_entries, 1):
             if entry not in group:
                 continue
@@ -8282,22 +8396,21 @@ def discover_deployments(root="."):
     )
 
 def run_deployments(config):
-    records=discover_deployments(".")
+    records = discover_deployments(".")
+    _ui_heading("DEPLOYMENTS")
     if not records:
         root = audit_context.foundry_project_root()
         current = project_context_target(root)
+        print("No Foundry broadcast deployments discovered.")
         if current:
             state = _live_target_state(config, current.get("address"), current.get("artifact"))
             status = state.get("status") or "UNVERIFIED"
-            print("No Foundry broadcast deployments discovered.")
-            print(
-                f"Remembered target: {current.get('contract') or 'unknown'} -> "
-                f"{apply_labels(current.get('address'), config)} [{status}]"
-            )
-        else:
-            print("No Foundry broadcast deployments discovered.")
+            _ui_key_values([
+                ("Remembered target", f"{current.get('contract') or 'unknown'} -> {apply_labels(current.get('address'), config)}"),
+                ("Deployment", status),
+            ])
         return
-    seen=set()
+    seen = set()
     for r in records:
         key=(r["contract"],r["address"])
         if key in seen: continue
@@ -17631,72 +17744,86 @@ def run_signals(config, args):
     return 0
 
 def run_status(config):
-    target=config.get("target")
+    target = config.get("target")
     if target:
-        load_abi(target,config)
-    rpc=effective_rpc(config)
-    info=anvil_rpc_info(config)
+        load_abi(target, config)
+    rpc = effective_rpc(config)
+    info = anvil_rpc_info(config)
     if info:
-        accounts=info.get("accounts",[])
+        accounts = info.get("accounts", [])
         if isinstance(accounts, list) and accounts:
             _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
             save_config(config)
     _sync_current_anvil_actor(config, info)
-    abi=resolve_abi_path(config,target) if target else None
-    contract=config.get("target_contract") or "unknown"
-    if target:
-        print(f"Target : {contract} @ {apply_labels(target, config)}")
-    else:
-        print("Target : none")
-    if rpc:
-        mode="manual" if config.get("rpc") else "auto Anvil"
-        print(f"RPC    : {rpc} ({mode})")
-    else:
-        print("RPC    : none (no local Anvil detected)")
-    print(f"Actor  : {actor_display(config)}")
-    print(f"ABI    : {abi or 'auto/not found'}")
-    print(f"Contract: {contract}")
+    abi = resolve_abi_path(config, target) if target else None
+    contract = config.get("target_contract") or "unknown"
+
+    rows = [
+        ("Target", f"{contract} @ {apply_labels(target, config)}" if target else "none"),
+        ("RPC", f"{rpc} ({'manual' if config.get('rpc') else 'auto Anvil'})" if rpc else "none (no local Anvil detected)"),
+        ("Actor", actor_display(config)),
+        ("ABI", abi or "auto/not found"),
+        ("Contract", contract),
+    ]
+    header_status = "NO TARGET"
     if target:
         runtime_state = _live_target_state(config, target, abi)
         runtime_status = runtime_state.get("status")
         verification = runtime_state.get("verification")
         if runtime_status == "DEPLOYED" and verification != "CODE MISMATCH":
-            print(f"Deployment: LIVE ({verification.lower()}; {runtime_state.get('code_size', 0)} bytes)")
-            print(f"Chain     : {runtime_state.get('chain_id') or 'unknown'}")
-            print(f"Block     : {runtime_state.get('block_number') or 'unknown'}")
+            header_status = "LIVE"
+            rows.extend([
+                ("Deployment", f"LIVE ({str(verification or 'unverified').lower()}; {runtime_state.get('code_size', 0)} bytes)"),
+                ("Chain", runtime_state.get("chain_id") or "unknown"),
+                ("Block", runtime_state.get("block_number") or "unknown"),
+            ])
         elif runtime_status == "NOT_DEPLOYED":
-            print("Deployment: NOT DEPLOYED")
-            print("WARNING   : target is remembered/configured, but the current RPC reports no contract bytecode here.")
-            print("Fix       : lk lab | lk target auto | lk recon | lk target reset")
+            header_status = "NOT DEPLOYED"
+            rows.extend([
+                ("Deployment", "NOT DEPLOYED"),
+                ("Warning", "Target is remembered/configured, but the current RPC reports no contract bytecode here."),
+                ("Fix", "lk lab | lk target auto | lk recon | lk target reset"),
+            ])
         elif runtime_status in {"RPC_UNAVAILABLE", "NO_RPC"}:
-            print("Deployment: UNVERIFIED")
-            print("WARNING   : Lowkey cannot prove that contract bytecode exists on the current RPC.")
-            print("Fix       : start/connect the correct RPC, then run 'lk status' or 'lk recon'.")
+            header_status = "UNVERIFIED"
+            rows.extend([
+                ("Deployment", "UNVERIFIED"),
+                ("Warning", "Lowkey cannot prove that contract bytecode exists on the current RPC."),
+                ("Fix", "Start/connect the correct RPC, then run 'lk status' or 'lk recon'."),
+            ])
         elif runtime_status == "DEPLOYED" and verification == "CODE MISMATCH":
-            print("Deployment: CODE MISMATCH")
-            print("WARNING   : bytecode exists, but it does not match the selected project artifact.")
-            print("Fix       : lk lab | lk target auto | inspect the deployment before sending calls")
+            header_status = "CODE MISMATCH"
+            rows.extend([
+                ("Deployment", "CODE MISMATCH"),
+                ("Warning", "Bytecode exists, but it does not match the selected project artifact."),
+                ("Fix", "lk lab | lk target auto | inspect the deployment before sending calls"),
+            ])
         else:
-            print(f"Deployment: {runtime_status or 'UNVERIFIED'}")
-    print(f"Last tx: {config.get('last_tx') or 'none'}")
+            header_status = runtime_status or "UNVERIFIED"
+            rows.append(("Deployment", header_status))
+
+    rows.append(("Last tx", config.get("last_tx") or "none"))
     root = audit_context.foundry_project_root()
     _sync_security_patterns(root)
     context = audit_context.load(root)
     open_signals = len(audit_context.signals(root, "open"))
-    print(f"Signals: {open_signals} open")
+    rows.append(("Signals", f"{open_signals} open"))
     security_summary = _security_pattern_summary(root)
-    print(
-        "Security patterns: "
-        f"{security_summary['total']} "
-        f"(review {security_summary['reviews']}, confirmed {security_summary['confirmed']}, candidate {security_summary['candidates']})"
-    )
+    rows.append((
+        "Security patterns",
+        f"{security_summary['total']} (review {security_summary['reviews']}, confirmed {security_summary['confirmed']}, candidate {security_summary['candidates']})",
+    ))
     focus = context.get("focus")
     if isinstance(focus, dict) and focus.get("signal_id"):
-        print(f"Focus  : {focus.get('signal_id')} — {focus.get('title') or 'audit signal'}")
+        rows.append(("Focus", f"{focus.get('signal_id')} — {focus.get('title') or 'audit signal'}"))
     for tool_name in ("slither", "forge", "generator"):
         state = context.get("tools", {}).get(tool_name, {})
         if isinstance(state, dict) and state.get("status"):
-            print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
+            summary = f" — {state.get('summary')}" if state.get("summary") else ""
+            rows.append((tool_name.capitalize(), f"{state.get('status')}{summary}"))
+
+    _ui_heading(contract if target else "LOWKEY", header_status)
+    _ui_key_values(rows)
 
 def run_wizard(config,args):
     if not args:
@@ -21189,7 +21316,7 @@ def _print_ai_recommendations(command, native_items, config=None, args=None, res
         )
 
 def _print_recommended_next_commands(command, args=None, result=0, config=None):
-    """Render native suggestions on success and optional learning notes for any eligible attempt."""
+    """Render compact, complete next steps on success and optional AI notes when eligible."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
     canonical = _canonical_help_command(command)
     raw_args = [str(item).strip().lower() for item in (args or [])]
@@ -21200,43 +21327,14 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     items = []
     if result_code in {None, 0}:
         items = _recommended_next_commands(command, args, config)
-    if items and canonical in {"fn", "functions"}:
-        print("")
-        print(_function_terminal_style("NEXT COMMANDS", "heading"))
-        try:
-            footer_width = shutil.get_terminal_size(fallback=(88, 24)).columns
-        except (OSError, AttributeError):
-            footer_width = 88
-        print(_function_terminal_style("─" * max(48, min(footer_width, 88)), "muted"))
-        short_reasons = {
-            "lk ask": "Understand the function's inputs",
-            "lk read": "Read current contract state",
-            "lk wizard": "Run with guided prompts",
-            "lk changes": "Review state effects",
-        }
-        command_width = min(max(len(command_text) for command_text, _ in items), 42)
-        for command_text, reason in items:
-            command_key = " ".join(command_text.split()[:2])
-            short_reason = short_reasons.get(command_key)
-            if short_reason is None:
-                short_reason = str(reason).split(". ", 1)[0].strip()
-                if len(short_reason) > 54:
-                    short_reason = short_reason[:51].rstrip() + "..."
-            if len(command_text) <= command_width:
-                print(f"  {command_text:<{command_width}}  {short_reason}")
-            else:
-                _function_print_wrapped("  ", command_text)
-                print(f"  {' ' * command_width}  {short_reason}")
-    elif items:
-        print("")
-        print("LOWKEY RECOMMENDED NEXT COMMANDS")
-        print("================================")
-        for index, (command_text, reason) in enumerate(items, 1):
-            print(f"  {index}. {command_text}")
-            print(f"     Why: {reason}")
-    # Unlike the native task menu, the AI learning nudge is allowed after a
-    # failed/unknown command and when there is no static next-command menu.
+    if items:
+        _ui_print_next_commands(
+            items,
+            function_mode=canonical in {"fn", "functions"},
+        )
+    # AI guidance remains optional and never replaces the native recommendations.
     _print_ai_recommendations(command, items, config, args=args, result=result_code)
+
 
 
 def _dispatch_command_impl(cmd,args,config,from_batch=False):
