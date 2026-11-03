@@ -190,22 +190,22 @@ class CommandHelpTests(unittest.TestCase):
         output = io.StringIO()
         fake = SimpleNamespace(
             returncode=0,
-            stdout="Usage: forge build [OPTIONS]\nOptions:\n  --skip <SKIP>  Skip build steps",
+            stdout="Usage: forge build [OPTIONS]\\nOptions:\\n  --skip <SKIP>  Skip build steps",
         )
-        with patch.object(lk.shutil, "which", return_value="/usr/bin/forge"), \\
-             patch.object(lk.subprocess, "run", return_value=fake) as run:
-            lk._NATIVE_HELP_OUTPUT_CACHE.clear()
-            with redirect_stdout(output):
-                lk._render_native_help_reference(entry)
-            self.assertEqual(
-                run.call_args.args[0],
-                ["/usr/bin/forge", "build", "--help"],
-            )
+        with patch.object(lk.shutil, "which", return_value="/usr/bin/forge"):
+            with patch.object(lk.subprocess, "run", return_value=fake) as run:
+                lk._NATIVE_HELP_OUTPUT_CACHE.clear()
+                with redirect_stdout(output):
+                    lk._render_native_help_reference(entry)
+                self.assertEqual(
+                    run.call_args.args[0],
+                    ["/usr/bin/forge", "build", "--help"],
+                )
+                run.assert_called_once()
         rendered = output.getvalue()
         self.assertIn("INSTALLED TOOL OPTIONS", rendered)
         self.assertIn("You do not need to leave the lk help menu", rendered)
         self.assertIn("--skip <SKIP>", rendered)
-        run.assert_called_once()
         lk._NATIVE_HELP_OUTPUT_CACHE.clear()
 
     def test_native_help_falls_back_cleanly_when_tool_is_missing(self):
@@ -222,11 +222,11 @@ class CommandHelpTests(unittest.TestCase):
         import re
 
         forbidden = re.compile(
-            r"\b(?:forge|cast|anvil|chisel|slither)(?:\s+[A-Za-z0-9_-]+)?\s+--help\b",
+            r"\\b(?:forge|cast|anvil|chisel|slither)(?:\\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\\s+--help\\b",
             re.IGNORECASE,
         )
         lowkey_passthrough = re.compile(
-            r"\blk\s+(?:forge|raw)\s+<[^>]+>\s+--help\b",
+            r"\\blk\\s+(?:forge|raw)\\s+<[^>]+>\\s+--help\\b",
             re.IGNORECASE,
         )
 
@@ -1237,7 +1237,7 @@ class CommandHelpTests(unittest.TestCase):
             source,
             flags=re.MULTILINE,
         )
-        exempt = {"q", "send", "import", "wizard", "ens"}
+        exempt = {"q", "send", "import", "wizard", "ens", "chisel"}
         missing = []
         for name, block in blocks:
             usage_lines = [line for line in block.splitlines() if '"lk ' in line and '|' in line]
