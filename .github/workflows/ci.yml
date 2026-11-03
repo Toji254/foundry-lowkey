@@ -63,7 +63,7 @@ jobs:
           }
           EOF
           set +e
-          CHISEL_OUTPUT="$(lk chisel --root "$CHISEL_ROOT" --contract Counter eval 'lowkeyTarget.increment() == 1' 2>&1)"
+          CHISEL_OUTPUT="$(lk chisel --root "$CHISEL_ROOT" --contract Counter eval 'lowkeySend_increment(address(0x1111)) == 1' 2>&1)"
           CHISEL_STATUS=$?
           set -e
           printf '%s\n' "$CHISEL_OUTPUT"
