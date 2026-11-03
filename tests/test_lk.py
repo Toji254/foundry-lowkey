@@ -4575,17 +4575,81 @@ contract Pool {
             item, decoded, {"labels": {}}, abi
         )
         self.assertIn(
-            "  amount = 2 ETH (2,000,000,000,000,000,000 wei, inferred) [uint256]",
+            "  amount = 2,000,000,000,000,000,000 [uint256]",
             rendered,
         )
+        self.assertIn("Human-readable equivalent: 2 ETH", rendered)
         self.assertIn(
-            "  current status = 0 (status/state code) [uint8]",
+            "  current status = 0 [uint8]",
             rendered,
         )
+        self.assertIn("Meaning: status/state code", rendered)
         self.assertNotIn(
             "current status=0 (status/state code) units",
             rendered,
         )
+
+    def test_human_abi_return_infers_native_eth_for_contribution_getter(self):
+        item = {
+            "type": "function",
+            "name": "getContribution",
+            "stateMutability": "view",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "uint256"}],
+        }
+        payable_contribute = {
+            "type": "function",
+            "name": "contribute",
+            "stateMutability": "payable",
+            "inputs": [],
+            "outputs": [],
+        }
+        rendered = lk.format_human_abi_return(
+            item,
+            "1700000000000000",
+            {"labels": {}},
+            [item, payable_contribute],
+        )
+
+        self.assertIn(
+            "get contribution = 1,700,000,000,000,000 [uint256]",
+            rendered,
+        )
+        self.assertIn("Human-readable equivalent: 0.0017 ETH", rendered)
+        self.assertIn("inferred from payable contribute()", rendered)
+        self.assertIn("unit is inferred, not encoded in the ABI", rendered)
+
+    def test_trace_return_shows_raw_word_and_human_eth_equivalent(self):
+        target = "0x" + "1" * 40
+        item = {
+            "type": "function",
+            "name": "getContribution",
+            "stateMutability": "view",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "uint256"}],
+        }
+        payable_contribute = {
+            "type": "function",
+            "name": "contribute",
+            "stateMutability": "payable",
+            "inputs": [],
+            "outputs": [],
+        }
+        raw = "0x" + format(1700000000000000, "064x")
+        trace = f"    └─ ← [Return] {raw}"
+
+        with patch.object(
+            lk, "_trace_function_item", return_value=(item, [item, payable_contribute])
+        ):
+            rendered, candidates = lk._trace_identifier_info(
+                {"target": target}, {"to": target}, trace
+            )
+
+        output = "\\n".join(rendered)
+        self.assertIn(f"get contribution: {raw} [uint256]", output)
+        self.assertIn("Decoded integer: 1,700,000,000,000,000", output)
+        self.assertIn("Human-readable equivalent: 0.0017 ETH", output)
+        self.assertEqual(candidates, [])
 
     def test_actor_identity_is_used_in_anvil_and_common_display(self):
         alice = "0x" + "1" * 40
@@ -4946,7 +5010,8 @@ contract Pool {
         self.assertIn("Returns:\n", rendered)
         self.assertIn("  creator = zero address (not set) [address]", rendered)
         self.assertIn("  recipient = zero address (not set) [address]", rendered)
-        self.assertIn("  amount = 0 ETH (0 wei, inferred) [uint256]", rendered)
+        self.assertIn("  amount = 0 [uint256]", rendered)
+        self.assertIn("Human-readable equivalent: 0 ETH", rendered)
         self.assertIn("  current status = 0 (status/state code) [uint8]", rendered)
         self.assertNotIn(", recipient=", rendered)
 
