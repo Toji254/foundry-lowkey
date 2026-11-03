@@ -15633,7 +15633,7 @@ def _chisel_sender_call_helpers(contract):
 
         body = [
             f"function {helper_name}({', '.join(parameters)}) public{returns} {{",
-            f"    vm.prank({sender_name});",
+            f"    lowkeyVm.prank({sender_name});",
             f"    {'return ' if typed_outputs else ''}{call};",
             "}",
         ]
@@ -15688,8 +15688,8 @@ def _chisel_print_contract_guide(contract, auto_instance=False):
         print("           Example pattern: lowkeyTarget.someGetter(arg)")
         print("  WRITE:   use a generated lowkeySend_* helper or call the contract directly.")
         print("  PAYABLE: generated helpers take ethValue as their final argument.")
-        print("  SENDER:  generated helpers take the intended sender as their first argument.")
-        print("  FUND:    use vm.deal(alice, 10 ether); to fund a test address in this temporary EVM.")
+        print("  SENDER:  generated helpers impersonate their first argument; direct calls can use lowkeyVm.prank(alice).")
+        print("  FUND:    use lowkeyVm.deal(alice, 10 ether); to fund a test address in this temporary EVM.")
         print("  RETURNS: helpers preserve ABI return values; mapping getters can be destructured.")
     else:
         print("  No lowkeyTarget instance was auto-created.")
@@ -15723,7 +15723,13 @@ def _write_chisel_prelude(contract, directory):
     import_path = json.dumps(contract["source"])
     import_file = prelude_dir / "00-lowkey-import.sol"
     import_file.write_text(
-        f'import {{{contract["name"]} as LowkeyLoadedTarget}} from {import_path};\n',
+        'import {Vm as LowkeyVm} from "forge-std/Vm.sol";\\n'
+        f'import {{{contract["name"]} as LowkeyLoadedTarget}} from {import_path};\\n',
+        encoding="utf-8",
+    )
+
+    (prelude_dir / "05-lowkey-vm.sol").write_text(
+        'LowkeyVm internal constant lowkeyVm = LowkeyVm(address(uint160(uint256(keccak256("hevm cheat code")))));\\n',
         encoding="utf-8",
     )
 
