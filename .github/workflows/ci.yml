@@ -62,8 +62,14 @@ jobs:
               }
           }
           EOF
+          set +e
           CHISEL_OUTPUT="$(lk chisel --root "$CHISEL_ROOT" --contract Counter eval 'lowkeyTarget.increment() == 1' 2>&1)"
+          CHISEL_STATUS=$?
+          set -e
           printf '%s\n' "$CHISEL_OUTPUT"
+          if [ "$CHISEL_STATUS" -ne 0 ]; then
+            exit "$CHISEL_STATUS"
+          fi
           grep -q "true" <<<"$CHISEL_OUTPUT"
       - name: Exercise installed native AI and memory commands
         run: bash scripts/test-native-ai-harness.sh
