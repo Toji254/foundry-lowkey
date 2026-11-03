@@ -19437,7 +19437,7 @@ COMMAND_HELP.update({
         options=[
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard setValue 10 send"),
-            ("encode", "Build calldata without sending.", "lk wizard setValue 10 encode"),
+            ("encode", "Only build the call data. Nothing is sent; Lowkey builds calldata without broadcasting a transaction.", "lk wizard setValue 10 encode"),
             ("No ETH value option", "Wizard does not have an ETH-value flag or attach-ETH switch. Use lk send --value or lk probe --value to attach ETH.", "lk send contribute --value 1ether"),
         ],
         argument_types=ABI_CALL_ARGUMENT_TYPES,
@@ -19654,7 +19654,13 @@ COMMAND_HELP.update({
             ("--json", "Print machine-readable project data. Also accepts the spelling json.", "lk project --json"),
         ],
         children={
-            "--workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace --h", "Use it before choosing a primary audit project in a monorepo."),
+            "--workspace": _help_entry(
+                "Show the larger workspace map.",
+                "lk project --workspace",
+                "lk project --workspace --h",
+                "Use it before choosing a primary audit project in a monorepo.",
+                options=[("--workspace", "Show the larger workspace map without selecting a nested project.", "lk project --workspace")],
+            ),
         },
         related=["lk projects", "lk target", "lk system"],
     ),
