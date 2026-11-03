@@ -18148,7 +18148,14 @@ COMMAND_HELP = {
         "lk targets [--all]",
         "lk targets",
         "Use it when a project has several deployed contracts and you want to choose one quickly.",
-        related=["lk target list", "lk use <name>"],
+        forms=[
+            ("lk targets", "Show protocol targets and hide lab/support contracts from the normal project target list.", "lk targets"),
+            ("lk targets --all", "Include lab/support contracts as well as protocol targets. Use this when inspecting the full local deployment inventory.", "lk targets --all"),
+        ],
+        options=[
+            ("--all", "Include support contracts, mocks, and other non-protocol targets in the target switchboard.", "lk targets --all"),
+        ],
+        related=["lk target list", "lk use <name>", "lk lab"],
     ),
     "use": _help_entry(
         "Switch Lowkey to a saved project target.",
@@ -18464,24 +18471,41 @@ COMMAND_HELP = {
     ),
     "functions": _help_entry(
         "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
-        "lk functions [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
+        "lk functions [query] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
         "lk functions -v",
-        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory.",
+        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory. Add a query to narrow the list; filter flags require a selected target with an ABI.",
+        forms=[
+            ("lk functions", "List the selected contract's ABI functions, grouped into write functions, read functions, and storage getters.", "lk functions"),
+            ("lk functions <query>", "Search the function inventory by name or signature text.", "lk functions withdraw"),
+            ("lk functions <query> [filters...]", "Combine a search with visibility, mutability, class, verbose, or risk filters.", "lk functions withdraw --visibility external --mutability nonpayable"),
+        ],
         options=[
-            ("-v", "Verbose function metadata: source visibility, modifiers, storage refs, calls, ETH flow, selectors, and review flags.", "lk functions -v"),
-            ("-V", "Filter by source visibility.", "lk functions -V external"),
-            ("-m", "Filter by mutability.", "lk functions -m payable"),
-            ("-c", "Filter by audit class.", "lk functions -c admin"),
-            ("-r", "Show compact audit-review flags.", "lk functions -r"),
+            ("-v / --verbose", "Show per-function source metadata including visibility, modifiers, storage references, calls, ETH flow, selectors, and review flags.", "lk functions --verbose"),
+            ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous. The long form also accepts --visibility=<value>.", "lk functions --visibility=external"),
+            ("-m / --mutability <value>", "Filter by mutability: pure, view, nonpayable, or payable. The long form also accepts --mutability=<value>.", "lk functions -m payable"),
+            ("-c / --class <value>", "Filter by audit class: state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow. The long form also accepts --class=<value>.", "lk functions --class admin"),
+            ("-r / --risk", "Show compact audit-review flags for functions that deserve closer inspection.", "lk functions --risk"),
         ],
         related=["lk fn", "lk ask", "lk risk"]
     ),
     "fn": _help_entry(
-        "Short spelling of the function inventory/search command.",
-        "lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
+        "Short spelling of the function inventory/search command. It accepts the same filters and produces the same output as lk functions.",
+        "lk fn [query] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
         "lk fn -v setValue",
-        "Use it for the same function inventory when you want the compact command.",
-        related=["lk functions", "lk ask"]
+        "Use it for the same function inventory when you want the compact command. Add a query to narrow the list; filter flags require a selected target with an ABI.",
+        forms=[
+            ("lk fn", "List the selected contract's ABI functions, grouped into write functions, read functions, and storage getters.", "lk fn"),
+            ("lk fn <query>", "Search the function inventory by name or signature text.", "lk fn withdraw"),
+            ("lk fn <query> [filters...]", "Combine a search with visibility, mutability, class, verbose, or risk filters.", "lk fn withdraw --visibility external --mutability nonpayable"),
+        ],
+        options=[
+            ("-v / --verbose", "Show per-function source metadata including visibility, modifiers, storage references, calls, ETH flow, selectors, and review flags.", "lk fn --verbose"),
+            ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous. The long form also accepts --visibility=<value>.", "lk fn --visibility=external"),
+            ("-m / --mutability <value>", "Filter by mutability: pure, view, nonpayable, or payable. The long form also accepts --mutability=<value>.", "lk fn -m payable"),
+            ("-c / --class <value>", "Filter by audit class: state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow. The long form also accepts --class=<value>.", "lk fn --class admin"),
+            ("-r / --risk", "Show compact audit-review flags for functions that deserve closer inspection.", "lk fn --risk"),
+        ],
+        related=["lk functions", "lk ask", "lk risk"]
     ),
     "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createRecord", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
     "wizard": _help_entry(
@@ -19157,7 +19181,7 @@ COMMAND_HELP = {
         options=[
             ("--report lcov", "Ask native Forge to emit LCOV coverage data.", "lk coverage --report lcov"),
             ("--lcov-version 1.0", "Choose LCOV 1.0 when supported by the installed Forge version.", "lk coverage --report lcov --lcov-version 1.0"),
-            ("Other Forge options", "Coverage options are passed to Forge rather than reimplemented by Lowkey. Check the options supported by your installed version.", "lk forge coverage --help"),
+            ("Other Forge options", "Coverage options are passed to Forge rather than reimplemented by Lowkey. Check the options supported by your installed version.", "forge coverage --help"),
         ],
         related=["lk test", "lk audit run", "lk cov"],
     ),
@@ -19225,6 +19249,10 @@ COMMAND_HELP = {
             ("lk slots <slot>", "Read one storage word.", "lk slots 0"),
             ("lk slots <slot> [slot ...]", "Read selected slots side by side.", "lk slots 0 1 2 3"),
             ("lk slots <start>..<end>", "Read up to 256 consecutive slots.", "lk slots 0..15"),
+            ("lk slots <slot> --block <block>", "Read a storage word as it existed at a historical block number or supported block tag.", "lk slots 3 --block latest"),
+        ],
+        options=[
+            ("--block <block>", "Read historical storage at a block number or supported block tag. The option is forwarded to Cast's storage command.", "lk slots 3 --block latest"),
         ],
         related=["lk storage", "lk layout", "lk mapping"],
     ),
@@ -19241,8 +19269,8 @@ def _native_forge_help(command: str, summary: str, example: str) -> dict:
         example,
         f"Use it when you need Forge's native '{command}' capability while keeping Lowkey's project routing and command surface.",
         options=[
-            ("Forge options", "Pass any options supported by the installed Forge command.", f"lk {command} --help"),
-            ("Forwarding", "Lowkey forwards the remaining arguments to the native Forge command; behavior depends on the installed Forge version.", f"lk {command} --help"),
+            ("Forge options", "Pass options supported by your installed Forge version. Ask Forge directly for its authoritative option list; Lowkey does not reimplement these flags.", f"forge {command} --help"),
+            ("Forwarding", "Lowkey forwards the remaining arguments to the native Forge command. These are upstream Forge options, not Lowkey-owned flags, and may vary by installed version.", f"forge {command} --help"),
         ],
         related=["lk forge", "lk doctor"],
     )
@@ -19698,7 +19726,7 @@ COMMAND_HELP.update({
         "lk forge test -vvvv",
         "Use it when you need a Forge feature that Lowkey does not wrap separately. Forge subcommands and flags are passed through as supplied.",
         options=[
-            ("Forge subcommand options...", "Use forge --help or forge <subcommand> --help for the authoritative option list for your installed version.", "lk forge test --help"),
+            ("Forge subcommand options...", "Use forge --help or forge <subcommand> --help for the authoritative option list for your installed version.", "forge test --help"),
         ],
         related=["lk build", "lk test"],
     ),
@@ -19708,7 +19736,7 @@ COMMAND_HELP.update({
         "lk build",
         "Use it before trusting artifacts, ABI data, or storage layout. Extra arguments pass through to forge build.",
         options=[
-            ("Forge build options...", "Run forge build --help to see options supported by your installed version.", "lk forge build --help"),
+            ("Forge build options...", "Run forge build --help to see options supported by your installed version.", "forge build --help"),
         ],
         related=["lk test", "lk lab"],
     ),
@@ -19728,7 +19756,7 @@ COMMAND_HELP.update({
         "lk script script/LocalDeploy.s.sol --sig run()",
         "Use it when the project already has a useful setup/deployment script. Script options pass through to Forge.",
         options=[
-            ("Forge script options...", "Run forge script --help for options supported by your installed version.", "lk forge script --help"),
+            ("Forge script options...", "Run forge script --help for options supported by your installed version.", "forge script --help"),
         ],
         related=["lk lab", "lk forge"],
     ),
@@ -19738,7 +19766,7 @@ COMMAND_HELP.update({
         "lk inspect MyContract storage-layout --json",
         "Use it for compiler metadata Lowkey does not wrap directly. Inspect options pass through to Forge.",
         options=[
-            ("Forge inspect options...", "Run forge inspect --help for the option list supported by your installed version.", "lk forge inspect --help"),
+            ("Forge inspect options...", "Run forge inspect --help for the option list supported by your installed version.", "forge inspect --help"),
         ],
         related=["lk layout", "lk forge"],
     ),
@@ -19748,7 +19776,7 @@ COMMAND_HELP.update({
         "lk fmt",
         "Use it after intentional Solidity edits. Extra arguments pass through to forge fmt.",
         options=[
-            ("Forge fmt options...", "Run forge fmt --help for formatting options supported by your installed version.", "lk forge fmt --help"),
+            ("Forge fmt options...", "Run forge fmt --help for formatting options supported by your installed version.", "forge fmt --help"),
         ],
         related=["lk build", "lk test"],
     ),
@@ -19758,7 +19786,7 @@ COMMAND_HELP.update({
         "lk raw storage 0",
         "Use it as the advanced EVM inspection escape hatch. Lowkey passes the selected Cast command and its arguments through unchanged.",
         options=[
-            ("Cast subcommand options...", "Run cast --help or cast <subcommand> --help for the authoritative option list.", "lk raw storage --help"),
+            ("Cast subcommand options...", "Run cast --help or cast <subcommand> --help for the authoritative option list.", "cast storage --help"),
         ],
         related=["lk encode", "lk tx"],
     ),
@@ -19768,7 +19796,7 @@ COMMAND_HELP.update({
         "lk chisel",
         "Use it for quick Solidity/EVM experiments without creating a full contract. Lowkey passes Chisel arguments through unchanged.",
         options=[
-            ("Chisel options...", "Run chisel --help for the options supported by your installed version.", "lk chisel --help"),
+            ("Chisel options...", "Run chisel --help for the options supported by your installed version.", "chisel --help"),
         ],
     ),
 })
@@ -20951,7 +20979,13 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             )
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
-    elif cmd in {"targets","target-list"}: return run_targets(config, include_support=bool(args and args[0] == "--all"))
+    elif cmd in {"targets","target-list"}:
+        unknown = [value for value in args if value != "--all"]
+        if unknown:
+            return fail(f"Usage: lk targets [--all]\\nUnknown option or argument: {unknown[0]}")
+        if args.count("--all") > 1:
+            return fail("Error: --all may only be supplied once.")
+        return run_targets(config, include_support="--all" in args)
     elif cmd=="use":
         root=audit_context.foundry_project_root()
         if not args:
