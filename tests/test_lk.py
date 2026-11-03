@@ -5012,7 +5012,8 @@ contract Pool {
         self.assertIn("  recipient = zero address (not set) [address]", rendered)
         self.assertIn("  amount = 0 [uint256]", rendered)
         self.assertIn("Human-readable equivalent: 0 ETH", rendered)
-        self.assertIn("  current status = 0 (status/state code) [uint8]", rendered)
+        self.assertIn("  current status = 0 [uint8]", rendered)
+        self.assertIn("Meaning: status/state code", rendered)
         self.assertNotIn(", recipient=", rendered)
 
     def test_human_abi_return_preserves_multi_value_lines(self):
