@@ -18942,7 +18942,7 @@ COMMAND_HELP = {
         "Use it when inspecting selectors or understanding calldata. Supply parameter TYPES, not argument names or values. Single quotes protect parentheses and array brackets from Bash. A bare name is resolved only when the selected target ABI contains exactly one matching function.",
         forms=[
             ("Full ABI signature", "Include the function name and every parameter type in ABI order.", "lk sig 'setValue(uint256)'"),
-            ("Bare function name", "With a selected target, Lowkey can resolve a name when exactly one ABI function matches. Overloads are listed for you to choose from.", "lk sig createBounty"),
+            ("Bare function name", "With a selected target, Lowkey can resolve a name when exactly one ABI function matches. Overloads are listed for you to choose from.", "lk sig setValue"),
         ],
         options=[
             ("Single quotes", "Quote the entire signature so Bash passes parentheses and square brackets to Lowkey literally.", "lk sig 'transfer(address,uint256)'"),
