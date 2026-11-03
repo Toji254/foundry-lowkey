@@ -4386,7 +4386,8 @@ def format_human_abi_return(item, decoded, config, abi=None):
 
         # Keep the decoded integer visible as the primary evidence. An ETH
         # conversion is a second line because ABI types do not carry units.
-        lines.append(f"  {label} = {rendered} [{type_name}]")
+        primary_value = value if unit == "native ETH" else rendered
+        lines.append(f"  {label} = {primary_value} [{type_name}]")
         if annotation:
             lines.append(f"    Meaning: {annotation}")
         elif unit == "native ETH":
@@ -4415,7 +4416,8 @@ def format_human_abi_return(item, decoded, config, abi=None):
             is_numeric=type_name.lower().startswith(("uint","int"))
             unit=_human_return_unit(item,abi,output) if is_numeric and not enum_rendered else None
             annotation=_human_numeric_annotation(item,output,abi) if is_numeric and not enum_rendered else None
-            rendered_parts.append(f"  {label} = {rendered_value} [{type_name}]")
+            primary_value = value_part if unit == "native ETH" else rendered_value
+            rendered_parts.append(f"  {label} = {primary_value} [{type_name}]")
             if annotation:
                 rendered_parts.append(f"    Meaning: {annotation}")
             elif unit == "native ETH":
