@@ -26,6 +26,18 @@ class CommandHelpTests(unittest.TestCase):
             code = lk.dispatch_command(command, list(args), {})
         return code, output.getvalue()
 
+    def test_sig_help_shows_copyable_quoted_signature_and_explains_bash(self):
+        code, output = self.capture_dispatch("sig", "--h")
+        self.assertEqual(code, 0)
+        for item in (
+            "lk sig '<functionName>(<parameterTypes>)'",
+            "lk sig 'createBounty(string,string[])'",
+            "Single quotes protect parentheses and array brackets from Bash.",
+            "Parameter TYPES",
+            "lk sig createBounty",
+        ):
+            self.assertIn(item, output)
+
     def test_walkthrough_help_lists_test_and_human_guidance(self):
         code, output = self.capture_dispatch("walkthrough", "--h")
         self.assertEqual(code, 0)
