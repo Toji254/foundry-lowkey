@@ -43,9 +43,10 @@ class CliConsistencyTests(unittest.TestCase):
             with redirect_stdout(output):
                 lk._print_recommended_next_commands("status", [], 0, {})
         rendered = output.getvalue()
-        self.assertIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
-        self.assertIn("1. lk functions", rendered)
-        self.assertIn("Why: List contract functions.", rendered)
+        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertIn("→ lk functions", rendered)
+        self.assertIn("List contract functions.", rendered)
         ai_footer.assert_called_once_with("status", native, {}, args=[], result=0)
 
     def test_send_preview_recommends_preflight_and_confirmed_submission(self):

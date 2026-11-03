@@ -1252,9 +1252,10 @@ class CommandHelpTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("NEXT COMMANDS", rendered)
         self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        normalized_rendered = " ".join(rendered.split())
         for command, reason in items:
-            self.assertIn(command, rendered)
-            self.assertIn(reason, rendered)
+            self.assertIn(command, normalized_rendered)
+            self.assertIn(reason, normalized_rendered)
 
     def test_recommendations_require_a_curated_workflow(self):
         audit_commands = [command for command, _ in lk._recommended_next_commands("audit", [])]

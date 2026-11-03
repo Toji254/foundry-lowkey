@@ -2659,10 +2659,10 @@ def _ui_terminal_width(stream=None):
 def _ui_status_marker(status):
     """Render a compact status marker; status words remain explicit for screen readers."""
     value = str(status or "").strip().upper()
-    if value in {"LIVE", "READY", "PASS", "PASSED", "SUCCESS", "COMPLETE", "UP-TO-DATE", "AVAILABLE", "LOADED", "MATCHED", "DEPLOYED"}:
+    if value in {"LIVE", "READY", "PASS", "PASSED", "SUCCESS", "COMPLETE", "UP-TO-DATE", "AVAILABLE", "LOADED", "MATCHED", "DEPLOYED", "CODE PRESENT"}:
         tone = "receive"
         marker = "●"
-    elif any(token in value for token in ("WARN", "REVIEW", "PENDING", "UNVERIFIED", "NOT DEPLOYED", "NO TARGET")):
+    elif any(token in value for token in ("WARN", "REVIEW", "PENDING", "UNVERIFIED", "NOT DEPLOYED", "NO TARGET", "NO CODE")):
         tone = "warning"
         marker = "!"
     elif any(token in value for token in ("FAIL", "ERROR", "MISMATCH", "REVERT", "INVALID")):
@@ -2737,13 +2737,15 @@ def _ui_print_next_commands(items, *, function_mode=False, stream=None):
     for command, reason in items:
         command = str(command)
         reason = str(reason).strip()
+        summary = None
         if function_mode:
             key = " ".join(command.split()[:2])
-            reason = short_reasons.get(key, reason)
+            summary = short_reasons.get(key)
+        display_reason = summary or reason
         prefix = f"  → {command:<{command_width}}  "
         available = max(16, terminal_width - len(prefix))
         wrapped = textwrap.wrap(
-            reason,
+            display_reason,
             width=available,
             break_long_words=False,
             break_on_hyphens=False,
@@ -2752,6 +2754,21 @@ def _ui_print_next_commands(items, *, function_mode=False, stream=None):
         continuation = " " * len(prefix)
         for part in wrapped[1:]:
             print(continuation + part, file=stream)
+        # Keep the familiar one-line function hint, but never discard the
+        # complete curated reason: show it as a wrapped detail when different.
+        if summary and reason.casefold() != summary.casefold():
+            detail_prefix = continuation + "Detail: "
+            detail_width = max(16, terminal_width - len(detail_prefix))
+            detail_lines = textwrap.wrap(
+                reason,
+                width=detail_width,
+                break_long_words=False,
+                break_on_hyphens=False,
+            ) or [""]
+            print(detail_prefix + detail_lines[0], file=stream)
+            detail_continuation = " " * len(detail_prefix)
+            for part in detail_lines[1:]:
+                print(detail_continuation + part, file=stream)
 
 
 def _function_print_wrapped(prefix, value):
