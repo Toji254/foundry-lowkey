@@ -1347,6 +1347,54 @@ class LowkeyCastTests(unittest.TestCase):
         )
         self.assertEqual(config["actor"], "Alice")
 
+    def test_as_direct_send_restores_and_persists_previous_actor(self):
+        target = "0x" + "1" * 40
+        tx_hash = "0x" + "a" * 64
+        item = {
+            "type": "function",
+            "name": "contribute",
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": "payable",
+        }
+        config = {
+            "actor": "Alice",
+            "target": target,
+            "wallets": {
+                "Alice": {"address": "0x" + "2" * 40},
+                "Bob": {"address": "0x" + "3" * 40},
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as raw:
+            config_dir = pathlib.Path(raw) / "config"
+            config_file = config_dir / "config.json"
+
+            def send_as_temporary_actor(command, execution_config):
+                self.assertEqual(execution_config["actor"], "Bob")
+                self.assertTrue(execution_config["_ephemeral"])
+                execution_config["last_tx"] = tx_hash
+                # This is the persistence attempted by a successful lk send.
+                # It must be suppressed until run_as restores Alice.
+                lk.save_config(execution_config)
+                return 0
+
+            with patch.object(lk, "CONFIG_DIR", str(config_dir)), patch.object(
+                lk, "CONFIG_FILE", str(config_file)
+            ), patch.object(lk, "load_abi", return_value=[item]), patch.object(
+                lk, "run_cast", side_effect=send_as_temporary_actor
+            ):
+                result = lk.run_as(config, ["Bob", "contribute", "--eth", "0.0009"])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(config["actor"], "Alice")
+            self.assertNotIn("_ephemeral", config)
+            self.assertTrue(config_file.is_file())
+            persisted = json.loads(config_file.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["actor"], "Alice")
+            self.assertEqual(persisted["last_tx"], tx_hash)
+            self.assertNotIn("_ephemeral", persisted)
+
     def test_storage_slot_range_expands_and_reads_each_slot(self):
         config = {"target": "0x" + "1" * 40}
         results = [
