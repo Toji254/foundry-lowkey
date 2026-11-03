@@ -18000,7 +18000,7 @@ def run_break(config, args):
 
 HELP_FLAGS = {"--h", "--help", "-h", "help"}
 
-def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None, argument_types=None):
+def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None, argument_types=None, notes=None):
     return {
         "summary": summary,
         "usage": usage,
@@ -18011,13 +18011,14 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
         "forms": forms or [],
         "related": related or [],
         "argument_types": argument_types or [],
+        "notes": notes or [],
     }
 
 def _validate_help_variations(entries):
     """Validate structured help variants without changing runtime behavior."""
     problems = []
     for command, entry in entries.items():
-        for field_name in ("forms", "options", "argument_types"):
+        for field_name in ("forms", "options", "argument_types", "notes"):
             for index, item in enumerate(entry.get(field_name) or [], 1):
                 if not isinstance(item, (list, tuple)) or len(item) != 3:
                     problems.append(f"lk {command}: {field_name}[{index}] must be (command, description, example)")
@@ -18562,7 +18563,25 @@ COMMAND_HELP = {
         argument_types=ABI_CALL_ARGUMENT_TYPES,
         related=["lk mapping", "lk layout", "lk trace"],
     ),
-    "state-diff": _help_entry("Alias for the storage-change reproduction workflow.", "lk state-diff '<function(parameter TYPES...)>' <VALUES...>", "lk state-diff 'setValue(uint256)' 10", "Use it when the state-diff terminology makes more sense to you.", related=["lk changes", "lk snapshot", "lk diff"]),
+    "state-diff": _help_entry(
+        "Alias for lk changes: run a concrete call in a temporary test and show the contract storage values it changed.",
+        "lk state-diff <function> [values...] [options]",
+        "lk state-diff setValue 10 --actor Alice",
+        "Use it when the state-diff terminology makes more sense to you. It accepts the same function syntax and local-call options as lk changes.",
+        forms=[
+            ("lk state-diff <function> [values...]", "Run a function by name; Lowkey resolves the ABI signature.", "lk state-diff setValue 10"),
+            ("lk state-diff '<function(types...)>' [values...]", "Specify an exact overloaded function signature. Quote parentheses for Bash.", "lk state-diff 'setValue(uint256)' 10"),
+            ("lk state-diff <function> [values...] --actor <name>", "Choose the named local actor for the temporary call.", "lk state-diff setValue 10 --actor Alice"),
+            ("lk state-diff <function> [values...] --repeat <N>", "Repeat the call inside one test transaction. Maximum: 100.", "lk state-diff setValue 10 --repeat 3"),
+        ],
+        options=[
+            ("--actor <name> / --as <name>", "Choose the actor used for the temporary call.", "lk state-diff setValue 10 --as Alice"),
+            ("--value <amount> / --eth <amount>", "Attach ETH to the temporary call as msg.value. --eth treats a unitless number as ETH.", "lk state-diff contribute --eth 0.1"),
+            ("--repeat <N> / --times <N>", "Repeat the exact call N times inside the same temporary test transaction. Maximum: 100.", "lk state-diff setValue 10 --times 3"),
+        ],
+        argument_types=ABI_CALL_ARGUMENT_TYPES,
+        related=["lk changes", "lk snapshot", "lk diff"],
+    ),
     "risk": _help_entry("Show rule-based ABI review hints and source security-pattern signals.", "lk risk", "lk risk", "Use it to find functions/patterns that deserve manual review; hints are not vulnerability verdicts.", related=["lk scan", "lk seams", "lk findings"]),
     "scan": _help_entry(
         "Quickly search source code for security-related patterns that may need a closer look.",
@@ -18706,7 +18725,21 @@ COMMAND_HELP = {
         ],
         related=["lk receipt", "lk walkthrough"],
     ),    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
-    "logs": _help_entry("Query logs and optionally decode events.", "lk logs [args...]", "lk logs --decode", "Use it when events are part of behavior or security evidence.", options=[("--decode", "Decode matching events with the current ABI.", "lk logs --decode")], related=["lk event", "lk tx"]),
+    "logs": _help_entry(
+        "Query transaction logs and optionally decode emitted events against the ABI for each emitting contract.",
+        "lk logs [Cast log filters...] [--decode]",
+        "lk logs --decode",
+        "Use it when event evidence matters. Without --decode, Lowkey passes filters to Cast. With --decode, matching log records are decoded using the ABI for their emitting contracts.",
+        forms=[
+            ("lk logs [Cast log filters...]", "Query logs using Cast's normal filter syntax.", "lk logs --from-block 1 --to-block latest"),
+            ("lk logs [Cast log filters...] --decode", "Show matching logs and decode their event names and arguments.", "lk logs --decode"),
+        ],
+        options=[
+            ("--decode", "Decode matching event logs. This is a Lowkey flag; other log filters are passed through to Cast.", "lk logs --decode"),
+            ("Cast log filters...", "Use filters supported by your installed Cast version. Run cast logs --help for the authoritative list.", "lk raw logs --help"),
+        ],
+        related=["lk last logs", "lk receipt", "lk event"],
+    ),
     "chain": _help_entry("Show chain ID, current block, and RPC.", "lk chain", "lk chain", "Use it to verify exactly which local chain/fork you are talking to.", related=["lk rpc", "lk fork"]),
     "balance": _help_entry(
         "Show how much native ETH an address holds.",
@@ -18740,7 +18773,25 @@ COMMAND_HELP = {
     ),
     "decode-error": _help_entry("Decode a Solidity custom-error payload.", "lk decode-error <data>", "lk decode-error 0x...", "Use it when a revert payload is hex and you want the actual error and arguments.", related=["lk trace", "lk decode"]),
     "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
-    "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
+    "poc": _help_entry(
+        "Generate a PoC candidate only from exact calldata and an explicit measurable impact assertion.",
+        "lk poc --calldata <hex> --impact-assertion '<boolean condition>' [options]",
+        "lk poc --function 'withdraw()' --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'",
+        "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.",
+        forms=[
+            ("lk poc --calldata <hex> --impact-assertion '<condition>'", "Provide the exact transaction calldata and a boolean impact assertion. Both are required.", "lk poc --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+            ("lk poc --function '<signature>' --value <ETH>", "Optionally label the call with its function and attach ETH to the reproduced call.", "lk poc --function 'withdraw()' --value 0.1ether --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+        ],
+        options=[
+            ("--calldata <hex>", "Required. Exact transaction calldata beginning with 0x.", "lk poc --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+            ("--impact-assertion <condition>", "Required. A quoted boolean assertion over supported measured before/after impact values.", "lk poc --impact-assertion 'attackerAfter > attackerBefore' --calldata 0x1234"),
+            ("--finding <number>", "Associate the candidate with an existing finding by its numeric index.", "lk poc --finding 1 --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+            ("--name <name>", "Give the generated PoC candidate a readable name.", "lk poc --name UnauthorizedWithdrawal --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+            ("--function <signature>", "Record the function signature associated with the calldata.", "lk poc --function 'withdraw()' --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+            ("--value <amount>", "Attach ETH to the reproduced call. Default: 0.", "lk poc --value 0.1ether --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+        ],
+        related=["lk finding", "lk export"],
+    ),
     "verification": _help_entry(
         "Check which test/verification engines fit this project, or run a controlled multi-engine campaign from a JSON file.",
         "lk verification <engines|run|correlate|investigate> ... (short alias: lk verify)",
@@ -18988,17 +19039,26 @@ COMMAND_HELP = {
     "implementation": _help_entry("Resolve the implementation behind the selected proxy.", "lk implementation", "lk implementation", "Use it to find the code that executes behind a proxy.", related=["lk proxy", "lk admin"]),
     "admin": _help_entry("Resolve the proxy admin when supported.", "lk admin", "lk admin", "Use it when reviewing who controls upgrades.", related=["lk proxy", "lk implementation"]),
     "selectors": _help_entry(
-        "Show deployed runtime selectors matched to readable function signatures from the selected contract ABI.",
+        "Compare the function selectors in the selected contract ABI with selector patterns detected in deployed runtime bytecode.",
         "lk selectors [--compare|--raw] [bytecode]",
         "lk selectors",
-        "Use it to see which ABI functions have matching selectors in the selected contract's deployed runtime bytecode.",
+        "Use it for bytecode-level callable-surface analysis. With a selected target, Lowkey resolves detected selectors to ABI function signatures by default.",
         forms=[
-            ("Named function view", "With a selected target, match runtime selectors to ABI function names and signatures. This is the default.", "lk selectors"),
-            ("Raw selector view", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
+            ("lk selectors", "Show detected runtime selectors matched to readable function signatures. This is the default with a selected target.", "lk selectors"),
+            ("lk selectors --compare", "Show the ABI-versus-runtime comparison, including unmatched entries in both directions.", "lk selectors --compare"),
+            ("lk selectors --raw", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
+            ("lk selectors <bytecode>", "Extract selectors from explicitly supplied runtime bytecode.", "lk selectors 0x6000"),
         ],
         options=[
-            ("--compare", "Request the runtime-to-ABI comparison explicitly.", "lk selectors --compare"),
-            ("--raw", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
+            ("--compare", "Display the ABI-to-runtime comparison explicitly. This is the normal readable view when a target is selected.", "lk selectors --compare"),
+            ("--raw", "Bypass ABI name resolution and show the raw Cast selector output.", "lk selectors --raw"),
+        ],
+        notes=[
+            ("ABI selectors", "Calculated from canonical function signatures in the loaded ABI. They describe the functions declared by the interface Lowkey has loaded.", "ABI: 0xf6a8419e  createEscrow(address)"),
+            ("Runtime selectors", "Four-byte selector patterns detected in deployed runtime bytecode. They are evidence found in code, not proof that a function is reachable.", "Runtime: 0xf6a8419e  createEscrow(address)"),
+            ("ABI-ONLY", "An ABI selector was not detected in the runtime scan. Possible causes include a stale ABI, proxy routing, or a dispatcher pattern the selector scanner does not recognise.", "ABI-ONLY: 0x12345678  legacyFunction()"),
+            ("RUNTIME-ONLY", "A selector pattern was detected in bytecode but has no matching loaded ABI function. This may be a missing ABI entry, a different interface, or a false positive; inspect the disassembly.", "RUNTIME-ONLY: 0xdeadbeef"),
+            ("Important limitation", "A matching selector is a consistency lead, not proof of reachability, successful execution, or security. Proxies and custom fallback dispatchers need separate inspection.", "lk disasm"),
         ],
         related=["lk functions", "lk sig", "lk calldata", "lk disasm"],
     ),
@@ -19024,6 +19084,11 @@ COMMAND_HELP = {
             ("lk txpool status", "Show pending and queued transaction counts.", "lk txpool status"),
             ("lk txpool content", "Show the full pending and queued transaction contents.", "lk txpool content"),
             ("lk txpool pending", "Show the pending/queued transaction contents (same view as content).", "lk txpool pending"),
+        ],
+        options=[
+            ("status", "Show pending and queued transaction counts.", "lk txpool status"),
+            ("content", "Show pending and queued transaction details.", "lk txpool content"),
+            ("pending", "Alias for the content view.", "lk txpool pending"),
         ],
         related=["lk chain", "lk trace"]),
     "chisel": _help_entry(
@@ -19063,8 +19128,10 @@ COMMAND_HELP = {
         forms=[
             ("lk fuzz", "Run the project's normal tests, including fuzz tests that Forge discovers.", "lk fuzz"),
             ("lk fuzz --fuzz-runs <number>", "Tell Forge how many random inputs to try for each fuzz test.", "lk fuzz --fuzz-runs 1000"),
-            ("lk fuzz replay", "Run saved failing fuzz test cases again.", "lk fuzz replay"),
-            ("lk fuzz failures", "Show saved fuzz and invariant failure files.", "lk fuzz failures"),
+            ("lk fuzz replay / lk fuzz rerun", "Replay saved failing Forge tests.", "lk fuzz replay"),
+            ("lk fuzz failures / lk fuzz corpus", "Show saved fuzz and invariant failure files.", "lk fuzz failures"),
+            ("lk fuzz watch [Forge options...]", "Run Forge tests in watch mode and rerun when source files change.", "lk fuzz watch"),
+            ("lk fuzz [Forge options...]", "Pass additional test settings through to Forge.", "lk fuzz --match-test test_withdraw -vvvv"),
         ],
         options=[
             ("--fuzz-runs <number>", "Set how many random inputs Forge should try for each fuzz test.", "lk fuzz --fuzz-runs 1000"),
@@ -19591,6 +19658,16 @@ def _render_command_help(path):
         print("Arrays and tuples are each ONE argument; quote the whole bracket/tuple value in your shell.")
         for abi_type, description, example in argument_types:
             print(f"  {abi_type}")
+            print(f"      {description}")
+            print(f"      Example: {example}")
+
+    notes = entry.get("notes") or []
+    if notes:
+        print("")
+        print("OUTPUT / HOW TO READ")
+        print("--------------------")
+        for label, description, example in notes:
+            print(f"  {label}")
             print(f"      {description}")
             print(f"      Example: {example}")
 
