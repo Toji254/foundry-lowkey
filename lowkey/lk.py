@@ -4344,7 +4344,7 @@ def _normalize_decoded_abi_scalar(value, type_name):
     return match.group(1) if match else rendered
 
 
-def _human_native_eth_annotation(item,output,abi,scalar_value):
+def _human_native_eth_annotation(item,output,abi,value):
     """Return a second-line ETH interpretation while preserving the raw integer."""
     if _human_return_unit(item,abi,output) != "native ETH":
         return None
@@ -4413,7 +4413,7 @@ def format_human_abi_return(item, decoded, config, abi=None):
         if annotation:
             lines.append(f"    Meaning: {annotation}")
         elif unit == "native ETH":
-            human_line=_human_native_eth_annotation(item,output,abi,value)
+            human_line=_human_native_eth_annotation(item,output,abi,scalar_value)
             if human_line:
                 lines.append(human_line)
         elif unit:
