@@ -6082,8 +6082,37 @@ def run_cast(args,config,capture=False):
     active_rpc=effective_rpc(config)
     if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
     actor=actor_override or config.get("actor")
+
+    # eth_call has no wallet signer, but msg.sender still matters to contract
+    # logic. Mirror the selected Lowkey actor unless the caller explicitly
+    # supplied --from. This makes caller-dependent view functions (for example
+    # contributions[msg.sender]) read the same account that lk send would use.
+    if cast_cmd == "call" and actor and "--from" not in cmd and not any(
+        str(argument).startswith("--from=") for argument in cmd
+    ):
+        sender = actor_address(config, actor)
+        if is_address(sender):
+            cmd.extend(["--from", sender])
+
     actor_entry=config.get("wallets",{}).get(actor) if actor else None
     actor_key=resolve_wallet_key(config,actor) if cast_cmd=="send" else None
+
+    # A view/pure function can technically be invoked by a signed transaction,
+    # but this still mines a block and spends gas. Keep the explicit send
+    # available for transaction-context experiments while making the cost clear.
+    if (
+        cast_cmd == "send"
+        and function_item
+        and str(function_item.get("stateMutability") or "").lower() in {"view", "pure"}
+        and not capture
+    ):
+        print(
+            "Note: this function is declared "
+            f"{str(function_item.get('stateMutability')).lower()}. "
+            "A send still mines a transaction and spends gas; use 'lk read' "
+            "for a free simulated read.",
+            file=sys.stderr,
+        )
     if cast_cmd=="send" and isinstance(actor_entry,dict) and actor_entry.get("source")=="anvil-impersonated":
         address=actor_entry.get("address")
         if not is_address(address):
