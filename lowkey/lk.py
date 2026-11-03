@@ -4340,7 +4340,7 @@ def _normalize_decoded_abi_scalar(value, type_name):
     lowered = str(type_name or "").strip().lower()
     if not lowered.startswith(("uint", "int")):
         return rendered
-    match = re.fullmatch(r"(-?\\d+)(?:\\s+\\[[^\\]\\r\\n]+\\])?", rendered)
+    match = re.fullmatch(r"(-?\d+)(?:\s+\[[^\]\r\n]+\])?", rendered)
     return match.group(1) if match else rendered
 
 
