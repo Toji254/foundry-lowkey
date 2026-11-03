@@ -4265,7 +4265,8 @@ def _human_return_unit(item,abi,output=None):
     """Infer a safe display unit from standard ABI/function conventions."""
     name=str(item.get("name") or "").strip().lower()
     output_name=str((output or {}).get("name") or "").strip().lower()
-    names={str(entry.get("name") or "").strip().lower() for entry in abi_functions(abi)}
+    functions=abi_functions(abi)
+    names={str(entry.get("name") or "").strip().lower() for entry in functions}
 
     if name=="balanceof":
         if {"ownerof","tokenuri"} <= names:
@@ -4281,34 +4282,67 @@ def _human_return_unit(item,abi,output=None):
         return "decimal places"
 
     # An ABI does not encode whether a uint256 is wei, tokens, shares, etc.
-    # When a getter returns an amount-like field and the contract exposes a
-    # payable function, show the native-ETH equivalent as an explicit
-    # inference while keeping the exact integer value visible.
+    # Only infer native ETH when the ABI gives a payable-inflow clue and does
+    # not look like an ERC20 surface. This also covers unnamed outputs from
+    # contribution getters such as getContribution() / contributions(address).
     amount_fields={"amount","value","deposit","ethamount","depositamount"}
-    has_payable=any(
-        str(entry.get("stateMutability") or "").lower()=="payable"
-        for entry in abi_functions(abi)
+    normalized_output=output_name.replace("_","").lower()
+    is_amount_field=normalized_output in {
+        field.replace("_","").lower() for field in amount_fields
+    }
+    function_tokens=_function_tokens(name)
+    is_contribution_getter=bool(
+        {"contribution","contributions"} & function_tokens
     )
+    payable_entries=[
+        entry for entry in functions
+        if str(entry.get("stateMutability") or "").lower()=="payable"
+    ]
+    payable_inflow=next(
+        (
+            entry for entry in payable_entries
+            if _function_tokens(entry.get("name")) & {"contribute","donate","deposit","fund"}
+        ),
+        None,
+    )
+    has_payable=bool(payable_entries)
     token_surface={"transfer","approve","allowance","balanceof","totalsupply"}
     looks_token_like=len(token_surface & names) >= 3
-    if output_name.replace("_","").lower() in {
-        field.replace("_","").lower() for field in amount_fields
-    } and has_payable and not looks_token_like:
+
+    if not looks_token_like and (
+        (is_amount_field and has_payable)
+        or (is_contribution_getter and payable_inflow is not None)
+    ):
         return "native ETH"
 
     return None
 
-def _human_native_eth_render(value, rendered):
-    """Show an inferred ETH equivalent without hiding the exact integer."""
+
+def _human_native_eth_reason(item,abi):
+    """Explain which ABI clue caused the native-ETH unit inference."""
+    for entry in abi_functions(abi):
+        if str(entry.get("stateMutability") or "").lower() != "payable":
+            continue
+        if _function_tokens(entry.get("name")) & {"contribute","donate","deposit","fund"}:
+            return f"inferred from payable {format_signature(entry)}"
+    return "inferred from a payable contract interface"
+
+
+def _human_native_eth_annotation(item,output,abi,value):
+    """Return a second-line ETH interpretation while preserving the raw integer."""
+    if _human_return_unit(item,abi,output) != "native ETH":
+        return None
     try:
         wei=int(str(value).replace(",","").strip())
     except (TypeError,ValueError):
         return None
     if wei < 0:
         return None
-    eth=_wei_to_eth(wei)
-    return f"{eth} ETH ({rendered} wei, inferred)"
-
+    return (
+        f"    Human-readable equivalent: {_wei_to_eth(wei)} ETH "
+        f"(raw value interpreted as wei; {_human_native_eth_reason(item,abi)}; "
+        "unit is inferred, not encoded in the ABI)"
+    )
 
 def _human_numeric_annotation(item, output, abi):
     """Add meaning where a numeric ABI value has a recognizable convention."""
@@ -4328,7 +4362,7 @@ def _human_numeric_annotation(item, output, abi):
 
 
 def format_human_abi_return(item, decoded, config, abi=None):
-    """Render ABI return data for humans while retaining concise Solidity type evidence."""
+    """Render raw ABI values first, then safe human-readable interpretations."""
     outputs=item.get("outputs",[]) if isinstance(item,dict) else []
     value=apply_labels(str(decoded or "").strip(),config)
     if not outputs:
@@ -4346,27 +4380,25 @@ def format_human_abi_return(item, decoded, config, abi=None):
             output.get("name"),
             config,
         )
+        lines=["Returns:"]
+        is_numeric=type_name.lower().startswith(("uint","int"))
+        unit=_human_return_unit(item,abi,output) if is_numeric and not enum_rendered else None
+        annotation=_human_numeric_annotation(item,output,abi) if is_numeric and not enum_rendered else None
 
-        # Enum values are already semantically rendered (for example,
-        # "waiting (enum value 0)"). Never append generic numeric units to an
-        # enum; doing so makes the result misleading.
-        if (
-            not enum_rendered
-            and (type_name.lower().startswith("uint") or type_name.lower().startswith("int"))
-        ):
-            unit=_human_return_unit(item,abi,output)
-            annotation=_human_numeric_annotation(item,output,abi)
-            if annotation and annotation not in rendered:
-                rendered=f"{rendered} ({annotation})"
-            elif unit == "native ETH":
-                native_rendered = _human_native_eth_render(value, rendered)
-                rendered = native_rendered or f"{rendered} units (unit not specified by ABI)"
-            elif unit:
-                rendered=f"{rendered} {unit}"
-            else:
-                rendered=f"{rendered} units (unit not specified by ABI)"
-
-        return "Returns:\n" + f"  {label} = {rendered} [{type_name}]"
+        # Keep the decoded integer visible as the primary evidence. An ETH
+        # conversion is a second line because ABI types do not carry units.
+        lines.append(f"  {label} = {rendered} [{type_name}]")
+        if annotation:
+            lines.append(f"    Meaning: {annotation}")
+        elif unit == "native ETH":
+            human_line=_human_native_eth_annotation(item,output,abi,value)
+            if human_line:
+                lines.append(human_line)
+        elif unit:
+            lines[-1]=f"  {label} = {rendered} {unit} [{type_name}]"
+        elif is_numeric and not enum_rendered:
+            lines[-1]=f"  {label} = {rendered} units (unit not specified by ABI) [{type_name}]"
+        return "\n".join(lines)
 
     types=[canonical_type(output) for output in outputs]
     labels=[_human_field_label(output.get("name")) or f"value{index}" for index,output in enumerate(outputs,1)]
@@ -4384,17 +4416,17 @@ def format_human_abi_return(item, decoded, config, abi=None):
             is_numeric=type_name.lower().startswith(("uint","int"))
             unit=_human_return_unit(item,abi,output) if is_numeric and not enum_rendered else None
             annotation=_human_numeric_annotation(item,output,abi) if is_numeric and not enum_rendered else None
-            if annotation:
-                if annotation not in rendered_value:
-                    rendered_value=f"{rendered_value} ({annotation})"
-            elif unit == "native ETH":
-                native_rendered = _human_native_eth_render(value_part, rendered_value)
-                rendered_value = native_rendered or f"{rendered_value} units (unit not specified by ABI)"
-            elif unit:
-                rendered_value=f"{rendered_value} {unit}"
-            elif is_numeric and not enum_rendered:
-                rendered_value=f"{rendered_value} units (unit not specified by ABI)"
             rendered_parts.append(f"  {label} = {rendered_value} [{type_name}]")
+            if annotation:
+                rendered_parts.append(f"    Meaning: {annotation}")
+            elif unit == "native ETH":
+                human_line=_human_native_eth_annotation(item,output,abi,value_part)
+                if human_line:
+                    rendered_parts.append(human_line)
+            elif unit:
+                rendered_parts[-1]=f"  {label} = {rendered_value} {unit} [{type_name}]"
+            elif is_numeric and not enum_rendered:
+                rendered_parts[-1]=f"  {label} = {rendered_value} units (unit not specified by ABI) [{type_name}]"
         return "Returns:\n" + "\n".join(rendered_parts)
     return f"Returns: {value}  [ABI output: {', '.join(types)}]"
 
@@ -4845,7 +4877,7 @@ def _trace_function_item(config, tx):
     return None, abi
 
 def _trace_identifier_info(config, tx, trace_text):
-    """Render probable identifier-like return values and register repeats locally."""
+    """Render raw return words plus decoded, unit-aware values where safe."""
     function_item, abi = _trace_function_item(config, tx)
     returned = _trace_root_return(trace_text)
     if not function_item or not returned:
@@ -4869,9 +4901,31 @@ def _trace_identifier_info(config, tx, trace_text):
         if looks_like_id:
             identifier_count += 1
             label = _trace_identifier_label(function_item, output, identifier_count)
+        elif name:
+            label = _human_field_label(name)
+        elif len(outputs) == 1:
+            label = _function_display_name(function_item)
         else:
             label = f"Return value #{index + 1}"
         rendered.append(f"  {label}: {raw} [{type_name}]")
+
+        if not looks_like_id and type_name.lower().startswith(("uint","int")):
+            decoded_number = _hex_to_int(raw)
+            if decoded_number is not None:
+                rendered.append(f"    Decoded integer: {decoded_number:,}")
+                annotation = _human_numeric_annotation(function_item, output, abi)
+                unit = _human_return_unit(function_item, abi, output)
+                if annotation:
+                    rendered.append(f"    Meaning: {annotation}")
+                elif unit == "native ETH":
+                    human_line = _human_native_eth_annotation(
+                        function_item, output, abi, decoded_number
+                    )
+                    if human_line:
+                        rendered.append(human_line)
+                else:
+                    rendered.append("    Unit: not specified by ABI")
+
         if looks_like_id and re.fullmatch(r"0x[0-9a-fA-F]{64}", raw):
             candidates.append({
                 "value": raw.lower(),
