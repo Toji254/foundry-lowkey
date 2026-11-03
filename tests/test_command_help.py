@@ -74,6 +74,22 @@ class CommandHelpTests(unittest.TestCase):
                 )
                 self.assertEqual(undocumented, [], f"undocumented usage flags for {' '.join(path)}")
 
+
+    def test_help_uses_compact_sections_without_removing_flag_documentation(self):
+        code, output = self.capture_dispatch("send", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk send", output)
+        self.assertIn("COMMAND VARIATIONS", output)
+        self.assertIn("OPTIONS / MODES", output)
+        self.assertIn("--value <amount>", output)
+        self.assertIn("--actor <name>", output)
+        self.assertIn("--preview", output)
+        self.assertIn("--confirm", output)
+        self.assertIn("--yes", output)
+        self.assertIn("Example:", output)
+        self.assertNotIn("=" * 72, output)
+        self.assertNotIn("------------------", output)
+
     def test_every_nested_help_entry_has_valid_structured_metadata(self):
         def walk(entries, prefix=()):
             for name, entry in entries.items():

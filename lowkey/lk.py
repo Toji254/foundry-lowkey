@@ -20459,145 +20459,148 @@ def _render_command_help(path):
     alias = _help_alias_for(path[0]) if path else None
 
     print()
-    print(f"LOWKEY HELP  •  lk {shown_path}")
-    print("=" * 72)
+    _ui_heading(f"LOWKEY HELP  •  lk {shown_path}")
 
     if unknown:
-        print(f"Unknown subcommand: '{unknown}' under 'lk {shown_path}'.")
+        _ui_key_values([
+            ("Unknown subcommand", f"'{unknown}' under 'lk {shown_path}'."),
+        ])
         available = list((entry or {}).get("children", {}).keys())
         if available:
-            print("Available next commands: " + ", ".join(available))
-        print(f"Run 'lk {shown_path} --h' to see the parent help.")
+            _ui_key_values([("Available next commands", ", ".join(available))])
+        _ui_key_values([("Parent help", f"lk {shown_path} --h")])
         return 2
 
     if not entry:
         command = str(path[0] if path else "").strip().lower()
         suggestions = _help_suggestions(command)
-        print(f"No dedicated Lowkey help page matches '{command}'.")
+        _ui_key_values([("Help", f"No dedicated Lowkey help page matches '{command}'.")])
         if suggestions:
             print("")
-            print("DID YOU MEAN")
-            print("------------")
+            print(_function_terminal_style("DID YOU MEAN", "heading"))
             for suggestion in suggestions:
-                print(f"  lk {suggestion} --h")
+                print(f"  → lk {suggestion} --h")
         print("")
-        print("ALL COMMANDS")
-        print("------------")
-        print("  lk --h")
-        print("  Help forms: --h | --help | -h | help")
+        print(_function_terminal_style("ALL COMMANDS", "heading"))
+        print("  → lk --h")
+        _ui_key_values([("Help forms", "--h | --help | -h | help")])
         return 2
 
     if alias:
-        print(f"Alias: 'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'.")
-    print(f"What it does: {entry['summary']}")
-    print(f"When to use: {entry['use']}")
-    print(f"Usage: {entry['usage']}")
-    print(f"Example: {entry['example']}")
+        _ui_key_values([
+            ("Alias", f"'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'."),
+        ])
+    _ui_key_values([
+        ("What it does:", entry["summary"]),
+        ("When to use:", entry["use"]),
+        ("Usage:", entry["usage"]),
+        ("Example:", entry["example"]),
+    ])
 
     forms = entry.get("forms") or []
     print("")
-    print("COMMAND VARIATIONS")
-    print("------------------")
+    print(_function_terminal_style("COMMAND VARIATIONS", "heading"))
     if forms:
         for form, description, example in forms:
-            print(f"  {form}")
-            print(f"      {description}")
-            print(f"      Example: {example}")
+            _ui_key_values([(form, f"{description}\nExample: {example}")], indent=2)
     elif entry.get("children"):
-        print("  This command uses the standard form shown above; available subcommands are listed below.")
+        _ui_key_values([
+            ("Standard form", "Use the form shown above; available subcommands are listed below."),
+        ])
     else:
-        print("  No additional invocation forms are registered for this command.")
-        print(f"  Use: {entry['usage']}")
+        _ui_key_values([
+            ("Variations", "No additional invocation forms are registered."),
+            ("Use", entry["usage"]),
+        ])
 
     children = entry.get("children") or {}
     if children:
         print("")
-        print("NEXT COMMANDS")
-        print("-------------")
+        print(_function_terminal_style("NEXT COMMANDS", "heading"))
         for name, child in children.items():
-            print(f"  lk {shown_path} {name}")
-            print(f"      What it does: {child['summary']}")
-            print(f"      When to use: {child['use']}")
-            print(f"      Example: {child['example']}")
+            _ui_key_values([(
+                f"lk {shown_path} {name}",
+                f"What it does: {child['summary']}\n"
+                f"When to use: {child['use']}\n"
+                f"Example: {child['example']}",
+            )], indent=2)
         print("")
-        print("TIP")
-        print("  Pick a next command above and add --h for its detailed help.")
+        _ui_key_values([
+            ("Tip", "Pick a next command above and add --h for its detailed help."),
+        ])
     else:
         parent = _help_parent_path(path)
         if parent:
             parent_shown = " ".join(parent)
             print("")
-            print("NAVIGATION")
-            print("----------")
-            print(f"  lk {parent_shown} --h")
-            print("      Go back to the parent command and see its available subcommands.")
+            print(_function_terminal_style("NAVIGATION", "heading"))
+            _ui_key_values([
+                (f"lk {parent_shown} --h", "Go back to the parent command and see its available subcommands."),
+            ], indent=2)
 
     argument_types = entry.get("argument_types") or []
     if argument_types:
         print("")
-        print("SOLIDITY ABI ARGUMENT TYPES")
-        print("---------------------------")
-        print("Use one value per ABI parameter, in the exact function-input order.")
-        print("Arrays and tuples are each ONE argument; quote the whole bracket/tuple value in your shell.")
+        print(_function_terminal_style("SOLIDITY ABI ARGUMENT TYPES", "heading"))
+        _ui_key_values([
+            ("Order", "Use one value per ABI parameter, in the exact function-input order."),
+            ("Arrays and tuples", "Each is ONE argument; quote the whole bracket/tuple value in your shell."),
+        ])
         for abi_type, description, example in argument_types:
-            print(f"  {abi_type}")
-            print(f"      {description}")
-            print(f"      Example: {example}")
+            _ui_key_values([(abi_type, f"{description}\nExample: {example}")], indent=2)
 
     notes = entry.get("notes") or []
     if notes:
         print("")
-        print("OUTPUT / HOW TO READ")
-        print("--------------------")
+        print(_function_terminal_style("OUTPUT / HOW TO READ", "heading"))
         for label, description, example in notes:
-            print(f"  {label}")
-            print(f"      {description}")
-            print(f"      Example: {example}")
+            _ui_key_values([(label, f"{description}\nExample: {example}")], indent=2)
 
     options = entry.get("options") or []
     print("")
-    print("OPTIONS / MODES")
-    print("---------------")
+    print(_function_terminal_style("OPTIONS / MODES", "heading"))
     if options:
         for option, description, example in options:
-            print(f"  {option}")
-            print(f"      {description}")
-            print(f"      Example: {example}")
+            _ui_key_values([(option, f"{description}\nExample: {example}")], indent=2)
     else:
-        print("  No additional command-specific flags or modes are registered.")
-        print("  Global --ai and help flags are available; see AI GUIDANCE and HELP TIP below.")
+        _ui_key_values([
+            ("Command-specific flags", "No additional command-specific flags or modes are registered."),
+            ("Global flags", "Global --ai and help flags are available; see AI GUIDANCE and HELP TIP below."),
+        ])
 
     if shown_path.split()[0].lower() != "ai":
         print("")
-        print("AI GUIDANCE")
-        print("-----------")
-        print("  Add --ai to this command to explain its observed result, risks, and next step.")
-        print(f"  Example: lk {shown_path} --ai")
-        print("  The native command keeps its normal behavior; AI suggestions are never run.")
+        print(_function_terminal_style("AI GUIDANCE", "heading"))
+        _ui_key_values([
+            ("--ai", "Explain the command's observed result, risks, and next step."),
+            ("Example", f"lk {shown_path} --ai"),
+            ("Behavior", "The native command keeps its normal behavior; AI suggestions are never run."),
+        ])
 
     related = entry.get("related") or []
     print("")
-    print("RELATED COMMANDS")
-    print("---------------")
+    print(_function_terminal_style("RELATED COMMANDS", "heading"))
     if related:
         for command in related:
-            print(f"  {command}")
+            print(f"  → {command}")
     else:
         print("  none listed")
 
     print("")
-    print("HELP TIP")
-    print("  Help is always safe: it does not select targets, send transactions, or change project state.")
-    print("  Accepted forms: --h, --help, -h, help.")
+    print(_function_terminal_style("HELP TIP", "heading"))
+    _ui_key_values([
+        ("Safety", "Help is always safe: it does not select targets, send transactions, or change project state."),
+        ("Accepted forms", "--h, --help, -h, help."),
+    ])
     if children:
         first_child = next(iter(children))
-        print(f"  Next: lk {shown_path} {first_child} --h")
+        _ui_key_values([("Next", f"lk {shown_path} {first_child} --h")])
     elif related:
-        print(f"  Related: {related[0]}")
+        _ui_key_values([("Related", related[0])])
     elif parent:
-        print(f"  Parent: lk {' '.join(parent)} --h")
+        _ui_key_values([("Parent", f"lk {' '.join(parent)} --h")])
     else:
-        print("  Start: lk --h")
+        _ui_key_values([("Start", "lk --h")])
     return 0
 
 def print_help():
