@@ -15530,6 +15530,134 @@ def _chisel_contract_interface(contract):
     return {"functions": functions, "events": events, "errors": errors}
 
 
+
+def _chisel_safe_identifier(value, fallback, used=None):
+    """Return a Solidity-safe local identifier, avoiding keywords and collisions."""
+    name = re.sub(r"[^A-Za-z0-9_]", "_", str(value or "")).strip("_")
+    if not name or not re.match(r"[A-Za-z_]", name):
+        name = fallback
+    keywords = {
+        "abstract", "after", "alias", "apply", "auto", "byte", "case", "catch", "constant",
+        "contract", "copyof", "default", "define", "final", "immutable", "implements", "in",
+        "inline", "let", "macro", "match", "memory", "mutable", "null", "of", "override",
+        "partial", "pragma", "promise", "reference", "relocatable", "sealed", "sizeof", "static",
+        "supports", "switch", "this", "trait", "typedef", "typeof", "unchecked", "var", "view",
+        "virtual", "while", "calldata", "storage", "address", "bool", "string", "bytes",
+        "int", "uint", "return", "returns", "function", "event", "error", "modifier",
+        "library", "interface", "enum", "struct", "mapping", "new", "delete", "if", "else",
+        "for", "do", "break", "continue", "try", "revert", "emit", "import", "using",
+        "is", "payable", "pure", "external", "public", "private", "internal",
+    }
+    if name in keywords:
+        name = fallback
+    if used is not None:
+        base = name
+        suffix = 2
+        while name in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used.add(name)
+    return name
+
+
+def _chisel_supported_helper_type(parameter):
+    """Return a Solidity ABI type/location for straightforward generated call helpers."""
+    try:
+        abi_type = canonical_type(parameter)
+    except (TypeError, ValueError):
+        return None
+    if not abi_type or "tuple" in abi_type:
+        return None
+    base = re.sub(r"\[[0-9]*\]", "", abi_type)
+    if not (
+        base in {"address", "bool", "string", "bytes"}
+        or re.fullmatch(r"(?:u?int(?:[0-9]{0,3})?|bytes(?:[1-9]|[12][0-9]|3[0-2]))", base)
+    ):
+        return None
+    location = " memory" if base in {"string", "bytes"} or "[" in abi_type else ""
+    return abi_type + location
+
+
+def _chisel_sender_call_helpers(contract):
+    """Generate sender-aware wrappers for ABI functions with safely expressible types."""
+    helpers = []
+    names = {}
+    skipped = []
+    for item in _chisel_contract_abi(contract):
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        mutability = str(item.get("stateMutability") or "nonpayable").lower()
+        if mutability not in {"nonpayable", "payable"}:
+            continue
+        function_name = str(item.get("name") or "")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", function_name):
+            continue
+        inputs = item.get("inputs") or []
+        outputs = item.get("outputs") or []
+        typed_inputs = [_chisel_supported_helper_type(value) for value in inputs]
+        typed_outputs = [_chisel_supported_helper_type(value) for value in outputs]
+        if any(value is None for value in typed_inputs + typed_outputs):
+            skipped.append(format_signature(item))
+            continue
+
+        used_parameters = set()
+        sender_name = _chisel_safe_identifier("lowkeySender", "sender", used_parameters)
+        parameters = [f"address {sender_name}"]
+        argument_names = []
+        for index, (parameter, abi_type) in enumerate(zip(inputs, typed_inputs), 1):
+            name = _chisel_safe_identifier(parameter.get("name"), f"arg{index}", used_parameters)
+            parameters.append(f"{abi_type} {name}")
+            argument_names.append(name)
+
+        payable = mutability == "payable"
+        value_name = None
+        if payable:
+            value_name = _chisel_safe_identifier("ethValue", "value", used_parameters)
+            parameters.append(f"uint256 {value_name}")
+
+        occurrence = names.get(function_name, 0) + 1
+        names[function_name] = occurrence
+        helper_name = f"lowkeySend_{function_name}" if occurrence == 1 else f"lowkeySend_{function_name}_{occurrence}"
+
+        call = f"lowkeyTarget.{function_name}({', '.join(argument_names)})"
+        if payable:
+            call = f"lowkeyTarget.{function_name}{{value: {value_name}}}({', '.join(argument_names)})"
+        returns = ""
+        if typed_outputs:
+            return_declarations = []
+            used_returns = set()
+            for index, (output, abi_type) in enumerate(zip(outputs, typed_outputs), 1):
+                name = _chisel_safe_identifier(output.get("name"), f"lowkeyReturn{index}", used_returns)
+                return_declarations.append(f"{abi_type} {name}")
+            returns = f" returns ({', '.join(return_declarations)})"
+
+        body = [
+            f"function {helper_name}({', '.join(parameters)}) public{returns} {{",
+            f"    vm.prank({sender_name});",
+            f"    {'return ' if typed_outputs else ''}{call};",
+            "}",
+        ]
+        helpers.append({
+            "name": helper_name,
+            "signature": f"{helper_name}({', '.join(parameters)})",
+            "outputs": typed_outputs,
+            "payable": payable,
+            "source": "\n".join(body),
+        })
+    return {"helpers": helpers, "skipped": skipped}
+
+
+def _write_chisel_call_helpers(contract, directory):
+    """Write generated sender-aware wrappers after the target instance declaration."""
+    generated = _chisel_sender_call_helpers(contract)
+    if generated["helpers"]:
+        path = Path(directory) / "20-lowkey-call-helpers.sol"
+        path.write_text("\n\n".join(item["source"] for item in generated["helpers"]) + "\n", encoding="utf-8")
+        generated["path"] = str(path)
+    else:
+        generated["path"] = None
+    return generated
+
 def _chisel_print_contract_guide(contract, auto_instance=False):
     """Print actionable Solidity REPL syntax next to the loaded contract."""
     interface = _chisel_contract_interface(contract)
@@ -15558,17 +15686,31 @@ def _chisel_print_contract_guide(contract, auto_instance=False):
         print("  Target instance: lowkeyTarget")
         print("  READ:    enter a view/pure call as an expression WITHOUT a trailing semicolon.")
         print("           Example pattern: lowkeyTarget.someGetter(arg)")
-        print("  WRITE:   enter an actual function call ending with a semicolon.")
-        print("           Example pattern: lowkeyTarget.someAction(arg);")
-        print("  PAYABLE: attach ETH with {value: amount ether}.")
-        print("           Example pattern: lowkeyTarget.deposit{value: 2 ether}();")
-        print("  SENDER:  use vm.prank(alice); immediately before the call in the same pasted input.")
+        print("  WRITE:   use a generated lowkeySend_* helper or call the contract directly.")
+        print("  PAYABLE: generated helpers take ethValue as their final argument.")
+        print("  SENDER:  generated helpers take the intended sender as their first argument.")
         print("  FUND:    use vm.deal(alice, 10 ether); to fund a test address in this temporary EVM.")
-        print("  RETURNS: for getters returning multiple values, destructure into typed variables,")
-        print("           then query the individual variables to inspect them.")
+        print("  RETURNS: helpers preserve ABI return values; mapping getters can be destructured.")
     else:
         print("  No lowkeyTarget instance was auto-created.")
         print("  Follow the constructor/linking instructions above, create the instance, then call it.")
+    if auto_instance:
+        generated = _chisel_sender_call_helpers(contract)
+        if generated["helpers"]:
+            print("")
+            print("SENDER-AWARE CALL HELPERS")
+            print("=========================")
+            for helper in generated["helpers"]:
+                returns = ""
+                if helper["outputs"]:
+                    returns = " -> " + (helper["outputs"][0] if len(helper["outputs"]) == 1 else "(" + ", ".join(helper["outputs"]) + ")")
+                print(f"  {helper['signature']}{returns}")
+            print("  Usage: lowkeySend_function(sender, arguments...)")
+            print("  Payable usage: lowkeySend_function(sender, arguments..., 2 ether)")
+            print("  Helpers do not fund senders or bypass require/access-control checks.")
+        if generated["skipped"]:
+            print("")
+            print("  Helpers omitted for complex tuple ABI types; use the direct Solidity call.")
     print("")
     print("  ABI signatures are a reference, not commands. Do not type a signature alone.")
     print("  Only public/external ABI entries appear; private state such as a private nonce has no getter.")
@@ -15622,7 +15764,13 @@ def _write_chisel_prelude(contract, directory):
             "LowkeyLoadedTarget internal lowkeyTarget = new LowkeyLoadedTarget(<arguments>)."
         )
 
-    return {"directory": str(prelude_dir), "auto_instance": auto_instance, "next_step": next_step}
+    helper_info = _write_chisel_call_helpers(contract, prelude_dir) if auto_instance else {"helpers": [], "skipped": [], "path": None}
+    return {
+        "directory": str(prelude_dir),
+        "auto_instance": auto_instance,
+        "next_step": next_step,
+        "call_helpers": helper_info,
+    }
 
 
 def _launch_chisel(binary, args, cwd=None):
