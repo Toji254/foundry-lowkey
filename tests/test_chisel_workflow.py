@@ -175,6 +175,96 @@ class ChiselWorkflowTests(unittest.TestCase):
         self.assertIn("private state such as a private nonce has no getter", rendered)
 
 
+
+    def test_sender_helpers_generate_payable_and_nonpayable_calls_with_returns(self):
+        contract = {
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "createEscrow",
+                    "stateMutability": "payable",
+                    "inputs": [{"name": "recipient", "type": "address"}],
+                    "outputs": [{"name": "", "type": "bytes32"}],
+                },
+                {
+                    "type": "function",
+                    "name": "acceptEscrow",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{"name": "escrowId", "type": "bytes32"}],
+                    "outputs": [],
+                },
+                {
+                    "type": "function",
+                    "name": "EscrowID",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "ID", "type": "bytes32"}],
+                    "outputs": [{"name": "amount", "type": "uint256"}],
+                },
+            ]
+        }
+
+        generated = lk._chisel_sender_call_helpers(contract)
+        by_name = {item["name"]: item for item in generated["helpers"]}
+
+        self.assertEqual(set(by_name), {"lowkeySend_createEscrow", "lowkeySend_acceptEscrow"})
+        self.assertIn("vm.prank(lowkeySender);", by_name["lowkeySend_createEscrow"]["source"])
+        self.assertIn("{value: ethValue}(recipient)", by_name["lowkeySend_createEscrow"]["source"])
+        self.assertIn("returns (bytes32 lowkeyReturn1)", by_name["lowkeySend_createEscrow"]["source"])
+        self.assertIn("return lowkeyTarget.createEscrow", by_name["lowkeySend_createEscrow"]["source"])
+        self.assertIn("lowkeyTarget.acceptEscrow(escrowId);", by_name["lowkeySend_acceptEscrow"]["source"])
+        self.assertNotIn("EscrowID", by_name)
+
+    def test_sender_helpers_skip_tuple_signatures_and_do_not_guess_support(self):
+        contract = {
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "submit",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{
+                        "name": "record",
+                        "type": "tuple",
+                        "components": [
+                            {"name": "owner", "type": "address"},
+                            {"name": "amount", "type": "uint256"},
+                        ],
+                    }],
+                    "outputs": [],
+                }
+            ]
+        }
+
+        generated = lk._chisel_sender_call_helpers(contract)
+
+        self.assertEqual(generated["helpers"], [])
+        self.assertEqual(generated["skipped"], ["submit((address,uint256))"])
+
+    def test_sender_helper_source_is_written_after_target_instance_prelude(self):
+        contract = {
+            "name": "Vault",
+            "source": "src/Vault.sol",
+            "constructor_inputs": [],
+            "constructor_payable": False,
+            "has_linked_libraries": False,
+            "abi": [{
+                "type": "function",
+                "name": "deposit",
+                "stateMutability": "payable",
+                "inputs": [],
+                "outputs": [],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result = lk._write_chisel_prelude(contract, tmp)
+            helper_file = pathlib.Path(tmp) / "20-lowkey-call-helpers.sol"
+            helper_source = helper_file.read_text(encoding="utf-8")
+
+        self.assertTrue(result["auto_instance"])
+        self.assertEqual(len(result["call_helpers"]["helpers"]), 1)
+        self.assertIn("function lowkeySend_deposit(address lowkeySender, uint256 ethValue)", helper_source)
+        self.assertIn("vm.prank(lowkeySender);", helper_source)
+        self.assertIn("lowkeyTarget.deposit{value: ethValue}();", helper_source)
+
     def test_prelude_imports_contract_and_auto_instantiates_safe_constructor(self):
         contract = {
             "name": "Vault",
