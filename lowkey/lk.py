@@ -16033,6 +16033,396 @@ def run_selectors(config,args):
         return fail("Error: no runtime bytecode available.")
     return run_cast(["selectors",code],config)
 
+
+def _inspect_artifact_metadata(artifact):
+    metadata = artifact.get("metadata") if isinstance(artifact, dict) else None
+    if isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str):
+        try:
+            value = json.loads(metadata)
+            return value if isinstance(value, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
+def _inspect_bytecode_object(value):
+    if isinstance(value, dict):
+        value = value.get("object") or value.get("bytecode") or ""
+    return str(value or "").removeprefix("0x")
+
+
+def _inspect_project_artifacts(root):
+    records = []
+    seen = set()
+    for raw_path in artifact_json_files(root):
+        artifact = read_artifact(raw_path)
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("abi"), list):
+            continue
+        name = artifact_contract_name(raw_path, artifact)
+        source = artifact_source_name(artifact, raw_path, root)
+        if not source:
+            try:
+                source = Path(raw_path).resolve().relative_to(Path(root).resolve()).as_posix()
+            except (OSError, ValueError):
+                source = str(raw_path)
+        key = (str(name).casefold(), str(source).replace("\\", "/").casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append({
+            "name": str(name),
+            "source": str(source),
+            "path": str(Path(raw_path).resolve()),
+            "artifact": artifact,
+        })
+    return sorted(records, key=lambda item: (item["name"].casefold(), item["source"].casefold()))
+
+
+def _inspect_record_matches(record, query):
+    normalized = str(query or "").strip().replace("\\", "/").casefold()
+    if not normalized:
+        return False
+    name = str(record.get("name") or "").casefold()
+    source = str(record.get("source") or "").replace("\\", "/").casefold()
+    return (
+        name == normalized
+        or f"{source}:{name}" == normalized
+        or source == normalized
+        or Path(source).name.casefold() == normalized
+        or Path(source).stem.casefold() == normalized
+    )
+
+
+def _inspect_compiler_summary(artifact):
+    metadata = _inspect_artifact_metadata(artifact)
+    compiler = metadata.get("compiler") if isinstance(metadata.get("compiler"), dict) else {}
+    settings = metadata.get("settings") if isinstance(metadata.get("settings"), dict) else {}
+    optimizer = settings.get("optimizer") if isinstance(settings.get("optimizer"), dict) else {}
+    metadata_settings = settings.get("metadata") if isinstance(settings.get("metadata"), dict) else {}
+    return {
+        "version": compiler.get("version") or artifact.get("compilerVersion") or "not recorded",
+        "optimizer_enabled": optimizer.get("enabled"),
+        "optimizer_runs": optimizer.get("runs"),
+        "evm_version": settings.get("evmVersion"),
+        "bytecode_hash": metadata_settings.get("bytecodeHash"),
+    }
+
+
+def run_inspect(config, args):
+    """Inspect compiled project artifacts using Lowkey-owned arguments and rendering."""
+    root = Path(
+        detected_project_root(".") if callable(detected_project_root) else Path.cwd()
+    ).expanduser().resolve()
+    values = list(args or [])
+    sections = set()
+    json_mode = False
+    no_build = False
+    positionals = []
+    flag_sections = {
+        "--abi": "abi",
+        "--functions": "functions",
+        "--events": "events",
+        "--errors": "errors",
+        "--storage": "storage",
+        "--layout": "storage",
+        "--selectors": "selectors",
+        "--bytecode": "bytecode",
+        "--metadata": "metadata",
+        "--all": "all",
+    }
+    positional_sections = {
+        "abi": "abi",
+        "functions": "functions",
+        "methods": "functions",
+        "events": "events",
+        "errors": "errors",
+        "storage": "storage",
+        "storage-layout": "storage",
+        "storagelayout": "storage",
+        "layout": "storage",
+        "selectors": "selectors",
+        "method-identifiers": "selectors",
+        "bytecode": "bytecode",
+        "deployedbytecode": "bytecode",
+        "metadata": "metadata",
+    }
+
+    for token in values:
+        value = str(token)
+        if value == "--json":
+            json_mode = True
+        elif value == "--no-build":
+            no_build = True
+        elif value in flag_sections:
+            sections.add(flag_sections[value])
+        elif value.startswith("-"):
+            return fail(
+                f"Unknown lk inspect option: {value}. Supported options: "
+                "--abi, --functions, --events, --errors, --storage, --selectors, "
+                "--bytecode, --metadata, --all, --json, --no-build."
+            )
+        else:
+            positionals.append(value)
+
+    if len(positionals) > 2:
+        return fail(
+            "Usage: lk inspect [Contract] [section] "
+            "[--abi|--functions|--events|--errors|--storage|--selectors|--bytecode|--metadata|--all] "
+            "[--json] [--no-build]"
+        )
+
+    query = positionals[0] if positionals else None
+    if len(positionals) == 2:
+        section = positional_sections.get(positionals[1].casefold())
+        if not section:
+            return fail(
+                f"Unknown inspection section: {positionals[1]}. "
+                "Use abi, functions, events, errors, storage-layout, selectors, bytecode, or metadata."
+            )
+        sections.add(section)
+
+    if "all" in sections:
+        sections = {"abi", "functions", "events", "errors", "storage", "selectors", "bytecode", "metadata"}
+
+    records = _inspect_project_artifacts(root)
+
+    def build_project():
+        print(f"Building project artifacts in {root}...")
+        result = run_foundry(["build"], capture=True, cwd=root)
+        code = getattr(result, "code", result if isinstance(result, int) else 1)
+        output = str(getattr(result, "text", "") or "").strip()
+        if output:
+            print(output, file=sys.stderr if code else sys.stdout)
+        return code
+
+    matches = [item for item in records if _inspect_record_matches(item, query)] if query else []
+    if query and not matches and not no_build and (root / "foundry.toml").is_file():
+        code = build_project()
+        if code:
+            return code
+        records = _inspect_project_artifacts(root)
+        matches = [item for item in records if _inspect_record_matches(item, query)]
+
+    if not query:
+        if not records and not no_build and (root / "foundry.toml").is_file():
+            code = build_project()
+            if code:
+                return code
+            records = _inspect_project_artifacts(root)
+        if json_mode:
+            print(json.dumps([
+                {"contract": item["name"], "source": item["source"], "artifact": item["path"]}
+                for item in records
+            ], indent=2))
+            return 0
+        print("COMPILED CONTRACTS")
+        print("==================")
+        print(f"Project: {root}")
+        if not records:
+            print("No compiled contract artifacts were found.")
+            print("Run 'lk build' first, or use 'lk inspect --no-build' to avoid triggering a build.")
+            return 0
+        for index, item in enumerate(records, 1):
+            abi = item["artifact"].get("abi", [])
+            functions = sum(isinstance(row, dict) and row.get("type") == "function" for row in abi)
+            events = sum(isinstance(row, dict) and row.get("type") == "event" for row in abi)
+            errors = sum(isinstance(row, dict) and row.get("type") == "error" for row in abi)
+            print(f"{index:>2}. {item['name']}")
+            print(f"    Source: {item['source']}")
+            print(f"    ABI: {functions} function(s), {events} event(s), {errors} custom error(s)")
+        print("")
+        print("Inspect one: lk inspect <Contract>")
+        print("Sections:    lk inspect <Contract> --functions --events --storage")
+        return 0
+
+    if not matches:
+        if not records:
+            return fail(
+                f"No compiled contract artifacts were found in {root}. "
+                "Run 'lk build' first, or use 'lk inspect --no-build' to skip compilation."
+            )
+        available = ", ".join(sorted({item["name"] for item in records})[:12])
+        return fail(
+            f"Contract '{query}' was not found in the current project's compiled artifacts. "
+            f"Available contracts: {available}"
+        )
+    if len(matches) > 1:
+        print(f"Contract name '{query}' is ambiguous:")
+        for item in matches:
+            print(f"  {item['source']}:{item['name']}")
+        print("Use the source-qualified form: lk inspect <source-path>:<Contract>")
+        return 2
+
+    record = matches[0]
+    artifact = record["artifact"]
+    abi = artifact.get("abi") if isinstance(artifact.get("abi"), list) else []
+    functions = [item for item in abi if isinstance(item, dict) and item.get("type") == "function"]
+    events = [item for item in abi if isinstance(item, dict) and item.get("type") == "event"]
+    errors = [item for item in abi if isinstance(item, dict) and item.get("type") == "error"]
+    constructors = [item for item in abi if isinstance(item, dict) and item.get("type") == "constructor"]
+    fallbacks = [item for item in abi if isinstance(item, dict) and item.get("type") == "fallback"]
+    receives = [item for item in abi if isinstance(item, dict) and item.get("type") == "receive"]
+    storage_layout = artifact.get("storageLayout") or artifact.get("storage_layout")
+    if not sections:
+        sections = {"overview"}
+    if "overview" in sections:
+        sections.update({"functions", "events", "errors", "storage", "bytecode", "metadata"})
+
+    bytecode = _inspect_bytecode_object(artifact.get("bytecode"))
+    runtime_bytecode = _inspect_bytecode_object(artifact.get("deployedBytecode"))
+    compiler = _inspect_compiler_summary(artifact)
+    selector_values = {}
+    if "selectors" in sections:
+        for item in [*functions, *errors, *events]:
+            signature = format_signature(item)
+            if item.get("type") == "event":
+                code, output, _error = cast_output(["cast", "sig-event", signature])
+            else:
+                code, output, _error = cast_output(["cast", "sig", signature])
+            selector_values[signature] = output.splitlines()[0].strip() if code == 0 and output else None
+
+    result = {
+        "contract": record["name"],
+        "source": record["source"],
+        "artifact": record["path"],
+        "compiler": compiler,
+        "abi": abi if "abi" in sections else None,
+        "functions": [
+            {
+                "signature": format_signature(item),
+                "mutability": item.get("stateMutability", "nonpayable"),
+                "inputs": item.get("inputs", []),
+                "outputs": item.get("outputs", []),
+            }
+            for item in functions
+        ] if "functions" in sections else None,
+        "events": [
+            {
+                "signature": format_signature(item),
+                "inputs": item.get("inputs", []),
+                "anonymous": bool(item.get("anonymous", False)),
+            }
+            for item in events
+        ] if "events" in sections else None,
+        "errors": [
+            {"signature": format_signature(item), "inputs": item.get("inputs", [])}
+            for item in errors
+        ] if "errors" in sections else None,
+        "constructor": constructors[0] if constructors and "abi" in sections else None,
+        "fallback": bool(fallbacks),
+        "receive": bool(receives),
+        "storage": storage_layout if "storage" in sections else None,
+        "bytecode": {
+            "creation_bytes": len(bytecode) // 2,
+            "runtime_bytes": len(runtime_bytecode) // 2,
+            "creation_available": bool(bytecode),
+            "runtime_available": bool(runtime_bytecode),
+        } if "bytecode" in sections else None,
+        "selectors": selector_values if "selectors" in sections else None,
+        "metadata": compiler if "metadata" in sections else None,
+    }
+    if json_mode:
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    print("CONTRACT INSPECTION")
+    print("===================")
+    print(f"Contract : {record['name']}")
+    print(f"Source   : {record['source']}")
+    print(f"Artifact : {record['path']}")
+    if "metadata" in sections or "overview" in sections:
+        print(f"Compiler : {compiler['version']}")
+        if compiler["optimizer_enabled"] is not None:
+            suffix = f" ({compiler['optimizer_runs']} runs)" if compiler["optimizer_runs"] is not None else ""
+            print(f"Optimizer: {'on' if compiler['optimizer_enabled'] else 'off'}{suffix}")
+        if compiler["evm_version"]:
+            print(f"EVM      : {compiler['evm_version']}")
+    print(f"ABI      : {len(abi)} item(s)")
+
+    if "abi" in sections:
+        print("\nABI")
+        print("---")
+        print(json.dumps(abi, indent=2))
+    if "functions" in sections:
+        print(f"\nFUNCTIONS ({len(functions)})")
+        print("----------------")
+        for item in functions:
+            signature = format_signature(item)
+            mutability = str(item.get("stateMutability") or "nonpayable").upper()
+            outputs = ", ".join(
+                str(value.get("type") or "?")
+                for value in (item.get("outputs") or [])
+                if isinstance(value, dict)
+            )
+            print(f"  {signature}  [{mutability}]" + (f" -> ({outputs})" if outputs else ""))
+    if "events" in sections:
+        print(f"\nEVENTS ({len(events)})")
+        print("-------------")
+        for item in events:
+            indexed = [
+                str(value.get("name") or value.get("type") or "value")
+                for value in item.get("inputs", [])
+                if isinstance(value, dict) and value.get("indexed")
+            ]
+            suffix = f"  indexed: {', '.join(indexed)}" if indexed else ""
+            print(f"  {format_signature(item)}{suffix}")
+    if "errors" in sections:
+        print(f"\nCUSTOM ERRORS ({len(errors)})")
+        print("--------------------")
+        for item in errors:
+            print(f"  {format_signature(item)}")
+    if "storage" in sections:
+        print("\nSTORAGE LAYOUT")
+        print("--------------")
+        entries = storage_layout.get("storage", []) if isinstance(storage_layout, dict) else []
+        types = storage_layout.get("types", {}) if isinstance(storage_layout, dict) else {}
+        if not entries:
+            print("  Not present in this artifact. Run 'lk layout <Contract>' for a compiler-derived layout.")
+        else:
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                type_id = item.get("type")
+                label = storage_type_label(types, type_id) if isinstance(types, dict) else str(type_id or "unknown")
+                print(
+                    f"  slot {item.get('slot', '?')} offset {item.get('offset', 0)} "
+                    f"{item.get('label', 'unnamed')}: {label}"
+                )
+    if "bytecode" in sections:
+        print("\nBYTECODE")
+        print("--------")
+        print(f"  Creation : {len(bytecode) // 2} bytes {'(available)' if bytecode else '(not available)'}")
+        print(f"  Runtime  : {len(runtime_bytecode) // 2} bytes {'(available)' if runtime_bytecode else '(not available)'}")
+    if "selectors" in sections:
+        print("\nSELECTORS")
+        print("---------")
+        for signature, selector in selector_values.items():
+            print(f"  {signature}: {selector or 'unavailable'}")
+    if "metadata" in sections and "overview" not in sections:
+        print("\nCOMPILER METADATA")
+        print("-----------------")
+        print(json.dumps(compiler, indent=2))
+    if constructors:
+        print("\nCONSTRUCTOR")
+        print("-----------")
+        for item in constructors[0].get("inputs", []):
+            if isinstance(item, dict):
+                print(f"  {item.get('name') or 'arg'}: {item.get('type')}")
+    entrypoints = []
+    if fallbacks:
+        entrypoints.append("fallback()")
+    if receives:
+        entrypoints.append("receive()")
+    if entrypoints:
+        print("\nSPECIAL ENTRYPOINTS")
+        print("------------------")
+        for entrypoint in entrypoints:
+            print(f"  {entrypoint}")
+    return 0
+
+
 def run_layout(args):
     if not args: return fail("Usage: lk layout <ContractName>")
     code,out,err=cast_output(["forge","inspect",args[0],"storage-layout","--json"])
@@ -20460,6 +20850,777 @@ COMMAND_HELP.update({
     ),
 })
 
+
+def _apply_command_help_audit_catalog():
+    """Give every help page a command-specific invocation form and document real modes."""
+    details = {
+        "inspect": {
+            "summary": "Inspect compiled contract artifacts through Lowkey's own contract-aware view.",
+            "usage": "lk inspect [Contract] [section] [options]",
+            "example": "lk inspect Escrow --functions --events --storage",
+            "use": "Use it after building a project when you want to understand a contract's ABI, callable surface, events, custom errors, storage metadata, selectors, and bytecode without learning compiler artifact field names.",
+            "forms": [
+                ("lk inspect", "List compiled contracts discovered in the current project, their source paths and ABI counts.", "lk inspect"),
+                ("lk inspect <Contract>", "Show a readable overview of one compiled contract.", "lk inspect Escrow"),
+                ("lk inspect <Contract> --functions --events --errors", "Show callable functions, emitted events and custom errors.", "lk inspect Escrow --functions --events --errors"),
+                ("lk inspect <Contract> --storage --selectors --bytecode", "Show storage metadata, ABI selectors and bytecode sizes when those values are present in the artifact.", "lk inspect Escrow --storage --selectors --bytecode"),
+                ("lk inspect <Contract> <section>", "Select one section by name; the same section can be selected with a flag.", "lk inspect Escrow storage-layout"),
+                ("lk inspect <Contract> --all --json", "Return all supported inspection sections as structured JSON.", "lk inspect Escrow --all --json"),
+            ],
+            "options": [
+                ("--abi", "Print the complete compiled ABI, including functions, events, errors, constructor and special entrypoints.", "lk inspect Escrow --abi"),
+                ("--functions", "List functions with mutability and input/output types.", "lk inspect Escrow --functions"),
+                ("--events", "List event signatures and indexed parameters.", "lk inspect Escrow --events"),
+                ("--errors", "List custom-error signatures and parameters.", "lk inspect Escrow --errors"),
+                ("--storage / --layout", "Show storage layout included in the artifact. If absent, use lk layout for compiler-derived layout.", "lk inspect Escrow --storage"),
+                ("--selectors", "Calculate function, custom-error and event selectors from the ABI.", "lk inspect Escrow --selectors"),
+                ("--bytecode", "Show creation/runtime bytecode availability and byte sizes without dumping huge hex blobs.", "lk inspect Escrow --bytecode"),
+                ("--metadata", "Show compiler version and available optimizer/EVM metadata.", "lk inspect Escrow --metadata"),
+                ("--all", "Show every supported section.", "lk inspect Escrow --all"),
+                ("--json", "Emit the selected inspection data as JSON.", "lk inspect Escrow --all --json"),
+                ("--no-build", "Use artifacts already on disk; do not trigger a Foundry build when the contract is missing.", "lk inspect Escrow --no-build"),
+            ],
+            "related": ["lk build", "lk layout", "lk functions", "lk abi", "lk forge inspect"],
+        },
+        "q": {
+            "forms": [
+                ("lk q", "Show the current best auditor question and explain how to work through it.", "lk q"),
+                ("lk q current|next|why|evidence|path", "Navigate the question frontier and inspect why a question is active.", "lk q current"),
+                ("lk q note|done|skip|na <reason>", "Record your answer, settle a question, or explain why it is deferred/not applicable.", "lk q note \"owner is initialized before any external call\""),
+                ("lk q source <QUESTION_ID>", "Inspect the research references attached to one question.", "lk q source AUTH-001"),
+                ("lk q reset", "Reset question-learning state without deleting audit evidence.", "lk q reset"),
+            ],
+            "notes": [
+                ("Question status", "A question marked settled is a workflow/learning state, not proof that a vulnerability is absent.", "lk q path"),
+            ],
+        },
+        "audit-checks": {
+            "forms": [
+                ("lk audit-checks", "Run the connected audit with static checks enabled.", "lk audit-checks"),
+                ("lk audit-checks auto", "Use the automatic audit path.", "lk audit-checks auto"),
+            ],
+            "options": [
+                ("--no-checks", "Skip optional static checks. This is not equivalent to completing the full static baseline.", "lk audit-checks --no-checks"),
+                ("--walkthrough", "Enter the walkthrough-oriented audit path.", "lk audit-checks --walkthrough"),
+                ("--interactive", "Allow project-selection and workflow prompts where supported.", "lk audit-checks --interactive"),
+                ("--non-interactive", "Disable prompts; a multi-project workspace must already have a selected project.", "lk audit-checks --non-interactive"),
+            ],
+        },
+        "audit--checks": {
+            "forms": [
+                ("lk audit--checks", "Legacy compact spelling of the connected audit with static checks enabled.", "lk audit--checks"),
+                ("lk audit--checks auto", "Use the automatic audit path through the legacy alias.", "lk audit--checks auto"),
+            ],
+            "options": [
+                ("--no-checks", "Skip optional static checks; do not interpret this as a complete static review.", "lk audit--checks --no-checks"),
+                ("--walkthrough", "Use the walkthrough-oriented audit path.", "lk audit--checks --walkthrough"),
+                ("--interactive / --non-interactive", "Choose whether Lowkey may prompt when selecting a project from a workspace.", "lk audit--checks --non-interactive"),
+            ],
+        },
+        "impersonate": {
+            "forms": [
+                ("lk impersonate <address> [name]", "Impersonate an address on the current Anvil instance and save it as a local actor.", "lk impersonate 0x1111111111111111111111111111111111111111 Whale"),
+                ("lk impersonate <address>", "Generate an actor name when you do not supply one.", "lk impersonate 0x1111111111111111111111111111111111111111"),
+            ],
+            "notes": [
+                ("Local-chain only", "This requires an Anvil RPC that supports account impersonation; it does not unlock or control a real wallet.", "lk doctor"),
+            ],
+        },
+        "impersonate-actor": {
+            "forms": [
+                ("lk impersonate-actor <address> [name]", "Alias for creating/selecting an impersonated local Anvil actor.", "lk impersonate-actor 0x1111111111111111111111111111111111111111 Whale"),
+            ],
+            "notes": [
+                ("Local-chain only", "This requires Anvil account-impersonation support; it does not unlock a real wallet.", "lk doctor"),
+            ],
+        },
+        "actors": {
+            "forms": [
+                ("lk actors", "List the local Anvil accounts Lowkey can use as test identities.", "lk actors"),
+            ],
+            "notes": [
+                ("Identity source", "These are local Anvil accounts, not a list of accounts on a public network.", "lk actor"),
+            ],
+        },
+        "ask": {
+            "forms": [
+                ("lk ask <function>", "Resolve one function and show its ABI parameter names and Solidity types.", "lk ask createEscrow"),
+                ("lk ask '<signature>'", "Select an overloaded function using its full canonical signature.", "lk ask 'transfer(address,uint256)'"),
+            ],
+        },
+        "state-diff": {
+            "forms": [
+                ("lk state-diff '<signature>' <values...>", "Run the storage-change reproduction workflow for one concrete function call.", "lk state-diff 'setValue(uint256)' 10"),
+                ("lk state-diff <function> <values...> --actor <name>", "Run the test call as one saved local actor.", "lk state-diff release @firstEscrow --actor Bob"),
+                ("lk state-diff <function> <values...> --repeat <N>", "Repeat the call inside the generated test transaction to observe accumulated storage changes.", "lk state-diff contribute --eth 0.1 --repeat 3"),
+            ],
+            "options": [
+                ("--actor <name> / --as <name>", "Select the actor used inside the generated state-diff test.", "lk state-diff release @firstEscrow --as Bob"),
+                ("--value <amount>", "Attach ETH to the call; Solidity receives it as msg.value.", "lk state-diff contribute --value 1ether"),
+                ("--eth <amount>", "Friendly ETH spelling; a unitless amount is interpreted as ETH.", "lk state-diff contribute --eth 0.01"),
+                ("--keep", "Keep the generated test file after the run so you can inspect or adapt it.", "lk state-diff withdraw --keep"),
+                ("--repeat <N> / --times <N>", "Repeat the exact call in the generated test, from 1 to 100 times.", "lk state-diff contribute --repeat 3"),
+            ],
+        },
+        "risk": {
+            "forms": [
+                ("lk risk", "Show rule-based ABI/name hints and source security-pattern signals for the selected target.", "lk risk"),
+            ],
+            "notes": [
+                ("Trust level", "ABI/name hints are triage clues, not proof of a vulnerability. Confirm interesting paths in source and tests.", "lk findings"),
+            ],
+        },
+        "deps": {
+            "forms": [
+                ("lk deps", "Show imports and inheritance in the selected project.", "lk deps"),
+                ("lk deps <directory-or-file>", "Limit analysis to a project directory or Solidity/Vyper source file.", "lk deps src"),
+            ],
+        },
+        "layout": {
+            "forms": [
+                ("lk layout <Contract>", "Show compiler-derived storage slots, offsets, variable names and types.", "lk layout Escrow"),
+            ],
+            "notes": [
+                ("Storage is not ABI order", "Storage slots describe persistent state layout; they are not function argument positions or ABI selectors.", "lk inspect Escrow --storage"),
+            ],
+        },
+        "namespace": {
+            "forms": [
+                ("lk namespace <namespace-id>", "Calculate the ERC-7201 namespaced storage slot for an identifier.", "lk namespace example.storage"),
+            ],
+        },
+        "proof": {
+            "forms": [
+                ("lk proof <slot>", "Read a storage/account proof for the selected target at the latest block.", "lk proof 3"),
+                ("lk proof <slot> <block>", "Request the proof at one specific block number.", "lk proof 3 21000000"),
+            ],
+        },
+        "tx": {
+            "forms": [
+                ("lk tx", "Inspect the most recently recorded transaction.", "lk tx"),
+                ("lk tx <transaction-hash>", "Inspect and decode one explicit transaction.", "lk tx 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ],
+        },
+        "chain": {
+            "forms": [
+                ("lk chain", "Show the selected RPC's chain ID and current block number.", "lk chain"),
+            ],
+        },
+        "label": {
+            "forms": [
+                ("lk label <address> <name>", "Save a readable local label for an address; Lowkey uses it in later output.", "lk label 0x1111111111111111111111111111111111111111 Treasury"),
+            ],
+        },
+        "encode": {
+            "forms": [
+                ("lk encode <function> [args...]", "Encode one target function call using its ABI and argument values.", "lk encode transfer 0x1111111111111111111111111111111111111111 100"),
+                ("lk encode '<signature>' [args...]", "Choose an overloaded function using its canonical signature.", "lk encode 'transfer(address,uint256)' 0x1111111111111111111111111111111111111111 100"),
+            ],
+            "notes": [
+                ("No transaction is sent", "This creates calldata only; it does not submit a transaction or change contract state.", "lk send transfer 0x1111111111111111111111111111111111111111 100 --preview"),
+            ],
+        },
+        "decode": {
+            "forms": [
+                ("lk decode <function> <return-data>", "Decode ABI return bytes for a function in the selected target's ABI.", "lk decode balanceOf 0x0000000000000000000000000000000000000000000000000000000000000001"),
+            ],
+        },
+        "4byte-calldata": {
+            "forms": [
+                ("lk 4byte-calldata <selector>", "Look up possible function signatures for a four-byte selector.", "lk 4byte-calldata 0xa9059cbb"),
+            ],
+            "notes": [
+                ("Candidate signatures", "A selector can have multiple candidates. Confirm the match against the target ABI or source.", "lk selectors"),
+            ],
+        },
+        "4byte-event": {
+            "forms": [
+                ("lk 4byte-event <topic0>", "Look up possible event signatures from a topic-zero hash.", "lk 4byte-event 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
+            ],
+            "notes": [
+                ("Candidate signatures", "Topic lookups can return candidates; confirm the event and indexed fields against the ABI.", "lk event"),
+            ],
+        },
+        "decode-error": {
+            "forms": [
+                ("lk decode-error <revert-data>", "Match the error selector against the selected ABI and decode its arguments.", "lk decode-error 0x08c379a0"),
+            ],
+            "notes": [
+                ("Unknown errors", "When the ABI does not contain the selector, Lowkey falls back to the Cast error decoder.", "lk abi"),
+            ],
+        },
+        "event": {
+            "forms": [
+                ("lk event <event-signature> <data> [topics...]", "Decode one event using its signature, non-indexed data and indexed topics.", "lk event 'Transfer(address,address,uint256)' 0x... 0x... 0x..."),
+            ],
+            "notes": [
+                ("Topic order", "Supply indexed topics in the exact order declared by the event, after topic zero.", "lk logs --decode"),
+            ],
+        },
+        "poc": {
+            "forms": [
+                ("lk poc --calldata <hex> --impact-assertion '<condition>'", "Record a PoC-generation request using exact calldata and a measurable impact condition.", "lk poc --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+                ("lk poc --function <signature> --calldata <hex> --impact-assertion '<condition>'", "Attach the intended function signature when it is known.", "lk poc --function withdraw() --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+            ],
+            "options": [
+                ("--calldata <hex>", "Required exact transaction calldata for the candidate.", "lk poc --calldata 0x1234 --impact-assertion 'balanceAfter < balanceBefore'"),
+                ("--impact-assertion <condition>", "Required boolean expression defining measurable impact; Lowkey does not invent this for you.", "lk poc --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+                ("--function <signature>", "Optional signature used to label/validate the requested call.", "lk poc --function withdraw() --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+            ],
+            "notes": [
+                ("Candidate is not a confirmed exploit", "A generated PoC candidate is not a confirmed exploit until its impact assertion is reproduced and validated against the threat model.", "lk test-gen"),
+            ],
+        },
+        "findings": {
+            "forms": [
+                ("lk findings", "List open audit signals for the current project.", "lk findings"),
+                ("lk findings <status>", "Filter signals by open, closed, all, investigating, proven or dismissed.", "lk findings investigating"),
+                ("lk findings set <SIGNAL_ID> <status> [note]", "Update one signal's triage status and optionally record a note.", "lk findings set SIG-001 investigating \"checking the alternate withdraw path\""),
+            ],
+            "options": [
+                ("<status>", "Accepted statuses: open, closed, all, investigating, proven, dismissed.", "lk findings all"),
+                ("set <SIGNAL_ID> <status> [note]", "Changing a signal's status records triage; it does not by itself prove or disprove the signal.", "lk findings set SIG-001 proven \"reproduced in a local test\""),
+            ],
+        },
+        "note": {
+            "forms": [
+                ("lk note <text>", "Append a free-form note to the current project's audit workspace.", "lk note owner is initialized during setup"),
+                ("lk note \"<text with spaces>\"", "Quote notes containing spaces or shell-special characters.", "lk note \"check whether pause blocks every withdrawal route\""),
+            ],
+        },
+        "todo": {
+            "forms": [
+                ("lk todo <text>", "Add an unchecked investigation task to the project's TODO file.", "lk todo inspect emergencyWithdraw path"),
+            ],
+        },
+        "context": {
+            "forms": [
+                ("lk context", "Show the current audit context, shared project knowledge, target and recent evidence.", "lk context"),
+            ],
+            "notes": [
+                ("Project scope", "Context is project-scoped; switch to the intended nested project before comparing evidence.", "lk project"),
+            ],
+        },
+        "workspace": {
+            "forms": [
+                ("lk workspace", "Initialize the standard local audit workspace if it is not already present.", "lk workspace"),
+                ("lk workspace init", "Explicitly create project-local notes, TODOs, findings, sessions and matrix paths.", "lk workspace init"),
+            ],
+        },
+        "export": {
+            "forms": [
+                ("lk export", "Package the current project's findings, checklist, notes and workspace records into audit-report/.", "lk export"),
+            ],
+            "notes": [
+                ("Review before sharing", "The report can contain target addresses and investigation details; inspect it before sending it outside the project.", "lk context"),
+            ],
+        },
+        "proxy": {
+            "forms": [
+                ("lk proxy", "Inspect the selected target for an EIP-1967-style proxy and show implementation/admin when detected.", "lk proxy"),
+            ],
+        },
+        "implementation": {
+            "forms": [
+                ("lk implementation", "Resolve the implementation address behind the selected proxy target.", "lk implementation"),
+            ],
+        },
+        "admin": {
+            "forms": [
+                ("lk admin", "Resolve the proxy admin for the selected target when its proxy pattern supports it.", "lk admin"),
+            ],
+        },
+        "calldata": {
+            "forms": [
+                ("lk calldata <hex>", "Decode raw calldata against the selected ABI and show its selector and arguments.", "lk calldata 0xa9059cbb..."),
+            ],
+            "notes": [
+                ("Unknown selectors", "When no ABI entry matches, Lowkey reports an unknown selector and attempts a public signature lookup.", "lk 4byte-calldata"),
+            ],
+        },
+        "disasm": {
+            "forms": [
+                ("lk disasm", "Disassemble the selected target's runtime bytecode.", "lk disasm"),
+                ("lk disasm <address>", "Fetch and disassemble runtime bytecode at a supplied address.", "lk disasm 0x1111111111111111111111111111111111111111"),
+                ("lk disasm <bytecode>", "Disassemble raw 0x-prefixed bytecode supplied directly.", "lk disasm 0x6001600055"),
+            ],
+        },
+        "txpool": {
+            "forms": [
+                ("lk txpool", "Show pending and queued transaction counts.", "lk txpool"),
+                ("lk txpool status", "Show pending and queued counts from the current RPC.", "lk txpool status"),
+                ("lk txpool content", "Show transaction-pool contents as JSON.", "lk txpool content"),
+                ("lk txpool pending", "Alias for content; show pending pool transactions.", "lk txpool pending"),
+            ],
+            "notes": [
+                ("RPC support", "This requires an RPC exposing Anvil/Geth-style txpool methods. Many hosted RPCs disable them.", "lk rpc"),
+            ],
+        },
+        "chisel": {
+            "forms": [
+                ("lk chisel", "Build the active Foundry project, load a detected contract interface and open the interactive Solidity REPL.", "lk chisel"),
+                ("lk chisel --contract <Contract>", "Select the project contract whose interface Lowkey should load.", "lk chisel --contract Escrow"),
+                ("lk chisel --no-build", "Reuse existing artifacts and skip the automatic project build.", "lk chisel --no-build"),
+                ("lk chisel eval <expression>", "Evaluate an expression with the selected contract context when supported by Chisel.", "lk chisel --contract Escrow eval 'Escrow.owner()'"),
+            ],
+            "options": [
+                ("--contract <Contract|source-path>", "Choose a contract or source path for Lowkey's generated interface and helper functions.", "lk chisel --contract src/Escrow.sol:Escrow"),
+                ("--no-build", "Skip the automatic Foundry build and use artifacts already on disk.", "lk chisel --no-build"),
+                ("Chisel-native options", "Other arguments pass through to Chisel. Lowkey's loader cannot be combined with Chisel's own --prelude.", "chisel --help"),
+            ],
+        },
+        "ens": {
+            "forms": [
+                ("lk ens <name>", "Resolve an ENS name to an address using the configured RPC.", "lk ens vitalik.eth"),
+                ("lk ens <address>", "Reverse-resolve an address when reverse records exist.", "lk ens 0x1111111111111111111111111111111111111111"),
+            ],
+        },
+        "symbolic": {
+            "forms": [
+                ("lk symbolic [Foundry test options...]", "Run Foundry's symbolic-testing mode for the selected project's tests.", "lk symbolic --match-test testWithdraw"),
+                ("lk symbolic emit [Foundry test options...]", "Run symbolic testing and request regression emission through Foundry's emit mode.", "lk symbolic emit --match-test testWithdraw"),
+            ],
+            "options": [
+                ("emit", "Add the regression-emission flag to the underlying symbolic test run.", "lk symbolic emit"),
+                ("Foundry test options", "Test filters and compatible flags are forwarded to the selected Foundry test runner.", "forge test --help"),
+            ],
+        },
+        "brutalize": {
+            "forms": [
+                ("lk brutalize [Foundry test options...]", "Run Foundry's brutalize test mode against selected tests.", "lk brutalize --match-test testWithdraw"),
+            ],
+            "options": [
+                ("Foundry test options", "Test filters and compatible flags are forwarded to the Foundry test runner.", "forge test --help"),
+            ],
+            "notes": [
+                ("Purpose", "Brutalize stresses assumptions about inputs/state; it does not by itself establish a vulnerability.", "lk test"),
+            ],
+        },
+        "compare": {
+            "forms": [
+                ("lk compare <topicA> <topicB> [topicC...]", "Compare Solidity concepts side by side.", "lk compare mapping storage"),
+            ],
+        },
+        "expression": {
+            "forms": [
+                ("lk expression \"<Solidity expression>\"", "Break one Solidity expression into its component operations and meaning.", "lk expression \"balances[msg.sender] += msg.value\""),
+            ],
+        },
+        "practice": {
+            "forms": [
+                ("lk practice", "Start a prediction-first Solidity drill on the current/default topic.", "lk practice"),
+                ("lk practice <topic>", "Choose the Solidity concept used for the drill.", "lk practice mapping"),
+            ],
+        },
+        "confused": {
+            "forms": [
+                ("lk confused <term>", "Compare a concept with the term it is commonly confused with.", "lk confused calldata"),
+            ],
+        },
+        "patterns": {
+            "forms": [
+                ("lk patterns", "Show recurring Solidity coding and audit patterns.", "lk patterns"),
+            ],
+        },
+        "cheatcode": {
+            "forms": [
+                ("lk cheatcode", "List the focused Foundry cheatcode examples available in Lowkey.", "lk cheatcode"),
+                ("lk cheatcode <name>", "Print one cheatcode example and explain its basic use.", "lk cheatcode prank"),
+            ],
+        },
+        "cheatcodes": {
+            "forms": [
+                ("lk cheatcodes", "List supported cheatcode examples.", "lk cheatcodes"),
+                ("lk cheatcodes <name>", "Print a short example for one supported cheatcode.", "lk cheatcodes deal"),
+            ],
+            "notes": [
+                ("Dangerous example", "The ffi example can execute an external process from the test environment; treat it as lab-only.", "lk cheatcodes ffi"),
+            ],
+        },
+        "forge": {
+            "forms": [
+                ("lk forge <Forge subcommand> [args...]", "Use the explicit raw Forge bridge when Lowkey does not provide a dedicated workflow.", "lk forge inspect Escrow abi"),
+                ("lk forge <Forge subcommand> --help", "Use the installed Forge version's native help for a command that Lowkey does not wrap.", "forge inspect --help"),
+            ],
+            "options": [
+                ("Forge subcommand options", "Arguments after the Forge subcommand are passed to Forge. Prefer a dedicated lk command when one exists.", "forge test --help"),
+            ],
+            "notes": [
+                ("Raw escape hatch", "This is the intentional Forge passthrough. It is separate from Lowkey-owned commands such as lk build, lk test and lk inspect.", "lk inspect"),
+            ],
+        },
+        "build": {
+            "forms": [
+                ("lk build", "Compile the current selected project through its detected native build backend.", "lk build"),
+                ("lk build [backend options...]", "Pass backend-compatible build options when the selected project supports them.", "lk build --offline"),
+            ],
+            "options": [
+                ("Backend-specific build options", "Foundry projects accept Foundry build options; other project types may support a different option set.", "lk forge build --help"),
+            ],
+            "notes": [
+                ("Project routing", "Lowkey detects the project's backend first; it does not force a non-Foundry project through Forge.", "lk detect"),
+            ],
+        },
+        "test": {
+            "forms": [
+                ("lk test", "Run the selected project's native test suite.", "lk test"),
+                ("lk test [test options...]", "Pass supported test selection, verbosity and execution options to the detected test backend.", "lk test --match-test testWithdraw"),
+            ],
+            "options": [
+                ("--match-test <pattern>", "Foundry example: run only tests whose names match the supplied pattern.", "lk test --match-test testWithdraw"),
+                ("-vvv / --verbosity <level>", "Foundry example: increase execution detail and traces.", "lk test -vvv"),
+                ("Backend-specific test options", "Lowkey routes to the project's detected test runner; other backends may use different options.", "lk forge test --help"),
+            ],
+        },
+        "script": {
+            "forms": [
+                ("lk script <script-path> [Forge script options...]", "Execute one Foundry deployment/interaction script.", "lk script script/LocalDeploy.s.sol --sig run()"),
+            ],
+            "options": [
+                ("--sig <signature>", "Choose the script function to execute.", "lk script script/LocalDeploy.s.sol --sig run()"),
+                ("--broadcast", "Broadcast script transactions to the configured chain; without it, script execution is normally simulated.", "lk script script/LocalDeploy.s.sol --sig run() --broadcast"),
+                ("Other Forge script options", "Additional options are passed through to the installed Forge version.", "forge script --help"),
+            ],
+        },
+        "lint": {
+            "forms": [
+                ("lk lint", "Run installed Forge lint diagnostics with Lowkey's timeout and generated-file filtering.", "lk lint"),
+                ("lk lint [Forge lint options...]", "Change lint selection/severity using options supported by the installed Forge version.", "lk lint --severity warning"),
+            ],
+            "options": [
+                ("Forge lint options", "Lowkey applies its diagnostic handling, then passes supported options through to Forge.", "forge lint --help"),
+            ],
+        },
+        "geiger": {
+            "forms": [
+                ("lk geiger", "Run the unsafe-cheatcode lint compatibility check when the installed Forge version supports it.", "lk geiger"),
+                ("lk geiger [Forge lint options...]", "Pass compatible lint options to the unsafe-cheatcode rule.", "lk geiger --severity warning"),
+            ],
+            "options": [
+                ("Forge lint options", "This command selects the unsafe-cheatcode lint rule; supported options are passed to the installed Forge version.", "forge lint --help"),
+            ],
+        },
+        "fmt": {
+            "forms": [
+                ("lk fmt", "Format the current Foundry project's Solidity files.", "lk fmt"),
+                ("lk fmt --check", "Check formatting without rewriting files when supported by the installed Forge version.", "lk fmt --check"),
+                ("lk fmt [Forge fmt options...]", "Use formatter options for paths, line lengths, bracket spacing and related style rules.", "lk fmt --help"),
+            ],
+            "options": [
+                ("Forge fmt options", "Lowkey passes formatter-specific options to the installed Forge version.", "forge fmt --help"),
+            ],
+        },
+        "create": {
+            "forms": [
+                ("lk create <path>", "Create a new Foundry contract, script, test or other supported component at the requested path.", "lk create src/Vault.sol"),
+                ("lk create <path> [Forge create options...]", "Use installed Forge template/scaffolding options when required.", "lk create src/Vault.sol --template templates/Vault.sol"),
+            ],
+            "options": [
+                ("Forge create options", "Additional template/scaffolding options are passed to the installed Forge version.", "forge create --help"),
+            ],
+        },
+        "batch": {
+            "forms": [
+                ("lk batch <command-file>", "Run one Lowkey command per non-empty, non-comment line in a file.", "lk batch audit-steps.lk"),
+            ],
+            "notes": [
+                ("Send safety", "A send/s command in a batch file is changed to --confirm unless --yes, --confirm, --preview or --dry-run is already present.", "lk batch audit-steps.lk"),
+            ],
+        },
+        "raw": {
+            "forms": [
+                ("lk raw <Cast subcommand> [args...]", "Run a Cast command that Lowkey does not expose through a friendlier workflow.", "lk raw storage 0"),
+                ("lk raw <Cast subcommand> --help", "Use Cast's native help for the exact options supported by the installed version.", "cast storage --help"),
+            ],
+            "options": [
+                ("Cast subcommand options", "Arguments after the subcommand are passed to Cast. Use lk read/lk send for Lowkey's ABI-aware actor and transaction flow.", "cast call --help"),
+            ],
+        },
+        "gas": {
+            "forms": [
+                ("lk gas <function> [args...]", "Estimate gas for one function call on the selected target without broadcasting a transaction.", "lk gas withdraw"),
+                ("lk gas '<signature>' [args...]", "Select an overloaded function by its canonical signature.", "lk gas 'transfer(address,uint256)' 0x1111111111111111111111111111111111111111 100"),
+            ],
+            "notes": [
+                ("No transaction is sent", "Gas estimation simulates the call; it does not submit the call or change contract state.", "lk send withdraw --preview"),
+            ],
+        },
+        "info": {
+            "forms": [
+                ("lk info", "Show selected-target facts including chain, code presence, ABI availability and proxy hints.", "lk info"),
+            ],
+        },
+        "status": {
+            "forms": [
+                ("lk status", "Show active target, RPC, actor, ABI, last transaction and open audit signals.", "lk status"),
+            ],
+        },
+        "recon": {
+            "forms": [
+                ("lk recon", "Run a first-pass live reconnaissance check against the selected target.", "lk recon"),
+            ],
+            "notes": [
+                ("What it checks", "Balance, runtime code, code hash, code size, nonce and common proxy indicators. This is not a vulnerability verdict.", "lk info"),
+            ],
+        },
+        "deployments": {
+            "forms": [
+                ("lk deployments", "List deployment records discovered in the current project's broadcast history.", "lk deployments"),
+            ],
+        },
+        "clone": {
+            "forms": [
+                ("lk clone <repository> [directory] [options]", "Clone a repository, detect its project type, build it, run the connected audit and prepare a local lab when supported.", "lk clone Toji254/foundry-lowkey"),
+                ("lk clone <repository> --depth <N>", "Use a shallow clone with the requested history depth.", "lk clone Toji254/foundry-lowkey --depth 5"),
+                ("lk clone <repository> --full", "Fetch full repository history instead of the default shallow clone.", "lk clone Toji254/foundry-lowkey --full"),
+            ],
+            "options": [
+                ("--depth <N>", "Set a positive shallow-clone depth; use --full for full history.", "lk clone Toji254/foundry-lowkey --depth 5"),
+                ("--full", "Fetch complete repository history instead of the default depth-one checkout.", "lk clone Toji254/foundry-lowkey --full"),
+                ("--jobs <N>", "Set parallel jobs used by the clone/dependency-cache workflow.", "lk clone Toji254/foundry-lowkey --jobs 4"),
+                ("--no-cache / --no-cache-deps", "Disable Lowkey's dependency repository cache for this clone.", "lk clone Toji254/foundry-lowkey --no-cache"),
+            ],
+        },
+        "doctor": {
+            "forms": [
+                ("lk doctor", "Check Lowkey, Foundry, Anvil, project dependencies and optional audit tools.", "lk doctor"),
+            ],
+        },
+        "self-test": {
+            "forms": [
+                ("lk self-test", "Run Lowkey's deterministic sanity checks for core parsing and safety helpers.", "lk self-test"),
+            ],
+            "notes": [
+                ("Scope", "This is a Lowkey regression smoke test, not a full project test suite or smart-contract audit.", "lk test"),
+            ],
+        },
+        "interface": {
+            "forms": [
+                ("lk interface", "Render the selected target's local ABI interface.", "lk interface"),
+                ("lk interface <ABI-path>", "Render an interface from an explicit ABI/artifact path.", "lk interface out/Vault.sol/Vault.json"),
+            ],
+            "options": [
+                ("Cast interface options", "Extra arguments are passed to Cast's interface renderer.", "cast interface --help"),
+            ],
+        },
+        "4byte": {
+            "forms": [
+                ("lk 4byte <selector>", "Look up candidate function signatures for a four-byte selector.", "lk 4byte 0xa9059cbb"),
+            ],
+        },
+        "access-list": {
+            "forms": [
+                ("lk access-list <function> [args...]", "Build an access list for the selected target and function.", "lk access-list balanceOf 0x1111111111111111111111111111111111111111"),
+                ("lk access-list <address> <function> [args...]", "Build the list for an explicit contract address instead of the selected target.", "lk access-list 0x2222222222222222222222222222222222222222 balanceOf 0x1111111111111111111111111111111111111111"),
+            ],
+        },
+        "constructor-args": {
+            "forms": [
+                ("lk constructor-args [address]", "Decode constructor arguments using available deployment/creation data.", "lk constructor-args 0x1111111111111111111111111111111111111111"),
+            ],
+        },
+        "creation-code": {
+            "forms": [
+                ("lk creation-code [address]", "Inspect creation/init code for a contract deployment.", "lk creation-code 0x1111111111111111111111111111111111111111"),
+            ],
+        },
+        "decode-calldata": {
+            "forms": [
+                ("lk decode-calldata <calldata>", "Decode calldata using the selected target ABI when the selector is known.", "lk decode-calldata 0xa9059cbb..."),
+                ("lk decode-calldata '<signature>' <calldata>", "Supply the exact signature when the selector is ambiguous or no ABI is loaded.", "lk decode-calldata 'transfer(address,uint256)' 0xa9059cbb..."),
+            ],
+        },
+        "abi-encode": {
+            "forms": [
+                ("lk abi-encode '<signature>' [args...]", "Encode ABI values for one exact function signature.", "lk abi-encode 'transfer(address,uint256)' 0x1111111111111111111111111111111111111111 100"),
+            ],
+        },
+        "version": {
+            "forms": [
+                ("lk version", "Show the installed Lowkey version and runtime synchronization status.", "lk version"),
+            ],
+        },
+        "detect": {
+            "forms": [
+                ("lk detect", "Detect the current project's languages, build system and native backend.", "lk detect"),
+            ],
+        },
+        "detect-project": {
+            "forms": [
+                ("lk detect-project", "Alias for detecting the current project's language and build system.", "lk detect-project"),
+            ],
+        },
+        "c": {
+            "forms": [
+                ("lk c <function> [args...]", "Short Cast-call alias. Prefer lk read for Lowkey's decoded, human-readable ABI output.", "lk c owner"),
+            ],
+            "options": [
+                ("Cast call options", "Arguments after the function are passed to Cast call; see the installed Cast version for its full option set.", "cast call --help"),
+            ],
+        },
+        "s": {
+            "forms": [
+                ("lk s <function> [args...]", "Short Cast-send alias. Prefer lk send for actor selection, preview and confirmation.", "lk s setValue 10"),
+            ],
+            "options": [
+                ("Cast send options", "Arguments after the function are passed to Cast send. This shortcut does not add lk send's full convenience options.", "cast send --help"),
+            ],
+        },
+        "st": {
+            "forms": [
+                ("lk st <slot> [options...]", "Short Cast storage-read alias for one slot on the selected target.", "lk st 0"),
+            ],
+            "options": [
+                ("--block <block>", "Read a slot at a specific block when the current RPC supports historical state.", "lk st 0 --block latest"),
+            ],
+        },
+        "logs": {
+            "forms": [
+                ("lk logs [Cast log filters...]", "Retrieve event logs using Cast's log-query filters.", "lk logs --from-block 100 --to-block latest"),
+                ("lk logs --decode [Cast log filters...]", "Fetch logs as JSON and decode events matching the selected ABI.", "lk logs --decode --from-block 100 --to-block latest"),
+            ],
+            "options": [
+                ("--decode", "Use Lowkey's JSON/event decoder instead of displaying only raw Cast log output.", "lk logs --decode"),
+                ("Cast log filters", "Block ranges, addresses and topic filters are passed to Cast logs.", "cast logs --help"),
+            ],
+        },
+        "snapshot": {
+            "forms": [
+                ("lk snapshot", "Save the first ten storage slots for the selected target.", "lk snapshot"),
+                ("lk snapshot <slot...>", "Save one or more explicitly selected slots.", "lk snapshot 0 1 2 3"),
+                ("lk snapshot [slot...] --block <block>", "Read and snapshot slots at a selected historical block.", "lk snapshot 0 1 --block 21000000"),
+            ],
+            "options": [
+                ("--block <block>", "Read selected slots at the requested block instead of latest state.", "lk snapshot 0 1 --block 21000000"),
+            ],
+        },
+        "receipt": {
+            "forms": [
+                ("lk receipt", "Inspect the last transaction recorded by Lowkey.", "lk receipt"),
+                ("lk receipt <transaction-hash>", "Inspect one explicit transaction receipt.", "lk receipt 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                ("lk receipt <transaction-hash> --raw", "Display the raw Cast receipt instead of Lowkey's decoded report.", "lk receipt 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --raw"),
+            ],
+        },
+        "fork": {
+            "forms": [
+                ("lk fork <rpc-url> [block] [--port PORT]", "Start a local Anvil fork of the supplied RPC, optionally pinned to a block.", "lk fork https://rpc.example 21000000 --port 8546"),
+                ("lk fork status", "Show whether Lowkey's local fork is running and its RPC endpoint.", "lk fork status"),
+                ("lk fork stop", "Stop the fork started by Lowkey and clear its local RPC selection.", "lk fork stop"),
+                ("lk fork dump [file] / lk fork load <file>", "Save or restore Anvil's state snapshot on the running fork.", "lk fork dump anvil-state.json"),
+            ],
+            "options": [
+                ("--port <PORT>", "Choose the local Anvil port; the default is 8546.", "lk fork https://rpc.example --port 8547"),
+                ("Extra Anvil options", "Additional Anvil options are passed to the fork process after Lowkey's fork settings.", "anvil --help"),
+            ],
+        },
+        "system": {
+            "forms": [
+                ("lk system", "Refresh and display the current project's machine-readable system model.", "lk system"),
+                ("lk system --json", "Print the refreshed system model as JSON.", "lk system --json"),
+            ],
+        },
+        "project": {
+            "forms": [
+                ("lk project", "Show the current project/dependency map, or workspace overview at a multi-project root.", "lk project"),
+                ("lk project <number|path>", "Open/select one project within the current workspace.", "lk project 2"),
+                ("lk project --workspace", "Show the workspace-level overview without opening one project's deep map.", "lk project --workspace"),
+                ("lk project <number|path> --json", "Print the selected project map as JSON.", "lk project 2 --json"),
+            ],
+        },
+        "balance": {
+            "forms": [
+                ("lk balance", "Show the selected target's ETH balance.", "lk balance"),
+                ("lk balance <address|actor|target-name>", "Resolve and show one address or saved local actor/target balance.", "lk balance Alice"),
+            ],
+        },
+        "token": {
+            "forms": [
+                ("lk token <address>", "Show the token's name, symbol, decimals and total supply.", "lk token 0x1111111111111111111111111111111111111111"),
+                ("lk token balance <token> <holder>", "Read one ERC-20 balance for a token and holder.", "lk token balance 0x1111111111111111111111111111111111111111 Alice"),
+            ],
+        },
+        "last": {
+            "forms": [
+                ("lk last", "Show the last recorded transaction receipt.", "lk last"),
+                ("lk last tx|trace|receipt", "Open the last transaction, trace or receipt view.", "lk last trace"),
+            ],
+        },
+        "matrix": {
+            "forms": [
+                ("lk matrix init", "Initialize the attacker-state matrix files and directories.", "lk matrix init"),
+                ("lk matrix actor <name> <address>", "Save a named actor address for scenario documentation.", "lk matrix actor attacker 0x1111111111111111111111111111111111111111"),
+                ("lk matrix add <name> <function> <actor> <expected...>", "Record one expected scenario outcome and its current evidence references.", "lk matrix add withdraw-denied withdraw attacker \"reverts for non-owner\""),
+                ("lk matrix list", "List the scenarios saved in the matrix.", "lk matrix list"),
+                ("lk matrix test <name>", "Generate/run the test associated with one saved scenario.", "lk matrix test withdraw-denied"),
+            ],
+            "notes": [
+                ("Expected result", "The matrix stores the expected scenario outcome; running the generated test does not automatically prove that your expectation is correct.", "lk matrix test withdraw-denied"),
+            ],
+        },
+        "actor": {
+            "options": [
+                ("reset 1", "Clear the active actor selection but keep saved actor profiles.", "lk actor reset 1"),
+                ("reset 2", "Clear the active actor selection and remove user-created actor profiles; internal lab deployer profiles are retained.", "lk actor reset 2"),
+            ],
+        },
+        "rpc": {
+            "options": [
+                ("<url>", "Set the active RPC URL.", "lk rpc http://127.0.0.1:8545"),
+                ("set <name> <url>", "Save a named RPC profile and activate it.", "lk rpc set local http://127.0.0.1:8545"),
+                ("use <name>", "Activate a saved RPC profile.", "lk rpc use local"),
+                ("reset", "Clear the manually selected RPC and return to automatic Anvil detection.", "lk rpc reset"),
+            ],
+        },
+        "abi": {
+            "forms": [
+                ("lk abi", "Show the current ABI grouped into write functions, read functions, storage getters, events and errors.", "lk abi"),
+                ("lk abi auto", "Auto-discover and load an ABI for the selected target.", "lk abi auto"),
+            ],
+        },
+        "mapping": {
+            "options": [
+                ("<slot> <key>", "Read a mapping entry when the key type can be inferred from the supplied key.", "lk mapping 5 0x1111111111111111111111111111111111111111"),
+                ("<key_type> <slot> <key>", "Specify the mapping key type explicitly before the slot and key.", "lk mapping address 5 0x1111111111111111111111111111111111111111"),
+            ],
+        },
+        "array": {
+            "options": [
+                ("<array-name> [index]", "Read one element from a storage array.", "lk array owners 0"),
+                ("<array-name> <start>..<end>", "Read a bounded range of array elements.", "lk array owners 0..9"),
+            ],
+        },
+        "ids": {
+            "options": [
+                ("--all", "Include all saved identifiers instead of the default useful/recent view.", "lk ids --all"),
+            ],
+        },
+    }
+
+    for command, fields in details.items():
+        entry = COMMAND_HELP.get(command)
+        if isinstance(entry, dict):
+            for field, value in fields.items():
+                entry[field] = value
+
+    # Every root and nested help page gets an explicit invocation example.
+    # Commands with no extra options say so honestly in OPTIONS / MODES.
+    def complete(entries, prefix=()):
+        for name, entry in entries.items():
+            if not entry.get("forms"):
+                usage = str(entry.get("usage") or "lk " + " ".join((*prefix, name)))
+                summary = str(entry.get("summary") or "Run this Lowkey command.")
+                example = str(entry.get("example") or usage)
+                entry["forms"] = [
+                    (usage, "Standard invocation: " + summary, example)
+                ]
+            complete(entry.get("children") or {}, (*prefix, name))
+
+    complete(COMMAND_HELP)
+
+
+_apply_command_help_audit_catalog()
+
+
 HELP_ALIASES = {
     "cheats": "cheat",
     "cheatsheet": "cheat",
@@ -21966,6 +23127,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         return generator_module.run_generate(config, args)
     elif cmd=="poc": return run_audit_poc(config,args)
     elif cmd=="deps": run_deps(args)
+    elif cmd=="inspect": return run_inspect(config,args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": return run_raw(config,args)
