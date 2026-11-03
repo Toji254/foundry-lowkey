@@ -20462,9 +20462,7 @@ def _render_command_help(path):
     _ui_heading(f"LOWKEY HELP  •  lk {shown_path}")
 
     if unknown:
-        _ui_key_values([
-            ("Unknown subcommand", f"'{unknown}' under 'lk {shown_path}'."),
-        ])
+        _function_print_wrapped("Unknown subcommand: ", f"'{unknown}' under 'lk {shown_path}'.")
         available = list((entry or {}).get("children", {}).keys())
         if available:
             _ui_key_values([("Available next commands", ", ".join(available))])
@@ -20487,15 +20485,13 @@ def _render_command_help(path):
         return 2
 
     if alias:
-        _ui_key_values([
-            ("Alias", f"'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'."),
-        ])
+        _function_print_wrapped("Alias: ", f"'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'.")
     _ui_key_values([
         ("What it does:", entry["summary"]),
         ("When to use:", entry["use"]),
-        ("Usage:", entry["usage"]),
-        ("Example:", entry["example"]),
     ])
+    _function_print_wrapped("Usage: ", entry["usage"])
+    _function_print_wrapped("Example: ", entry["example"])
 
     forms = entry.get("forms") or []
     print("")
@@ -20534,18 +20530,14 @@ def _render_command_help(path):
             parent_shown = " ".join(parent)
             print("")
             print(_function_terminal_style("NAVIGATION", "heading"))
-            _ui_key_values([
-                (f"lk {parent_shown} --h", "Go back to the parent command and see its available subcommands."),
-            ], indent=2)
+            _function_print_wrapped("  ", f"lk {parent_shown} --h — Go back to the parent command and see its available subcommands.")
 
     argument_types = entry.get("argument_types") or []
     if argument_types:
         print("")
         print(_function_terminal_style("SOLIDITY ABI ARGUMENT TYPES", "heading"))
-        _ui_key_values([
-            ("Order", "Use one value per ABI parameter, in the exact function-input order."),
-            ("Arrays and tuples", "Each is ONE argument; quote the whole bracket/tuple value in your shell."),
-        ])
+        _function_print_wrapped("  ", "Use one value per ABI parameter, in the exact function-input order.")
+        _function_print_wrapped("  ", "Arrays and tuples are each ONE argument; quote the whole bracket/tuple value in your shell.")
         for abi_type, description, example in argument_types:
             _ui_key_values([(abi_type, f"{description}\nExample: {example}")], indent=2)
 
@@ -20598,7 +20590,7 @@ def _render_command_help(path):
     elif related:
         _ui_key_values([("Related", related[0])])
     elif parent:
-        _ui_key_values([("Parent", f"lk {' '.join(parent)} --h")])
+        _function_print_wrapped("Parent: ", f"lk {' '.join(parent)} --h")
     else:
         _ui_key_values([("Start", "lk --h")])
     return 0
