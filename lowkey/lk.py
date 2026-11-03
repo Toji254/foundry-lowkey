@@ -20910,13 +20910,13 @@ def _apply_command_help_audit_catalog():
         "replay": {
             "forms": [
                 ("lk replay <transaction-hash>", "Replay/trace one recorded or supplied transaction.", "lk replay 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                ("lk replay <transaction-hash> [trace options...]", "Use the same trace filters and display options as lk trace.", "lk replay 0xaaaaaaaa... --grep withdraw"),
+                ("lk replay <transaction-hash> [trace options...]", "Use the same trace filters and display options as lk trace.", "lk replay 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --grep withdraw"),
             ],
             "options": [
-                ("--grep <text>", "Show only trace lines that contain the supplied text.", "lk replay 0xaaaaaaaa... --grep withdraw"),
-                ("--quick", "Request a shorter trace when the full detail is not needed.", "lk replay 0xaaaaaaaa... --quick"),
-                ("--decode-internal", "Ask Cast to decode more data used by internal calls.", "lk replay 0xaaaaaaaa... --decode-internal"),
-                ("--trace-printer <value>", "Pass a trace display setting to Cast; see cast run --help for available values.", "lk replay 0xaaaaaaaa... --trace-printer <value>"),
+                ("--grep <text>", "Show only trace lines that contain the supplied text.", "lk replay 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --grep withdraw"),
+                ("--quick", "Request a shorter trace when the full detail is not needed.", "lk replay 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --quick"),
+                ("--decode-internal", "Ask Cast to decode more data used by internal calls.", "lk replay 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --decode-internal"),
+                ("--trace-printer <value>", "Pass a trace display setting to Cast; see cast run --help for available values.", "lk replay 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --trace-printer <value>"),
             ],
             "related": ["lk trace", "lk receipt", "lk tx"],
         },
@@ -21680,6 +21680,22 @@ def _apply_command_help_audit_catalog():
         if isinstance(entry, dict):
             for field, value in fields.items():
                 entry[field] = value
+
+    probe_entry = COMMAND_HELP.get("probe")
+    if isinstance(probe_entry, dict):
+        probe_entry.setdefault("notes", []).extend([
+            ("Default actor behavior", "Without --actor, Lowkey runs the probe as every configured local actor. Use --actor or --as to isolate one identity.", "lk probe withdraw --actor Alice"),
+            ("Repeat behavior", "Probe does not support repeated calls; repeat counts above one are rejected. Use lk changes --repeat when you need repeated calls inside one test transaction.", "lk changes setValue 10 --repeat 3"),
+        ])
+
+    lab_entry = COMMAND_HELP.get("lab")
+    if isinstance(lab_entry, dict):
+        lab_entry.setdefault("forms", []).append(
+            ("lk lab --forge [Contract]", "Backward-compatible alias for --generic; new commands should use --generic.", "lk lab --generic Vault")
+        )
+        lab_entry.setdefault("notes", []).append(
+            ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab Vault --ai-review")
+        )
 
     # The runtime supports init/actor/add/list/test. A historical help child
     # called "state" was never implemented, so do not advertise it as a command.
