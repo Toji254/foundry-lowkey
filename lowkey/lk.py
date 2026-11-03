@@ -15489,9 +15489,10 @@ def _chisel_abi_parameter_text(parameters, fallback_prefix="arg", include_indexe
             parameter_type = canonical_type(parameter) or str(parameter.get("type") or "value")
         except (TypeError, ValueError):
             parameter_type = str(parameter.get("type") or "value")
-        name = str(parameter.get("name") or f"{fallback_prefix}{index}")
+        raw_name = str(parameter.get("name") or "").strip()
+        name = raw_name or (f"{fallback_prefix}{index}" if fallback_prefix else "")
         indexed = "indexed " if include_indexed and parameter.get("indexed") else ""
-        rendered.append(f"{parameter_type} {indexed}{name}")
+        rendered.append(f"{parameter_type} {indexed}{name}".rstrip())
     return ", ".join(rendered)
 
 
@@ -15510,7 +15511,7 @@ def _chisel_contract_interface(contract):
             name = str(item.get("name") or "<unnamed>")
             inputs = _chisel_abi_parameter_text(item.get("inputs") or [])
             outputs_list = item.get("outputs") or []
-            outputs = _chisel_abi_parameter_text(outputs_list, "return")
+            outputs = _chisel_abi_parameter_text(outputs_list, "")
             signature = f"{name}({inputs})"
             if outputs:
                 signature += f" -> ({outputs})" if len(outputs_list) > 1 else f" -> {outputs}"
