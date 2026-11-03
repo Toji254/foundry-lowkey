@@ -21649,7 +21649,7 @@ def _apply_command_help_audit_catalog():
         "balance": {
             "forms": [
                 ("lk balance", "Show the selected target's ETH balance.", "lk balance"),
-                ("lk balance <address|actor|target-name>", "Resolve and show one address or saved local actor/target balance.", "lk balance Alice"),
+                ("lk balance <address|actor|target-name>", "Resolve one address or a saved target or actor name, then show its ETH balance.", "lk balance Alice"),
             ],
         },
         "token": {
@@ -21740,7 +21740,7 @@ def _apply_command_help_audit_catalog():
             ("lk lab --forge [Contract]", "Backward-compatible alias for --generic; new commands should use --generic.", "lk lab --generic Vault")
         )
         lab_entry.setdefault("notes", []).append(
-            ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab Vault --ai-review")
+            ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab --ai-review")
         )
 
     # The runtime supports init/actor/add/list/test. A historical help child
