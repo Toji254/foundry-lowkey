@@ -15194,6 +15194,7 @@ def run_selector_compare(config,args):
     runtime=values[0] if values else run_cast(["code",target],config,capture=True)
     if not runtime or not str(runtime).startswith("0x"):
         return fail("Error: no runtime bytecode available.")
+
     _,selector_output,_=cast_output(["cast","selectors",runtime])
     runtime_selectors=runtime_selector_set(selector_output)
     abi=load_abi(target,config)
@@ -15202,28 +15203,53 @@ def run_selector_compare(config,args):
         signature=format_signature(item)
         selector=abi_selector(signature)
         if selector:
-            abi_map[selector.lower()]=signature
-    print("SELECTOR COMPARISON")
-    print("===================")
-    print("ABI SELECTORS:")
-    for selector,signature in sorted(abi_map.items()):
-        print(f"  {selector}  {signature}")
-    print("\nRUNTIME SELECTORS:")
-    for selector in sorted(runtime_selectors):
-        print(f"  {selector}  {abi_map.get(selector,'<not in loaded ABI>')}")
-    abi_only=sorted(set(abi_map)-runtime_selectors)
+            abi_map[selector.lower()]=item
+
+    matched=sorted(runtime_selectors & set(abi_map))
     runtime_only=sorted(runtime_selectors-set(abi_map))
-    print("\nABI-ONLY:")
-    for selector in abi_only:
-        print(f"  {selector}  {abi_map[selector]}")
-    if not abi_only:
+    abi_only=sorted(set(abi_map)-runtime_selectors)
+    contract=config.get("target_contract") or "selected target"
+
+    print("FUNCTION SELECTORS")
+    print("==================")
+    print(f"Target: {contract} ({target})")
+    print(f"Runtime selectors found: {len(runtime_selectors)}")
+    print(f"Matched to loaded ABI:   {len(matched)}")
+    print()
+    print("FUNCTIONS IN DEPLOYED RUNTIME")
+    print("-----------------------------")
+    if matched:
+        for selector in matched:
+            item=abi_map[selector]
+            signature=format_signature(item)
+            mutability=item.get("stateMutability") or "unknown mutability"
+            outputs=[canonical_type(value) for value in item.get("outputs",[])]
+            returns=f"  returns ({', '.join(outputs)})" if outputs else ""
+            print(f"  {selector}  {signature}  [{mutability}]{returns}")
+    else:
+        print("  No runtime selectors matched the loaded ABI.")
+
+    print("\nRUNTIME SELECTORS WITHOUT ABI MATCH")
+    print("-----------------------------------")
+    if runtime_only:
+        for selector in runtime_only:
+            print(f"  {selector}  (no matching function in the loaded ABI)")
+    else:
         print("  none")
-    print("\nRUNTIME-ONLY:")
-    for selector in runtime_only:
-        print(f"  {selector}")
-    if not runtime_only:
+
+    print("\nABI FUNCTIONS NOT DETECTED IN RUNTIME")
+    print("-------------------------------------")
+    if abi_only:
+        for selector in abi_only:
+            print(f"  {selector}  {format_signature(abi_map[selector])}")
+    else:
         print("  none")
-    print("\nReview note: selector extraction is a lead, not proof of hidden functionality.")
+
+    print("\nHow to read this:")
+    print("  selector  = first four bytes of the function's Keccak-256 signature hash")
+    print("  [view]    = read-only function; [nonpayable] = cannot receive ETH; [payable] = can receive ETH")
+    print("  returns   = ABI-declared return types, not the values returned by a particular transaction")
+    print("Review note: bytecode selector matches are evidence to investigate, not proof that every path is reachable.")
     return 0
 
 def run_chisel(args):
@@ -15367,9 +15393,16 @@ def run_fuzz_help():
 """)
 
 def run_selectors(config,args):
-    if "--compare" in args:
-        return run_selector_compare(config,args)
-    code=args[0] if args else run_cast(["code",config.get("target")],config,capture=True)
+    values=list(args or [])
+    if "--compare" in values:
+        return run_selector_compare(config,values)
+    raw_mode="--raw" in values
+    values=[value for value in values if value!="--raw"]
+    # With a selected contract, show human-readable ABI signatures by default.
+    # --raw preserves Cast's low-level bytecode selector listing.
+    if config.get("target") and not raw_mode:
+        return run_selector_compare(config,values)
+    code=values[0] if values else run_cast(["code",config.get("target")],config,capture=True)
     if not code or not str(code).startswith("0x"):
         return fail("Error: no runtime bytecode available.")
     return run_cast(["selectors",code],config)
@@ -18933,7 +18966,17 @@ COMMAND_HELP = {
     "proxy": _help_entry("Inspect an EIP-1967-style proxy.", "lk proxy", "lk proxy", "Use it when a target may be a proxy and you need to distinguish proxy from implementation.", related=["lk implementation", "lk admin"]),
     "implementation": _help_entry("Resolve the implementation behind the selected proxy.", "lk implementation", "lk implementation", "Use it to find the code that executes behind a proxy.", related=["lk proxy", "lk admin"]),
     "admin": _help_entry("Resolve the proxy admin when supported.", "lk admin", "lk admin", "Use it when reviewing who controls upgrades.", related=["lk proxy", "lk implementation"]),
-    "selectors": _help_entry("Extract function selectors.", "lk selectors [args...]", "lk selectors", "Use it for bytecode-level callable-surface analysis.", related=["lk sig", "lk calldata"]),
+    "selectors": _help_entry(
+        "Show deployed runtime selectors matched to readable function signatures from the selected contract ABI.",
+        "lk selectors [--compare|--raw] [bytecode]",
+        "lk selectors",
+        "Use it to see which ABI functions have matching selectors in the selected contract's deployed runtime bytecode.",
+        options=[
+            ("--compare", "Show the runtime-to-ABI comparison explicitly. This is the default when a target is selected.", "lk selectors --compare"),
+            ("--raw", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
+        ],
+        related=["lk functions", "lk sig", "lk calldata", "lk disasm"],
+    ),
     "calldata": _help_entry("Decode raw calldata and selectors.", "lk calldata <data>", "lk calldata 0xa9059cbb...", "Use it when a trace or transaction gives you raw hex.", related=["lk encode", "lk sig"]),
     "sig": _help_entry(
         "Calculate the 4-byte function selector from a canonical ABI function signature.",
