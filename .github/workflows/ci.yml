@@ -272,7 +272,7 @@ jobs:
           test -f .audit/evidence/system_bootstrap.json
           lk lab Fixture
           lk status | tee /tmp/lowkey-live-status.txt
-          grep -q "Deployment: LIVE" /tmp/lowkey-live-status.txt
+          grep -Eq "Deployment[[:space:]]+LIVE" /tmp/lowkey-live-status.txt
           lk abi | tee /tmp/lowkey-abi.txt
           test -f .audit/abi/Fixture.json
           grep -q '"abi": \[' .audit/abi/Fixture.json
