@@ -3017,7 +3017,7 @@ def run_encode(config,args):
     run_cast(["calldata"]+values,config)
 def run_signature(config, args):
     usage = "Usage: lk sig '<functionName>(<parameterTypes>)'"
-    example = "Example: lk sig 'createBounty(string,string[])'"
+    example = "Example: lk sig 'setValue(uint256)'"
 
     if not args:
         return fail(
@@ -3076,7 +3076,7 @@ def run_signature(config, args):
     if code != 0:
         print(
             "Expected a canonical ABI signature such as "
-            "'createBounty(string,string[])' (parameter TYPES, not values). "
+            "'setValue(uint256)' (parameter TYPES, not values). "
             "Quote the whole signature in Bash.",
             file=sys.stderr,
         )
@@ -18938,10 +18938,10 @@ COMMAND_HELP = {
     "sig": _help_entry(
         "Calculate the 4-byte function selector from a canonical ABI function signature.",
         "lk sig '<functionName>(<parameterTypes>)' | lk sig <functionName>",
-        "lk sig 'createBounty(string,string[])'",
+        "lk sig 'setValue(uint256)'",
         "Use it when inspecting selectors or understanding calldata. Supply parameter TYPES, not argument names or values. Single quotes protect parentheses and array brackets from Bash. A bare name is resolved only when the selected target ABI contains exactly one matching function.",
         forms=[
-            ("Full ABI signature", "Include the function name and every parameter type in ABI order.", "lk sig 'createBounty(string,string[])'"),
+            ("Full ABI signature", "Include the function name and every parameter type in ABI order.", "lk sig 'setValue(uint256)'"),
             ("Bare function name", "With a selected target, Lowkey can resolve a name when exactly one ABI function matches. Overloads are listed for you to choose from.", "lk sig createBounty"),
         ],
         options=[
