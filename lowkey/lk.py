@@ -20854,6 +20854,49 @@ COMMAND_HELP.update({
 def _apply_command_help_audit_catalog():
     """Give every help page a command-specific invocation form and document real modes."""
     details = {
+        "benchmark": {
+            "forms": [
+                ("lk benchmark", "Run the deterministic source-triage regression cases and show the pass/fail summary.", "lk benchmark"),
+                ("lk benchmark --json", "Emit all case results as machine-readable JSON.", "lk benchmark --json"),
+                ("lk benchmark --verbose", "Include detailed error text for failed benchmark cases.", "lk benchmark --verbose"),
+            ],
+            "notes": [
+                ("What it measures", "This is a regression test for Lowkey's source-triage detectors and language-boundary handling. It is not a real-world audit-accuracy score.", "lk self-test"),
+            ],
+        },
+        "questions": {
+            "forms": [
+                ("lk questions", "Show the compact auditor-question frontier for the current project.", "lk questions"),
+                ("lk questions --all", "Include every applicable question rather than the compact frontier view.", "lk questions --all"),
+            ],
+            "notes": [
+                ("Question controls", "Use lk q to inspect, answer, defer or mark a question not applicable. A settled question is not proof that a vulnerability is absent.", "lk q"),
+            ],
+        },
+        "walkthrough": {
+            "forms": [
+                ("lk walkthrough [options]", "Run the interactive protocol story and observe calls, actors, events, balances and storage changes.", "lk walkthrough --auto --steps 8"),
+                ("lk walkthrough --static", "Render the compiled project model without sending live transactions.", "lk walkthrough --static"),
+                ("lk walkthrough --auto --steps <N>", "Let Lowkey provision a local target/runtime where possible and limit the story to a chosen number of interactions.", "lk walkthrough --auto --steps 6"),
+                ("lk walkthrough test [options]", "Run randomized adversarial interactions against disposable local snapshots; see the nested test help for seed/case controls.", "lk walkthrough test --auto --cases 50"),
+                ("lk walkthrough seed [SEED]", "List prior test seeds or show the exact replay command for one seed.", "lk walkthrough seed 12345"),
+            ],
+        },
+        "verification-benchmark": {
+            "forms": [
+                ("lk verification-benchmark <manifest.json>", "Run the repeatable benchmark cases defined by a manifest.", "lk verification-benchmark .audit/verification/benchmark.json"),
+                ("lk vbench <manifest.json>", "Short alias for verification-benchmark; accepts the same options.", "lk vbench .audit/verification/benchmark.json --min-mutation-score 0.8"),
+            ],
+        },
+        "mutation-check": {
+            "forms": [
+                ("lk mutation-check <manifest.json>", "Apply configured code changes in isolated copies and check whether the baseline tests detect them.", "lk mutation-check .audit/verification/mutations.json"),
+                ("lk mcheck <manifest.json>", "Short alias for mutation-check; accepts the same options.", "lk mcheck .audit/verification/mutations.json --timeout 300"),
+            ],
+            "notes": [
+                ("Baseline requirement", "The unmodified test suite must pass before mutation results count. Invalid edits and timeouts are reported separately.", "lk test"),
+            ],
+        },
         "fuzz": {
             "summary": "Run fuzz tests or inspect/replay cases saved by previous fuzz and invariant runs.",
             "usage": "lk fuzz [Foundry test options] | replay | rerun | failures | corpus | watch",
