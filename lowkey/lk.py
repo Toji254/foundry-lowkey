@@ -4290,10 +4290,9 @@ def _human_return_unit(item,abi,output=None):
     is_amount_field=normalized_output in {
         field.replace("_","").lower() for field in amount_fields
     }
-    function_tokens=_function_tokens(name)
-    is_contribution_getter=bool(
-        {"contribution","contributions"} & function_tokens
-    )
+    # name is already lowercase here, so use a substring check rather
+    # than the camel-case token splitter (which needs original capitalization).
+    is_contribution_getter="contribution" in name
     payable_entries=[
         entry for entry in functions
         if str(entry.get("stateMutability") or "").lower()=="payable"
