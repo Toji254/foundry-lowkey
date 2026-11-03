@@ -18236,7 +18236,7 @@ COMMAND_HELP = {
         children={
             "auto": _help_entry("Run the audit in autonomous mode and allow safe local target provisioning.", "lk audit auto [options]", "lk audit auto --checks", "Use it when you want the audit session to bootstrap itself."),
             "run": _help_entry("Run the full evidence pipeline, optionally requesting an assertion-bearing PoC.", "lk audit run [--poc --poc-calldata 0x... --poc-impact-assertion '<condition>']", "lk audit run --poc --poc-calldata 0x... --poc-impact-assertion 'attackerAfter > attackerBefore'", "An incomplete PoC request leaves a review gap and returns nonzero; a generated candidate is still unvalidated.", options=[("--poc", "Request a PoC; also supply --poc-calldata and --poc-impact-assertion.", "lk audit run --poc --poc-calldata 0x... --poc-impact-assertion 'attackerAfter > attackerBefore'")]),
-            "pipeline": _help_entry("Compatibility spelling for the full audit evidence pipeline.", "lk audit pipeline [--poc]", "lk audit pipeline --poc", "Use it when an older workflow or script calls the pipeline by name; new usage should normally prefer 'lk audit run'.", related=["lk audit run"]),
+            "pipeline": _help_entry("Compatibility spelling for the full audit evidence pipeline.", "lk audit pipeline [--poc]", "lk audit pipeline --poc", "Use it when an older workflow or script calls the pipeline by name; new usage should normally prefer 'lk audit run'.", options=[("--poc", "Request a PoC candidate. Supply exact PoC calldata and a measurable impact assertion as required by the pipeline.", "lk audit pipeline --poc --poc-calldata 0x... --poc-impact-assertion 'attackerAfter > attackerBefore'")], related=["lk audit run"]),
 
         },
         options=[
@@ -18429,7 +18429,7 @@ COMMAND_HELP = {
             ("enum", "A Solidity enum is encoded as an unsigned integer (normally uint8). Pass its zero-based member index: the first enum member is 0, the second is 1, and so on.", "lk send setStatus 2"),
             ("string", "Pass text as one shell argument. Put quotes around text containing spaces so the shell keeps it together.", 'lk send setDescription "hello bounty hunters"'),
             ("bytes", "Pass dynamic bytes as 0x-prefixed hex with an even number of hex digits. The length can vary.", "lk send setData 0xdeadbeef"),
-            ("bytes1 ... bytes32", "Pass exactly the fixed number of bytes required by the parameter. Example: bytes4 needs 8 hex digits after 0x; bytes32 needs 64.", "lk send setMagic 0x12345678"),
+            ("bytes1 ... bytes32", "Pass exactly the fixed number of bytes required by the parameter. Example: bytes4 needs 8 hex digits after 0x; bytes32 needs exactly 64 hex characters after 0x.", "lk send setMagic 0x12345678"),
             ("T[] (dynamic array)", "Use square brackets with comma-separated elements. For string arrays, quote each string inside the array and quote the complete array for the shell.", """lk send createRecord "description of the record" '["defi","solidity"]' --eth 2 --preview"""),
             ("T[N] (fixed-size array)", "Use the same square-bracket form, with exactly N elements. The number of values must match the declared array length.", "lk send setMilestones '[10,20,30]'"),
             ("T[][] (nested arrays)", "Nest square brackets to match the array dimensions. Keep the complete expression as one quoted shell argument.", "lk send setGrid '[[1,2],[3,4]]'"),
@@ -19336,7 +19336,12 @@ COMMAND_HELP.update({
         "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
         "lk functions [query] [-v|--verbose] [-V|--visibility <value>] [-m|--mutability <value>] [-c|--class <value>] [-r|--risk]",
         "lk functions -v",
-        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory.",
+        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory. Add a query to narrow the list.",
+        forms=[
+            ("lk functions", "List the selected contract's ABI functions.", "lk functions"),
+            ("lk functions <query>", "Search the inventory by function name or signature text.", "lk functions withdraw"),
+            ("lk functions <query> [filters...]", "Combine a name search with the documented visibility, mutability, class, verbose, or risk filters.", "lk functions withdraw --visibility external --mutability nonpayable"),
+        ],
         options=[
             ("-v / --verbose", "Show expanded metadata: source visibility, modifiers, storage references, calls, ETH flow, selectors, and review flags.", "lk functions --verbose"),
             ("-V / --visibility <value>", "Filter by public, external, internal, private, unknown, or ambiguous visibility. Also accepts --visibility=VALUE.", "lk functions -V external"),
@@ -19350,7 +19355,12 @@ COMMAND_HELP.update({
         "Short spelling of the function inventory/search command. It accepts the same filters as lk functions.",
         "lk fn [query] [-v|--verbose] [-V|--visibility <value>] [-m|--mutability <value>] [-c|--class <value>] [-r|--risk]",
         "lk fn -v setValue",
-        "Use it for the same function inventory when you want the compact command.",
+        "Use it for the same function inventory when you want the compact command. Add a query to narrow the list.",
+        forms=[
+            ("lk fn", "List the selected contract's ABI functions.", "lk fn"),
+            ("lk fn <query>", "Search the inventory by function name or signature text.", "lk fn withdraw"),
+            ("lk fn <query> [filters...]", "Combine a name search with the same filters supported by lk functions.", "lk fn withdraw --visibility external --mutability nonpayable"),
+        ],
         options=[
             ("-v / --verbose", "Show expanded function metadata.", "lk fn --verbose"),
             ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous.", "lk fn -V external"),
@@ -19371,13 +19381,17 @@ COMMAND_HELP.update({
             ("lk read <target> <function> <args...>", "Read a function on another saved target or address without changing the current target.", "lk read MyToken balanceOf Alice"),
         ],
         argument_types=ABI_CALL_ARGUMENT_TYPES,
+        options=[
+            ("bytes32", "Pass a bytes32 value as 0x followed by exactly 64 hex characters, or use a saved reference such as @firstEscrow.", "lk read EscrowID @firstEscrow"),
+            ("@identifier", "Use @number, @last, or a named alias when the saved identifier type matches the ABI input.", "lk read EscrowID @last"),
+        ],
         related=["lk ask", "lk send", "lk changes"],
     ),
     "changes": _help_entry(
         "Run a function once in a temporary test and show exactly which contract storage values changed.",
         "lk changes <function> [values...] [options]",
         "lk changes setValue 10",
-        "Use the function name for normal use. Lowkey resolves the full signature; quote a full signature when selecting an exact overload.",
+        "Use the simple function name for normal use. For example, use `contribute` instead of `contribute()`. Lowkey resolves the full signature. Use a full quoted signature when selecting an exact overload.",
         forms=[
             ("lk changes <function> [values...]", "Run a function by name; Lowkey resolves the ABI signature.", "lk changes setValue 10"),
             ("lk changes '<function(types...)>' [values...]", "Select an exact overload. Quote parentheses for Bash.", "lk changes 'setValue(uint256)' 10"),
@@ -19404,7 +19418,7 @@ COMMAND_HELP.update({
         ],
         options=[
             ("--actor <name> / --as <name>", "Run the test only as this named local actor.", "lk probe setValue 10 --as Alice"),
-            ("--value <amount> / --eth <amount>", "Attach ETH to the test call as msg.value.", "lk probe contribute --eth 0.1"),
+            ("--value <amount> / --eth <amount>", "Attach ETH to the test call as msg.value. For example, --value 1ether means msg.value is 1 ETH.", "lk probe contribute --value 1ether"),
         ],
         argument_types=ABI_CALL_ARGUMENT_TYPES,
         related=["lk walkthrough test", "lk changes", "lk generate test"],
@@ -19416,7 +19430,7 @@ COMMAND_HELP.update({
         "Use it when you know the function but want Lowkey to resolve its signature and prompt for missing values. A target must be selected. Transactions use the current actor.",
         forms=[
             ("lk wizard <function> [values...]", "Supply known values; Lowkey prompts for any missing inputs.", "lk wizard setValue 10"),
-            ("lk wizard <function> [values...] call", "Force a read-only call.", "lk wizard getValue call"),
+            ("lk wizard <function> [values...] call", "Force a read-only call. The contract is not changed.", "lk wizard getValue call"),
             ("lk wizard <function> [values...] send", "Force a state-changing transaction.", "lk wizard setValue 10 send"),
             ("lk wizard <function> [values...] encode", "Build calldata only; do not send.", "lk wizard setValue 10 encode"),
         ],
@@ -19424,14 +19438,14 @@ COMMAND_HELP.update({
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard setValue 10 send"),
             ("encode", "Build calldata without sending.", "lk wizard setValue 10 encode"),
-            ("No ETH value option", "Wizard has no attach-ETH switch. Use lk send --value or lk probe --value for that.", "lk send contribute --value 1ether"),
+            ("No ETH value option", "Wizard does not have an ETH-value flag or attach-ETH switch. Use lk send --value or lk probe --value to attach ETH.", "lk send contribute --value 1ether"),
         ],
         argument_types=ABI_CALL_ARGUMENT_TYPES,
         related=["lk ask", "lk read", "lk send", "lk probe"],
     ),
     "state-diff": _help_entry(
         "Alias for lk changes: run a concrete function call in a temporary test and show the contract storage values it changed.",
-        "lk state-diff <function> [values...] [options]",
+        "lk state-diff '<function(parameter TYPES...)>' <VALUES...>",
         "lk state-diff setValue 10 --actor Alice",
         "Use it when the state-diff terminology makes more sense to you. It accepts the same function syntax and local-call options as lk changes.",
         forms=[
@@ -19480,8 +19494,8 @@ COMMAND_HELP.update({
             ("--raw", "Bypass ABI name resolution and show the raw Cast selector output.", "lk selectors --raw"),
         ],
         notes=[
-            ("ABI selectors", "Calculated from canonical function signatures in the loaded ABI. They describe the functions declared by the interface Lowkey has loaded.", "ABI: 0xf6a8419e  createEscrow(address)"),
-            ("Runtime selectors", "Four-byte selector patterns detected in deployed runtime bytecode. They are evidence found in code, not proof that a function is reachable.", "Runtime: 0xf6a8419e  createEscrow(address)"),
+            ("ABI selectors", "Calculated from canonical function signatures in the loaded ABI. They describe the functions declared by the interface Lowkey has loaded.", "ABI: 0xf6a8419e  createRecord(address)"),
+            ("Runtime selectors", "Four-byte selector patterns detected in deployed runtime bytecode. They are evidence found in code, not proof that a function is reachable.", "Runtime: 0xf6a8419e  createRecord(address)"),
             ("ABI-ONLY", "An ABI selector was not detected in the runtime scan. Possible causes include a stale ABI, proxy routing, or a dispatcher pattern the scanner does not recognise.", "ABI-ONLY: 0x12345678  legacyFunction()"),
             ("RUNTIME-ONLY", "A selector pattern was detected in bytecode but has no matching loaded ABI function. This may be a missing ABI entry, a different interface, or a false positive; inspect the disassembly.", "RUNTIME-ONLY: 0xdeadbeef"),
             ("Important limitation", "A matching selector is a consistency lead, not proof of reachability, successful execution, or security. Proxies and custom fallback dispatchers need separate inspection.", "lk disasm"),
@@ -19594,7 +19608,7 @@ COMMAND_HELP.update({
         "Generate executable test artifacts only when Lowkey can establish a concrete property; otherwise report missing requirements. No-argument mode retains recorded-call reproduction.",
         "lk test-gen <ContractName> [--language solidity|vyper] [--types unit,fuzz,invariant,integration,fork,poc,regression,formal] [options]",
         "lk test-gen Vault --types unit,fuzz,invariant --validate --strict",
-        "Write complete artifacts with executable assertions. --validate compiles and executes eligible generated tests; a pass is not proof of protocol-wide security.",
+        "Write complete artifacts with executable assertions. Solidity + Foundry and Vyper + Titanoboa are the supported native backends; use --language to choose one. --validate compiles and executes eligible generated tests; a pass is not proof of protocol-wide security.",
         forms=[
             ("lk test-gen <ContractName>", "Generate executable tests for properties Lowkey can establish.", "lk test-gen Vault --types unit,fuzz,invariant --validate"),
             ("No-argument legacy mode", "Replay the latest useful recorded call into a Forge regression-test candidate.", "lk test-gen"),
@@ -19618,6 +19632,7 @@ COMMAND_HELP.update({
             ("lk slots <slot>", "Read one storage word.", "lk slots 0"),
             ("lk slots <slot> [slot ...]", "Read selected slots side by side.", "lk slots 0 1 2 3"),
             ("lk slots <start>..<end>", "Read up to 256 consecutive slots.", "lk slots 0..15"),
+            ("lk slots <slot> --block <block>", "Read a storage word at a historical block number or supported tag.", "lk slots 3 --block latest"),
         ],
         options=[
             ("--block <block>", "Read historical storage at a block number or supported block tag.", "lk slots 3 --block latest"),
@@ -19638,6 +19653,9 @@ COMMAND_HELP.update({
             ("--workspace", "Show the larger workspace map without selecting a nested project.", "lk project --workspace"),
             ("--json", "Print machine-readable project data. Also accepts the spelling json.", "lk project --json"),
         ],
+        children={
+            "--workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace --h", "Use it before choosing a primary audit project in a monorepo."),
+        },
         related=["lk projects", "lk target", "lk system"],
     ),
     "system": _help_entry(
@@ -19645,6 +19663,10 @@ COMMAND_HELP.update({
         "lk system [json|--json]",
         "lk system",
         "Use it to inspect which local project, target, RPC, toolchain and Lowkey subsystems are currently available.",
+        forms=[
+            ("lk system", "Show the human-readable system model.", "lk system"),
+            ("lk system json / lk system --json", "Print the full system manifest as machine-readable JSON.", "lk system --json"),
+        ],
         options=[
             ("json / --json", "Print the full system manifest as JSON.", "lk system --json"),
         ],
@@ -19860,7 +19882,10 @@ def _help_entry_for_path(path):
     for token in path[1:]:
         raw_key = str(token or "").strip().lower()
         children = current.get("children", {})
-        key = HELP_ALIASES.get(raw_key, raw_key)
+        # Exact nested command names take precedence over top-level aliases.
+        # For example, verification investigate is a real child even though
+        # investigate is also a root-level alias for focus.
+        key = raw_key if raw_key in children else HELP_ALIASES.get(raw_key, raw_key)
         if key in children:
             current = children[key]
             consumed.append(key)
