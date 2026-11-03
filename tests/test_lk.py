@@ -3081,6 +3081,58 @@ contract Pool {
         self.assertIn("1000000000000000000 wei [~1.0000 ETH]", rendered)
         self.assertIn("raw mapping slot", rendered)
 
+    def test_selectors_defaults_to_readable_runtime_abi_mapping(self):
+        target = "0x" + "1" * 40
+        runtime = "0x60006000"
+        abi = [{
+            "type": "function",
+            "name": "createEscrow",
+            "inputs": [{"name": "recipient", "type": "address"}],
+            "outputs": [{"name": "", "type": "bytes32"}],
+            "stateMutability": "payable",
+        }]
+        output = io.StringIO()
+        with patch.object(lk, "run_cast", return_value=runtime) as run_cast, patch.object(
+            lk, "cast_output", return_value=(0, "0xf6a8419e\\n", "")
+        ) as cast_output, patch.object(
+            lk, "load_abi", return_value=abi
+        ), patch.object(
+            lk, "abi_selector", return_value="0xf6a8419e"
+        ):
+            with redirect_stdout(output):
+                result = lk.run_selectors(
+                    {"target": target, "target_contract": "Escrow"}, []
+                )
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["code", target], {"target": target, "target_contract": "Escrow"}, capture=True)
+        cast_output.assert_called_once_with(["cast", "selectors", runtime])
+        rendered = output.getvalue()
+        self.assertIn("FUNCTIONS IN DEPLOYED RUNTIME", rendered)
+        self.assertIn("0xf6a8419e", rendered)
+        self.assertIn("createEscrow(address)", rendered)
+        self.assertIn("[payable]", rendered)
+        self.assertIn("returns (bytes32)", rendered)
+
+    def test_selectors_raw_mode_keeps_cast_output(self):
+        target = "0x" + "1" * 40
+        runtime = "0x60006000"
+        cast_result = lk.CommandResult("raw selector output", 0)
+        with patch.object(
+            lk, "run_cast", side_effect=[runtime, cast_result]
+        ) as run_cast:
+            result = lk.run_selectors({"target": target}, ["--raw"])
+
+        self.assertIs(result, cast_result)
+        self.assertEqual(
+            run_cast.call_args_list[0].args,
+            (["code", target], {"target": target},),
+        )
+        self.assertEqual(
+            run_cast.call_args_list[1].args,
+            (["selectors", runtime], {"target": target}),
+        )
+
     def test_local_cast_commands_do_not_receive_rpc_url(self):
         config = {"rpc": "http://127.0.0.1:8545"}
         expected_commands = [
