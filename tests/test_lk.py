@@ -1395,6 +1395,52 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(persisted["last_tx"], tx_hash)
             self.assertNotIn("_ephemeral", persisted)
 
+    def test_cast_call_defaults_from_to_selected_actor_and_respects_override(self):
+        target = "0x" + "1" * 40
+        alice = "0x" + "2" * 40
+        explicit = "0x" + "3" * 40
+        item = {
+            "type": "function",
+            "name": "getContribution",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "uint256"}],
+            "stateMutability": "view",
+        }
+        config = {
+            "target": target,
+            "rpc": "http://127.0.0.1:8545",
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": alice}},
+        }
+
+        with patch.object(lk, "load_abi", return_value=[item]), patch.object(
+            lk, "effective_rpc", return_value=config["rpc"]
+        ), patch.object(lk, "actor_address", return_value=alice), patch.object(
+            lk, "cast_output", return_value=(0, "0x" + f"{17:064x}", "")
+        ) as cast_output:
+            result = lk.run_cast(["call", "getContribution()"], config, capture=True)
+
+        self.assertEqual(result.code, 0)
+        args = cast_output.call_args.args[0]
+        self.assertIn("--from", args)
+        self.assertEqual(args[args.index("--from") + 1], alice)
+
+        with patch.object(lk, "load_abi", return_value=[item]), patch.object(
+            lk, "effective_rpc", return_value=config["rpc"]
+        ), patch.object(lk, "actor_address", return_value=alice), patch.object(
+            lk, "cast_output", return_value=(0, "0x" + f"{17:064x}", "")
+        ) as cast_output:
+            result = lk.run_cast(
+                ["call", "getContribution()", "--from", explicit],
+                config,
+                capture=True,
+            )
+
+        self.assertEqual(result.code, 0)
+        args = cast_output.call_args.args[0]
+        self.assertEqual(args.count("--from"), 1)
+        self.assertEqual(args[args.index("--from") + 1], explicit)
+
     def test_storage_slot_range_expands_and_reads_each_slot(self):
         config = {"target": "0x" + "1" * 40}
         results = [
