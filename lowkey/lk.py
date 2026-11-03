@@ -15601,6 +15601,111 @@ def _select_chisel_contract(candidates, query=None, config=None, root=None):
     return candidates[selected - 1], None
 
 
+
+
+def _chisel_contract_abi(contract):
+    """Load the selected artifact ABI for an accurate, project-specific REPL guide."""
+    abi = contract.get("abi") if isinstance(contract, dict) else None
+    if isinstance(abi, list):
+        return abi
+    artifact_path = contract.get("artifact") if isinstance(contract, dict) else None
+    artifact = read_artifact(artifact_path) if artifact_path else None
+    abi = artifact.get("abi") if isinstance(artifact, dict) else None
+    return abi if isinstance(abi, list) else []
+
+
+def _chisel_abi_parameter_text(parameters, fallback_prefix="arg", include_indexed=False):
+    """Render ABI parameters as readable Solidity types and names."""
+    rendered = []
+    for index, parameter in enumerate(parameters or [], 1):
+        if not isinstance(parameter, dict):
+            continue
+        try:
+            parameter_type = canonical_type(parameter) or str(parameter.get("type") or "value")
+        except (TypeError, ValueError):
+            parameter_type = str(parameter.get("type") or "value")
+        name = str(parameter.get("name") or f"{fallback_prefix}{index}")
+        indexed = "indexed " if include_indexed and parameter.get("indexed") else ""
+        rendered.append(f"{parameter_type} {indexed}{name}")
+    return ", ".join(rendered)
+
+
+def _chisel_contract_interface(contract):
+    """Build an ABI-derived inventory; private/internal members are intentionally absent."""
+    functions = []
+    events = []
+    errors = []
+    for item in _chisel_contract_abi(contract):
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "function":
+            mutability = str(item.get("stateMutability") or "nonpayable").lower()
+            kind = "READ" if mutability in {"view", "pure"} else "PAYABLE" if mutability == "payable" else "WRITE"
+            name = str(item.get("name") or "<unnamed>")
+            inputs = _chisel_abi_parameter_text(item.get("inputs") or [])
+            outputs_list = item.get("outputs") or []
+            outputs = _chisel_abi_parameter_text(outputs_list, "return")
+            signature = f"{name}({inputs})"
+            if outputs:
+                signature += f" -> ({outputs})" if len(outputs_list) > 1 else f" -> {outputs}"
+            functions.append((kind, signature))
+        elif item_type == "event":
+            name = str(item.get("name") or "<unnamed>")
+            inputs = _chisel_abi_parameter_text(item.get("inputs") or [], include_indexed=True)
+            events.append(f"{name}({inputs})")
+        elif item_type == "error":
+            name = str(item.get("name") or "<unnamed>")
+            inputs = _chisel_abi_parameter_text(item.get("inputs") or [])
+            errors.append(f"{name}({inputs})")
+    functions.sort(key=lambda value: ({"READ": 0, "WRITE": 1, "PAYABLE": 2}.get(value[0], 9), value[1].casefold()))
+    events.sort(key=str.casefold)
+    errors.sort(key=str.casefold)
+    return {"functions": functions, "events": events, "errors": errors}
+
+
+def _chisel_print_contract_guide(contract, auto_instance=False):
+    """Print actionable Solidity REPL syntax next to the loaded contract."""
+    interface = _chisel_contract_interface(contract)
+    print(_function_terminal_style("CONTRACT INTERFACE", "heading"))
+    if interface["functions"]:
+        for kind, signature in interface["functions"]:
+            print(f"  [{kind:<7}] {signature}")
+    else:
+        print("  No public/external functions were found in this contract ABI.")
+    if interface["events"]:
+        print("")
+        print(_function_terminal_style("EVENTS", "heading"))
+        for signature in interface["events"]:
+            print(f"  {signature}")
+    if interface["errors"]:
+        print("")
+        print(_function_terminal_style("CUSTOM ERRORS", "heading"))
+        for signature in interface["errors"]:
+            print(f"  {signature}")
+
+    print("")
+    print(_function_terminal_style("HOW TO INTERACT", "heading"))
+    if auto_instance:
+        print("  Target instance: lowkeyTarget")
+        print("  READ:    enter a view/pure call as an expression WITHOUT a trailing semicolon.")
+        print("           Example pattern: lowkeyTarget.someGetter(arg)")
+        print("  WRITE:   enter an actual function call ending with a semicolon.")
+        print("           Example pattern: lowkeyTarget.someAction(arg);")
+        print("  PAYABLE: attach ETH with {value: amount ether}.")
+        print("           Example pattern: lowkeyTarget.deposit{value: 2 ether}();")
+        print("  SENDER:  use vm.prank(alice); immediately before the call in the same pasted input.")
+        print("  FUND:    use vm.deal(alice, 10 ether); to fund a test address in this temporary EVM.")
+        print("  RETURNS: for getters returning multiple values, destructure into typed variables,")
+        print("           then query the individual variables to inspect them.")
+    else:
+        print("  No lowkeyTarget instance was auto-created.")
+        print("  Follow the constructor/linking instructions above, create the instance, then call it.")
+    print("")
+    print("  ABI signatures are a reference, not commands. Do not type a signature alone.")
+    print("  Only public/external ABI entries appear; private state such as a private nonce has no getter.")
+    print("  Runtime: temporary Chisel EVM. State is isolated from Anvil and public networks.")
+
 def _write_chisel_prelude(contract, directory):
     """Create an ephemeral Chisel prelude that imports and, where safe, instantiates a target."""
     prelude_dir = Path(directory)
@@ -15750,6 +15855,7 @@ def run_chisel(args, config=None):
         chisel_args.extend(["--prelude", prelude["directory"]])
         chisel_args.extend(eval_args)
         print(prelude["next_step"])
+        _chisel_print_contract_guide(selected, prelude["auto_instance"])
         print("Type !help for Chisel commands; !source shows the generated REPL source.")
         return _launch_chisel(binary, chisel_args, cwd=root)
 
