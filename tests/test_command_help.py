@@ -414,6 +414,35 @@ class CommandHelpTests(unittest.TestCase):
             self.assertIn("Unauthorized()", output.getvalue())
             forge.assert_not_called()
 
+
+    def test_mode_rich_help_matches_the_actual_command_handlers(self):
+        cases = {
+            "probe": ("Default actor behavior", "--actor <name>", "lk changes"),
+            "fuzz": ("lk fuzz replay", "lk fuzz failures", "lk fuzz watch"),
+            "invariant": ("lk invariant new", "--match-test"),
+            "mutate": ("lk mutate", "mutation-testing"),
+            "lab": ("--generic", "--artifact", "--forge", "--ai-review"),
+            "walkthrough": ("lk walkthrough test", "lk walkthrough seed", "--static"),
+            "verification-benchmark": ("lk vbench", "--min-mutation-score"),
+            "mutation-check": ("lk mcheck", "--timeout"),
+            "questions": ("lk questions --all", "lk q note"),
+            "benchmark": ("--json", "--verbose", "not a real-world audit-accuracy score"),
+        }
+        for command, expected_items in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                for item in expected_items:
+                    self.assertIn(item, output)
+
+    def test_matrix_help_does_not_advertise_unimplemented_state_action(self):
+        code, output = self.capture_dispatch("matrix", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk matrix init", output)
+        self.assertIn("lk matrix add", output)
+        self.assertIn("lk matrix test", output)
+        self.assertNotIn("lk matrix state", output)
+
     def test_launcher_routed_commands_also_have_lowkey_help(self):
         import re
 
