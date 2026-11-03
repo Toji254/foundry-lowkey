@@ -4327,7 +4327,24 @@ def _human_native_eth_reason(item,abi):
     return "inferred from a payable contract interface"
 
 
-def _human_native_eth_annotation(item,output,abi,value):
+def _normalize_decoded_abi_scalar(value, type_name):
+    """Strip Cast's optional scientific-notation hint from decoded integers.
+
+    Recent Cast output may render a uint256 as:
+        1700000000000000 [1.7e15]
+
+    The bracketed part is a display hint, not part of the ABI value. Keep the
+    exact decimal integer for raw display and unit conversion.
+    """
+    rendered = str(value or "").strip()
+    lowered = str(type_name or "").strip().lower()
+    if not lowered.startswith(("uint", "int")):
+        return rendered
+    match = re.fullmatch(r"(-?\\d+)(?:\\s+\\[[^\\]\\r\\n]+\\])?", rendered)
+    return match.group(1) if match else rendered
+
+
+def _human_native_eth_annotation(item,output,abi,scalar_value):
     """Return a second-line ETH interpretation while preserving the raw integer."""
     if _human_return_unit(item,abi,output) != "native ETH":
         return None
@@ -4372,9 +4389,10 @@ def format_human_abi_return(item, decoded, config, abi=None):
         output=outputs[0]
         type_name=canonical_type(output)
         label=_human_field_label(output.get("name")) or _function_display_name(item)
-        enum_rendered = _humanize_enum_scalar(value, output)
+        scalar_value = _normalize_decoded_abi_scalar(value, type_name)
+        enum_rendered = _humanize_enum_scalar(scalar_value, output)
         rendered = enum_rendered or _humanize_abi_scalar(
-            value,
+            scalar_value,
             type_name,
             output.get("name"),
             config,
@@ -4387,7 +4405,7 @@ def format_human_abi_return(item, decoded, config, abi=None):
         # Keep the decoded integer visible as the primary evidence. An ETH
         # conversion is a second line because ABI types do not carry units.
         primary_value = (
-            value
+            scalar_value
             if is_numeric and not enum_rendered and (annotation or unit == "native ETH")
             else rendered
         )
@@ -4410,9 +4428,10 @@ def format_human_abi_return(item, decoded, config, abi=None):
     if len(decoded_parts)==len(outputs):
         rendered_parts=[]
         for label,value_part,type_name,output in zip(labels,decoded_parts,types,outputs):
-            enum_rendered = _humanize_enum_scalar(value_part, output)
+            scalar_value = _normalize_decoded_abi_scalar(value_part, type_name)
+            enum_rendered = _humanize_enum_scalar(scalar_value, output)
             rendered_value = enum_rendered or _humanize_abi_scalar(
-                value_part,
+                scalar_value,
                 type_name,
                 output.get("name"),
                 config,
@@ -4421,7 +4440,7 @@ def format_human_abi_return(item, decoded, config, abi=None):
             unit=_human_return_unit(item,abi,output) if is_numeric and not enum_rendered else None
             annotation=_human_numeric_annotation(item,output,abi) if is_numeric and not enum_rendered else None
             primary_value = (
-                value_part
+                scalar_value
                 if is_numeric and not enum_rendered and (annotation or unit == "native ETH")
                 else rendered_value
             )
@@ -4429,7 +4448,7 @@ def format_human_abi_return(item, decoded, config, abi=None):
             if annotation:
                 rendered_parts.append(f"    Meaning: {annotation}")
             elif unit == "native ETH":
-                human_line=_human_native_eth_annotation(item,output,abi,value_part)
+                human_line=_human_native_eth_annotation(item,output,abi,scalar_value)
                 if human_line:
                     rendered_parts.append(human_line)
             elif unit:
