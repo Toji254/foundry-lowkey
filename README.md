@@ -252,9 +252,12 @@ lk actor 1
 lk actor
 lk as attacker c balances 0x...
 lk as attacker s release --preview
+lk as Bob read getContribution
 ~~~
 
 `lk as <actor> <command>` is a temporary execution context: the command runs with that actor as its signer, then Lowkey restores the previously selected actor. Transaction metadata is still retained, but the temporary signer is not saved as the active actor.
+
+For `lk read` / `cast call`, Lowkey defaults `--from` to the active actor so view functions that inspect `msg.sender` return that actor's state. An explicit `--from <address>` overrides this. Sending a `view` or `pure` function is still possible for transaction-context experiments, but Lowkey warns that it mines a transaction and consumes gas; use `lk read` for an ordinary read.
 
 "lk actor <index>" selects an actor profile already assigned to that Anvil account. "lk actor <index> <name>" assigns or rebinds a user-facing profile. Anvil account 0 is reserved for Lowkey's internal lab-deployer, so user actors should use account 1 or higher.
 
