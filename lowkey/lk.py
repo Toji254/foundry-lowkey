@@ -15723,13 +15723,13 @@ def _write_chisel_prelude(contract, directory):
     import_path = json.dumps(contract["source"])
     import_file = prelude_dir / "00-lowkey-import.sol"
     import_file.write_text(
-        'import {Vm as LowkeyVm} from "forge-std/Vm.sol";\\n'
+        'import {Vm as LowkeyVm} from "forge-std/Vm.sol";\n'
         f'import {{{contract["name"]} as LowkeyLoadedTarget}} from {import_path};\\n',
         encoding="utf-8",
     )
 
     (prelude_dir / "05-lowkey-vm.sol").write_text(
-        'LowkeyVm internal constant lowkeyVm = LowkeyVm(address(uint160(uint256(keccak256("hevm cheat code")))));\\n',
+        'LowkeyVm internal constant lowkeyVm = LowkeyVm(address(uint160(uint256(keccak256("hevm cheat code")))));\n',
         encoding="utf-8",
     )
 
