@@ -6978,7 +6978,7 @@ contract Matrix_{identifier} is Test {{
 '''
         path=write_generated_test("matrix_"+identifier,template)
         return run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
-    return fail("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
+    return fail("Usage: lk matrix init | actor <name> <address> | add <name> <function> <actor> <expected> | list | test <name>")
 
 def run_note(note):
     if not note:
@@ -21066,6 +21066,9 @@ def _apply_command_help_audit_catalog():
                 ("--calldata <hex>", "Required exact transaction calldata for the candidate.", "lk poc --calldata 0x1234 --impact-assertion 'balanceAfter < balanceBefore'"),
                 ("--impact-assertion <condition>", "Required boolean expression defining measurable impact; Lowkey does not invent this for you.", "lk poc --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
                 ("--function <signature>", "Optional signature used to label/validate the requested call.", "lk poc --function withdraw() --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+                ("--finding <number>", "Attach the generated PoC request to one existing finding index.", "lk poc --finding 2 --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+                ("--name <name>", "Give the generated PoC/test artifact a readable name.", "lk poc --name unauthorized-withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+                ("--value <amount>", "Attach ETH value to the raw call; the default is zero.", "lk poc --value 1ether --calldata 0x1234 --impact-assertion 'balanceAfter > balanceBefore'"),
             ],
             "notes": [
                 ("Candidate is not a confirmed exploit", "A generated PoC candidate is not a confirmed exploit until its impact assertion is reproduced and validated against the threat model.", "lk test-gen"),
@@ -21311,13 +21314,18 @@ def _apply_command_help_audit_catalog():
             ],
         },
         "create": {
+            "summary": "Deploy a compiled contract using the installed Forge deployment command.",
+            "usage": "lk create <Contract> [Forge deployment options...]",
+            "example": "lk create src/Vault.sol:Vault",
+            "use": "Use it when you want to deploy a compiled contract directly through Forge. For Lowkey-managed local deployments and actor/target setup, prefer lk lab.",
             "forms": [
-                ("lk create <Contract>", "Deploy one compiled contract selected by its contract identifier.", "lk create src/Vault.sol:Vault"),
-                ("lk create <path> [Forge create options...]", "Use installed Forge template/scaffolding options when required.", "lk create src/Vault.sol --template templates/Vault.sol"),
+                ("lk create <Contract>", "Deploy one compiled contract selected by its project-qualified contract identifier.", "lk create src/Vault.sol:Vault"),
+                ("lk create <Contract> [Forge deployment options...]", "Pass additional deployment options supported by the installed Forge version.", "lk create src/Vault.sol:Vault --help"),
             ],
             "options": [
                 ("Forge deployment options", "Arguments after the contract identifier are passed to the installed Forge create/deployment command.", "forge create --help"),
             ],
+            "related": ["lk lab", "lk deployments", "lk target auto", "lk forge create"],
         },
         "batch": {
             "forms": [
@@ -21546,6 +21554,11 @@ def _apply_command_help_audit_catalog():
             ],
         },
         "matrix": {
+            "summary": "Record attacker/state scenarios and turn them into reproducible local tests.",
+            "usage": "lk matrix init | actor <name> <address> | add <name> <function> <actor> <expected...> | list | test <name>",
+            "example": "lk matrix add unauthorized-withdraw withdraw attacker 'reverts for non-owner'",
+            "use": "Use it to write down an expected outcome before generating a local test, then keep the actor, target and evidence references together.",
+            "related": ["lk probe", "lk generate test", "lk snapshot", "lk findings"],
             "forms": [
                 ("lk matrix init", "Initialize the attacker-state matrix files and directories.", "lk matrix init"),
                 ("lk matrix actor <name> <address>", "Save a named actor address for scenario documentation.", "lk matrix actor attacker 0x1111111111111111111111111111111111111111"),
@@ -21601,6 +21614,27 @@ def _apply_command_help_audit_catalog():
         if isinstance(entry, dict):
             for field, value in fields.items():
                 entry[field] = value
+
+    # The runtime supports init/actor/add/list/test. A historical help child
+    # called "state" was never implemented, so do not advertise it as a command.
+    matrix_entry = COMMAND_HELP.get("matrix", {})
+    if isinstance(matrix_entry, dict):
+        matrix_entry.setdefault("children", {}).pop("state", None)
+
+    # Pipeline PoC flags belong to the nested evidence-pipeline commands.
+    audit_entry = COMMAND_HELP.get("audit", {})
+    audit_children = audit_entry.get("children", {}) if isinstance(audit_entry, dict) else {}
+    pipeline_poc_options = [
+        ("--poc / --generate-poc", "Request an assertion-bearing PoC candidate; exact calldata and a measurable impact assertion are also required.", "lk audit run --poc --poc-calldata 0x1234 --poc-impact-assertion 'attackerAfter > attackerBefore'"),
+        ("--poc-function <signature>", "Label/validate the intended function when its signature is known.", "lk audit run --poc --poc-function withdraw() --poc-calldata 0x1234 --poc-impact-assertion 'attackerAfter > attackerBefore'"),
+        ("--poc-calldata <hex>", "Supply the exact transaction calldata to reproduce.", "lk audit run --poc --poc-calldata 0x1234 --poc-impact-assertion 'attackerAfter > attackerBefore'"),
+        ("--poc-value <amount>", "Attach the ETH value used by the candidate call; defaults to zero.", "lk audit run --poc --poc-value 1ether --poc-calldata 0x1234 --poc-impact-assertion 'attackerAfter > attackerBefore'"),
+        ("--poc-impact-assertion <condition>", "State the boolean condition that measures the security impact. Lowkey does not infer the assertion.", "lk audit run --poc --poc-calldata 0x1234 --poc-impact-assertion 'attackerAfter > attackerBefore'"),
+    ]
+    for pipeline_name in ("run", "pipeline"):
+        child = audit_children.get(pipeline_name)
+        if isinstance(child, dict):
+            child["options"] = list(pipeline_poc_options)
 
     # Every root and nested help page gets an explicit invocation example.
     # Commands with no extra options say so honestly in OPTIONS / MODES.
