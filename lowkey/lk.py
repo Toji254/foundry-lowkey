@@ -21716,6 +21716,7 @@ def _apply_command_help_audit_catalog():
         "ids": {
             "options": [
                 ("--all", "Include all saved identifiers instead of the default useful/recent view.", "lk ids --all"),
+                ("No saved IDs yet", "For an older transaction, replay its trace so Lowkey can inspect the ABI return data or decoded event again. Only identifiable contract IDs are saved; a transaction hash is not itself a contract ID.", "lk trace 0x871f..."),
             ],
         },
     }
@@ -21801,11 +21802,11 @@ for _help_command, (_help_binary, _help_args) in _NATIVE_HELP_SOURCES.items():
         }
 
 _NATIVE_HELP_REDIRECT_RE = re.compile(
-    r"\b(?:forge|cast|anvil|chisel|slither)(?:\s+[A-Za-z0-9_-]+)?\s+--help\b",
+    r"\b(?:forge|cast|anvil|chisel|slither)(?:\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\s+--help\b",
     re.IGNORECASE,
 )
 _NATIVE_HELP_REDIRECT_SENTENCE_RE = re.compile(
-    r"[^.\n]*\b(?:forge|cast|anvil|chisel|slither)(?:\s+[A-Za-z0-9_-]+)?\s+--help[^.\n]*\.?",
+    r"[^.\n]*\b(?:forge|cast|anvil|chisel|slither)(?:\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\s+--help[^.\n]*\.?",
     re.IGNORECASE,
 )
 _LOWKEY_NATIVE_HELP_REDIRECT_RE = re.compile(
