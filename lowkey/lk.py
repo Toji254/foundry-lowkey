@@ -20857,28 +20857,28 @@ def _apply_command_help_audit_catalog():
         "inspect": {
             "summary": "Inspect compiled contract artifacts through Lowkey's own contract-aware view.",
             "usage": "lk inspect [Contract] [section] [options]",
-            "example": "lk inspect Escrow --functions --events --storage",
+            "example": "lk inspect Vault --functions --events --storage",
             "use": "Use it after building a project when you want to understand a contract's ABI, callable surface, events, custom errors, storage metadata, selectors, and bytecode without learning compiler artifact field names.",
             "forms": [
                 ("lk inspect", "List compiled contracts discovered in the current project, their source paths and ABI counts.", "lk inspect"),
-                ("lk inspect <Contract>", "Show a readable overview of one compiled contract.", "lk inspect Escrow"),
-                ("lk inspect <Contract> --functions --events --errors", "Show callable functions, emitted events and custom errors.", "lk inspect Escrow --functions --events --errors"),
-                ("lk inspect <Contract> --storage --selectors --bytecode", "Show storage metadata, ABI selectors and bytecode sizes when those values are present in the artifact.", "lk inspect Escrow --storage --selectors --bytecode"),
-                ("lk inspect <Contract> <section>", "Select one section by name; the same section can be selected with a flag.", "lk inspect Escrow storage-layout"),
-                ("lk inspect <Contract> --all --json", "Return all supported inspection sections as structured JSON.", "lk inspect Escrow --all --json"),
+                ("lk inspect <Contract>", "Show a readable overview of one compiled contract.", "lk inspect Vault"),
+                ("lk inspect <Contract> --functions --events --errors", "Show callable functions, emitted events and custom errors.", "lk inspect Vault --functions --events --errors"),
+                ("lk inspect <Contract> --storage --selectors --bytecode", "Show storage metadata, ABI selectors and bytecode sizes when those values are present in the artifact.", "lk inspect Vault --storage --selectors --bytecode"),
+                ("lk inspect <Contract> <section>", "Select one section by name; the same section can be selected with a flag.", "lk inspect Vault storage-layout"),
+                ("lk inspect <Contract> --all --json", "Return all supported inspection sections as structured JSON.", "lk inspect Vault --all --json"),
             ],
             "options": [
-                ("--abi", "Print the complete compiled ABI, including functions, events, errors, constructor and special entrypoints.", "lk inspect Escrow --abi"),
-                ("--functions", "List functions with mutability and input/output types.", "lk inspect Escrow --functions"),
-                ("--events", "List event signatures and indexed parameters.", "lk inspect Escrow --events"),
-                ("--errors", "List custom-error signatures and parameters.", "lk inspect Escrow --errors"),
-                ("--storage / --layout", "Show storage layout included in the artifact. If absent, use lk layout for compiler-derived layout.", "lk inspect Escrow --storage"),
-                ("--selectors", "Calculate function, custom-error and event selectors from the ABI.", "lk inspect Escrow --selectors"),
-                ("--bytecode", "Show creation/runtime bytecode availability and byte sizes without dumping huge hex blobs.", "lk inspect Escrow --bytecode"),
-                ("--metadata", "Show compiler version and available optimizer/EVM metadata.", "lk inspect Escrow --metadata"),
-                ("--all", "Show every supported section.", "lk inspect Escrow --all"),
-                ("--json", "Emit the selected inspection data as JSON.", "lk inspect Escrow --all --json"),
-                ("--no-build", "Use artifacts already on disk; do not trigger a Foundry build when the contract is missing.", "lk inspect Escrow --no-build"),
+                ("--abi", "Print the complete compiled ABI, including functions, events, errors, constructor and special entrypoints.", "lk inspect Vault --abi"),
+                ("--functions", "List functions with mutability and input/output types.", "lk inspect Vault --functions"),
+                ("--events", "List event signatures and indexed parameters.", "lk inspect Vault --events"),
+                ("--errors", "List custom-error signatures and parameters.", "lk inspect Vault --errors"),
+                ("--storage / --layout", "Show storage layout included in the artifact. If absent, use lk layout for compiler-derived layout.", "lk inspect Vault --storage"),
+                ("--selectors", "Calculate function, custom-error and event selectors from the ABI.", "lk inspect Vault --selectors"),
+                ("--bytecode", "Show creation/runtime bytecode availability and byte sizes without dumping huge hex blobs.", "lk inspect Vault --bytecode"),
+                ("--metadata", "Show compiler version and available optimizer/EVM metadata.", "lk inspect Vault --metadata"),
+                ("--all", "Show every supported section.", "lk inspect Vault --all"),
+                ("--json", "Emit the selected inspection data as JSON.", "lk inspect Vault --all --json"),
+                ("--no-build", "Use artifacts already on disk; do not trigger a Foundry build when the contract is missing.", "lk inspect Vault --no-build"),
             ],
             "related": ["lk build", "lk layout", "lk functions", "lk abi", "lk forge inspect"],
         },
@@ -20944,18 +20944,18 @@ def _apply_command_help_audit_catalog():
         },
         "ask": {
             "forms": [
-                ("lk ask <function>", "Resolve one function and show its ABI parameter names and Solidity types.", "lk ask createEscrow"),
+                ("lk ask <function>", "Resolve one function and show its ABI parameter names and Solidity types.", "lk ask createRecord"),
                 ("lk ask '<signature>'", "Select an overloaded function using its full canonical signature.", "lk ask 'transfer(address,uint256)'"),
             ],
         },
         "state-diff": {
             "forms": [
                 ("lk state-diff '<signature>' <values...>", "Run the storage-change reproduction workflow for one concrete function call.", "lk state-diff 'setValue(uint256)' 10"),
-                ("lk state-diff <function> <values...> --actor <name>", "Run the test call as one saved local actor.", "lk state-diff release @firstEscrow --actor Bob"),
+                ("lk state-diff <function> <values...> --actor <name>", "Run the test call as one saved local actor.", "lk state-diff release @firstVault --actor Bob"),
                 ("lk state-diff <function> <values...> --repeat <N>", "Repeat the call inside the generated test transaction to observe accumulated storage changes.", "lk state-diff contribute --eth 0.1 --repeat 3"),
             ],
             "options": [
-                ("--actor <name> / --as <name>", "Select the actor used inside the generated state-diff test.", "lk state-diff release @firstEscrow --as Bob"),
+                ("--actor <name> / --as <name>", "Select the actor used inside the generated state-diff test.", "lk state-diff release @firstVault --as Bob"),
                 ("--value <amount>", "Attach ETH to the call; Solidity receives it as msg.value.", "lk state-diff contribute --value 1ether"),
                 ("--eth <amount>", "Friendly ETH spelling; a unitless amount is interpreted as ETH.", "lk state-diff contribute --eth 0.01"),
                 ("--keep", "Keep the generated test file after the run so you can inspect or adapt it.", "lk state-diff withdraw --keep"),
@@ -20978,10 +20978,10 @@ def _apply_command_help_audit_catalog():
         },
         "layout": {
             "forms": [
-                ("lk layout <Contract>", "Show compiler-derived storage slots, offsets, variable names and types.", "lk layout Escrow"),
+                ("lk layout <Contract>", "Show compiler-derived storage slots, offsets, variable names and types.", "lk layout Vault"),
             ],
             "notes": [
-                ("Storage is not ABI order", "Storage slots describe persistent state layout; they are not function argument positions or ABI selectors.", "lk inspect Escrow --storage"),
+                ("Storage is not ABI order", "Storage slots describe persistent state layout; they are not function argument positions or ABI selectors.", "lk inspect Vault --storage"),
             ],
         },
         "namespace": {
@@ -21159,12 +21159,12 @@ def _apply_command_help_audit_catalog():
         "chisel": {
             "forms": [
                 ("lk chisel", "Build the active Foundry project, load a detected contract interface and open the interactive Solidity REPL.", "lk chisel"),
-                ("lk chisel --contract <Contract>", "Select the project contract whose interface Lowkey should load.", "lk chisel --contract Escrow"),
+                ("lk chisel --contract <Contract>", "Select the project contract whose interface Lowkey should load.", "lk chisel --contract Vault"),
                 ("lk chisel --no-build", "Reuse existing artifacts and skip the automatic project build.", "lk chisel --no-build"),
-                ("lk chisel eval <expression>", "Evaluate an expression with the selected contract context when supported by Chisel.", "lk chisel --contract Escrow eval 'Escrow.owner()'"),
+                ("lk chisel eval <expression>", "Evaluate an expression with the selected contract context when supported by Chisel.", "lk chisel --contract Vault eval 'Vault.owner()'"),
             ],
             "options": [
-                ("--contract <Contract|source-path>", "Choose a contract or source path for Lowkey's generated interface and helper functions.", "lk chisel --contract src/Escrow.sol:Escrow"),
+                ("--contract <Contract|source-path>", "Choose a contract or source path for Lowkey's generated interface and helper functions.", "lk chisel --contract src/Vault.sol:Vault"),
                 ("--no-build", "Skip the automatic Foundry build and use artifacts already on disk.", "lk chisel --no-build"),
                 ("Chisel-native options", "Other arguments pass through to Chisel. Lowkey's loader cannot be combined with Chisel's own --prelude.", "chisel --help"),
             ],
@@ -21239,7 +21239,7 @@ def _apply_command_help_audit_catalog():
         },
         "forge": {
             "forms": [
-                ("lk forge <Forge subcommand> [args...]", "Use the explicit raw Forge bridge when Lowkey does not provide a dedicated workflow.", "lk forge inspect Escrow abi"),
+                ("lk forge <Forge subcommand> [args...]", "Use the explicit raw Forge bridge when Lowkey does not provide a dedicated workflow.", "lk forge inspect Vault abi"),
                 ("lk forge <Forge subcommand> --help", "Use the installed Forge version's native help for a command that Lowkey does not wrap.", "forge inspect --help"),
             ],
             "options": [
@@ -21312,11 +21312,11 @@ def _apply_command_help_audit_catalog():
         },
         "create": {
             "forms": [
-                ("lk create <path>", "Create a new Foundry contract, script, test or other supported component at the requested path.", "lk create src/Vault.sol"),
+                ("lk create <Contract>", "Deploy one compiled contract selected by its contract identifier.", "lk create src/Vault.sol:Vault"),
                 ("lk create <path> [Forge create options...]", "Use installed Forge template/scaffolding options when required.", "lk create src/Vault.sol --template templates/Vault.sol"),
             ],
             "options": [
-                ("Forge create options", "Additional template/scaffolding options are passed to the installed Forge version.", "forge create --help"),
+                ("Forge deployment options", "Arguments after the contract identifier are passed to the installed Forge create/deployment command.", "forge create --help"),
             ],
         },
         "batch": {
