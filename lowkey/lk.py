@@ -19432,7 +19432,7 @@ COMMAND_HELP.update({
             ("lk wizard <function> [values...]", "Supply known values; Lowkey prompts for any missing inputs.", "lk wizard setValue 10"),
             ("lk wizard <function> [values...] call", "Force a read-only call. The contract is not changed.", "lk wizard getValue call"),
             ("lk wizard <function> [values...] send", "Force a state-changing transaction.", "lk wizard setValue 10 send"),
-            ("lk wizard <function> [values...] encode", "Build calldata only; do not send.", "lk wizard setValue 10 encode"),
+            ("lk wizard <function> [values...] encode", "Only build the call data. Nothing is sent; Lowkey builds calldata without broadcasting a transaction.", "lk wizard setValue 10 encode"),
         ],
         options=[
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
