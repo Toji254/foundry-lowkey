@@ -207,7 +207,7 @@ class ChiselWorkflowTests(unittest.TestCase):
         by_name = {item["name"]: item for item in generated["helpers"]}
 
         self.assertEqual(set(by_name), {"lowkeySend_createEscrow", "lowkeySend_acceptEscrow"})
-        self.assertIn("vm.prank(lowkeySender);", by_name["lowkeySend_createEscrow"]["source"])
+        self.assertIn("lowkeyVm.prank(lowkeySender);", by_name["lowkeySend_createEscrow"]["source"])
         self.assertIn("{value: ethValue}(recipient)", by_name["lowkeySend_createEscrow"]["source"])
         self.assertIn("returns (bytes32 lowkeyReturn1)", by_name["lowkeySend_createEscrow"]["source"])
         self.assertIn("return lowkeyTarget.createEscrow", by_name["lowkeySend_createEscrow"]["source"])
@@ -262,7 +262,7 @@ class ChiselWorkflowTests(unittest.TestCase):
         self.assertTrue(result["auto_instance"])
         self.assertEqual(len(result["call_helpers"]["helpers"]), 1)
         self.assertIn("function lowkeySend_deposit(address lowkeySender, uint256 ethValue)", helper_source)
-        self.assertIn("vm.prank(lowkeySender);", helper_source)
+        self.assertIn("lowkeyVm.prank(lowkeySender);", helper_source)
         self.assertIn("lowkeyTarget.deposit{value: ethValue}();", helper_source)
 
     def test_prelude_imports_contract_and_auto_instantiates_safe_constructor(self):
@@ -277,8 +277,11 @@ class ChiselWorkflowTests(unittest.TestCase):
             prelude = lk._write_chisel_prelude(contract, tmp)
             import_source = (pathlib.Path(tmp) / "00-lowkey-import.sol").read_text(encoding="utf-8")
             instance_source = (pathlib.Path(tmp) / "10-lowkey-instance.sol").read_text(encoding="utf-8")
+            vm_source = (pathlib.Path(tmp) / "05-lowkey-vm.sol").read_text(encoding="utf-8")
 
         self.assertTrue(prelude["auto_instance"])
+        self.assertIn('import {Vm as LowkeyVm} from "forge-std/Vm.sol";', import_source)
+        self.assertIn("LowkeyVm internal constant lowkeyVm", vm_source)
         self.assertIn('import {Vault as LowkeyLoadedTarget} from "src/Vault.sol";', import_source)
         self.assertIn("new LowkeyLoadedTarget()", instance_source)
         self.assertIn("lowkeyTarget", prelude["next_step"])
