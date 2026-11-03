@@ -19427,7 +19427,7 @@ COMMAND_HELP.update({
         "Interact with one contract function without having to build the full command yourself.",
         "lk wizard <function> [values...] [call|send|encode]",
         "lk wizard setValue 10",
-        "Use it when you know the function but want Lowkey to resolve its signature and prompt for missing values. A target must be selected. Transactions use the current actor.",
+        "Use it when you know the function but want Lowkey to resolve its signature and prompt for missing values. A target must already be selected. Transactions use the current actor.",
         forms=[
             ("lk wizard <function> [values...]", "Supply known values; Lowkey prompts for any missing inputs.", "lk wizard setValue 10"),
             ("lk wizard <function> [values...] call", "Force a read-only call. The contract is not changed.", "lk wizard getValue call"),
