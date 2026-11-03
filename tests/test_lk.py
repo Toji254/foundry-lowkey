@@ -4875,6 +4875,77 @@ contract Pool {
         with patch.object(lk, "cast_output", return_value=(0, "0x12345678\n", "")):
             self.assertEqual(lk.abi_selector("foo(uint256)"), "0x12345678")
 
+    def test_run_signature_resolves_unique_name_from_selected_target_abi(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "createBounty",
+            "inputs": [
+                {"name": "title", "type": "string"},
+                {"name": "tags", "type": "string[]"},
+            ],
+        }]
+        with patch.object(lk, "load_abi", return_value=abi), patch.object(
+            lk, "cast_output", return_value=(0, "0xf9fa0cc9", "")
+        ) as cast:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_signature({"target": target}, ["createBounty"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            cast.call_args.args[0],
+            ["cast", "sig", "createBounty(string,string[])"],
+        )
+        self.assertIn("Resolved function: createBounty(string,string[])", output.getvalue())
+        self.assertIn("0xf9fa0cc9", output.getvalue())
+
+    def test_run_signature_lists_overloads_for_a_bare_name(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {"type": "function", "name": "setValue", "inputs": [{"type": "uint256"}]},
+            {"type": "function", "name": "setValue", "inputs": [{"type": "address"}]},
+        ]
+        output = io.StringIO()
+        with patch.object(lk, "load_abi", return_value=abi), redirect_stdout(output), redirect_stderr(output):
+            result = lk.run_signature({"target": target}, ["setValue"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("overloaded", output.getvalue())
+        self.assertIn("lk sig 'setValue(uint256)'", output.getvalue())
+        self.assertIn("lk sig 'setValue(address)'", output.getvalue())
+
+    def test_run_signature_explains_missing_parameter_types(self):
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            result = lk.run_signature({}, ["createBounty"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("complete ABI signature", output.getvalue())
+        self.assertIn("parameter types", output.getvalue().lower())
+        self.assertIn("lk sig 'createBounty(string,string[])'", output.getvalue())
+        self.assertIn("Quote the complete signature", output.getvalue())
+
+    def test_run_signature_rejects_extra_selector_or_argument_values(self):
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            result = lk.run_signature({}, ["createBounty", "0x" + "a" * 64])
+
+        self.assertEqual(result, 2)
+        self.assertIn("accepts one function signature only", output.getvalue())
+        self.assertIn("Do not append argument values", output.getvalue())
+
+    def test_run_signature_passes_complete_signature_to_cast(self):
+        signature = "transfer(address,uint256)"
+        with patch.object(lk, "cast_output", return_value=(0, "0xa9059cbb", "")) as cast:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_signature({}, [signature])
+
+        self.assertEqual(result, 0)
+        cast.assert_called_once_with(["cast", "sig", signature])
+        self.assertIn("0xa9059cbb", output.getvalue())
+
     def test_encode_target_call_rejects_placeholder(self):
         config={"target":"0x"+"1"*40}
         with patch.object(lk,"load_abi",return_value=[
