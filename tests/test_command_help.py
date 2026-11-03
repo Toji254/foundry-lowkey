@@ -190,7 +190,7 @@ class CommandHelpTests(unittest.TestCase):
         output = io.StringIO()
         fake = SimpleNamespace(
             returncode=0,
-            stdout="Usage: forge build [OPTIONS]\\nOptions:\\n  --skip <SKIP>  Skip build steps",
+            stdout="Usage: forge build [OPTIONS]\nOptions:\n  --skip <SKIP>  Skip build steps",
         )
         with patch.object(lk.shutil, "which", return_value="/usr/bin/forge"):
             with patch.object(lk.subprocess, "run", return_value=fake) as run:
@@ -222,11 +222,11 @@ class CommandHelpTests(unittest.TestCase):
         import re
 
         forbidden = re.compile(
-            r"\\b(?:forge|cast|anvil|chisel|slither)(?:\\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\\s+--help\\b",
+            r"\b(?:forge|cast|anvil|chisel|slither)(?:\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\s+--help\b",
             re.IGNORECASE,
         )
         lowkey_passthrough = re.compile(
-            r"\\blk\\s+(?:forge|raw)\\s+<[^>]+>\\s+--help\\b",
+            r"\blk\s+(?:forge|raw)\s+<[^>]+>\s+--help\b",
             re.IGNORECASE,
         )
 
