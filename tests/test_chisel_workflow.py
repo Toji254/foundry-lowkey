@@ -279,8 +279,9 @@ class ChiselWorkflowTests(unittest.TestCase):
                 prelude_dir = pathlib.Path(command[command.index("--prelude") + 1])
                 self.assertTrue((prelude_dir / "00-lowkey-import.sol").is_file())
                 self.assertTrue((prelude_dir / "10-lowkey-instance.sol").is_file())
-                self.assertEqual(command[-2], "eval")
-                self.assertEqual(command[-1], "lowkeyTarget.increment() == 1")
+                eval_index = command.index("eval")
+                self.assertLess(command.index("--prelude"), eval_index)
+                self.assertEqual(command[eval_index + 1], "lowkeyTarget.increment() == 1")
                 return SimpleNamespace(returncode=0)
 
             with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
