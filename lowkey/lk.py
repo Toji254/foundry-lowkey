@@ -10,6 +10,7 @@ import textwrap
 import io
 import shutil
 import socket
+import tempfile
 from urllib import request as urllib_request
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime
@@ -15252,8 +15253,360 @@ def run_selector_compare(config,args):
     print("Review note: bytecode selector matches are evidence to investigate, not proof that every path is reachable.")
     return 0
 
-def run_chisel(args):
-    return run_tool("chisel",args)
+def _parse_chisel_lowkey_options(args):
+    """Remove Lowkey-only options while preserving native Chisel arguments."""
+    contract_query = None
+    no_build = False
+    native_args = []
+    index = 0
+    values = list(args or [])
+    while index < len(values):
+        token = str(values[index])
+        if token == "--contract":
+            if index + 1 >= len(values) or str(values[index + 1]).startswith("--"):
+                raise ValueError("--contract needs a contract name or source path")
+            contract_query = str(values[index + 1]).strip()
+            if not contract_query:
+                raise ValueError("--contract needs a non-empty contract name or source path")
+            index += 2
+            continue
+        if token.startswith("--contract="):
+            contract_query = token.split("=", 1)[1].strip()
+            if not contract_query:
+                raise ValueError("--contract needs a non-empty contract name or source path")
+            index += 1
+            continue
+        if token == "--no-build":
+            no_build = True
+            index += 1
+            continue
+        native_args.append(token)
+        index += 1
+    return contract_query, no_build, native_args
+
+
+def _chisel_root_from_args(native_args):
+    """Resolve an explicit Chisel --root or the nearest active Foundry project."""
+    root_value = None
+    for index, token in enumerate(native_args):
+        if token == "--root" and index + 1 < len(native_args):
+            root_value = native_args[index + 1]
+        elif token.startswith("--root="):
+            root_value = token.split("=", 1)[1]
+    if root_value:
+        candidate = Path(root_value).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        root = candidate.resolve()
+    else:
+        try:
+            root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            root = Path.cwd().resolve()
+    return root if (root / "foundry.toml").is_file() else None
+
+
+def _chisel_build_options(native_args):
+    """Forward project/compiler selection options that also apply to forge build."""
+    result = []
+    index = 0
+    values = list(native_args or [])
+    while index < len(values):
+        token = str(values[index])
+        if token in {"--profile", "--use"} and index + 1 < len(values):
+            result.extend([token, values[index + 1]])
+            index += 2
+            continue
+        if token.startswith("--profile=") or token.startswith("--use="):
+            result.append(token)
+        elif token == "--offline":
+            result.append(token)
+        index += 1
+    return result
+
+
+def _chisel_project_contracts(root):
+    """Discover deployable first-party Solidity contracts from this Foundry build."""
+    root_path = Path(root).expanduser().resolve()
+    candidates = []
+    seen = set()
+    for artifact_path in local_artifact_paths(root_path):
+        artifact = read_artifact(artifact_path)
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("abi"), list):
+            continue
+        try:
+            if not artifact_is_project_application(root_path, artifact_path, artifact):
+                continue
+        except (OSError, TypeError, ValueError):
+            continue
+
+        contract_name = artifact_contract_name(artifact_path, artifact)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(contract_name or "")):
+            continue
+        source_name = artifact_source_name(artifact, artifact_path, root_path)
+        if not source_name:
+            continue
+        source_path = Path(source_name).expanduser()
+        if not source_path.is_absolute():
+            source_path = root_path / source_path
+        try:
+            source_path = source_path.resolve()
+            source_relative = source_path.relative_to(root_path).as_posix()
+        except (OSError, ValueError):
+            continue
+        if source_path.suffix.lower() != ".sol" or not source_path.is_file():
+            continue
+
+        key = (str(contract_name).casefold(), source_relative.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        constructors = [
+            item for item in artifact["abi"]
+            if isinstance(item, dict) and item.get("type") == "constructor"
+        ]
+        constructor = constructors[0] if constructors else {}
+        inputs = constructor.get("inputs", []) if isinstance(constructor, dict) else []
+        bytecode = artifact.get("bytecode", {})
+        link_references = bytecode.get("linkReferences", {}) if isinstance(bytecode, dict) else {}
+        has_linked_libraries = bool(
+            isinstance(link_references, dict)
+            and any(bool(value) for value in link_references.values())
+        )
+        candidates.append({
+            "name": str(contract_name),
+            "source": source_relative,
+            "source_path": str(source_path),
+            "artifact": str(Path(artifact_path).resolve()),
+            "constructor_inputs": inputs if isinstance(inputs, list) else [],
+            "constructor_payable": str(constructor.get("stateMutability") or "").lower() == "payable",
+            "has_linked_libraries": has_linked_libraries,
+        })
+
+    return sorted(candidates, key=lambda item: (item["name"].casefold(), item["source"].casefold()))
+
+
+def _select_chisel_contract(candidates, query=None, config=None, root=None):
+    """Select an explicit, remembered, or unambiguous project contract."""
+    candidates = list(candidates or [])
+    if not candidates:
+        return None, "No deployable first-party Solidity contracts were found in the build artifacts."
+
+    if query:
+        normalized = str(query).replace("\\", "/").strip().lstrip("./")
+        matches = [
+            item for item in candidates
+            if item["name"].casefold() == str(query).casefold()
+            or item["source"].casefold() == normalized.casefold()
+        ]
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            choices = "\n".join(f"  {item['name']}  ({item['source']})" for item in matches)
+            return None, f"'{query}' matches more than one contract. Choose by source path:\n{choices}"
+        choices = "\n".join(f"  {item['name']}  ({item['source']})" for item in candidates)
+        return None, f"Contract '{query}' was not found in this project's deployable artifacts.\nAvailable contracts:\n{choices}"
+
+    preferred_name = None
+    preferred_artifact = None
+    if root is not None:
+        remembered = project_context_target(root)
+        if isinstance(remembered, dict):
+            preferred_name = remembered.get("contract")
+            preferred_artifact = remembered.get("artifact")
+        elif config and active_project_target(config, root):
+            preferred_name = config.get("target_contract")
+            preferred_artifact = (config.get("abi_paths") or {}).get(config.get("target"))
+
+    if preferred_artifact:
+        try:
+            preferred_path = Path(os.path.expanduser(str(preferred_artifact)))
+            if not preferred_path.is_absolute():
+                preferred_path = Path(root) / preferred_path
+            preferred_path = preferred_path.resolve()
+            for item in candidates:
+                if Path(item["artifact"]).resolve() == preferred_path:
+                    return item, None
+        except (OSError, TypeError, ValueError):
+            pass
+    if preferred_name:
+        matches = [item for item in candidates if item["name"].casefold() == str(preferred_name).casefold()]
+        if len(matches) == 1:
+            return matches[0], None
+
+    if len(candidates) == 1:
+        return candidates[0], None
+
+    listing = "\n".join(
+        f"  {index}. {item['name']}  ({item['source']})"
+        for index, item in enumerate(candidates, 1)
+    )
+    if not sys.stdin.isatty():
+        return None, (
+            "This project has multiple deployable contracts and no selected target.\n"
+            f"{listing}\n"
+            "Choose one with: lk chisel --contract <name-or-source-path>"
+        )
+
+    print("PROJECT CONTRACTS")
+    print("=================")
+    print(listing)
+    try:
+        answer = input("Select a contract number (q to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None, "Contract selection cancelled."
+    if answer.lower() in {"q", "quit", "cancel"}:
+        return None, "Contract selection cancelled."
+    try:
+        selected = int(answer)
+    except ValueError:
+        return None, "Enter one of the contract numbers shown above."
+    if selected < 1 or selected > len(candidates):
+        return None, "That contract number is outside the available list."
+    return candidates[selected - 1], None
+
+
+def _write_chisel_prelude(contract, directory):
+    """Create an ephemeral Chisel prelude that imports and, where safe, instantiates a target."""
+    prelude_dir = Path(directory)
+    prelude_dir.mkdir(parents=True, exist_ok=True)
+    import_path = json.dumps(contract["source"])
+    import_file = prelude_dir / "00-lowkey-import.sol"
+    import_file.write_text(
+        f'import {{{contract["name"]} as LowkeyLoadedTarget}} from {import_path};\n',
+        encoding="utf-8",
+    )
+
+    inputs = contract.get("constructor_inputs") or []
+    payable = bool(contract.get("constructor_payable"))
+    linked = bool(contract.get("has_linked_libraries"))
+    auto_instance = not inputs and not payable and not linked
+    if auto_instance:
+        (prelude_dir / "10-lowkey-instance.sol").write_text(
+            "LowkeyLoadedTarget internal lowkeyTarget = new LowkeyLoadedTarget();\n",
+            encoding="utf-8",
+        )
+
+    if auto_instance:
+        next_step = "A temporary instance is prepared as lowkeyTarget in Chisel's isolated EVM."
+    elif linked:
+        next_step = (
+            "The contract imports successfully, but its creation bytecode references linked libraries. "
+            "Create/link an instance only after supplying those library addresses."
+        )
+    elif payable:
+        next_step = (
+            "The constructor is payable, so Lowkey did not guess an ETH amount. "
+            "Create an instance with new LowkeyLoadedTarget{value: <amount>}()."
+        )
+    else:
+        signatures = []
+        for index, item in enumerate(inputs, 1):
+            try:
+                arg_type = canonical_type(item)
+            except (TypeError, ValueError):
+                arg_type = str(item.get("type") or "value")
+            arg_name = str(item.get("name") or f"arg{index}")
+            signatures.append(f"{arg_type} {arg_name}")
+        next_step = (
+            "The contract is imported as LowkeyLoadedTarget. Its constructor needs "
+            f"{', '.join(signatures)}. Create an instance with "
+            "LowkeyLoadedTarget internal lowkeyTarget = new LowkeyLoadedTarget(<arguments>)."
+        )
+
+    return {"directory": str(prelude_dir), "auto_instance": auto_instance, "next_step": next_step}
+
+
+def _launch_chisel(binary, args, cwd=None):
+    try:
+        result = subprocess.run(
+            [binary, *(args or [])],
+            cwd=str(cwd) if cwd is not None else None,
+        )
+    except OSError as error:
+        return fail(f"Error executing chisel: {error}", 1)
+    return record_status(result.returncode)
+
+
+def run_chisel(args, config=None):
+    """Build the active Foundry project and open Chisel with its current contract imported."""
+    try:
+        contract_query, no_build, native_args = _parse_chisel_lowkey_options(args)
+    except ValueError as error:
+        return fail(f"Error: {error}")
+
+    binary = tool_path("chisel")
+    if not binary:
+        return fail("Error: chisel was not found on PATH. Install/update Foundry first.")
+
+    root = _chisel_root_from_args(native_args)
+    if root is None:
+        if contract_query:
+            return fail("Error: --contract requires a Foundry project (foundry.toml) in the current or selected root.")
+        if no_build:
+            return fail("Error: --no-build is only available when Lowkey detects a Foundry project.")
+        return _launch_chisel(binary, native_args)
+
+    native_commands = {"list", "load", "view", "clear-cache", "eval"}
+    if native_args and native_args[0] in native_commands:
+        return _launch_chisel(binary, native_args, cwd=root)
+
+    has_native_prelude = any(
+        token == "--prelude" or token.startswith("--prelude=")
+        for token in native_args
+    )
+    if has_native_prelude and contract_query:
+        return fail("Error: use either Lowkey's --contract loader or Chisel's native --prelude, not both.")
+
+    if not no_build:
+        print(f"Building Foundry project: {root}")
+        build_result = run_foundry(["build", *_chisel_build_options(native_args)], capture=True, cwd=root)
+        build_output = str(build_result).strip()
+        if build_output:
+            print(build_output)
+        build_code = getattr(build_result, "code", 0)
+        if build_code != 0:
+            return fail(
+                "Chisel was not started because the current project did not compile. "
+                "Fix the build errors, then run 'lk chisel' again.",
+                build_code,
+            )
+    else:
+        print("Build skipped: using existing artifacts. They may not match the current source.")
+
+    if has_native_prelude:
+        print("Using your native Chisel prelude; Lowkey's automatic contract import is disabled.")
+        return _launch_chisel(binary, native_args, cwd=root)
+
+    candidates = _chisel_project_contracts(root)
+    selected, selection_error = _select_chisel_contract(candidates, contract_query, config, root)
+    if selected is None:
+        return fail(f"Error: {selection_error}", 2)
+
+    print("LOWKEY CHISEL")
+    print("=============")
+    print(f"Project : {root.name}")
+    print(f"Contract: {selected['name']}")
+    print(f"Source  : {selected['source']}")
+    print("Runtime : temporary Chisel EVM (not Anvil or a public network)")
+    print("")
+
+    verbose_requested = any(
+        token in {"-v", "-vv", "-vvv", "--verbosity", "--quiet", "-q"}
+        or token.startswith("--verbosity=")
+        for token in native_args
+    )
+    chisel_args = list(native_args)
+    if not verbose_requested:
+        chisel_args.append("-v")
+
+    with tempfile.TemporaryDirectory(prefix="lowkey-chisel-") as temporary:
+        prelude = _write_chisel_prelude(selected, temporary)
+        chisel_args.extend(["--prelude", prelude["directory"]])
+        print(prelude["next_step"])
+        print("Type !help for Chisel commands; !source shows the generated REPL source.")
+        return _launch_chisel(binary, chisel_args, cwd=root)
 
 def run_fuzz(args):
     values=list(args)
@@ -19821,13 +20174,16 @@ COMMAND_HELP.update({
         related=["lk encode", "lk tx"],
     ),
     "chisel": _help_entry(
-        "Launch Foundry Chisel for small interactive Solidity experiments.",
-        "lk chisel [Chisel options...]",
-        "lk chisel",
-        "Use it for quick Solidity/EVM experiments without creating a full contract. Lowkey passes Chisel arguments through unchanged.",
+        "Build the active Foundry project and open Chisel with a selected project contract imported.",
+        "lk chisel [--contract <name-or-source-path>] [--no-build] [Chisel options...]",
+        "lk chisel --contract Escrow",
+        "Run from any directory inside a Foundry project. Lowkey builds the current source, discovers first-party deployable Solidity artifacts, imports the selected contract through Chisel's native prelude, and creates a temporary instance only when a no-argument nonpayable constructor is safe. The instance lives only in Chisel's isolated EVM; this does not deploy to Anvil or a public chain.",
         options=[
-            ("Chisel options...", "Run chisel --help for the options supported by your installed version.", "chisel --help"),
+            ("Contract selection (--contract)", "Choose one compiled project contract by name or source path. Without it, Lowkey uses the project's remembered target, selects the only candidate, or asks you to choose.", "lk chisel --contract Escrow"),
+            ("Build control (--no-build)", "Skip forge build and use existing artifacts. Those artifacts may be stale, so the default is to build first.", "lk chisel --no-build"),
+            ("Chisel options...", "All other options pass through to your installed Chisel. Chisel trace output is enabled by default; pass -q or an explicit verbosity option to control it.", "chisel --help"),
         ],
+        related=["lk build", "lk targets", "lk test"],
     ),
 })
 
@@ -21273,7 +21629,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd in {"4byte","4byte-calldata","4byte-event","access-list","interface","constructor-args","creation-code","decode-calldata","abi-encode"}: return run_cast_deep(config,[cmd,*args])
     elif cmd=="disasm": return run_disasm(config,args)
     elif cmd=="txpool": return run_txpool(config,args)
-    elif cmd=="chisel": return run_chisel(args)
+    elif cmd=="chisel": return run_chisel(args, config)
     elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
     elif cmd=="as": return run_as(config,args)
     elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
