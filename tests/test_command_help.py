@@ -34,7 +34,7 @@ class CommandHelpTests(unittest.TestCase):
             "lk sig 'setValue(uint256)'",
             "Single quotes protect parentheses and array brackets from Bash.",
             "Parameter TYPES",
-            "lk sig createBounty",
+            "lk sig setValue",
         ):
             self.assertIn(item, output)
 
