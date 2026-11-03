@@ -325,6 +325,95 @@ class CommandHelpTests(unittest.TestCase):
         problems = validate(lk.COMMAND_HELP)
         self.assertEqual(problems, [])
 
+
+    def test_every_root_and_nested_help_entry_has_an_explicit_invocation_form(self):
+        def walk(entries, prefix=()):
+            missing = []
+            for name, entry in entries.items():
+                path = (*prefix, name)
+                forms = entry.get("forms") or []
+                if not forms:
+                    missing.append(" ".join(path))
+                for form in forms:
+                    self.assertEqual(len(form), 3, f"invalid form for {' '.join(path)}")
+                    self.assertTrue(str(form[0]).strip())
+                    self.assertTrue(str(form[1]).strip())
+                    self.assertTrue(str(form[2]).strip())
+                missing.extend(walk(entry.get("children") or {}, path))
+            return missing
+
+        self.assertEqual(walk(lk.COMMAND_HELP), [])
+
+    def test_inspect_help_is_lowkey_owned_and_documents_supported_sections(self):
+        code, output = self.capture_dispatch("inspect", "--h")
+        self.assertEqual(code, 0)
+        for item in (
+            "lk inspect [Contract] [section] [options]",
+            "lk inspect Escrow",
+            "--abi",
+            "--functions",
+            "--events",
+            "--errors",
+            "--storage",
+            "--selectors",
+            "--bytecode",
+            "--metadata",
+            "--all",
+            "--json",
+            "--no-build",
+            "lk forge inspect",
+        ):
+            self.assertIn(item, output)
+        self.assertNotIn("Run forge inspect --help", output)
+        self.assertNotIn("Forge inspect options", output)
+
+    def test_inspect_launcher_is_not_a_generic_forge_passthrough(self):
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        self.assertIn("script|coverage|lint", script)
+        self.assertNotIn("script|inspect|coverage", script)
+
+    def test_inspect_reads_compiled_artifacts_without_invoking_forge_inspect(self):
+        artifact = {
+            "contractName": "Vault",
+            "sourceName": "src/Vault.sol",
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "withdraw",
+                    "inputs": [{"name": "amount", "type": "uint256"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                {
+                    "type": "event",
+                    "name": "Withdrawn",
+                    "inputs": [{"name": "amount", "type": "uint256", "indexed": False}],
+                },
+                {
+                    "type": "error",
+                    "name": "Unauthorized",
+                    "inputs": [],
+                },
+            ],
+            "bytecode": {"object": "60016000"},
+            "deployedBytecode": {"object": "60026000"},
+            "metadata": json.dumps({"compiler": {"version": "0.8.28"}, "settings": {}}),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "Vault.json"
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            output = io.StringIO()
+            with patch.object(lk, "detected_project_root", return_value=pathlib.Path(tmp)), \
+                 patch.object(lk, "artifact_json_files", return_value=[str(path)]), \
+                 patch.object(lk, "run_foundry") as forge:
+                with redirect_stdout(output):
+                    code = lk.run_inspect({}, ["Vault", "--functions", "--events", "--errors"])
+            self.assertEqual(code, 0)
+            self.assertIn("withdraw(uint256)", output.getvalue())
+            self.assertIn("Withdrawn(uint256)", output.getvalue())
+            self.assertIn("Unauthorized()", output.getvalue())
+            forge.assert_not_called()
+
     def test_launcher_routed_commands_also_have_lowkey_help(self):
         import re
 
