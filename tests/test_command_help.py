@@ -1295,7 +1295,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Read current contract state", rendered)
         self.assertIn("Run with guided prompts", rendered)
         self.assertIn("Review state effects", rendered)
-        self.assertNotIn("Use it before read/send/changes", rendered)
+        self.assertIn("Detail: Use it before read/send/changes", rendered)
 
     def test_main_appends_recommendations_after_successful_command(self):
         original_argv = lk.sys.argv

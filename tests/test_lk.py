@@ -142,8 +142,9 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIsNone(code)
         self.assertIn("Deployment", rendered)
         self.assertIn("NOT DEPLOYED", rendered)
-        self.assertIn("current RPC reports no contract bytecode", rendered)
-        self.assertIn("lk lab", rendered)
+        normalized_rendered = " ".join(rendered.split())
+        self.assertIn("current RPC reports no contract bytecode", normalized_rendered)
+        self.assertIn("lk lab", normalized_rendered)
         self.assertIn("lk target reset", rendered)
 
     def test_cast_send_blocks_undeployed_target_before_cast(self):
