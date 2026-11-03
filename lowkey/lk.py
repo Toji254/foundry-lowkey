@@ -19418,14 +19418,19 @@ def _render_command_help(path):
     print(f"Example: {entry['example']}")
 
     forms = entry.get("forms") or []
+    print("")
+    print("COMMAND VARIATIONS")
+    print("------------------")
     if forms:
-        print("")
-        print("COMMAND VARIATIONS")
-        print("------------------")
         for form, description, example in forms:
             print(f"  {form}")
             print(f"      {description}")
             print(f"      Example: {example}")
+    elif entry.get("children"):
+        print("  This command uses the standard form shown above; available subcommands are listed below.")
+    else:
+        print("  No additional invocation forms are registered for this command.")
+        print(f"  Use: {entry['usage']}")
 
     children = entry.get("children") or {}
     if children:
@@ -19463,14 +19468,17 @@ def _render_command_help(path):
             print(f"      Example: {example}")
 
     options = entry.get("options") or []
+    print("")
+    print("OPTIONS / MODES")
+    print("---------------")
     if options:
-        print("")
-        print("OPTIONS / MODES")
-        print("---------------")
         for option, description, example in options:
             print(f"  {option}")
             print(f"      {description}")
             print(f"      Example: {example}")
+    else:
+        print("  No additional command-specific flags or modes are registered.")
+        print("  Global --ai and help flags are available; see AI GUIDANCE and HELP TIP below.")
 
     if shown_path.split()[0].lower() != "ai":
         print("")
@@ -19481,12 +19489,14 @@ def _render_command_help(path):
         print("  The native command keeps its normal behavior; AI suggestions are never run.")
 
     related = entry.get("related") or []
+    print("")
+    print("RELATED COMMANDS")
+    print("---------------")
     if related:
-        print("")
-        print("RELATED COMMANDS")
-        print("---------------")
         for command in related:
             print(f"  {command}")
+    else:
+        print("  none listed")
 
     print("")
     print("HELP TIP")
