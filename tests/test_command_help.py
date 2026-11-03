@@ -38,6 +38,14 @@ class CommandHelpTests(unittest.TestCase):
         ):
             self.assertIn(item, output)
 
+    def test_selectors_help_explains_named_default_and_raw_mode(self):
+        code, output = self.capture_dispatch("selectors", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("readable function signatures", output)
+        self.assertIn("lk selectors --compare", output)
+        self.assertIn("lk selectors --raw", output)
+        self.assertIn("without resolving function names", output)
+
     def test_walkthrough_help_lists_test_and_human_guidance(self):
         code, output = self.capture_dispatch("walkthrough", "--h")
         self.assertEqual(code, 0)
