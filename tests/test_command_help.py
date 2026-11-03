@@ -419,13 +419,14 @@ class CommandHelpTests(unittest.TestCase):
 
         script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
         match = re.search(
-            r"script\|inspect\|coverage\|lint\|geiger\|fmt\|lsp\|create\|"
+            r"script\|coverage\|lint\|geiger\|fmt\|lsp\|create\|"
             r"verify-contract\|verify-check\|verify-bytecode\|tree\|install\|"
             r"remove\|update\|init\|clean\|cache\|config\|remappings\|bind\|"
             r"bind-json\|doc\|compiler\|eip712\|soldeer\|completions\|flatten",
             script,
         )
         self.assertIsNotNone(match)
+        self.assertNotIn("inspect", match.group(0).split("|"))
         native_commands = set(match.group(0).split("|"))
         native_commands.add("generate")
 
