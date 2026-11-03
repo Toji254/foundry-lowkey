@@ -4923,7 +4923,7 @@ contract Pool {
         self.assertEqual(result, 2)
         self.assertIn("complete ABI signature", output.getvalue())
         self.assertIn("parameter types", output.getvalue().lower())
-        self.assertIn("lk sig 'createBounty(string,string[])'", output.getvalue())
+        self.assertIn("lk sig 'setValue(uint256)'", output.getvalue())
         self.assertIn("Quote the complete signature", output.getvalue())
 
     def test_run_signature_rejects_extra_selector_or_argument_values(self):
