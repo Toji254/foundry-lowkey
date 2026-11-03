@@ -15549,7 +15549,11 @@ def run_chisel(args, config=None):
         return _launch_chisel(binary, native_args)
 
     native_commands = {"list", "load", "view", "clear-cache", "eval"}
-    if native_args and native_args[0] in native_commands:
+    native_control_flags = {"-h", "--help", "-V", "--version"}
+    if (
+        (native_args and native_args[0] in native_commands)
+        or any(token in native_control_flags for token in native_args)
+    ):
         return _launch_chisel(binary, native_args, cwd=root)
 
     has_native_prelude = any(
