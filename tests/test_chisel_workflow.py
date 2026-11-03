@@ -260,6 +260,42 @@ class ChiselWorkflowTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(launch.call_args.args[0], ["/usr/bin/chisel", "--help"])
 
+    def test_contract_aware_eval_builds_and_loads_the_selected_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "foundry-app"
+            self._project(root, "Vault")
+            build_calls = []
+
+            class BuildResult:
+                code = 0
+                def __str__(self):
+                    return "Compiler run successful"
+
+            def fake_build(args, capture=False, cwd=None):
+                build_calls.append((args, capture, pathlib.Path(cwd)))
+                return BuildResult()
+
+            def fake_launch(command, cwd=None):
+                prelude_dir = pathlib.Path(command[command.index("--prelude") + 1])
+                self.assertTrue((prelude_dir / "00-lowkey-import.sol").is_file())
+                self.assertTrue((prelude_dir / "10-lowkey-instance.sol").is_file())
+                self.assertEqual(command[-2], "eval")
+                self.assertEqual(command[-1], "lowkeyTarget.increment() == 1")
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "tool_path", return_value="/usr/bin/chisel"), \
+                 patch.object(lk, "run_foundry", side_effect=fake_build), \
+                 patch.object(lk.subprocess, "run", side_effect=fake_launch), \
+                 redirect_stdout(io.StringIO()):
+                result = lk.run_chisel(
+                    ["--contract", "Vault", "eval", "lowkeyTarget.increment() == 1"],
+                    config={},
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(build_calls, [(["build"], True, root)])
+
 
 if __name__ == "__main__":
     unittest.main()
