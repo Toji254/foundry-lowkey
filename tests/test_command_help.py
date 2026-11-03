@@ -172,18 +172,46 @@ class CommandHelpTests(unittest.TestCase):
                 )
                 self.assertTrue(entry.get("example", "").startswith("lk "))
 
-        for command, expected in (
-            ("build", {"binary": "forge", "args": ["build"]}),
-            ("test", {"binary": "forge", "args": ["test"]}),
-            ("coverage", {"binary": "forge", "args": ["coverage"]}),
-            ("chisel", {"binary": "chisel", "args": []}),
-            ("raw", {"binary": "cast", "args": []}),
-            ("logs", {"binary": "cast", "args": ["logs"]}),
-            ("trace", {"binary": "cast", "args": ["run"]}),
-            ("slither", {"binary": "slither", "args": []}),
-            ("fork", {"binary": "anvil", "args": []}),
-        ):
+        expected_sources = {
+            "forge": ("forge", []),
+            "build": ("forge", ["build"]),
+            "test": ("forge", ["test"]),
+            "script": ("forge", ["script"]),
+            "coverage": ("forge", ["coverage"]),
+            "lint": ("forge", ["lint"]),
+            "fmt": ("forge", ["fmt"]),
+            "create": ("forge", ["create"]),
+            "fuzz": ("forge", ["test"]),
+            "invariant": ("forge", ["test"]),
+            "mutate": ("forge", ["test"]),
+            "symbolic": ("forge", ["test"]),
+            "brutalize": ("forge", ["test"]),
+            "trace": ("cast", ["run"]),
+            "replay": ("cast", ["run"]),
+            "logs": ("cast", ["logs"]),
+            "raw": ("cast", []),
+            "4byte": ("cast", ["4byte"]),
+            "4byte-calldata": ("cast", ["4byte-calldata"]),
+            "4byte-event": ("cast", ["4byte-event"]),
+            "access-list": ("cast", ["access-list"]),
+            "constructor-args": ("cast", ["constructor-args"]),
+            "creation-code": ("cast", ["creation-code"]),
+            "decode-calldata": ("cast", ["decode-calldata"]),
+            "abi-encode": ("cast", ["abi-encode"]),
+            "admin": ("cast", ["admin"]),
+            "implementation": ("cast", ["implementation"]),
+            "interface": ("cast", ["interface"]),
+            "c": ("cast", ["call"]),
+            "s": ("cast", ["send"]),
+            "chisel": ("chisel", []),
+            "slither": ("slither", []),
+            "fork": ("anvil", []),
+        }
+        self.assertEqual(lk._NATIVE_HELP_SOURCES, expected_sources)
+        for command, (binary, args) in expected_sources.items():
             with self.subTest(command=command):
+                expected = {"binary": binary, "args": args}
+                self.assertIn(command, lk.COMMAND_HELP)
                 self.assertEqual(lk.COMMAND_HELP[command].get("native_help"), expected)
 
         entry = lk.COMMAND_HELP["build"]
