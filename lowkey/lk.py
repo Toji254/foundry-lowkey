@@ -3015,14 +3015,73 @@ def run_encode(config,args):
         except ValueError as error:
             return fail(f"Error: {error}")
     run_cast(["calldata"]+values,config)
-def run_signature(args):
+def run_signature(config, args):
+    usage = "Usage: lk sig '<functionName>(<parameterTypes>)'"
+    example = "Example: lk sig 'createBounty(string,string[])'"
+
     if not args:
-        return fail("Usage: lk sig <function(signature)>")
-    code,out,err=cast_output(["cast","sig",args[0]])
-    if out: print(out)
-    if err: print(err,file=sys.stderr)
-    if code!=0 and not err:
-        print("Unable to resolve selector.",file=sys.stderr)
+        return fail(
+            f"{usage}\n{example}\n"
+            "Use parameter TYPES, not argument names or values. "
+            "Run 'lk sig --h' for examples and shell-quoting guidance."
+        )
+    if len(args) > 1:
+        return fail(
+            f"{usage}\n{example}\n"
+            "lk sig accepts one function signature only. Do not append argument values, "
+            "a function selector, or a transaction/hash value."
+        )
+
+    signature = str(args[0]).strip()
+    if not signature:
+        return fail(f"{usage}\n{example}")
+
+    # A bare function name is convenient when a selected target has one ABI match.
+    # If it is overloaded, show the exact canonical signatures the user can copy.
+    if "(" not in signature or ")" not in signature:
+        target = config.get("target")
+        abi = load_abi(target, config) if target else []
+        matches = matching_functions(abi, signature) if abi else []
+        if len(matches) == 1:
+            signature = format_signature(matches[0])
+            print(f"Resolved function: {signature}")
+        elif len(matches) > 1:
+            suggestions = "\\n".join(
+                f"  lk sig '{format_signature(item)}'" for item in matches
+            )
+            return fail(
+                f"Function name '{signature}' is overloaded in the selected contract.\n"
+                "Choose one complete signature (include parameter TYPES):\n"
+                f"{suggestions}"
+            )
+        else:
+            target_hint = (
+                " Use 'lk fn' to see functions in the selected contract."
+                if target else
+                " Select a target with 'lk target' to allow name-only resolution."
+            )
+            return fail(
+                f"'{signature}' is only a function name; lk sig needs the complete "
+                "ABI signature, including parameter types.\n"
+                f"{usage}\n{example}\n"
+                "Quote the complete signature so Bash treats parentheses and array "
+                f"brackets literally.{target_hint}"
+            )
+
+    code, out, err = cast_output(["cast", "sig", signature])
+    if out:
+        print(out)
+    if err:
+        print(err, file=sys.stderr)
+    if code != 0:
+        print(
+            "Expected a canonical ABI signature such as "
+            "'createBounty(string,string[])' (parameter TYPES, not values). "
+            "Quote the whole signature in Bash.",
+            file=sys.stderr,
+        )
+        if not err and not out:
+            print("Unable to calculate the function selector.", file=sys.stderr)
     return record_status(code)
 def _foundry_offline_env():
     """Environment for probe-style forge invocations that must never hang.
@@ -18876,7 +18935,21 @@ COMMAND_HELP = {
     "admin": _help_entry("Resolve the proxy admin when supported.", "lk admin", "lk admin", "Use it when reviewing who controls upgrades.", related=["lk proxy", "lk implementation"]),
     "selectors": _help_entry("Extract function selectors.", "lk selectors [args...]", "lk selectors", "Use it for bytecode-level callable-surface analysis.", related=["lk sig", "lk calldata"]),
     "calldata": _help_entry("Decode raw calldata and selectors.", "lk calldata <data>", "lk calldata 0xa9059cbb...", "Use it when a trace or transaction gives you raw hex.", related=["lk encode", "lk sig"]),
-    "sig": _help_entry("Print a function signature/selector representation.", "lk sig <function>", "lk sig transfer(address,uint256)", "Use it when reasoning about selectors.", related=["lk calldata", "lk encode"]),
+    "sig": _help_entry(
+        "Calculate the 4-byte function selector from a canonical ABI function signature.",
+        "lk sig '<functionName>(<parameterTypes>)' | lk sig <functionName>",
+        "lk sig 'createBounty(string,string[])'",
+        "Use it when inspecting selectors or understanding calldata. Supply parameter TYPES, not argument names or values. Single quotes protect parentheses and array brackets from Bash. A bare name is resolved only when the selected target ABI contains exactly one matching function.",
+        forms=[
+            ("Full ABI signature", "Include the function name and every parameter type in ABI order.", "lk sig 'createBounty(string,string[])'"),
+            ("Bare function name", "With a selected target, Lowkey can resolve a name when exactly one ABI function matches. Overloads are listed for you to choose from.", "lk sig createBounty"),
+        ],
+        options=[
+            ("Single quotes", "Quote the entire signature so Bash passes parentheses and square brackets to Lowkey literally.", "lk sig 'transfer(address,uint256)'"),
+            ("Parameter TYPES", "Use Solidity ABI types such as address, uint256, string[] or bytes32. Do not put actual argument values here.", "lk sig 'transfer(address,uint256)'"),
+        ],
+        related=["lk calldata", "lk encode", "lk fn"],
+    ),
     "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
     "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),
     "chisel": _help_entry("Launch/use Foundry Chisel for tiny Solidity experiments.", "lk chisel [args...]", "lk chisel", "Use it for quick Solidity/EVM experiments without creating a full contract."),
@@ -19653,7 +19726,8 @@ FORK / PROXY / ABI FORENSICS
   lk admin                          Resolve the proxy admin.
   lk selectors                     Extract runtime function selectors.
   lk calldata <data>                Decode calldata and selectors.
-  lk sig <function>                 Print a function signature/selector.
+  lk sig '<name>(<types>)'          Calculate a selector; quote the full ABI signature.
+  lk sig <name>                     Resolve a unique function name from the selected target ABI.
   lk 4byte ...                      Extended Cast 4byte helper.
   lk access-list ...                Build/access an access list.
   lk constructor-args ...           Inspect constructor arguments.
@@ -20541,7 +20615,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="chain": run_chain(config)
     elif cmd=="balance": return run_balance(config,args)
     elif cmd=="encode": run_encode(config,args)
-    elif cmd=="sig": run_signature(args)
+    elif cmd=="sig": return run_signature(config,args)
     elif cmd in {"decode-error","error"}: run_decode_error(config,args)
     elif cmd in {"decode","returns"}: run_decode(config,args)
     elif cmd in {"event","decode-event"}: run_event(config,args)
