@@ -20176,10 +20176,10 @@ COMMAND_HELP.update({
     "chisel": _help_entry(
         "Build the active Foundry project and open Chisel with a selected project contract imported.",
         "lk chisel [--contract <name-or-source-path>] [--no-build] [Chisel options...]",
-        "lk chisel --contract Escrow",
+        "lk chisel --contract ExampleVault",
         "Run from any directory inside a Foundry project. Lowkey builds the current source, discovers first-party deployable Solidity artifacts, imports the selected contract through Chisel's native prelude, and creates a temporary instance only when a no-argument nonpayable constructor is safe. The instance lives only in Chisel's isolated EVM; this does not deploy to Anvil or a public chain.",
         options=[
-            ("Contract selection (--contract)", "Choose one compiled project contract by name or source path. Without it, Lowkey uses the project's remembered target, selects the only candidate, or asks you to choose.", "lk chisel --contract Escrow"),
+            ("Contract selection (--contract)", "Choose one compiled project contract by name or source path. Without it, Lowkey uses the project's remembered target, selects the only candidate, or asks you to choose.", "lk chisel --contract ExampleVault"),
             ("Build control (--no-build)", "Skip forge build and use existing artifacts. Those artifacts may be stale, so the default is to build first.", "lk chisel --no-build"),
             ("Chisel options...", "All other options pass through to your installed Chisel. Chisel trace output is enabled by default; pass -q or an explicit verbosity option to control it.", "chisel --help"),
         ],
