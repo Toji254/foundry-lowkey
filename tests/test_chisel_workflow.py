@@ -245,6 +245,21 @@ class ChiselWorkflowTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(launch.call_args.args[0], ["/usr/bin/chisel", "list"])
 
+    def test_native_chisel_help_bypasses_build_and_contract_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "foundry-app"
+            self._project(root, "Vault")
+            self._project(root, "VaultFactory", "src/VaultFactory.sol")
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "tool_path", return_value="/usr/bin/chisel"), \
+                 patch.object(lk, "run_foundry", side_effect=AssertionError("help must bypass build")), \
+                 patch.object(lk.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as launch:
+                result = lk.run_chisel(["--help"], config={})
+
+            self.assertEqual(result, 0)
+            self.assertEqual(launch.call_args.args[0], ["/usr/bin/chisel", "--help"])
+
 
 if __name__ == "__main__":
     unittest.main()
