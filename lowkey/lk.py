@@ -18000,7 +18000,7 @@ def run_break(config, args):
 
 HELP_FLAGS = {"--h", "--help", "-h", "help"}
 
-def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None, argument_types=None, notes=None):
+def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None, argument_types=None):
     return {
         "summary": summary,
         "usage": usage,
@@ -18011,14 +18011,13 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
         "forms": forms or [],
         "related": related or [],
         "argument_types": argument_types or [],
-        "notes": notes or [],
     }
 
 def _validate_help_variations(entries):
     """Validate structured help variants without changing runtime behavior."""
     problems = []
     for command, entry in entries.items():
-        for field_name in ("forms", "options", "argument_types", "notes"):
+        for field_name in ("forms", "options", "argument_types"):
             for index, item in enumerate(entry.get(field_name) or [], 1):
                 if not isinstance(item, (list, tuple)) or len(item) != 3:
                     problems.append(f"lk {command}: {field_name}[{index}] must be (command, description, example)")
@@ -18034,19 +18033,6 @@ def _validate_help_variations(entries):
         if not isinstance(children, dict):
             problems.append(f"lk {command}: children must be a mapping")
     return problems
-
-ABI_CALL_ARGUMENT_TYPES = [
-    ("address / address payable / contract", "Pass a 0x-prefixed 20-byte address. A configured actor name or project-target name can also be used when Lowkey can resolve it.", "lk read balance 0x1111111111111111111111111111111111111111"),
-    ("bool", "Pass true or false.", "lk read isEnabled"),
-    ("uint<M> / int<M> / uint / int", "Pass an integer in decimal or 0x-prefixed hex. Bare uint means uint256 and bare int means int256. Common units such as 1ether, 5gwei, and wei are accepted for integer arguments.", "lk read allowance 100"),
-    ("enum", "Pass the zero-based member index: the first member is 0, the second is 1, and so on. ABI encoding represents enums as integers.", "lk send setStatus 1"),
-    ("string", "Pass text as one shell argument. Quote text containing spaces.", 'lk send setName "hello there"'),
-    ("bytes", "Pass dynamic bytes as 0x-prefixed hex with an even number of hex digits.", "lk send setData 0xdeadbeef"),
-    ("bytes1 ... bytes32", "Pass exactly the fixed number of bytes required. bytes4 needs 8 hex digits after 0x; bytes32 needs 64.", "lk send setMagic 0x12345678"),
-    ("T[] / T[N] / T[][]", "Pass arrays in square brackets with comma-separated elements. Quote the complete expression so the shell keeps it as one argument.", "lk send setValues '[10,20,30]'"),
-    ("tuple / struct", "Pass tuple components in parentheses and in the struct's declared field order. Quote the complete tuple in the shell.", "lk send updatePosition '(0x1111111111111111111111111111111111111111,100)'"),
-    ("@identifier", "Use @number, @last, or @alias in a compatible ABI argument instead of copying a saved contract ID.", "lk read EscrowID @firstEscrow"),
-]
 
 COMMAND_HELP = {
     "benchmark": _help_entry(
@@ -18103,15 +18089,39 @@ COMMAND_HELP = {
         "Use it when you want to understand how contracts, actors, calls, events, balances, and storage changes fit together before deep auditing.",
         children={
             "test": _help_entry(
-        "Run the project's native Foundry tests.",
-        "lk test [Forge test options...]",
-        "lk test",
-        "Use it after changes and before trusting a security reproduction. Extra arguments are passed to forge test.",
+                "Run randomized adversarial interactions against disposable local Anvil snapshots, restoring state between probes.",
+                "lk walkthrough test [options]",
+                "lk walkthrough test --auto --cases 50",
+                "Use it when you want to stress assumptions and collect reproducible behavior without permanently mutating the lab state. The seed is the run's reproducibility key: it changes the randomized probe order, actors, arguments, and inputs.",
+                children={
+                        },
+                options=[
+                    ("--auto", "Automatically build/provision a local target when possible.", "lk walkthrough test --auto"),
+                    ("--cases N", "Run N randomized cases; Lowkey caps this at 200.", "lk walkthrough test --cases 50"),
+                    ("--seed N", "Choose the deterministic seed. The same seed reproduces the randomized probe sequence when code and baseline state are unchanged.", "lk walkthrough test --seed 42"),
+                    ("--technical", "Show lower-level storage details while testing.", "lk walkthrough test --technical"),
+                    ("--yes", "Run without interactive pauses.", "lk walkthrough test --yes"),
+                ],
+                related=["lk walkthrough", "lk trace", "lk findings"],
+            ),
+            "seed": _help_entry(
+                "Show previous walkthrough test seeds and the short findings recorded for each run.",
+                "lk walkthrough seed [SEED]",
+                "lk walkthrough seed 12345",
+                "Use it after a test run to see which seeds you have used, what each run found, and the exact command needed to replay one.",
+            ),
+        },
         options=[
-            ("Forge test options...", "Pass test filters, verbosity, fuzz settings, fork options, and other native Forge flags. Run forge test --help for your installed version.", "lk test --match-test test_withdraw -vvvv"),
+            ("--auto", "Let Lowkey find/provision a safe local target and Anvil runtime.", "lk walkthrough --auto"),
+            ("--static", "Render the compiled protocol model without sending live transactions.", "lk walkthrough --static"),
+            ("--contract NAME", "Focus on a specific compiled contract.", "lk walkthrough --contract MyContract"),
+            ("--steps N", "Limit the live story to N observed interactions.", "lk walkthrough --steps 6"),
+            ("--technical", "Show lower-level storage details.", "lk walkthrough --technical"),
+            ("--yes", "Run without interactive pauses.", "lk walkthrough --auto --yes"),
         ],
-        related=["lk fuzz", "lk audit"],
-    ),    "break": _help_entry(
+        related=["lk project", "lk system", "lk lab", "lk audit"],
+    ),
+    "break": _help_entry(
         "Run an aggressive local adversarial campaign against one function, the current target, or every live project target. It escalates through attack families and only calls something a BREAK when its harness records an explicit behavioral condition.",
         "lk break [function] [options] | lk break --system [options]",
         "lk break --function setValue --until-found",
@@ -18137,13 +18147,6 @@ COMMAND_HELP = {
         "lk targets [--all]",
         "lk targets",
         "Use it when a project has several deployed contracts and you want to choose one quickly.",
-        forms=[
-            ("lk targets", "List saved protocol targets for the selected project.", "lk targets"),
-            ("lk targets --all", "Include support contracts as well as protocol targets.", "lk targets --all"),
-        ],
-        options=[
-            ("--all", "Include lab/support contracts that are normally hidden from the protocol target list.", "lk targets --all"),
-        ],
         related=["lk target list", "lk use <name>"],
     ),
     "use": _help_entry(
@@ -18202,12 +18205,6 @@ COMMAND_HELP = {
         "lk audit-checks [options]",
         "lk audit-checks",
         "Use it when following an older Lowkey command sequence; new scripts should normally use lk audit --checks.",
-        options=[
-            ("--no-checks", "Skip the default static-check layer.", "lk audit-checks --no-checks"),
-            ("--walkthrough", "Run the protocol walkthrough in the audit session.", "lk audit-checks --walkthrough"),
-            ("--interactive", "Force the interactive audit menu.", "lk audit-checks --interactive"),
-            ("--non-interactive", "Skip the interactive menu.", "lk audit-checks --non-interactive"),
-        ],
         related=["lk audit --checks", "lk audit run"],
     ),
     "audit--checks": _help_entry(
@@ -18215,12 +18212,6 @@ COMMAND_HELP = {
         "lk audit--checks [options]",
         "lk audit--checks",
         "Use it only when an older command sequence already uses this spelling.",
-        options=[
-            ("--no-checks", "Skip the default static-check layer.", "lk audit--checks --no-checks"),
-            ("--walkthrough", "Run the protocol walkthrough in the audit session.", "lk audit--checks --walkthrough"),
-            ("--interactive", "Force the interactive audit menu.", "lk audit--checks --interactive"),
-            ("--non-interactive", "Skip the interactive menu.", "lk audit--checks --non-interactive"),
-        ],
         related=["lk audit --checks"],
     ),
     "audit": _help_entry(
@@ -18257,10 +18248,7 @@ COMMAND_HELP = {
         children={
             "--workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace --h", "Use it before choosing a primary audit project in a monorepo."),
         },
-        options=[
-            ("--workspace", "Show the larger workspace map without selecting a nested project.", "lk project --workspace"),
-            ("--json", "Print machine-readable project data. Also accepts the spelling json.", "lk project 2 --json"),
-        ],
+        options=[("--json", "Print machine-readable project data.", "lk project 2 --json")],
         related=["lk projects", "lk system", "lk deps"],
     ),
     "projects": _help_entry(
@@ -18281,12 +18269,10 @@ COMMAND_HELP = {
     ),
     "system": _help_entry(
         "Build Lowkey's reusable model of contracts, deployments, relationships, roles, and initialization.",
-        "lk system [json|--json]",
+        "lk system [json]",
         "lk system",
         "Use it when you want the protocol architecture before drilling into individual functions.",
-        options=[
-            ("json / --json", "Print the full system manifest as JSON.", "lk system --json"),
-        ],
+        options=[("json", "Print the full system manifest as JSON.", "lk system json")],
         related=["lk project", "lk walkthrough"],
     ),
     "rpc": _help_entry(
@@ -18392,7 +18378,12 @@ COMMAND_HELP = {
             ("lk read <getter> @<alias>", "Use a saved identifier instead of copying its full bytes32 value; Lowkey checks that the saved type matches the ABI input.", "lk read EscrowID @firstEscrow"),
             ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x1111111111111111111111111111111111111111 getValue"),
         ],
-        argument_types=ABI_CALL_ARGUMENT_TYPES,
+        options=[
+            ("address", "Pass an Ethereum address directly, a configured actor name such as Alice or Bob, or a project target name such as Fallback.", "lk read contributions Fallback"),
+            ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read getValue"),
+            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, or use a saved reference such as @firstEscrow.", "lk read EscrowID @firstEscrow"),
+            ("@identifier", "Use @number, @last, or @alias in any ABI argument whose type matches the saved identifier.", "lk read EscrowID @last"),
+        ],
         related=["lk ask", "lk send", "lk changes"],
     ),
     "send": _help_entry(
@@ -18472,30 +18463,23 @@ COMMAND_HELP = {
     ),
     "functions": _help_entry(
         "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
-        "lk functions [query] [-v|--verbose] [-V|--visibility <value>] [-m|--mutability <value>] [-c|--class <value>] [-r|--risk]",
+        "lk functions [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
         "lk functions -v",
         "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory.",
         options=[
-            ("-v / --verbose", "Show expanded metadata: source visibility, modifiers, storage references, calls, ETH flow, selectors, and review flags.", "lk functions --verbose"),
-            ("-V / --visibility <value>", "Filter by public, external, internal, private, unknown, or ambiguous visibility. Also accepts --visibility=VALUE.", "lk functions -V external"),
-            ("-m / --mutability <value>", "Filter by pure, view, nonpayable, or payable mutability. Also accepts --mutability=VALUE.", "lk functions --mutability payable"),
-            ("-c / --class <value>", "Filter by audit class such as state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow. Also accepts --class=VALUE.", "lk functions -c admin"),
-            ("-r / --risk", "Show compact audit-review flags alongside the function inventory.", "lk functions --risk"),
+            ("-v", "Verbose function metadata: source visibility, modifiers, storage refs, calls, ETH flow, selectors, and review flags.", "lk functions -v"),
+            ("-V", "Filter by source visibility.", "lk functions -V external"),
+            ("-m", "Filter by mutability.", "lk functions -m payable"),
+            ("-c", "Filter by audit class.", "lk functions -c admin"),
+            ("-r", "Show compact audit-review flags.", "lk functions -r"),
         ],
         related=["lk fn", "lk ask", "lk risk"]
     ),
     "fn": _help_entry(
         "Short spelling of the function inventory/search command.",
-        "lk fn [query] [-v|--verbose] [-V|--visibility <value>] [-m|--mutability <value>] [-c|--class <value>] [-r|--risk]",
+        "lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
         "lk fn -v setValue",
         "Use it for the same function inventory when you want the compact command.",
-        options=[
-            ("-v / --verbose", "Show expanded function metadata.", "lk fn --verbose"),
-            ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous.", "lk fn -V external"),
-            ("-m / --mutability <value>", "Filter by pure, view, nonpayable, or payable mutability.", "lk fn -m payable"),
-            ("-c / --class <value>", "Filter by audit class, such as admin, state, getter, asset, callback, or eth-flow.", "lk fn -c admin"),
-            ("-r / --risk", "Show compact audit-review flags.", "lk fn --risk"),
-        ],
         related=["lk functions", "lk ask"]
     ),
     "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createRecord", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
@@ -18560,28 +18544,9 @@ COMMAND_HELP = {
             ("--repeat <N>", "Repeat the exact call N times inside one transaction (maximum 100).", "lk changes setValue 10 --repeat 3"),
             ("--times <N>", "Another spelling of --repeat.", "lk changes setValue 10 --times 3"),
         ],
-        argument_types=ABI_CALL_ARGUMENT_TYPES,
         related=["lk mapping", "lk layout", "lk trace"],
     ),
-    "state-diff": _help_entry(
-        "Alias for lk changes: run a concrete call in a temporary test and show the contract storage values it changed.",
-        "lk state-diff <function> [values...] [options]",
-        "lk state-diff setValue 10 --actor Alice",
-        "Use it when the state-diff terminology makes more sense to you. It accepts the same function syntax and local-call options as lk changes.",
-        forms=[
-            ("lk state-diff <function> [values...]", "Run a function by name; Lowkey resolves the ABI signature.", "lk state-diff setValue 10"),
-            ("lk state-diff '<function(types...)>' [values...]", "Specify an exact overloaded function signature. Quote parentheses for Bash.", "lk state-diff 'setValue(uint256)' 10"),
-            ("lk state-diff <function> [values...] --actor <name>", "Choose the named local actor for the temporary call.", "lk state-diff setValue 10 --actor Alice"),
-            ("lk state-diff <function> [values...] --repeat <N>", "Repeat the call inside one test transaction. Maximum: 100.", "lk state-diff setValue 10 --repeat 3"),
-        ],
-        options=[
-            ("--actor <name> / --as <name>", "Choose the actor used for the temporary call.", "lk state-diff setValue 10 --as Alice"),
-            ("--value <amount> / --eth <amount>", "Attach ETH to the temporary call as msg.value. --eth treats a unitless number as ETH.", "lk state-diff contribute --eth 0.1"),
-            ("--repeat <N> / --times <N>", "Repeat the exact call N times inside the same temporary test transaction. Maximum: 100.", "lk state-diff setValue 10 --times 3"),
-        ],
-        argument_types=ABI_CALL_ARGUMENT_TYPES,
-        related=["lk changes", "lk snapshot", "lk diff"],
-    ),
+    "state-diff": _help_entry("Alias for the storage-change reproduction workflow.", "lk state-diff '<function(parameter TYPES...)>' <VALUES...>", "lk state-diff 'setValue(uint256)' 10", "Use it when the state-diff terminology makes more sense to you.", related=["lk changes", "lk snapshot", "lk diff"]),
     "risk": _help_entry("Show rule-based ABI review hints and source security-pattern signals.", "lk risk", "lk risk", "Use it to find functions/patterns that deserve manual review; hints are not vulnerability verdicts.", related=["lk scan", "lk seams", "lk findings"]),
     "scan": _help_entry(
         "Quickly search source code for security-related patterns that may need a closer look.",
@@ -18725,21 +18690,7 @@ COMMAND_HELP = {
         ],
         related=["lk receipt", "lk walkthrough"],
     ),    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
-    "logs": _help_entry(
-        "Query transaction logs and optionally decode emitted events against the ABI for each emitting contract.",
-        "lk logs [Cast log filters...] [--decode]",
-        "lk logs --decode",
-        "Use it when event evidence matters. Without --decode, Lowkey passes filters to Cast. With --decode, matching log records are decoded using the ABI for their emitting contracts.",
-        forms=[
-            ("lk logs [Cast log filters...]", "Query logs using Cast's normal filter syntax.", "lk logs --from-block 1 --to-block latest"),
-            ("lk logs [Cast log filters...] --decode", "Show matching logs and decode their event names and arguments.", "lk logs --decode"),
-        ],
-        options=[
-            ("--decode", "Decode matching event logs. This is a Lowkey flag; other log filters are passed through to Cast.", "lk logs --decode"),
-            ("Cast log filters...", "Use filters supported by your installed Cast version. Run cast logs --help for the authoritative list.", "lk raw logs --help"),
-        ],
-        related=["lk last logs", "lk receipt", "lk event"],
-    ),
+    "logs": _help_entry("Query logs and optionally decode events.", "lk logs [args...]", "lk logs --decode", "Use it when events are part of behavior or security evidence.", options=[("--decode", "Decode matching events with the current ABI.", "lk logs --decode")], related=["lk event", "lk tx"]),
     "chain": _help_entry("Show chain ID, current block, and RPC.", "lk chain", "lk chain", "Use it to verify exactly which local chain/fork you are talking to.", related=["lk rpc", "lk fork"]),
     "balance": _help_entry(
         "Show how much native ETH an address holds.",
@@ -18754,8 +18705,7 @@ COMMAND_HELP = {
         related=["lk recon", "lk actor", "lk target"],
     ),
     "label": _help_entry("Give an address a readable label in Lowkey output.", "lk label <address> <name>", "lk label 0x... Treasury", "Use it when traces and balances are easier to read with protocol role names.", related=["lk actor", "lk walkthrough"]),
-    "encode": _help_entry("Build ABI calldata for a function and its values.", "lk encode <function> [args...]", "lk encode transfer 0x... 1000", "Use it for calldata debugging or low-level calls.", argument_types=ABI_CALL_ARGUMENT_TYPES,
-        related=["lk decode", "lk sig", "lk calldata"]),
+    "encode": _help_entry("Build ABI calldata for a function and its values.", "lk encode <function> [args...]", "lk encode transfer 0x... 1000", "Use it for calldata debugging or low-level calls.", related=["lk decode", "lk sig", "lk calldata"]),
     "decode": _help_entry("Decode return data using the current target ABI.", "lk decode <function> <return-data>", "lk decode getValue 0x...", "Use it when a low-level call returned encoded bytes.", related=["lk encode", "lk decode-error"]),
     "4byte-calldata": _help_entry(
         "Look up possible function signatures for calldata/selector data.",
@@ -18773,25 +18723,7 @@ COMMAND_HELP = {
     ),
     "decode-error": _help_entry("Decode a Solidity custom-error payload.", "lk decode-error <data>", "lk decode-error 0x...", "Use it when a revert payload is hex and you want the actual error and arguments.", related=["lk trace", "lk decode"]),
     "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
-    "poc": _help_entry(
-        "Generate a PoC candidate only from exact calldata and an explicit measurable impact assertion.",
-        "lk poc --calldata <hex> --impact-assertion '<boolean condition>' [options]",
-        "lk poc --function 'withdraw()' --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'",
-        "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.",
-        forms=[
-            ("lk poc --calldata <hex> --impact-assertion '<condition>'", "Provide the exact transaction calldata and a boolean impact assertion. Both are required.", "lk poc --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
-            ("lk poc --function '<signature>' --value <ETH>", "Optionally label the call with its function and attach ETH to the reproduced call.", "lk poc --function 'withdraw()' --value 0.1ether --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
-        ],
-        options=[
-            ("--calldata <hex>", "Required. Exact transaction calldata beginning with 0x.", "lk poc --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
-            ("--impact-assertion <condition>", "Required. A quoted boolean assertion over supported measured before/after impact values.", "lk poc --impact-assertion 'attackerAfter > attackerBefore' --calldata 0x1234"),
-            ("--finding <number>", "Associate the candidate with an existing finding by its numeric index.", "lk poc --finding 1 --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
-            ("--name <name>", "Give the generated PoC candidate a readable name.", "lk poc --name UnauthorizedWithdrawal --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
-            ("--function <signature>", "Record the function signature associated with the calldata.", "lk poc --function 'withdraw()' --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
-            ("--value <amount>", "Attach ETH to the reproduced call. Default: 0.", "lk poc --value 0.1ether --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
-        ],
-        related=["lk finding", "lk export"],
-    ),
+    "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
     "verification": _help_entry(
         "Check which test/verification engines fit this project, or run a controlled multi-engine campaign from a JSON file.",
         "lk verification <engines|run|correlate|investigate> ... (short alias: lk verify)",
@@ -19029,36 +18961,23 @@ COMMAND_HELP = {
             "dump": _help_entry("Checkpoint the current Anvil state.", "lk fork dump [file]", "lk fork dump fork-state.json", "Use it before destructive experiments."),
             "load": _help_entry("Restore a dumped state snapshot.", "lk fork load <file>", "lk fork load fork-state.json", "Use it to return to a known local state."),
         },
-        options=[
-            ("--port <port>", "Choose the local Anvil port. The default is 8546.", "lk fork https://rpc.example 20000000 --port 8550"),
-            ("Additional Anvil options...", "Any remaining flags are passed to the installed Anvil command. Run anvil --help for options supported by your version.", "lk fork https://rpc.example --port 8550"),
-        ],
         related=["lk impersonate", "lk lab", "lk rpc"],
     ),
     "proxy": _help_entry("Inspect an EIP-1967-style proxy.", "lk proxy", "lk proxy", "Use it when a target may be a proxy and you need to distinguish proxy from implementation.", related=["lk implementation", "lk admin"]),
     "implementation": _help_entry("Resolve the implementation behind the selected proxy.", "lk implementation", "lk implementation", "Use it to find the code that executes behind a proxy.", related=["lk proxy", "lk admin"]),
     "admin": _help_entry("Resolve the proxy admin when supported.", "lk admin", "lk admin", "Use it when reviewing who controls upgrades.", related=["lk proxy", "lk implementation"]),
     "selectors": _help_entry(
-        "Compare the function selectors in the selected contract ABI with selector patterns detected in deployed runtime bytecode.",
+        "Show deployed runtime selectors matched to readable function signatures from the selected contract ABI.",
         "lk selectors [--compare|--raw] [bytecode]",
         "lk selectors",
-        "Use it for bytecode-level callable-surface analysis. With a selected target, Lowkey resolves detected selectors to ABI function signatures by default.",
+        "Use it to see which ABI functions have matching selectors in the selected contract's deployed runtime bytecode.",
         forms=[
-            ("lk selectors", "Show detected runtime selectors matched to readable function signatures. This is the default with a selected target.", "lk selectors"),
-            ("lk selectors --compare", "Show the ABI-versus-runtime comparison, including unmatched entries in both directions.", "lk selectors --compare"),
-            ("lk selectors --raw", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
-            ("lk selectors <bytecode>", "Extract selectors from explicitly supplied runtime bytecode.", "lk selectors 0x6000"),
+            ("Named function view", "With a selected target, match runtime selectors to ABI function names and signatures. This is the default.", "lk selectors"),
+            ("Raw selector view", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
         ],
         options=[
-            ("--compare", "Display the ABI-to-runtime comparison explicitly. This is the normal readable view when a target is selected.", "lk selectors --compare"),
-            ("--raw", "Bypass ABI name resolution and show the raw Cast selector output.", "lk selectors --raw"),
-        ],
-        notes=[
-            ("ABI selectors", "Calculated from canonical function signatures in the loaded ABI. They describe the functions declared by the interface Lowkey has loaded.", "ABI: 0xf6a8419e  createEscrow(address)"),
-            ("Runtime selectors", "Four-byte selector patterns detected in deployed runtime bytecode. They are evidence found in code, not proof that a function is reachable.", "Runtime: 0xf6a8419e  createEscrow(address)"),
-            ("ABI-ONLY", "An ABI selector was not detected in the runtime scan. Possible causes include a stale ABI, proxy routing, or a dispatcher pattern the selector scanner does not recognise.", "ABI-ONLY: 0x12345678  legacyFunction()"),
-            ("RUNTIME-ONLY", "A selector pattern was detected in bytecode but has no matching loaded ABI function. This may be a missing ABI entry, a different interface, or a false positive; inspect the disassembly.", "RUNTIME-ONLY: 0xdeadbeef"),
-            ("Important limitation", "A matching selector is a consistency lead, not proof of reachability, successful execution, or security. Proxies and custom fallback dispatchers need separate inspection.", "lk disasm"),
+            ("--compare", "Request the runtime-to-ABI comparison explicitly.", "lk selectors --compare"),
+            ("--raw", "Show Cast's low-level selector extraction without resolving function names.", "lk selectors --raw"),
         ],
         related=["lk functions", "lk sig", "lk calldata", "lk disasm"],
     ),
@@ -19079,27 +18998,9 @@ COMMAND_HELP = {
         related=["lk calldata", "lk encode", "lk fn"],
     ),
     "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
-    "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", forms=[
-            ("lk txpool", "Show pending and queued transaction counts (same as status).", "lk txpool"),
-            ("lk txpool status", "Show pending and queued transaction counts.", "lk txpool status"),
-            ("lk txpool content", "Show the full pending and queued transaction contents.", "lk txpool content"),
-            ("lk txpool pending", "Show the pending/queued transaction contents (same view as content).", "lk txpool pending"),
-        ],
-        options=[
-            ("status", "Show pending and queued transaction counts.", "lk txpool status"),
-            ("content", "Show pending and queued transaction details.", "lk txpool content"),
-            ("pending", "Alias for the content view.", "lk txpool pending"),
-        ],
-        related=["lk chain", "lk trace"]),
-    "chisel": _help_entry(
-        "Launch Foundry Chisel for small interactive Solidity experiments.",
-        "lk chisel [Chisel options...]",
-        "lk chisel",
-        "Use it for quick Solidity/EVM experiments without creating a full contract. Lowkey passes Chisel arguments through unchanged.",
-        options=[
-            ("Chisel options...", "Options depend on your installed Chisel version. Run chisel --help for the supported list.", "lk chisel --help"),
-        ],
-    ),    "ens": _help_entry("Resolve ENS names or reverse-resolve addresses.", "lk ens <name|address>", "lk ens vitalik.eth", "Use it when human-readable names help identify addresses.", related=["lk label"]),
+    "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),
+    "chisel": _help_entry("Launch/use Foundry Chisel for tiny Solidity experiments.", "lk chisel [args...]", "lk chisel", "Use it for quick Solidity/EVM experiments without creating a full contract."),
+    "ens": _help_entry("Resolve ENS names or reverse-resolve addresses.", "lk ens <name|address>", "lk ens vitalik.eth", "Use it when human-readable names help identify addresses.", related=["lk label"]),
     "token": _help_entry(
         "Read basic ERC-20 metadata or a holder balance.",
         "lk token <token> | lk token balance <token> <holder>",
@@ -19128,10 +19029,8 @@ COMMAND_HELP = {
         forms=[
             ("lk fuzz", "Run the project's normal tests, including fuzz tests that Forge discovers.", "lk fuzz"),
             ("lk fuzz --fuzz-runs <number>", "Tell Forge how many random inputs to try for each fuzz test.", "lk fuzz --fuzz-runs 1000"),
-            ("lk fuzz replay / lk fuzz rerun", "Replay saved failing Forge tests.", "lk fuzz replay"),
-            ("lk fuzz failures / lk fuzz corpus", "Show saved fuzz and invariant failure files.", "lk fuzz failures"),
-            ("lk fuzz watch [Forge options...]", "Run Forge tests in watch mode and rerun when source files change.", "lk fuzz watch"),
-            ("lk fuzz [Forge options...]", "Pass additional test settings through to Forge.", "lk fuzz --match-test test_withdraw -vvvv"),
+            ("lk fuzz replay", "Run saved failing fuzz test cases again.", "lk fuzz replay"),
+            ("lk fuzz failures", "Show saved fuzz and invariant failure files.", "lk fuzz failures"),
         ],
         options=[
             ("--fuzz-runs <number>", "Set how many random inputs Forge should try for each fuzz test.", "lk fuzz --fuzz-runs 1000"),
@@ -19150,40 +19049,10 @@ COMMAND_HELP = {
             ("--match-test <pattern>", "Run only invariant tests whose test name matches the pattern you give.", "lk invariant --match-test invariant_.*"),
         ],
         related=["lk fuzz", "lk matrix", "lk changes"],
-    ),    "mutate": _help_entry(
-        "Run Foundry mutation testing.",
-        "lk mutate [Forge test options...]",
-        "lk mutate --match-test test_withdraw",
-        "Use it to check whether your tests notice meaningful code changes. Lowkey adds Forge's --mutate flag and passes your remaining arguments to Forge.",
-        options=[
-            ("Forge test options...", "Additional options are passed to forge test. Run forge test --help for supported options for your installed version.", "lk mutate --match-test test_withdraw"),
-        ],
-        related=["lk test", "lk fuzz"],
-    ),    "symbolic": _help_entry(
-        "Run symbolic-testing workflows through Foundry.",
-        "lk symbolic [emit] [Forge test options...]",
-        "lk symbolic emit",
-        "Use it when symbolic path exploration is useful. Lowkey adds Forge's --symbolic flag; remaining arguments are passed to Forge.",
-        forms=[
-            ("lk symbolic", "Run symbolic testing with the default test selection.", "lk symbolic"),
-            ("lk symbolic emit", "Ask Forge to emit regression cases from symbolic execution.", "lk symbolic emit"),
-            ("lk symbolic emit [Forge options...]", "Pass extra Forge test options after the emit mode.", "lk symbolic emit --match-test test_withdraw"),
-        ],
-        options=[
-            ("emit", "Enable Forge's regression-case emission mode by adding --emit-regression.", "lk symbolic emit"),
-            ("Forge test options...", "Pass additional options to Forge. Run forge test --help for options supported by your installed version.", "lk symbolic --match-test test_withdraw"),
-        ],
-        related=["lk fuzz", "lk invariant"],
-    ),    "brutalize": _help_entry(
-        "Run Foundry's brutalize testing mode.",
-        "lk brutalize [Forge test options...]",
-        "lk brutalize --match-test test_withdraw",
-        "Use it when you suspect edge cases around malformed or extreme inputs. Lowkey adds Forge's --brutalize flag and passes your remaining arguments to Forge.",
-        options=[
-            ("Forge test options...", "Additional options are passed to forge test. Run forge test --help for supported options for your installed version.", "lk brutalize --match-test test_withdraw"),
-        ],
-        related=["lk probe", "lk fuzz"],
-    ),    "cheat": _help_entry(
+    ),    "mutate": _help_entry("Run mutation testing when configured.", "lk mutate [args...]", "lk mutate", "Use it to check whether your tests notice meaningful code changes.", related=["lk test", "lk fuzz"]),
+    "symbolic": _help_entry("Run symbolic-testing workflows when configured.", "lk symbolic [args...]", "lk symbolic", "Use it when symbolic path exploration is useful.", related=["lk fuzz", "lk invariant"]),
+    "brutalize": _help_entry("Stress calldata/state assumptions with adversarial inputs.", "lk brutalize [args...]", "lk brutalize", "Use it when you suspect edge cases around malformed/extreme input.", related=["lk probe", "lk fuzz"]),
+    "cheat": _help_entry(
         "Open the read-only Solidity learning dictionary covering syntax, symbols, data structures, storage, calls, errors, ETH flow, interfaces, fallback/receive, and common audit concepts.",
         "lk cheat [topic] | lk cheat symbols | lk cheat search <word>",
         "lk cheat mapping",
@@ -19213,9 +19082,6 @@ COMMAND_HELP = {
             ("lk connect --list", "List concepts available to connect.", "lk connect --list"),
         ],
 
-        options=[
-            ("--list", "List every concept available to connect without starting a concept lab.", "lk connect --list"),
-        ],
         related=["lk cheat", "lk compare", "lk expression"],
     ),
     "expression": _help_entry(
@@ -19269,54 +19135,14 @@ COMMAND_HELP = {
             ("--force", "Replace existing generated artifacts with the same filenames.", "lk test-gen Vault --types unit,fuzz,invariant --force"),
             ("No-argument legacy mode", "With no arguments, replay the latest useful transaction/evidence into a Forge regression test.", "lk test-gen"),
         ],
-        options=[
-            ("--language <solidity|vyper>", "Select the generator backend. Without it, all matching supported sources are considered.", "lk test-gen Counter --language vyper"),
-            ("--types <list|all>", "Choose unit, fuzz, invariant, integration, fork, poc, regression, or formal artifacts.", "lk test-gen Vault --types unit,fuzz,invariant"),
-            ("--output-dir <path>", "Choose where complete artifacts and the report are written. Default: .audit/test-gen.", "lk test-gen Vault --output-dir .audit/review"),
-            ("--validate", "Build the baseline, compile generated artifacts, and execute eligible generated tests.", "lk test-gen Vault --types unit,fuzz,invariant --validate"),
-            ("--strict", "Require validation to pass and reject incomplete or unverified generation requests.", "lk test-gen Vault --validate --strict"),
-            ("--force", "Replace existing generated artifacts with the same filenames.", "lk test-gen Vault --types unit,fuzz,invariant --force"),
-        ],
         related=["lk generate test", "lk trace", "lk verification engines"],
     ),
-    "forge": _help_entry(
-        "Pass a native Forge subcommand and its options through Lowkey without translating them.",
-        "lk forge <forge-command> [args...]",
-        "lk forge test -vvvv",
-        "Use it when you need a Forge feature that Lowkey does not wrap separately. Forge subcommands and flags are passed through as supplied.",
-        options=[
-            ("Forge subcommand options...", "Options are interpreted by your installed Forge version. Use forge --help or forge <subcommand> --help for the authoritative option list.", "lk forge test --help"),
-        ],
-        related=["lk build", "lk test"],
-    ),    "build": _help_entry(
-        "Compile the current project with Foundry.",
-        "lk build [Forge build options...]",
-        "lk build",
-        "Use it before trusting artifacts, ABI data, or storage layout. Extra arguments are passed to forge build.",
-        options=[
-            ("Forge build options...", "Pass build options to Forge. Run forge build --help to see options supported by your installed version.", "lk forge build --help"),
-        ],
-        related=["lk test", "lk lab"],
-    ),    "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
-    "script": _help_entry(
-        "Run a native Forge script.",
-        "lk script <script-path> [Forge script options...]",
-        "lk script script/LocalDeploy.s.sol --sig run()",
-        "Use it when the project already has a useful setup/deployment script. Script options are passed through to Forge.",
-        options=[
-            ("Forge script options...", "Pass script options to Forge. Run forge script --help for options supported by your installed version.", "lk forge script --help"),
-        ],
-        related=["lk lab", "lk forge"],
-    ),    "inspect": _help_entry(
-        "Run native Forge inspect commands.",
-        "lk inspect <Contract> <field> [Forge inspect options...]",
-        "lk inspect MyContract storage-layout --json",
-        "Use it for compiler metadata Lowkey does not wrap directly. Inspect options are passed through to Forge.",
-        options=[
-            ("Forge inspect options...", "Pass inspect options to Forge. Run forge inspect --help for your installed version.", "lk forge inspect --help"),
-        ],
-        related=["lk layout", "lk forge"],
-    ),    "coverage": _help_entry(
+    "forge": _help_entry("Pass a native Forge command through Lowkey.", "lk forge <forge-command> [args...]", "lk forge test -vvvv", "Use it when you need a Forge feature that Lowkey does not wrap separately.", related=["lk build", "lk test"]),
+    "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
+    "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
+    "script": _help_entry("Run a native Forge script.", "lk script <args...>", "lk script script/LocalDeploy.s.sol --sig run()", "Use it when the project already has a useful setup/deployment script.", related=["lk lab", "lk forge"]),
+    "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect MyContract storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
+    "coverage": _help_entry(
         "Run Foundry coverage reporting and optionally write an LCOV report for editor extensions such as Coverage Gutters (short alias: lk cov).",
         "lk coverage [Forge options...]",
         "lk coverage --report lcov --lcov-version 1.0",
@@ -19336,28 +19162,11 @@ COMMAND_HELP = {
     ),
     "lint": _help_entry("Run Forge lint tooling when supported.", "lk lint", "lk lint", "Use it for quick static/code-quality checks.", related=["lk geiger", "lk doctor"]),
     "geiger": _help_entry("Run Geiger-style scanning when available.", "lk geiger", "lk geiger", "Use it as an extra dependency/security signal.", related=["lk lint", "lk audit"]),
-    "fmt": _help_entry(
-        "Format Foundry source files.",
-        "lk fmt [Forge fmt options...]",
-        "lk fmt",
-        "Use it after intentional Solidity edits. Extra arguments are passed to forge fmt.",
-        options=[
-            ("Forge fmt options...", "Pass formatting options to Forge. Run forge fmt --help for options supported by your installed version.", "lk forge fmt --help"),
-        ],
-        related=["lk build", "lk test"],
-    ),    "create": _help_entry("Create a new Foundry component.", "lk create", "lk create", "Use it while bootstrapping contracts, libraries, or tests."),
+    "fmt": _help_entry("Format Foundry source files.", "lk fmt", "lk fmt", "Use it after intentional Solidity edits.", related=["lk build", "lk test"]),
+    "create": _help_entry("Create a new Foundry component.", "lk create", "lk create", "Use it while bootstrapping contracts, libraries, or tests."),
     "batch": _help_entry("Run one Lowkey command per line from a file.", "lk batch <command-file>", "lk batch audit-steps.lk", "Use it for repeatable local investigation sequences.", related=["lk audit"]),
-    "raw": _help_entry(
-        "Run a raw Cast subcommand when Lowkey has no friendlier wrapper.",
-        "lk raw <cast-subcommand> [Cast options...]",
-        "lk raw storage 0",
-        "Use it as the advanced EVM inspection escape hatch. Lowkey passes the selected Cast command and its arguments through unchanged.",
-        options=[
-            ("Cast subcommand options...", "Options are interpreted by your installed Cast version. Run cast --help or cast <subcommand> --help for the authoritative list.", "lk raw storage --help"),
-        ],
-        related=["lk encode", "lk tx"],
-    ),    "gas": _help_entry("Estimate gas for a function call.", "lk gas <function> [args]", "lk gas setValue 10", "Use it to see the transaction's estimated gas cost before sending.", argument_types=ABI_CALL_ARGUMENT_TYPES,
-        related=["lk send", "lk trace"]),
+    "raw": _help_entry("Run a raw Cast command when Lowkey has no friendlier wrapper.", "lk raw <cast-subcommand> [args...]", "lk raw storage 0", "Use it as the advanced EVM inspection escape hatch.", related=["lk encode", "lk tx"]),
+    "gas": _help_entry("Estimate gas for a function call.", "lk gas <function> [args]", "lk gas setValue 10", "Use it to see the transaction's estimated gas cost before sending.", related=["lk send", "lk trace"]),
     "slither": _help_entry(
         "Run Slither, a Solidity code checker, through Lowkey.",
         "lk slither [options]",
@@ -19415,9 +19224,6 @@ COMMAND_HELP = {
             ("lk slots <slot>", "Read one storage word.", "lk slots 0"),
             ("lk slots <slot> [slot ...]", "Read selected slots side by side.", "lk slots 0 1 2 3"),
             ("lk slots <start>..<end>", "Read up to 256 consecutive slots.", "lk slots 0..15"),
-        ],
-        options=[
-            ("--block <block>", "Read historical storage at a block number or supported block tag.", "lk slots 3 --block latest"),
         ],
         related=["lk storage", "lk layout", "lk mapping"],
     ),
@@ -19658,16 +19464,6 @@ def _render_command_help(path):
         print("Arrays and tuples are each ONE argument; quote the whole bracket/tuple value in your shell.")
         for abi_type, description, example in argument_types:
             print(f"  {abi_type}")
-            print(f"      {description}")
-            print(f"      Example: {example}")
-
-    notes = entry.get("notes") or []
-    if notes:
-        print("")
-        print("OUTPUT / HOW TO READ")
-        print("--------------------")
-        for label, description, example in notes:
-            print(f"  {label}")
             print(f"      {description}")
             print(f"      Example: {example}")
 
