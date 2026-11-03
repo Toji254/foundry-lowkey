@@ -15604,12 +15604,17 @@ def run_chisel(args, config=None):
         for token in native_args
     )
     chisel_args = list(native_args)
+    eval_index = chisel_args.index("eval") if "eval" in chisel_args else None
+    eval_args = chisel_args[eval_index:] if eval_index is not None else []
+    if eval_index is not None:
+        chisel_args = chisel_args[:eval_index]
     if not verbose_requested:
         chisel_args.append("-v")
 
     with tempfile.TemporaryDirectory(prefix="lowkey-chisel-") as temporary:
         prelude = _write_chisel_prelude(selected, temporary)
         chisel_args.extend(["--prelude", prelude["directory"]])
+        chisel_args.extend(eval_args)
         print(prelude["next_step"])
         print("Type !help for Chisel commands; !source shows the generated REPL source.")
         return _launch_chisel(binary, chisel_args, cwd=root)
