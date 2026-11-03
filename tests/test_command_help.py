@@ -204,7 +204,7 @@ class CommandHelpTests(unittest.TestCase):
                 run.assert_called_once()
         rendered = output.getvalue()
         self.assertIn("INSTALLED TOOL OPTIONS", rendered)
-        self.assertIn("You do not need to leave the lk help menu", rendered)
+        self.assertIn("you do not need to leave the lk help menu", rendered)
         self.assertIn("--skip <SKIP>", rendered)
         lk._NATIVE_HELP_OUTPUT_CACHE.clear()
 
