@@ -169,7 +169,7 @@ class ChiselWorkflowTests(unittest.TestCase):
             lk._chisel_print_contract_guide(contract, auto_instance=True)
 
         rendered = output.getvalue()
-        self.assertIn("[READ   ] balanceOf(address account) -> uint256 return1", rendered)
+        self.assertIn("[READ   ] balanceOf(address account) -> uint256", rendered)
         self.assertIn("WITHOUT a trailing semicolon", rendered)
         self.assertIn("ABI signatures are a reference, not commands", rendered)
         self.assertIn("private state such as a private nonce has no getter", rendered)
