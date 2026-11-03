@@ -103,6 +103,78 @@ class ChiselWorkflowTests(unittest.TestCase):
         self.assertIn("lk chisel --contract", error)
         self.assertIn("VaultFactory", error)
 
+
+    def test_interface_guide_lists_abi_reads_writes_payable_events_and_returns(self):
+        contract = {
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "EscrowID",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "ID", "type": "bytes32"}],
+                    "outputs": [
+                        {"name": "creator", "type": "address"},
+                        {"name": "recipient", "type": "address"},
+                        {"name": "amount", "type": "uint256"},
+                        {"name": "currentstatus", "type": "uint8"},
+                        {"name": "id", "type": "bytes32"},
+                    ],
+                },
+                {
+                    "type": "function",
+                    "name": "createEscrow",
+                    "stateMutability": "payable",
+                    "inputs": [{"name": "recipient", "type": "address"}],
+                    "outputs": [{"name": "escrowId", "type": "bytes32"}],
+                },
+                {
+                    "type": "function",
+                    "name": "acceptEscrow",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{"name": "escrowId", "type": "bytes32"}],
+                    "outputs": [],
+                },
+                {
+                    "type": "event",
+                    "name": "CreateEscrow",
+                    "inputs": [
+                        {"name": "recipient", "type": "address", "indexed": True},
+                        {"name": "amount", "type": "uint256", "indexed": False},
+                    ],
+                },
+            ]
+        }
+
+        interface = lk._chisel_contract_interface(contract)
+
+        self.assertIn(("READ", "EscrowID(bytes32 ID) -> (address creator, address recipient, uint256 amount, uint8 currentstatus, bytes32 id)"), interface["functions"])
+        self.assertIn(("WRITE", "acceptEscrow(bytes32 escrowId)"), interface["functions"])
+        self.assertIn(("PAYABLE", "createEscrow(address recipient) -> bytes32 escrowId"), interface["functions"])
+        self.assertEqual(interface["events"], ["CreateEscrow(address indexed recipient, uint256 amount)"])
+
+    def test_interface_guide_explains_valid_repl_input_and_private_visibility(self):
+        contract = {
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "balanceOf",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "account", "type": "address"}],
+                    "outputs": [{"name": "", "type": "uint256"}],
+                }
+            ]
+        }
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk._chisel_print_contract_guide(contract, auto_instance=True)
+
+        rendered = output.getvalue()
+        self.assertIn("[READ   ] balanceOf(address account) -> uint256 return1", rendered)
+        self.assertIn("WITHOUT a trailing semicolon", rendered)
+        self.assertIn("ABI signatures are a reference, not commands", rendered)
+        self.assertIn("private state such as a private nonce has no getter", rendered)
+
+
     def test_prelude_imports_contract_and_auto_instantiates_safe_constructor(self):
         contract = {
             "name": "Vault",
