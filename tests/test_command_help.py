@@ -61,7 +61,7 @@ class CommandHelpTests(unittest.TestCase):
                 # Every flag printed in the usage line must have an explanation
                 # in COMMAND VARIATIONS or OPTIONS / MODES. Global help flags
                 # are described in HELP TIP instead.
-                usage_flags = set(re.findall(r"(?<![A-Za-z0-9_])--[A-Za-z][A-Za-z0-9-]*", entry.get("usage", "")))
+                usage_flags = set(re.findall(r"(?<![A-Za-z0-9_-])(?:--[A-Za-z][A-Za-z0-9-]*|-[A-Za-z][A-Za-z0-9-]*)", entry.get("usage", "")))
                 documented_text = " ".join(
                     str(value)
                     for field in ("forms", "options")
@@ -70,7 +70,7 @@ class CommandHelpTests(unittest.TestCase):
                 )
                 undocumented = sorted(
                     flag for flag in usage_flags
-                    if flag not in documented_text and flag not in {"--h", "--help"}
+                    if flag not in documented_text and flag not in {"--h", "--help", "-h"}
                 )
                 self.assertEqual(undocumented, [], f"undocumented usage flags for {' '.join(path)}")
 
@@ -85,6 +85,110 @@ class CommandHelpTests(unittest.TestCase):
                 walk(children, path)
 
         walk(lk.COMMAND_HELP)
+
+    def test_functions_and_fn_document_every_supported_filter_spelling(self):
+        parser_args = [
+            "--verbose",
+            "--visibility=external",
+            "-m", "payable",
+            "--class=admin",
+            "--risk",
+            "withdraw",
+        ]
+        options, query = lk._parse_function_options(parser_args)
+        self.assertIsNotNone(options)
+        self.assertEqual(query, "withdraw")
+        self.assertEqual(
+            options,
+            {
+                "verbose": True,
+                "visibility": "external",
+                "mutability": "payable",
+                "class": "admin",
+                "risk": True,
+            },
+        )
+
+        supported_flags = (
+            "-v", "--verbose",
+            "-V", "--visibility",
+            "-m", "--mutability",
+            "-c", "--class",
+            "-r", "--risk",
+        )
+        for command in ("functions", "fn"):
+            with self.subTest(command=command):
+                entry = lk.COMMAND_HELP[command]
+                documented = " ".join(
+                    str(value)
+                    for field in ("forms", "options")
+                    for row in (entry.get(field) or [])
+                    for value in row
+                )
+                for flag in supported_flags:
+                    self.assertIn(flag, documented)
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                for flag in supported_flags:
+                    self.assertIn(flag, output)
+
+    def test_targets_help_documents_all_and_dispatch_rejects_unknown_arguments(self):
+        code, output = self.capture_dispatch("targets", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--all", output)
+        self.assertIn("support contracts", output)
+        self.assertIn("lk targets --all", output)
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_targets") as run_targets:
+            result = lk._dispatch_command_impl("targets", ["--all"], {})
+        self.assertEqual(result, run_targets.return_value)
+        run_targets.assert_called_once_with({}, include_support=True)
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_targets") as run_targets:
+            result = lk._dispatch_command_impl("targets", ["--unknown"], {})
+        self.assertEqual(result, 2)
+        run_targets.assert_not_called()
+
+    def test_slots_help_documents_historical_block_reads(self):
+        code, output = self.capture_dispatch("slots", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--block <block>", output)
+        self.assertIn("historical storage", output)
+        self.assertIn("lk slots 3 --block latest", output)
+
+    def test_forwarded_tool_help_examples_call_the_upstream_binary(self):
+        native_commands = (
+            "bind", "bind-json", "cache", "clean", "compiler", "completions",
+            "config", "doc", "eip712", "flatten", "init", "install", "lsp",
+            "remappings", "remove", "soldeer", "tree", "update",
+            "verify-bytecode", "verify-check", "verify-contract",
+        )
+        for command in native_commands:
+            with self.subTest(command=command):
+                entry = lk.COMMAND_HELP[command]
+                examples = [entry.get("example", "")]
+                examples.extend(row[2] for row in (entry.get("options") or []))
+                self.assertIn(f"forge {command} --help", " ".join(examples))
+                self.assertNotIn(f"lk {command} --help", " ".join(examples))
+
+        chisel = lk.COMMAND_HELP["chisel"]
+        chisel_examples = [chisel.get("example", "")]
+        chisel_examples.extend(row[2] for row in (chisel.get("options") or []))
+        self.assertIn("chisel --help", " ".join(chisel_examples))
+        self.assertNotIn("lk chisel --help", " ".join(chisel_examples))
+
+        raw = lk.COMMAND_HELP["raw"]
+        raw_examples = [raw.get("example", "")]
+        raw_examples.extend(row[2] for row in (raw.get("options") or []))
+        self.assertIn("cast storage --help", " ".join(raw_examples))
+        self.assertNotIn("lk raw storage --help", " ".join(raw_examples))
+
+        logs_examples = " ".join(
+            row[2]
+            for row in (lk.COMMAND_HELP["logs"].get("options") or [])
+        )
+        self.assertIn("cast logs --help", logs_examples)
+        self.assertNotIn("lk raw logs --help", logs_examples)
 
     def test_sig_help_shows_copyable_quoted_signature_and_explains_bash(self):
         code, output = self.capture_dispatch("sig", "--h")
