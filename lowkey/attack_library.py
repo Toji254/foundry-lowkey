@@ -744,8 +744,8 @@ def render_list(args):
     print()
     for row in rows[:limit]:
         entry = row["entry"]
-        print("%-9s [%-13s] %-38s %s" % (
-            entry["id"], entry["severity"].upper(), entry["title"], entry["category"]
+        print("%-9s [%-13s] %-38s %s  (%s)" % (
+            entry["id"], entry["severity"].upper(), entry["title"], entry["category"], entry["slug"]
         ))
     if len(rows) > limit:
         print()
