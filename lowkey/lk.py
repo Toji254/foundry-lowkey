@@ -12511,7 +12511,7 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
                         Path.home().resolve()
                     ).as_posix()
                 except (OSError, ValueError):
-                    project_label = Path(root).name
+                    project_label = str(Path(root).expanduser().resolve())
                 origin = project_label
             elif wallet_name:
                 category = "wallets"
@@ -20046,7 +20046,7 @@ COMMAND_HELP = {
         "Deploy a contract directly into the local Anvil lab using Lowkey's generic ABI deployment path and constructor prompts.",
         "lk deploy [Contract] | lk deploy --artifact <Contract>",
         "lk deploy TargetHolder",
-        "Use it when you have compiled a contract and want to deploy it now without first creating a project-specific deployment script. This command uses the same local Anvil lifecycle as lk lab.",
+        "Deploy one compiled contract directly through the generic ABI path. This skips project-native lab setup; use lk lab when you want Lowkey to assemble the project's broader attack environment. Both commands share the same local Anvil lifecycle.",
         forms=[
             ("lk deploy [Contract]", "Deploy through the generic ABI path. Lowkey discovers the artifact and prompts for constructor values when needed. Equivalent to lk lab --generic [Contract].", "lk deploy TargetHolder"),
             ("lk deploy --generic [Contract]", "Explicitly select the generic ABI deployment path.", "lk deploy --generic TargetHolder"),
