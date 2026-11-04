@@ -34,7 +34,7 @@ CAPABILITIES = [
 (2,"control","Sequential control gate","implemented"),
 (3,"mutation-score","Harness mutation score","implemented"),
 (4,"target-coverage","Coverage restricted to target lines","implemented"),
-(5,"provenance","Signed/hashed run provenance","implemented"),
+(5,"provenance","Artifact hash and run provenance","partial"),
 (6,"sandbox","Isolated untrusted build/test execution","partial"),
 (7,"decompile","Unverified bytecode decompilation","adapter-required"),
 (8,"storage-infer","Probabilistic storage-layout inference","partial"),
@@ -452,6 +452,11 @@ contract NoReturnERC20 {mapping(address=>uint256) public balanceOf;function mint
 """)
     print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Supports fee, rebase-like manual balance change, false-return, no-return, decimals, pause, blacklist and callback hooks. This is a test fixture, not a standard-complete ERC-20 suite."); return 0
 def run_control_alias(args): return control(args)
+def run_control(args):
+    """Entry point used by break_engine for the mandatory control gate."""
+    return control(args)
+
+
 def mutation(args):
     try:
         try: from . import behavioral_validation
@@ -467,7 +472,9 @@ def reprove(args):
     bad=[{"line":i,"text":line.strip()} for i,line in enumerate(text.splitlines(),1) if rx.search(line)]
     argv=json.loads(ns.argv_json)
     if not isinstance(argv,list) or not all(isinstance(x,str) for x in argv): raise ValueError("--argv-json must be a JSON string array.")
-    if bad: return output({"status":"UNPROVEN","cheatcodes":bad,"command_run":False}) or 1
+    if bad:
+        print(json.dumps({"status":"UNPROVEN","cheatcodes":bad,"command_run":False}, indent=2))
+        return 1
     proc=run(argv,root,900); payload={"status":"REPRODUCED_FORK" if proc.returncode==0 else "UNPROVEN","exit_code":proc.returncode,"stdout":proc.stdout[-3000:],"stderr":proc.stderr[-1500:],"limitation":"Check actual recipient gains, gas, fees and slippage. Local fork success is not mainnet broadcast proof."}
     write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 0 if proc.returncode==0 else 1
 def fork_cache(args):
