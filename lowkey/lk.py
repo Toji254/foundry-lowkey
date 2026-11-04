@@ -1180,7 +1180,21 @@ def target_aliases(config, root=None):
             except OSError:
                 continue
             artifact_data = read_artifact(str(artifact_path)) if artifact_path.is_file() else None
-            if artifact_data and not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
+            # An explicit project-owned alias may intentionally point at a
+            # contract deployed from a sibling project (for example, a
+            # constructor dependency under investigation). Keep the strict
+            # first-party artifact filter for files inside this project, but
+            # do not hide a manually pinned external ABI artifact.
+            try:
+                artifact_path.relative_to(project_root)
+                artifact_is_local = True
+            except ValueError:
+                artifact_is_local = False
+            if (
+                artifact_data
+                and artifact_is_local
+                and not artifact_is_project_application(project_root, str(artifact_path), artifact_data)
+            ):
                 continue
 
         lowered_name = str(name).lower()
