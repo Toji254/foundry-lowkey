@@ -56,6 +56,14 @@ class GodmodeTests(unittest.TestCase):
             "prestate_addresses": [target, sender, wrapper],
             "prestate_slots": [{"address": target, "slot": "0x" + "0" * 64}],
             "metric_addresses": [sender, wrapper],
+            "trace_expectations": [{
+                "address": target,
+                "control_min_calls": 1,
+                "control_max_calls": 1,
+                "attack_min_calls": 2,
+                "attack_max_calls": 2,
+                "description": "Reentrancy adds exactly one nested target withdrawal call."
+            }],
             "control": {"argv": [sys.executable, "-c", "pass"]},
             "attack": {"argv": [sys.executable, "-c", "pass"]},
         }
@@ -122,19 +130,28 @@ class GodmodeTests(unittest.TestCase):
                     return state["scenario_slot"]
                 return "0x" + "0" * 63 + "1"
             if method == "debug_traceTransaction":
+                calls = [{
+                    "type": "CALL",
+                    "from": wrapper,
+                    "to": target,
+                    "input": "0xdeadbeef",
+                    "value": "0x0",
+                }]
+                if state["tx_hash"] == "0x" + "b" * 64:
+                    calls.append({
+                        "type": "CALL",
+                        "from": wrapper,
+                        "to": target,
+                        "input": "0xdeadbeef",
+                        "value": "0x0",
+                    })
                 return {
                     "type": "CALL",
                     "from": sender,
                     "to": wrapper,
                     "input": state["input"],
                     "value": "0x0",
-                    "calls": [{
-                        "type": "CALL",
-                        "from": wrapper,
-                        "to": target,
-                        "input": "0xdeadbeef",
-                        "value": "0x0",
-                    }],
+                    "calls": calls,
                 }
             raise AssertionError("Unexpected RPC method: " + method)
         return fake_rpc
