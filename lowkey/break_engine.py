@@ -1141,7 +1141,8 @@ def _render_repeat_test(
     if seed_fund:
         seed_amount = _solidity_amount_literal(seed_fund)
         if setup_signature:
-            setup_arg = ", 1" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
+            setup_values = _setup_argument_expressions(setup_signature, "ATTACKER")
+            setup_arg = ", " + ", ".join(setup_values) if setup_values else ""
             setup_value = f"{{value: setupValue}}" if asset_signature else f"{{value: {seed_amount}}}"
             setup_value_decl = (
                 f"        uint256 setupValue = assetReadOk ? 0 : {seed_amount};\n"
@@ -1159,7 +1160,8 @@ def _render_repeat_test(
         else:
             setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
     elif setup_signature:
-        setup_arg = ", 1 ether" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
+        setup_values = _setup_argument_expressions(setup_signature, "ATTACKER")
+        setup_arg = ", " + ", ".join(setup_values) if setup_values else ""
         setup_block += """
         bytes memory setupData = abi.encodeWithSignature("%s"%s);
         uint256 setupValue = assetReadOk ? 0 : 2 wei;
