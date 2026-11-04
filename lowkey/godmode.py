@@ -491,6 +491,9 @@ def _trace_control_run(root, url, name, entry, metric_rx, spec, env):
                 slots.append({"address":address,"slot":slot})
             if not slots: raise ValueError("Declare at least one prestate_slots entry for the target accounting/authorization state.")
             entry_digest,entry_call=_control_entry_digest(tx,chain_id)
+            trace_entry_digest,trace_entry=_control_entry_digest(trace,chain_id)
+            if trace_entry_digest!=entry_digest:
+                raise ValueError(f"{name} callTracer root does not match eth_getTransactionByHash.")
             prestate_digest,prestate=_control_prestate_digest(url,receipt,addresses,slots)
             return {
                 "exit_code":proc.returncode,
