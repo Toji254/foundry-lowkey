@@ -19,8 +19,8 @@ A successful transaction, a revert, a suspicious name, a static finding, or a ta
 | Family | Current implementation | Can generic `lk break` claim BREAK? | Limitation |
 |---|---|---:|---|
 | Reentrancy | Forge callback harness with a sequential non-reentrant control run from a reverted snapshot | Conditionally | Requires a valid target setup and measurable differential; simulated balances remain a fidelity limitation; runtime compile/fixture validation is still required |
-| Replay | Repeat-call harness with optional address-keyed entitlement getter | Conditionally | Entitlement discovery is heuristic; it does not yet compare against a sequential control |
-| Accounting | Repeat-call harness with ETH/token balance observations and optional entitlement getter | Conditionally | Not a general accounting invariant; token units and unusual token semantics need dedicated adapters |
+| Replay | Repeat-call harness with optional address-keyed entitlement getter, two-call success check and attacker/target balance deltas | Conditionally | BREAK requires the pre-attack entitlement getter; setup/getter discovery is heuristic and this path does not yet use an independent sequential control |
+| Accounting | Repeat-call harness with ETH/token balance observations, decimal-aware optional token seeding, safe no-return/bool-return approvals and same-asset payout/outflow comparison | Conditionally | BREAK requires both calls to succeed and payout to exceed entitlement in the same asset unit with target outflow corroboration; this is not a general accounting invariant and unusual token semantics need dedicated adapters |
 | Access control | Generic unauthorized-call probe | No | Call success does not prove privilege escalation or state compromise |
 | Upgrade | Generic lifecycle/privileged-call probe | No | Needs implementation/admin state verification and upgrade-specific invariants |
 | Boundary | Zero/max argument probes | No | Successful edge calls are observations until a violated property is measured |
