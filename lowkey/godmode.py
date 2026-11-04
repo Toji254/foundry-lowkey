@@ -513,11 +513,33 @@ def run_control(args):
 
 
 def mutation(args):
+    p=argparse.ArgumentParser(prog="lk mutation-score")
+    p.add_argument("manifest")
+    p.add_argument("--min-score",type=float,default=0.90)
+    p.add_argument("--timeout",type=int,default=300)
+    p.add_argument("--output",default=".audit/verification/mutation-score-report.json")
+    ns=p.parse_args(args)
+    if not 0.0<=ns.min_score<=1.0: raise ValueError("--min-score must be between 0 and 1.")
     try:
         try: from . import behavioral_validation
         except ImportError: import behavioral_validation
-        return behavioral_validation.run_cli(args)
     except ImportError as exc: raise RuntimeError("Existing mutation runner unavailable: "+str(exc))
+    rc=behavioral_validation.run_cli([ns.manifest,"--output",ns.output,"--timeout",str(ns.timeout)])
+    if rc!=0:
+        print("MUTATION GATE: FAIL (baseline or mutation campaign did not complete)")
+        return rc
+    report_path=Path(ns.output).expanduser()
+    if not report_path.is_absolute(): report_path=Path.cwd()/report_path
+    if not report_path.is_file(): raise RuntimeError("Mutation runner did not create its report: "+str(report_path))
+    report=json.loads(report_path.read_text(encoding="utf-8"))
+    score=report.get("mutation_score")
+    passed=isinstance(score,(float,int)) and score>=ns.min_score
+    print("MUTATION GATE: "+("PASS" if passed else "FAIL"))
+    print("  Required: "+format(ns.min_score,".1%"))
+    print("  Observed: "+(format(score,".1%") if isinstance(score,(int,float)) else "not available"))
+    print("  Invalid/timeouts are excluded from the score and must be reviewed separately.")
+    return 0 if passed else 1
+
 def reprove(args):
     p=argparse.ArgumentParser(prog="lk reprove"); p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True); p.add_argument("--argv-json",required=True); ns=p.parse_args(args)
     root=root_path(ns.root); h=(root/ns.harness).resolve()
