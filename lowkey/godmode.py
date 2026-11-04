@@ -319,36 +319,124 @@ def selectors(target,url):
 def run(argv,cwd,timeout=300):
     if not argv or not all(isinstance(x,str) for x in argv): raise ValueError("Supply a non-empty argv array.")
     return subprocess.run(argv,cwd=str(cwd),capture_output=True,text=True,timeout=max(1,min(timeout,3600)),shell=False)
+def analyze_harness_fidelity(source_text, path="<memory>"):
+    """Static fidelity inventory for a generated test harness; never a proof verdict."""
+    source_text=str(source_text or "")
+    patterns={
+        "synthetic_eth":r"\bvm\.deal\s*\(",
+        "synthetic_token_balance":r"(?<![\w.])deal\s*\(\s*(?:token|IERC20|address\s*\()",
+        "caller_impersonation":r"\bvm\.(?:prank|startPrank|hoax)\s*\(",
+        "storage_override":r"\bvm\.(?:store|load)\s*\(",
+        "code_injection":r"\bvm\.etch\s*\(",
+        "external_call_mock":r"\bvm\.(?:mockCall|mockCallRevert|mockFunction|expectCall)\s*\(",
+        "time_or_block_override":r"\bvm\.(?:warp|roll|setBlockhash)\s*\(",
+        "test_assumption":r"\bvm\.(?:assume|bound)\s*\(",
+    }
+    signals=[]
+    for kind,pattern in patterns.items():
+        rx=re.compile(pattern)
+        for match in rx.finditer(source_text):
+            line=source_text.count("\n",0,match.start())+1
+            signals.append({"kind":kind,"line":line,"token":match.group(0)})
+    pinned=bool(re.search(r"\bvm\.(?:createSelectFork|createFork)\s*\([^;]*,\s*(?:0x[0-9a-fA-F]+|[0-9]+)",source_text))
+    gas_measured=bool(re.search(r"\bgasleft\s*\(|snapshotGas|startSnapshotGas",source_text,re.I))
+    synthetic_kinds={x["kind"] for x in signals}
+    synthetic_state=bool(synthetic_kinds & {"synthetic_eth","synthetic_token_balance","storage_override","code_injection","external_call_mock","time_or_block_override"})
+    gaps=[]
+    labels={
+        "synthetic_eth":"Foundry ETH balances are synthetically assigned",
+        "synthetic_token_balance":"Token balances are synthetically assigned",
+        "caller_impersonation":"Caller identity is impersonated with a test cheatcode",
+        "storage_override":"Storage is directly overridden with a test cheatcode",
+        "code_injection":"Runtime code is injected with a test cheatcode",
+        "external_call_mock":"External dependency behavior is mocked",
+        "time_or_block_override":"Timestamp or block number is overridden",
+        "test_assumption":"Fuzzer inputs are constrained with assumptions",
+    }
+    for kind in sorted(synthetic_kinds):
+        gaps.append(labels.get(kind,kind))
+    if not pinned: gaps.append("No explicit block-pinned fork creation was detected")
+    if not gas_measured: gaps.append("Transaction gas cost is not measured by this harness")
+    gaps.append("Net profit and financing costs are not independently verified by a test harness scan")
+    return {
+        "schema_version":1,
+        "path":str(path),
+        "source_sha256":hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+        "signals":signals,
+        "synthetic_eth":"synthetic_eth" in synthetic_kinds,
+        "synthetic_token_balance":"synthetic_token_balance" in synthetic_kinds,
+        "caller_impersonation":"caller_impersonation" in synthetic_kinds,
+        "storage_override":"storage_override" in synthetic_kinds,
+        "code_injection":"code_injection" in synthetic_kinds,
+        "external_call_mock":"external_call_mock" in synthetic_kinds,
+        "time_or_block_override":"time_or_block_override" in synthetic_kinds,
+        "fork_block_pinned":pinned,
+        "gas_measured":gas_measured,
+        "transaction_gas_verified":False,
+        "net_profit_verified":False,
+        "synthetic_state":synthetic_state,
+        "classification":"SIMULATED" if synthetic_state or not pinned else "FORK_REPRODUCTION_CANDIDATE",
+        "confirmation_eligible":False,
+        "proof_gaps":gaps,
+        "policy":"Static harness inspection only. This record does not prove exploitability, authorization, gas realism, or profitability.",
+    }
+
+
 def control(args):
     p=argparse.ArgumentParser(prog="lk control"); p.add_argument("manifest"); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/control.json"); ns=p.parse_args(args)
     root=root_path(ns.root); mf=(root/ns.manifest).resolve()
     if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Manifest must be an existing file inside project.")
     spec=json.loads(mf.read_text()); a=spec.get("attack") or {}; c=spec.get("control") or {}
-    if not spec.get("same_calls_id"): raise ValueError("Declare same_calls_id to identify the matched call sequence.")
+    if not spec.get("same_calls_id"): raise ValueError("Declare same_calls_id as a human-readable label for the matched call sequence.")
     if not isinstance(a.get("argv"),list) or not isinstance(c.get("argv"),list): raise ValueError("Manifest requires control.argv and attack.argv.")
     cr=re.compile(str(spec.get("control_metric_regex") or "")); ar=re.compile(str(spec.get("attack_metric_regex") or ""))
     if not cr.pattern or not ar.pattern or cr.groups<1 or ar.groups<1: raise ValueError("Both metric regexes must contain a capture group for the numeric metric.")
+    sequence_rx=re.compile(str(spec.get("call_sequence_regex") or r"LOWKEY_CALL_SEQUENCE_SHA256\s+([0-9a-fA-F]{64})"),re.I)
+    context_rx=re.compile(str(spec.get("precondition_regex") or r"LOWKEY_PRECONDITION_SHA256\s+([0-9a-fA-F]{64})"),re.I)
     rows={}
     for name,entry,rx in (("control",c,cr),("attack",a,ar)):
         temp=Path(tempfile.mkdtemp(prefix="lk-control-")); work=temp/"project"
         try:
             shutil.copytree(root,work,ignore=shutil.ignore_patterns(".git",".audit","out","cache","node_modules","__pycache__"))
             proc=run([str(x) for x in entry["argv"]],work,int(spec.get("timeout_seconds",300)))
-            m=rx.search(proc.stdout+"\n"+proc.stderr)
-            rows[name]={"exit_code":proc.returncode,"metric":float(m.group(1)) if m else None,
-                        "argv":entry["argv"],"output_tail":(proc.stdout+"\n"+proc.stderr)[-2500:]}
+            combined=proc.stdout+"\n"+proc.stderr
+            metric=rx.search(combined)
+            sequence=sequence_rx.search(combined)
+            context=context_rx.search(combined)
+            sequence_value=sequence.group(1).lower() if sequence else None
+            context_value=context.group(1).lower() if context else None
+            rows[name]={"exit_code":proc.returncode,"metric":float(metric.group(1)) if metric else None,
+                        "call_sequence_sha256":sequence_value,"precondition_sha256":context_value,
+                        "argv":entry["argv"],"output_tail":combined[-2500:]}
         finally: shutil.rmtree(temp,ignore_errors=True)
     delta=None
     if rows["control"]["metric"] is not None and rows["attack"]["metric"] is not None:
         delta=rows["attack"]["metric"]-rows["control"]["metric"]
-    passed=rows["control"]["exit_code"]==0 and rows["attack"]["exit_code"]==0 and delta is not None and delta>0
+    sequence_verified=bool(rows["control"]["call_sequence_sha256"] and
+                           rows["control"]["call_sequence_sha256"]==rows["attack"]["call_sequence_sha256"])
+    preconditions_verified=bool(rows["control"]["precondition_sha256"] and
+                                rows["control"]["precondition_sha256"]==rows["attack"]["precondition_sha256"])
+    passed=(rows["control"]["exit_code"]==0 and rows["attack"]["exit_code"]==0 and
+            delta is not None and delta>0 and sequence_verified and preconditions_verified)
+    reasons=[]
+    if not sequence_verified: reasons.append("control and attack did not emit the same valid call-sequence SHA-256")
+    if not preconditions_verified: reasons.append("control and attack did not emit the same valid precondition/state SHA-256")
+    if delta is None or delta<=0: reasons.append("attack metric did not exceed control metric")
+    if rows["control"]["exit_code"]!=0 or rows["attack"]["exit_code"]!=0: reasons.append("one or both commands failed")
     out=safe_out(root,ns.output)
     payload={"created_at":now(),"status":"BREAK" if passed else "OBSERVED","control_delta":delta,
              "metric_name":spec.get("metric_name","attacker_gain"),"same_calls_id":spec["same_calls_id"],
+             "same_calls_verified":sequence_verified and preconditions_verified,
+             "call_sequence_sha256":rows["control"]["call_sequence_sha256"] if sequence_verified else None,
+             "precondition_sha256":rows["control"]["precondition_sha256"] if preconditions_verified else None,
              "target_address":spec.get("target_address"),"function":spec.get("function"),"family":spec.get("family"),
-             "runs":rows,"gate":"Both commands must pass and attack metric must exceed the sequential control metric."}
-    write_json(out,payload); print(f"{payload['status']}: control delta {delta}; evidence {out.relative_to(root)}")
+             "runs":rows,"reasons":reasons,
+             "gate":"Both commands must pass, attack metric must exceed control, and both runs must emit identical call-sequence and precondition/state digests."}
+    write_json(out,payload)
+    print(f"{payload['status']}: control delta {delta}; matched calls/state {'verified' if payload['same_calls_verified'] else 'NOT verified'}; evidence {out.relative_to(root)}")
     return 0 if passed else 1
+
+
 def coverage(args):
     p=argparse.ArgumentParser(prog="lk target-coverage"); p.add_argument("source_file"); p.add_argument("--start-line",type=int,default=1); p.add_argument("--end-line",type=int); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/target-coverage.json"); ns=p.parse_args(args)
     root=root_path(ns.root); src=(root/ns.source_file).resolve()
@@ -930,15 +1018,19 @@ def main(argv=None):
     if cmd=="target-coverage": return coverage(rest)
     if cmd=="provenance": return provenance(rest)
     if cmd=="fidelity":
-        p=argparse.ArgumentParser(prog="lk fidelity"); p.add_argument("--root",default="."); p.add_argument("--record",action="store_true"); p.add_argument("--cheatcode",action="append",default=[]); p.add_argument("--strength",choices=("heuristic","simulated-funds","reproduced-fork"),default="heuristic"); ns=p.parse_args(rest); root=root_path(ns.root)
-        try:
-            try: from . import evidence_ledger
-            except ImportError: import evidence_ledger
-            if ns.record:
-                ev=evidence_ledger.append_event(root,"fidelity_record",{"strength":ns.strength,"cheatcodes":ns.cheatcode,"created_at":now()}); print("Recorded "+ev["event_id"]); return 0
-            rows=[e for e in evidence_ledger.read_events(root) if e.get("event_type")=="fidelity_record"]; return output(rows)
-        except ImportError as exc: raise RuntimeError(str(exc))
-    if cmd=="sandbox":
+         p=argparse.ArgumentParser(prog="lk fidelity"); p.add_argument("--root",default="."); p.add_argument("--record",action="store_true"); p.add_argument("--inspect"); p.add_argument("--cheatcode",action="append",default=[]); p.add_argument("--strength",choices=("heuristic","simulated-funds","reproduced-fork"),default="heuristic"); ns=p.parse_args(rest); root=root_path(ns.root)
+         try:
+             if ns.inspect:
+                 harness=(root/ns.inspect).resolve()
+                 if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be an existing file inside the project.")
+                 return output(analyze_harness_fidelity(harness.read_text(encoding="utf-8",errors="replace"),harness.relative_to(root).as_posix()))
+             try: from . import evidence_ledger
+             except ImportError: import evidence_ledger
+             if ns.record:
+                 ev=evidence_ledger.append_event(root,"fidelity_record",{"strength":ns.strength,"cheatcodes":ns.cheatcode,"created_at":now()}); print("Recorded "+ev["event_id"]); return 0
+             rows=[e for e in evidence_ledger.read_events(root) if e.get("event_type")=="fidelity_record"]; return output(rows)
+         except ImportError as exc: raise RuntimeError(str(exc))
+     if cmd=="sandbox":
         p=argparse.ArgumentParser(prog="lk sandbox"); p.add_argument("--root",default="."); p.add_argument("--timeout",type=int,default=300); p.add_argument("command",nargs=argparse.REMAINDER); ns=p.parse_args(rest)
         root=root_path(ns.root)
         if not shutil.which("bwrap"): raise RuntimeError("bubblewrap unavailable; refusing unsandboxed execution.")
