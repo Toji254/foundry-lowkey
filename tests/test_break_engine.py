@@ -299,6 +299,9 @@ class BreakEngineTests(unittest.TestCase):
         # Reentrancy uses the generated hostile wrapper as the caller; it does
         # not need the repeat/accounting harness's ATTACKER constant.
         self.assertIn("LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET);", body)
+        self.assertIn("vm.deal(address(hostile), 1 wei);", body)
+        self.assertNotIn("vm.deal(address(this), 100 ether);", body)
+        self.assertNotIn("vm.deal(address(hostile), 100 ether);", body)
         funded = break_engine._render_reentrancy_test(
             target, fn, "withdraw()", [], 3, seed_fund="10 ether"
         )
@@ -339,6 +342,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("SETUP_VALUE_WEI", body)
 
         self.assertIn("console2.log(\"SETUP_VALUE_WEI\", uint256(10 ether));", body)
+        self.assertIn("vm.deal(address(hostile), (10 ether) + 1 wei);", body)
 
         self.assertIn("lastSeedSuccess = ok;", body)
         self.assertIn("lastAttackSuccess = ok;", body)
