@@ -7357,16 +7357,17 @@ def run_custody(config, args=None):
     abi = load_abi(target, target_config) or []
     candidates = _custody_getter_candidates(abi)
     authorities = []
-    seen_addresses = set()
+    code_cache = {}
     for getter in candidates[:32]:
         raw_value = _recon_cast_text(["call", target, getter["signature"]], target_config)
         match = re.search(r"0x[0-9a-fA-F]{40}", raw_value)
         address = match.group(0).lower() if match else None
         has_code = None
-        if address and int(address, 16) != 0 and address not in seen_addresses:
-            seen_addresses.add(address)
-            external_code = _recon_cast_text(["code", address], target_config)
-            has_code = external_code.startswith("0x") and len(external_code) > 2
+        if address and int(address, 16) != 0:
+            if address not in code_cache:
+                external_code = _recon_cast_text(["code", address], target_config)
+                code_cache[address] = external_code.startswith("0x") and len(external_code) > 2
+            has_code = code_cache[address]
         authorities.append({
             **getter,
             "raw_result": raw_value or None,
@@ -7399,11 +7400,20 @@ def run_custody(config, args=None):
         "admin": admin or None,
         "source": "Cast proxy helpers; may be unsupported for non-standard proxies",
     }
+    rpc = effective_rpc(target_config)
+    chain_id_raw, _chain_error = _unravel_rpc(rpc, "eth_chainId", [], timeout=10) if rpc else (None, "no RPC")
+    block_raw, _block_error = _unravel_rpc(rpc, "eth_blockNumber", [], timeout=10) if rpc else (None, "no RPC")
+    chain_id = _unravel_int(chain_id_raw, None) if chain_id_raw is not None else None
+    observed_block = _unravel_int(block_raw, None) if block_raw is not None else None
+    abi_path = resolve_abi_path(target, target_config)
     dossier = {
         "schema_version": 1,
         "target": target,
         "target_label": apply_labels(target, target_config),
+        "chain_id": chain_id,
+        "observed_block_number": observed_block,
         "abi_available": bool(abi),
+        "abi_path": str(abi_path) if abi_path else None,
         "authority_getter_candidates": authorities,
         "privileged_entrypoint_candidates": privileged_functions,
         "proxy_authority_observation": proxy_observation,
