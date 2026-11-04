@@ -866,6 +866,21 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Balance:  1 ETH", rendered)
         self.assertIn(target, rendered)
 
+    def test_recon_slot_parser_returns_only_low_twenty_byte_candidates(self):
+        address = "0x" + "1234567890abcdef" * 2 + "12345678"
+        word = "0x" + "0" * 24 + address[2:]
+        self.assertEqual(lk._recon_slot_address(word), address.lower())
+        self.assertIsNone(lk._recon_slot_address("0x" + "0" * 64))
+        self.assertIsNone(lk._recon_slot_address("not a storage word"))
+
+    def test_recon_help_exposes_json_deep_and_storage_modes(self):
+        code, output = self.capture_dispatch("recon", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk recon [address]", output)
+        self.assertIn("--json", output)
+        self.assertIn("--deep", output)
+        self.assertIn("--storage-range", output)
+
     def test_unravel_does_not_treat_creation_bytecode_as_a_selector(self):
         self.assertEqual(lk._unravel_call_decoder({}, None, "0x60006000"), (None, None))
 
