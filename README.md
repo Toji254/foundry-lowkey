@@ -1081,7 +1081,7 @@ Target resolution is project-first:
 - A target remembered for another Foundry project is ignored instead of leaking into the current one.
 - lk fn <query> can inspect the current project's built out/ artifacts even when no live deployment exists.
 
-A manually registered target (`lk target <name> <address>`) is saved to the current project and can be selected later by name. This also supports an explicitly linked contract deployed from a sibling project: its ABI may live outside the current repository, while the named address remains owned by the current audit project. Local test/mock artifacts and aliases owned by other projects remain excluded from the project target list.
+A manually registered target (`lk target <name> <address>`) is saved to the current project and can be selected later by name. Target ownership is stored separately from ABI/artifact lookup roots, so an explicitly linked contract deployed from a sibling project remains selectable even after Lowkey discovers or refreshes its external ABI. Local test/mock artifacts and aliases owned by other projects remain excluded from the project target list.
 
 A live target is still required for state-changing investigation commands such as lk changes,
 because those commands need an address on the connected chain.
