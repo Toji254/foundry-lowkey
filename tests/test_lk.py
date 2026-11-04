@@ -337,6 +337,83 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIsNone(config.get("target"))
 
+    def test_status_shows_linked_address_getters_and_code_presence(self):
+        target = "0x" + "1" * 40
+        linked = "0x" + "2" * 40
+        controller = "0x" + "3" * 40
+        abi = [
+            {
+                "type": "function", "name": "target", "inputs": [],
+                "outputs": [{"type": "address"}], "stateMutability": "view",
+            },
+            {
+                "type": "function", "name": "controller", "inputs": [],
+                "outputs": [{"type": "address"}], "stateMutability": "view",
+            },
+            {
+                "type": "function", "name": "withdraw", "inputs": [],
+                "outputs": [{"type": "address"}], "stateMutability": "nonpayable",
+            },
+            {
+                "type": "function", "name": "lookup", "inputs": [{"type": "uint256"}],
+                "outputs": [{"type": "address"}], "stateMutability": "view",
+            },
+        ]
+        config = {
+            "target": target,
+            "target_contract": "TargetHolder",
+            "abi_paths": {target: "/tmp/TargetHolder.json"},
+            "last_tx": None,
+        }
+
+        def fake_cast(command, **_kwargs):
+            signature = command[3]
+            if signature == "target()(address)":
+                return 0, linked, ""
+            if signature == "controller()(address)":
+                return 0, controller, ""
+            raise AssertionError(f"Unexpected status call: {signature}")
+
+        def fake_rpc(_rpc, method, params):
+            if method != "eth_getCode":
+                raise AssertionError(f"Unexpected RPC method: {method}")
+            if params[0].lower() == linked.lower():
+                return "0x60016001"
+            return "0x"
+
+        with patch.object(lk, "load_abi", return_value=abi), \\
+             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
+             patch.object(lk, "anvil_rpc_info", return_value=None), \\
+             patch.object(lk, "_sync_current_anvil_actor"), \\
+             patch.object(lk, "cast_output", side_effect=fake_cast), \\
+             patch.object(lk, "rpc_json", side_effect=fake_rpc), \\
+             patch.object(lk, "apply_labels", side_effect=lambda address, _config: (
+                 f"Fallout ({address})" if address.lower() == linked.lower()
+                 else f"lab-deployer ({address})" if address.lower() == controller.lower()
+                 else address
+             )), \\
+             patch.object(lk, "_live_target_state", return_value={
+                 "status": "DEPLOYED", "verification": "MATCHED", "code_size": 2029,
+                 "chain_id": "31337", "block_number": "11",
+             }), \\
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/status-links")), \\
+             patch.object(lk, "_sync_security_patterns"), \\
+             patch.object(lk.audit_context, "load", return_value={"focus": {}, "tools": {}}), \\
+             patch.object(lk.audit_context, "signals", return_value=[]), \\
+             patch.object(lk, "_security_pattern_summary", return_value={
+                 "total": 0, "reviews": 0, "confirmed": 0, "candidates": 0,
+             }):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk.run_status(config)
+
+        rendered = output.getvalue()
+        self.assertIn("Address references (read-only getters):", rendered)
+        self.assertIn(f"target()                 Fallout ({linked}) [contract (2 bytes)]", rendered)
+        self.assertIn(f"controller()             lab-deployer ({controller}) [no code (likely an EOA)]", rendered)
+        self.assertNotIn("withdraw()", rendered)
+        self.assertNotIn("lookup(", rendered)
+
     def test_status_reports_not_deployed_target_and_recovery(self):
         address = "0x" + "3" * 40
         config = {
