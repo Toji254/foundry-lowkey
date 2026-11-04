@@ -319,6 +319,15 @@ def save_config(config):
     try:
         with open(tmp,"w",encoding="utf-8") as f:
             persisted={k:v for k,v in config.items() if not str(k).startswith("_")}
+            # Fixture-context RPCs belong to the active project's .audit/anvil.json,
+            # not to the user's global configuration. Keep the prior global RPC so
+            # opening another repository cannot inherit this project's local port.
+            rpc_scope = config.get("_fixture_rpc_scope")
+            if isinstance(rpc_scope, dict) and config.get("rpc") == rpc_scope.get("runtime_rpc"):
+                if rpc_scope.get("previous_rpc_present"):
+                    persisted["rpc"] = rpc_scope.get("previous_rpc")
+                else:
+                    persisted.pop("rpc", None)
             json.dump(persisted,f,indent=4); f.write("\n")
         os.chmod(tmp,0o600); os.replace(tmp,CONFIG_FILE); os.chmod(CONFIG_FILE,0o600)
     finally:
@@ -637,7 +646,41 @@ def detect_anvil_rpc(preferred=None):
     return None
 
 
+
+def project_fixture_rpc_info(config, root=None):
+    """Resolve a promoted fixture's managed Anvil only within its owning project.
+
+    The global RPC setting must still equal the value that existed before the
+    fixture lab was created. If the user changes that setting afterwards, their
+    explicit choice wins over the remembered project-local node.
+    """
+    try:
+        project_root = Path(root or audit_context.foundry_project_root()).expanduser().resolve()
+    except Exception:
+        return None
+    state = read_project_anvil_state(project_root)
+    if not isinstance(state, dict) or state.get("purpose") != "project-fixture-block-context":
+        return None
+    previous_rpc = state.get("previous_rpc")
+    previous_present = bool(state.get("previous_rpc_present"))
+    if previous_present:
+        if "rpc" not in config or config.get("rpc") != previous_rpc:
+            return None
+    elif config.get("rpc") is not None:
+        return None
+    rpc = str(state.get("rpc") or "").strip()
+    if not rpc:
+        return None
+    info = detect_anvil_rpc(rpc)
+    if not info:
+        return None
+    return info
+
+
 def anvil_rpc_info(config):
+    project_info = project_fixture_rpc_info(config)
+    if project_info:
+        return project_info
     explicit=config.get("rpc")
     if explicit:
         return detect_anvil_rpc(explicit)
@@ -650,6 +693,9 @@ def anvil_rpc_info(config):
     return info
 
 def effective_rpc(config):
+    project_info = project_fixture_rpc_info(config)
+    if project_info:
+        return project_info.get("url")
     # "rpc" is the current key; keep reading older saved configs that used "rpc_url".
     if config.get("rpc"):
         return config["rpc"]
@@ -9756,6 +9802,8 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
         except OSError:
             pass
 
+    previous_rpc_present = "rpc" in config
+    previous_rpc = config.get("rpc")
     write_project_anvil_state(root, {
         "auto_started": True,
         "pid": process.pid,
@@ -9763,11 +9811,18 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
         "started": datetime.now().isoformat(timespec="seconds"),
         "purpose": "project-fixture-block-context",
         "fixture_context": context,
+        "previous_rpc_present": previous_rpc_present,
+        "previous_rpc": previous_rpc,
     })
+    config["_fixture_rpc_scope"] = {
+        "runtime_rpc": fixture_rpc,
+        "previous_rpc_present": previous_rpc_present,
+        "previous_rpc": previous_rpc,
+        "project_root": str(Path(root).resolve()),
+    }
     config["rpc"] = fixture_rpc
     config["_auto_rpc_info"] = info
     config["_lab_rpc"] = fixture_rpc
-    save_config(config)
     return fixture_rpc, info, None
 
 

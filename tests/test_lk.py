@@ -21,6 +21,70 @@ spec.loader.exec_module(lk)
 
 
 class LowkeyCastTests(unittest.TestCase):
+    def test_save_config_keeps_fixture_rpc_out_of_global_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = pathlib.Path(tmp) / "config.json"
+            original_config_file = lk.CONFIG_FILE
+            original_config_dir = lk.CONFIG_DIR
+            try:
+                lk.CONFIG_FILE = str(config_path)
+                lk.CONFIG_DIR = tmp
+                config = {
+                    "rpc": "http://127.0.0.1:8546",
+                    "_fixture_rpc_scope": {
+                        "runtime_rpc": "http://127.0.0.1:8546",
+                        "previous_rpc_present": True,
+                        "previous_rpc": None,
+                    },
+                    "target": "0x" + "1" * 40,
+                }
+                lk.save_config(config)
+                persisted = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertIsNone(persisted["rpc"])
+                self.assertEqual(persisted["target"], "0x" + "1" * 40)
+            finally:
+                lk.CONFIG_FILE = original_config_file
+                lk.CONFIG_DIR = original_config_dir
+
+    def test_project_fixture_rpc_is_scoped_to_matching_project_and_original_rpc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            lk.write_project_anvil_state(root, {
+                "auto_started": True,
+                "purpose": "project-fixture-block-context",
+                "rpc": "http://127.0.0.1:8546",
+                "previous_rpc_present": True,
+                "previous_rpc": None,
+            })
+            config = {"rpc": None}
+            info = {
+                "url": "http://127.0.0.1:8546",
+                "client": "anvil/test",
+                "accounts": [],
+            }
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "detect_anvil_rpc", return_value=info):
+                self.assertEqual(lk.project_fixture_rpc_info(config), info)
+                self.assertEqual(lk.effective_rpc(config), "http://127.0.0.1:8546")
+                changed = {"rpc": "http://127.0.0.1:8545"}
+                self.assertIsNone(lk.project_fixture_rpc_info(changed))
+
+    def test_project_fixture_rpc_does_not_leak_into_another_project(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            lk.write_project_anvil_state(Path(first), {
+                "auto_started": True,
+                "purpose": "project-fixture-block-context",
+                "rpc": "http://127.0.0.1:8546",
+                "previous_rpc_present": True,
+                "previous_rpc": None,
+            })
+            config = {"rpc": None}
+            info = {"url": "http://127.0.0.1:8546", "client": "anvil/test", "accounts": []}
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=Path(second)), \
+                 patch.object(lk, "detect_anvil_rpc", return_value=info):
+                self.assertIsNone(lk.project_fixture_rpc_info(config))
+                self.assertNotEqual(lk.effective_rpc(config), "http://127.0.0.1:8546")
+
     def test_inspect_clone_reports_eip1167_implementation(self):
         target = "0x" + "1" * 40
         implementation = "0x" + "2" * 40
