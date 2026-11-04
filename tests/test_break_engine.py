@@ -230,7 +230,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("vm.deal(TARGET, 10 ether);", funded)
         # Funding-only reentrancy probes use the hostile wrapper's outer attack
         # call; there is no setup call unless a setup signature is supplied.
-        self.assertIn('address(hostile).call{value: 1 wei}', funded)
+        self.assertIn('address(hostile).call{value: 0}', funded)
 
 
     def test_fund_target_compact_amount_is_normalized_for_solidity(self):
