@@ -888,6 +888,54 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(tree["children"][0]["value_wei"], 5)
         self.assertEqual(len(lines), 2)
 
+    def test_unravel_emits_json_dossier_from_rpc_evidence(self):
+        tx_hash = "0x" + "a" * 64
+        sender, target, recipient = ("0x" + value * 40 for value in ("1", "2", "3"))
+        tx = {
+            "from": sender, "to": target, "input": "0x12345678", "value": "0x10",
+            "blockNumber": "0x64", "transactionIndex": "0x2",
+        }
+        receipt = {
+            "status": "0x1", "gasUsed": "0x5208",
+            "effectiveGasPrice": "0x3b9aca00", "logs": [],
+        }
+        block = {"hash": "0x" + "b" * 64, "timestamp": "0x6553f100"}
+        trace = {
+            "type": "CALL", "from": sender, "to": target, "value": "0x10",
+            "input": "0x12345678",
+            "calls": [{
+                "type": "CALL", "from": target, "to": recipient, "value": "0x5",
+                "input": "0x12345678", "calls": [],
+            }],
+        }
+        responses = {
+            "eth_getTransactionByHash": tx,
+            "eth_getTransactionReceipt": receipt,
+            "eth_getBlockByNumber": block,
+            "eth_chainId": "0x1",
+            "debug_traceTransaction": trace,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+            with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                with patch.object(lk, "_unravel_rpc", side_effect=lambda _url, method, *_a, **_k: (responses.get(method), None)):
+                    with patch.object(lk, "_trace_function_item", return_value=(None, [])):
+                        with patch.object(lk, "_contract_identity", return_value=None):
+                            with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(temp_dir)):
+                                with patch.object(lk.audit_context, "set_latest"):
+                                    with patch.object(lk.audit_context, "record_tool"):
+                                        with redirect_stdout(output):
+                                            code = lk.run_unravel({"target": target, "wallets": {}, "labels": {}}, [tx_hash, "--json"])
+            report = json.loads(output.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(report["chain_id"], 1)
+            self.assertEqual(report["block_number"], 100)
+            self.assertEqual(report["status"], "SUCCESS")
+            self.assertEqual(report["gas_used"], 21000)
+            self.assertEqual(len(report["native_value_flows"]), 2)
+            self.assertTrue(pathlib.Path(report["evidence_path"]).is_file())
+
     def test_trace_surfaces_probable_identifier_and_repeats(self):
         identifier = "0x" + "a" * 64
         item = {
