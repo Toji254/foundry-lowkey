@@ -9889,9 +9889,8 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     )
     relative_test = os.path.relpath(test_path, root)
 
-    heading = "LOWKEY CONTRACT DEPLOYMENT" if deployment_only else "LOWKEY LOCAL AUDIT LAB"
-    print(heading)
-    print("=" * len(heading))
+    print("LOWKEY LOCAL AUDIT LAB")
+    print("======================")
     print(f"Project : {root}")
     print(f"Fixture : {fixture['relative']}::{fixture['contract']}")
     print(f"Test    : {relative_test}")
@@ -13076,8 +13075,9 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
             "implementation inspection, use 'lk lab --artifact " + str(contract) + "'."
         )
 
-    print("LOWKEY LOCAL AUDIT LAB")
-    print("======================")
+    heading = "LOWKEY CONTRACT DEPLOYMENT" if deployment_only else "LOWKEY LOCAL AUDIT LAB"
+    print(heading)
+    print("=" * len(heading))
     print(f"Project : {root}")
     print(f"Contract: {contract}")
     print(f"Target  : pending deployment")
@@ -20042,10 +20042,10 @@ COMMAND_HELP = {
         related=["lk deployments", "lk status", "lk lab"],
     ),
     "lab": _help_entry(
-        "Create a disposable local EVM lab for safe contract interaction and audit experiments.",
+        "Orchestrate a project-aware local attack environment, preferring native deployment scripts and test fixtures before a generic fallback.",
         "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab --ai-review | lk lab stop",
         "lk lab MyContract",
-        "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
+        "Use it when you want Lowkey to assemble the project's local testing environment and operational target—not just deploy one artifact.",
         forms=[
             ("lk lab [Contract]", "Use the project’s native deployment path when available.", "lk lab MyContract"),
             ("lk lab --generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic MyContract"),
