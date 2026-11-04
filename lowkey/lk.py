@@ -19155,10 +19155,81 @@ def run_signals(config, args):
             _render_signal_evidence(signal, prefix="      ", config=config)
     return 0
 
+def _status_address_references(config, target, abi, rpc, *, limit=12):
+    """Read a bounded set of zero-argument address getters for status context.
+
+    These are read-only calls. They help show linked contracts/accounts without
+    assuming every constructor argument is stored or publicly exposed.
+    """
+    if not is_address(target) or not rpc or not isinstance(abi, list):
+        return []
+
+    references = []
+    for item in abi:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        if str(item.get("stateMutability") or "").lower() not in {"view", "pure"}:
+            continue
+        if item.get("inputs") not in (None, []):
+            continue
+        outputs = item.get("outputs") or []
+        if len(outputs) != 1 or outputs[0].get("type") != "address":
+            continue
+
+        signature = format_output_signature(item)
+        try:
+            code, output, _error = cast_output(
+                ["cast", "call", target, signature, "--rpc-url", rpc],
+                timeout=5,
+            )
+        except (OSError, TypeError, ValueError):
+            continue
+        if code != 0:
+            continue
+
+        raw = str(output or "").strip()
+        match = re.fullmatch(r"0x([0-9a-fA-F]{40})", raw)
+        if not match:
+            # Cast versions may render the ABI-encoded 32-byte address word.
+            match = re.fullmatch(r"0x0{24}([0-9a-fA-F]{40})", raw)
+        if not match:
+            continue
+
+        address = "0x" + match.group(1)
+        if address.lower() == "0x" + "0" * 40:
+            identity = "zero address"
+            code_state = "unset"
+        else:
+            identity = apply_labels(address, config)
+            try:
+                runtime = rpc_json(rpc, "eth_getCode", [address, "latest"])
+            except Exception:
+                runtime = None
+            if runtime is None:
+                code_state = "code status unavailable"
+            else:
+                runtime = str(runtime).strip()
+                if runtime.lower() in {"", "0x", "0x0"}:
+                    code_state = "no code (likely an EOA)"
+                else:
+                    code_size = max(0, (len(runtime) - 2) // 2)
+                    code_state = f"contract ({code_size} bytes)"
+
+        references.append({
+            "function": format_signature(item),
+            "address": address,
+            "identity": identity,
+            "code_state": code_state,
+        })
+        if len(references) >= max(1, int(limit)):
+            break
+
+    return references
+
+
 def run_status(config):
     target=config.get("target")
-    if target:
-        load_abi(target,config)
+    target_abi = load_abi(target,config) if target else []
     rpc=effective_rpc(config)
     info=anvil_rpc_info(config)
     if info:
@@ -19203,6 +19274,15 @@ def run_status(config):
             print("Fix       : lk lab | lk target auto | inspect the deployment before sending calls")
         else:
             print(f"Deployment: {runtime_status or 'UNVERIFIED'}")
+
+        references = _status_address_references(config, target, target_abi, rpc)
+        if references:
+            print("Address references (read-only getters):")
+            for reference in references:
+                print(
+                    f"  {reference['function']:<24} "
+                    f"{reference['identity']} [{reference['code_state']}]"
+                )
     print(f"Last tx: {config.get('last_tx') or 'none'}")
     root = audit_context.foundry_project_root()
     _sync_security_patterns(root)
@@ -19222,6 +19302,8 @@ def run_status(config):
         state = context.get("tools", {}).get(tool_name, {})
         if isinstance(state, dict) and state.get("status"):
             print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
+
+
 
 def run_wizard(config,args):
     if not args:
