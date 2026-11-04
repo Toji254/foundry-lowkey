@@ -1347,7 +1347,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("CONTRACTS ON THIS ANVIL (14)", rendered)
         self.assertIn("SAVED WALLETS (1)", rendered)
         self.assertIn("ANVIL ACCOUNTS (1)", rendered)
-        self.assertIn("Smart-contract-development-journey/Ethernaut CTFs/Fallout", rendered)
+        self.assertIn(str(project.resolve()), rendered)
         self.assertIn("Contract13", rendered)
         self.assertNotIn("more; enter a contract name", rendered)
 
@@ -1402,8 +1402,9 @@ class LowkeyCastTests(unittest.TestCase):
             "wallets": {},
         }
         output = io.StringIO()
+        tty = type("TestTTY", (), {"isatty": lambda self: True})()
         with redirect_stdout(output), patch.object(
-            lk.sys.stdin, "isatty", return_value=True
+            lk.sys, "stdin", new=tty
         ), patch("builtins.input", return_value="2"):
             action = lk._lab_review_deployment(
                 config,
