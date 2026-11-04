@@ -2410,6 +2410,28 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         )
 
     archive_path = _archive_harness(host, harness)
+    chain_result = _cast_exec(host, ["chain-id"], rpc)
+    block_result = _cast_exec(host, ["block-number"], rpc)
+    code_result = _cast_exec(host, ["code", target.address], rpc)
+    chain_id = _cast_int(chain_result.stdout) if chain_result.returncode == 0 else None
+    observed_block = _cast_int(block_result.stdout) if block_result.returncode == 0 else None
+    deployed_code = (code_result.stdout or "").strip().lower() if code_result.returncode == 0 else ""
+    target_code_sha256 = hashlib.sha256(deployed_code.encode("utf-8")).hexdigest() if deployed_code else None
+    harness_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    cheatcodes = sorted(set(re.findall(
+        r"\\bvm\\.(deal|prank|startPrank|store|etch|warp|roll|fee|prevrandao|mockCall|mockCallRevert|snapshotState|revertToState)\\b",
+        body,
+    )))
+    if re.search(r"\\bdeal\\s*\\(", body):
+        cheatcodes.append("deal-token-or-balance")
+    cheatcodes = sorted(set(cheatcodes))
+    synthetic_funds = any(item in cheatcodes for item in ("deal", "deal-token-or-balance"))
+    artifact_sha256 = None
+    if target.artifact:
+        try:
+            artifact_sha256 = hashlib.sha256(Path(target.artifact).read_bytes()).hexdigest()
+        except OSError:
+            pass
     evidence = {
         "family": family,
         "target": asdict(target),
@@ -2418,6 +2440,21 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         "calldata": calldata,
         "call_value": value,
         "discovery": discovery,
+        "execution_context": {
+            "chain_id": chain_id,
+            "observed_block_number": observed_block,
+            "fork_block_pinned": False,
+            "target_code_sha256": target_code_sha256,
+            "artifact_sha256": artifact_sha256,
+            "harness_sha256": harness_sha256,
+        },
+        "fidelity": {
+            "cheatcodes": cheatcodes,
+            "strength": "simulated-funds" if synthetic_funds else "fork-execution",
+            "synthetic_funds_detected": synthetic_funds,
+            "net_profit_verified": False,
+            "gas_cost_included": False,
+        },
         "forge_returncode": completed.returncode,
         "harness": archive_path or harness,
         "harness_archive": archive_path,
