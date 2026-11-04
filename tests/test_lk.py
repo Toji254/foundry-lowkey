@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import types
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import ExitStack, redirect_stdout, redirect_stderr
 import io
 import unittest
 from unittest.mock import patch
@@ -381,28 +381,34 @@ class LowkeyCastTests(unittest.TestCase):
                 return "0x60016001"
             return "0x"
 
-        with patch.object(lk, "load_abi", return_value=abi), \\
-             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
-             patch.object(lk, "anvil_rpc_info", return_value=None), \\
-             patch.object(lk, "_sync_current_anvil_actor"), \\
-             patch.object(lk, "cast_output", side_effect=fake_cast), \\
-             patch.object(lk, "rpc_json", side_effect=fake_rpc), \\
-             patch.object(lk, "apply_labels", side_effect=lambda address, _config: (
-                 f"Fallout ({address})" if address.lower() == linked.lower()
-                 else f"lab-deployer ({address})" if address.lower() == controller.lower()
-                 else address
-             )), \\
-             patch.object(lk, "_live_target_state", return_value={
-                 "status": "DEPLOYED", "verification": "MATCHED", "code_size": 2029,
-                 "chain_id": "31337", "block_number": "11",
-             }), \\
-             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/status-links")), \\
-             patch.object(lk, "_sync_security_patterns"), \\
-             patch.object(lk.audit_context, "load", return_value={"focus": {}, "tools": {}}), \\
-             patch.object(lk.audit_context, "signals", return_value=[]), \\
-             patch.object(lk, "_security_pattern_summary", return_value={
-                 "total": 0, "reviews": 0, "confirmed": 0, "candidates": 0,
-             }):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(lk, "load_abi", return_value=abi))
+            stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"))
+            stack.enter_context(patch.object(lk, "anvil_rpc_info", return_value=None))
+            stack.enter_context(patch.object(lk, "_sync_current_anvil_actor"))
+            stack.enter_context(patch.object(lk, "cast_output", side_effect=fake_cast))
+            stack.enter_context(patch.object(lk, "rpc_json", side_effect=fake_rpc))
+            stack.enter_context(patch.object(lk, "apply_labels", side_effect=lambda address, _config: (
+                f"Fallout ({address})" if address.lower() == linked.lower()
+                else f"lab-deployer ({address})" if address.lower() == controller.lower()
+                else address
+            )))
+            stack.enter_context(patch.object(lk, "_live_target_state", return_value={
+                "status": "DEPLOYED", "verification": "MATCHED", "code_size": 2029,
+                "chain_id": "31337", "block_number": "11",
+            }))
+            stack.enter_context(patch.object(
+                lk.audit_context, "foundry_project_root",
+                return_value=pathlib.Path("/tmp/status-links"),
+            ))
+            stack.enter_context(patch.object(lk, "_sync_security_patterns"))
+            stack.enter_context(patch.object(
+                lk.audit_context, "load", return_value={"focus": {}, "tools": {}},
+            ))
+            stack.enter_context(patch.object(lk.audit_context, "signals", return_value=[]))
+            stack.enter_context(patch.object(lk, "_security_pattern_summary", return_value={
+                "total": 0, "reviews": 0, "confirmed": 0, "candidates": 0,
+            }))
             output = io.StringIO()
             with redirect_stdout(output):
                 lk.run_status(config)
