@@ -1211,11 +1211,24 @@ def _render_repeat_test(
         uint256 targetTokenMid = 0;
         uint256 targetTokenAfter = 0;
         if (assetReadOk) {{
-            // Seed the actor with the project's actual ERC-20 asset in the local
-            // Forge VM and approve the target before attempting token-valued setup.
-            deal(assetToken, ATTACKER, 1 ether);
-            vm.prank(ATTACKER);
-            IERC20Lowkey(assetToken).approve(TARGET, type(uint256).max);
+            // Use one whole token, scaled by the token's declared decimals.
+            // If decimals() is unavailable or unreasonable, skip token accounting
+            // instead of silently injecting an arbitrary 1e18 base-unit amount.
+            uint256 tokenUnit = 0;
+            (bool decimalsOk, bytes memory decimalsData) = assetToken.staticcall(
+                abi.encodeWithSignature("decimals()")
+            );
+            if (decimalsOk && decimalsData.length >= 32) {
+                uint256 tokenDecimals = abi.decode(decimalsData, (uint256));
+                if (tokenDecimals <= 36) tokenUnit = 10 ** tokenDecimals;
+            }
+            if (tokenUnit == 0) {
+                assetReadOk = false;
+            } else {
+                deal(assetToken, ATTACKER, tokenUnit);
+                _safeApprove(assetToken, TARGET, 0);
+                _safeApprove(assetToken, TARGET, type(uint256).max);
+            }
         }}
 """
         asset_baseline = """
