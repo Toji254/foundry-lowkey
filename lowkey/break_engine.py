@@ -489,6 +489,7 @@ def _parse_args(args: list[str]):
         "seed": 1337,
         "quiet": False,
         "explain": None,
+        "control_manifest": None,
     }
     positionals = []
     i = 0
@@ -566,6 +567,12 @@ def _parse_args(args: list[str]):
                 opts["explain"] = str(args[i + 1])
                 i += 2
             continue
+        if low == "--control-manifest":
+            if i + 1 >= len(args):
+                raise ValueError("--control-manifest needs a JSON manifest path.")
+            opts["control_manifest"] = str(args[i + 1])
+            i += 2
+            continue
         if low == "--quiet":
             opts["quiet"] = True
             i += 1
@@ -634,6 +641,9 @@ MODES
   --fund-target 10ether
                 Fund the target only inside the disposable Forge fork.
                 This is useful for withdrawal/reserve experiments.
+  --control-manifest FILE  Require a matched sequential-control run before any
+                    candidate BREAK is accepted. The manifest must name the
+                    same target_address, function, family and same_calls_id.
   --explain [file|latest]  Explain JSON evidence in auditor-friendly language.
                     With no file, Lowkey explains the newest break evidence.
                     This reads evidence only; it does not rerun the attack.
@@ -642,6 +652,7 @@ SAFETY
   lk break requires a detected Anvil node. It does not send production
   transactions. The engine executes generated Forge experiments against the
   local node state and keeps experiments isolated with Forge fork snapshots.
+  A candidate BREAK is downgraded to OBSERVED unless --control-manifest passes.
 
 OUTPUT
   WHAT / ATTACK / RESULT / BREAK CONDITION / EVIDENCE
@@ -2625,6 +2636,85 @@ def _explain_evidence(path: str, root: Path | None = None) -> int:
     return 0
 
 
+def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any]) -> AttackResult:
+    """Do not let a candidate BREAK survive without a matched sequential control."""
+    if not result.break_condition:
+        return result
+
+    root = _root(host)
+    raw_manifest = opts.get("control_manifest")
+    gate = {"status": "missing", "reason": "No sequential-control manifest was supplied."}
+    if raw_manifest:
+        try:
+            manifest_path = Path(str(raw_manifest)).expanduser()
+            if not manifest_path.is_absolute():
+                manifest_path = (root / manifest_path).resolve()
+            else:
+                manifest_path = manifest_path.resolve()
+            if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
+                raise ValueError("control manifest must be an existing file inside the active project.")
+            spec = json.loads(manifest_path.read_text(encoding="utf-8"))
+            expected = {
+                "target_address": str(result.address or "").lower(),
+                "function": str(result.function or ""),
+                "family": str(result.family or "").lower(),
+            }
+            actual = {
+                "target_address": str(spec.get("target_address") or "").lower(),
+                "function": str(spec.get("function") or ""),
+                "family": str(spec.get("family") or "").lower(),
+            }
+            if not spec.get("same_calls_id"):
+                raise ValueError("manifest must declare same_calls_id for the matched call sequence.")
+            mismatches = [key for key in expected if expected[key] != actual[key]]
+            if mismatches:
+                raise ValueError("manifest does not match this candidate: " + ", ".join(mismatches))
+            try:
+                from . import godmode
+            except ImportError:
+                import godmode
+            exit_code = godmode.run_control([str(manifest_path), "--root", str(root)])
+            gate = {
+                "status": "passed" if exit_code == 0 else "failed",
+                "exit_code": exit_code,
+                "manifest": str(manifest_path.relative_to(root)),
+                "same_calls_id": spec.get("same_calls_id"),
+                "reason": "Sequential control produced a positive attack-minus-control delta." if exit_code == 0
+                          else "Control run did not satisfy the required positive delta.",
+            }
+        except Exception as exc:
+            gate = {"status": "failed", "reason": str(exc)}
+
+    if gate["status"] != "passed":
+        result.break_condition = False
+        result.status = "OBSERVED"
+        result.summary = (
+            "Candidate BREAK downgraded to OBSERVED: sequential control did not pass. "
+            + str(gate.get("reason") or "")
+        )
+    result.detail = result.detail or {}
+    result.detail["control_gate"] = gate
+
+    if result.evidence_path:
+        try:
+            evidence_path = Path(result.evidence_path).expanduser().resolve()
+            if evidence_path.is_file():
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                evidence["control_gate"] = gate
+                evidence["break_condition"] = bool(result.break_condition)
+                evidence["verdict"] = "BREAK" if result.break_condition else "OBSERVED"
+                if not result.break_condition:
+                    raw_output = str(evidence.get("output_tail") or "")
+                    evidence["output_tail"] = re.sub(
+                        r"LOWKEY_BREAK\s+true", "LOWKEY_BREAK false", raw_output, flags=re.I
+                    )
+                    evidence["control_downgrade_reason"] = gate.get("reason")
+                evidence_path.write_text(json.dumps(evidence, indent=2, default=str) + "\n", encoding="utf-8")
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return result
+
+
 def run(config, args=None, host=None):
     host = host or __import__("lowkey.lk", fromlist=["*"])
     args = list(args or [])
@@ -2720,6 +2810,7 @@ def run(config, args=None, host=None):
                         result = _safe_run_family(
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
+                        result = _apply_sequential_control(host, result, opts)
                         campaign_results.append(result)
 
                         marker = "!!! BREAK !!!" if result.break_condition else result.status
