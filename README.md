@@ -73,11 +73,22 @@ lk control .audit/control.json
 lk break --family reentrancy --control-manifest .audit/control.json
 ```
 
-The two commands must exercise the same declared call sequence and actor/precondition setup; only the callback/interleaving condition should differ. `same_calls_id` is a declaration tying those scenarios together, not an automatic proof that two arbitrary scripts are equivalent. Lowkey compares the explicit metrics and only lets the candidate through when both runs pass and the attack delta is positive.
+Both commands must print these runtime digests in their stdout/stderr:
+
+```text
+LOWKEY_CALL_SEQUENCE_SHA256 <64 hexadecimal characters>
+LOWKEY_PRECONDITION_SHA256 <64 hexadecimal characters>
+```
+
+The sequence digest should be computed by each script from a canonical representation of the actual executed calls (caller, target, calldata, value, and order). The precondition digest should be computed from the relevant actor, balances, storage/nonce state, and block context immediately before the tested sequence. Keep the hash construction identical in both scripts. Lowkey checks that the reported digests match and that the attack metric exceeds the control metric.
+
+**Important limitation:** Lowkey currently compares the digests emitted by the two commands; it does not independently derive them from EVM traces or prove the scripts computed them honestly. Do not hard-code the same digest into both commands. A matching digest is a test-supplied assertion, not independent proof of call equivalence. A future trace-backed verifier should replace this attestation step.
+
+A `BREAK` from `lk control` is therefore only a controlled differential observation. In `lk break`, even a passed control is marked `SIMULATED_BREAK` while fidelity is incomplete. The generated harness is not eligible for confirmation merely because the Forge test passed.
 
 ### Proof support and boundaries
 
-`lk target-coverage` runs Forge LCOV and reports reachability for the requested file/line range. `lk mutation-score <manifest>` delegates to the existing baseline-first mutation runner and enforces a 90% score by default (`--min-score 0.90`); use a separate manifest for each attack family when measuring family-specific harness quality. `lk provenance` hashes selected artifacts and records run metadata; pass `--signing-key /path/to/private-key.pem` to create a detached OpenSSL signature. `lk fidelity` stores the declared evidence strength in the existing append-only ledger. `lk reprove` rejects common state-fabricating cheatcodes and only accepts a local Anvil fork endpoint. `lk report` writes finding sections and a SHA-256 sidecar when the run JSON contains validated finding records.
+`lk target-coverage` runs Forge LCOV and reports reachability for the requested file/line range. `lk mutation-score <manifest>` delegates to the existing baseline-first mutation runner and enforces a 90% score by default (`--min-score 0.90`); use a separate manifest for each attack family when measuring family-specific harness quality. `lk provenance` hashes selected artifacts and records run metadata; pass `--signing-key /path/to/private-key.pem` to create a detached OpenSSL signature. `lk fidelity` stores declared evidence strength in the append-only ledger; `lk fidelity --inspect path/to/Harness.t.sol` scans a harness for common synthetic-state and cheatcode signals and records its source hash. The scanner is static and can miss aliases/wrappers or custom state manipulation; it is not a proof of realism. `lk break` attaches this scan to each generated harness and will not automatically create a human-confirmed finding. `lk reprove` rejects common state-fabricating cheatcodes and only accepts a local Anvil fork endpoint. `lk report` writes finding sections and a SHA-256 sidecar when the run JSON contains validated finding records.
 
 The source maps classify fallback/callback paths, Chainlink-style aggregators, spot/TWAP reads, timestamps/deadlines, storage declarations, token assumptions, signatures, initializer and custody cues, cross-VM authorization cues, CFG outlines, and read/call/write candidates. These are static signals. The storage/proxy/selector commands need an RPC endpoint. Historical replay needs an archive RPC and a dedicated harness; flash loans need actual venue callbacks and liquidity reads; symbolic path work needs Halmos and an explicit harness; Flashbots bundle simulation needs relay authentication. These are not silently substituted with mocks. No Godmode command submits a production transaction or calls `eth_sendBundle`.
 
