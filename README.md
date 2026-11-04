@@ -873,6 +873,19 @@ The fallback starts a temporary local Hardhat JSON-RPC node at the exact pinned 
 
 The fork is started on port 8546 by default so a normal development Anvil instance on 8545 can remain running.
 
+## Address-first reconnaissance
+
+Start from the selected target or pass an address directly:
+
+~~~bash
+lk recon
+lk recon 0xTARGET --json
+lk recon 0xTARGET --deep
+lk recon 0xTARGET --storage-range 0:31
+~~~
+
+The JSON dossier records chain/block identity, runtime bytecode metadata, local ABI functions/selectors, standard proxy-slot observations and EIP-1167 clone hints. `--deep` adds PUSH4/PUSH20 candidates from disassembly; `--storage-range` saves raw slot values as observations, not a decoded storage layout. Candidate signatures and address references are not verified facts.
+
 ## Cast shortcuts
 
 ~~~bash
