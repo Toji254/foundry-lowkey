@@ -45,6 +45,7 @@ START:
   lk attack severity                severity scale and rating rules
   lk attack glossary                explain common audit words
   lk attack check                   validate catalogue integrity
+  lk attack version                 show catalogue version and entry count
 
 LIST FILTERS:
   lk attack list --severity High
@@ -1066,7 +1067,7 @@ def render_check():
             print("  - %s" % problem)
         return 1
     print("Result    : PASS")
-    print("Every entry has a unique ID/slug, required lesson fields, a supported severity, and valid source IDs.")
+    print("Every entry has a unique ID/slug, required lesson fields, a supported severity, recognized source keys, and valid OWASP SCWE ID formats.")
     return 0
 
 
