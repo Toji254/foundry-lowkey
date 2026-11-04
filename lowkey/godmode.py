@@ -454,7 +454,13 @@ def _control_prestate_digest(url, receipt, addresses, slots):
             "address":item["address"],"slot":item["slot"],
             "value":rpc(url,"eth_getStorageAt",[item["address"],item["slot"],hex(block_number-1)]),
         })
-    digest=hashlib.sha256(json.dumps(prestate,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    # The parent hash itself includes the intentionally different attacker-only
+    # scenario setup transaction. Keep it in evidence, but compare the execution
+    # context and explicitly declared target/account state rather than the hash.
+    comparable={key:value for key,value in prestate.items() if key!="parent_block_hash"}
+    digest=hashlib.sha256(json.dumps(comparable,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    prestate["equivalence_fields"] = sorted(comparable.keys())
+    prestate["equivalence_policy"] = "parent block hash is retained for provenance but excluded because a declared attacker-only setup transaction changes it; block number, timestamp, base fee, declared account balances/nonces/code and declared slots are compared."
     return digest,prestate
 
 
