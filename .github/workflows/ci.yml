@@ -427,11 +427,11 @@ jobs:
                   "description": "Attacker-only callback mode; both setup paths update a nonzero storage word to a different nonzero value so setup gas and parent block context remain equivalent."
               }],
               "control": {
-                  "prepare_argv": ["python3", "scripts/trace-control.py", "prepare", "2"],
+                  "prepare_argv": ["python3", "scripts/trace-control.py", "prepare", "1"],
                   "argv": ["python3", "scripts/trace-control.py", "send"]
               },
               "attack": {
-                  "prepare_argv": ["python3", "scripts/trace-control.py", "prepare", "1"],
+                  "prepare_argv": ["python3", "scripts/trace-control.py", "prepare", "2"],
                   "argv": ["python3", "scripts/trace-control.py", "send"]
               }
           }
@@ -448,8 +448,8 @@ jobs:
           assert result["same_prestate_verified"] is True, result
           assert result["runs"]["control"]["metric"] > 0, result
           assert result["runs"]["attack"]["metric"] > result["runs"]["control"]["metric"], result
-          assert result["runs"]["control"]["scenario_parameters"][0]["observed_value"] == "0x" + "0" * 64, result
-          assert result["runs"]["attack"]["scenario_parameters"][0]["observed_value"].lower().endswith("01"), result
+          assert result["runs"]["control"]["scenario_parameters"][0]["observed_value"].lower().endswith("01"), result
+          assert result["runs"]["attack"]["scenario_parameters"][0]["observed_value"].lower().endswith("02"), result
           target = result["target_address"].lower()
           control_calls = sum(1 for row in result["runs"]["control"]["call_trace"] if row.get("to") == target)
           attack_calls = sum(1 for row in result["runs"]["attack"]["call_trace"] if row.get("to") == target)
