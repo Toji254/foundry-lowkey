@@ -7041,8 +7041,8 @@ def run_recon(config, args=None):
             if not match:
                 return fail("Error: --storage-range must look like 0:60.")
             first, last = map(int, match.groups())
-            if first < 0 or last < first or last - first > 127:
-                return fail("Error: storage range must be ordered and cover at most 128 slots.")
+            if first < 0 or last < first or last - first > 31:
+                return fail("Error: storage range must be ordered and cover at most 32 slots.")
             storage_range = (first, last)
             index += 2
         elif token.startswith("-"):
@@ -7147,7 +7147,7 @@ def run_recon(config, args=None):
                 "candidate_signatures": lookup.splitlines()[:8],
                 "confirmed": False,
             })
-        for address in addresses[:96]:
+        for address in addresses[:24]:
             referenced_code = _recon_cast_text(["code", address], target_config)
             deep_evidence["embedded_address_candidates"].append({
                 "address": address,
