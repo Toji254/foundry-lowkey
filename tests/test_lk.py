@@ -1315,7 +1315,7 @@ class LowkeyCastTests(unittest.TestCase):
             rendered = output.getvalue()
             self.assertIn("Fallout", rendered)
             self.assertIn("CONTRACTS ON THIS ANVIL", rendered)
-            self.assertIn("live deployed contract is required", rendered)
+            self.assertIn("choose a live deployed contract", rendered)
 
     def test_constructor_address_picker_groups_all_choices_and_shows_workspace_origin(self):
         with tempfile.TemporaryDirectory() as tmp:
