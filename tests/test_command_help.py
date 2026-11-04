@@ -871,6 +871,23 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(lk._unravel_eth(10**18), "1")
         self.assertEqual(lk._unravel_eth(10**18 + 123), "1.000000000000000123")
 
+    def test_unravel_call_tree_preserves_nested_native_value_edges(self):
+        root = {
+            "type": "CALL", "from": "0x" + "1" * 40, "to": "0x" + "2" * 40,
+            "value": "0x10", "input": "0x12345678",
+            "calls": [{
+                "type": "CALL", "from": "0x" + "2" * 40, "to": "0x" + "3" * 40,
+                "value": "0x5", "input": "0x12345678", "calls": [],
+            }],
+        }
+        budget = {"seen": 0, "max_nodes": 10, "max_depth": 8, "truncated": False}
+        with patch.object(lk, "_trace_function_item", return_value=(None, [])):
+            tree, lines = lk._unravel_render_call({}, root, 0, {}, {}, budget)
+        self.assertEqual(budget["seen"], 2)
+        self.assertEqual(tree["value_wei"], 16)
+        self.assertEqual(tree["children"][0]["value_wei"], 5)
+        self.assertEqual(len(lines), 2)
+
     def test_trace_surfaces_probable_identifier_and_repeats(self):
         identifier = "0x" + "a" * 64
         item = {
