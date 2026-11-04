@@ -1421,11 +1421,12 @@ contract LowkeyBreakTime is Test {{
         bytes memory data = hex"{calldata[2:]}";
         vm.deal(ATTACKER, 100 ether);
 
-        vm.warp(100000);
+        uint256 forkTimestamp = block.timestamp;
+        vm.warp(forkTimestamp + 1 days);
         vm.prank(ATTACKER);
         (bool first, bytes memory a) = TARGET.call{{value: {value_lit}}}(data);
 
-        vm.warp(200000);
+        vm.warp(forkTimestamp + 30 days);
         vm.prank(ATTACKER);
         (bool second, bytes memory b) = TARGET.call{{value: {value_lit}}}(data);
 
