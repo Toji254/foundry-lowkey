@@ -33,6 +33,46 @@ class BreakEngineTests(unittest.TestCase):
         ])
         self.assertEqual(opts["control_manifest"], ".audit/control.json")
 
+    def test_record_break_never_auto_confirms_a_local_break(self):
+        import tempfile
+
+        class Context:
+            def __init__(self, root):
+                self.root = root
+                self.signals = []
+
+            def foundry_project_root(self):
+                return self.root
+
+            def add_signal(self, signal, root):
+                self.signals.append(signal)
+
+            def emit(self, *args, **kwargs):
+                pass
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = Context(root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            host = Host(tmp)
+            result = break_engine.AttackResult(
+                family="reentrancy",
+                contract="Vault",
+                address="0x" + "1" * 40,
+                function="withdraw()",
+                status="BREAK",
+                summary="local behavior observed",
+                break_condition=True,
+                detail={"fidelity": {"classification": "SIMULATED", "confirmation_eligible": False}},
+            )
+            evidence_path = pathlib.Path(break_engine._record_break(host, result))
+            signal = host.audit_context.signals[0]
+            self.assertTrue(evidence_path.is_file())
+            self.assertEqual(signal["verification_status"], "OBSERVED")
+            self.assertEqual(signal["verification"]["status"], "OBSERVED")
+            self.assertTrue(signal["verification"]["human_review_required"])
+            self.assertEqual(signal["verification"]["fidelity"]["classification"], "SIMULATED")
     def test_candidate_break_is_downgraded_without_control(self):
         import tempfile
 
