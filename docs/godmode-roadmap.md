@@ -18,6 +18,7 @@ The following first tranche is implemented in this branch; it is not a claim tha
 - CI has a generated-harness Solidity compilation gate, including the same via-IR fallback used by the production runner.
 - `lk unravel` reconstructs an existing transaction into a bounded call tree when the RPC supports callTracer, native ETH call flows, decoded ABI calls/events, gas fee and a saved JSON dossier. It falls back to Cast trace when callTracer is unavailable; this is not a net-profit or exploit verdict.
 - `lk recon [address] --json` now emits a saved address dossier with chain/block identity, runtime code metadata, local ABI/function inventory, EIP-1967/EIP-1822 slot observations, EIP-1167 clone hints, and optional deep PUSH4/PUSH20 candidates or bounded raw storage observations. Candidate data is explicitly not treated as verified source, a confirmed implementation, or compiler storage layout.
+- `lk custody [address] --json` now records live owner/admin/guardian/treasury/timelock-style address getter results, privileged-looking ABI entrypoint candidates, proxy admin/implementation observations, chain/block identity and code-presence checks. These are custody leads, not proof of access-control enforcement or asset control.
 
 The live compile/CI result for this branch must be checked before treating the new paths as validated. Dedicated end-to-end `lk unravel` tests and historical transaction reconstruction remain follow-up work.
 
