@@ -13110,7 +13110,33 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     has_initializer = artifact_has_initializer(artifact)
     locked_implementation = artifact_is_locked_implementation(root, path, artifact)
     if has_initializer:
-        if deployment_only:
+        print(f"Target  : {contract} @ {target}")
+        print(f"ABI     : {path}")
+        print("Status  : IMPLEMENTATION ONLY" if locked_implementation else "Status  : DEPLOYED IMPLEMENTATION")
+        if locked_implementation:
+            print("Note    : this implementation locks its initializer; it is not a configured proxy/clone.")
+        else:
+            print("Note    : this artifact exposes initialize(); a proxy/initializer may be required.")
+        print("         A live bytecode match proves deployment, not protocol readiness.")
+
+    current_actor = config.get("actor")
+    current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
+    if not (
+        current_actor
+        and isinstance(current_entry, dict)
+        and current_entry.get("source") not in {"anvil-default", "anvil-impersonated"}
+    ):
+        _ensure_lab_deployer(config, accounts[0], 0)
+    set_lab_target(config, root, target, contract, path)
+    config["_lab_system_root"] = str(Path(root).resolve())
+    config["lab_system"] = {
+        "root": target,
+        "target": target,
+        "root_model": contract,
+        "target_model": contract,
+    }
+
+    if deployment_only:
         print()
         print("DEPLOYMENT COMPLETE")
         print("===================")
