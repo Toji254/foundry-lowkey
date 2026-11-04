@@ -97,11 +97,6 @@ class BreakEngineTests(unittest.TestCase):
             break_engine._basic_solidity_expr("address[]", "[]"),
             "new address[](0)",
         )
-    def test_generic_array_expression_is_supported_for_dynamic_arrays(self):
-        self.assertEqual(
-            break_engine._basic_solidity_expr("address[]", "[]"),
-            "new address[](0)",
-        )
         self.assertEqual(
             break_engine._basic_solidity_expr("uint256[]", "[]"),
             "new uint256[](0)",
@@ -234,6 +229,35 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("attackSequential(uint256)", funded)
         self.assertIn("controlDifferential", funded)
 
+
+    def test_reentrancy_renderer_requires_sequential_control(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        fn = {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"}
+        body = break_engine._render_reentrancy_test(
+            target, fn, "withdraw()", [], 3, call_value="0"
+        )
+        self.assertIn("attackSequential(uint256)", body)
+        self.assertIn("controlDifferential", body)
+        self.assertIn("measuredAttackerGain > controlGain", body)
+        self.assertIn("targetLoss > controlTargetLoss", body)
+        self.assertIn("controlOuter && (exceededEntitlement || genericValueBreak)", body)
+
+    def test_time_probe_is_relative_to_fork_timestamp(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_time_test(target, "claim()", "0x12345678", "0")
+        self.assertIn("uint256 forkTimestamp = block.timestamp;", body)
+        self.assertIn("vm.warp(forkTimestamp + 1 days);", body)
+        self.assertIn("vm.warp(forkTimestamp + 30 days);", body)
+        self.assertNotIn("vm.warp(100000)", body)
+        self.assertNotIn("vm.warp(200000)", body)
+
+    def test_generic_access_renderer_never_emits_name_only_break(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_access_test(
+            target, "transferOwnership(address)", "0x12345678", "0", break_on_success=True
+        )
+        self.assertIn('console2.log("AUTHORIZATION_STATE_VERIFIED", false);', body)
+        self.assertIn('console2.log("LOWKEY_BREAK", false);', body)
 
     def test_fund_target_compact_amount_is_normalized_for_solidity(self):
         self.assertEqual(break_engine._solidity_amount_literal("10ether"), "10 ether")
