@@ -866,6 +866,23 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Balance:  1 ETH", rendered)
         self.assertIn(target, rendered)
 
+    def test_custody_getter_candidates_require_zero_arg_address_views(self):
+        abi = [
+            {"type": "function", "name": "owner", "stateMutability": "view", "inputs": [], "outputs": [{"type": "address"}]},
+            {"type": "function", "name": "guardian", "stateMutability": "view", "inputs": [], "outputs": [{"type": "address"}]},
+            {"type": "function", "name": "balanceOf", "stateMutability": "view", "inputs": [{"type": "address"}], "outputs": [{"type": "uint256"}]},
+            {"type": "function", "name": "setOwner", "stateMutability": "nonpayable", "inputs": [{"type": "address"}], "outputs": []},
+        ]
+        candidates = lk._custody_getter_candidates(abi)
+        self.assertEqual([item["name"] for item in candidates], ["owner", "guardian"])
+        self.assertEqual(candidates[0]["signature"], "owner()(address)")
+
+    def test_custody_help_describes_candidates_not_authorization_proof(self):
+        code, output = self.capture_dispatch("custody", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk custody [address]", output)
+        self.assertIn("not proof of authorization", output)
+
     def test_recon_slot_parser_returns_only_low_twenty_byte_candidates(self):
         address = "0x" + "1234567890abcdef" * 2 + "12345678"
         word = "0x" + "0" * 24 + address[2:]
