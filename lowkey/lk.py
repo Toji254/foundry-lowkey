@@ -179,7 +179,8 @@ AUDIT_CHECKLIST = [
 DEFAULT_CONFIG = {
     "target": None, "target_contract": None, "aliases": {}, "targets": {}, "rpc": None,
     "rpc_profiles": {}, "actor": None, "wallets": {},
-    "abi_paths": {}, "project_roots": {}, "labels": {}, "confirm_sends": False, "rpc_auto": False, "version": 4
+    "abi_paths": {}, "project_roots": {}, "target_owners": {}, "labels": {},
+    "confirm_sends": False, "rpc_auto": False, "version": 4
 }
 
 _COMMAND_STATUS = 0
@@ -303,7 +304,7 @@ def load_config():
         return fresh_config()
     config = fresh_config()
     config.update(loaded)
-    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "project_roots", "labels"]:
+    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "project_roots", "target_owners", "labels"]:
         if not isinstance(config.get(key), dict): config[key] = {}
     # ABI paths are normalized lazily after helper definitions are loaded.
     return config
@@ -1113,14 +1114,21 @@ def target_aliases(config, root=None):
         roots = {}
 
     owners_by_address = {}
-    for address, owner in roots.items():
-        if not is_address(address) or not owner:
+    # Older configs used project_roots for both ABI discovery and alias
+    # ownership. Keep it as a migration fallback, but an explicit target_owners
+    # entry takes precedence because the ABI can live in a sibling project.
+    owner_maps = (roots, config.get("target_owners", {}))
+    for owner_map in owner_maps:
+        if not isinstance(owner_map, dict):
             continue
-        try:
-            owner_root = Path(os.path.expanduser(str(owner))).resolve()
-        except OSError:
-            continue
-        owners_by_address[str(address).lower()] = owner_root
+        for address, owner in owner_map.items():
+            if not is_address(address) or not owner:
+                continue
+            try:
+                owner_root = Path(os.path.expanduser(str(owner))).resolve()
+            except OSError:
+                continue
+            owners_by_address[str(address).lower()] = owner_root
 
     names = list(config.get("aliases", {}).items()) + list(config.get("targets", {}).items())
 
@@ -1212,13 +1220,17 @@ def target_aliases(config, root=None):
     return merged
 
 def remember_project_target(config, root, name, address):
-    """Persist a target alias together with the project that owns it."""
+    """Persist a target alias and its owning project independently of its ABI location."""
     if not name or not is_address(address):
         return
     root = str(Path(audit_context.foundry_project_root(root)).resolve())
     config.setdefault("aliases", {})[str(name)] = address
     config.setdefault("targets", {})[str(name)] = address
-    config.setdefault("project_roots", {})[address] = root
+    # project_roots tracks where ABI/artifact discovery should look. It may
+    # legitimately point to a sibling project for an external dependency.
+    # target_owners tracks which audit project explicitly registered this name.
+    config.setdefault("target_owners", {})[address] = root
+    config.setdefault("project_roots", {}).setdefault(address, root)
 
 def resolve_target_ref(config,ref,root=None):
     if ref is None:
