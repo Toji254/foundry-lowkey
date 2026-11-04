@@ -296,10 +296,7 @@ jobs:
               uint256 private mode = 3;
               bool private entered;
               constructor(address target_) { target = target_; }
-              function setMode(uint8 value) external {
-                  require(value == 1 || value == 2, "BAD_MODE");
-                  mode = value;
-              }
+              function setMode(uint8 value) external { mode = value; }
               function execute() external {
                   (bool ok, bytes memory reason) = target.call(abi.encodeWithSignature("withdraw()"));
                   if (!ok) assembly { revert(add(reason, 32), mload(reason)) }
@@ -393,7 +390,7 @@ jobs:
               data = config["set_mode_selector"] + format(mode_value, "064x")
               tx_hash = rpc("eth_sendTransaction", [{
                   "from": config["setup_sender"], "to": config["attacker"],
-                  "data": data, "value": "0x0"
+                  "data": data, "value": "0x0", "gas": "0x100000", "gasPrice": "0x3b9aca00"
               }])
               receipt = rpc("eth_getTransactionReceipt", [tx_hash])
               if not receipt or str(receipt.get("status","")).lower() not in {"0x1","1"}:
@@ -403,7 +400,8 @@ jobs:
               raise ValueError("expected prepare or send mode")
           tx_hash = rpc("eth_sendTransaction", [{
               "from": config["sender"], "to": config["attacker"],
-              "data": config["execute_calldata"], "value": "0x0"
+              "data": config["execute_calldata"], "value": "0x0",
+              "gas": "0x989680", "gasPrice": "0x3b9aca00"
           }])
           receipt = rpc("eth_getTransactionReceipt", [tx_hash])
           if not receipt or str(receipt.get("status","")).lower() not in {"0x1","1"}:
@@ -445,6 +443,7 @@ jobs:
           result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
           assert result["status"] == "BREAK", result
           assert result["same_entry_call_verified"] is True, result
+          assert result["same_transaction_envelope_verified"] is True, result
           assert result["same_prestate_verified"] is True, result
           assert result["runs"]["control"]["metric"] > 0, result
           assert result["runs"]["attack"]["metric"] > result["runs"]["control"]["metric"], result
