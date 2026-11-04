@@ -126,6 +126,38 @@ class TargetScopingTests(unittest.TestCase):
             }
             self.assertFalse(lk.artifact_is_project_application(root, source_path, artifact))
 
+    def test_explicit_project_alias_keeps_sibling_project_abi_target_selectable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = pathlib.Path(tmp)
+            root = workspace / "TargetHolder"
+            sibling = workspace / "Ethernaut" / "Fallout"
+            root.mkdir()
+            sibling.mkdir(parents=True)
+            address = "0x" + "3" * 40
+            artifact = sibling / "out" / "Fallout.sol" / "Fallout.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Fallout",
+                    "sourceName": "src/Fallout.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+            config = {
+                "aliases": {"Fallout": address},
+                "targets": {"Fallout": address},
+                "project_roots": {address: str(root)},
+                "abi_paths": {address: str(artifact)},
+            }
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                aliases = lk.target_aliases(config, root)
+
+            self.assertEqual(aliases, {"Fallout": address})
+            self.assertEqual(lk.resolve_target_ref(config, "Fallout", root), address)
+
     def test_target_list_separates_protocol_from_lab_support(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
