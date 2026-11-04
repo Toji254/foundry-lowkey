@@ -46,45 +46,79 @@ The capability inventory uses three honest states: `implemented` means the comma
 
 ### Sequential control is mandatory for BREAK
 
-The `lk break` engine can still find candidate behavioral breaks, but a candidate is downgraded to `OBSERVED` unless a matching sequential-control manifest passes. Example:
+The lk break engine can find candidate behavioral breaks, but a candidate is downgraded to OBSERVED unless a matching trace-backed sequential-control manifest passes. lk control accepts **only a local Anvil RPC** and requires each scenario to execute one real, mined transaction.
 
-```json
+Example manifest:
+
+~~~json
 {
   "target_address": "0x0000000000000000000000000000000000000001",
-  "function": "withdraw()",
-  "family": "reentrancy",
-  "same_calls_id": "withdraw-sequence-v1",
-  "metric_name": "attacker_gain_wei",
-  "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
-  "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
+  "same_calls_id": "withdraw-same-entrypoint-v1",
+  "prestate_addresses": [
+    "0x0000000000000000000000000000000000000001",
+    "0x0000000000000000000000000000000000000002",
+    "0x0000000000000000000000000000000000000003"
+  ],
+  "prestate_slots": [
+    {
+      "address": "0x0000000000000000000000000000000000000001",
+      "slot": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "metric_name": "attacker_portfolio_net_eth_delta_wei",
+  "metric_addresses": [
+    "0x0000000000000000000000000000000000000002",
+    "0x0000000000000000000000000000000000000003"
+  ],
   "control": {
-    "argv": ["forge", "test", "--match-test", "test_sequential_control", "-vv"]
+    "argv": ["bash", "scripts/run-control.sh"]
   },
   "attack": {
-    "argv": ["forge", "test", "--match-test", "test_reentrant_attack", "-vv"]
+    "argv": ["bash", "scripts/run-attack.sh"]
   }
 }
-```
+~~~
+
+Each script must execute its scenario against the same local Anvil endpoint (Lowkey supplies ETH_RPC_URL, FOUNDRY_ETH_RPC_URL, and LOWKEY_RPC_URL) and print exactly one line:
+
+~~~text
+LOWKEY_TRACE_TX_HASH 0x<32-byte-mined-transaction-hash>
+~~~
+
+The tested transaction must be the only transaction in its block and have transaction index zero. Lowkey obtains the transaction and receipt from RPC, runs debug_traceTransaction with callTracer, verifies the trace root matches the mined transaction, checks that the trace reaches target_address, and derives the root-entry-call fingerprint from the real sender, recipient, calldata, value, and chain ID.
+
+For pre-state comparison, prestate_addresses must include the transaction sender, root recipient, and target. prestate_slots must include at least one relevant target accounting or authorization slot. Lowkey reads those values at the transaction's parent block. **Only the declared storage slots are compared**; include every target slot that matters to the hypothesis. The full nested call traces are retained in the evidence, so callback/reentrant execution differences remain visible even when the outer entry call is identical.
+
+The attack metric is no longer printed by the scripts. Lowkey calculates the native-ETH balance delta for metric_addresses from the transaction's parent block to its mined block. The transaction sender must be included, so its actual gas spend is included in the portfolio delta. The control and attack are run from Anvil snapshots and reverted independently, then Lowkey compares their measured portfolio deltas. ERC20/token-share profit metrics are not yet supported by this control gate.
 
 Run it with:
 
-```bash
-lk control .audit/control.json
+~~~bash
+lk control .audit/control.json --rpc-url http://127.0.0.1:8545
 lk break --family reentrancy --control-manifest .audit/control.json
-```
+~~~
 
-Both commands must print these runtime digests in their stdout/stderr:
+same_calls_id is a human-readable experiment label, not evidence. A BREAK from lk control means the on-chain root call and declared parent pre-state matched and the attack produced a larger measured native-ETH portfolio delta. It is not human confirmation, and unlisted storage or off-chain assumptions remain the operator's responsibility. The transaction scripts must not hard-code results or reuse old transaction hashes; Lowkey verifies that each hash is mined in the current local Anvil run.
 
-```text
-LOWKEY_CALL_SEQUENCE_SHA256 <64 hexadecimal characters>
-LOWKEY_PRECONDITION_SHA256 <64 hexadecimal characters>
-```
+### Fidelity promotion ladder
 
-The sequence digest should be computed by each script from a canonical representation of the actual executed calls (caller, target, calldata, value, and order). The precondition digest should be computed from the relevant actor, balances, storage/nonce state, and block context immediately before the tested sequence. Keep the hash construction identical in both scripts. Lowkey checks that the reported digests match and that the attack metric exceeds the control metric.
+lk fidelity --inspect test/YourPoC.t.sol reports detected test-state modifications. The current fork-reproduction denylist includes synthetic ETH/token balances, caller impersonation, storage writes, code injection, mocked dependencies, and timestamp/block overrides. vm.assume/bounded-input assumptions are disclosed and allowed at the FORK_REPRODUCED stage, but not at the stricter REALISTIC stage. The allowlist and denylist are recorded with the fidelity report.
 
-**Important limitation:** Lowkey currently compares the digests emitted by the two commands; it does not independently derive them from EVM traces or prove the scripts computed them honestly. Do not hard-code the same digest into both commands. A matching digest is a test-supplied assertion, not independent proof of call equivalence. A future trace-backed verifier should replace this attestation step.
+To run an actual local-fork transaction through the higher proof stages:
 
-A `BREAK` from `lk control` is therefore only a controlled differential observation. In `lk break`, even a passed control is marked `SIMULATED_BREAK` while fidelity is incomplete. The generated harness is not eligible for confirmation merely because the Forge test passed.
+~~~bash
+lk reprove test/YourPoC.t.sol \\
+  --rpc-url http://127.0.0.1:8545 \\
+  --fork-block 19300000 \\
+  --target-address 0x0000000000000000000000000000000000000001 \\
+  --profit-address 0x0000000000000000000000000000000000000002 \\
+  --profit-address 0x0000000000000000000000000000000000000003 \\
+  --argv-json '["bash", "scripts/replay-local.sh"]'
+~~~
+
+The replay script must broadcast one transaction to the local Anvil fork and print LOWKEY_TRACE_TX_HASH. The transaction must be the only transaction in block fork-block + 1. Lowkey verifies the receipt, callTracer root, target reachability, measured native-ETH balances, actual gasUsed, and effectiveGasPrice. The result is FORK_REPRODUCED when the execution is valid; it becomes PROFITABLE only when the measured portfolio delta remains positive after gas. Native ETH is currently measured; ERC20/ERC4626 share accounting needs a token-specific adapter.
+
+No tool assigns HUMAN_CONFIRMED automatically. A human must review the evidence and record an explicit disposition in the evidence ledger. A successful Forge test alone never establishes realistic profit or confirms a finding.
 
 ### Proof support and boundaries
 
