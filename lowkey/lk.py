@@ -17798,6 +17798,165 @@ def source_sol_files(root):
             if filename.endswith(".sol"): paths.append(os.path.join(path,filename))
     return sorted(paths)
 
+def run_fallback_map(config, args=None):
+    """Inventory source-level entrypoints and external-call boundaries outside ordinary selectors."""
+    values = list(args or [])
+    json_output = "--json" in values
+    include_tests = "--include-tests" in values
+    values = [value for value in values if value not in {"--json", "--include-tests"}]
+    if len(values) > 1:
+        return fail("Usage: lk fallback-map [file|directory] [--include-tests] [--json]")
+    try:
+        project_root = os.path.abspath(audit_context.foundry_project_root())
+    except Exception as exc:
+        return fail(f"Error: could not resolve the current project: {exc}")
+    scan_root = os.path.abspath(values[0]) if values else project_root
+    if not os.path.exists(scan_root):
+        return fail(f"Error: source path does not exist: {scan_root}")
+    source_paths = source_sol_files(scan_root)
+    if include_tests and os.path.isdir(project_root):
+        source_paths = sorted(set(source_paths + source_sol_files(os.path.join(project_root, "test"))))
+    if not source_paths:
+        return fail("No Solidity source files found in the selected scope.")
+
+    # Every hit is a source lead, not proof of runtime reachability or exploitability.
+    patterns = [
+        ("native-receiver", "receive()", re.compile(r"\breceive\s*\(\s*\)\s*external\b[^;{]*\{")),
+        ("fallback-entrypoint", "fallback()", re.compile(r"\bfallback\s*\([^)]*\)\s*(?:external|public)\b[^;{]*\{")),
+        ("receiver-hook", "ERC-721/1155 receiver hook", re.compile(
+            r"\bfunction\s+(onERC721Received|onERC1155Received|onERC1155BatchReceived)\s*\("
+        )),
+        ("token-hook", "token callback hook", re.compile(
+            r"\bfunction\s+(tokensReceived|tokensToSend|onTokenTransfer|onTransferReceived)\s*\("
+        )),
+        ("flashloan-or-swap-callback", "flash-loan / swap callback", re.compile(
+            r"\bfunction\s+(uniswapV2Call|uniswapV3SwapCallback|uniswapV3FlashCallback|"
+            r"pancakeCall|executeOperation|receiveFlashLoan|onFlashLoan)\s*\("
+        )),
+        ("cross-domain-callback", "cross-domain message callback", re.compile(
+            r"\bfunction\s+(ccipReceive|lzReceive|sgReceive|onMessageReceived|"
+            r"handleMessage|_onMessageReceived)\s*\("
+        )),
+        ("try-catch-boundary", "try/catch boundary", re.compile(r"\btry\s+[^;{}]{1,300}\{", re.DOTALL)),
+        ("low-level-call", "low-level call boundary", re.compile(
+            r"\.\s*(call|delegatecall|staticcall)\s*(?:\{[^}]*\})?\s*\(", re.DOTALL
+        )),
+        ("token-hook-call", "token/NFT hook-capable call", re.compile(
+            r"\.\s*(safeTransferFrom|safeTransfer|transferAndCall|safeBatchTransferFrom)\s*\("
+        )),
+    ]
+    items = []
+    scanned_files = []
+    for source_path in source_paths:
+        try:
+            with open(source_path, "r", encoding="utf-8", errors="replace") as handle:
+                original = handle.read()
+        except OSError:
+            continue
+        cleaned = _source_comment_strip(original, "solidity")
+        original_lines = original.splitlines()
+        scanned_files.append(source_path)
+        for category, label, pattern in patterns:
+            for match in pattern.finditer(cleaned):
+                line_number = cleaned.count("\n", 0, match.start()) + 1
+                if not 1 <= line_number <= len(original_lines):
+                    continue
+                line_text = original_lines[line_number - 1].strip()
+                matched_name = match.group(1) if match.lastindex else label
+                if category == "native-receiver":
+                    enclosing = "receive"
+                elif category == "fallback-entrypoint":
+                    enclosing = "fallback"
+                elif category in {
+                    "receiver-hook", "token-hook", "flashloan-or-swap-callback",
+                    "cross-domain-callback",
+                }:
+                    enclosing = str(matched_name)
+                else:
+                    enclosing = None
+                    prefix = cleaned[:match.start()]
+                    for function_match in re.finditer(
+                        r"\b(?:function\s+([A-Za-z_]\w*)|constructor\s*\(|receive\s*\(|fallback\s*\()",
+                        prefix,
+                    ):
+                        enclosing = function_match.group(1) or (
+                            "constructor" if "constructor" in function_match.group(0)
+                            else "receive" if "receive" in function_match.group(0)
+                            else "fallback"
+                        )
+                items.append({
+                    "category": category,
+                    "name": matched_name,
+                    "label": label,
+                    "file": os.path.relpath(source_path, project_root),
+                    "line": line_number,
+                    "enclosing_function": enclosing,
+                    "snippet": line_text[:300],
+                    "confidence": "source-pattern",
+                })
+    items.sort(key=lambda item: (item["file"], item["line"], item["category"]))
+    report = {
+        "schema_version": 1,
+        "project_root": project_root,
+        "scan_root": scan_root,
+        "source_file_count": len(scanned_files),
+        "finding_count": len(items),
+        "items": items,
+        "limits": [
+            "Source patterns are leads, not proof of runtime reachability or exploitability.",
+            "Inherited and delegated behavior may live in other source files or implementation contracts.",
+            "Assembly-created dispatch and bytecode-only callbacks are outside this source scan.",
+            "A low-level call is not automatically an unsafe callback; inspect its target, value, return handling and state ordering.",
+        ],
+    }
+    evidence_path = None
+    try:
+        evidence_dir = os.path.join(project_root, ".audit", "fallback-map")
+        os.makedirs(evidence_dir, exist_ok=True)
+        evidence_path = os.path.join(evidence_dir, "fallback_map.json")
+        with open(evidence_path, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError:
+        pass
+    report["evidence_path"] = evidence_path
+    try:
+        audit_context.record_tool(
+            "fallback-map",
+            project_root,
+            status="completed",
+            summary=f"found {len(items)} source-level fallback/callback boundaries",
+            data={"source_file_count": len(scanned_files), "finding_count": len(items), "evidence_path": evidence_path},
+        )
+    except Exception:
+        pass
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    print("LOWKEY // FALLBACK & CALLBACK MAP")
+    print("=================================")
+    scope = os.path.relpath(scan_root, project_root) if scan_root.startswith(project_root) else scan_root
+    print(f"Scope       : {scope}")
+    print(f"Source files: {len(scanned_files)}")
+    print(f"Source hits : {len(items)}")
+    print("")
+    if not items:
+        print("No matching fallback/callback boundaries were found in this source scope.")
+    else:
+        for item in items:
+            print(
+                f"{item['category']:<25} {item['file']}:{item['line']} "
+                f"| {item['name']} | inside {item['enclosing_function'] or 'contract scope'}"
+            )
+            if item["snippet"]:
+                print(f"  {item['snippet']}")
+    print("")
+    print("These are source-level leads, not a reachability or exploit verdict.")
+    if evidence_path:
+        print(f"Evidence    : {evidence_path}")
+    return 0
+
+
 def source_vyper_files(root):
     if os.path.isfile(root):
         return [root] if str(root).endswith(".vy") else []
@@ -21196,6 +21355,17 @@ COMMAND_HELP = {
         ],
         related=["lk receipt", "lk walkthrough"],
     ),
+    "fallback-map": _help_entry(
+        "List receive/fallback entrypoints, token receiver hooks, flash-loan/swap callbacks, cross-domain callbacks, try/catch blocks, and low-level call boundaries in Solidity source.",
+        "lk fallback-map [file|directory] [--include-tests] [--json]",
+        "lk fallback-map",
+        "Use it before tracing callback-driven behavior or building a hostile receiver. The scan is source-based and reports leads, not proof of runtime reachability.",
+        options=[
+            ("--include-tests", "Include the project's test/ fixtures in the scan.", "lk fallback-map --include-tests"),
+            ("--json", "Emit the structured inventory as JSON.", "lk fallback-map --json"),
+        ],
+        related=["lk recon", "lk functions", "lk break --family callback", "lk trace"],
+    ),
     "unravel": _help_entry(
         "Reconstruct one transaction into a decoded call tree, native-value flows, receipt events, gas cost and a saved evidence dossier.",
         "lk unravel [tx] [--json] [--max-depth N] [--max-nodes N]",
@@ -23840,6 +24010,7 @@ UTILITIES / COMPATIBILITY
   lk resolve / lookup               ENS lookup aliases.
   lk erc20                         Token helper alias.
   lk receipt / tx / trace / unravel / logs Transaction inspection and transaction reconstruction.
+  lk fallback-map                 Inventory fallback, receiver, callback, try/catch and low-level-call paths.
   lk batch <file>                   Run one lk command per line.
   lk self-test                      Run Lowkey regression tests.
   lk doctor                        Diagnose installation/toolchain problems.
@@ -23900,6 +24071,7 @@ _NEXT_COMMANDS = {
     "changes": ["lk findings", "lk finding <note>", "lk mapping <slot> <key>", "lk read <function> [args]"],
     "trace": ["lk unravel <tx>", "lk changes <function> [values...]", "lk tx <tx>", "lk findings"],
     "unravel": ["lk focus <id>", "lk trace <tx>", "lk break --function <function>"],
+    "fallback-map": ["lk functions", "lk trace <tx>", "lk break --family callback"],
     "tx": ["lk receipt", "lk trace", "lk logs"],
     "receipt": ["lk trace", "lk tx", "lk logs"],
     "logs": ["lk tx", "lk receipt", "lk event <sig> <data>"],
@@ -24804,6 +24976,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="receipt": return run_receipt(config, args=args)
     elif cmd=="trace": return run_trace(config,args)
     elif cmd=="unravel": return run_unravel(config,args)
+    elif cmd=="fallback-map": return run_fallback_map(config,args)
     elif cmd=="logs": run_logs(config,args)
     elif cmd=="last":
         action=args[0] if args else "receipt"
