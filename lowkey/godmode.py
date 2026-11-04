@@ -477,6 +477,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
             for scenario in spec.get("scenario_parameters") or []:
                 if not isinstance(scenario,dict): raise ValueError("scenario_parameters entries must be objects.")
                 scenario_address=addr(scenario.get("address"))
+                if scenario_address not in addresses:
+                    raise ValueError(f"Scenario parameter address {scenario_address} must also appear in prestate_addresses.")
                 scenario_slot=str(scenario.get("slot") or "").lower()
                 if re.fullmatch(r"0x[0-9a-f]{64}",scenario_slot) is None:
                     try: scenario_slot=hex(int(scenario_slot,0))
