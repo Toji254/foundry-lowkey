@@ -420,6 +420,13 @@ Lowkey automatically reuses an existing Anvil, or starts a disposable project-lo
 
 The generic path deliberately refuses to call an upgradeable-style contract "ready" when it exposes `initialize()`. Complex protocols may require a proxy, registries, mocks, or initialization data that cannot be safely guessed. In those cases Lowkey reports the missing lab layer instead of giving a misleading live target.
 
+### \`lk lab\` vs \`lk deploy\`
+
+- \`lk lab\` is the environment-setup command. It prefers the project's own deployment script or test fixture, then falls back to generic deployment when appropriate. Its goal is a usable, project-aware attack environment—not merely an address with bytecode.
+- \`lk deploy [Contract]\` is the direct-deployment shortcut. It deliberately selects the generic ABI deployment path and prompts for constructor values. It is equivalent to \`lk lab --generic [Contract]\`, but makes the intent explicit.
+- Both commands reuse the same active local Anvil when available. Deploying to a reused node adds to its existing state; it does not reset the chain. A successful \`lk deploy\` proves that the contract was deployed and its runtime bytecode is present, not that the full protocol is initialized or audit-ready.
+
+
 Stop an Anvil started by Lowkey with:
 
 ~~~bash
