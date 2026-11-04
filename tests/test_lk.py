@@ -1224,7 +1224,7 @@ class LowkeyCastTests(unittest.TestCase):
             }
 
             def fake_run_cast(args, config=None, capture=False):
-                address = args[2]
+                address = args[1]
                 code = "0x6000" if address.lower() == live_contract.lower() else "0x"
                 return lk.CommandResult(code, 0)
 
