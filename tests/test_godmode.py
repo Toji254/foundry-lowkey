@@ -256,6 +256,40 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["control_delta"], 3)
             self.assertFalse(saved["attack_metric_positive_after_gas"])
 
+    def test_control_blocks_rpc_state_fabrication_in_prepare_and_attack_scripts(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            bad = scripts / "prepare.py"
+            bad.write_text('rpc("anvil_setStorageAt", [target, slot, value])\n', encoding="utf-8")
+            manifest["scenario_parameters"] = [{
+                "name": "mode", "address": wrapper, "slot": "0x0",
+                "control_value": "0x0", "attack_value": "0x1",
+            }]
+            manifest["control"] = {
+                "prepare_argv": [sys.executable, "scripts/prepare.py"],
+                "argv": [sys.executable, "-c", "print('LOWKEY_TRACE_TX_HASH ' + 'a'*64)"],
+            }
+            manifest["attack"] = manifest["control"]
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with patch.object(godmode, "rpc", side_effect=lambda url, method, params, timeout=20:
+                              "0x1" if method == "evm_snapshot" else True), \
+                 patch.object(godmode, "run") as run_mock, \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn("anvil_setStorageAt", saved["reasons"][0])
+            run_mock.assert_not_called()
+
     def test_control_records_attacker_scenario_parameter_before_transaction(self):
         from unittest.mock import patch
         import subprocess
