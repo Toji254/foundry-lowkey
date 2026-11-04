@@ -62,8 +62,8 @@ class GodmodeTests(unittest.TestCase):
         (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
         return manifest, target, sender, wrapper
 
-    def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678", control_gain=5, attack_gain=15):
-        state = {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
+    def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678", control_gain=5, attack_gain=15, external_state=None):
+        state = external_state if external_state is not None else {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
 
         def fake_rpc(url, method, params, timeout=20):
             if method == "evm_snapshot":
@@ -229,7 +229,6 @@ class GodmodeTests(unittest.TestCase):
 
             # The state toggle is written during prepare, read by Lowkey before
             # the transaction, and then may be changed again by the callback.
-            original_rpc = rpc_mock
             with patch.object(godmode, "rpc", side_effect=rpc_with_scenario), \
                  patch.object(godmode, "run", side_effect=fake_run), \
                  redirect_stdout(io.StringIO()):
