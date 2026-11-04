@@ -415,6 +415,28 @@ def _trace_flatten(trace, limit=512):
     return rows
 
 
+def _control_transaction_envelope(tx, chain_id):
+    """Canonical transaction fields that can affect call context or gas accounting."""
+    fields=("nonce","gas","gasPrice","maxFeePerGas","maxPriorityFeePerGas","type","accessList")
+    envelope={"chain_id":str(chain_id).lower()}
+    for name in fields:
+        value=tx.get(name)
+        if name=="accessList" and isinstance(value,list):
+            envelope[name]=[
+                {"address":str(row.get("address") or "").lower(),
+                 "storageKeys":sorted(str(key).lower() for key in (row.get("storageKeys") or []))}
+                for row in value if isinstance(row,dict)
+            ]
+        elif value is None:
+            envelope[name]=None
+        elif isinstance(value,str):
+            envelope[name]=value.lower()
+        else:
+            envelope[name]=value
+    digest=hashlib.sha256(json.dumps(envelope,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    return digest,envelope
+
+
 def _control_entry_digest(tx, chain_id):
     value=tx.get("value") or "0x0"
     try: value_int=int(str(value),16) if str(value).startswith("0x") else int(value)
@@ -539,6 +561,7 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 slots.append({"address":address,"slot":slot})
             if not slots: raise ValueError("Declare at least one prestate_slots entry for the target accounting/authorization state.")
             entry_digest,entry_call=_control_entry_digest(tx,chain_id)
+            envelope_digest,envelope=_control_transaction_envelope(tx,chain_id)
             trace_entry_digest,trace_entry=_control_entry_digest(trace,chain_id)
             if trace_entry_digest!=entry_digest:
                 raise ValueError(f"{name} callTracer root does not match eth_getTransactionByHash.")
@@ -569,6 +592,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "block_number":block_number,
                 "entry_call_sha256":entry_digest,
                 "entry_call":entry_call,
+                "transaction_envelope_sha256":envelope_digest,
+                "transaction_envelope":envelope,
                 "prestate_sha256":prestate_digest,
                 "prestate":prestate,
                 "scenario_parameters":scenario_parameters,
@@ -610,15 +635,18 @@ def control(args):
         delta=rows["attack"]["metric"]-rows["control"]["metric"]
     same_entry=bool(rows.get("control",{}).get("entry_call_sha256") and
                     rows.get("control",{}).get("entry_call_sha256")==rows.get("attack",{}).get("entry_call_sha256"))
+    same_envelope=bool(rows.get("control",{}).get("transaction_envelope_sha256") and
+                       rows.get("control",{}).get("transaction_envelope_sha256")==rows.get("attack",{}).get("transaction_envelope_sha256"))
     same_prestate=bool(rows.get("control",{}).get("prestate_sha256") and
                        rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256"))
     same_chain=bool(rows.get("control",{}).get("chain_id") and
                     str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower())
-    passed=same_entry and same_prestate and same_chain and delta is not None and delta>0
+    passed=same_entry and same_envelope and same_prestate and same_chain and delta is not None and delta>0
     reasons=[]
     for name in ("control","attack"):
         if rows.get(name,{}).get("trace_error"): reasons.append(name+": "+rows[name]["trace_error"])
     if not same_entry: reasons.append("RPC-derived root transaction sender/target/calldata/value differ or a trace is missing.")
+    if not same_envelope: reasons.append("RPC-derived transaction nonce/gas/fee/type/access-list envelope differs.")
     if not same_prestate: reasons.append("RPC-derived parent-block pre-state for the declared accounts/slots differs.")
     if not same_chain: reasons.append("Control and attack transactions were executed on different chain IDs.")
     if delta is None or delta<=0: reasons.append("Attack metric did not exceed the control metric.")
@@ -627,13 +655,14 @@ def control(args):
         "created_at":now(),"status":"BREAK" if passed else "OBSERVED","verification_method":"local-Anvil RPC transaction plus debug_traceTransaction callTracer",
         "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
         "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
+        "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,"same_chain_verified":same_chain,
         "target_address":target,"prestate_slots_checked":spec.get("prestate_slots") or [],
         "runs":rows,"reasons":reasons,
-        "gate":"Only trace-backed local transactions with identical root invocation and declared parent-block pre-state plus a positive attack-control metric can produce BREAK.",
+        "gate":"Only trace-backed local transactions with identical root invocation, transaction envelope and declared parent-block pre-state plus a positive RPC-measured attack-control portfolio delta can produce BREAK.",
     }
     write_json(out,payload)
-    print(f"{payload['status']}: delta {delta}; entry call {'matched' if same_entry else 'DIFFERENT'}; parent pre-state {'matched' if same_prestate else 'DIFFERENT'}; evidence {out.relative_to(root)}")
+    print(f"{payload['status']}: delta {delta}; entry call {'matched' if same_entry else 'DIFFERENT'}; tx envelope {'matched' if same_envelope else 'DIFFERENT'}; parent pre-state {'matched' if same_prestate else 'DIFFERENT'}; evidence {out.relative_to(root)}")
     return 0 if passed else 1
 
 
