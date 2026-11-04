@@ -527,11 +527,27 @@ jobs:
 
           # This is Anvil's documented deterministic test key for account zero.
           ANVIL_KEY0=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+          # Foundry 1.9 defaults to a dry-run for forge create. This CI
+          # scenario must deploy to the local Anvil instance before exercising
+          # Lowkey's on-chain identifier and state-transition workflows.
           forge create src/EscrowFlow.sol:EscrowFlow \
             --rpc-url "$LOWKEY_RPC_URL" \
             --private-key "$ANVIL_KEY0" \
+            --broadcast \
             --json > /tmp/lowkey-escrow-deployment.json
-          TARGET=$(python3 -c 'import json; print(json.load(open("/tmp/lowkey-escrow-deployment.json"))["deployedTo"])')
+          TARGET=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          deployment = json.loads(Path("/tmp/lowkey-escrow-deployment.json").read_text())
+          address = deployment.get("deployedTo")
+          if not address:
+              raise SystemExit(
+                  "forge create --broadcast did not return deployedTo; "
+                  f"returned JSON keys: {sorted(deployment)}"
+              )
+          print(address)
+          PY
+          )
           test -n "$TARGET"
 
           lk actor 1 Alice
