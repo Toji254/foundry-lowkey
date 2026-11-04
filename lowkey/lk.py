@@ -3930,6 +3930,460 @@ def run_trace(config,args=None):
         data={"tx_hash":tx_hash, "returned_values": returned_lines or []},
     )
     return result_code
+
+def _unravel_int(value, default=0):
+    """Parse an RPC quantity without treating missing values as real zeroes."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return int(text, 16) if text.lower().startswith("0x") else int(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _unravel_eth(wei):
+    """Format wei exactly without floating-point rounding."""
+    value = max(0, int(wei or 0))
+    whole, fraction = divmod(value, 10 ** 18)
+    if fraction == 0:
+        return str(whole)
+    return f"{whole}.{fraction:018d}".rstrip("0")
+
+
+def _unravel_rpc(url, method, params=None, timeout=20):
+    """Use a longer, bounded timeout for expensive trace RPC methods."""
+    if not url:
+        return None, "RPC URL is not configured"
+    try:
+        payload = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params or [],
+        }).encode("utf-8")
+        request = urllib_request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        if not isinstance(body, dict):
+            return None, "RPC returned a non-object response"
+        if body.get("error") is not None:
+            error = body.get("error")
+            return None, error.get("message") if isinstance(error, dict) else str(error)
+        return body.get("result"), None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _unravel_call_decoder(config, target, calldata):
+    """Resolve a function selector and decode arguments only when an ABI matches."""
+    data = str(calldata or "0x")
+    if not is_address(target) or not re.fullmatch(r"0x[0-9a-fA-F]*", data):
+        return None, data[:10] if data.startswith("0x") and len(data) >= 10 else None
+    item, _abi = _trace_function_item(config, {"to": target, "input": data})
+    if not item:
+        return None, data[:10] if len(data) >= 10 else None
+    signature = format_signature(item)
+    decoded = None
+    if len(data) >= 10:
+        code, output, _error = cast_output(["cast", "calldata-decode", signature, data])
+        if code == 0 and str(output or "").strip():
+            decoded = str(output).strip()
+    return {
+        "signature": signature,
+        "decoded_arguments": decoded,
+    }, data[:10] if len(data) >= 10 else None
+
+
+def _unravel_address_label(config, address, identities, contract_cache):
+    address = str(address or "").strip()
+    if not is_address(address):
+        return "creation" if not address else address
+    lowered = address.lower()
+    known = identities.get(lowered)
+    if known:
+        return f"{known[0]} ({known[1]})"
+    cached = contract_cache.get(lowered)
+    if cached:
+        return cached
+    # Only resolve the top-level destination's optional token metadata. Unknown
+    # internal addresses remain explicit addresses rather than guessed names.
+    return address
+
+
+def _unravel_render_call(config, node, depth, identities, contract_cache, budget):
+    if not isinstance(node, dict):
+        return None, []
+    if budget["seen"] >= budget["max_nodes"] or depth > budget["max_depth"]:
+        budget["truncated"] = True
+        return None, []
+    budget["seen"] += 1
+
+    sender = node.get("from")
+    recipient = node.get("to")
+    calldata = node.get("input") or "0x"
+    decoded, selector = _unravel_call_decoder(config, recipient, calldata)
+    value_wei = _unravel_int(node.get("value"))
+    gas_used = _unravel_int(node.get("gasUsed"))
+    call_type = str(node.get("type") or "CALL").upper()
+    error = node.get("error") or node.get("revertReason")
+    sender_label = _unravel_address_label(config, sender, identities, contract_cache)
+    recipient_label = _unravel_address_label(config, recipient, identities, contract_cache)
+    call = {
+        "depth": depth,
+        "type": call_type,
+        "from": sender,
+        "from_label": sender_label,
+        "to": recipient,
+        "to_label": recipient_label,
+        "value_wei": value_wei,
+        "value_eth": _unravel_eth(value_wei),
+        "gas_used": gas_used,
+        "selector": selector,
+        "function": decoded.get("signature") if decoded else None,
+        "decoded_arguments": decoded.get("decoded_arguments") if decoded else None,
+        "error": str(error) if error else None,
+        "input": calldata,
+        "output": node.get("output"),
+        "children": [],
+    }
+    lines = [
+        f"{'  ' * depth}{call_type} {sender_label} -> {recipient_label}"
+        f" | {call['function'] or selector or 'unknown call'}"
+        f" | value {call['value_eth']} ETH"
+        + (f" | gas {gas_used}" if gas_used else "")
+        + (f" | REVERT {error}" if error else "")
+    ]
+    if call.get("decoded_arguments"):
+        lines.append(f"{'  ' * (depth + 1)}args: {call['decoded_arguments']}")
+    if value_wei > 0:
+        call["_native_value_flow"] = {
+            "from": sender,
+            "from_label": sender_label,
+            "to": recipient,
+            "to_label": recipient_label,
+            "value_wei": value_wei,
+            "value_eth": _unravel_eth(value_wei),
+            "call_type": call_type,
+            "depth": depth,
+        }
+    for child in node.get("calls") or []:
+        rendered, child_lines = _unravel_render_call(
+            config, child, depth + 1, identities, contract_cache, budget
+        )
+        if rendered:
+            call["children"].append(rendered)
+        lines.extend(child_lines)
+        if budget["seen"] >= budget["max_nodes"]:
+            break
+    return call, lines
+
+
+def run_unravel(config, args=None):
+    """Build a transaction-first dossier from RPC transaction/receipt/trace evidence."""
+    values = list(args or [])
+    json_output = False
+    no_calltree = False
+    no_cast_trace = False
+    max_depth = 8
+    max_nodes = 256
+    trace_args = []
+    tx_hash = None
+    index = 0
+    while index < len(values):
+        token = str(values[index])
+        if token == "--json":
+            json_output = True
+            index += 1
+        elif token == "--no-calltree":
+            no_calltree = True
+            index += 1
+        elif token == "--no-cast-trace":
+            no_cast_trace = True
+            index += 1
+        elif token in {"--max-depth", "--max-nodes"}:
+            if index + 1 >= len(values):
+                return fail(f"Usage: lk unravel [tx] [{token} N]")
+            try:
+                parsed = int(values[index + 1])
+            except ValueError:
+                return fail(f"Error: {token} needs a positive integer.")
+            if token == "--max-depth":
+                if not 1 <= parsed <= 16:
+                    return fail("Error: --max-depth must be between 1 and 16.")
+                max_depth = parsed
+            else:
+                if not 1 <= parsed <= 2000:
+                    return fail("Error: --max-nodes must be between 1 and 2000.")
+                max_nodes = parsed
+            index += 2
+        elif token in {"--quick", "--decode-internal"}:
+            trace_args.append(token)
+            index += 1
+        elif token == "--trace-printer":
+            if index + 1 >= len(values):
+                return fail("Usage: lk unravel [tx] [--trace-printer <value>]")
+            trace_args.extend([token, values[index + 1]])
+            index += 2
+        elif token.startswith("-"):
+            return fail(
+                "Usage: lk unravel [tx] [--json] [--max-depth N] [--max-nodes N] "
+                "[--no-calltree] [--no-cast-trace] [trace options]"
+            )
+        elif tx_hash is None:
+            tx_hash = token
+            index += 1
+        else:
+            return fail("Usage: lk unravel [tx] [options]")
+
+    tx_hash = tx_hash or last_transaction(config)
+    if not tx_hash:
+        return fail("Error: No transaction ID supplied or saved.")
+    if not is_tx_hash(tx_hash):
+        return fail("Error: invalid transaction ID")
+
+    root = audit_context.foundry_project_root()
+    rpc = effective_rpc(config)
+    if not rpc:
+        return fail("Error: no RPC is configured. Set one with lk rpc <url>.")
+
+    tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
+    receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash])
+    if not isinstance(tx, dict):
+        return fail("Error: transaction was not found on the active RPC.")
+    if not isinstance(receipt, dict):
+        return fail(
+            "Error: transaction receipt is not available. It may still be pending "
+            "or the RPC may not retain this transaction."
+        )
+
+    block_number = tx.get("blockNumber") or receipt.get("blockNumber")
+    block = rpc_json(rpc, "eth_getBlockByNumber", [block_number, False]) if block_number else None
+    chain_id_raw = rpc_json(rpc, "eth_chainId", [])
+    chain_id = _unravel_int(chain_id_raw, None) if chain_id_raw is not None else None
+
+    tracer_result = None
+    tracer_error = None
+    if not no_calltree:
+        tracer_result, tracer_error = _unravel_rpc(
+            rpc,
+            "debug_traceTransaction",
+            [tx_hash, {"tracer": "callTracer"}],
+            timeout=20,
+        )
+        if not isinstance(tracer_result, dict):
+            tracer_result = None
+
+    cast_trace_text = None
+    cast_trace_code = None
+    if not no_cast_trace and tracer_result is None:
+        trace_result = run_cast(["run", tx_hash] + trace_args, config, capture=True)
+        cast_trace_text = getattr(trace_result, "text", str(trace_result or ""))
+        cast_trace_code = getattr(trace_result, "code", 1)
+
+    identities = _known_address_identities(config)
+    contract_cache = {}
+    top_target = tx.get("to") or receipt.get("contractAddress")
+    if is_address(top_target):
+        top_identity = _contract_identity(config, top_target)
+        if top_identity:
+            label = str(top_identity.get("name") or "").strip()
+            symbol = str(top_identity.get("symbol") or "").strip()
+            if label and symbol:
+                contract_cache[str(top_target).lower()] = f"{label} ({symbol}) [{top_target}]"
+            elif label:
+                contract_cache[str(top_target).lower()] = f"{label} [{top_target}]"
+            elif symbol:
+                contract_cache[str(top_target).lower()] = f"{symbol} [{top_target}]"
+            elif top_identity.get("contract"):
+                contract_cache[str(top_target).lower()] = f"contract [{top_target}]"
+
+    call_tree = None
+    call_lines = []
+    value_flows = []
+    call_budget = {"seen": 0, "max_nodes": max_nodes, "max_depth": max_depth, "truncated": False}
+    if tracer_result is not None:
+        call_tree, call_lines = _unravel_render_call(
+            config, tracer_result, 0, identities, contract_cache, call_budget
+        )
+        def collect_flows(node):
+            if not isinstance(node, dict):
+                return
+            flow = node.get("_native_value_flow")
+            if flow:
+                value_flows.append(flow)
+                node.pop("_native_value_flow", None)
+            for child in node.get("children") or []:
+                collect_flows(child)
+        collect_flows(call_tree)
+
+    input_data = tx.get("input") or tx.get("data") or "0x"
+    top_decoded, top_selector = _unravel_call_decoder(config, top_target, input_data)
+    gas_used = _unravel_int(receipt.get("gasUsed"))
+    gas_price = _unravel_int(receipt.get("effectiveGasPrice") or tx.get("gasPrice"))
+    gas_cost_wei = gas_used * gas_price
+    tx_value_wei = _unravel_int(tx.get("value"))
+    status_raw = receipt.get("status")
+    status = "SUCCESS" if status_raw in ("0x1", 1) else "REVERTED" if status_raw in ("0x0", 0) else "UNKNOWN"
+
+    decoded_events = []
+    logs = receipt.get("logs") or []
+    for log_index, log in enumerate(logs[:256]):
+        event = decode_event_log(config, log, log.get("address") if isinstance(log, dict) else None)
+        decoded_events.append({
+            "log_index": log_index,
+            "address": log.get("address") if isinstance(log, dict) else None,
+            "emitter": _unravel_address_label(
+                config, log.get("address") if isinstance(log, dict) else None,
+                identities, contract_cache
+            ),
+            "event": event[0] if event else None,
+            "decoded": event[1] if event else None,
+            "topic0": (log.get("topics") or [None])[0] if isinstance(log, dict) else None,
+            "data": log.get("data") if isinstance(log, dict) else None,
+        })
+
+    report = {
+        "schema_version": 1,
+        "transaction_hash": tx_hash,
+        "chain_id": chain_id,
+        "block_number": _unravel_int(block_number, None) if block_number else None,
+        "block_hash": (block or {}).get("hash") if isinstance(block, dict) else None,
+        "block_timestamp": _unravel_int((block or {}).get("timestamp"), None) if isinstance(block, dict) else None,
+        "transaction_index": _unravel_int(tx.get("transactionIndex"), None) if tx.get("transactionIndex") is not None else None,
+        "from": tx.get("from"),
+        "from_label": _unravel_address_label(config, tx.get("from"), identities, contract_cache),
+        "to": top_target,
+        "to_label": _unravel_address_label(config, top_target, identities, contract_cache),
+        "contract_creation": not bool(tx.get("to")),
+        "top_level_function": top_decoded.get("signature") if top_decoded else None,
+        "top_level_selector": top_selector,
+        "decoded_arguments": top_decoded.get("decoded_arguments") if top_decoded else None,
+        "transaction_value_wei": tx_value_wei,
+        "transaction_value_eth": _unravel_eth(tx_value_wei),
+        "status": status,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": gas_price,
+        "transaction_fee_wei": gas_cost_wei,
+        "transaction_fee_eth": _unravel_eth(gas_cost_wei),
+        "call_tracer_available": tracer_result is not None,
+        "call_tracer_error": tracer_error,
+        "call_tree": call_tree,
+        "call_tree_lines": call_lines,
+        "call_tree_truncated": call_budget["truncated"],
+        "native_value_flows": value_flows,
+        "decoded_events": decoded_events,
+        "cast_trace_exit_code": cast_trace_code,
+        "cast_trace_fallback": cast_trace_text if tracer_result is None else None,
+        "analysis_limits": [
+            "Native call value is not the same as net attacker profit.",
+            "ERC-20 flows are shown only when the receipt event has a matching ABI; unknown logs remain raw.",
+            "A call tree is available only when the RPC supports debug_traceTransaction with callTracer.",
+            "Unknown addresses remain explicit addresses; Lowkey does not invent names.",
+            "A single transaction does not establish a multi-transaction exploit's total economics.",
+        ],
+    }
+
+    evidence_path = None
+    try:
+        evidence_dir = os.path.join(str(root), ".audit", "unravel")
+        os.makedirs(evidence_dir, exist_ok=True)
+        evidence_path = os.path.join(evidence_dir, f"{tx_hash.lower()}.json")
+        with open(evidence_path, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError:
+        evidence_path = None
+    report["evidence_path"] = evidence_path
+
+    audit_context.set_latest(root, tx_hash=tx_hash, trace=tx_hash)
+    audit_context.record_tool(
+        "unravel",
+        root,
+        status="completed",
+        summary=f"unravelled transaction {tx_hash[:10]}...",
+        data={
+            "tx_hash": tx_hash,
+            "chain_id": chain_id,
+            "block_number": report["block_number"],
+            "call_tracer_available": report["call_tracer_available"],
+            "call_count": call_budget["seen"],
+            "value_flow_count": len(value_flows),
+            "event_count": len(decoded_events),
+            "evidence_path": evidence_path,
+        },
+    )
+
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    print("LOWKEY // TRANSACTION UNRAVEL")
+    print("============================")
+    print(f"Transaction: {tx_hash}")
+    print(f"Chain ID   : {chain_id if chain_id is not None else 'unknown'}")
+    print(f"Block      : {report['block_number'] if report['block_number'] is not None else 'unknown'}")
+    print(f"Block hash : {report['block_hash'] or 'unknown'}")
+    print(f"Status     : {status}")
+    print(f"From       : {report['from_label']}")
+    print(f"To         : {report['to_label']}")
+    print(f"Function   : {report['top_level_function'] or top_selector or 'unknown'}")
+    if top_decoded and top_decoded.get("decoded_arguments"):
+        print(f"Arguments  : {top_decoded['decoded_arguments']}")
+    print(f"Value      : {report['transaction_value_eth']} ETH")
+    print(f"Gas used   : {gas_used:,}")
+    print(f"Gas price  : {gas_price:,} wei")
+    print(f"Tx fee     : {report['transaction_fee_eth']} ETH")
+    print("")
+    print("CALL TREE")
+    print("---------")
+    if call_lines:
+        print("\n".join(call_lines))
+        if report["call_tree_truncated"]:
+            print(f"... call tree truncated at {max_nodes} nodes / depth {max_depth}")
+    elif cast_trace_text:
+        print("Structured callTracer unavailable; showing Cast trace fallback.")
+        print(cast_trace_text)
+    else:
+        print("No structured call tree is available from this RPC.")
+        if tracer_error:
+            print(f"Trace reason: {tracer_error}")
+    print("")
+    print("NATIVE VALUE FLOWS")
+    print("------------------")
+    if value_flows:
+        for flow in value_flows:
+            print(
+                f"{'  ' * int(flow['depth'])}{flow['from_label']} -> {flow['to_label']}"
+                f" | {flow['value_eth']} ETH | {flow['call_type']}"
+            )
+    else:
+        print("No native-value call edges were decoded.")
+    print("")
+    print(f"EVENT LOGS ({len(decoded_events)})")
+    print("-----------")
+    for event in decoded_events:
+        if event.get("event"):
+            print(f"{event['emitter']} :: {event['event']}")
+            if event.get("decoded"):
+                print(f"  {event['decoded']}")
+        else:
+            print(f"{event['emitter']} :: unknown event {event.get('topic0') or '(no topic)'}")
+    print("")
+    print("This is transaction reconstruction, not an exploit verdict or net-profit proof.")
+    if evidence_path:
+        print(f"Evidence   : {evidence_path}")
+    return 0
+
+
 def decode_event_log(config, log, target=None):
     topics = log.get("topics", []) if isinstance(log, dict) else []
     data = log.get("data", "0x") if isinstance(log, dict) else "0x"
@@ -20725,7 +21179,22 @@ COMMAND_HELP = {
             ("--trace-printer <value>", "Pass a trace display setting to Cast. Run 'cast run --help' to see the exact value choices.", "lk trace --trace-printer <value>"),
         ],
         related=["lk receipt", "lk walkthrough"],
-    ),    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
+    ),
+    "unravel": _help_entry(
+        "Reconstruct one transaction into a decoded call tree, native-value flows, receipt events, gas cost and a saved evidence dossier.",
+        "lk unravel [tx] [--json] [--max-depth N] [--max-nodes N]",
+        "lk unravel 0x871fecf8d5d88863f191016cae8f994eb8e2143521764948684d1468a7948957",
+        "Use it when you start from a transaction hash and want to understand the attack or protocol execution as one composed sequence. It uses a node callTracer when available and falls back to Cast's trace.",
+        options=[
+            ("--json", "Emit the complete dossier as JSON.", "lk unravel 0x... --json"),
+            ("--max-depth N", "Bound nested call depth (1–16).", "lk unravel 0x... --max-depth 8"),
+            ("--max-nodes N", "Bound rendered calls (1–2000).", "lk unravel 0x... --max-nodes 256"),
+            ("--no-calltree", "Skip the debug_traceTransaction callTracer request.", "lk unravel 0x... --no-calltree"),
+            ("--no-cast-trace", "Do not use Cast fallback when callTracer is unavailable.", "lk unravel 0x... --no-cast-trace"),
+        ],
+        related=["lk trace", "lk receipt", "lk logs", "lk break"],
+    ),
+    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
     "logs": _help_entry("Query logs and optionally decode events.", "lk logs [args...]", "lk logs --decode", "Use it when events are part of behavior or security evidence.", options=[("--decode", "Decode matching events with the current ABI.", "lk logs --decode")], related=["lk event", "lk tx"]),
     "chain": _help_entry("Show chain ID, current block, and RPC.", "lk chain", "lk chain", "Use it to verify exactly which local chain/fork you are talking to.", related=["lk rpc", "lk fork"]),
     "balance": _help_entry(
@@ -23354,7 +23823,7 @@ UTILITIES / COMPATIBILITY
   lk signals                       Legacy alias for findings.
   lk resolve / lookup               ENS lookup aliases.
   lk erc20                         Token helper alias.
-  lk receipt / tx / trace / logs   Transaction inspection commands.
+  lk receipt / tx / trace / unravel / logs Transaction inspection and transaction reconstruction.
   lk batch <file>                   Run one lk command per line.
   lk self-test                      Run Lowkey regression tests.
   lk doctor                        Diagnose installation/toolchain problems.
@@ -23413,7 +23882,8 @@ _NEXT_COMMANDS = {
     "focus": ["lk fn <function>", "lk changes <function> [values...]", "lk trace", "lk finding <note>"],
     "probe": ["lk changes <function> [values...]", "lk trace", "lk finding <note>"],
     "changes": ["lk findings", "lk finding <note>", "lk mapping <slot> <key>", "lk read <function> [args]"],
-    "trace": ["lk changes <function> [values...]", "lk tx <tx>", "lk findings"],
+    "trace": ["lk unravel <tx>", "lk changes <function> [values...]", "lk tx <tx>", "lk findings"],
+    "unravel": ["lk focus <id>", "lk trace <tx>", "lk break --function <function>"],
     "tx": ["lk receipt", "lk trace", "lk logs"],
     "receipt": ["lk trace", "lk tx", "lk logs"],
     "logs": ["lk tx", "lk receipt", "lk event <sig> <data>"],
@@ -24317,6 +24787,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": return run_receipt(config, args=args)
     elif cmd=="trace": return run_trace(config,args)
+    elif cmd=="unravel": return run_unravel(config,args)
     elif cmd=="logs": run_logs(config,args)
     elif cmd=="last":
         action=args[0] if args else "receipt"
