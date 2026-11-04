@@ -467,7 +467,6 @@ def _trace_control_run(root, url, name, entry, spec, env):
             shutil.copytree(root,work,ignore=shutil.ignore_patterns(".git",".audit","out","cache","node_modules","__pycache__"))
             proc=run([str(x) for x in entry["argv"]],work,int(spec.get("timeout_seconds",300)),env=env)
             combined=(proc.stdout or "")+"\n"+(proc.stderr or "")
-            metric=metric_rx.search(combined)
             hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",combined)
             if proc.returncode!=0: raise RuntimeError(f"{name} command failed (exit {proc.returncode}): {combined[-1200:]}")
             if len(hashes)!=1: raise ValueError(f"{name} command must emit exactly one LOWKEY_TRACE_TX_HASH marker for the transaction under test.")
@@ -513,6 +512,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
             sender=str(tx.get("from") or "").lower()
             if not metric_addresses or sender not in metric_addresses:
                 raise ValueError("metric_addresses must include the actual transaction sender so gas expenditure is included in the measured portfolio.")
+            if not set(metric_addresses).issubset(set(addresses)):
+                raise ValueError("Every metric_address must also appear in prestate_addresses.")
             before_by_address={x["address"]:int(str(x["balance"]),16) for x in prestate["addresses"]}
             after_by_address={address:int(str(rpc(url,"eth_getBalance",[address,hex(block_number)])),16)
                               for address in metric_addresses}
