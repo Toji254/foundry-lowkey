@@ -125,21 +125,30 @@ library console2 {
                     source, encoding="utf-8"
                 )
 
+            command = ["forge", "build", "--root", str(root)]
             result = subprocess.run(
-                ["forge", "build", "--root", str(root), "--via-ir", "--optimize"],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
+            compile_route = "default"
+            if result.returncode != 0 and "Stack too deep" in (result.stdout + result.stderr):
+                compile_route = "via-ir fallback"
+                result = subprocess.run(
+                    command + ["--via-ir", "--optimize"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
             self.assertEqual(
                 result.returncode,
                 0,
-                msg="Generated harness compilation failed:\n"
+                msg=f"Generated harness compilation failed ({compile_route}):\n"
                 + result.stdout[-12000:]
                 + "\n"
                 + result.stderr[-12000:],
             )
-
 
 if __name__ == "__main__":
     unittest.main()
