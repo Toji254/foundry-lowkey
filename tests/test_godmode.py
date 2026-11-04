@@ -235,10 +235,16 @@ class GodmodeTests(unittest.TestCase):
                         return {"transactions": [tx_hash]}
                 if method == "eth_chainId":
                     return "0x7a69"
+                if method == "eth_getCode":
+                    return "0x6000"
+                if method == "eth_getStorageAt":
+                    return "0x" + "0" * 63 + "1"
                 if method == "debug_traceTransaction":
                     return {"type": "CALL", "from": sender, "to": target, "input": "0x12345678",
                             "value": "0x0", "calls": []}
                 if method == "eth_getBalance":
+                    if url == "https://archive.example":
+                        return hex(10**18)
                     return hex(after if params[1] == "0x65" else before)
                 raise AssertionError("Unexpected RPC method: " + method)
 
@@ -251,6 +257,8 @@ class GodmodeTests(unittest.TestCase):
                 result = godmode.reprove([
                     "test/RealForkPoC.t.sol", "--root", str(root),
                     "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
+                    "--source-rpc-url", "https://archive.example",
+                    "--prestate-slot", target + ":" + ("0x" + "0" * 64),
                     "--target-address", target, "--profit-address", recipient,
                     "--argv-json", json.dumps([sys.executable, "-c", "pass"]),
                 ])
