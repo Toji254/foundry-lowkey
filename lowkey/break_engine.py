@@ -1270,6 +1270,7 @@ contract LowkeyBreakRepeat is Test {{
         // Fund the attacker before any payable setup call. Otherwise a seeded
         // deposit/credit path can revert for lack of ETH and masquerade as a
         // protocol-level accounting observation.
+        vm.deal(address(this), 100 ether);
         vm.deal(ATTACKER, 100 ether);
 {asset_discovery}
 {setup_block}
@@ -1279,13 +1280,12 @@ contract LowkeyBreakRepeat is Test {{
 
         // Measure withdrawal gains only after setup has established the attacker's entitlement.
         uint256 targetBefore = TARGET.balance;
-        uint256 attackerBefore = ATTACKER.balance;
+        uint256 attackerSideBefore = address(this).balance + ATTACKER.balance;
 
         vm.prank(ATTACKER);
         (bool first, bytes memory firstReturndata) = TARGET.call{{value: {value}}}(data);
 
         uint256 targetMid = TARGET.balance;
-        uint256 attackerMid = ATTACKER.balance;
         if (assetReadOk) {{
             targetTokenMid = IERC20Lowkey(assetToken).balanceOf(TARGET);
             attackerTokenMid = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
@@ -1295,13 +1295,14 @@ contract LowkeyBreakRepeat is Test {{
         (bool second, bytes memory secondReturndata) = TARGET.call{{value: {value}}}(data);
 
         uint256 targetAfter = TARGET.balance;
-        uint256 attackerAfter = ATTACKER.balance;
+        uint256 attackerSideAfter = address(this).balance + ATTACKER.balance;
         if (assetReadOk) {{
             targetTokenAfter = IERC20Lowkey(assetToken).balanceOf(TARGET);
             attackerTokenAfter = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
         }}
 {entitlement_after_second}
-        uint256 totalGain = attackerAfter > attackerBefore ? attackerAfter - attackerBefore : 0;
+        uint256 totalGain = attackerSideAfter > attackerSideBefore
+            ? attackerSideAfter - attackerSideBefore : 0;
         uint256 totalTargetOutflow = targetBefore > targetAfter ? targetBefore - targetAfter : 0;
         uint256 totalTokenGain = assetReadOk && attackerTokenAfter > attackerTokenBefore
             ? attackerTokenAfter - attackerTokenBefore : 0;
@@ -1315,6 +1316,8 @@ contract LowkeyBreakRepeat is Test {{
         console2.logBytes(firstReturndata);
         console2.log("SECOND_RETURNDATA_LENGTH", secondReturndata.length);
         console2.logBytes(secondReturndata);
+        console2.log("ATTACKER_SIDE_BEFORE", attackerSideBefore);
+        console2.log("ATTACKER_SIDE_AFTER", attackerSideAfter);
         console2.log("TOTAL_ATTACKER_GAIN", totalGain);
         console2.log("TOTAL_TARGET_OUTFLOW", totalTargetOutflow);
         console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
@@ -1340,7 +1343,6 @@ contract LowkeyBreakRepeat is Test {{
             console2.log("LOWKEY_BREAK", false);
         }}
 
-        targetMid; attackerMid;
     }}
 }}
 """
