@@ -12223,8 +12223,11 @@ def _lab_workspace_remembered_targets(config):
     """Read remembered targets from sibling projects in the nearest shared workspace."""
     active_root = config.get("_lab_system_root")
     try:
+        # audit_context.project_root() calls Path.expanduser(), so normalize
+        # the string-valued runtime config path before passing it through.
+        active_path = Path(active_root or Path.cwd()).expanduser().resolve()
         active_root = Path(
-            audit_context.foundry_project_root(active_root or Path.cwd())
+            audit_context.foundry_project_root(active_path)
         ).expanduser().resolve()
     except (OSError, TypeError, ValueError):
         active_root = Path.cwd().resolve()
