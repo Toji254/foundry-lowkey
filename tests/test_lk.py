@@ -1197,6 +1197,83 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "uint8"), "1")
         self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "int8"), "1")
 
+    def test_lab_address_choices_include_live_remembered_contracts_from_other_projects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "TargetHolder"
+            fallout_root = pathlib.Path(tmp) / "Ethernaut CTFs" / "Fallout"
+            active_root.mkdir()
+            fallout_root.mkdir(parents=True)
+            live_contract = "0x" + "a" * 40
+            stale_contract = "0x" + "b" * 40
+            actor = "0x" + "1" * 40
+            config = {
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {
+                    "Fallout": live_contract,
+                    "OldTarget": stale_contract,
+                },
+                "aliases": {
+                    "Fallout": live_contract,
+                    "OldTarget": stale_contract,
+                },
+                "project_roots": {
+                    live_contract: str(fallout_root),
+                    stale_contract: str(fallout_root),
+                },
+            }
+
+            def fake_run_cast(args, config=None, capture=False):
+                address = args[2]
+                code = "0x6000" if address.lower() == live_contract.lower() else "0x"
+                return lk.CommandResult(code, 0)
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+                choices = lk._lab_address_choices(config, [actor])
+
+            self.assertIn(("anvil:0", actor), choices)
+            self.assertIn(("Fallout", live_contract), choices)
+            self.assertNotIn(("OldTarget", stale_contract), choices)
+            self.assertEqual(
+                sum(1 for _name, address in choices if address.lower() == live_contract.lower()),
+                1,
+            )
+
+    def test_constructor_contract_address_prompt_resolves_remembered_project_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = pathlib.Path(tmp) / "Ethernaut CTFs" / "Fallout"
+            project_root.mkdir(parents=True)
+            address = "0x" + "5" * 40
+            actor = "0x" + "1" * 40
+            config = {
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {"Fallout": address},
+                "aliases": {"Fallout": address},
+                "project_roots": {address: str(project_root)},
+            }
+            output = io.StringIO()
+            with redirect_stdout(output), patch.object(
+                lk, "run_cast", return_value=lk.CommandResult("0x6000", 0)
+            ), patch("builtins.input", return_value="Fallout"):
+                value = lk._lab_prompt_value(
+                    config,
+                    [actor],
+                    "TargetHolder",
+                    {
+                        "name": "one",
+                        "type": "address",
+                        "internalType": "contract Fallout",
+                    },
+                    path="params[1]",
+                )
+
+            self.assertEqual(value, address)
+            rendered = output.getvalue()
+            self.assertIn("Fallout", rendered)
+            self.assertIn("live remembered contracts", rendered)
+            self.assertIn("live deployed contract is required", rendered)
+
     def test_read_warns_for_state_changing_abi_function_without_contract_specific_names(self):
         target = "0x" + "1" * 40
         abi = [{
