@@ -7997,12 +7997,38 @@ def _select_project_target(config, entry, root):
         config.setdefault("abi_paths", {})[address] = artifact
     remember_project_target(config, root, entry.get("name") or contract, address)
     save_config(config)
+
+    target_source = entry.get("source") or "project"
+    if target_source == "project-config":
+        # This entry came from a named alias, not a deployment discovered in
+        # the current project's artifacts. Preserve the explicit registration
+        # when its ABI lives in a sibling project: project_context_target()
+        # intentionally accepts manually pinned targets outside this tree.
+        owners = config.get("target_owners", {})
+        owner = next(
+            (
+                value for registered_address, value in owners.items()
+                if is_address(registered_address)
+                and str(registered_address).lower() == str(address).lower()
+            ),
+            None,
+        )
+        if owner:
+            try:
+                owner_root = Path(os.path.expanduser(str(owner))).resolve()
+                current_root = Path(os.path.expanduser(str(root))).resolve()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                owner_root = None
+                current_root = None
+            if owner_root is not None and owner_root == current_root:
+                target_source = "manual"
+
     audit_context.set_target(
         root,
         address=address,
         contract=contract,
         artifact=artifact,
-        source=entry.get("source") or "project",
+        source=target_source,
     )
     print(f"Target selected: {entry.get('name') or contract} -> {apply_labels(address, config)}")
     if entry.get("source_file"):
