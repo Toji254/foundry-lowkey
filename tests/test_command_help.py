@@ -949,6 +949,164 @@ class CommandHelpTests(unittest.TestCase):
         self.assertNotIn("Tx ID:", rendered)
         self.assertNotIn("Return value #1:", rendered)
 
+    def test_unravel_quantity_and_wei_formatting_are_exact(self):
+        self.assertEqual(lk._unravel_int("0x2a"), 42)
+        self.assertEqual(lk._unravel_int("17"), 17)
+        self.assertIsNone(lk._unravel_int("not-a-number", None))
+        self.assertEqual(lk._unravel_eth(10**18), "1")
+        self.assertEqual(lk._unravel_eth(1500000000000000000), "1.5")
+        self.assertEqual(lk._unravel_eth(1), "0.000000000000000001")
+
+    def test_unravel_call_renderer_preserves_nested_value_edges(self):
+        sender = "0x" + "1" * 40
+        target = "0x" + "2" * 40
+        child_target = "0x" + "3" * 40
+        node = {
+            "type": "CALL",
+            "from": sender,
+            "to": target,
+            "value": hex(10**18),
+            "gasUsed": "0x5208",
+            "input": "0x12345678",
+            "calls": [{
+                "type": "CALL",
+                "from": target,
+                "to": child_target,
+                "value": hex(2 * 10**18),
+                "gasUsed": "0x1000",
+                "input": "0xabcdef01",
+                "calls": [],
+            }],
+        }
+        with patch.object(
+            lk,
+            "_unravel_call_decoder",
+            return_value=({"signature": "withdraw()", "decoded_arguments": "to: Alice"}, "0x12345678"),
+        ):
+            rendered, lines = lk._unravel_render_call(
+                {},
+                node,
+                0,
+                {sender.lower(): ("Alice", sender)},
+                {},
+                {"seen": 0, "max_nodes": 10, "max_depth": 4, "truncated": False},
+            )
+        self.assertEqual(rendered["function"], "withdraw()")
+        self.assertEqual(rendered["value_wei"], 10**18)
+        self.assertEqual(len(rendered["children"]), 1)
+        self.assertEqual(rendered["children"][0]["value_wei"], 2 * 10**18)
+        self.assertEqual(len(lines), 4)
+        self.assertIn("Alice", lines[0])
+        self.assertIn("value 1 ETH", lines[0])
+        self.assertIn("value 2 ETH", lines[2])
+
+    def test_unravel_persists_transaction_calltree_and_decoded_events(self):
+        tx_hash = "0x" + "a" * 64
+        sender = "0x" + "1" * 40
+        target = "0x" + "2" * 40
+        child_target = "0x" + "3" * 40
+        tx = {
+            "hash": tx_hash,
+            "from": sender,
+            "to": target,
+            "input": "0x12345678",
+            "value": hex(10**18),
+            "blockNumber": "0x10",
+            "transactionIndex": "0x2",
+            "gasPrice": "0x3b9aca00",
+        }
+        receipt = {
+            "status": "0x1",
+            "blockNumber": "0x10",
+            "gasUsed": "0x5208",
+            "effectiveGasPrice": "0x3b9aca00",
+            "logs": [{
+                "address": target,
+                "topics": ["0x" + "4" * 64],
+                "data": "0x",
+            }],
+        }
+        block = {"hash": "0x" + "5" * 64, "timestamp": "0x6553f100"}
+        tracer = {
+            "type": "CALL",
+            "from": sender,
+            "to": target,
+            "value": hex(10**18),
+            "gasUsed": "0x5208",
+            "input": "0x12345678",
+            "calls": [{
+                "type": "CALL",
+                "from": target,
+                "to": child_target,
+                "value": hex(2 * 10**18),
+                "gasUsed": "0x1000",
+                "input": "0xabcdef01",
+                "calls": [],
+            }],
+        }
+
+        def rpc_side_effect(_url, method, params=None):
+            if method == "eth_getTransactionByHash":
+                return tx
+            if method == "eth_getTransactionReceipt":
+                return receipt
+            if method == "eth_getBlockByNumber":
+                return block
+            if method == "eth_chainId":
+                return "0x1"
+            return None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            output = io.StringIO()
+            with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                with patch.object(lk, "rpc_json", side_effect=rpc_side_effect):
+                    with patch.object(lk, "_unravel_rpc", return_value=(tracer, None)):
+                        with patch.object(
+                            lk,
+                            "_known_address_identities",
+                            return_value={sender.lower(): ("Alice", sender)},
+                        ):
+                            with patch.object(
+                                lk,
+                                "_contract_identity",
+                                return_value={"name": "Vault", "symbol": "vETH", "contract": True},
+                            ):
+                                with patch.object(
+                                    lk,
+                                    "_unravel_call_decoder",
+                                    return_value=({
+                                        "signature": "withdraw()",
+                                        "decoded_arguments": "to: Alice",
+                                    }, "0x12345678"),
+                                ):
+                                    with patch.object(
+                                        lk,
+                                        "decode_event_log",
+                                        return_value=("Withdraw(address,uint256)", "receiver: Alice"),
+                                    ):
+                                        with patch.object(
+                                            lk.audit_context,
+                                            "foundry_project_root",
+                                            return_value=root,
+                                        ):
+                                            with patch.object(lk.audit_context, "set_latest"):
+                                                with patch.object(lk.audit_context, "record_tool"):
+                                                    with redirect_stdout(output):
+                                                        code = lk.run_unravel({}, [tx_hash, "--json"])
+
+            report = json.loads(output.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(report["chain_id"], 1)
+            self.assertEqual(report["status"], "SUCCESS")
+            self.assertEqual(report["top_level_function"], "withdraw()")
+            self.assertEqual(report["transaction_value_wei"], 10**18)
+            self.assertEqual(report["native_value_flows"][0]["value_wei"], 10**18)
+            self.assertEqual(report["native_value_flows"][1]["value_wei"], 2 * 10**18)
+            self.assertEqual(report["decoded_events"][0]["event"], "Withdraw(address,uint256)")
+            self.assertEqual(report["call_tree"]["children"][0]["to"], child_target)
+            self.assertTrue(pathlib.Path(report["evidence_path"]).is_file())
+
     def test_wizard_help_explains_how_to_attach_eth(self):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
