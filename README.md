@@ -882,7 +882,10 @@ lk recon
 lk recon 0xTARGET --json
 lk recon 0xTARGET --deep
 lk recon 0xTARGET --storage-range 0:31
+lk custody 0xTARGET --json
 ~~~
+
+The custody dossier resolves live zero-argument address getters whose names suggest authority (owner, admin, guardian, treasury, timelock, and related roles), lists privileged-looking state-changing ABI entrypoints, and checks whether discovered authority addresses currently have code. These are review candidates, not proof of who can call a function or who can ultimately move assets.
 
 The JSON dossier records chain/block identity, runtime bytecode metadata, local ABI functions/selectors, standard proxy-slot observations and EIP-1167 clone hints. `--deep` adds PUSH4/PUSH20 candidates from disassembly; `--storage-range` saves up to 32 raw slot values as observations, not a decoded storage layout. Candidate signatures and address references are not verified facts.
 
