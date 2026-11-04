@@ -146,6 +146,7 @@ def main() -> int:
             "    PoolTemplate internal poolImplementation;\n"
             "    PoolFactory internal factory;\n"
             "    function setUp() public {\n"
+            "        vm.warp(1700000000);\n"
             "        poolImplementation = new PoolTemplate();\n"
             "        PoolFactory implementation = new PoolFactory();\n"
             "        LocalEIP1967Proxy proxy = new LocalEIP1967Proxy(\n"
@@ -190,6 +191,30 @@ def main() -> int:
             )
         if "Target  : PoolFactory @" not in lab.stdout:
             raise AssertionError(f"Lowkey did not select the factory proxy as the protocol root:\n{lab.stdout[-12000:]}")
+
+        if "Block context restored: timestamp=1700000000" not in lab.stdout:
+            raise AssertionError(
+                "Lowkey did not report the fixture's deliberately warped timestamp:\n"
+                + lab.stdout[-12000:]
+            )
+        fixture_rpc_line = next(
+            (line for line in lab.stdout.splitlines()
+             if line.startswith("RPC (fixture context):")),
+            None,
+        )
+        if not fixture_rpc_line:
+            raise AssertionError("Lowkey did not report its isolated fixture-context RPC.")
+        fixture_rpc = fixture_rpc_line.split(":", 1)[1].strip()
+        observed_timestamp = run(
+            ["cast", "block", "latest", "--rpc-url", fixture_rpc, "--field", "timestamp"],
+            root,
+            env,
+        )
+        if int(observed_timestamp.stdout.strip(), 0) != 1700000000:
+            raise AssertionError(
+                "The promoted Anvil does not use the fixture timestamp. "
+                f"Observed: {observed_timestamp.stdout.strip()}"
+            )
 
         generated_harness = root / "test" / "foundry" / ".lowkey" / "LowkeyAutoFixture_PoolFactoryTest.t.sol"
         if generated_harness.exists():
