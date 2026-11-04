@@ -57,6 +57,7 @@ class GodmodeTests(unittest.TestCase):
             "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
             "prestate_addresses": [target, sender, wrapper],
             "prestate_slots": [{"address": target, "slot": "0x" + "0" * 64}],
+            "metric_addresses": [sender, wrapper],
             "control": {"argv": [sys.executable, "-c", "pass"]},
             "attack": {"argv": [sys.executable, "-c", "pass"]},
         }
@@ -96,6 +97,12 @@ class GodmodeTests(unittest.TestCase):
             if method == "eth_getTransactionReceipt":
                 return {"status": "0x1", "blockNumber": "0x65", "transactionIndex": "0x0"}
             if method == "eth_getBalance":
+                if params[1] == "0x65":
+                    gain = 5 if state["tx_hash"] == "0x" + "a" * 64 else 15
+                    if params[0] == sender:
+                        return hex(0x100 - 1)
+                    if params[0] == wrapper:
+                        return hex(0x100 + gain + 1)
                 return "0x100"
             if method == "eth_getTransactionCount":
                 return "0x1"
@@ -135,7 +142,7 @@ class GodmodeTests(unittest.TestCase):
                 i = run_index["value"]
                 run_index["value"] += 1
                 gain = 5 if i == 0 else 15
-                output = f"CONTROL_GAIN {gain}\\nLOWKEY_TRACE_TX_HASH {hashes[i]}\\n"
+                output = f"LOWKEY_TRACE_TX_HASH {hashes[i]}\\n"
                 return subprocess.CompletedProcess(argv, 0, output, "")
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
@@ -166,7 +173,7 @@ class GodmodeTests(unittest.TestCase):
             def fake_run(argv, cwd, timeout=300, env=None):
                 i = run_index["value"]
                 run_index["value"] += 1
-                output = f"CONTROL_GAIN {2 if i == 0 else 9}\\nLOWKEY_TRACE_TX_HASH {hashes[i]}\\n"
+                output = f"LOWKEY_TRACE_TX_HASH {hashes[i]}\\n"
                 return subprocess.CompletedProcess(argv, 0, output, "")
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper, "0xaabbccdd")), \\
@@ -189,7 +196,7 @@ class GodmodeTests(unittest.TestCase):
             self._control_manifest(root)
 
             def fake_run(argv, cwd, timeout=300, env=None):
-                output = "CONTROL_GAIN 2\\nLOWKEY_CALL_SEQUENCE_SHA256 " + "a" * 64
+                output = "LOWKEY_CALL_SEQUENCE_SHA256 " + "a" * 64
                 return subprocess.CompletedProcess(argv, 0, output, "")
 
             with patch.object(godmode, "run", side_effect=fake_run), \\
