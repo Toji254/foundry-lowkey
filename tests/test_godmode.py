@@ -64,6 +64,8 @@ class GodmodeTests(unittest.TestCase):
         return manifest, target, sender, wrapper
 
     def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678"):
+        state = {"tx_hash": None, "input": None}
+
         def fake_rpc(url, method, params, timeout=20):
             if method == "evm_snapshot":
                 return "0x1"
@@ -78,15 +80,17 @@ class GodmodeTests(unittest.TestCase):
                     "hash": "0x" + "4" * 64,
                     "timestamp": "0x100",
                     "baseFeePerGas": "0x1",
-                    "transactions": ["0x" + "a" * 64] if params[0] == "0x65" else [],
+                    "transactions": [state["tx_hash"]] if params[0] == "0x65" and state["tx_hash"] else [],
                 }
             if method == "eth_getTransactionByHash":
                 tx_hash = params[0]
+                state["tx_hash"] = tx_hash
+                state["input"] = attack_calldata if tx_hash == "0x" + "b" * 64 else "0x12345678"
                 return {
                     "hash": tx_hash,
                     "from": sender,
                     "to": wrapper,
-                    "input": attack_calldata if tx_hash == "0x" + "b" * 64 else "0x12345678",
+                    "input": state["input"],
                     "value": "0x0",
                 }
             if method == "eth_getTransactionReceipt":
@@ -104,7 +108,7 @@ class GodmodeTests(unittest.TestCase):
                     "type": "CALL",
                     "from": sender,
                     "to": wrapper,
-                    "input": "0x12345678",
+                    "input": state["input"],
                     "value": "0x0",
                     "calls": [{
                         "type": "CALL",
@@ -147,7 +151,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(saved["same_entry_call_verified"])
             self.assertTrue(saved["same_prestate_verified"])
             self.assertEqual(saved["verification_method"].split()[0], "local-Anvil")
-            self.assertTrue(saved["runs"]["attack"]["call_trace"][1]["to"], target)
+            self.assertEqual(saved["runs"]["attack"]["call_trace"][1]["to"], target)
 
     def test_control_rejects_different_root_calldata_even_when_metric_is_positive(self):
         from unittest.mock import patch
