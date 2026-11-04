@@ -216,17 +216,17 @@ class TargetScopingTests(unittest.TestCase):
                 "source": "project-config",
             }
 
-            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
-                 patch.object(lk, "effective_rpc", return_value=None), \\
-                 patch.object(lk, "save_config"), \\
-                 patch("sys.stdout", io.StringIO()):
-                self.assertEqual(lk._select_project_target(config, entry, root), 0)
-                selected = lk.project_context_target(root)
-                self.assertIsNotNone(selected)
-                self.assertEqual(selected["address"], address)
-                self.assertEqual(selected["source"], "manual")
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                with patch.object(lk, "effective_rpc", return_value=None):
+                    with patch.object(lk, "save_config"):
+                        with patch("sys.stdout", io.StringIO()):
+                            self.assertEqual(lk._select_project_target(config, entry, root), 0)
+                            selected = lk.project_context_target(root)
+                            self.assertIsNotNone(selected)
+                            self.assertEqual(selected["address"], address)
+                            self.assertEqual(selected["source"], "manual")
 
-                lk.activate_project_target(config, root)
+                            lk.activate_project_target(config, root)
 
             self.assertEqual(config["target"], address)
             self.assertEqual(config["target_contract"], "Fallout")
