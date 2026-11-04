@@ -536,10 +536,16 @@ def validate_catalogue():
         if entry["severity"] not in SEVERITIES:
             problems.append("%s: invalid severity %s" % (entry["slug"], entry["severity"]))
         for source in entry["references"]:
-            if source not in REFERENCE_SOURCES:
+            if source not in REFERENCE_SOURCES and not re.fullmatch(r"OWASP-SCWE-\\d{3}", source):
                 problems.append("%s: unknown reference %s" % (entry["slug"], source))
         seen_ids.add(entry["id"])
         seen_slugs.add(entry["slug"])
+
+    known_slugs = seen_slugs
+    for profile, slugs in PROFILES.items():
+        for slug in slugs:
+            if slug not in known_slugs:
+                problems.append("%s profile: unknown attack slug %s" % (profile, slug))
     return problems
 
 
@@ -614,6 +620,13 @@ def _print_refs(entry):
         source = REFERENCE_SOURCES.get(source_id)
         if source:
             print("    %s: %s" % (source["name"], source["url"]))
+        elif re.fullmatch(r"OWASP-SCWE-\\d{3}", source_id):
+            # Keep individual weakness IDs searchable while linking to the
+            # maintained OWASP catalogue rather than inventing an ID-specific URL.
+            catalogue = REFERENCE_SOURCES.get("OWASP-SCWE")
+            print("    OWASP SCWE identifier: %s" % source_id)
+            if catalogue:
+                print("    %s: %s" % (catalogue["name"], catalogue["url"]))
 
 
 def _resolve_or_suggest(query):
