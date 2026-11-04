@@ -1620,8 +1620,10 @@ def _render_reentrancy_test(
 """
     if setup_signature:
         seed_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
+        setup_values = _setup_argument_expressions(setup_signature, "hostile")
+        setup_args = ", " + ", ".join(setup_values) if setup_values else ""
         setup_block += f"""
-        bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_args});
         (bool seeded, ) = address(hostile).call{{value: {seed_value}}}(
             abi.encodeWithSignature("seed(bytes)", setupData)
         );
