@@ -121,7 +121,7 @@ class AttackLibraryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("LOCAL ATTACK LAB", lab)
         self.assertIn("local test networks only", lab)
-        self.assertIn("VulnerableVault", lab)
+        self.assertIn("ToyVault", lab)
         self.assertNotIn("https://", lab)
 
         code, quiz = capture(attacks.render_quiz, entry)
