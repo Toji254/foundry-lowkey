@@ -852,7 +852,7 @@ def reprove(args):
                      "stdout":command_result.stdout[-3000:],"stderr":command_result.stderr[-1500:],
                      "fidelity":fidelity,"reason":"Reproduction command did not complete successfully."}
             write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 1
-        hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",command_result.stdout+"\\n"+command_result.stderr)
+        hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",command_result.stdout+"\n"+command_result.stderr)
         if not tx_hash and len(hashes)==1: tx_hash=hashes[0]
         if len(hashes)>1: raise ValueError("Reproof command must emit at most one LOWKEY_TRACE_TX_HASH.")
     if not tx_hash or not re.fullmatch(r"0x[0-9a-fA-F]{64}",tx_hash):
