@@ -21,10 +21,33 @@ fi
 # Integrated offensive-security workflows. Native commands not listed here
 # continue through the original Lowkey router unchanged.
 case "${1:-}" in
-    capabilities|godmode|control|mutation-score|target-coverage|provenance|fidelity|sandbox|decompile|storage-infer|proxy-resolve|selectors-full|cfg|reentrancy-graph|fallback-map|calldata-mine|attack-forge|invariant-forge|archetype|token-weird|oracle-map|skew|flashmax|time|sig-matrix|init-frontrun|path|compose|reprove|economic|gas-ladder|state-diff|watch|custody|agent-split|verify-hack|unravel|bundle|sandwich|jit|fork-cache|upgrade-diff|cross-vm|learn|report|questions)
+    capabilities|godmode|control|mutation-score|target-coverage|provenance|fidelity|sandbox|decompile|storage-infer|proxy-resolve|selectors-full|cfg|reentrancy-graph|fallback-map|calldata-mine|attack-forge|invariant-forge|archetype|token-weird|oracle-map|skew|flashmax|time|sig-matrix|init-frontrun|path|compose|reprove|economic|gas-ladder|watch|custody|agent-split|verify-hack|unravel|bundle|sandwich|jit|fork-cache|upgrade-diff|cross-vm|learn|report|questions)
         exec python3 "$HOME/.lowkey/godmode.py" "$@"
         ;;
 esac
+
+# Preserve Lowkey's original function-level state-diff command. The
+# Godmode storage-slot diff is selected only with explicit block/slot flags.
+if [[ "${1:-}" == "state-diff" ]]; then
+    use_slot_diff=0
+    for arg in "$@"; do
+        case "$arg" in
+            --before|--before=*|--after|--after=*|--slot|--slot=*)
+                use_slot_diff=1
+                ;;
+        esac
+    done
+    if [[ "$use_slot_diff" -eq 1 ]]; then
+        exec python3 "$HOME/.lowkey/godmode.py" "$@"
+    fi
+fi
+
+# "lk coverage" is the short alias for target-line coverage. It does not
+# replace the existing audit pipeline coverage command.
+if [[ "${1:-}" == "coverage" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/godmode.py" target-coverage "$@"
+fi
 
 # Native Forge subcommands must own their own --help parsing. The generic
 # contextual-help interception below would otherwise turn 'lk forge debug --help'
