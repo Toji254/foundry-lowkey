@@ -2255,6 +2255,16 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
 
     value = _payable_value(fn, opts, "small")
     seed_fund = opts.get("fund_target")
+    discovery = {
+        "abi_discovery_succeeded": None,
+        "setup_found": None,
+        "setup_signature": None,
+        "entitlement_found": None,
+        "entitlement_signature": None,
+        "asset_found": None,
+        "asset_signature": None,
+        "error": None,
+    }
 
     if family in {"replay", "accounting"}:
         try:
@@ -2262,10 +2272,26 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             setup_signature = _find_setup_signature(all_functions)
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
             asset_signature = _find_asset_getter_signature(all_functions)
-        except Exception:
+            discovery.update({
+                "abi_discovery_succeeded": True,
+                "setup_found": setup_signature is not None,
+                "setup_signature": setup_signature,
+                "entitlement_found": entitlement_signature is not None,
+                "entitlement_signature": entitlement_signature,
+                "asset_found": asset_signature is not None,
+                "asset_signature": asset_signature,
+            })
+        except Exception as exc:
             setup_signature = None
             entitlement_signature = None
             asset_signature = None
+            discovery.update({
+                "abi_discovery_succeeded": False,
+                "setup_found": False,
+                "entitlement_found": False,
+                "asset_found": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
         body = _render_repeat_test(
             target,
             fn,
@@ -2311,6 +2337,15 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             all_functions = _discover_functions(host, config, target)
             setup_signature = _find_setup_signature(all_functions)
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
+            discovery.update({
+                "abi_discovery_succeeded": True,
+                "setup_found": setup_signature is not None,
+                "setup_signature": setup_signature,
+                "entitlement_found": entitlement_signature is not None,
+                "entitlement_signature": entitlement_signature,
+                "asset_found": False,
+                "asset_signature": None,
+            })
             body = _render_reentrancy_test(
                 target,
                 fn,
@@ -2325,6 +2360,19 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         except ValueError as error:
             return AttackResult(
                 family, target.contract, target.address, signature, "BLOCKED", str(error)
+            )
+        except Exception as error:
+            discovery.update({
+                "abi_discovery_succeeded": False,
+                "setup_found": False,
+                "entitlement_found": False,
+                "asset_found": False,
+                "error": f"{type(error).__name__}: {error}",
+            })
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED",
+                f"Could not discover the setup/entitlement ABI needed for a reentrancy experiment: {error}",
+                detail={"discovery": discovery},
             )
     elif family == "upgrade":
         body = _render_access_test(
@@ -2369,6 +2417,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         "values": values,
         "calldata": calldata,
         "call_value": value,
+        "discovery": discovery,
         "forge_returncode": completed.returncode,
         "harness": archive_path or harness,
         "harness_archive": archive_path,
