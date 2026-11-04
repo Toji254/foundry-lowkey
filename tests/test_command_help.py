@@ -866,6 +866,11 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Balance:  1 ETH", rendered)
         self.assertIn(target, rendered)
 
+    def test_unravel_eth_formats_whole_and_fractional_wei_exactly(self):
+        self.assertEqual(lk._unravel_eth(0), "0")
+        self.assertEqual(lk._unravel_eth(10**18), "1")
+        self.assertEqual(lk._unravel_eth(10**18 + 123), "1.000000000000000123")
+
     def test_trace_surfaces_probable_identifier_and_repeats(self):
         identifier = "0x" + "a" * 64
         item = {
