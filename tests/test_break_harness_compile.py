@@ -2,6 +2,7 @@ import importlib.util
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -10,6 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "break_engine.py"
 spec = importlib.util.spec_from_file_location("lowkey_break_engine_compile", MODULE)
 break_engine = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = break_engine
 spec.loader.exec_module(break_engine)
 
 
