@@ -930,6 +930,7 @@ def reprove(args):
     if block_txs!=[tx_hash]:
         raise ValueError("The tested transaction must be the only transaction in its block.")
     chain_id=rpc(url,"eth_chainId",[])
+    target=addr(ns.target_address)
     source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
     if ns.source_rpc_url:
         source_url=rpc_url(ns.source_rpc_url)
@@ -972,7 +973,6 @@ def reprove(args):
     tx_digest,entry=_control_entry_digest(tx,chain_id)
     trace_digest,_=_control_entry_digest(trace,chain_id)
     if tx_digest!=trace_digest: raise ValueError("CallTracer root does not match the mined transaction.")
-    target=addr(ns.target_address)
     calls=_trace_flatten(trace)
     if target not in {x.get("to") for x in calls}:
         raise ValueError("The transaction trace did not call --target-address.")
