@@ -473,9 +473,31 @@ def attack_forge(args):
     entry=next((x for x in ATTACKS if str(x.get("id","")).lower()==ns.attack_id.lower() or str(x.get("slug","")).lower()==ns.attack_id.lower()),None)
     if not entry: raise ValueError("Unknown attack ID/slug.")
     out=safe_out(root,".audit/attack-forge/"+str(entry["id"])+"/AttackHarness.template.t.sol")
-    out.write_text("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\nimport \"forge-std/Test.sol\";\ncontract LowkeyAttackCandidate is Test {\n address constant TARGET = "+target+";\n function test_candidate() external { assertGt(TARGET.code.length, 0, \"no runtime code\"); /* add exact protocol invariant and impact */ }\n}\n")
-    write_json(out.parent/"attack.json",{"attack":entry,"target":target,"status":"starter-only","proof":False,"required":["protocol-specific setup","attacker/authority model","asset accounting","measurable impact assertion","sequential control","mutation validation","economic costs","fork provenance"]})
-    print(f"Starter only: {out.relative_to(root)}"); return 0
+    fixture=None
+    try:
+        try: from .attack_library import LAB_SNIPPETS
+        except ImportError: from attack_library import LAB_SNIPPETS
+        snippet=LAB_SNIPPETS.get(str(entry.get("slug") or ""))
+        if snippet:
+            fixture=safe_out(root,".audit/attack-forge/"+str(entry["id"])+"/VulnerableFixture.sol")
+            fixture.write_text(str(snippet).rstrip()+"\n",encoding="utf-8")
+    except (ImportError,AttributeError,TypeError):
+        snippet=None
+    out.write_text("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\nimport \"forge-std/Test.sol\";\ncontract LowkeyAttackCandidate is Test {\n address constant TARGET = "+target+";\n function test_candidate() external { assertGt(TARGET.code.length, 0, \"no runtime code\"); /* add exact protocol invariant and impact */ }\n}\n",encoding="utf-8")
+    attack={key:entry.get(key) for key in ("id","slug","title","category","severity","plain","pattern","audit_signal","local_lab","mitigation","references")}
+    write_json(out.parent/"attack.json",{"attack":attack,"target":target,"fixture":str(fixture.relative_to(root)) if fixture else None,
+      "status":"starter-needs-protocol-specific-predicate","proof":False,
+      "required":["bind exact target ABI and function","set up realistic actors, permissions and asset state",
+        "assert a measurable security-property violation","run the matched sequential control","validate test sensitivity with mutation",
+        "record fork block, gas, fees, recipient delta and artifact hashes"]})
+    (out.parent/"README.md").write_text("# Attack candidate: "+str(entry.get("title") or entry["id"])+"\n\n"+
+       "Library metadata is preserved in attack.json. The generated harness only checks that the target has code; replace it with the actual exploit preconditions and measurable impact before treating it as a PoC.\n\n"+
+       ("A local fixture snippet was included. Review it; do not assume it is byte-for-byte compatible with the live target.\n" if fixture else "No runnable fixture snippet exists for this catalogue entry yet.\n"),encoding="utf-8")
+    print("Attack workspace: "+str(out.parent.relative_to(root)))
+    print("Fixture: "+(str(fixture.relative_to(root)) if fixture else "none available"))
+    print("Status: starter only; no exploit proof claimed.")
+    return 0
+
 def generate(args,kind):
     p=argparse.ArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",default="general"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
     templates={
