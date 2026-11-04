@@ -12668,7 +12668,7 @@ def run_lab(config,args):
         print("      Requires AI to be configured and enabled. Lowkey continues native lab setup if")
         print("      the optional review is unavailable; the review is unverified and does not choose")
         print("      a target, deploy, sign, or run tests. Selected source may be sent to the provider.")
-        print("      Example: lk lab Vault --ai-review")
+        print("      Example: lk lab --generic Vault --ai-review")
         print("")
         print("  Automatic reviews are a separate opt-in:")
         print("      lk ai mode auto       Allow complexity-triggered reviews for eligible labs.")
@@ -20174,7 +20174,16 @@ COMMAND_HELP = {
     ),
     "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
     "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),
-    "chisel": _help_entry("Launch/use Foundry Chisel for tiny Solidity experiments.", "lk chisel [args...]", "lk chisel", "Use it for quick Solidity/EVM experiments without creating a full contract."),
+    "chisel": _help_entry(
+        "Launch/use Foundry Chisel for tiny Solidity experiments.",
+        "lk chisel [args...]",
+        "lk chisel",
+        "Use it for quick Solidity/EVM experiments without creating a full contract.",
+        forms=[
+            ("lk chisel", "Open the interactive Solidity REPL.", "lk chisel"),
+            ("chisel --help", "Show native options supported by the installed Chisel version.", "chisel --help"),
+        ],
+    ),
     "ens": _help_entry("Resolve ENS names or reverse-resolve addresses.", "lk ens <name|address>", "lk ens vitalik.eth", "Use it when human-readable names help identify addresses.", related=["lk label"]),
     "token": _help_entry(
         "Read basic ERC-20 metadata or a holder balance.",
@@ -21585,6 +21594,7 @@ def _apply_command_help_audit_catalog():
             ],
             "options": [
                 ("Cast subcommand options", "Arguments after the subcommand are passed to Cast. Use lk read/lk send for Lowkey's ABI-aware actor and transaction flow.", "cast call --help"),
+                ("Storage subcommand help", "Show the native Cast storage command syntax supported by the installed Cast version.", "cast storage --help"),
             ],
         },
         "gas": {
@@ -21781,7 +21791,7 @@ def _apply_command_help_audit_catalog():
         "balance": {
             "forms": [
                 ("lk balance", "Show the selected target's ETH balance.", "lk balance"),
-                ("lk balance <address|actor|target-name>", "Resolve and show one address or saved local actor/target balance.", "lk balance Alice"),
+                ("lk balance <address|actor|target-name>", "Resolve a full address or a saved target or actor name, then show its ETH balance.", "lk balance Alice"),
             ],
         },
         "token": {
@@ -21848,6 +21858,7 @@ def _apply_command_help_audit_catalog():
         "ids": {
             "options": [
                 ("--all", "Include all saved identifiers instead of the default useful/recent view.", "lk ids --all"),
+                ("No saved IDs yet", "For an older transaction, replay its trace so Lowkey can inspect the ABI return again. An identifier is saved only when it can be recovered from ABI return data or a decoded event field.", "lk trace 0x871f..."),
             ],
         },
     }
@@ -21871,7 +21882,7 @@ def _apply_command_help_audit_catalog():
             ("lk lab --forge [Contract]", "Backward-compatible alias for --generic; new commands should use --generic.", "lk lab --generic Vault")
         )
         lab_entry.setdefault("notes", []).append(
-            ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab Vault --ai-review")
+            ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab --generic Vault --ai-review")
         )
 
     # The runtime supports init/actor/add/list/test. A historical help child
