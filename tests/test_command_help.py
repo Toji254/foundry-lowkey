@@ -1158,6 +1158,51 @@ class CommandHelpTests(unittest.TestCase):
             self.assertEqual(report["call_tree"]["children"][0]["to"], child_target)
             self.assertTrue(pathlib.Path(report["evidence_path"]).is_file())
 
+    def test_fallback_map_finds_hooks_and_call_boundaries_but_ignores_comments(self):
+        source = """// receive() external payable { this is only a comment
+pragma solidity ^0.8.20;
+interface ITarget {
+    function ping() external;
+}
+contract FallbackFixture {
+    receive() external payable {}
+    fallback() external payable {}
+    function onERC721Received(address, address, uint256, bytes calldata)
+        external pure returns (bytes4) { return this.onERC721Received.selector; }
+    function executeOperation(address, uint256, uint256, address, bytes calldata)
+        external returns (bool) { return true; }
+    function run(address target, bytes calldata payload) external {
+        try ITarget(target).ping() {} catch {}
+        (bool ok, ) = target.call{value: 1 ether}(payload);
+        ok;
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            src = root / "src"
+            src.mkdir()
+            (src / "FallbackFixture.sol").write_text(source, encoding="utf-8")
+            output = io.StringIO()
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                with patch.object(lk.audit_context, "record_tool"):
+                    with redirect_stdout(output):
+                        code = lk.run_fallback_map({}, ["--json"])
+            report = json.loads(output.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(report["source_file_count"], 1)
+        categories = {item["category"] for item in report["items"]}
+        self.assertIn("native-receiver", categories)
+        self.assertIn("fallback-entrypoint", categories)
+        self.assertIn("receiver-hook", categories)
+        self.assertIn("flashloan-or-swap-callback", categories)
+        self.assertIn("try-catch-boundary", categories)
+        self.assertIn("low-level-call", categories)
+        self.assertFalse(any(item["line"] == 1 for item in report["items"]))
+        self.assertTrue(pathlib.Path(report["evidence_path"]).is_file())
+        self.assertIn("not proof", " ".join(report["limits"]).lower())
+
     def test_wizard_help_explains_how_to_attach_eth(self):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
