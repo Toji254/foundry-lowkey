@@ -328,7 +328,9 @@ jobs:
               return body.get("result")
 
           root = pathlib.Path("/tmp/lowkey-fixture")
-          sender = rpc("eth_accounts", [])[0]
+          accounts = rpc("eth_accounts", [])
+          sender = accounts[0]
+          setup_sender = accounts[1]
           target_artifact = json.loads((root / "out/TraceControlFixture.sol/TraceTarget.json").read_text())
           attacker_artifact = json.loads((root / "out/TraceControlFixture.sol/TraceAttacker.json").read_text())
           target_bytecode = target_artifact["bytecode"]["object"].removeprefix("0x")
@@ -361,6 +363,7 @@ jobs:
           (root / "scripts").mkdir(exist_ok=True)
           (root / "scripts/trace-control.json").write_text(json.dumps({
               "sender": sender,
+              "setup_sender": setup_sender,
               "target": target,
               "attacker": attacker,
               "mapping_slot": mapping_slot,
@@ -386,7 +389,7 @@ jobs:
               reenter = int(sys.argv[2])
               data = config["set_reenter_selector"] + format(reenter, "064x")
               tx_hash = rpc("eth_sendTransaction", [{
-                  "from": config["sender"], "to": config["attacker"],
+                  "from": config["setup_sender"], "to": config["attacker"],
                   "data": data, "value": "0x0"
               }])
               receipt = rpc("eth_getTransactionReceipt", [tx_hash])
