@@ -4155,19 +4155,30 @@ def run_unravel(config, args=None):
     if not rpc:
         return fail("Error: no RPC is configured. Set one with lk rpc <url>.")
 
-    tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
-    receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash])
+    tx, tx_error = _unravel_rpc(
+        rpc, "eth_getTransactionByHash", [tx_hash], timeout=20
+    )
     if not isinstance(tx, dict):
-        return fail("Error: transaction was not found on the active RPC.")
+        detail = f" RPC error: {tx_error}" if tx_error else ""
+        return fail(f"Error: transaction was not found on the active RPC.{detail}")
+
+    receipt, receipt_error = _unravel_rpc(
+        rpc, "eth_getTransactionReceipt", [tx_hash], timeout=20
+    )
     if not isinstance(receipt, dict):
+        detail = f" RPC error: {receipt_error}" if receipt_error else ""
         return fail(
             "Error: transaction receipt is not available. It may still be pending "
-            "or the RPC may not retain this transaction."
+            "or the RPC may not retain this transaction." + detail
         )
 
     block_number = tx.get("blockNumber") or receipt.get("blockNumber")
-    block = rpc_json(rpc, "eth_getBlockByNumber", [block_number, False]) if block_number else None
-    chain_id_raw = rpc_json(rpc, "eth_chainId", [])
+    block = None
+    if block_number:
+        block, _block_error = _unravel_rpc(
+            rpc, "eth_getBlockByNumber", [block_number, False], timeout=20
+        )
+    chain_id_raw, _chain_error = _unravel_rpc(rpc, "eth_chainId", [], timeout=10)
     chain_id = _unravel_int(chain_id_raw, None) if chain_id_raw is not None else None
 
     tracer_result = None
