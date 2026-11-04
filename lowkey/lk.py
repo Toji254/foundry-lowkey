@@ -12183,11 +12183,47 @@ def _normalize_human_numeric_input(value, ptype, label=''):
         return grouped
 
     return value
-def _lab_address_choices(config, accounts):
+def _lab_remembered_contract_is_live(config, address, rpc):
+    """Check a remembered contract against the exact RPC used by this lab."""
+    artifact_path = None
+    try:
+        artifact_path = resolve_abi_path(config, address)
+    except Exception:
+        artifact_path = None
+
+    artifact = read_artifact(artifact_path) if artifact_path else None
+    deployed_bytecode = artifact.get("deployedBytecode") if isinstance(artifact, dict) else None
+    if isinstance(deployed_bytecode, dict):
+        deployed_bytecode = deployed_bytecode.get("object")
+    if str(deployed_bytecode or "").strip() not in {"", "0x", "0x0"}:
+        # An address can be reused after an Anvil reset. When the original
+        # artifact is available, require the runtime (or proxy/clone) to match
+        # it instead of accepting unrelated code at the same address.
+        verification_config = dict(config)
+        verification_config["rpc"] = rpc
+        verification_config.pop("_fixture_rpc_scope", None)
+        state = _live_target_state(verification_config, address, artifact_path)
+        return (
+            state.get("status") == "DEPLOYED"
+            and state.get("verification") in {"MATCHED", "PROXY/CLONE MATCHED"}
+        )
+
+    # Manually remembered targets may not have a local artifact. They are still
+    # useful as constructor references, but only while code exists at this
+    # address on the exact current lab RPC.
+    try:
+        result = run_cast(["code", address, "--rpc-url", rpc], config={}, capture=True)
+    except Exception:
+        return False
+    runtime = str(result.text or "").strip()
+    return result.code == 0 and runtime.lower() not in {"", "0x", "0x0"}
+
+
+def _lab_address_choices(config, accounts, rpc=None):
     choices = []
 
-    # Only expose addresses that are actually local actors or explicitly named
-    # wallet profiles. Do not leak stale targets from another project.
+    # Current Anvil actors and explicitly named wallet profiles remain the
+    # first choices, preserving the existing constructor-wizard behavior.
     for index, address in enumerate(accounts or []):
         if is_address(address):
             choices.append((f"anvil:{index}", str(address)))
@@ -12195,6 +12231,62 @@ def _lab_address_choices(config, accounts):
     for name, entry in (config.get("wallets", {}) or {}).items():
         if isinstance(entry, dict) and is_address(entry.get("address")):
             choices.append((str(name), str(entry["address"])))
+
+    # Also offer contracts remembered by Lowkey across projects. The global
+    # project_roots map establishes ownership; live bytecode is checked on this
+    # deployment's RPC so stale addresses from another Anvil instance never
+    # become selectable constructor dependencies.
+    rpc = rpc or config.get("_lab_rpc")
+    project_roots = config.get("project_roots", {})
+    if rpc and isinstance(project_roots, dict):
+        remembered = []
+        seen_contracts = set()
+        named_targets = []
+        for source in ("targets", "aliases"):
+            values = config.get(source, {})
+            if isinstance(values, dict):
+                named_targets.extend(values.items())
+
+        for name, address in named_targets:
+            if not name or not is_address(address):
+                continue
+            address_key = str(address).lower()
+            if address_key in seen_contracts:
+                continue
+            owner_root = configured_project_root(address, config)
+            if not owner_root:
+                continue
+            if not _lab_remembered_contract_is_live(config, str(address), rpc):
+                continue
+            seen_contracts.add(address_key)
+            remembered.append({
+                "name": str(name).strip(),
+                "address": str(address),
+                "root": Path(owner_root).resolve(),
+            })
+
+        # Make duplicate contract names unambiguous without making a unique
+        # target awkward to type. The short name still resolves when unique.
+        name_counts = {}
+        for item in remembered:
+            key = item["name"].casefold()
+            name_counts[key] = name_counts.get(key, 0) + 1
+
+        for item in remembered:
+            label = item["name"]
+            if name_counts.get(label.casefold(), 0) > 1:
+                try:
+                    project_label = item["root"].relative_to(Path.home().resolve()).as_posix()
+                except ValueError:
+                    project_label = item["root"].name
+                label = f"{label} ({project_label})"
+                if sum(
+                    1 for other in remembered
+                    if other["name"].casefold() == item["name"].casefold()
+                    and other["root"] == item["root"]
+                ) > 1:
+                    label += f" #{item['address'][-6:]}"
+            choices.append((label, item["address"]))
 
     seen = set()
     result = []
@@ -12293,6 +12385,8 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
         _print_numeric_unit_reference(label, ptype)
         print("  Input tip : commas/underscores are accepted in integers, e.g. 1,000,000.")
 
+    choices = None
+    requires_contract = False
     if ptype == "address":
         choices = _lab_address_choices(config, accounts)
         requires_contract = str((param or {}).get("internalType") or "").startswith("contract ")
@@ -12307,9 +12401,11 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
             ]
             print("  Requirement: a live deployed contract is required for this parameter.")
         if choices:
-            print("  Known local addresses:")
+            print("  Known local addresses (actors, wallets, and live remembered contracts):")
             for index, (name, address) in enumerate(choices[:12]):
-                print(f"    [{index}] {name:<18} {address}")
+                print(f"    [{index}] {name:<32} {address}")
+            if len(choices) > 12:
+                print(f"    ... {len(choices) - 12} more; enter a contract name to select it.")
             print("  Tip       : enter the number, name, or full address.")
 
     if default is not None:
@@ -12326,16 +12422,30 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
         value = default
 
     if ptype == "address":
-        choices = _lab_address_choices(config, accounts)
-        requires_contract = str((param or {}).get("internalType") or "").startswith("contract ")
-        if value.isdigit() and int(value) < len(choices):
-            value = choices[int(value)][1]
+        choices = choices if choices is not None else _lab_address_choices(config, accounts)
+        if value.isdigit():
+            choice_index = int(value)
+            if choice_index < min(len(choices), 12):
+                value = choices[choice_index][1]
+            elif choice_index < len(choices):
+                raise ValueError("choose one of the displayed numbers or enter the full contract name.")
         else:
-            lower = value.lower()
-            for name, address in choices:
-                if name.lower() == lower:
-                    value = address
-                    break
+            lower = value.casefold()
+            exact_matches = [
+                (name, address) for name, address in choices
+                if name.casefold() == lower
+            ]
+            matches = exact_matches or [
+                (name, address) for name, address in choices
+                if name.split(" (", 1)[0].casefold() == lower
+            ]
+            if len(matches) == 1:
+                value = matches[0][1]
+            elif len(matches) > 1:
+                options = ", ".join(name for name, _address in matches)
+                raise ValueError(
+                    f"'{value}' matches multiple known contracts; choose a displayed number or use a qualified name: {options}"
+                )
 
         if requires_contract and any(
             str(value).lower() == str(account).lower() for account in accounts or []
