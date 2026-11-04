@@ -120,6 +120,13 @@ library console2 {
                     target, "withdraw()", "0x12345678", "0"
                 ),
             }
+            for family in (
+                "callback", "signature", "dos", "oracle",
+                "economic", "erc20", "proxy", "storage",
+            ):
+                renderers[family] = break_engine._render_access_test(
+                    target, "withdraw()", "0x12345678", "0", break_on_success=False
+                )
             for family, source in renderers.items():
                 (root / "test" / "lowkey" / f"{family}.t.sol").write_text(
                     source, encoding="utf-8"
