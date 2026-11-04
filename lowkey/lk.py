@@ -9889,8 +9889,9 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     )
     relative_test = os.path.relpath(test_path, root)
 
-    print("LOWKEY LOCAL AUDIT LAB")
-    print("======================")
+    heading = "LOWKEY CONTRACT DEPLOYMENT" if deployment_only else "LOWKEY LOCAL AUDIT LAB"
+    print(heading)
+    print("=" * len(heading))
     print(f"Project : {root}")
     print(f"Fixture : {fixture['relative']}::{fixture['contract']}")
     print(f"Test    : {relative_test}")
@@ -12461,6 +12462,187 @@ def _lab_constructor_meaning(label, ptype, param=None):
     return f"ABI value of type {normalized}."
 
 
+def _lab_short_address(address):
+    value = str(address or "")
+    if not is_address(value):
+        return value
+    return f"{value[:10]}…{value[-6:]}"
+
+
+def _lab_address_picker_entries(config, accounts, choices, requires_contract=False):
+    """Enrich known address choices for the interactive constructor picker."""
+    actor_indexes = {
+        str(address).lower(): index
+        for index, address in enumerate(accounts or [])
+        if is_address(address)
+    }
+    wallet_names = {}
+    for name, entry in (config.get("wallets", {}) or {}).items():
+        address = entry.get("address") if isinstance(entry, dict) else None
+        if is_address(address):
+            wallet_names.setdefault(str(address).lower(), str(name))
+
+    remembered_roots = {}
+    try:
+        for item in _lab_workspace_remembered_targets(config):
+            address = item.get("address")
+            root = item.get("root")
+            if is_address(address) and root:
+                remembered_roots[str(address).lower()] = root
+    except Exception:
+        # Address selection must remain usable if optional provenance discovery fails.
+        remembered_roots = {}
+
+    entries = []
+    for name, address in choices or []:
+        if not is_address(address):
+            continue
+        key = str(address).lower()
+        if key in actor_indexes:
+            category = "actors"
+            origin = f"Anvil account #{actor_indexes[key]}"
+        else:
+            root = configured_project_root(address, config) or remembered_roots.get(key)
+            wallet_name = wallet_names.get(key)
+            if root:
+                category = "contracts"
+                try:
+                    project_label = Path(root).expanduser().resolve().relative_to(
+                        Path.home().resolve()
+                    ).as_posix()
+                except (OSError, ValueError):
+                    project_label = Path(root).name
+                origin = project_label
+            elif wallet_name:
+                category = "wallets"
+                origin = "Saved wallet profile"
+            else:
+                category = "contracts"
+                origin = "Remembered deployment"
+
+        if requires_contract:
+            if category == "actors":
+                continue
+            if category == "wallets":
+                rpc = config.get("_lab_rpc")
+                if not rpc:
+                    continue
+                try:
+                    code_check = run_cast(
+                        ["code", address, "--rpc-url", rpc], config={}, capture=True
+                    )
+                    runtime_code = str(code_check.text or "").strip().lower()
+                    if code_check.code != 0 or runtime_code in {"", "0x", "0x0"}:
+                        continue
+                except Exception:
+                    continue
+                category = "contracts"
+                origin = f"{origin} · deployed bytecode"
+
+        entries.append({
+            "name": str(name),
+            "address": str(address),
+            "category": category,
+            "origin": origin,
+        })
+
+    order = {"contracts": 0, "wallets": 1, "actors": 2}
+    entries.sort(key=lambda item: (order.get(item["category"], 9), item["name"].casefold()))
+    return entries
+
+
+def _lab_print_address_picker(entries, *, title="AVAILABLE ADDRESSES"):
+    print(f"  {title}:")
+    groups = (
+        ("contracts", "CONTRACTS ON THIS ANVIL"),
+        ("wallets", "SAVED WALLETS"),
+        ("actors", "ANVIL ACCOUNTS"),
+    )
+    for category, heading in groups:
+        grouped = [item for item in entries if item["category"] == category]
+        if not grouped:
+            continue
+        print(f"    {heading} ({len(grouped)})")
+        for index, item in enumerate(entries):
+            if item["category"] != category:
+                continue
+            print(f"      [{index}] {item['name']}")
+            print(f"           {item['origin']} · {_lab_short_address(item['address'])}")
+
+
+def _lab_resolve_address_selection(raw_value, entries, label):
+    value = str(raw_value or "").strip()
+    if not value:
+        raise ValueError(f"'{label}' needs a value.")
+    if value.isdigit():
+        index = int(value)
+        if 0 <= index < len(entries):
+            return entries[index]["address"]
+        raise ValueError(
+            f"address choice {value} is out of range; choose one of the displayed numbers."
+        )
+    if is_address(value):
+        return value
+
+    lower = value.casefold()
+    exact = [
+        item for item in entries
+        if item["name"].casefold() == lower
+        or item["name"].split(" (", 1)[0].casefold() == lower
+    ]
+    matches = exact or [
+        item for item in entries
+        if lower in item["name"].casefold()
+        or lower in item["origin"].casefold()
+    ]
+    if len(matches) == 1:
+        return matches[0]["address"]
+    if len(matches) > 1:
+        names = ", ".join(item["name"] for item in matches[:8])
+        raise ValueError(
+            f"'{value}' matches multiple addresses: {names}. Use a number or a more specific name."
+        )
+    raise ValueError(
+        f"No known address matches '{value}'. Enter a listed number, a contract/wallet name, "
+        "a full address, or type '?' to search."
+    )
+
+
+def _lab_prompt_address_selection(entries, label):
+    while True:
+        raw = input(
+            "  Select by number, name, partial name, or address (? = search): "
+        ).strip()
+        if raw in {"?", "/", "search"}:
+            query = input("  Search contract, wallet, actor, or project name: ").strip()
+            if not query:
+                print("  Search cancelled; choose from the list or enter a value.")
+                continue
+            lower = query.casefold()
+            matches = [
+                item for item in entries
+                if lower in item["name"].casefold()
+                or lower in item["origin"].casefold()
+                or lower in item["address"].casefold()
+            ]
+            if not matches:
+                print(f"  No known addresses match '{query}'. Try another search.")
+                continue
+            if len(matches) == 1:
+                return matches[0]["address"]
+            _lab_print_address_picker(matches, title=f"SEARCH RESULTS FOR '{query}'")
+            raw = input("  Select a result by number or name: ").strip()
+            try:
+                return _lab_resolve_address_selection(raw, matches, label)
+            except ValueError as error:
+                print(f"  {error}")
+                continue
+        try:
+            return _lab_resolve_address_selection(raw, entries, label)
+        except ValueError as error:
+            print(f"  {error}")
+
+
 def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False, default=None, param=None):
     print(f"  Field     : {label}")
     print(f"  Type      : {ptype}")
@@ -12470,36 +12652,30 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
         _print_numeric_unit_reference(label, ptype)
         print("  Input tip : commas/underscores are accepted in integers, e.g. 1,000,000.")
 
-    choices = None
     requires_contract = False
+    entries = []
     if ptype == "address":
         choices = _lab_address_choices(config, accounts)
         requires_contract = str((param or {}).get("internalType") or "").startswith("contract ")
+        entries = _lab_address_picker_entries(
+            config, accounts, choices, requires_contract=requires_contract
+        )
         if requires_contract:
-            choices = [
-                (name, address)
-                for name, address in choices
-                if not any(
-                    str(address).lower() == str(account).lower()
-                    for account in accounts or []
-                )
-            ]
-            print("  Requirement: a live deployed contract is required for this parameter.")
-        if choices:
-            print("  Known local addresses (actors, wallets, and live remembered contracts):")
-            for index, (name, address) in enumerate(choices[:12]):
-                print(f"    [{index}] {name:<32} {address}")
-            if len(choices) > 12:
-                print(f"    ... {len(choices) - 12} more; enter a contract name to select it.")
-            print("  Tip       : enter the number, name, or full address.")
+            print("  Requirement: choose a live deployed contract; ordinary Anvil accounts are not valid here.")
+        if entries:
+            print("  Available choices are grouped by type. Contract bytecode was checked against this Anvil.")
 
     if default is not None:
         print(f"  Suggested : {default}")
         if ptype.startswith(("uint", "int")):
             print("  Suggestion note: generic raw integer; unit and meaning are not inferred from the ABI.")
 
-    prompt = f"  Value{' [Enter = ' + default + ']' if default is not None else ''}: "
-    value = input(prompt).strip()
+    if ptype == "address" and entries:
+        _lab_print_address_picker(entries)
+        value = _lab_prompt_address_selection(entries, label)
+    else:
+        prompt = f"  Value{' [Enter = ' + default + ']' if default is not None else ''}: "
+        value = input(prompt).strip()
 
     if not value:
         if default is None:
@@ -12507,31 +12683,6 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
         value = default
 
     if ptype == "address":
-        choices = choices if choices is not None else _lab_address_choices(config, accounts)
-        if value.isdigit():
-            choice_index = int(value)
-            if choice_index < min(len(choices), 12):
-                value = choices[choice_index][1]
-            elif choice_index < len(choices):
-                raise ValueError("choose one of the displayed numbers or enter the full contract name.")
-        else:
-            lower = value.casefold()
-            exact_matches = [
-                (name, address) for name, address in choices
-                if name.casefold() == lower
-            ]
-            matches = exact_matches or [
-                (name, address) for name, address in choices
-                if name.split(" (", 1)[0].casefold() == lower
-            ]
-            if len(matches) == 1:
-                value = matches[0][1]
-            elif len(matches) > 1:
-                options = ", ".join(name for name, _address in matches)
-                raise ValueError(
-                    f"'{value}' matches multiple known contracts; choose a displayed number or use a qualified name: {options}"
-                )
-
         if requires_contract and any(
             str(value).lower() == str(account).lower() for account in accounts or []
         ):
@@ -12555,7 +12706,6 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
         return json.dumps(value, ensure_ascii=False)
 
     return value
-
 
 def _lab_prompt_value(config, accounts, contract, param, path="root", nested=False):
     raw_type = str(param.get("type") or "")
@@ -12710,6 +12860,76 @@ def _live_deployed_address(rpc, candidates):
     return None
 
 
+def _lab_known_address_label(config, accounts, address):
+    key = str(address or "").lower()
+    if not is_address(key):
+        return None
+    for index, account in enumerate(accounts or []):
+        if str(account).lower() == key:
+            return f"Anvil #{index}"
+    for name, entry in (config.get("wallets", {}) or {}).items():
+        candidate = entry.get("address") if isinstance(entry, dict) else None
+        if str(candidate or "").lower() == key:
+            return str(name)
+    for source in ("targets", "aliases"):
+        values = config.get(source, {})
+        if isinstance(values, dict):
+            for name, candidate in values.items():
+                if str(candidate or "").lower() == key:
+                    return str(name)
+    try:
+        for item in _lab_workspace_remembered_targets(config):
+            if str(item.get("address") or "").lower() == key:
+                return str(item.get("name") or item.get("contract") or "Known contract")
+    except Exception:
+        pass
+    return None
+
+
+def _lab_review_deployment(config, root, rpc, accounts, contract, constructor_inputs, values):
+    """Show resolved constructor values and require a deliberate deploy/edit/cancel choice."""
+    print()
+    print("DEPLOYMENT REVIEW")
+    print("=================")
+    print(f"Contract : {contract}")
+    print(f"Project  : {Path(root).resolve()}")
+    print(f"Network  : Local Anvil · {rpc_display(rpc)}")
+    print(f"Deployer : lab-deployer ({accounts[0]})")
+    print()
+    print("CONSTRUCTOR ARGUMENTS")
+    if not constructor_inputs:
+        print("  (none)")
+    for index, (param, value) in enumerate(zip(constructor_inputs or [], values or []), 1):
+        label = str(param.get("name") or f"argument{index}")
+        ptype = canonical_type(param)
+        rendered = str(value)
+        if ptype == "address" and is_address(value):
+            known = _lab_known_address_label(config, accounts, value)
+            if known:
+                rendered = f"{known} · {value}"
+        print(f"  {label:<20} {rendered}")
+    print()
+    print("  [1] Deploy now")
+    print("  [2] Change constructor values")
+    print("  [3] Cancel deployment")
+    if not sys.stdin.isatty():
+        print("  Non-interactive mode: continuing with the supplied constructor values.")
+        return "deploy"
+    while True:
+        try:
+            choice = input("  Choose [1]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return "cancel"
+        if choice in {"", "1", "d", "deploy", "y", "yes"}:
+            return "deploy"
+        if choice in {"2", "e", "edit", "change"}:
+            return "edit"
+        if choice in {"3", "q", "quit", "cancel", "n", "no"}:
+            return "cancel"
+        print("  Enter 1 to deploy, 2 to edit, or 3 to cancel.")
+
+
 def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_inputs):
     """Deploy an ABI-bearing artifact directly with cast on local EVM nodes."""
     if not artifact_is_deployable(artifact):
@@ -12730,23 +12950,34 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     print("Lowkey prefers project-native deployment/test harnesses; the generic deployer is the fallback.")
     print("")
 
-    values = []
-    for index, param in enumerate(constructor_inputs or [], 1):
-        try:
-            values.append(
-                _lab_prompt_value(
-                    config,
-                    accounts,
-                    str(contract),
-                    param,
-                    path=f"params[{index}]",
-                    nested=False,
+    while True:
+        values = []
+        for index, param in enumerate(constructor_inputs or [], 1):
+            try:
+                values.append(
+                    _lab_prompt_value(
+                        config,
+                        accounts,
+                        str(contract),
+                        param,
+                        path=f"params[{index}]",
+                        nested=False,
+                    )
                 )
-            )
-        except (EOFError, KeyboardInterrupt):
-            return None, "local lab cancelled"
-        except (TypeError, ValueError) as error:
-            return None, f"constructor input error: {error}"
+            except (EOFError, KeyboardInterrupt):
+                return None, "local lab cancelled"
+            except (TypeError, ValueError) as error:
+                return None, f"constructor input error: {error}"
+
+        review = _lab_review_deployment(
+            config, root, rpc, accounts, str(contract), constructor_inputs, values
+        )
+        if review == "deploy":
+            break
+        if review == "edit":
+            print("\nRe-enter the constructor values below.")
+            continue
+        return None, "local deployment cancelled by user"
 
     command = [
         "cast", "send",
@@ -12815,7 +13046,7 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     return None, "deployment succeeded, but Lowkey could not identify a live deployed contract address"
 
 
-def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic"):
+def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic", deployment_only=False):
     config["_lab_system_root"] = str(Path(root).resolve())
     config.pop("lab_system", None)
     candidate = (
@@ -12857,7 +13088,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     else:
         print("Mode    : generic ABI deployment")
 
-    print(f"Action  : deploying {contract}...")
+    print(f"Action  : configure and deploy {contract}...")
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or ("foundry" if (Path(root) / "foundry.toml").is_file() else "generic"))
 
@@ -12879,42 +13110,25 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     has_initializer = artifact_has_initializer(artifact)
     locked_implementation = artifact_is_locked_implementation(root, path, artifact)
     if has_initializer:
-        print(f"Target  : {contract} @ {target}")
-        print(f"ABI     : {path}")
-        print("Status  : IMPLEMENTATION ONLY" if locked_implementation else "Status  : DEPLOYED IMPLEMENTATION")
-        if locked_implementation:
-            print("Note    : this implementation locks its initializer; it is not a configured proxy/clone.")
-        else:
-            print("Note    : this artifact exposes initialize(); a proxy/initializer may be required.")
-        print("         A live bytecode match proves deployment, not protocol readiness.")
-
-    current_actor = config.get("actor")
-    current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
-    if not (
-        current_actor
-        and isinstance(current_entry, dict)
-        and current_entry.get("source") not in {"anvil-default", "anvil-impersonated"}
-    ):
-        _ensure_lab_deployer(config, accounts[0], 0)
-    set_lab_target(config, root, target, contract, path)
-    config["_lab_system_root"] = str(Path(root).resolve())
-    config["lab_system"] = {
-        "root": target,
-        "target": target,
-        "root_model": contract,
-        "target_model": contract,
-    }
-
+        if deployment_only:
+        print()
+        print("DEPLOYMENT COMPLETE")
+        print("===================")
     print(f"Target  : {contract} @ {target}")
     print(f"ABI     : {path}")
     print(f"Constructor caller : lab-deployer ({accounts[0]}) [Anvil #0]")
     _print_lab_owner_identity(config, target)
     _print_security_scope(root)
+    if deployment_only:
+        print("Note    : deployment and runtime-bytecode verification do not establish protocol readiness or a security verdict.")
     if locked_implementation:
         print("Lab     : IMPLEMENTATION ONLY — no initialized proxy/clone or operational protocol setup was established.")
         print("Next    : use the project's native deployment/test setup before state-changing protocol experiments.")
         return 0
-    print("Ready   : lk read ... | lk changes ... | lk trace")
+    if deployment_only:
+        print("Next    : lk read ... | lk trace | lk changes")
+    else:
+        print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
 def _tracked_scarb_manifest_drift(root):
@@ -13095,7 +13309,7 @@ def _preferred_lab_contract(root, requested=None, remembered_name=None):
     return discover_audit_target_contract(root)
 
 
-def run_lab(config,args):
+def run_lab(config,args, *, deployment_only=False):
     args = list(args or [])
     ai_review_requested = "--ai-review" in args
     if ai_review_requested:
@@ -13517,7 +13731,10 @@ def run_lab(config,args):
             if isinstance(signal, dict) and signal.get("function"):
                 requested = str(signal.get("function")).split("(", 1)[0]
 
-    return run_generic_lab(config, root, rpc, accounts, key, requested, mode=mode)
+    return run_generic_lab(
+        config, root, rpc, accounts, key, requested, mode=mode,
+        deployment_only=deployment_only,
+    )
 
 def run_ens(config,args):
     if not args: print("Usage: lk ens <name|address>"); return
@@ -23626,7 +23843,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             return fail("Use `lk lab stop` to stop the local Anvil instance; `lk deploy` is for contract deployment.")
         if not deploy_args or str(deploy_args[0]).strip().lower() not in {"--generic", "generic", "--artifact", "artifact"}:
             deploy_args.insert(0, "--generic")
-        return run_lab(config, deploy_args)
+        return run_lab(config, deploy_args, deployment_only=True)
     elif cmd in {"project","graph"}: return run_project_map(config,args)
     elif cmd=="projects": return run_projects(config,args)
     elif cmd=="system": return run_system_model(config,args)
