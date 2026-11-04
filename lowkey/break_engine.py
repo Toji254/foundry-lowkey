@@ -2657,11 +2657,13 @@ def _explain_evidence(path: str, root: Path | None = None) -> int:
 
 
 def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any]) -> AttackResult:
-    """Do not let a candidate BREAK survive without a matched sequential control."""
+    """Require matched controls; keep simulated successes distinct from confirmed proof."""
     if not result.break_condition:
         return result
 
     root = _root(host)
+    result.detail = result.detail or {}
+    result.detail["candidate_break_condition"] = True
     raw_manifest = opts.get("control_manifest")
     gate = {"status": "missing", "reason": "No sequential-control manifest was supplied."}
     if raw_manifest:
@@ -2685,7 +2687,7 @@ def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any]) 
                 "family": str(spec.get("family") or "").lower(),
             }
             if not spec.get("same_calls_id"):
-                raise ValueError("manifest must declare same_calls_id for the matched call sequence.")
+                raise ValueError("manifest must declare same_calls_id as a human-readable call-sequence label.")
             mismatches = [key for key in expected if expected[key] != actual[key]]
             if mismatches:
                 raise ValueError("manifest does not match this candidate: " + ", ".join(mismatches))
@@ -2699,20 +2701,43 @@ def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any]) 
                 "exit_code": exit_code,
                 "manifest": str(manifest_path.relative_to(root)),
                 "same_calls_id": spec.get("same_calls_id"),
-                "reason": "Sequential control produced a positive attack-minus-control delta." if exit_code == 0
-                          else "Control run did not satisfy the required positive delta.",
+                "reason": "Matched call-sequence and precondition/state digests plus positive attack-control delta." if exit_code == 0
+                          else "Sequential control did not verify identical calls/state and a positive attack-control delta.",
             }
         except Exception as exc:
             gate = {"status": "failed", "reason": str(exc)}
+
+    if gate["status"] == "passed":
+        fidelity = result.detail.get("fidelity")
+        if not isinstance(fidelity, dict) and result.evidence_path:
+            try:
+                evidence_path = Path(result.evidence_path).expanduser().resolve()
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                fidelity = evidence.get("fidelity")
+            except (OSError, ValueError, json.JSONDecodeError):
+                fidelity = None
+        if not isinstance(fidelity, dict):
+            gate["status"] = "fidelity-unavailable"
+            gate["reason"] = "Automatic harness fidelity evidence is missing; refusing to promote the candidate."
+        else:
+            gate["fidelity"] = fidelity
+            if not fidelity.get("confirmation_eligible", False):
+                gate["promotion_stage"] = "SIMULATED_ONLY"
+                gate["reason"] = "Control passed, but the generated harness is not independently block-pinned and cheatcode-free. This is a simulated break candidate, not a confirmed exploit."
+                result.status = "SIMULATED_BREAK"
 
     if gate["status"] != "passed":
         result.break_condition = False
         result.status = "OBSERVED"
         result.summary = (
-            "Candidate BREAK downgraded to OBSERVED: sequential control did not pass. "
+            "Candidate BREAK downgraded to OBSERVED: sequential control/fidelity gate did not pass. "
             + str(gate.get("reason") or "")
         )
-    result.detail = result.detail or {}
+    elif result.status == "SIMULATED_BREAK":
+        result.summary = (
+            "A behavioral break was reproduced in the controlled simulation. "
+            "Fidelity checks are incomplete; this is not a realistic-profit or confirmed-impact result."
+        )
     result.detail["control_gate"] = gate
 
     if result.evidence_path:
@@ -2722,7 +2747,7 @@ def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any]) 
                 evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
                 evidence["control_gate"] = gate
                 evidence["break_condition"] = bool(result.break_condition)
-                evidence["verdict"] = "BREAK" if result.break_condition else "OBSERVED"
+                evidence["verdict"] = "SIMULATED_BREAK" if result.status == "SIMULATED_BREAK" else ("BREAK" if result.break_condition else "OBSERVED")
                 if not result.break_condition:
                     raw_output = str(evidence.get("output_tail") or "")
                     evidence["output_tail"] = re.sub(
@@ -2833,7 +2858,8 @@ def run(config, args=None, host=None):
                         result = _apply_sequential_control(host, result, opts)
                         campaign_results.append(result)
 
-                        marker = "!!! BREAK !!!" if result.break_condition else result.status
+                        marker = ("SIMULATED BREAK" if result.status == "SIMULATED_BREAK"
+                                  else ("!!! BREAK !!!" if result.break_condition else result.status))
                         print(
                             f"[{marker}] {target.contract}::{result.function or '-'} "
                             f"| {family:<12} | {result.summary}"
@@ -2845,12 +2871,15 @@ def run(config, args=None, host=None):
                             evidence = _record_break(host, result)
                             print()
                             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                            print("LOWKEY // CONCRETE BREAK CONDITION REACHED")
+                            print("LOWKEY // SIMULATED BREAK CONDITION REACHED" if result.status == "SIMULATED_BREAK"
+                                  else "LOWKEY // CONCRETE BREAK CONDITION REACHED")
                             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                             print(f"Family   : {family}")
                             print(f"Function : {result.function}")
                             print(f"Evidence : {result.evidence_path or evidence}")
-                            print("Status   : campaign stopped; inspect the harness and prove impact.")
+                            print("Status   : SIMULATION ONLY; block-pinned, cheatcode-free reproof and human review are still required."
+                                  if result.status == "SIMULATED_BREAK"
+                                  else "Status   : campaign stopped; inspect the harness and prove impact.")
                             return 0
 
             if not opts.get("until_found") and rounds >= max(1, opts.get("max_rounds", 1)):
