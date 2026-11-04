@@ -1228,7 +1228,9 @@ def _render_repeat_test(
                 assetReadOk = false;
             } else {
                 deal(assetToken, ATTACKER, tokenUnit);
+                vm.prank(ATTACKER);
                 _safeApprove(assetToken, TARGET, 0);
+                vm.prank(ATTACKER);
                 _safeApprove(assetToken, TARGET, type(uint256).max);
             }
         }}
