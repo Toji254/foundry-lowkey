@@ -324,7 +324,7 @@ def analyze_harness_fidelity(source_text, path="<memory>"):
     source_text=str(source_text or "")
     patterns={
         "synthetic_eth":r"\bvm\.deal\s*\(",
-        "synthetic_token_balance":r"(?<![\w.])deal\s*\(\s*(?:token|IERC20|address\s*\()",
+        "synthetic_token_balance":r"(?<![\w.])deal\s*\(",
         "caller_impersonation":r"\bvm\.(?:prank|startPrank|hoax)\s*\(",
         "storage_override":r"\bvm\.(?:store|load)\s*\(",
         "code_injection":r"\bvm\.etch\s*\(",
@@ -358,6 +358,16 @@ def analyze_harness_fidelity(source_text, path="<memory>"):
     if not pinned: gaps.append("No explicit block-pinned fork creation was detected")
     if not gas_measured: gaps.append("Transaction gas cost is not measured by this harness")
     gaps.append("Net profit and financing costs are not independently verified by a test harness scan")
+    hard_blocked={"synthetic_eth","synthetic_token_balance","caller_impersonation","storage_override","code_injection","external_call_mock","time_or_block_override"}
+    observed_kinds=sorted(synthetic_kinds)
+    fork_blockers=sorted(hard_blocked & synthetic_kinds)
+    policy={
+        "SIMULATED_BREAK":{"allowed":"All detected test cheatcodes are permitted only as disclosed simulation inputs; never label as realistic."},
+        "FORK_REPRODUCED":{"allowed":["test_assumption"],"blocked":sorted(hard_blocked)},
+        "REALISTIC":{"allowed":[],"blocked":sorted(hard_blocked | {"test_assumption"})},
+        "PROFITABLE":{"requirements":["FORK_REPRODUCED","measured recipient/attacker balance deltas","actual receipt gasUsed and effectiveGasPrice","net profit greater than zero"]},
+        "HUMAN_CONFIRMED":{"requirements":["PROFITABLE or documented non-profit impact","native evidence reviewed","explicit human disposition in evidence ledger"]},
+    }
     return {
         "schema_version":1,
         "path":str(path),
@@ -377,6 +387,10 @@ def analyze_harness_fidelity(source_text, path="<memory>"):
         "synthetic_state":synthetic_state,
         "classification":"SIMULATED" if synthetic_state or not pinned else "FORK_REPRODUCTION_CANDIDATE",
         "confirmation_eligible":False,
+        "promotion_policy":policy,
+        "fork_reproduction_blockers":fork_blockers,
+        "allowed_cheatcodes_for_fork_reproduction":policy["FORK_REPRODUCED"]["allowed"],
+        "observed_cheatcodes":observed_kinds,
         "proof_gaps":gaps,
         "policy":"Static harness inspection only. This record does not prove exploitability, authorization, gas realism, or profitability.",
     }
@@ -807,19 +821,115 @@ def mutation(args):
     return 0 if passed else 1
 
 def reprove(args):
-    p=argparse.ArgumentParser(prog="lk reprove"); p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True); p.add_argument("--argv-json",required=True); ns=p.parse_args(args)
-    root=root_path(ns.root); h=(root/ns.harness).resolve()
-    if not h.is_relative_to(root) or not h.is_file(): raise ValueError("Harness must be inside project.")
-    if not local_rpc(rpc_url(ns.rpc_url)): raise ValueError("Reproof accepts local Anvil fork endpoint only.")
-    text=h.read_text(errors="replace"); rx=re.compile(r"\bvm\.(?:deal|store|etch|mockCall|mockCallRevert|warp|roll)\s*\(")
-    bad=[{"line":i,"text":line.strip()} for i,line in enumerate(text.splitlines(),1) if rx.search(line)]
-    argv=json.loads(ns.argv_json)
-    if not isinstance(argv,list) or not all(isinstance(x,str) for x in argv): raise ValueError("--argv-json must be a JSON string array.")
-    if bad:
-        print(json.dumps({"status":"UNPROVEN","cheatcodes":bad,"command_run":False}, indent=2))
-        return 1
-    proc=run(argv,root,900); payload={"status":"REPRODUCED_FORK" if proc.returncode==0 else "UNPROVEN","exit_code":proc.returncode,"stdout":proc.stdout[-3000:],"stderr":proc.stderr[-1500:],"limitation":"Check actual recipient gains, gas, fees and slippage. Local fork success is not mainnet broadcast proof."}
-    write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 0 if proc.returncode==0 else 1
+    p=argparse.ArgumentParser(prog="lk reprove")
+    p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
+    p.add_argument("--fork-block",required=True,type=int); p.add_argument("--tx-hash")
+    p.add_argument("--target-address",required=True); p.add_argument("--profit-address",action="append",required=True)
+    p.add_argument("--argv-json")
+    ns=p.parse_args(args)
+    root=root_path(ns.root); harness=(root/ns.harness).resolve()
+    if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be inside project.")
+    url=rpc_url(ns.rpc_url)
+    if not local_rpc(url): raise ValueError("Reproof accepts local Anvil fork endpoint only.")
+    if ns.fork_block<0: raise ValueError("--fork-block must be non-negative.")
+    fidelity=analyze_harness_fidelity(harness.read_text(encoding="utf-8",errors="replace"),harness.relative_to(root).as_posix())
+    blockers=fidelity.get("fork_reproduction_blockers") or []
+    if blockers:
+        payload={"status":"SIMULATED_BREAK","command_run":False,"fidelity":fidelity,
+                 "blocked_cheatcodes":blockers,
+                 "reason":"Harness contains state-fabricating or environment-changing cheatcodes that are not allowed for fork reproduction."}
+        write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 1
+    tx_hash=ns.tx_hash
+    command_result=None
+    if ns.argv_json:
+        argv=json.loads(ns.argv_json)
+        if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv):
+            raise ValueError("--argv-json must be a non-empty JSON string array.")
+        env=os.environ.copy(); env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
+        command_result=run(argv,root,900,env=env)
+        if command_result.returncode:
+            payload={"status":"UNPROVEN","command_run":True,"exit_code":command_result.returncode,
+                     "stdout":command_result.stdout[-3000:],"stderr":command_result.stderr[-1500:],
+                     "fidelity":fidelity,"reason":"Reproduction command did not complete successfully."}
+            write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 1
+        hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",command_result.stdout+"\\n"+command_result.stderr)
+        if not tx_hash and len(hashes)==1: tx_hash=hashes[0]
+        if len(hashes)>1: raise ValueError("Reproof command must emit at most one LOWKEY_TRACE_TX_HASH.")
+    if not tx_hash or not re.fullmatch(r"0x[0-9a-fA-F]{64}",tx_hash):
+        raise ValueError("Supply --tx-hash or make --argv-json emit LOWKEY_TRACE_TX_HASH <32-byte hash>.")
+    tx_hash=tx_hash.lower()
+    tx=rpc(url,"eth_getTransactionByHash",[tx_hash])
+    receipt=rpc(url,"eth_getTransactionReceipt",[tx_hash])
+    if not isinstance(tx,dict) or not isinstance(receipt,dict):
+        raise ValueError("Transaction hash is not mined on this Anvil node.")
+    if str(receipt.get("status") or "").lower() not in {"0x1","1"}:
+        raise ValueError("Reproof transaction reverted.")
+    block_number=int(str(receipt.get("blockNumber") or "0x0"),16)
+    tx_index=int(str(receipt.get("transactionIndex") or "0x0"),16)
+    if block_number!=ns.fork_block+1 or tx_index!=0:
+        raise ValueError("For a precise fork reproof, the tested transaction must be the first and only transaction in the block immediately after --fork-block.")
+    parent=rpc(url,"eth_getBlockByNumber",[hex(ns.fork_block),False])
+    if not isinstance(parent,dict) or not parent.get("hash"):
+        raise ValueError("The declared fork parent block is unavailable from this RPC.")
+    block=rpc(url,"eth_getBlockByNumber",[hex(block_number),False])
+    block_txs=[str(x).lower() for x in ((block or {}).get("transactions") or [])]
+    if block_txs!=[tx_hash]:
+        raise ValueError("The tested transaction must be the only transaction in its block.")
+    chain_id=rpc(url,"eth_chainId",[])
+    trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
+    if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
+    tx_digest,entry=_control_entry_digest(tx,chain_id)
+    trace_digest,_=_control_entry_digest(trace,chain_id)
+    if tx_digest!=trace_digest: raise ValueError("CallTracer root does not match the mined transaction.")
+    target=addr(ns.target_address)
+    calls=_trace_flatten(trace)
+    if target not in {x.get("to") for x in calls}:
+        raise ValueError("The transaction trace did not call --target-address.")
+    profit_addresses=sorted({addr(x) for x in ns.profit_address})
+    sender=str(tx.get("from") or "").lower()
+    if sender not in profit_addresses:
+        # If the gas payer is omitted from the measured portfolio, subtract its actual fee explicitly below.
+        subtract_fee=True
+    else:
+        subtract_fee=False
+    before_total=0; after_total=0; balances=[]
+    for address in profit_addresses:
+        before=int(str(rpc(url,"eth_getBalance",[address,hex(ns.fork_block)])),16)
+        after=int(str(rpc(url,"eth_getBalance",[address,hex(block_number)])),16)
+        before_total+=before; after_total+=after
+        balances.append({"address":address,"before_wei":before,"after_wei":after,"delta_wei":after-before})
+    gas_used=int(str(receipt.get("gasUsed") or "0x0"),16)
+    gas_price=receipt.get("effectiveGasPrice") or tx.get("gasPrice") or "0x0"
+    effective_gas_price=int(str(gas_price),16)
+    gas_cost=gas_used*effective_gas_price
+    gross_delta=after_total-before_total
+    net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
+    payload={
+        "status":"PROFITABLE" if net_profit>0 else "FORK_REPRODUCED",
+        "command_run":bool(command_result),
+        "exit_code":command_result.returncode if command_result else None,
+        "tx_hash":tx_hash,"chain_id":chain_id,"fork_parent_block":ns.fork_block,
+        "transaction_block":block_number,"transaction_index":tx_index,
+        "target_address":target,"entry_call":entry,"entry_call_sha256":tx_digest,
+        "call_trace":calls,"receipt_status":receipt.get("status"),
+        "gas_used":gas_used,"effective_gas_price_wei":effective_gas_price,"gas_cost_wei":gas_cost,
+        "profit_addresses":balances,"gross_balance_delta_wei":gross_delta,
+        "net_profit_wei":net_profit,
+        "fidelity":fidelity,
+        "promotion_policy":{
+            "FORK_REPRODUCED":"Block-pinned parent state, real mined local Anvil transaction, successful receipt, callTracer match, declared target reached, no synthetic funding/storage/code/mock/time/caller cheatcodes.",
+            "PROFITABLE":"FORK_REPRODUCED plus measured portfolio balance delta net of actual transaction gas is positive.",
+            "HUMAN_CONFIRMED":"Never assigned automatically; requires explicit human disposition in the evidence ledger.",
+        },
+        "human_confirmation_required":True,
+        "limitations":["Native-ETH balance accounting only; ERC20/ERC4626 share profit requires token-specific balance measurement.",
+                       "The operator must start Anvil from the declared fork and keep the parent block pinned.",
+                       "A replayed transaction proves only the tested path and state; it is not a completeness guarantee."],
+    }
+    out=safe_out(root,".audit/godmode/reprove.json"); write_json(out,payload)
+    print(json.dumps(payload,indent=2))
+    return 0
+
 def fork_cache(args):
     p=argparse.ArgumentParser(prog="lk fork-cache"); p.add_argument("action",choices=("snapshot","revert","list")); p.add_argument("--id"); p.add_argument("--rpc-url"); p.add_argument("--root",default="."); ns=p.parse_args(args)
     root=root_path(ns.root); f=safe_out(root,".audit/godmode/fork-cache.json"); data=json.loads(f.read_text()) if f.exists() else {}
