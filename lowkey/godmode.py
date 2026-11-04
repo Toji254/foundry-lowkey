@@ -835,8 +835,35 @@ def main(argv=None):
         if not ns.command or ns.command[0]!="--": raise ValueError("Usage: lk sandbox -- <command> [args]")
         temp=Path(tempfile.mkdtemp(prefix="lk-sandbox-")); work=temp/"project"
         try:
-            shutil.copytree(root,work,ignore=shutil.ignore_patterns(".git",".audit","node_modules","out","cache","__pycache__"))
-            proc=run(["bwrap","--die-with-parent","--unshare-net","--ro-bind","/","/","--dev","/dev","--proc","/proc","--bind",str(work),"/workspace","--chdir","/workspace","--",*ns.command[1:]],root,ns.timeout)
+            def ignore_sensitive(directory,names):
+                ignored=[]
+                for name in names:
+                    lower=name.lower()
+                    if name in {".git",".audit","node_modules","out","cache","__pycache__",".venv","venv"}:
+                        ignored.append(name)
+                    elif lower.startswith(".env") or any(token in lower for token in ("credential","keystore","private_key","wallet.json","id_rsa","id_ed25519",".npmrc")):
+                        ignored.append(name)
+                return ignored
+            shutil.copytree(root,work,ignore=ignore_sensitive)
+            home=Path.home()
+            home_args=[]
+            # Mount only toolchain executables/compiler caches, never the user's
+            # complete home directory or wallet/config folders.
+            for parent in (Path("/home"), home):
+                if str(parent)!="/" and not parent.exists():
+                    home_args += ["--dir",str(parent)]
+            foundry_bin=home/".foundry"/"bin"
+            if foundry_bin.is_dir():
+                home_args += ["--ro-bind",str(foundry_bin),str(foundry_bin)]
+            svm=home/".svm"
+            if svm.is_dir():
+                home_args += ["--ro-bind",str(svm),str(svm)]
+            path_value=str(foundry_bin)+":/usr/local/bin:/usr/bin:/bin"
+            argv=["bwrap","--die-with-parent","--unshare-net","--unshare-pid","--unshare-ipc","--unshare-uts",
+                  "--clearenv","--setenv","HOME",str(home), "--setenv","PATH",path_value,
+                  "--ro-bind","/usr","/usr","--ro-bind","/etc","/etc","--dev","/dev","--proc","/proc",
+                  "--tmpfs","/tmp",*home_args,"--bind",str(work),"/workspace","--chdir","/workspace","--",*ns.command[1:]]
+            proc=run(argv,root,ns.timeout)
             print(proc.stdout,end=""); print(proc.stderr,file=sys.stderr,end=""); return proc.returncode
         finally: shutil.rmtree(temp,ignore_errors=True)
     if cmd=="cheat-fingerprint": return fingerprint(rest)
