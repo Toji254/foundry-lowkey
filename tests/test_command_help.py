@@ -1622,17 +1622,23 @@ class CommandHelpTests(unittest.TestCase):
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
             code = lk._dispatch_command_impl("deploy", ["TargetHolder"], {})
         self.assertEqual(code, 0)
-        run_lab.assert_called_once_with({}, ["--generic", "TargetHolder"])
+        run_lab.assert_called_once_with(
+            {}, ["--generic", "TargetHolder"], deployment_only=True
+        )
 
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
             code = lk._dispatch_command_impl("deploy", ["--artifact", "TargetHolder"], {})
         self.assertEqual(code, 0)
-        run_lab.assert_called_once_with({}, ["--artifact", "TargetHolder"])
+        run_lab.assert_called_once_with(
+            {}, ["--artifact", "TargetHolder"], deployment_only=True
+        )
 
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
             code = lk._dispatch_command_impl("deployment", ["TargetHolder"], {})
         self.assertEqual(code, 0)
-        run_lab.assert_called_once_with({}, ["--generic", "TargetHolder"])
+        run_lab.assert_called_once_with(
+            {}, ["--generic", "TargetHolder"], deployment_only=True
+        )
 
     def test_lab_help_explains_anvil_reuse_and_local_fallback(self):
         code, output = self.capture_dispatch("lab", "--h")
