@@ -7299,6 +7299,165 @@ def inspect_proxy(config, quiet=False):
             print(f"Beacon slot: {beacon}")
     return is_proxy
 
+_CUSTODY_GETTER_RE = re.compile(
+    r"(?i)(owner|admin|guardian|treasury|fee.?recipient|pauser|"
+    r"operator|timelock|governor|governance|manager|upgrader|"
+    r"emergency.?admin|pending.?owner|pending.?admin)"
+)
+_CUSTODY_MUTATION_RE = re.compile(
+    r"(?i)(owner|admin|guardian|treasury|fee|pause|unpause|"
+    r"upgrade|implementation|beacon|grant|revoke|renounce|"
+    r"role|rescue|sweep|emergency|configure|set[A-Z_]|"
+    r"mint|burn|withdraw|execute|delegate)"
+)
+
+
+def _custody_getter_candidates(abi):
+    candidates = []
+    for item in abi or []:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        if item.get("stateMutability") not in {"view", "pure"}:
+            continue
+        if item.get("inputs") or len(item.get("outputs") or []) != 1:
+            continue
+        if str(item["outputs"][0].get("type") or "").lower() != "address":
+            continue
+        name = str(item.get("name") or "")
+        if not _CUSTODY_GETTER_RE.search(name):
+            continue
+        candidates.append({
+            "name": name,
+            "signature": f"{format_signature(item)}(address)",
+            "label": name,
+        })
+    return candidates
+
+
+def run_custody(config, args=None):
+    """Read-only privilege/custody inventory from ABI candidates and live getters."""
+    values = list(args or [])
+    json_output = False
+    target_arg = None
+    for token in values:
+        if token == "--json":
+            json_output = True
+        elif token.startswith("-"):
+            return fail("Usage: lk custody [address] [--json]")
+        elif target_arg is None:
+            target_arg = token
+        else:
+            return fail("Usage: lk custody [address] [--json]")
+
+    target = target_arg or config.get("target")
+    if not target or not is_address(target):
+        return fail("Error: select a contract address or pass it to lk custody.")
+    target_config = dict(config)
+    target_config["target"] = target
+    abi = load_abi(target, target_config) or []
+    candidates = _custody_getter_candidates(abi)
+    authorities = []
+    seen_addresses = set()
+    for getter in candidates[:32]:
+        raw_value = _recon_cast_text(["call", target, getter["signature"]], target_config)
+        match = re.search(r"0x[0-9a-fA-F]{40}", raw_value)
+        address = match.group(0).lower() if match else None
+        has_code = None
+        if address and int(address, 16) != 0 and address not in seen_addresses:
+            seen_addresses.add(address)
+            external_code = _recon_cast_text(["code", address], target_config)
+            has_code = external_code.startswith("0x") and len(external_code) > 2
+        authorities.append({
+            **getter,
+            "raw_result": raw_value or None,
+            "address": address,
+            "is_zero": bool(address and int(address, 16) == 0),
+            "has_code": has_code,
+            "address_label": apply_labels(address, target_config) if address else None,
+            "evidence_kind": "live-view-getter-candidate",
+        })
+
+    privileged_functions = []
+    for item in abi_functions(abi):
+        name = str(item.get("name") or "")
+        if (
+            item.get("stateMutability") not in {"view", "pure"}
+            and _CUSTODY_MUTATION_RE.search(name)
+        ):
+            privileged_functions.append({
+                "signature": format_signature(item),
+                "name": name,
+                "state_mutability": item.get("stateMutability"),
+                "inputs": [canonical_type(value) for value in item.get("inputs", [])],
+                "classification": "name-based-review-candidate",
+            })
+
+    implementation = _recon_cast_text(["implementation", target], target_config)
+    admin = _recon_cast_text(["admin", target], target_config)
+    proxy_observation = {
+        "implementation": implementation or None,
+        "admin": admin or None,
+        "source": "Cast proxy helpers; may be unsupported for non-standard proxies",
+    }
+    dossier = {
+        "schema_version": 1,
+        "target": target,
+        "target_label": apply_labels(target, target_config),
+        "abi_available": bool(abi),
+        "authority_getter_candidates": authorities,
+        "privileged_entrypoint_candidates": privileged_functions,
+        "proxy_authority_observation": proxy_observation,
+        "interpretation_limits": [
+            "A getter named owner/admin/guardian does not prove which functions enforce it.",
+            "A privileged-looking function name is not proof of authorization or exploitability.",
+            "No generic role-member enumeration is attempted unless the protocol exposes a compatible role API.",
+            "EOA/contract code presence does not establish who controls an address or whether it can move assets.",
+        ],
+    }
+    evidence_path = None
+    try:
+        directory = os.path.join(str(audit_context.foundry_project_root()), ".audit", "custody")
+        os.makedirs(directory, exist_ok=True)
+        evidence_path = os.path.join(directory, f"{target.lower()}.json")
+        with open(evidence_path, "w", encoding="utf-8") as handle:
+            json.dump(dossier, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError:
+        evidence_path = None
+    dossier["evidence_path"] = evidence_path
+
+    if json_output:
+        print(json.dumps(dossier, indent=2, sort_keys=True))
+        return 0
+    print("LOWKEY // CUSTODY & PRIVILEGE MAP")
+    print("================================")
+    print(f"Target : {dossier['target_label']}")
+    print(f"ABI    : {'AVAILABLE' if abi else 'NOT AVAILABLE'}")
+    print("")
+    print("AUTHORITY GETTERS")
+    print("-----------------")
+    for item in authorities:
+        value = item["address_label"] or item["raw_result"] or "unreadable"
+        code_label = "contract" if item["has_code"] else "EOA/no code" if item["has_code"] is False else "unknown"
+        print(f"{item['name']:<24} {value} ({code_label})")
+    if not authorities:
+        print("No matching no-argument address getters were found in the ABI.")
+    print("")
+    print("PRIVILEGED ENTRYPOINT CANDIDATES")
+    print("--------------------------------")
+    for item in privileged_functions[:100]:
+        print(f"{item['signature']:<48} {item['classification']}")
+    if not privileged_functions:
+        print("No name-based candidates were found in the ABI.")
+    print("")
+    print(f"Proxy implementation: {proxy_observation['implementation'] or 'unknown'}")
+    print(f"Proxy admin         : {proxy_observation['admin'] or 'unknown'}")
+    print("Names and getters are leads, not proof of enforced authorization.")
+    if evidence_path:
+        print(f"Evidence: {evidence_path}")
+    return 0
+
+
 def run_proxy(config):
     target=config.get("target")
     if not target:
@@ -21916,6 +22075,14 @@ COMMAND_HELP = {
         related=["lk impersonate", "lk lab", "lk rpc"],
     ),
     "proxy": _help_entry("Inspect an EIP-1967-style proxy.", "lk proxy", "lk proxy", "Use it when a target may be a proxy and you need to distinguish proxy from implementation.", related=["lk implementation", "lk admin"]),
+    "custody": _help_entry(
+        "Map live owner/admin/guardian/treasury-style address getters and privileged-looking ABI entrypoints.",
+        "lk custody [address] [--json]",
+        "lk custody 0x... --json",
+        "Use it to understand who may control or receive assets. Getter names and privileged-looking functions are candidates, not proof of authorization.",
+        options=[("--json", "Emit the full read-only custody dossier.", "lk custody 0x... --json")],
+        related=["lk recon", "lk proxy", "lk functions", "lk findings"],
+    ),
     "implementation": _help_entry("Resolve the implementation behind the selected proxy.", "lk implementation", "lk implementation", "Use it to find the code that executes behind a proxy.", related=["lk proxy", "lk admin"]),
     "admin": _help_entry("Resolve the proxy admin when supported.", "lk admin", "lk admin", "Use it when reviewing who controls upgrades.", related=["lk proxy", "lk implementation"]),
     "selectors": _help_entry(
@@ -24325,7 +24492,8 @@ _NEXT_COMMANDS = {
     "actors": ["lk actor <index> <name>", "lk wizard <function> [values...]", "lk as <actor> <command>"],
     "as": ["lk status", "lk functions", "lk actors"],
     "deployments": ["lk targets", "lk target auto", "lk status"],
-    "recon": ["lk functions", "lk proxy", "lk disasm", "lk layout"],
+    "recon": ["lk functions", "lk proxy", "lk custody", "lk disasm", "lk layout"],
+    "custody": ["lk functions", "lk proxy", "lk slither", "lk break --system"],
     "risk": ["lk seams", "lk fn <function>", "lk slither"],
     "seams": ["lk fn <function>", "lk scan src", "lk findings"],
     "scan": ["lk findings", "lk focus <id>", "lk rg \"<marker>\" src"],
@@ -25160,6 +25328,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         else: print("Usage: lk label <address> <name>")
     elif cmd=="recon": return run_recon(config,args)
     elif cmd=="proxy": run_proxy(config)
+    elif cmd=="custody": return run_custody(config,args)
     elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
     elif cmd=="admin": run_cast(["admin",config.get("target")],config)
     elif cmd in {"mapping","map"}: return run_mapping(config,*args)
