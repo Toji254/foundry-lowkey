@@ -49,13 +49,13 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py; do
+for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py fixture_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
 
-python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py"
+python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py" "$STAGE_DIR/fixture_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py"
 bash -n "$REPO_DIR/bin/lk"
 
 # Publish exactly the validated stage so the manifest always describes the
@@ -66,6 +66,7 @@ cp "$STAGE_DIR/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
 cp "$STAGE_DIR/generator.py" "$TARGET_LOWKEY_DIR/generator.py"
 cp "$STAGE_DIR/slither_tools.py" "$TARGET_LOWKEY_DIR/slither_tools.py"
 cp "$STAGE_DIR/audit_context.py" "$TARGET_LOWKEY_DIR/audit_context.py"
+cp "$STAGE_DIR/fixture_context.py" "$TARGET_LOWKEY_DIR/fixture_context.py"
 cp "$STAGE_DIR/project_detection.py" "$TARGET_LOWKEY_DIR/project_detection.py"
 cp "$STAGE_DIR/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
 cp "$STAGE_DIR/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
@@ -148,6 +149,7 @@ installed = {
     str(lowkey_dir / "generator.py"): sha256(lowkey_dir / "generator.py"),
     str(lowkey_dir / "slither_tools.py"): sha256(lowkey_dir / "slither_tools.py"),
     str(lowkey_dir / "audit_context.py"): sha256(lowkey_dir / "audit_context.py"),
+    str(lowkey_dir / "fixture_context.py"): sha256(lowkey_dir / "fixture_context.py"),
     str(lowkey_dir / "project_detection.py"): sha256(lowkey_dir / "project_detection.py"),
     str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),
     str(lowkey_dir / "audit_engine.py"): sha256(lowkey_dir / "audit_engine.py"),
@@ -212,6 +214,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/generator.py
   - $TARGET_LOWKEY_DIR/slither_tools.py
   - $TARGET_LOWKEY_DIR/audit_context.py
+  - $TARGET_LOWKEY_DIR/fixture_context.py
   - $TARGET_LOWKEY_DIR/project_detection.py
   - $TARGET_LOWKEY_DIR/clone_tools.py
   - $TARGET_LOWKEY_DIR/audit_engine.py

@@ -33,6 +33,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(manifest.exists())
             question_engine = pathlib.Path(home) / ".lowkey" / "question_engine.py"
             self.assertTrue(question_engine.exists())
+            self.assertTrue((pathlib.Path(home) / ".lowkey" / "fixture_context.py").exists())
             cheatsheet = pathlib.Path(home) / ".lowkey" / "solidity_cheatsheet.py"
             self.assertTrue(cheatsheet.exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "ai_harness.py").exists())
