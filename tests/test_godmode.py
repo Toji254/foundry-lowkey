@@ -249,13 +249,15 @@ class GodmodeTests(unittest.TestCase):
             tx_hashes = iter(["0x" + "a" * 64, "0x" + "b" * 64])
             gain_by_tx = {"0x" + "a" * 64: 5, "0x" + "b" * 64: 15}
 
+            rpc_state = {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
+
             def fake_run(argv, cwd, timeout=300, env=None):
                 if argv[0] == "prepare":
+                    rpc_state["scenario_slot"] = "0x" + format(int(argv[1]), "064x")
                     return subprocess.CompletedProcess(argv, 0, "", "")
                 tx_hash = next(tx_hashes)
                 return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "")
 
-            rpc_state = {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
             rpc_mock = self._mock_trace_rpc(target, sender, wrapper, external_state=rpc_state)
             def rpc_with_scenario(url, method, params, timeout=20):
                 if method == "eth_getBalance" and params[1] == "0x65":
@@ -302,13 +304,15 @@ class GodmodeTests(unittest.TestCase):
             manifest["attack"] = {"prepare_argv": ["prepare", "0"], "argv": ["send"]}
             (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
             calls = []
+            rpc_state = {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
             def fake_run(argv, cwd, timeout=300, env=None):
                 calls.append(argv)
                 if argv[0] == "prepare":
+                    rpc_state["scenario_slot"] = "0x" + format(int(argv[1]), "064x")
                     return subprocess.CompletedProcess(argv, 0, "", "")
                 return subprocess.CompletedProcess(argv, 0, "LOWKEY_TRACE_TX_HASH " + "0x" + "a" * 64 + "\n", "")
 
-            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper, external_state=rpc_state)), \
                  patch.object(godmode, "run", side_effect=fake_run), \
                  redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
