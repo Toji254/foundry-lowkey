@@ -83,5 +83,53 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["control_delta"], 0)
 
 
+    def test_source_maps_classify_oracle_and_time_patterns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "Oracle.sol").write_text("""
+                contract OracleUser {
+                    function quote() external view returns (uint256) {
+                        (, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();
+                        require(block.timestamp - updatedAt < 1 days);
+                        return uint256(answer);
+                    }
+                }
+            """, encoding="utf-8")
+            maps = godmode.source_maps(root)
+            self.assertTrue(any(x["kind"] == "chainlink_aggregator" for x in maps["oracle_map"]))
+            self.assertTrue(any(x["kind"] == "timestamp" for x in maps["time_map"]))
+
+    def test_report_renders_finding_fields_and_hash_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            latest = root / ".audit/godmode/latest.json"
+            latest.parent.mkdir(parents=True)
+            latest.write_text(json.dumps({
+                "overall_status": "EVIDENCE_REVIEW_REQUIRED",
+                "target": "0x0000000000000000000000000000000000000001",
+                "chain_id": "0x7a69",
+                "fork_block": "0x10",
+                "stages": [{"name": "control", "status": "passed"}],
+                "signals": {},
+                "findings": [{
+                    "title": "Unauthorized withdrawal",
+                    "severity": "High",
+                    "severity_rubric": "Impact: direct asset theft",
+                    "impact": "Attacker withdraws another user's balance",
+                    "gas_used": 170000,
+                    "net_profit": "0.4 ETH",
+                    "harness": "test/Exploit.t.sol",
+                    "reproduction_steps": ["Start local fork", "Run forge test"]
+                }]
+            }), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                result = godmode.report(["--root", str(root)])
+            rendered = (root / ".audit/godmode/report.md").read_text()
+            self.assertEqual(result, 0)
+            self.assertIn("Unauthorized withdrawal", rendered)
+            self.assertIn("Impact: Attacker withdraws another user's balance", rendered)
+            self.assertTrue((root / ".audit/godmode/report.md.sha256").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
