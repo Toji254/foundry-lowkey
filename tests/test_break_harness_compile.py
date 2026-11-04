@@ -64,6 +64,7 @@ abstract contract Test {
 pragma solidity ^0.8.20;
 library console2 {
     function log(string memory) internal pure {}
+    function log(string memory, string memory) internal pure {}
     function log(string memory, bool) internal pure {}
     function log(string memory, uint256) internal pure {}
     function logBytes(bytes memory) internal pure {}
