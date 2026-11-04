@@ -23,7 +23,7 @@ class GodmodeTests(unittest.TestCase):
 
     def test_push4_skips_push_data(self):
         # PUSH2 consumes 0x63 0x1122 as immediate data, not an opcode.
-        code = "0x61" + "631122" + "63" + "aabbccdd" + "00"
+        code = "0x61" + "6311" + "63" + "aabbccdd" + "00"
         self.assertEqual(godmode.push4(code), ["0xaabbccdd"])
 
     def test_source_maps_find_fallback_and_ordered_candidate(self):
