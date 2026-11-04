@@ -342,6 +342,15 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("TARGET_CODE_LENGTH", body)
         self.assertIn("TARGET_BALANCE_AFTER_SETUP", body)
 
+    def test_setup_arguments_follow_abi_signature_types(self):
+        self.assertEqual(
+            break_engine._setup_argument_expressions(
+                "deposit(address,uint256,bool,bytes32)", "hostile"
+            ),
+            ["address(hostile)", "1", "true", "bytes32(uint256(1))"],
+        )
+        self.assertEqual(break_engine._setup_argument_expressions("deposit()", "ATTACKER"), [])
+
     def test_entitlement_getter_discovery_prefers_balances(self):
         functions = [
             {
