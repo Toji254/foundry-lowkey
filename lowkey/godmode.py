@@ -316,9 +316,9 @@ def selectors(target,url):
             except (OSError,subprocess.TimeoutExpired): pass
         rows.append({"selector":s,"signatures":names,"status":"resolved" if names else "unresolved"})
     return {"target":target,"selectors":rows,"count":len(rows),"warning":"PUSH4 constants can be mistaken for selectors; unresolved values remain unresolved."}
-def run(argv,cwd,timeout=300):
+def run(argv,cwd,timeout=300,env=None):
     if not argv or not all(isinstance(x,str) for x in argv): raise ValueError("Supply a non-empty argv array.")
-    return subprocess.run(argv,cwd=str(cwd),capture_output=True,text=True,timeout=max(1,min(timeout,3600)),shell=False)
+    return subprocess.run(argv,cwd=str(cwd),capture_output=True,text=True,timeout=max(1,min(timeout,3600)),shell=False,env=env)
 def analyze_harness_fidelity(source_text, path="<memory>"):
     """Static fidelity inventory for a generated test harness; never a proof verdict."""
     source_text=str(source_text or "")
@@ -382,58 +382,181 @@ def analyze_harness_fidelity(source_text, path="<memory>"):
     }
 
 
-def control(args):
-    p=argparse.ArgumentParser(prog="lk control"); p.add_argument("manifest"); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/control.json"); ns=p.parse_args(args)
-    root=root_path(ns.root); mf=(root/ns.manifest).resolve()
-    if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Manifest must be an existing file inside project.")
-    spec=json.loads(mf.read_text()); a=spec.get("attack") or {}; c=spec.get("control") or {}
-    if not spec.get("same_calls_id"): raise ValueError("Declare same_calls_id as a human-readable label for the matched call sequence.")
-    if not isinstance(a.get("argv"),list) or not isinstance(c.get("argv"),list): raise ValueError("Manifest requires control.argv and attack.argv.")
-    cr=re.compile(str(spec.get("control_metric_regex") or "")); ar=re.compile(str(spec.get("attack_metric_regex") or ""))
-    if not cr.pattern or not ar.pattern or cr.groups<1 or ar.groups<1: raise ValueError("Both metric regexes must contain a capture group for the numeric metric.")
-    sequence_rx=re.compile(str(spec.get("call_sequence_regex") or r"LOWKEY_CALL_SEQUENCE_SHA256\s+([0-9a-fA-F]{64})"),re.I)
-    context_rx=re.compile(str(spec.get("precondition_regex") or r"LOWKEY_PRECONDITION_SHA256\s+([0-9a-fA-F]{64})"),re.I)
-    rows={}
-    for name,entry,rx in (("control",c,cr),("attack",a,ar)):
+def _trace_flatten(trace, limit=512):
+    rows=[]
+    def walk(node,depth=0):
+        if not isinstance(node,dict) or len(rows)>=limit: return
+        rows.append({
+            "depth":depth,
+            "type":str(node.get("type") or ""),
+            "from":str(node.get("from") or "").lower(),
+            "to":str(node.get("to") or "").lower(),
+            "input":str(node.get("input") or "").lower(),
+            "value":str(node.get("value") or "0x0").lower(),
+            "error":str(node.get("error") or ""),
+        })
+        for child in node.get("calls") or []:
+            walk(child,depth+1)
+    walk(trace)
+    return rows
+
+
+def _control_entry_digest(tx, chain_id):
+    value=tx.get("value") or "0x0"
+    try: value_int=int(str(value),16) if str(value).startswith("0x") else int(value)
+    except (TypeError,ValueError): raise ValueError("Traced transaction has an invalid value field.")
+    entry={
+        "chain_id":str(chain_id).lower(),
+        "from":str(tx.get("from") or "").lower(),
+        "to":str(tx.get("to") or "").lower(),
+        "input":str(tx.get("input") or tx.get("data") or "").lower(),
+        "value_wei":value_int,
+    }
+    if not entry["from"] or not entry["to"] or not entry["input"].startswith("0x"):
+        raise ValueError("RPC transaction is missing sender, recipient or calldata.")
+    return hashlib.sha256(json.dumps(entry,sort_keys=True,separators=(",",":")).encode()).hexdigest(),entry
+
+
+def _control_prestate_digest(url, receipt, addresses, slots):
+    block_number=int(str(receipt.get("blockNumber") or "0x0"),16)
+    tx_index=int(str(receipt.get("transactionIndex") or "0x0"),16)
+    if block_number<1 or tx_index!=0:
+        raise ValueError("Trace-backed control requires an automined transaction at index 0 so its parent block is the exact pre-state.")
+    block=rpc(url,"eth_getBlockByNumber",[hex(block_number-1),False])
+    if not isinstance(block,dict): raise ValueError("RPC did not return the transaction's parent block.")
+    prestate={"parent_block_number":block_number-1,"parent_block_hash":str(block.get("hash") or "").lower(),
+              "timestamp":str(block.get("timestamp") or "").lower(),
+              "base_fee_per_gas":str(block.get("baseFeePerGas") or "").lower(),
+              "addresses":[],"storage":[]}
+    for address in sorted(set(addresses)):
+        prestate["addresses"].append({
+            "address":address,
+            "balance":rpc(url,"eth_getBalance",[address,hex(block_number-1)]),
+            "nonce":rpc(url,"eth_getTransactionCount",[address,hex(block_number-1)]),
+            "code_sha256":hashlib.sha256(bytes.fromhex(str(rpc(url,"eth_getCode",[address,hex(block_number-1)]) or "0x").removeprefix("0x"))).hexdigest(),
+        })
+    for item in sorted(slots,key=lambda x:(x["address"],x["slot"])):
+        prestate["storage"].append({
+            "address":item["address"],"slot":item["slot"],
+            "value":rpc(url,"eth_getStorageAt",[item["address"],item["slot"],hex(block_number-1)]),
+        })
+    digest=hashlib.sha256(json.dumps(prestate,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    return digest,prestate
+
+
+def _trace_control_run(root, url, name, entry, metric_rx, spec, env):
+    snapshot=rpc(url,"evm_snapshot",[])
+    if snapshot is None: raise RuntimeError("Anvil did not return an evm_snapshot ID.")
+    try:
         temp=Path(tempfile.mkdtemp(prefix="lk-control-")); work=temp/"project"
         try:
             shutil.copytree(root,work,ignore=shutil.ignore_patterns(".git",".audit","out","cache","node_modules","__pycache__"))
-            proc=run([str(x) for x in entry["argv"]],work,int(spec.get("timeout_seconds",300)))
-            combined=proc.stdout+"\n"+proc.stderr
-            metric=rx.search(combined)
-            sequence=sequence_rx.search(combined)
-            context=context_rx.search(combined)
-            sequence_value=sequence.group(1).lower() if sequence else None
-            context_value=context.group(1).lower() if context else None
-            rows[name]={"exit_code":proc.returncode,"metric":float(metric.group(1)) if metric else None,
-                        "call_sequence_sha256":sequence_value,"precondition_sha256":context_value,
-                        "argv":entry["argv"],"output_tail":combined[-2500:]}
+            proc=run([str(x) for x in entry["argv"]],work,int(spec.get("timeout_seconds",300)),env=env)
+            combined=(proc.stdout or "")+"\n"+(proc.stderr or "")
+            metric=metric_rx.search(combined)
+            hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",combined)
+            if proc.returncode!=0: raise RuntimeError(f"{name} command failed (exit {proc.returncode}): {combined[-1200:]}")
+            if len(hashes)!=1: raise ValueError(f"{name} command must emit exactly one LOWKEY_TRACE_TX_HASH marker for the transaction under test.")
+            tx_hash=hashes[0].lower()
+            tx=rpc(url,"eth_getTransactionByHash",[tx_hash])
+            receipt=rpc(url,"eth_getTransactionReceipt",[tx_hash])
+            if not isinstance(tx,dict) or not isinstance(receipt,dict): raise ValueError(f"{name} transaction was not mined on the supplied Anvil node.")
+            if str(receipt.get("status") or "").lower() not in {"0x1","1"}: raise ValueError(f"{name} transaction reverted; it cannot be used as a passing control trace.")
+            chain_id=rpc(url,"eth_chainId",[])
+            block_number=int(str(receipt.get("blockNumber") or "0x0"),16)
+            latest=int(str(rpc(url,"eth_blockNumber",[])),16)
+            if block_number>latest: raise ValueError(f"{name} transaction receipt refers to a future block.")
+            block=rpc(url,"eth_getBlockByNumber",[hex(block_number),False])
+            hashes_in_block=[str(x).lower() for x in ((block or {}).get("transactions") or [])]
+            if len(hashes_in_block)!=1 or hashes_in_block[0]!=tx_hash:
+                raise ValueError(f"{name} transaction must be the only transaction in its block; disable batching/mining bundles for this control run.")
+            trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
+            if not isinstance(trace,dict): raise ValueError(f"{name} node did not return a callTracer result.")
+            calls=_trace_flatten(trace)
+            target=str(spec.get("target_address") or "").lower()
+            touched={x["to"] for x in calls if x.get("to")}
+            if target and target not in touched: raise ValueError(f"{name} transaction trace never called the manifest target {target}.")
+            addresses=[addr(x) for x in (spec.get("prestate_addresses") or [])]
+            required={str(tx.get("from") or "").lower(),str(tx.get("to") or "").lower()}
+            if not required.issubset(set(addresses)): raise ValueError(f"{name} prestate_addresses must include the transaction sender and root recipient.")
+            if target and target not in addresses: raise ValueError(f"{name} prestate_addresses must include target_address.")
+            slots=[]
+            for raw in spec.get("prestate_slots") or []:
+                if not isinstance(raw,dict): raise ValueError("prestate_slots entries must be objects with address and slot.")
+                address=addr(raw.get("address"))
+                slot=str(raw.get("slot") or "").lower()
+                if re.fullmatch(r"0x[0-9a-f]{64}",slot) is None:
+                    try: slot=hex(int(slot,0))
+                    except (TypeError,ValueError): raise ValueError(f"Invalid prestate slot: {raw.get('slot')}")
+                slots.append({"address":address,"slot":slot})
+            if not slots: raise ValueError("Declare at least one prestate_slots entry for the target accounting/authorization state.")
+            entry_digest,entry_call=_control_entry_digest(tx,chain_id)
+            prestate_digest,prestate=_control_prestate_digest(url,receipt,addresses,slots)
+            return {
+                "exit_code":proc.returncode,
+                "metric":float(metric.group(1)) if metric else None,
+                "tx_hash":tx_hash,
+                "chain_id":chain_id,
+                "block_number":block_number,
+                "entry_call_sha256":entry_digest,
+                "entry_call":entry_call,
+                "prestate_sha256":prestate_digest,
+                "prestate":prestate,
+                "call_trace":calls,
+                "argv":entry["argv"],
+                "output_tail":combined[-2500:],
+            }
         finally: shutil.rmtree(temp,ignore_errors=True)
+    finally:
+        reverted=rpc(url,"evm_revert",[snapshot])
+        if reverted is not True: raise RuntimeError("Could not revert the local Anvil snapshot after the control run.")
+
+
+def control(args):
+    p=argparse.ArgumentParser(prog="lk control")
+    p.add_argument("manifest"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
+    p.add_argument("--output",default=".audit/godmode/control.json"); ns=p.parse_args(args)
+    root=root_path(ns.root); url=rpc_url(ns.rpc_url)
+    if not local_rpc(url): raise ValueError("Trace-backed control accepts a local Anvil RPC endpoint only.")
+    mf=(root/ns.manifest).resolve()
+    if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Manifest must be an existing file inside project.")
+    spec=json.loads(mf.read_text()); attack=spec.get("attack") or {}; control_run=spec.get("control") or {}
+    if not spec.get("same_calls_id"): raise ValueError("Declare same_calls_id as a human-readable label for the matched experiment.")
+    if not isinstance(attack.get("argv"),list) or not isinstance(control_run.get("argv"),list):
+        raise ValueError("Manifest requires control.argv and attack.argv.")
+    target=addr(spec.get("target_address"))
+    metric_c=re.compile(str(spec.get("control_metric_regex") or "")); metric_a=re.compile(str(spec.get("attack_metric_regex") or ""))
+    if not metric_c.pattern or not metric_a.pattern or metric_c.groups<1 or metric_a.groups<1:
+        raise ValueError("Both metric regexes must contain a capture group for the numeric metric.")
+    env=os.environ.copy()
+    env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
+    rows={}
+    for name,entry,rx in (("control",control_run,metric_c),("attack",attack,metric_a)):
+        rows[name]=_trace_control_run(root,url,name,entry,rx,spec,env)
     delta=None
     if rows["control"]["metric"] is not None and rows["attack"]["metric"] is not None:
         delta=rows["attack"]["metric"]-rows["control"]["metric"]
-    sequence_verified=bool(rows["control"]["call_sequence_sha256"] and
-                           rows["control"]["call_sequence_sha256"]==rows["attack"]["call_sequence_sha256"])
-    preconditions_verified=bool(rows["control"]["precondition_sha256"] and
-                                rows["control"]["precondition_sha256"]==rows["attack"]["precondition_sha256"])
-    passed=(rows["control"]["exit_code"]==0 and rows["attack"]["exit_code"]==0 and
-            delta is not None and delta>0 and sequence_verified and preconditions_verified)
+    same_entry=rows["control"]["entry_call_sha256"]==rows["attack"]["entry_call_sha256"]
+    same_prestate=rows["control"]["prestate_sha256"]==rows["attack"]["prestate_sha256"]
+    same_chain=str(rows["control"]["chain_id"]).lower()==str(rows["attack"]["chain_id"]).lower()
+    passed=same_entry and same_prestate and same_chain and delta is not None and delta>0
     reasons=[]
-    if not sequence_verified: reasons.append("control and attack did not emit the same valid call-sequence SHA-256")
-    if not preconditions_verified: reasons.append("control and attack did not emit the same valid precondition/state SHA-256")
-    if delta is None or delta<=0: reasons.append("attack metric did not exceed control metric")
-    if rows["control"]["exit_code"]!=0 or rows["attack"]["exit_code"]!=0: reasons.append("one or both commands failed")
+    if not same_entry: reasons.append("RPC-derived root transaction sender/target/calldata/value differ.")
+    if not same_prestate: reasons.append("RPC-derived parent-block pre-state for the declared accounts/slots differs.")
+    if not same_chain: reasons.append("Control and attack transactions were executed on different chain IDs.")
+    if delta is None or delta<=0: reasons.append("Attack metric did not exceed the control metric.")
     out=safe_out(root,ns.output)
-    payload={"created_at":now(),"status":"BREAK" if passed else "OBSERVED","control_delta":delta,
-             "metric_name":spec.get("metric_name","attacker_gain"),"same_calls_id":spec["same_calls_id"],
-             "same_calls_verified":sequence_verified and preconditions_verified,
-             "call_sequence_sha256":rows["control"]["call_sequence_sha256"] if sequence_verified else None,
-             "precondition_sha256":rows["control"]["precondition_sha256"] if preconditions_verified else None,
-             "target_address":spec.get("target_address"),"function":spec.get("function"),"family":spec.get("family"),
-             "runs":rows,"reasons":reasons,
-             "gate":"Both commands must pass, attack metric must exceed control, and both runs must emit identical call-sequence and precondition/state digests."}
+    payload={
+        "created_at":now(),"status":"BREAK" if passed else "OBSERVED","verification_method":"local-Anvil RPC transaction plus debug_traceTransaction callTracer",
+        "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
+        "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
+        "same_prestate_verified":same_prestate,"same_chain_verified":same_chain,
+        "target_address":target,"prestate_slots_checked":spec.get("prestate_slots") or [],
+        "runs":rows,"reasons":reasons,
+        "gate":"Only trace-backed local transactions with identical root invocation and declared parent-block pre-state plus a positive attack-control metric can produce BREAK.",
+    }
     write_json(out,payload)
-    print(f"{payload['status']}: control delta {delta}; matched calls/state {'verified' if payload['same_calls_verified'] else 'NOT verified'}; evidence {out.relative_to(root)}")
+    print(f"{payload['status']}: delta {delta}; entry call {'matched' if same_entry else 'DIFFERENT'}; parent pre-state {'matched' if same_prestate else 'DIFFERENT'}; evidence {out.relative_to(root)}")
     return 0 if passed else 1
 
 
