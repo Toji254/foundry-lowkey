@@ -216,11 +216,11 @@ class GodmodeTests(unittest.TestCase):
                 tx_hash = next(tx_hashes)
                 return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "")
 
-            rpc_mock = self._mock_trace_rpc(target, sender, wrapper)
+            rpc_state = {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
+            rpc_mock = self._mock_trace_rpc(target, sender, wrapper, external_state=rpc_state)
             def rpc_with_scenario(url, method, params, timeout=20):
                 if method == "eth_getBalance" and params[1] == "0x65":
-                    tx_hash = "0x" + "a" * 64 if params[0] == sender else "0x" + "b" * 64
-                    gain = gain_by_tx[tx_hash]
+                    gain = gain_by_tx[rpc_state["tx_hash"]]
                     if params[0] == sender:
                         return hex(0x100 - 1)
                     if params[0] == wrapper:
