@@ -1018,19 +1018,19 @@ def main(argv=None):
     if cmd=="target-coverage": return coverage(rest)
     if cmd=="provenance": return provenance(rest)
     if cmd=="fidelity":
-         p=argparse.ArgumentParser(prog="lk fidelity"); p.add_argument("--root",default="."); p.add_argument("--record",action="store_true"); p.add_argument("--inspect"); p.add_argument("--cheatcode",action="append",default=[]); p.add_argument("--strength",choices=("heuristic","simulated-funds","reproduced-fork"),default="heuristic"); ns=p.parse_args(rest); root=root_path(ns.root)
-         try:
-             if ns.inspect:
-                 harness=(root/ns.inspect).resolve()
-                 if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be an existing file inside the project.")
-                 return output(analyze_harness_fidelity(harness.read_text(encoding="utf-8",errors="replace"),harness.relative_to(root).as_posix()))
-             try: from . import evidence_ledger
-             except ImportError: import evidence_ledger
-             if ns.record:
-                 ev=evidence_ledger.append_event(root,"fidelity_record",{"strength":ns.strength,"cheatcodes":ns.cheatcode,"created_at":now()}); print("Recorded "+ev["event_id"]); return 0
-             rows=[e for e in evidence_ledger.read_events(root) if e.get("event_type")=="fidelity_record"]; return output(rows)
-         except ImportError as exc: raise RuntimeError(str(exc))
-     if cmd=="sandbox":
+        p=argparse.ArgumentParser(prog="lk fidelity"); p.add_argument("--root",default="."); p.add_argument("--record",action="store_true"); p.add_argument("--inspect"); p.add_argument("--cheatcode",action="append",default=[]); p.add_argument("--strength",choices=("heuristic","simulated-funds","reproduced-fork"),default="heuristic"); ns=p.parse_args(rest); root=root_path(ns.root)
+        try:
+            if ns.inspect:
+                harness=(root/ns.inspect).resolve()
+                if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be an existing file inside the project.")
+                return output(analyze_harness_fidelity(harness.read_text(encoding="utf-8",errors="replace"),harness.relative_to(root).as_posix()))
+            try: from . import evidence_ledger
+            except ImportError: import evidence_ledger
+            if ns.record:
+                ev=evidence_ledger.append_event(root,"fidelity_record",{"strength":ns.strength,"cheatcodes":ns.cheatcode,"created_at":now()}); print("Recorded "+ev["event_id"]); return 0
+            rows=[e for e in evidence_ledger.read_events(root) if e.get("event_type")=="fidelity_record"]; return output(rows)
+        except ImportError as exc: raise RuntimeError(str(exc))
+    if cmd=="sandbox":
         p=argparse.ArgumentParser(prog="lk sandbox"); p.add_argument("--root",default="."); p.add_argument("--timeout",type=int,default=300); p.add_argument("command",nargs=argparse.REMAINDER); ns=p.parse_args(rest)
         root=root_path(ns.root)
         if not shutil.which("bwrap"): raise RuntimeError("bubblewrap unavailable; refusing unsandboxed execution.")
