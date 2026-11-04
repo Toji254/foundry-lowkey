@@ -371,11 +371,14 @@ def coverage(args):
              "percent":round(covered*100/total,2) if total else None,"warning":"Execution reachability is not assertion quality or security proof."}
     write_json(safe_out(root,ns.output),payload); print(json.dumps(payload,indent=2)); return 0 if total else 1
 def provenance(args):
-    p=argparse.ArgumentParser(prog="lk provenance"); p.add_argument("artifacts",nargs="*"); p.add_argument("--root",default="."); p.add_argument("--chain-id"); p.add_argument("--fork-block"); p.add_argument("--output",default=".audit/godmode/provenance.json"); ns=p.parse_args(args)
+    p=argparse.ArgumentParser(prog="lk provenance")
+    p.add_argument("artifacts",nargs="*"); p.add_argument("--root",default="."); p.add_argument("--chain-id")
+    p.add_argument("--fork-block"); p.add_argument("--signing-key")
+    p.add_argument("--output",default=".audit/godmode/provenance.json"); ns=p.parse_args(args)
     root=root_path(ns.root); rows=[]
     for raw in ns.artifacts:
         f=(root/raw).resolve()
-        if not f.is_relative_to(root) or not f.is_file(): raise ValueError(f"Artifact missing/outside project: {raw}")
+        if not f.is_relative_to(root) or not f.is_file(): raise ValueError(f"Artifact must exist inside project: {raw}")
         rows.append({"path":f.relative_to(root).as_posix(),"sha256":sha(f),"bytes":f.stat().st_size})
     rev=None
     if shutil.which("git"):
@@ -384,8 +387,24 @@ def provenance(args):
     for tool in ("forge","cast","anvil","slither","halmos","heimdall","bwrap"):
         if shutil.which(tool):
             x=run([tool,"--version"],root,4); versions[tool]=(x.stdout or x.stderr).strip().splitlines()[0][:160]
-    payload={"created_at":now(),"project":str(root),"git_revision":rev,"chain_id":ns.chain_id,"fork_block":ns.fork_block,"artifacts":rows,"tool_versions":versions}
-    out=safe_out(root,ns.output); write_json(out,payload); print(f"Provenance: {out.relative_to(root)}"); return 0
+    payload={"created_at":now(),"project":str(root),"git_revision":rev,"chain_id":ns.chain_id,
+             "fork_block":ns.fork_block,"artifacts":rows,"tool_versions":versions,
+             "signature":"detached .sig file when --signing-key is provided"}
+    out=safe_out(root,ns.output); write_json(out,payload)
+    signature=None
+    if ns.signing_key:
+        key=Path(ns.signing_key).expanduser().resolve()
+        if not key.is_file(): raise ValueError("Signing key file does not exist.")
+        if not shutil.which("openssl"): raise RuntimeError("OpenSSL is required for detached provenance signing.")
+        sig=out.with_suffix(out.suffix+".sig")
+        proc=run(["openssl","dgst","-sha256","-sign",str(key),"-out",str(sig),str(out)],root,20)
+        if proc.returncode: raise RuntimeError("OpenSSL signing failed: "+proc.stderr[-1000:])
+        signature=str(sig.relative_to(root))
+    print("Provenance: "+str(out.relative_to(root)))
+    print("SHA-256: "+sha(out))
+    print("Detached signature: "+(signature or "not requested"))
+    return 0
+
 def output(payload):
     print(json.dumps(payload,indent=2,sort_keys=True)); return 0
 def source_cmd(command,args):
@@ -654,17 +673,61 @@ def godmode(args):
     for s in stages: print("  ["+s["status"].upper()+"] "+s["name"]+": "+str(s.get("reason",s.get("signals",s.get("output",""))))[:190])
     print("Report: "+str(out.relative_to(root))); return 2 if blockers else 0
 def report(args):
-    p=argparse.ArgumentParser(prog="lk report"); p.add_argument("--root",default="."); p.add_argument("--input",default=".audit/godmode/latest.json"); p.add_argument("--output",default=".audit/godmode/report.md"); ns=p.parse_args(args); root=root_path(ns.root)
-    src=(root/ns.input).resolve()
+    p=argparse.ArgumentParser(prog="lk report")
+    p.add_argument("--root",default="."); p.add_argument("--input",default=".audit/godmode/latest.json")
+    p.add_argument("--output",default=".audit/godmode/report.md"); ns=p.parse_args(args)
+    root=root_path(ns.root); src=(root/ns.input).resolve()
     if not src.is_relative_to(root) or not src.is_file(): raise ValueError("Report input not found inside project.")
-    data=json.loads(src.read_text()); lines=["# Lowkey audit report","",f"Generated: {now()}","",f"Overall: **{data.get('overall_status','REVIEW_REQUIRED')}**","",f"Target: {data.get('target') or 'source workspace'}","","## Stages"]
-    for s in data.get("stages",[]): lines.append("- **"+s["name"]+" — "+s["status"]+"**: "+str(s.get("reason",s.get("output",s.get("signals","")))))
-    lines += ["","## Findings / source leads"]
+    data=json.loads(src.read_text(encoding="utf-8"))
+    lines=["# Lowkey Security Audit Report","",f"Generated: {now()}",
+           f"Overall status: **{data.get('overall_status','REVIEW_REQUIRED')}**",
+           f"Target: {data.get('target') or 'source workspace'}",
+           f"Chain ID: {data.get('chain_id') or 'not recorded'}",
+           f"Fork block: {data.get('fork_block') or 'not recorded'}","",
+           "## Scope and execution stages"]
+    for stage in data.get("stages",[]):
+        lines.append("- **"+str(stage.get("name"))+" — "+str(stage.get("status"))+"**: "+str(stage.get("reason",stage.get("output",stage.get("signals","")))))
+    lines += ["","## Findings",""]
+    findings=data.get("findings") or []
+    if not findings:
+        lines.append("No validated findings are recorded in this run. The source maps below are leads, not reportable vulnerabilities.")
+    for index,finding in enumerate(findings,1):
+        lines += [f"### {index}. {finding.get('title','Untitled finding')}","",
+          f"- **Severity:** {finding.get('severity','Needs human review')}",
+          f"- **Severity rubric:** {finding.get('severity_rubric','Not supplied')}",
+          f"- **Affected asset / contract:** {finding.get('asset',finding.get('target','Not supplied'))}",
+          f"- **Impact:** {finding.get('impact','Not supplied')}",
+          f"- **Attacker prerequisites:** {finding.get('prerequisites','Not supplied')}",
+          f"- **Fork block:** {finding.get('fork_block',data.get('fork_block','Not supplied'))}",
+          f"- **Gas used:** {finding.get('gas_used','Not measured')}",
+          f"- **Gross profit:** {finding.get('gross_profit','Not measured')}",
+          f"- **Net profit:** {finding.get('net_profit','Not measured')}",
+          f"- **Harness:** {finding.get('harness','Not supplied')}",
+          f"- **Control evidence:** {finding.get('control_evidence','Not supplied')}",
+          f"- **Recommendation:** {finding.get('recommendation','Not supplied')}","",
+          "**Reproduction steps**",""]
+        steps=finding.get("reproduction_steps") or []
+        lines += [f"{n}. {step}" for n,step in enumerate(steps,1)] if steps else ["Not supplied."]
+        lines.append("")
+    lines += ["## Reconnaissance signals",""]
     for group,rows in (data.get("signals") or {}).items():
-        lines += ["","### "+group]
-        lines += ["- "+str(r.get("file"))+":"+str(r.get("line"))+" "+str(r.get("kind",r.get("function",r.get("variables","")))) for r in rows[:100]]
-    lines += ["","## Limitations","Static signals are leads, not findings. The green gate requires behavioral, control, coverage, mutation, economic and reproof evidence."]
-    out=safe_out(root,ns.output); out.write_text("\n".join(lines)+"\n"); print("Report: "+str(out.relative_to(root))); return 0
+        lines += ["### "+group]
+        if not rows: lines.append("- No matching source signals observed.")
+        for row in rows[:100]:
+            lines.append("- "+str(row.get("file",""))+":"+str(row.get("line",""))+" "+
+                         str(row.get("kind",row.get("function",row.get("variables","signal"))))+
+                         ": "+str(row.get("text",row.get("variables",""))))
+        lines.append("")
+    lines += ["## Proof limitations",
+      "- Static matches, selector guesses, generated templates and source-level order are leads, not findings.",
+      "- A candidate BREAK requires a matching sequential control with a positive measured delta.",
+      "- Target-line coverage and mutation score measure harness reachability and sensitivity; neither alone proves impact.",
+      "- Net economics must account for gas, pool fees, slippage, financing and realistic recipient balance changes.",
+      "- Local-fork reproduction is not permission to broadcast; no production transaction is sent by this report command.",""]
+    out=safe_out(root,ns.output); out.write_text("\n".join(lines),encoding="utf-8")
+    digest=sha(out); sidecar=out.with_suffix(out.suffix+".sha256"); sidecar.write_text(digest+"  "+out.name+"\n",encoding="utf-8")
+    print("Report: "+str(out.relative_to(root))); print("SHA-256: "+digest); return 0
+
 def provenance_cli(args): return provenance(args)
 
 def calldata_mine(args):
