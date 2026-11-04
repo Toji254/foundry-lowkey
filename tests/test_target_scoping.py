@@ -178,6 +178,60 @@ class TargetScopingTests(unittest.TestCase):
             self.assertEqual(config["target_owners"][address], str(root))
             self.assertEqual(config["aliases"]["Fallout"], address)
 
+    def test_selecting_explicit_sibling_alias_preserves_manual_project_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = pathlib.Path(tmp)
+            root = workspace / "TargetHolder"
+            sibling = workspace / "Ethernaut" / "Fallout"
+            root.mkdir()
+            sibling.mkdir(parents=True)
+            address = "0x" + "5" * 40
+            artifact = sibling / "out" / "Fallout.sol" / "Fallout.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Fallout",
+                    "sourceName": "src/Fallout.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+            config = {
+                "target": None,
+                "target_contract": None,
+                "aliases": {"Fallout": address},
+                "targets": {"Fallout": address},
+                "project_roots": {address: str(sibling)},
+                "target_owners": {address: str(root)},
+                "abi_paths": {address: str(artifact)},
+                "rpc": None,
+            }
+            entry = {
+                "name": "Fallout",
+                "contract": "Fallout",
+                "address": address,
+                "artifact": str(artifact),
+                "source_file": "src/Fallout.sol",
+                "source": "project-config",
+            }
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
+                 patch.object(lk, "effective_rpc", return_value=None), \\
+                 patch.object(lk, "save_config"), \\
+                 patch("sys.stdout", io.StringIO()):
+                self.assertEqual(lk._select_project_target(config, entry, root), 0)
+                selected = lk.project_context_target(root)
+                self.assertIsNotNone(selected)
+                self.assertEqual(selected["address"], address)
+                self.assertEqual(selected["source"], "manual")
+
+                lk.activate_project_target(config, root)
+
+            self.assertEqual(config["target"], address)
+            self.assertEqual(config["target_contract"], "Fallout")
+            self.assertEqual(config["abi_paths"][address], str(artifact))
+
     def test_target_list_separates_protocol_from_lab_support(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
