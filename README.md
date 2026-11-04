@@ -480,6 +480,8 @@ The resulting target and actor are stored in the current project's `.audit/` con
 
 `lk break` is the adversarial side of the Lowkey workflow. Instead of stopping at a static warning, it builds disposable Forge attack harnesses and tries to make the target violate an observable security property.
 
+**Read the [per-family break coverage matrix](docs/break-coverage.md) before interpreting a result.** A family in the attack catalogue is not necessarily a complete exploit adapter. Some families currently produce observations only; a successful call, a privileged-looking function name, or a target balance decrease is not a vulnerability verdict. The [next-generation audit roadmap](docs/godmode-roadmap.md) separates existing capabilities from proposed work.
+
 
 ~~~bash
 # Attack the current target
