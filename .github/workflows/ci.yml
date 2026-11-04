@@ -296,6 +296,7 @@ jobs:
               bool private reenter;
               bool private entered;
               constructor(address target_) { target = target_; }
+              function setReenter(bool value) external { reenter = value; }
               function execute() external {
                   (bool ok, bytes memory reason) = target.call(abi.encodeWithSignature("withdraw()"));
                   if (!ok) assembly { revert(add(reason, 32), mload(reason)) }
@@ -363,7 +364,10 @@ jobs:
               "target": target,
               "attacker": attacker,
               "mapping_slot": mapping_slot,
-              "execute_calldata": execute_calldata
+              "execute_calldata": execute_calldata,
+              "set_reenter_selector": subprocess.check_output(
+                  ["cast", "sig", "setReenter(bool)"], text=True
+              ).strip()
           }, indent=2) + "\n")
           script = '''import json, os, sys, urllib.request
           from pathlib import Path
@@ -380,8 +384,14 @@ jobs:
           mode = sys.argv[1]
           if mode == "prepare":
               reenter = int(sys.argv[2])
-              word = "0x" + format(reenter, "064x")
-              rpc("anvil_setStorageAt", [config["attacker"], "0x0", word])
+              data = config["set_reenter_selector"] + format(reenter, "064x")
+              tx_hash = rpc("eth_sendTransaction", [{
+                  "from": config["sender"], "to": config["attacker"],
+                  "data": data, "value": "0x0"
+              }])
+              receipt = rpc("eth_getTransactionReceipt", [tx_hash])
+              if not receipt or str(receipt.get("status","")).lower() not in {"0x1","1"}:
+                  raise RuntimeError("attacker scenario setup transaction failed")
               sys.exit(0)
           if mode != "send":
               raise ValueError("expected prepare or send mode")
@@ -450,13 +460,14 @@ jobs:
               }
           }
           EOF
+          python3 /tmp/lowkey-fixture/scripts/trace-control.py prepare 1
           LOCAL_PARENT_BLOCK="$(cast block-number --rpc-url http://127.0.0.1:8545)"
           python3 - <<'PY'
           import json
           from pathlib import Path
           config = json.loads(Path("/tmp/lowkey-fixture/scripts/trace-control.json").read_text())
           Path("/tmp/lowkey-reprove-args.json").write_text(json.dumps([
-              "python3", "scripts/trace-control.py", "1"
+              "python3", "scripts/trace-control.py", "send"
           ]))
           Path("/tmp/lowkey-reprove-target.txt").write_text(config["target"])
           Path("/tmp/lowkey-reprove-sender.txt").write_text(config["sender"])
