@@ -148,7 +148,10 @@ class TargetScopingTests(unittest.TestCase):
             config = {
                 "aliases": {"Fallout": address},
                 "targets": {"Fallout": address},
-                "project_roots": {address: str(root)},
+                # ABI discovery belongs to the sibling repository, while this
+                # explicit alias is owned by the active TargetHolder project.
+                "project_roots": {address: str(sibling)},
+                "target_owners": {address: str(root)},
                 "abi_paths": {address: str(artifact)},
             }
 
@@ -157,6 +160,23 @@ class TargetScopingTests(unittest.TestCase):
 
             self.assertEqual(aliases, {"Fallout": address})
             self.assertEqual(lk.resolve_target_ref(config, "Fallout", root), address)
+
+    def test_manual_target_registration_does_not_overwrite_external_abi_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = pathlib.Path(tmp)
+            root = workspace / "TargetHolder"
+            sibling = workspace / "Ethernaut" / "Fallout"
+            root.mkdir()
+            sibling.mkdir(parents=True)
+            address = "0x" + "4" * 40
+            config = {"project_roots": {address: str(sibling)}}
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                lk.remember_project_target(config, root, "Fallout", address)
+
+            self.assertEqual(config["project_roots"][address], str(sibling))
+            self.assertEqual(config["target_owners"][address], str(root))
+            self.assertEqual(config["aliases"]["Fallout"], address)
 
     def test_target_list_separates_protocol_from_lab_support(self):
         with tempfile.TemporaryDirectory() as tmp:
