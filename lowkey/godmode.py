@@ -496,6 +496,11 @@ def _trace_control_run(root, url, name, entry, spec, env):
             addresses=[addr(x) for x in (spec.get("prestate_addresses") or [])]
             scenario_parameters=[]
             prepare_argv=entry.get("prepare_argv")
+            for command_name,command_argv in (("prepare_argv",prepare_argv),("argv",entry.get("argv"))):
+                if command_argv:
+                    command_audit=inspect_reproduction_command(root,command_argv)
+                    if command_audit["blocked"]:
+                        raise ValueError(f"{name} {command_name} contains local RPC state-fabrication calls: {command_audit['state_fabrication_calls']}")
             if spec.get("scenario_parameters") and not prepare_argv:
                 raise ValueError(f"{name} requires prepare_argv so attacker-only scenario variables can be verified before transaction execution.")
             if prepare_argv:
