@@ -32,6 +32,10 @@ except ImportError:
 import audit_context
 import walkthrough
 try:
+    import fixture_context
+except ImportError:
+    from lowkey import fixture_context
+try:
     import test_generation
 except ImportError:
     test_generation = None
@@ -3000,6 +3004,16 @@ def run_functions(config, args=None):
 
     return 0
 
+
+def inspect_clone(config):
+    """Return an EIP-1167 implementation address when the selected target is a clone."""
+    target = config.get("target")
+    if not target:
+        return None
+    code = run_cast(["code", target], config, capture=True) or ""
+    return _fixture_embedded_implementation(code)
+
+
 def run_info(config):
     target = config.get("target")
     if not target:
@@ -3009,7 +3023,11 @@ def run_info(config):
     code = run_cast(["code", target], config, capture=True) or ""
     print(f"Code:   {'YES' if code.startswith('0x') and len(code) > 2 else 'NO'}")
     print(f"ABI:    {'LOADED' if load_abi(target, config) else 'NOT LOADED'}")
-    print(f"Proxy:  {'YES' if inspect_proxy(config, quiet=True) else 'NO'}")
+    print(f"EIP-1967 proxy: {'YES' if inspect_proxy(config, quiet=True) else 'NO'}")
+    clone_implementation = inspect_clone(config)
+    print(f"EIP-1167 clone: {'YES' if clone_implementation else 'NO'}")
+    if clone_implementation:
+        print(f"Implementation: {clone_implementation}")
 
 def run_encode(config,args):
     if not args:
@@ -6453,7 +6471,11 @@ def run_recon(config):
     print(f"Codesize: {codesize or 'Unknown'} bytes")
     print(f"Nonce:    {nonce or 'Unknown'}")
     proxy=inspect_proxy(config,quiet=True)
-    print(f"Proxy:    {'YES' if proxy else 'NO'}")
+    clone_implementation=inspect_clone(config)
+    print(f"EIP-1967 proxy: {'YES' if proxy else 'NO'}")
+    print(f"EIP-1167 clone: {'YES' if clone_implementation else 'NO'}")
+    if clone_implementation:
+        print(f"Implementation: {clone_implementation}")
     print("="*52)
 def inspect_proxy(config, quiet=False):
     target = config.get("target")
@@ -8944,25 +8966,30 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permi
             fixture_call = f"address target = address({helper_ref}());"
         target_marker = '        console2.log("LOWKEY_TARGET:", target);'
 
-    # dumpState exports the complete post-setup EVM state. Do not depend on the
-    # optional structured state-diff enums, which vary across Foundry versions.
-    state_capture = f"""        vm.dumpState("{state_literal}");"""
+    # dumpState exports contract/account state, but not the active block environment.
+    # Capture block metadata in the test body (not setUp) so Forge includes the
+    # console markers in the successful test's output.
+    state_dump = f"""        vm.dumpState("{state_literal}");"""
+    context_capture = fixture_context.solidity_capture()
 
     if setup_mode == "override":
         harness = f"""    function setUp() public override {{
         super.setUp();
         {fixture_call}
 {target_marker}
-{state_capture}
+{state_dump}
     }}
 
-    function testLowkeyLabStateDump() public {{}}
+    function testLowkeyLabStateDump() public {{
+{context_capture}
+    }}
 """
     else:
         harness = f"""    function testLowkeyLabStateDump() public {{
         {fixture_call}
 {target_marker}
-{state_capture}
+{state_dump}
+{context_capture}
     }}
 """
     test_dir = _foundry_active_test_root(root_path) / ".lowkey"
@@ -9649,6 +9676,101 @@ def _remember_fixture_application_targets(config, root, state_path, rpc, primary
     return discovered
 
 
+
+def _fixture_context_matches_rpc(rpc, context):
+    block = rpc_json(rpc, "eth_getBlockByNumber", ["latest", False])
+    chain_id = rpc_json(rpc, "eth_chainId", [])
+    return fixture_context.matches(block, chain_id, context)
+
+
+def _ensure_fixture_context_anvil(config, root, current_rpc, context):
+    """Start a clean, fixture-aligned Anvil without mutating the existing chain.
+
+    A matching header alone is not enough: an existing Anvil may contain stale
+    accounts/contracts from a previous lab. Always create a fresh context node,
+    verify its header, then switch the project lab to it.
+    """
+
+    binary = tool_path("anvil")
+    if not binary:
+        return None, None, "the Anvil executable is unavailable"
+
+    old_managed_pid = None
+    managed_state = read_project_anvil_state(root)
+    if isinstance(managed_state, dict):
+        managed_rpc = str(managed_state.get("rpc") or "").rstrip("/")
+        if managed_rpc == str(current_rpc or "").rstrip("/") and managed_state.get("auto_started"):
+            pid = managed_state.get("pid")
+            if isinstance(pid, int):
+                old_managed_pid = pid
+
+    port = next(
+        (candidate for candidate in range(8545, 8566)
+         if not local_port_open("127.0.0.1", candidate)),
+        None,
+    )
+    if port is None:
+        return None, None, "no free local port is available in the 8545-8565 range"
+
+    fixture_rpc = f"http://127.0.0.1:{port}"
+    log_path = Path(root).resolve() / ".audit" / "anvil-fixture-context.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = fixture_context.anvil_command(binary, port, context)
+    try:
+        with open(log_path, "a", encoding="utf-8") as log:
+            process = subprocess.Popen(
+                command,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+    except (OSError, ValueError) as exc:
+        return None, None, f"could not start fixture-context Anvil: {exc}"
+
+    info = None
+    for _ in range(50):
+        info = detect_anvil_rpc(fixture_rpc)
+        if info and _fixture_context_matches_rpc(fixture_rpc, context):
+            break
+        if process.poll() is not None:
+            info = None
+            break
+        import time
+        time.sleep(0.1)
+
+    if not info or not _fixture_context_matches_rpc(fixture_rpc, context):
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        return None, None, (
+            "Anvil started but its latest block did not match the exported fixture context; "
+            "inspect .audit/anvil-fixture-context.log"
+        )
+
+    # Never stop an Anvil the user started. Replace only a previous node that
+    # Lowkey itself owns, and only after the new context has been verified.
+    if old_managed_pid is not None:
+        try:
+            os.kill(old_managed_pid, 15)
+        except OSError:
+            pass
+
+    write_project_anvil_state(root, {
+        "auto_started": True,
+        "pid": process.pid,
+        "rpc": fixture_rpc,
+        "started": datetime.now().isoformat(timespec="seconds"),
+        "purpose": "project-fixture-block-context",
+        "fixture_context": context,
+    })
+    config["rpc"] = fixture_rpc
+    config["_auto_rpc_info"] = info
+    config["_lab_rpc"] = fixture_rpc
+    save_config(config)
+    return fixture_rpc, info, None
+
+
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
     """Run a project-owned Foundry setup/test path and materialize its full state."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
@@ -9722,6 +9844,35 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
             + (("\n" + detail) if detail else "")
         )
 
+    block_context, context_error = fixture_context.parse_context(output)
+    if context_error:
+        return fail(
+            "Error: fixture account state was exported, but its EVM block context was not captured. "
+            + context_error
+        )
+    rpc, fixture_info, context_node_error = _ensure_fixture_context_anvil(
+        config, root, rpc, block_context
+    )
+    if context_node_error:
+        return fail(
+            "Error: Lowkey could not establish the fixture's original block context. "
+            + context_node_error
+        )
+    accounts = fixture_info.get("accounts", []) if isinstance(fixture_info, dict) else []
+    if not accounts:
+        return fail("Error: fixture-context Anvil started without unlocked development accounts.")
+    key = derive_default_anvil_key(0)
+    if not key:
+        return fail("Error: could not derive the default Anvil account #0 key.")
+    config["_lab_rpc"] = rpc
+    print(
+        "Block context restored: "
+        f"timestamp={block_context['timestamp']} "
+        f"block={block_context['blockNumber']} "
+        f"chainId={block_context['chainId']}"
+    )
+    print(f"RPC (fixture context): {rpc_display(rpc)}")
+
     target_name = str(requested or fixture.get("target_contract") or "")
     target_hints = parse_lab_markers(output, "LOWKEY_CREATE")
     target, materialize_error = _materialize_fixture_state(
@@ -9787,6 +9938,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         "contract": fixture.get("contract"),
         "fixture_action": fixture.get("create_function"),
         "state_file": str(state_path),
+        "block_context": block_context,
     }
     set_lab_target(config, root, target, contract_name, artifact)
     additional_targets = _remember_fixture_application_targets(
@@ -14070,10 +14222,16 @@ def run_probe(config,args):
             vm.startPrank(actor);
             (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
             vm.stopPrank();
-            console2.log("SUCCESS", success);
-            if (!success) console2.logBytes(data);
+            console2.log("TARGET_CALL_SUCCESS", success);
+            if (!success) {{
+                console2.log("TARGET_CALL_RESULT_REVERTED");
+                console2.logBytes(data);
+            }} else {{
+                console2.log("TARGET_CALL_RESULT_SUCCEEDED");
+            }}
         }}''')
         body=f'''// Generated by LowkeyCast. This is a non-asserting probe: it records behavior.
+// A green Forge result means the probe harness ran; TARGET_CALL_SUCCESS reports the target result.
 pragma solidity ^0.8.20;
 
 import {{Test}} from "forge-std/Test.sol";

@@ -21,6 +21,104 @@ spec.loader.exec_module(lk)
 
 
 class LowkeyCastTests(unittest.TestCase):
+    def test_inspect_clone_reports_eip1167_implementation(self):
+        target = "0x" + "1" * 40
+        implementation = "0x" + "2" * 40
+        runtime = (
+            "0x363d3d373d3d3d363d73"
+            + implementation[2:]
+            + "5af43d82803e903d91602b57fd5bf3"
+        )
+        with patch.object(lk, "run_cast", return_value=runtime):
+            self.assertEqual(
+                lk.inspect_clone({"target": target}),
+                implementation,
+            )
+
+    def test_fixture_context_parser_reads_captured_values(self):
+        context, error = lk.fixture_context.parse_context("""
+            LOWKEY_CONTEXT_TIMESTAMP: 1752678400
+            LOWKEY_CONTEXT_BLOCK_NUMBER: 1
+            LOWKEY_CONTEXT_CHAIN_ID: 31337
+            LOWKEY_CONTEXT_BASE_FEE_PER_GAS: 1000000000
+            LOWKEY_CONTEXT_GAS_LIMIT: 30000000
+        """)
+        self.assertIsNone(error)
+        self.assertEqual(context, {
+            "timestamp": 1752678400,
+            "blockNumber": 1,
+            "chainId": 31337,
+            "baseFeePerGas": 1000000000,
+            "gasLimit": 30000000,
+        })
+
+    def test_fixture_context_parser_refuses_incomplete_capture(self):
+        context, error = lk.fixture_context.parse_context(
+            "LOWKEY_CONTEXT_TIMESTAMP: 1752678400"
+        )
+        self.assertIsNone(context)
+        self.assertIn("LOWKEY_CONTEXT_BLOCK_NUMBER", error)
+
+    def test_fixture_context_matches_actual_rpc_header(self):
+        context = {
+            "timestamp": 1752678400,
+            "blockNumber": 1,
+            "chainId": 31337,
+            "baseFeePerGas": 1000000000,
+            "gasLimit": 30000000,
+        }
+        block = {
+            "timestamp": hex(context["timestamp"]),
+            "number": hex(context["blockNumber"]),
+            "baseFeePerGas": hex(context["baseFeePerGas"]),
+            "gasLimit": hex(context["gasLimit"]),
+        }
+        self.assertTrue(lk.fixture_context.matches(block, hex(31337), context))
+        block["timestamp"] = hex(context["timestamp"] + 1)
+        self.assertFalse(lk.fixture_context.matches(block, hex(31337), context))
+
+    def test_fixture_context_anvil_command_uses_explicit_genesis_fields(self):
+        context = {
+            "timestamp": 1752678400,
+            "blockNumber": 1,
+            "chainId": 31337,
+            "baseFeePerGas": 1000000000,
+            "gasLimit": 30000000,
+        }
+        command = lk.fixture_context.anvil_command("/usr/bin/anvil", 8546, context)
+        self.assertEqual(command[0], "/usr/bin/anvil")
+        for flag, value in (
+            ("--timestamp", "1752678400"),
+            ("--number", "1"),
+            ("--chain-id", "31337"),
+            ("--block-base-fee-per-gas", "1000000000"),
+            ("--gas-limit", "30000000"),
+        ):
+            self.assertEqual(command[command.index(flag) + 1], value)
+
+    def test_promoted_fixture_harness_exports_block_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "test" / "Fixture.t.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Fixture { "
+                "function setUp() public {} "
+                "function createThing() internal returns (address) { "
+                "return address(new Thing()); } } contract Thing {}",
+                encoding="utf-8",
+            )
+            fixture = lk.discover_local_lab_fixture(root, "Thing")
+            self.assertIsNotNone(fixture)
+            generated = lk._generate_test_fixture_lab_script(root, fixture)
+            content = pathlib.Path(generated).read_text(encoding="utf-8")
+            self.assertIn("LOWKEY_CONTEXT_TIMESTAMP", content)
+            self.assertIn("block.timestamp", content)
+            self.assertIn("block.number", content)
+            self.assertIn("block.chainid", content)
+            test_body = content.split("function testLowkeyLabStateDump() public {", 1)[1]
+            self.assertIn("LOWKEY_CONTEXT_TIMESTAMP", test_body)
+
 
 
     def test_audit_run_poc_records_request_before_pipeline_and_forwards_flag(self):
@@ -5459,6 +5557,9 @@ contract Pool {
         self.assertIn("vm.startPrank", captured["content"])
         self.assertIn('hex"abcdef"', captured["content"])
         self.assertIn("ACTOR Alice", captured["content"])
+        self.assertIn("TARGET_CALL_SUCCESS", captured["content"])
+        self.assertIn("TARGET_CALL_RESULT_REVERTED", captured["content"])
+        self.assertIn("probe harness ran", captured["content"])
 
     def test_existing_public_actor_on_reserved_account_zero_cannot_be_selected(self):
         address = "0x" + "1" * 40
