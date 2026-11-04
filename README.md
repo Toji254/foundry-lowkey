@@ -77,7 +77,7 @@ The two commands must exercise the same declared call sequence and actor/precond
 
 ### Proof support and boundaries
 
-`lk target-coverage` runs Forge LCOV and reports reachability for the requested file/line range. `lk mutation-score` delegates to the existing baseline-first mutation runner. `lk provenance` hashes selected artifacts and records run metadata. `lk fidelity` stores the declared evidence strength in the existing append-only ledger. `lk reprove` rejects common state-fabricating cheatcodes and only accepts a local Anvil fork endpoint.
+`lk target-coverage` runs Forge LCOV and reports reachability for the requested file/line range. `lk mutation-score <manifest>` delegates to the existing baseline-first mutation runner and enforces a 90% score by default (`--min-score 0.90`); use a separate manifest for each attack family when measuring family-specific harness quality. `lk provenance` hashes selected artifacts and records run metadata. `lk fidelity` stores the declared evidence strength in the existing append-only ledger. `lk reprove` rejects common state-fabricating cheatcodes and only accepts a local Anvil fork endpoint.
 
 The source maps (fallbacks, oracle reads, signatures, initializer and custody cues, CFG outline, and read/call/write candidates) are static signals. The storage/proxy/selector commands need an RPC endpoint. Historical replay needs an archive RPC and a dedicated harness; flash loans need actual venue callbacks and liquidity reads; symbolic path work needs Halmos and an explicit harness; Flashbots bundle simulation needs relay authentication. These are not silently substituted with mocks. No Godmode command submits a production transaction or calls `eth_sendBundle`.
 
