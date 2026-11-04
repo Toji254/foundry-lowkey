@@ -465,7 +465,7 @@ jobs:
               }
           }
           EOF
-          python3 /tmp/lowkey-fixture/scripts/trace-control.py prepare 2
+          LOWKEY_RPC_URL=http://127.0.0.1:8545 python3 /tmp/lowkey-fixture/scripts/trace-control.py prepare 2
           LOCAL_PARENT_BLOCK="$(cast block-number --rpc-url http://127.0.0.1:8545)"
           python3 - <<'PY'
           import json
