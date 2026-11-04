@@ -2419,10 +2419,10 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     target_code_sha256 = hashlib.sha256(deployed_code.encode("utf-8")).hexdigest() if deployed_code else None
     harness_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
     cheatcodes = sorted(set(re.findall(
-        r"\\bvm\\.(deal|prank|startPrank|store|etch|warp|roll|fee|prevrandao|mockCall|mockCallRevert|snapshotState|revertToState)\\b",
+        r"\bvm\.(deal|prank|startPrank|store|etch|warp|roll|fee|prevrandao|mockCall|mockCallRevert|snapshotState|revertToState)\b",
         body,
     )))
-    if re.search(r"\\bdeal\\s*\\(", body):
+    if re.search(r"\bdeal\s*\(", body):
         cheatcodes.append("deal-token-or-balance")
     cheatcodes = sorted(set(cheatcodes))
     synthetic_funds = any(item in cheatcodes for item in ("deal", "deal-token-or-balance"))
