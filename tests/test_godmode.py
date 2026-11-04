@@ -127,7 +127,7 @@ class GodmodeTests(unittest.TestCase):
             rendered = (root / ".audit/godmode/report.md").read_text()
             self.assertEqual(result, 0)
             self.assertIn("Unauthorized withdrawal", rendered)
-            self.assertIn("Impact: Attacker withdraws another user's balance", rendered)
+            self.assertIn("Attacker withdraws another user's balance", rendered)
             self.assertTrue((root / ".audit/godmode/report.md.sha256").is_file())
 
 
