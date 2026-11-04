@@ -84,7 +84,7 @@ contract ReentrantReceiver {
     }
 
     receive() external payable {
-        if (address(vault).balance >= 1 ether) {
+        if (msg.value > 0 && address(vault).balance >= 1 ether) {
             vault.withdraw();
         }
     }
