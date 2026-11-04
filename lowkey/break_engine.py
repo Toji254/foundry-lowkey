@@ -1155,7 +1155,6 @@ def _render_repeat_test(
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
         console2.logBytes(setupReturndata);
-        console2.logBytes(setupReturndata);
         """
         else:
             setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
@@ -1302,7 +1301,6 @@ contract LowkeyBreakRepeat is Test {{
         vm.prank(ATTACKER);
         (bool first, bytes memory firstReturndata) = TARGET.call{{value: {value}}}(data);
 
-        uint256 targetMid = TARGET.balance;
         if (assetReadOk) {{
             targetTokenMid = IERC20Lowkey(assetToken).balanceOf(TARGET);
             attackerTokenMid = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
