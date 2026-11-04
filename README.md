@@ -72,6 +72,16 @@ Example manifest:
     "0x0000000000000000000000000000000000000002",
     "0x0000000000000000000000000000000000000003"
   ],
+  "trace_expectations": [
+    {
+      "address": "0x0000000000000000000000000000000000000001",
+      "control_min_calls": 1,
+      "control_max_calls": 1,
+      "attack_min_calls": 2,
+      "attack_max_calls": 2,
+      "description": "The attack adds one nested withdrawal call."
+    }
+  ],
   "scenario_parameters": [
     {
       "name": "attacker_callback_flag",
@@ -99,7 +109,7 @@ Each script must execute its scenario against the same local Anvil endpoint (Low
 LOWKEY_TRACE_TX_HASH 0x<32-byte-mined-transaction-hash>
 ~~~
 
-The tested transaction must be the only transaction in its block and have transaction index zero. Lowkey obtains the transaction and receipt from RPC, runs debug_traceTransaction with callTracer, verifies the trace root matches the mined transaction, checks that the trace reaches target_address, and derives the root-entry-call fingerprint from the real sender, recipient, calldata, value, and chain ID. It also compares the transaction envelope (nonce, gas limit, gas/fee fields, type, and access list), because contracts can observe fee context and gas availability. The nested call traces are retained but are expected to differ at the callback boundary in a reentrancy experiment. The outer invocation and transaction envelope must match exactly; scenario_parameters explicitly declare the only expected setup difference.
+The tested transaction must be the only transaction in its block and have transaction index zero. Lowkey obtains the transaction and receipt from RPC, runs debug_traceTransaction with callTracer, verifies the trace root matches the mined transaction, checks that the trace reaches target_address, and derives the root-entry-call fingerprint from the real sender, recipient, calldata, value, and chain ID. It also compares the transaction envelope (nonce, gas limit, gas/fee fields, type, and access list), because contracts can observe fee context and gas availability. The nested call traces are retained but are expected to differ at the callback boundary in a reentrancy experiment. The outer invocation and transaction envelope must match exactly; scenario_parameters explicitly declare the only expected setup difference. Each manifest must also include trace_expectations for the execution-path delta that demonstrates the hypothesis (for example, one target call in the control and two in the reentrancy attack). Lowkey counts those calls from the RPC traces and requires the declared ranges to match before returning BREAK.
 
 For pre-state comparison, prestate_addresses must include the transaction sender, root recipient, and target. prestate_slots must include at least one relevant target accounting or authorization slot. Lowkey reads those values at the transaction's parent block. **Only the declared storage slots are compared**; include every target slot that matters to the hypothesis. Parent block hash is retained as provenance but excluded from the state-equivalence digest because a declared attacker setup call can legitimately change that block hash. The digest still compares parent block number, timestamp, base fee, declared addresses' balances/nonces/code hashes, and declared storage slots. Keep the setup call's gas profile and block context equivalent; Lowkey rejects a mismatch in the transaction pre-state fingerprint. The full nested call traces are retained in the evidence, so callback/reentrant execution differences remain visible even when the outer entry call is identical.
 
