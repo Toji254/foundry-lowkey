@@ -465,6 +465,7 @@ def _trace_control_run(root, url, name, entry, spec, env):
         temp=Path(tempfile.mkdtemp(prefix="lk-control-")); work=temp/"project"
         try:
             shutil.copytree(root,work,ignore=shutil.ignore_patterns(".git",".audit","out","cache","node_modules","__pycache__"))
+            addresses=[addr(x) for x in (spec.get("prestate_addresses") or [])]
             scenario_parameters=[]
             prepare_argv=entry.get("prepare_argv")
             if spec.get("scenario_parameters") and not prepare_argv:
@@ -518,7 +519,6 @@ def _trace_control_run(root, url, name, entry, spec, env):
             target=str(spec.get("target_address") or "").lower()
             touched={x["to"] for x in calls if x.get("to")}
             if target and target not in touched: raise ValueError(f"{name} transaction trace never called the manifest target {target}.")
-            addresses=[addr(x) for x in (spec.get("prestate_addresses") or [])]
             required={str(tx.get("from") or "").lower(),str(tx.get("to") or "").lower()}
             if not required.issubset(set(addresses)): raise ValueError(f"{name} prestate_addresses must include the transaction sender and root recipient.")
             if target and target not in addresses: raise ValueError(f"{name} prestate_addresses must include target_address.")
