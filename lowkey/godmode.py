@@ -641,7 +641,8 @@ def control(args):
                        rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256"))
     same_chain=bool(rows.get("control",{}).get("chain_id") and
                     str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower())
-    passed=same_entry and same_envelope and same_prestate and same_chain and delta is not None and delta>0
+    attack_metric_positive=bool(rows.get("attack",{}).get("metric") is not None and rows["attack"]["metric"]>0)
+    passed=same_entry and same_envelope and same_prestate and same_chain and attack_metric_positive and delta is not None and delta>0
     reasons=[]
     for name in ("control","attack"):
         if rows.get(name,{}).get("trace_error"): reasons.append(name+": "+rows[name]["trace_error"])
@@ -650,6 +651,7 @@ def control(args):
     if not same_prestate: reasons.append("RPC-derived parent-block pre-state for the declared accounts/slots differs.")
     if not same_chain: reasons.append("Control and attack transactions were executed on different chain IDs.")
     if delta is None or delta<=0: reasons.append("Attack metric did not exceed the control metric.")
+    if not attack_metric_positive: reasons.append("Attack portfolio native-ETH delta after gas is not positive.")
     out=safe_out(root,ns.output)
     payload={
         "created_at":now(),"status":"BREAK" if passed else "OBSERVED","verification_method":"local-Anvil RPC transaction plus debug_traceTransaction callTracer",
@@ -657,9 +659,10 @@ def control(args):
         "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,"same_chain_verified":same_chain,
+        "attack_metric_positive_after_gas":attack_metric_positive,
         "target_address":target,"prestate_slots_checked":spec.get("prestate_slots") or [],
         "runs":rows,"reasons":reasons,
-        "gate":"Only trace-backed local transactions with identical root invocation, transaction envelope and declared parent-block pre-state plus a positive RPC-measured attack-control portfolio delta can produce BREAK.",
+        "gate":"Only trace-backed local transactions with identical root invocation, transaction envelope and declared parent-block pre-state, a positive attack portfolio delta after gas, and a positive attack-minus-control delta can produce BREAK.",
     }
     write_json(out,payload)
     print(f"{payload['status']}: delta {delta}; entry call {'matched' if same_entry else 'DIFFERENT'}; tx envelope {'matched' if same_envelope else 'DIFFERENT'}; parent pre-state {'matched' if same_prestate else 'DIFFERENT'}; evidence {out.relative_to(root)}")
