@@ -544,7 +544,8 @@ contract WeirdERC20 {
  function rebase(address account,int256 delta) external {if(delta>=0){balanceOf[account]+=uint256(delta);totalSupply+=uint256(delta);}else{uint256 cut=uint256(-delta);require(balanceOf[account]>=cut);balanceOf[account]-=cut;totalSupply-=cut;}}
  function _move(address f,address t,uint256 n) internal {require(!paused&&!blocked[f]&&!blocked[t]&&balanceOf[f]>=n);balanceOf[f]-=n;uint256 fee=n*feeBps/10000;balanceOf[t]+=n-fee;totalSupply-=fee;if(hook!=address(0)){(bool ok,)=hook.call(abi.encodeWithSignature("tokensReceived(address,address,uint256)",f,t,n));require(ok);}}
 }
-contract NoReturnERC20 {mapping(address=>uint256) public balanceOf;function mint(address a,uint n) external {balanceOf[a]+=n;}function transfer(address a,uint n) external {require(balanceOf[msg.sender]>=n);balanceOf[msg.sender]-=n;balanceOf[a]+=n;}}
+contract NoReturnERC20 {mapping(address=>uint256) public balanceOf;mapping(address=>mapping(address=>uint256)) public allowance;function mint(address a,uint n) external {balanceOf[a]+=n;}function approve(address s,uint n) external {allowance[msg.sender][s]=n;}function transfer(address a,uint n) external {require(balanceOf[msg.sender]>=n);balanceOf[msg.sender]-=n;balanceOf[a]+=n;}function transferFrom(address f,address t,uint n) external {require(allowance[f][msg.sender]>=n&&balanceOf[f]>=n);allowance[f][msg.sender]-=n;balanceOf[f]-=n;balanceOf[t]+=n;}}
+contract WideDecimalsToken {uint256 public decimals=1000;}
 """)
     print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Supports fee-on-transfer, explicit rebasing, false-return, no-return, configurable decimals, pause, blacklist and callback hooks. This is a test fixture, not a standard-complete ERC-20 suite."); return 0
 def run_control_alias(args): return control(args)
