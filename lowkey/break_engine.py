@@ -2087,11 +2087,13 @@ def _write_harness(host, name: str, body: str) -> str:
     # removes them after execution so they cannot silently become part of the
     # project's normal Forge suite.
     path = (
-        _root(host) / "test" / ".lowkey"
+        _root(host) / "test" / "lowkey"
         / f"Lowkey_Break_{_slug(name)}_{hashlib.sha1(body.encode()).hexdigest()[:10]}.t.sol"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body, encoding="utf-8")
+    # Exclusive creation prevents a generated harness from overwriting user code.
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(body)
     return str(path)
 
 
@@ -2110,7 +2112,7 @@ def _archive_harness(host, harness: str) -> str | None:
 
 
 def _cleanup_generated_harnesses(host):
-    root = _root(host) / "test" / ".lowkey"
+    root = _root(host) / "test" / "lowkey"
     if not root.is_dir():
         return
     for path in root.glob("Lowkey_Break_*.t.sol"):
