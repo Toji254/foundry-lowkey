@@ -1505,6 +1505,29 @@ def _basic_solidity_expr(ptype: str, value: str) -> str:
     raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
 
 
+def _setup_argument_expressions(signature: str, actor: str) -> list[str]:
+    """Build conservative scalar setup arguments from ABI signature types."""
+    encoded_types = str(signature).split("(", 1)[1].rsplit(")", 1)[0]
+    if not encoded_types:
+        return []
+    expressions = []
+    for item in encoded_types.split(","):
+        ptype = item.strip().lower()
+        if ptype == "address":
+            expressions.append(f"address({actor})")
+        elif ptype.startswith("uint") or ptype.startswith("int"):
+            expressions.append("1")
+        elif ptype == "bool":
+            expressions.append("true")
+        elif ptype == "bytes32":
+            expressions.append("bytes32(uint256(1))")
+        else:
+            raise ValueError(
+                f"setup function {signature} has unsupported argument type '{ptype}'"
+            )
+    return expressions
+
+
 def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
     for item in functions:
         if not isinstance(item, dict):
@@ -1516,11 +1539,14 @@ def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
         mutability = str(item.get("stateMutability") or "").lower()
         if len(inputs) == 0 and mutability == "payable":
             return _format_signature(item)
-        if (
-            len(inputs) == 1
-            and str(inputs[0].get("type") or "").lower().startswith("uint")
-            and mutability in {"payable", "nonpayable"}
-        ):
+        supported = all(
+            str(value.get("type") or "").lower() == "address"
+            or str(value.get("type") or "").lower() == "bool"
+            or str(value.get("type") or "").lower() == "bytes32"
+            or str(value.get("type") or "").lower().startswith(("uint", "int"))
+            for value in inputs
+        )
+        if inputs and supported and mutability in {"payable", "nonpayable"}:
             return _format_signature(item)
     return None
 
