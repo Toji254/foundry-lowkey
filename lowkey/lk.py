@@ -12669,6 +12669,7 @@ def run_lab(config,args):
         print("      the optional review is unavailable; the review is unverified and does not choose")
         print("      a target, deploy, sign, or run tests. Selected source may be sent to the provider.")
         print("      Example: lk lab --generic Vault --ai-review")
+        print("      Backward-compatible form: lk lab Vault --ai-review")
         print("")
         print("  Automatic reviews are a separate opt-in:")
         print("      lk ai mode auto       Allow complexity-triggered reviews for eligible labs.")
