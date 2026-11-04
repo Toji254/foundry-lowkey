@@ -6997,28 +6997,264 @@ def run_balance(config,args=None):
             print("WARNING   : this target address has ETH, but the current RPC reports no contract bytecode.")
     return 0
 
-def run_recon(config):
-    target=config.get("target")
-    if not target:
-        return fail("Error: Set target first.")
-    print(f"CONTRACT RECON: {apply_labels(target, config)}\n" + "="*52)
-    balance=run_cast(["balance",target],config,capture=True)
-    code=run_cast(["code",target],config,capture=True) or ""
-    codehash=run_cast(["codehash",target],config,capture=True)
-    nonce=run_cast(["nonce",target],config,capture=True)
-    codesize=run_cast(["codesize",target],config,capture=True)
-    print(f"Balance:  {humanize_value(balance) if balance else 'Unknown'}")
-    print(f"Code:     {'YES' if code.startswith('0x') and len(code)>2 else 'NO'}")
-    print(f"Codehash: {codehash or 'Unknown'}")
-    print(f"Codesize: {codesize or 'Unknown'} bytes")
-    print(f"Nonce:    {nonce or 'Unknown'}")
-    proxy=inspect_proxy(config,quiet=True)
-    clone_implementation=inspect_clone(config)
-    print(f"EIP-1967 proxy: {'YES' if proxy else 'NO'}")
-    print(f"EIP-1167 clone: {'YES' if clone_implementation else 'NO'}")
+def _recon_cast_text(args, config):
+    result = run_cast(args, config, capture=True)
+    return str(getattr(result, "text", result or "") or "").strip()
+
+
+def _recon_slot_address(raw_value):
+    """Extract a low-20-byte address candidate from one observed 32-byte slot."""
+    text_value = str(raw_value or "").strip()
+    match = re.search(r"0x([0-9a-fA-F]{64})", text_value)
+    if match:
+        word = match.group(1)
+    else:
+        word = text_value.removeprefix("0x")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", word):
+            return None
+    candidate = "0x" + word[-40:]
+    if int(candidate, 16) == 0:
+        return None
+    return candidate.lower()
+
+
+def run_recon(config, args=None):
+    """Build a read-only address dossier; inference is explicitly labelled."""
+    values = list(args or [])
+    json_output = False
+    deep = False
+    storage_range = None
+    address_arg = None
+    index = 0
+    while index < len(values):
+        token = str(values[index])
+        if token == "--json":
+            json_output = True
+            index += 1
+        elif token == "--deep":
+            deep = True
+            index += 1
+        elif token == "--storage-range":
+            if index + 1 >= len(values):
+                return fail("Usage: lk recon [address] [--json] [--deep] [--storage-range START:END]")
+            match = re.fullmatch(r"(\d+):(\d+)", str(values[index + 1]))
+            if not match:
+                return fail("Error: --storage-range must look like 0:60.")
+            first, last = map(int, match.groups())
+            if first < 0 or last < first or last - first > 127:
+                return fail("Error: storage range must be ordered and cover at most 128 slots.")
+            storage_range = (first, last)
+            index += 2
+        elif token.startswith("-"):
+            return fail("Usage: lk recon [address] [--json] [--deep] [--storage-range START:END]")
+        elif address_arg is None:
+            address_arg = token
+            index += 1
+        else:
+            return fail("Usage: lk recon [address] [options]")
+
+    target = address_arg or config.get("target")
+    if not target or not is_address(target):
+        return fail("Error: select a contract address with lk target <address> or pass it to lk recon.")
+    target = str(target)
+    target_config = dict(config)
+    target_config["target"] = target
+    rpc = effective_rpc(target_config)
+    if not rpc:
+        return fail("Error: no RPC is configured. Set one with lk rpc <url>.")
+
+    chain_id_raw, chain_error = _unravel_rpc(rpc, "eth_chainId", [], timeout=10)
+    block_raw, block_error = _unravel_rpc(rpc, "eth_blockNumber", [], timeout=10)
+    chain_id = _unravel_int(chain_id_raw, None) if chain_id_raw is not None else None
+    block_number = _unravel_int(block_raw, None) if block_raw is not None else None
+
+    balance = _recon_cast_text(["balance", target], target_config)
+    code = _recon_cast_text(["code", target], target_config)
+    codehash = _recon_cast_text(["codehash", target], target_config)
+    nonce = _recon_cast_text(["nonce", target], target_config)
+    codesize = _recon_cast_text(["codesize", target], target_config)
+    has_code = bool(code.startswith("0x") and len(code) > 2)
+    runtime_sha256 = hashlib.sha256(code.lower().encode("utf-8")).hexdigest() if has_code else None
+
+    abi = load_abi(target, target_config) or []
+    functions = abi_functions(abi)
+    abi_path = resolve_abi_path(target, target_config)
+    function_inventory = []
+    for item in functions:
+        signature = format_signature(item)
+        function_inventory.append({
+            "signature": signature,
+            "selector": abi_selector(signature),
+            "state_mutability": item.get("stateMutability"),
+            "inputs": [canonical_type(value) for value in item.get("inputs", [])],
+            "outputs": [canonical_type(value) for value in item.get("outputs", [])],
+        })
+
+    proxy_slots = {
+        "eip1967_implementation": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+        "eip1967_admin": "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103",
+        "eip1967_beacon": "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
+        "eip1822_proxiable": "0xc5f16f0fcc639fa48a6947836d9850f504798523bf8c9a3a87d5876cf622bcf7",
+    }
+    slot_observations = {}
+    proxy_candidates = []
+    for label, slot in proxy_slots.items():
+        raw_slot = _recon_cast_text(["st", slot], target_config)
+        address_candidate = _recon_slot_address(raw_slot)
+        candidate_has_code = False
+        if address_candidate:
+            candidate_code = _recon_cast_text(["code", address_candidate], target_config)
+            candidate_has_code = candidate_code.startswith("0x") and len(candidate_code) > 2
+        observation = {
+            "slot": slot,
+            "raw_value": raw_slot or None,
+            "address_candidate": address_candidate,
+            "candidate_has_code": candidate_has_code,
+            "classification": "standard-slot-hint" if label.startswith("eip1967") else "compatibility-slot-hint",
+        }
+        slot_observations[label] = observation
+        if address_candidate:
+            proxy_candidates.append({"source": label, **observation})
+
+    clone_implementation = inspect_clone(target_config)
+    proxy_likelihood = any(
+        slot_observations[label]["candidate_has_code"]
+        for label in ("eip1967_implementation", "eip1967_beacon", "eip1822_proxiable")
+    ) or bool(clone_implementation)
+
+    deep_evidence = {
+        "disassembly_available": False,
+        "raw_push4_selectors": [],
+        "selector_candidates": [],
+        "embedded_address_candidates": [],
+    }
+    if deep and has_code:
+        disassembly = _recon_cast_text(["disassemble", code], target_config)
+        deep_evidence["disassembly_available"] = bool(disassembly)
+        selectors = sorted(set(
+            "0x" + value.lower()
+            for value in re.findall(r"\bPUSH4\s+0x([0-9a-fA-F]{8})\b", disassembly, flags=re.I)
+        ))
+        addresses = sorted(set(
+            "0x" + value.lower()
+            for value in re.findall(r"\bPUSH20\s+0x([0-9a-fA-F]{40})\b", disassembly, flags=re.I)
+        ))
+        deep_evidence["raw_push4_selectors"] = selectors[:256]
+        for selector in selectors[:48]:
+            lookup = _recon_cast_text(["4byte", selector], target_config)
+            deep_evidence["selector_candidates"].append({
+                "selector": selector,
+                "candidate_signatures": lookup.splitlines()[:8],
+                "confirmed": False,
+            })
+        for address in addresses[:96]:
+            referenced_code = _recon_cast_text(["code", address], target_config)
+            deep_evidence["embedded_address_candidates"].append({
+                "address": address,
+                "has_code_at_observed_block": bool(referenced_code.startswith("0x") and len(referenced_code) > 2),
+                "classification": "bytecode-reference-candidate",
+                "confirmed_role": None,
+            })
+
+    raw_storage = []
+    if storage_range:
+        for slot in range(storage_range[0], storage_range[1] + 1):
+            value, error = _unravel_rpc(
+                rpc,
+                "eth_getStorageAt",
+                [target, hex(slot), "latest"],
+                timeout=10,
+            )
+            raw_storage.append({
+                "slot": slot,
+                "value": value,
+                "status": "observed" if value is not None else "unavailable",
+                "error": error,
+            })
+
+    dossier = {
+        "schema_version": 1,
+        "target": target,
+        "target_label": apply_labels(target, target_config),
+        "chain_id": chain_id,
+        "chain_id_error": chain_error,
+        "observed_block_number": block_number,
+        "block_number_error": block_error,
+        "rpc_configured": True,
+        "rpc_kind": "local" if re.search(r"(localhost|127\.0\.0\.1|::1)", rpc, flags=re.I) else "remote",
+        "balance": balance or None,
+        "has_runtime_code": has_code,
+        "runtime_code_size": codesize or None,
+        "runtime_codehash": codehash or None,
+        "runtime_code_sha256": runtime_sha256,
+        "account_nonce": nonce or None,
+        "abi_available": bool(abi),
+        "abi_path": str(abi_path) if abi_path else None,
+        "abi_provenance": "local-artifact" if abi else "unavailable",
+        "source_verified": None,
+        "functions": function_inventory,
+        "receive_entrypoint": any(item.get("type") == "receive" for item in abi),
+        "fallback_entrypoint": any(item.get("type") == "fallback" for item in abi),
+        "proxy_slot_observations": slot_observations,
+        "proxy_candidates": proxy_candidates,
+        "proxy_likelihood": proxy_likelihood,
+        "minimal_proxy_implementation_candidate": clone_implementation,
+        "deep_bytecode_evidence": deep_evidence,
+        "raw_storage_observations": raw_storage,
+        "interpretation_limits": [
+            "A local ABI/artifact does not prove that source is verified or matches deployed bytecode.",
+            "A slot value that resembles an address is a candidate, not a proven proxy role.",
+            "PUSH4 values and 4byte results are selector/signature candidates, not a confirmed ABI.",
+            "PUSH20 addresses may be constants, recipients, dependencies or data; role is not inferred.",
+            "Raw storage values are observations, never reconstructed compiler storage layout.",
+            "Decompilation and explorer-verified-source retrieval are not performed by this command.",
+        ],
+    }
+
+    evidence_path = None
+    try:
+        recon_dir = os.path.join(str(audit_context.foundry_project_root()), ".audit", "recon")
+        os.makedirs(recon_dir, exist_ok=True)
+        evidence_path = os.path.join(recon_dir, f"{target.lower()}.json")
+        with open(evidence_path, "w", encoding="utf-8") as handle:
+            json.dump(dossier, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError:
+        evidence_path = None
+    dossier["evidence_path"] = evidence_path
+    if json_output:
+        print(json.dumps(dossier, indent=2, sort_keys=True))
+        return 0
+
+    print(f"CONTRACT RECON: {dossier['target_label']}")
+    print("=" * 64)
+    print(f"Chain / block : {chain_id if chain_id is not None else 'unknown'} / {block_number if block_number is not None else 'unknown'}")
+    print(f"Balance       : {humanize_value(balance) if balance else 'Unknown'}")
+    print(f"Runtime code  : {'YES' if has_code else 'NO'}")
+    print(f"Code hash     : {codehash or 'Unknown'}")
+    print(f"Code size     : {codesize or 'Unknown'} bytes")
+    print(f"Nonce         : {nonce or 'Unknown'}")
+    print(f"ABI           : {'LOCAL ARTIFACT' if abi else 'NOT AVAILABLE'}")
+    print(f"Functions     : {len(function_inventory)}")
+    print(f"Receive       : {'YES' if dossier['receive_entrypoint'] else 'UNKNOWN/NO ABI'}")
+    print(f"Fallback      : {'YES' if dossier['fallback_entrypoint'] else 'UNKNOWN/NO ABI'}")
+    print(f"Proxy hints   : {'CANDIDATE' if proxy_likelihood else 'NOT DETECTED BY CHECKED STANDARDS'}")
     if clone_implementation:
-        print(f"Implementation: {clone_implementation}")
-    print("="*52)
+        print(f"Clone target  : {clone_implementation}")
+    for label, observation in slot_observations.items():
+        candidate = observation["address_candidate"] or "zero / not address-shaped"
+        status = "has code" if observation["candidate_has_code"] else "no code / not resolved"
+        print(f"{label:24}: {candidate} ({status})")
+    if deep:
+        print(f"Raw PUSH4     : {len(deep_evidence['raw_push4_selectors'])} selector candidates")
+        print(f"PUSH20 refs   : {len(deep_evidence['embedded_address_candidates'])} address candidates")
+    if storage_range:
+        print(f"Storage       : {len(raw_storage)} raw slots recorded (observations, not layout)")
+    print("=" * 64)
+    print("Candidates are leads; source/ABI identity, proxy roles and storage layout need corroboration.")
+    if evidence_path:
+        print(f"Evidence      : {evidence_path}")
+    return 0
 def inspect_proxy(config, quiet=False):
     target = config.get("target")
     if not target:
@@ -21883,7 +22119,18 @@ COMMAND_HELP = {
     ),    "rg": _help_entry("Search source with ripgrep and save the search in the audit context.", "lk rg <pattern> [path] [rg-options...]", "lk rg delegatecall src", "Use it for targeted source archaeology.", related=["lk scan", "lk deps"]),
     "info": _help_entry("Show target facts such as bytecode, ABI, and proxy information.", "lk info", "lk info", "Use it for quick reconnaissance.", related=["lk recon", "lk status"]),
     "status": _help_entry("Show active target, RPC, actor, ABI, last transaction, and open signals.", "lk status", "lk status", "Use it whenever you are unsure what Lowkey is currently pointing at.", related=["lk context", "lk target"]),
-    "recon": _help_entry("Quickly inspect a live target for balance/code/nonce and proxy hints.", "lk recon", "lk recon", "Use it as a first-pass sanity check.", related=["lk info", "lk proxy"]),
+    "recon": _help_entry(
+        "Build a read-only address dossier with chain/block identity, runtime code, local ABI/functions, standard proxy-slot observations and optional bytecode/storage candidates.",
+        "lk recon [address] [--json] [--deep] [--storage-range START:END]",
+        "lk recon 0x... --json --deep",
+        "Use it as the address-first entry point. Raw storage and bytecode-derived values are labelled as observations/candidates, not verified layout or confirmed roles.",
+        options=[
+            ("--json", "Write machine-readable dossier JSON to stdout.", "lk recon 0x... --json"),
+            ("--deep", "Disassemble runtime code and list PUSH4/PUSH20 candidates.", "lk recon 0x... --deep"),
+            ("--storage-range START:END", "Record up to 128 raw storage slots; these are observations, not a layout.", "lk recon 0x... --storage-range 0:60"),
+        ],
+        related=["lk info", "lk proxy", "lk disasm", "lk layout"],
+    ),
     "deployments": _help_entry("List deployment history discovered in the current project; this command does not deploy contracts.", "lk deployments", "lk deployments", "Use it to find addresses from previous deployment runs. Use lk deploy or lk lab when you want to deploy a contract now.", related=["lk deploy", "lk target auto", "lk lab"]),
     "clone": _help_entry("Clone and onboard a repository for auditing.", "lk clone <repo> [dir] [options]", "lk clone https://github.com/example/protocol", "Use it when starting work on a repository that is not onboarded yet.", related=["lk build", "lk audit", "lk lab"]),
     "doctor": _help_entry("Diagnose Lowkey, Foundry, Anvil, dependencies, and optional tools.", "lk doctor", "lk doctor", "Use it before debugging higher-level audit behavior when the toolchain may be the problem.", related=["lk self-test"]),
@@ -24053,7 +24300,7 @@ _NEXT_COMMANDS = {
     "actors": ["lk actor <index> <name>", "lk wizard <function> [values...]", "lk as <actor> <command>"],
     "as": ["lk status", "lk functions", "lk actors"],
     "deployments": ["lk targets", "lk target auto", "lk status"],
-    "recon": ["lk functions", "lk risk", "lk scan src", "lk slither"],
+    "recon": ["lk functions", "lk proxy", "lk disasm", "lk layout"],
     "risk": ["lk seams", "lk fn <function>", "lk slither"],
     "seams": ["lk fn <function>", "lk scan src", "lk findings"],
     "scan": ["lk findings", "lk focus <id>", "lk rg \"<marker>\" src"],
@@ -24886,7 +25133,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="label":
         if len(args)==2: config["labels"][args[0]]=args[1]; save_config(config)
         else: print("Usage: lk label <address> <name>")
-    elif cmd=="recon": run_recon(config)
+    elif cmd=="recon": return run_recon(config,args)
     elif cmd=="proxy": run_proxy(config)
     elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
     elif cmd=="admin": run_cast(["admin",config.get("target")],config)
