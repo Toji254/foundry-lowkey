@@ -1598,5 +1598,58 @@ class CommandHelpTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), ["cov", "--h"])
 
 
+    def test_deploy_help_is_distinct_from_deployment_history_and_singular_alias(self):
+        code, output = self.capture_dispatch("deploy", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk deploy", output)
+        self.assertIn("lk deploy TargetHolder", output)
+        self.assertIn("lk deploy --artifact TargetHolder", output)
+        self.assertIn("generic ABI path", output)
+        self.assertIn("Anvil lifecycle", output)
+
+        code, alias_output = self.capture_dispatch("deployment", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk deploy", alias_output)
+        self.assertIn("Alias: 'lk deployment' is another way to run 'lk deploy'.", alias_output)
+
+        code, history_output = self.capture_dispatch("deployments", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("deployment history", history_output.lower())
+        self.assertIn("does not deploy contracts", history_output.lower())
+        self.assertNotIn("constructor prompts", history_output.lower())
+
+    def test_deploy_routes_to_generic_lab_and_preserves_explicit_artifact_mode(self):
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
+            code = lk._dispatch_command_impl("deploy", ["TargetHolder"], {})
+        self.assertEqual(code, 0)
+        run_lab.assert_called_once_with({}, ["--generic", "TargetHolder"])
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
+            code = lk._dispatch_command_impl("deploy", ["--artifact", "TargetHolder"], {})
+        self.assertEqual(code, 0)
+        run_lab.assert_called_once_with({}, ["--artifact", "TargetHolder"])
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
+            code = lk._dispatch_command_impl("deployment", ["TargetHolder"], {})
+        self.assertEqual(code, 0)
+        run_lab.assert_called_once_with({}, ["--generic", "TargetHolder"])
+
+    def test_lab_help_explains_anvil_reuse_and_local_fallback(self):
+        code, output = self.capture_dispatch("lab", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("reuses a reachable Anvil node", output)
+        self.assertIn("starts a disposable project-local Anvil", output)
+        self.assertIn("does not reset the existing chain", output)
+
+    def test_full_help_surfaces_direct_deployment_and_history_distinction(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        self.assertIn("lk deploy [Contract]", rendered)
+        self.assertIn("lk deploy --artifact <Contract>", rendered)
+        self.assertIn("List deployment history only; does not deploy.", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

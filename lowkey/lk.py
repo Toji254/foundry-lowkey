@@ -19623,7 +19623,29 @@ COMMAND_HELP = {
             ("--artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact MyContract"),
             ("--ai-review", "Request optional unverified protocol reasoning; native lab logic remains authoritative.", "lk lab --ai-review"),
         ],
-        related=["lk target", "lk walkthrough", "lk status"],
+        notes=[
+            ("Anvil lifecycle", "Lowkey reuses a reachable Anvil node detected at the active local RPC. If no Anvil node is detected, it starts a disposable project-local Anvil. Deploying another contract on a reused Anvil adds chain state; it does not reset the existing chain.", "lk status && lk chain"),
+            ("Configured RPC safety", "The lab is local-only. If the configured RPC is not detected as an Anvil node, Lowkey clears that RPC override and uses a disposable local Anvil instead.", "lk lab --generic MyContract"),
+            ("Stopping the lab", "lk lab stop stops the project-local Anvil instance started by Lowkey. It is not a deployment-history command.", "lk lab stop"),
+        ],
+        related=["lk deploy", "lk deployments", "lk target", "lk walkthrough", "lk status"],
+    ),
+    "deploy": _help_entry(
+        "Deploy a contract directly into the local Anvil lab using Lowkey's generic ABI deployment path and constructor prompts.",
+        "lk deploy [Contract] | lk deploy --artifact <Contract>",
+        "lk deploy TargetHolder",
+        "Use it when you have compiled a contract and want to deploy it now without first creating a project-specific deployment script. This command uses the same local Anvil lifecycle as lk lab.",
+        forms=[
+            ("lk deploy [Contract]", "Deploy through the generic ABI path. Lowkey discovers the artifact and prompts for constructor values when needed. Equivalent to lk lab --generic [Contract].", "lk deploy TargetHolder"),
+            ("lk deploy --generic [Contract]", "Explicitly select the generic ABI deployment path.", "lk deploy --generic TargetHolder"),
+            ("lk deploy --artifact <Contract>", "Deploy the exact compiled artifact named, avoiding ambiguity when several artifacts share similar names.", "lk deploy --artifact TargetHolder"),
+        ],
+        notes=[
+            ("Anvil lifecycle", "Reuses a reachable Anvil node detected at the active local RPC. If none is detected, Lowkey starts a disposable project-local Anvil. A new deployment on a reused Anvil does not reset existing chain state.", "lk status && lk chain"),
+            ("Constructor input", "The generic path may prompt for constructor values and therefore needs an interactive terminal when constructor input is required.", "lk deploy TargetHolder"),
+            ("Deployment history", "Use lk deployments to list previous deployment records. That command only lists history; it does not deploy.", "lk deployments"),
+        ],
+        related=["lk lab --h", "lk deployments", "lk target auto", "lk status"],
     ),
     "audit-checks": _help_entry(
         "Legacy compatibility alias for running the audit with the default static checks.",
@@ -20635,7 +20657,7 @@ COMMAND_HELP = {
     "info": _help_entry("Show target facts such as bytecode, ABI, and proxy information.", "lk info", "lk info", "Use it for quick reconnaissance.", related=["lk recon", "lk status"]),
     "status": _help_entry("Show active target, RPC, actor, ABI, last transaction, and open signals.", "lk status", "lk status", "Use it whenever you are unsure what Lowkey is currently pointing at.", related=["lk context", "lk target"]),
     "recon": _help_entry("Quickly inspect a live target for balance/code/nonce and proxy hints.", "lk recon", "lk recon", "Use it as a first-pass sanity check.", related=["lk info", "lk proxy"]),
-    "deployments": _help_entry("List deployment records discovered in the current project.", "lk deployments", "lk deployments", "Use it when you need addresses created by a Foundry deployment run.", related=["lk target auto", "lk lab"]),
+    "deployments": _help_entry("List deployment history discovered in the current project; this command does not deploy contracts.", "lk deployments", "lk deployments", "Use it to find addresses from previous deployment runs. Use lk deploy or lk lab when you want to deploy a contract now.", related=["lk deploy", "lk target auto", "lk lab"]),
     "clone": _help_entry("Clone and onboard a repository for auditing.", "lk clone <repo> [dir] [options]", "lk clone https://github.com/example/protocol", "Use it when starting work on a repository that is not onboarded yet.", related=["lk build", "lk audit", "lk lab"]),
     "doctor": _help_entry("Diagnose Lowkey, Foundry, Anvil, dependencies, and optional tools.", "lk doctor", "lk doctor", "Use it before debugging higher-level audit behavior when the toolchain may be the problem.", related=["lk self-test"]),
     "self-test": _help_entry("Run Lowkey's built-in regression checks.", "lk self-test", "lk self-test", "Use it after changing Lowkey itself."),
@@ -22205,6 +22227,7 @@ HELP_ALIASES = {
     "signal": "findings",
     "investigate": "focus",
     "gen": "generate",
+    "deployment": "deploy",
     "verify": "verification",
     "vbench": "verification-benchmark",
     "mcheck": "mutation-check",
@@ -22463,7 +22486,8 @@ START HERE
   lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
-  lk lab                             Start/rebuild a disposable local audit lab.
+  lk lab                             Reuse a detected Anvil or start a project-local audit lab.
+  lk deploy [Contract]               Deploy a contract using the generic ABI/constructor-prompt path.
   lk lab --ai-review                 Add an optional, unverified protocol review.
   lk status --ai                    Explain status output, risks, and what to inspect next.
   lk send --ai                      Keep normal send behavior, then explain the result and evidence gaps.
@@ -22538,7 +22562,9 @@ PROJECT / TARGET SETUP
   lk target list                    List saved targets.
   lk target auto [name]             Use a recent deployment. Example: lk target auto vault
   lk use <name|number>              Switch to a saved target. Example: lk use vault
-  lk deployments                    List deployment records.
+  lk deploy [Contract]               Deploy a contract now; equivalent to lk lab --generic.
+  lk deploy --artifact <Contract>    Deploy the exact compiled artifact named.
+  lk deployments                    List deployment history only; does not deploy.
   lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
   lk projects                       Show projects found inside the current workspace.
   lk project [number|path]          Show the human-readable project map.
@@ -23399,6 +23425,13 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         return fail("Error: target belongs to a different project context.")
     elif cmd in {"build", "test"}: return run_native_project_command(config, cmd, args)
     elif cmd=="deployments": run_deployments(config)
+    elif cmd=="deploy":
+        deploy_args = list(args or [])
+        if deploy_args and str(deploy_args[0]).strip().lower() == "stop":
+            return fail("Use `lk lab stop` to stop the local Anvil instance; `lk deploy` is for contract deployment.")
+        if not deploy_args or str(deploy_args[0]).strip().lower() not in {"--generic", "generic", "--artifact", "artifact"}:
+            deploy_args.insert(0, "--generic")
+        return run_lab(config, deploy_args)
     elif cmd in {"project","graph"}: return run_project_map(config,args)
     elif cmd=="projects": return run_projects(config,args)
     elif cmd=="system": return run_system_model(config,args)
