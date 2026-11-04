@@ -9729,6 +9729,22 @@ def _fixture_context_matches_rpc(rpc, context):
     return fixture_context.matches(block, chain_id, context)
 
 
+
+def _fixture_rpc_origin(config, current_rpc, managed_state):
+    """Retain the user's pre-fixture RPC across repeated lab promotions."""
+    if (
+        isinstance(managed_state, dict)
+        and managed_state.get("purpose") == "project-fixture-block-context"
+        and str(managed_state.get("rpc") or "").rstrip("/")
+        == str(current_rpc or "").rstrip("/")
+    ):
+        return (
+            bool(managed_state.get("previous_rpc_present")),
+            managed_state.get("previous_rpc"),
+        )
+    return ("rpc" in config, config.get("rpc"))
+
+
 def _ensure_fixture_context_anvil(config, root, current_rpc, context):
     """Start a clean, fixture-aligned Anvil without mutating the existing chain.
 
@@ -9802,8 +9818,9 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
         except OSError:
             pass
 
-    previous_rpc_present = "rpc" in config
-    previous_rpc = config.get("rpc")
+    previous_rpc_present, previous_rpc = _fixture_rpc_origin(
+        config, current_rpc, managed_state
+    )
     write_project_anvil_state(root, {
         "auto_started": True,
         "pid": process.pid,

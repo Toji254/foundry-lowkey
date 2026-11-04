@@ -69,6 +69,29 @@ class LowkeyCastTests(unittest.TestCase):
                 changed = {"rpc": "http://127.0.0.1:8545"}
                 self.assertIsNone(lk.project_fixture_rpc_info(changed))
 
+    def test_repeated_fixture_promotion_preserves_original_global_rpc(self):
+        current_rpc = "http://127.0.0.1:8546"
+        managed_state = {
+            "purpose": "project-fixture-block-context",
+            "rpc": current_rpc,
+            "previous_rpc_present": True,
+            "previous_rpc": "http://127.0.0.1:8545",
+        }
+        config = {"rpc": current_rpc}
+        self.assertEqual(
+            lk._fixture_rpc_origin(config, current_rpc, managed_state),
+            (True, "http://127.0.0.1:8545"),
+        )
+        # A different current node means the user's newly selected RPC is the origin.
+        self.assertEqual(
+            lk._fixture_rpc_origin(
+                {"rpc": "http://127.0.0.1:8547"},
+                "http://127.0.0.1:8547",
+                managed_state,
+            ),
+            (True, "http://127.0.0.1:8547"),
+        )
+
     def test_project_fixture_rpc_does_not_leak_into_another_project(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             lk.write_project_anvil_state(Path(first), {
