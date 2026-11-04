@@ -80,10 +80,15 @@ class LowkeyCastTests(unittest.TestCase):
             })
             config = {"rpc": None}
             info = {"url": "http://127.0.0.1:8546", "client": "anvil/test", "accounts": []}
+            fallback_info = {
+                "url": "http://127.0.0.1:8545",
+                "client": "anvil/fallback",
+                "accounts": [],
+            }
             with patch.object(lk.audit_context, "foundry_project_root", return_value=Path(second)), \
-                 patch.object(lk, "detect_anvil_rpc", return_value=info):
+                 patch.object(lk, "detect_anvil_rpc", return_value=fallback_info):
                 self.assertIsNone(lk.project_fixture_rpc_info(config))
-                self.assertNotEqual(lk.effective_rpc(config), "http://127.0.0.1:8546")
+                self.assertEqual(lk.effective_rpc(config), "http://127.0.0.1:8545")
 
     def test_inspect_clone_reports_eip1167_implementation(self):
         target = "0x" + "1" * 40
