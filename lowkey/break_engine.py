@@ -1029,16 +1029,9 @@ def _run_simple_evm_family(
 
         first_success = first.returncode == 0 if first is not None else False
         second_success = second.returncode == 0 if second is not None else False
-        is_break = (
-            family in {"replay", "accounting"}
-            and second_success
-            and second_outflow > 1
-            and second_gain > 0
-        ) or (
-            family == "access"
-            and first_success
-            and bool(PRIVILEGED_RE.search(str(fn.get("name") or "")))
-        )
+        # Generic Cast probes lack a protocol-specific control/invariant oracle.
+        # Successful repeat calls and privileged-looking names remain observations.
+        is_break = False
 
         lines = [
             f"LOWKEY_BREAK_FAMILY {family}",
@@ -1371,7 +1364,8 @@ contract LowkeyBreakAccess is Test {{
         console2.log("LOWKEY_BREAK_FAMILY", "access");
         console2.log("SUCCESS", success);
         console2.log("RETURNDATA_LENGTH", returndata.length);
-        console2.log("LOWKEY_BREAK", {str(break_on_success).lower()} && success);
+        console2.log("AUTHORIZATION_STATE_VERIFIED", false);
+        console2.log("LOWKEY_BREAK", false);
     }}
 }}
 """
