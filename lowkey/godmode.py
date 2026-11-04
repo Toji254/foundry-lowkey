@@ -532,16 +532,24 @@ def control(args):
     env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
     rows={}
     for name,entry,rx in (("control",control_run,metric_c),("attack",attack,metric_a)):
-        rows[name]=_trace_control_run(root,url,name,entry,rx,spec,env)
+        try:
+            rows[name]=_trace_control_run(root,url,name,entry,rx,spec,env)
+        except Exception as exc:
+            rows[name]={"exit_code":None,"metric":None,"trace_error":str(exc),"argv":entry.get("argv")}
     delta=None
-    if rows["control"]["metric"] is not None and rows["attack"]["metric"] is not None:
+    if rows.get("control",{}).get("metric") is not None and rows.get("attack",{}).get("metric") is not None:
         delta=rows["attack"]["metric"]-rows["control"]["metric"]
-    same_entry=rows["control"]["entry_call_sha256"]==rows["attack"]["entry_call_sha256"]
-    same_prestate=rows["control"]["prestate_sha256"]==rows["attack"]["prestate_sha256"]
-    same_chain=str(rows["control"]["chain_id"]).lower()==str(rows["attack"]["chain_id"]).lower()
+    same_entry=bool(rows.get("control",{}).get("entry_call_sha256") and
+                    rows.get("control",{}).get("entry_call_sha256")==rows.get("attack",{}).get("entry_call_sha256"))
+    same_prestate=bool(rows.get("control",{}).get("prestate_sha256") and
+                       rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256"))
+    same_chain=bool(rows.get("control",{}).get("chain_id") and
+                    str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower())
     passed=same_entry and same_prestate and same_chain and delta is not None and delta>0
     reasons=[]
-    if not same_entry: reasons.append("RPC-derived root transaction sender/target/calldata/value differ.")
+    for name in ("control","attack"):
+        if rows.get(name,{}).get("trace_error"): reasons.append(name+": "+rows[name]["trace_error"])
+    if not same_entry: reasons.append("RPC-derived root transaction sender/target/calldata/value differ or a trace is missing.")
     if not same_prestate: reasons.append("RPC-derived parent-block pre-state for the declared accounts/slots differs.")
     if not same_chain: reasons.append("Control and attack transactions were executed on different chain IDs.")
     if delta is None or delta<=0: reasons.append("Attack metric did not exceed the control metric.")
