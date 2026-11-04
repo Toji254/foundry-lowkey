@@ -841,6 +841,7 @@ def reprove(args):
     p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
     p.add_argument("--fork-block",required=True,type=int); p.add_argument("--tx-hash")
     p.add_argument("--target-address",required=True); p.add_argument("--profit-address",action="append",required=True)
+    p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
     p.add_argument("--argv-json")
     ns=p.parse_args(args)
     root=root_path(ns.root); harness=(root/ns.harness).resolve()
@@ -892,6 +893,26 @@ def reprove(args):
     if block_txs!=[tx_hash]:
         raise ValueError("The tested transaction must be the only transaction in its block.")
     chain_id=rpc(url,"eth_chainId",[])
+    source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
+    if ns.source_rpc_url:
+        source_url=rpc_url(ns.source_rpc_url)
+        if local_rpc(source_url) or urlparse(source_url).hostname==urlparse(url).hostname:
+            raise ValueError("--source-rpc-url must be an independent non-local source endpoint, not the local Anvil node.")
+        source_chain_id=rpc(source_url,"eth_chainId",[])
+        source_parent=rpc(source_url,"eth_getBlockByNumber",[hex(ns.fork_block),False])
+        if str(source_chain_id).lower()!=str(chain_id).lower():
+            raise ValueError("Local Anvil chain ID does not match the independent source RPC.")
+        if not isinstance(source_parent,dict) or str(source_parent.get("hash") or "").lower()!=str(parent.get("hash") or "").lower():
+            raise ValueError("Local Anvil parent block hash does not match the independent source chain at --fork-block.")
+        local_target_code=rpc(url,"eth_getCode",[target,hex(ns.fork_block)])
+        source_target_code=rpc(source_url,"eth_getCode",[target,hex(ns.fork_block)])
+        if not local_target_code or local_target_code=="0x" or str(local_target_code).lower()!=str(source_target_code or "").lower():
+            raise ValueError("Target bytecode on the local fork does not match the independent source chain at --fork-block.")
+        source_sender_balance=int(str(rpc(source_url,"eth_getBalance",[str(tx.get("from")).lower(),hex(ns.fork_block)])),16)
+        source_verification={"verified":True,"source_chain_id":source_chain_id,
+                             "source_parent_hash":source_parent.get("hash"),
+                             "target_code_sha256":hashlib.sha256(bytes.fromhex(str(source_target_code).removeprefix("0x"))).hexdigest(),
+                             "sender_balance_at_fork_wei":source_sender_balance}
     trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
     if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
     tx_digest,entry=_control_entry_digest(tx,chain_id)
@@ -921,10 +942,12 @@ def reprove(args):
     gross_delta=after_total-before_total
     net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
     payload={
-        "status":"PROFITABLE" if net_profit>0 else "FORK_REPRODUCED",
+        "status":(("PROFITABLE" if net_profit>0 else "FORK_REPRODUCED") if source_verification["verified"]
+                  else ("LOCAL_PROFITABLE" if net_profit>0 else "LOCAL_REPRODUCED")),
         "command_run":bool(command_result),
         "exit_code":command_result.returncode if command_result else None,
         "tx_hash":tx_hash,"chain_id":chain_id,"fork_parent_block":ns.fork_block,
+        "source_fork_verification":source_verification,
         "transaction_block":block_number,"transaction_index":tx_index,
         "target_address":target,"entry_call":entry,"entry_call_sha256":tx_digest,
         "call_trace":calls,"receipt_status":receipt.get("status"),
@@ -939,7 +962,8 @@ def reprove(args):
         },
         "human_confirmation_required":True,
         "limitations":["Native-ETH balance accounting only; ERC20/ERC4626 share profit requires token-specific balance measurement.",
-                       "The operator must start Anvil from the declared fork and keep the parent block pinned.",
+                       "Without --source-rpc-url, this is a local Anvil reproduction only, not an independently verified source-chain fork.",
+                       "An independent source check verifies chain ID, parent block hash, target bytecode, and transaction-sender ETH balance; it does not prove that every dependency or storage slot is identical.",
                        "A replayed transaction proves only the tested path and state; it is not a completeness guarantee."],
     }
     out=safe_out(root,".audit/godmode/reprove.json"); write_json(out,payload)
