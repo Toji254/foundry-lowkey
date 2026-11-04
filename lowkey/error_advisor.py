@@ -178,6 +178,8 @@ def inspect_missing_import(project_root: Any, error: str) -> dict[str, Any]:
                 prefix, target = line.split("=", 1)
                 if prefix.strip() and target.strip():
                     remappings[prefix.strip()] = target.strip()
+        except OSError:
+            pass
 
     foundry_file = root / "foundry.toml"
     foundry_text = ""
