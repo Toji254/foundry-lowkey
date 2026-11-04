@@ -368,7 +368,15 @@ class GodmodeTests(unittest.TestCase):
                 output = "LOWKEY_CALL_SEQUENCE_SHA256 " + "a" * 64
                 return subprocess.CompletedProcess(argv, 0, output, "")
 
-            with patch.object(godmode, "run", side_effect=fake_run), \\
+            def fake_rpc(url, method, params, timeout=20):
+                if method == "evm_snapshot":
+                    return "0x1"
+                if method == "evm_revert":
+                    return True
+                raise AssertionError("Unexpected RPC call before a mined hash exists: " + method)
+
+            with patch.object(godmode, "rpc", side_effect=fake_rpc), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
                  redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
