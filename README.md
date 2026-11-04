@@ -884,7 +884,7 @@ lk recon 0xTARGET --deep
 lk recon 0xTARGET --storage-range 0:31
 ~~~
 
-The JSON dossier records chain/block identity, runtime bytecode metadata, local ABI functions/selectors, standard proxy-slot observations and EIP-1167 clone hints. `--deep` adds PUSH4/PUSH20 candidates from disassembly; `--storage-range` saves raw slot values as observations, not a decoded storage layout. Candidate signatures and address references are not verified facts.
+The JSON dossier records chain/block identity, runtime bytecode metadata, local ABI functions/selectors, standard proxy-slot observations and EIP-1167 clone hints. `--deep` adds PUSH4/PUSH20 candidates from disassembly; `--storage-range` saves up to 32 raw slot values as observations, not a decoded storage layout. Candidate signatures and address references are not verified facts.
 
 ## Cast shortcuts
 
