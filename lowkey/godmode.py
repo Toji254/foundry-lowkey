@@ -646,8 +646,38 @@ def control(args):
                        rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256"))
     same_chain=bool(rows.get("control",{}).get("chain_id") and
                     str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower())
+    trace_expectations=spec.get("trace_expectations") or []
+    trace_checks=[]
+    trace_delta_verified=bool(trace_expectations)
+    if not trace_expectations:
+        reasons_placeholder="Manifest must declare trace_expectations for the expected target/callback path delta."
+    for expectation in trace_expectations:
+        if not isinstance(expectation,dict):
+            trace_delta_verified=False
+            trace_checks.append({"verified":False,"reason":"trace_expectation must be an object"})
+            continue
+        address=addr(expectation.get("address"))
+        counts={}
+        for name in ("control","attack"):
+            calls=rows.get(name,{}).get("call_trace") or []
+            counts[name]=sum(1 for call in calls if str(call.get("to") or "").lower()==address)
+        expected={}
+        for name in ("control","attack"):
+            lo=expectation.get(name+"_min_calls")
+            hi=expectation.get(name+"_max_calls")
+            if lo is None or hi is None or int(lo)<0 or int(hi)<int(lo):
+                trace_delta_verified=False
+                expected[name]={"valid":False,"reason":"min/max calls are missing or invalid"}
+            else:
+                expected[name]={"min":int(lo),"max":int(hi),
+                                "matched":int(lo)<=counts[name]<=int(hi)}
+                if not expected[name]["matched"]: trace_delta_verified=False
+        trace_checks.append({"address":address,"description":expectation.get("description"),
+                             "observed_call_counts":counts,"expected":expected,
+                             "verified":all(item.get("matched",False) for item in expected.values())})
+    trace_delta_verified=trace_delta_verified and all(item.get("verified",False) for item in trace_checks)
     attack_metric_positive=bool(rows.get("attack",{}).get("metric") is not None and rows["attack"]["metric"]>0)
-    passed=same_entry and same_envelope and same_prestate and same_chain and attack_metric_positive and delta is not None and delta>0
+    passed=same_entry and same_envelope and same_prestate and same_chain and trace_delta_verified and attack_metric_positive and delta is not None and delta>0
     reasons=[]
     for name in ("control","attack"):
         if rows.get(name,{}).get("trace_error"): reasons.append(name+": "+rows[name]["trace_error"])
@@ -655,6 +685,7 @@ def control(args):
     if not same_envelope: reasons.append("RPC-derived transaction nonce/gas/fee/type/access-list envelope differs.")
     if not same_prestate: reasons.append("RPC-derived parent-block pre-state for the declared accounts/slots differs.")
     if not same_chain: reasons.append("Control and attack transactions were executed on different chain IDs.")
+    if not trace_delta_verified: reasons.append(reasons_placeholder if not trace_expectations else "Observed nested-call trace did not match the manifest-declared path/callback expectations.")
     if delta is None or delta<=0: reasons.append("Attack metric did not exceed the control metric.")
     if not attack_metric_positive: reasons.append("Attack portfolio native-ETH delta after gas is not positive.")
     out=safe_out(root,ns.output)
@@ -664,10 +695,11 @@ def control(args):
         "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,"same_chain_verified":same_chain,
+        "trace_delta_verified":trace_delta_verified,"trace_checks":trace_checks,
         "attack_metric_positive_after_gas":attack_metric_positive,
         "target_address":target,"prestate_slots_checked":spec.get("prestate_slots") or [],
         "runs":rows,"reasons":reasons,
-        "gate":"Only trace-backed local transactions with identical root invocation, transaction envelope and declared parent-block pre-state, a positive attack portfolio delta after gas, and a positive attack-minus-control delta can produce BREAK.",
+        "gate":"Only trace-backed local transactions with identical root invocation, transaction envelope and declared parent-block pre-state, manifest-matching nested-call deltas, a positive attack portfolio delta after gas, and a positive attack-minus-control delta can produce BREAK.",
     }
     write_json(out,payload)
     print(f"{payload['status']}: delta {delta}; entry call {'matched' if same_entry else 'DIFFERENT'}; tx envelope {'matched' if same_envelope else 'DIFFERENT'}; parent pre-state {'matched' if same_prestate else 'DIFFERENT'}; evidence {out.relative_to(root)}")
