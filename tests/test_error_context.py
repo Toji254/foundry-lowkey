@@ -150,5 +150,24 @@ Warning (2072): Unused local variable.
         self.assertIsInstance(result["project_knowledge"], dict)
 
 
+
+    def test_last_error_keeps_safe_nested_command_for_repair_history(self):
+        record = error_context.record_last_error(
+            command="lk forge update",
+            error="dependency operation completed",
+            exit_code=0,
+            project_root=self.project,
+        )
+        self.assertEqual(record["command"], "lk forge update")
+
+        sensitive = error_context.record_last_error(
+            command="lk send withdraw 0x" + "1" * 40,
+            error="reverted",
+            exit_code=1,
+            project_root=self.project,
+        )
+        self.assertEqual(sensitive["command"], "lk send")
+
+
 if __name__ == "__main__":
     unittest.main()

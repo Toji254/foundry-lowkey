@@ -52,9 +52,13 @@ def redact(text: Any, *, limit: int = 6000) -> str:
 
 def _safe_command(command: Any) -> str:
     if isinstance(command, (list, tuple)):
-        parts = [str(item) for item in command[:2]]
+        tokens = [str(item) for item in command]
     else:
-        parts = str(command or "").strip().split()[:2]
+        tokens = str(command or "").strip().split()
+    # Preserve only the harmless nested subcommand for useful troubleshooting
+    # history (e.g. "lk forge update"), never arbitrary function arguments.
+    nested_roots = {("lk", "forge"), ("lk", "ai"), ("lk", "verification")}
+    parts = tokens[:3] if len(tokens) >= 3 and tuple(tokens[:2]) in nested_roots else tokens[:2]
     safe = [re.sub(r"[^A-Za-z0-9_.-]", "", item)[:80] for item in parts]
     return " ".join(item for item in safe if item)
 

@@ -170,6 +170,139 @@ class ErrorAdvisorTests(unittest.TestCase):
             })
         self.assertNotIn(project_path, json.dumps(observed))
 
+
+
+    def test_missing_import_inspection_collects_project_remappings_and_dependency_evidence(self):
+        root = Path(self.tmp.name)
+        (root / "src").mkdir()
+        (root / "lib" / "openzeppelin-contracts" / "contracts" / "utils" / "math").mkdir(parents=True)
+        (root / "foundry.toml").write_text(
+            '[profile.default]\nsrc = "src"\nsolc_version = "0.6.12"\n',
+            encoding="utf-8",
+        )
+        (root / "remappings.txt").write_text(
+            "openzeppelin-contracts/=lib/openzeppelin-contracts/\n",
+            encoding="utf-8",
+        )
+        (root / "src" / "Fallout.sol").write_text(
+            'pragma solidity 0.6.12;\n'
+            'import "openzeppelin-contracts-06/math/SafeMath.sol";\n'
+            'contract Fallout {}\n',
+            encoding="utf-8",
+        )
+        error = (
+            'Error (6275): Source "openzeppelin-contracts-06/math/SafeMath.sol" not found: File not found.\n'
+            'src/Fallout.sol:2:1: ParserError\n'
+        )
+        evidence = error_advisor.inspect_missing_import(root, error)
+        self.assertTrue(evidence["missing_import_detected"])
+        self.assertEqual(evidence["import_path"], "openzeppelin-contracts-06/math/SafeMath.sol")
+        self.assertEqual(evidence["importer"], "src/Fallout.sol")
+        self.assertEqual(evidence["compiler_version"], "0.6.12")
+        self.assertIsNone(evidence["matching_remapping"])
+        self.assertIn("openzeppelin-contracts/", evidence["remapping_prefixes"])
+        self.assertFalse(evidence["resolved_import_exists"])
+
+    def test_missing_oz_06_import_gets_pinned_install_and_exact_remapping_plan(self):
+        root = Path(self.tmp.name)
+        (root / "src").mkdir()
+        (root / "lib" / "openzeppelin-contracts" / "contracts").mkdir(parents=True)
+        (root / "foundry.toml").write_text(
+            '[profile.default]\nsolc_version = "0.6.12"\n',
+            encoding="utf-8",
+        )
+        (root / "remappings.txt").write_text(
+            "openzeppelin-contracts/=lib/openzeppelin-contracts/\n",
+            encoding="utf-8",
+        )
+        (root / "src" / "Fallout.sol").write_text(
+            'pragma solidity 0.6.12;\n'
+            'import "openzeppelin-contracts-06/math/SafeMath.sol";\n',
+            encoding="utf-8",
+        )
+        error = (
+            'Source "openzeppelin-contracts-06/math/SafeMath.sol" not found: File not found.\n'
+            'src/Fallout.sol:2:1: ParserError\n'
+        )
+        evidence = error_advisor.inspect_missing_import(root, error)
+        plan = error_advisor.build_missing_import_repair_plan(
+            evidence,
+            recent_events=[{"command": "lk forge update"}],
+        )
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["risk"], "local-change")
+        self.assertEqual(
+            plan["commands"][0],
+            "lk forge install openzeppelin-contracts-06=OpenZeppelin/openzeppelin-contracts@v3.4.2 --no-git",
+        )
+        self.assertIn("openzeppelin-contracts-06/=lib/openzeppelin-contracts-06/contracts/", plan["commands"][-1])
+        self.assertIn("lk forge remappings", plan["verification_commands"])
+        self.assertEqual(plan["verification_commands"][-1], "lk build")
+        self.assertTrue(any("broad update" in item for item in plan["basis"]))
+
+    def test_missing_oz_06_import_reuses_an_existing_compatible_candidate(self):
+        root = Path(self.tmp.name)
+        candidate = root / "lib" / "legacy-oz" / "contracts" / "math" / "SafeMath.sol"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("pragma solidity 0.6.0; library SafeMath {}", encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "src" / "Fallout.sol").write_text(
+            'pragma solidity 0.6.12;\n'
+            'import "openzeppelin-contracts-06/math/SafeMath.sol";\n',
+            encoding="utf-8",
+        )
+        error = (
+            'Source "openzeppelin-contracts-06/math/SafeMath.sol" not found: File not found.\n'
+            'src/Fallout.sol:2:1: ParserError\n'
+        )
+        evidence = error_advisor.inspect_missing_import(root, error)
+        plan = error_advisor.build_missing_import_repair_plan(evidence)
+        self.assertIsNotNone(plan)
+        self.assertFalse(any("forge install" in command for command in plan["commands"]))
+        self.assertIn(
+            "openzeppelin-contracts-06/=lib/legacy-oz/contracts/",
+            plan["commands"][-1],
+        )
+
+    def test_missing_import_evidence_and_repair_plan_are_passed_to_ai_and_rendered(self):
+        root = Path(self.tmp.name)
+        (root / "src").mkdir()
+        (root / "src" / "Fallout.sol").write_text(
+            'pragma solidity 0.6.12;\n'
+            'import "openzeppelin-contracts-06/math/SafeMath.sol";\n',
+            encoding="utf-8",
+        )
+        error = (
+            'Source "openzeppelin-contracts-06/math/SafeMath.sol" not found: File not found.\n'
+            'src/Fallout.sol:2:1: ParserError\n'
+        )
+        record = {
+            "error": error, "command": "lk build", "exit_code": 1,
+            "project_root": str(root), "project_label": "Fallout",
+        }
+        response = {
+            "summary": "A legacy import cannot be resolved.",
+            "likely_cause": "The import prefix is not mapped.",
+            "confidence": "high", "checks": [], "fixes": [], "caveats": [],
+        }
+        observed = {}
+
+        def capture_request(**kwargs):
+            observed.update(kwargs)
+            return response
+
+        with patch.object(error_advisor.ai_harness, "request_structured", side_effect=capture_request):
+            diagnosis = error_advisor.diagnose_record(record)
+        self.assertTrue(observed["context"]["native_project_evidence"]["missing_import_detected"])
+        self.assertIsNotNone(observed["context"]["evidence_based_repair_plan"])
+        rendered = error_advisor.render(diagnosis)
+        self.assertIn("NATIVE PROJECT EVIDENCE", rendered)
+        self.assertIn("LOWKEY EVIDENCE-BASED REPAIR PATH", rendered)
+        self.assertIn("openzeppelin-contracts-06/math/SafeMath.sol", rendered)
+        self.assertIn("lk forge install", rendered)
+        self.assertIn("These commands were not executed.", rendered)
+
+
     def test_last_error_missing_is_actionable(self):
         with self.assertRaisesRegex(RuntimeError, "No saved Lowkey error"):
             error_context.read_last_error()
