@@ -22152,7 +22152,7 @@ COMMAND_HELP = {
         options=[
             ("--json", "Write machine-readable dossier JSON to stdout.", "lk recon 0x... --json"),
             ("--deep", "Disassemble runtime code and list PUSH4/PUSH20 candidates.", "lk recon 0x... --deep"),
-            ("--storage-range START:END", "Record up to 128 raw storage slots; these are observations, not a layout.", "lk recon 0x... --storage-range 0:60"),
+            ("--storage-range START:END", "Record up to 32 raw storage slots; these are observations, not a layout.", "lk recon 0x... --storage-range 0:31"),
         ],
         related=["lk info", "lk proxy", "lk disasm", "lk layout"],
     ),
