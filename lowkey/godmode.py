@@ -465,6 +465,33 @@ def _trace_control_run(root, url, name, entry, spec, env):
         temp=Path(tempfile.mkdtemp(prefix="lk-control-")); work=temp/"project"
         try:
             shutil.copytree(root,work,ignore=shutil.ignore_patterns(".git",".audit","out","cache","node_modules","__pycache__"))
+            scenario_parameters=[]
+            prepare_argv=entry.get("prepare_argv")
+            if spec.get("scenario_parameters") and not prepare_argv:
+                raise ValueError(f"{name} requires prepare_argv so attacker-only scenario variables can be verified before transaction execution.")
+            if prepare_argv:
+                prepared=run([str(x) for x in prepare_argv],work,int(spec.get("prepare_timeout_seconds",60)),env=env)
+                prepared_output=(prepared.stdout or "")+"\n"+(prepared.stderr or "")
+                if prepared.returncode!=0:
+                    raise RuntimeError(f"{name} scenario preparation failed (exit {prepared.returncode}): {prepared_output[-1200:]}")
+            for scenario in spec.get("scenario_parameters") or []:
+                if not isinstance(scenario,dict): raise ValueError("scenario_parameters entries must be objects.")
+                scenario_address=addr(scenario.get("address"))
+                scenario_slot=str(scenario.get("slot") or "").lower()
+                if re.fullmatch(r"0x[0-9a-f]{64}",scenario_slot) is None:
+                    try: scenario_slot=hex(int(scenario_slot,0))
+                    except ValueError: raise ValueError("Invalid scenario parameter storage slot.")
+                observed=rpc(url,"eth_getStorageAt",[scenario_address,scenario_slot,"latest"])
+                expected_raw=scenario.get(name+"_value")
+                if expected_raw is None: raise ValueError(f"scenario parameter is missing {name}_value.")
+                expected_value=int(str(expected_raw),16) if str(expected_raw).lower().startswith("0x") else int(expected_raw)
+                observed_value=int(str(observed),16)
+                if observed_value!=expected_value:
+                    raise ValueError(f"Scenario parameter {scenario.get('name') or scenario_slot} has value {observed}, expected {expected_raw} for {name} before the transaction.")
+                scenario_parameters.append({"name":scenario.get("name"),"address":scenario_address,
+                                            "slot":scenario_slot,"observed_value":observed,
+                                            "expected_value":expected_raw,"description":scenario.get("description"),
+                                            "verified_before_transaction":True})
             proc=run([str(x) for x in entry["argv"]],work,int(spec.get("timeout_seconds",300)),env=env)
             combined=(proc.stdout or "")+"\n"+(proc.stderr or "")
             hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",combined)
@@ -508,24 +535,6 @@ def _trace_control_run(root, url, name, entry, spec, env):
             if trace_entry_digest!=entry_digest:
                 raise ValueError(f"{name} callTracer root does not match eth_getTransactionByHash.")
             prestate_digest,prestate=_control_prestate_digest(url,receipt,addresses,slots)
-            scenario_parameters=[]
-            for scenario in spec.get("scenario_parameters") or []:
-                if not isinstance(scenario,dict): raise ValueError("scenario_parameters entries must be objects.")
-                scenario_address=addr(scenario.get("address"))
-                scenario_slot=str(scenario.get("slot") or "").lower()
-                if re.fullmatch(r"0x[0-9a-f]{64}",scenario_slot) is None:
-                    try: scenario_slot=hex(int(scenario_slot,0))
-                    except ValueError: raise ValueError("Invalid scenario parameter storage slot.")
-                observed=rpc(url,"eth_getStorageAt",[scenario_address,scenario_slot,"latest"])
-                expected_raw=scenario.get(name+"_value")
-                if expected_raw is None: raise ValueError(f"scenario parameter is missing {name}_value.")
-                expected_value=int(str(expected_raw),16) if str(expected_raw).lower().startswith("0x") else int(expected_raw)
-                observed_value=int(str(observed),16)
-                if observed_value!=expected_value:
-                    raise ValueError(f"Scenario parameter {scenario.get('name') or scenario_slot} has value {observed}, expected {expected_raw} for {name}.")
-                scenario_parameters.append({"name":scenario.get("name"),"address":scenario_address,
-                                            "slot":scenario_slot,"observed_value":observed,
-                                            "expected_value":expected_raw,"description":scenario.get("description")})
             metric_addresses=sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
             sender=str(tx.get("from") or "").lower()
             if not metric_addresses or sender not in metric_addresses:
