@@ -1357,6 +1357,19 @@ contract LowkeyBreakRepeat is Test {{
         }}
 
     }}
+
+    function _safeApprove(address token, address spender, uint256 amount) private {{
+        (bool ok, bytes memory returndata) = token.call(
+            abi.encodeWithSelector(bytes4(0x095ea7b3), spender, amount)
+        );
+        require(
+            ok && (
+                returndata.length == 0
+                || (returndata.length >= 32 && abi.decode(returndata, (bool)))
+            ),
+            "LOWKEY_SAFE_APPROVE_FAILED"
+        );
+    }}
 }}
 """
 
