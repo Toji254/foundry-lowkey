@@ -882,11 +882,14 @@ lk gas <function> [args]
 lk tx [<tx>]
 lk receipt [<tx>]
 lk trace [<tx>]
+lk unravel [<tx>] --json
 lk logs --decode
 lk txpool
 lk selectors --compare
 lk disasm
 ~~~
+
+`lk unravel <tx>` starts from an existing transaction hash and assembles receipt status, block/chain identity, gas fee, ABI-decoded top-level and nested calls when available, callTracer native-value edges, decoded logs and a JSON dossier under `.audit/unravel/`. It uses a node's `debug_traceTransaction` callTracer when supported and falls back to the existing Cast trace. Native ETH call values are not net attacker profit, and a single transaction is not proof of exploitability.
 
 For anything Lowkey does not wrap yet:
 
