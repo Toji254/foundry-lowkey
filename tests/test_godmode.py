@@ -52,9 +52,7 @@ class GodmodeTests(unittest.TestCase):
         manifest = {
             "target_address": target,
             "same_calls_id": "withdraw-same-entrypoint-v1",
-            "metric_name": "attacker_gain_wei",
-            "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
-            "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
+            "metric_name": "attacker_portfolio_native_delta_wei",
             "prestate_addresses": [target, sender, wrapper],
             "prestate_slots": [{"address": target, "slot": "0x" + "0" * 64}],
             "metric_addresses": [sender, wrapper],
@@ -64,7 +62,7 @@ class GodmodeTests(unittest.TestCase):
         (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
         return manifest, target, sender, wrapper
 
-    def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678"):
+    def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678", control_gain=5, attack_gain=15):
         state = {"tx_hash": None, "input": None}
 
         def fake_rpc(url, method, params, timeout=20):
@@ -98,7 +96,7 @@ class GodmodeTests(unittest.TestCase):
                 return {"status": "0x1", "blockNumber": "0x65", "transactionIndex": "0x0"}
             if method == "eth_getBalance":
                 if params[1] == "0x65":
-                    gain = 5 if state["tx_hash"] == "0x" + "a" * 64 else 15
+                    gain = control_gain if state["tx_hash"] == "0x" + "a" * 64 else attack_gain
                     if params[0] == sender:
                         return hex(0x100 - 1)
                     if params[0] == wrapper:
@@ -141,7 +139,6 @@ class GodmodeTests(unittest.TestCase):
             def fake_run(argv, cwd, timeout=300, env=None):
                 i = run_index["value"]
                 run_index["value"] += 1
-                gain = 5 if i == 0 else 15
                 output = f"LOWKEY_TRACE_TX_HASH {hashes[i]}\\n"
                 return subprocess.CompletedProcess(argv, 0, output, "")
 
@@ -310,24 +307,32 @@ class GodmodeTests(unittest.TestCase):
         self.assertFalse(result["confirmation_eligible"])
         self.assertFalse(result["net_profit_verified"])
 
-    def test_control_rejects_non_positive_delta(self):
+    def test_control_rejects_non_positive_rpc_measured_portfolio_delta(self):
+        from unittest.mock import patch
+        import subprocess
+
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            manifest = {
-                "same_calls_id": "same-sequence-1",
-                "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
-                "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
-                "control": {"argv": [sys.executable, "-c", "print('CONTROL_GAIN 15'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
-                "attack": {"argv": [sys.executable, "-c", "print('ATTACK_GAIN 15'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
-            }
-            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
-            with redirect_stdout(io.StringIO()):
-                result = godmode.run_control(["control.json", "--root", str(root)])
+            _, target, sender, wrapper = self._control_manifest(root)
+            hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
+            run_index = {"value": 0}
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                i = run_index["value"]
+                run_index["value"] += 1
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[i]}\n", "")
+
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(
+                     target, sender, wrapper, control_gain=15, attack_gain=15)), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
             self.assertEqual(saved["status"], "OBSERVED")
             self.assertEqual(saved["control_delta"], 0)
-
 
     def test_source_maps_classify_oracle_and_time_patterns(self):
         with tempfile.TemporaryDirectory() as tmp:
