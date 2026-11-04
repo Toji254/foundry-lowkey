@@ -185,6 +185,9 @@ class TargetScopingTests(unittest.TestCase):
             sibling = workspace / "Ethernaut" / "Fallout"
             root.mkdir()
             sibling.mkdir(parents=True)
+            # audit_context writes project-local target memory only for a
+            # recognized project; a Foundry manifest makes this fixture real.
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             address = "0x" + "5" * 40
             artifact = sibling / "out" / "Fallout.sol" / "Fallout.json"
             artifact.parent.mkdir(parents=True)
