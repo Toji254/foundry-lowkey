@@ -7089,6 +7089,26 @@ def run_recon(config, args=None):
             "inputs": [canonical_type(value) for value in item.get("inputs", [])],
             "outputs": [canonical_type(value) for value in item.get("outputs", [])],
         })
+    callback_names = {
+        "onerc721received", "onerc1155received", "onerc1155batchreceived",
+        "tokensreceived", "tokenstosend", "uniswapv3flashcallback",
+        "receiveflashloan", "executeoperation", "onflashloan",
+        "uniswapv2call", "pancakecall", "onmorphoflashloan",
+    }
+    callback_entrypoints = [
+        format_signature(item)
+        for item in functions
+        if str(item.get("name") or "").lower() in callback_names
+        or re.search(r"(callback|received)$", str(item.get("name") or ""), flags=re.I)
+    ]
+    event_inventory = [
+        format_signature(item) for item in abi
+        if isinstance(item, dict) and item.get("type") == "event"
+    ]
+    error_inventory = [
+        format_signature(item) for item in abi
+        if isinstance(item, dict) and item.get("type") == "error"
+    ]
 
     proxy_slots = {
         "eip1967_implementation": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
@@ -7163,7 +7183,7 @@ def run_recon(config, args=None):
                 rpc,
                 "eth_getStorageAt",
                 [target, hex(slot), "latest"],
-                timeout=10,
+                timeout=3,
             )
             raw_storage.append({
                 "slot": slot,
@@ -7195,6 +7215,9 @@ def run_recon(config, args=None):
         "functions": function_inventory,
         "receive_entrypoint": any(item.get("type") == "receive" for item in abi),
         "fallback_entrypoint": any(item.get("type") == "fallback" for item in abi),
+        "callback_entrypoints": callback_entrypoints,
+        "events": event_inventory,
+        "custom_errors": error_inventory,
         "proxy_slot_observations": slot_observations,
         "proxy_candidates": proxy_candidates,
         "proxy_likelihood": proxy_likelihood,
@@ -7238,6 +7261,8 @@ def run_recon(config, args=None):
     print(f"Functions     : {len(function_inventory)}")
     print(f"Receive       : {'YES' if dossier['receive_entrypoint'] else 'UNKNOWN/NO ABI'}")
     print(f"Fallback      : {'YES' if dossier['fallback_entrypoint'] else 'UNKNOWN/NO ABI'}")
+    print(f"Callbacks     : {len(callback_entrypoints)}")
+    print(f"Events/errors : {len(event_inventory)} / {len(error_inventory)}")
     print(f"Proxy hints   : {'CANDIDATE' if proxy_likelihood else 'NOT DETECTED BY CHECKED STANDARDS'}")
     if clone_implementation:
         print(f"Clone target  : {clone_implementation}")
