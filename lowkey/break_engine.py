@@ -1578,6 +1578,7 @@ def _render_reentrancy_test(
 """
     if setup_signature:
         seed_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
+        setup_block += f'        vm.deal(address(hostile), ({seed_value}) + 1 wei);\n'
         setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
         (bool seeded, ) = address(hostile).call{{value: {seed_value}}}(
@@ -1586,6 +1587,8 @@ def _render_reentrancy_test(
         console2.log("SETUP_WRAPPER_SUCCESS", seeded);
         console2.log("SETUP_VALUE_WEI", uint256({seed_value}));
 """
+    else:
+        setup_block += "        vm.deal(address(hostile), 1 wei);\n"
     setup_block += """        uint256 targetBalanceAfterSetup = TARGET.balance;
 """
     if entitlement_signature:
@@ -1684,8 +1687,6 @@ contract LowkeyBreakReentrancy is Test {{
         LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET);
         bytes memory payload = {payload_expr};
         hostile.setPayload(payload);
-        vm.deal(address(this), 100 ether);
-        vm.deal(address(hostile), 100 ether);
 {setup_block}
         uint256 beforeHostile = address(hostile).balance;
         uint256 beforeTarget = TARGET.balance;
@@ -2103,11 +2104,11 @@ def _record_break(host, result: AttackResult):
         payload,
     )
     payload["evidence_path"] = str(path)
-    _emit(host, "break-found" if result.break_condition else "break-observation", result.summary, payload)
+    event_name = "break-simulated" if result.status == "SIMULATED_BREAK" else ("break-found" if result.break_condition else "break-observation")
+    _emit(host, event_name, result.summary, payload)
 
     if result.break_condition:
-        # A concrete behavioral break is stronger than a source heuristic, but the
-        # tool deliberately does not assign economic severity.
+        # Local execution is a candidate; only a human-reviewed proof can confirm it.
         try:
             signal = {
                 "category": "break",
@@ -2115,25 +2116,27 @@ def _record_break(host, result: AttackResult):
                 "check": f"BREAK-{result.family.upper()}",
                 "title": f"Break condition: {ATTACK_FAMILIES.get(result.family, {}).get('title', result.family)}",
                 "impact": "Unknown",
-                "confidence": "Reproduced locally",
+                "confidence": "Observed in local simulation; fidelity review required",
                 "file": "",
                 "line": None,
                 "function": result.function,
                 "description": result.summary,
                 "meaning": ATTACK_FAMILIES.get(result.family, {}).get("basis", ""),
                 "why": "A generated adversarial harness reached an explicit behavioral break condition on the isolated local execution.",
-                "next": "Inspect the generated harness and prove the exact invariant/impact manually.",
+                "next": "Review the fidelity ledger, then reproduce on a block-pinned fork without synthetic state changes before assigning severity or confirming impact.",
                 "provenance": [
                     "Immunefi common vulnerability taxonomy",
                     "Immunefi public bug-fix reviews",
                     "Cyfrin CodeHawks public contest submissions",
                     "Solodit public finding taxonomy",
                 ],
-                "verification_status": "CONFIRMED",
+                "verification_status": "OBSERVED",
                 "verification": {
-                    "status": "CONFIRMED",
-                    "mode": "stateful-break",
+                    "status": "OBSERVED",
+                    "mode": "stateful-break-simulation",
                     "evidence": [str(path)],
+                    "human_review_required": True,
+                    "fidelity": result.detail.get("fidelity"),
                 },
                 "status": "open",
             }
@@ -2272,6 +2275,21 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         )
 
     archive_path = _archive_harness(host, harness)
+    fidelity = None
+    try:
+        try:
+            import godmode as godmode_module
+        except ImportError:
+            from lowkey import godmode as godmode_module
+        fidelity_path = archive_path or harness
+        fidelity_source = Path(fidelity_path).read_text(encoding="utf-8", errors="replace")
+        fidelity = godmode_module.analyze_harness_fidelity(fidelity_source, fidelity_path)
+    except Exception as fidelity_error:
+        fidelity = {
+            "classification": "UNAVAILABLE",
+            "confirmation_eligible": False,
+            "proof_gaps": [f"Automatic harness fidelity scan failed: {fidelity_error}"],
+        }
     evidence = {
         "family": family,
         "target": asdict(target),
@@ -2282,6 +2300,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         "forge_returncode": completed.returncode,
         "harness": archive_path or harness,
         "harness_archive": archive_path,
+        "fidelity": fidelity,
         "output_tail": "\n".join(output.splitlines()[-160:]),
         "generated_at": time.time(),
         "research_basis": ATTACK_FAMILIES.get(family, {}),
@@ -2308,6 +2327,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     result.detail["harness"] = archive_path or harness
     result.detail["harness_archive"] = archive_path
     result.detail["forge_returncode"] = completed.returncode
+    result.detail["fidelity"] = fidelity
 
     # Generated harnesses are always disposable in the project test tree. The
     # archived copy under .audit/break/harnesses remains available for review.
