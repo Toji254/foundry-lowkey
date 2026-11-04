@@ -62,7 +62,7 @@ class GodmodeTests(unittest.TestCase):
         (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
         return manifest, target, sender, wrapper
 
-    def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678", control_gain=5, attack_gain=15, external_state=None):
+    def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678", control_gain=5, attack_gain=15, external_state=None, attack_tx_fields=None):
         state = external_state if external_state is not None else {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
 
         def fake_rpc(url, method, params, timeout=20):
@@ -88,13 +88,21 @@ class GodmodeTests(unittest.TestCase):
                 tx_hash = params[0]
                 state["tx_hash"] = tx_hash
                 state["input"] = attack_calldata if tx_hash == "0x" + "b" * 64 else "0x12345678"
-                return {
+                tx = {
                     "hash": tx_hash,
                     "from": sender,
                     "to": wrapper,
                     "input": state["input"],
                     "value": "0x0",
+                    "nonce": "0x0",
+                    "gas": "0x100000",
+                    "gasPrice": "0x1",
+                    "type": "0x0",
+                    "accessList": [],
                 }
+                if tx_hash == "0x" + "b" * 64 and attack_tx_fields:
+                    tx.update(attack_tx_fields)
+                return tx
             if method == "eth_getTransactionReceipt":
                 return {"status": "0x1", "blockNumber": "0x65", "transactionIndex": "0x0"}
             if method == "eth_getBalance":
@@ -158,6 +166,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["status"], "BREAK")
             self.assertEqual(saved["control_delta"], 10)
             self.assertTrue(saved["same_entry_call_verified"])
+            self.assertTrue(saved["same_transaction_envelope_verified"])
             self.assertTrue(saved["same_prestate_verified"])
             self.assertEqual(saved["verification_method"].split()[0], "local-Anvil")
             self.assertEqual(saved["runs"]["attack"]["call_trace"][1]["to"], target)
@@ -282,6 +291,36 @@ class GodmodeTests(unittest.TestCase):
             # Control succeeds its prepare step and its transaction; attack fails
             # during preparation, so the second send is never executed.
             self.assertEqual([call[0] for call in calls], ["prepare", "send", "prepare"])
+
+    def test_control_rejects_different_transaction_gas_envelope(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            _, target, sender, wrapper = self._control_manifest(root)
+            hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
+            run_index = {"value": 0}
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                i = run_index["value"]
+                run_index["value"] += 1
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[i]}\n", "")
+
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(
+                     target, sender, wrapper, attack_tx_fields={"gasPrice": "0x2"})), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertTrue(saved["same_entry_call_verified"])
+            self.assertFalse(saved["same_transaction_envelope_verified"])
+            self.assertTrue(saved["same_prestate_verified"])
+            self.assertIn("transaction nonce/gas/fee/type/access-list envelope differs", saved["reasons"])
 
     def test_control_rejects_script_supplied_hashes_without_a_mined_trace(self):
         from unittest.mock import patch
