@@ -29,6 +29,12 @@ lk cheat receive
 lk cheat interface
 lk cheat symbols
 lk cheat search mapping
+lk attack
+lk attack categories
+lk attack search reentrancy
+lk attack learn EVM-001
+lk attack list --severity Informational
+lk attack map lending
 lk -h
 lk project
 lk system
@@ -41,6 +47,39 @@ lk audit run
 lk audit run --poc --poc-calldata 0x... --poc-impact-assertion 'attackerAfter > attackerBefore'
 lk poc --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'
 ~~~
+
+### Lowkey Attack Library
+
+`lk attack` opens the source-linked, beginner-first blockchain attack reference. The current catalogue contains 209 entries across EVM execution, authorization and signatures, DeFi accounting/oracles, tokens, governance, MEV, proxies, bridges, denial of service, randomness, Solana, Move, Cosmos/IBC, privacy/ZK, wallets/account abstraction, and operational security.
+
+Start with:
+
+~~~bash
+lk attack
+lk attack categories
+lk attack list --severity Critical
+lk attack list --severity High
+lk attack list --severity Medium
+lk attack list --severity Low
+lk attack list --severity Informational
+lk attack search "share inflation"
+lk attack show EVM-001
+lk attack learn single-function-reentrancy
+lk attack lab single-function-reentrancy
+lk attack quiz single-function-reentrancy
+lk attack related single-function-reentrancy
+lk attack map lending
+lk attack incidents
+lk attack sources
+lk attack severity
+lk attack check
+~~~
+
+Each entry includes a plain-English explanation, the vulnerable shape or code pattern, audit signals, a local reproduction idea, mitigation direction, and source cross-references. The learning view adds a beginner-first reproduction sequence and evidence checklist. `lk attack lab` prints a disposable local Foundry exercise; it does not start Anvil, connect to an RPC, or send transactions.
+
+Severity labels are **typical starting estimates**, not guaranteed findings. Final severity depends on reachability, asset impact, attacker capability, preconditions, blast radius, and the applicable contest/client rubric. Informational entries deliberately include documentation, observability, and testing gaps that are not vulnerabilities by themselves. Use `lk attack check` to validate catalogue IDs, severity labels, protocol-map references, and source mappings.
+
+The catalogue is an expandable cross-reference, not a claim that every possible blockchain attack has already been discovered. Protocol-specific modules and new incident research should continue to grow it.
 
 #### Beginner-first walkthrough view
 
