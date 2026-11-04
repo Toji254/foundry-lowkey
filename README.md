@@ -70,6 +70,16 @@ Example manifest:
     "0x0000000000000000000000000000000000000002",
     "0x0000000000000000000000000000000000000003"
   ],
+  "scenario_parameters": [
+    {
+      "name": "attacker_callback_flag",
+      "address": "0x0000000000000000000000000000000000000003",
+      "slot": "0x0",
+      "control_value": "0x0",
+      "attack_value": "0x1",
+      "description": "The only permitted attacker-side setup difference."
+    }
+  ],
   "control": {
     "argv": ["bash", "scripts/run-control.sh"]
   },
@@ -88,6 +98,8 @@ LOWKEY_TRACE_TX_HASH 0x<32-byte-mined-transaction-hash>
 The tested transaction must be the only transaction in its block and have transaction index zero. Lowkey obtains the transaction and receipt from RPC, runs debug_traceTransaction with callTracer, verifies the trace root matches the mined transaction, checks that the trace reaches target_address, and derives the root-entry-call fingerprint from the real sender, recipient, calldata, value, and chain ID.
 
 For pre-state comparison, prestate_addresses must include the transaction sender, root recipient, and target. prestate_slots must include at least one relevant target accounting or authorization slot. Lowkey reads those values at the transaction's parent block. **Only the declared storage slots are compared**; include every target slot that matters to the hypothesis. The full nested call traces are retained in the evidence, so callback/reentrant execution differences remain visible even when the outer entry call is identical.
+
+Use scenario_parameters to declare the *only* expected attacker-side setup differences (for example, an attacker callback toggle). Each entry names an address, storage slot, control_value, attack_value, and description. Lowkey reads the actual slot after each scenario and records whether it matches the declared value. These scenario slots are not silently treated as identical target pre-state; they are explicitly declared experimental variables. Keep them confined to the attacker fixture, never target accounting or authorization storage.
 
 The attack metric is no longer printed by the scripts. Lowkey calculates the native-ETH balance delta for metric_addresses from the transaction's parent block to its mined block. The transaction sender must be included, so its actual gas spend is included in the portfolio delta. The control and attack are run from Anvil snapshots and reverted independently, then Lowkey compares their measured portfolio deltas. ERC20/token-share profit metrics are not yet supported by this control gate.
 
@@ -109,14 +121,16 @@ To run an actual local-fork transaction through the higher proof stages:
 ~~~bash
 lk reprove test/YourPoC.t.sol \\
   --rpc-url http://127.0.0.1:8545 \\
+  --source-rpc-url "$ARCHIVE_RPC_URL" \\
   --fork-block 19300000 \\
   --target-address 0x0000000000000000000000000000000000000001 \\
+  --prestate-slot 0x0000000000000000000000000000000000000000000000000000000000000001:0x0 \\
   --profit-address 0x0000000000000000000000000000000000000002 \\
   --profit-address 0x0000000000000000000000000000000000000003 \\
   --argv-json '["bash", "scripts/replay-local.sh"]'
 ~~~
 
-The replay script must broadcast one transaction to the local Anvil fork and print LOWKEY_TRACE_TX_HASH. The transaction must be the only transaction in block fork-block + 1. Lowkey verifies the receipt, callTracer root, target reachability, measured native-ETH balances, actual gasUsed, and effectiveGasPrice. The result is FORK_REPRODUCED when the execution is valid; it becomes PROFITABLE only when the measured portfolio delta remains positive after gas. Native ETH is currently measured; ERC20/ERC4626 share accounting needs a token-specific adapter.
+The replay script must broadcast one transaction to the local Anvil node and print LOWKEY_TRACE_TX_HASH. The transaction must be the only transaction in block fork-block + 1. Without --source-rpc-url, Lowkey verifies a local replay only and reports LOCAL_REPRODUCED or LOCAL_PROFITABLE. To reach the stronger FORK_REPRODUCED or PROFITABLE stage, --source-rpc-url must point to an independent read-only archive endpoint for the same chain, and --prestate-slot must identify the target's relevant accounting/authorization slot(s). Lowkey compares chain ID, parent block hash, target bytecode, declared storage slots, and sender ETH balance at the fork block against that independent source. The local Anvil endpoint remains the only transaction destination. PROFITABLE requires positive measured native-ETH portfolio delta after actual receipt gas. This does not validate every dependency, hidden storage slot, or off-chain assumption. ERC20/ERC4626 share accounting needs a token-specific adapter. No automated result becomes HUMAN_CONFIRMED.
 
 No tool assigns HUMAN_CONFIRMED automatically. A human must review the evidence and record an explicit disposition in the evidence ledger. A successful Forge test alone never establishes realistic profit or confirms a finding.
 
