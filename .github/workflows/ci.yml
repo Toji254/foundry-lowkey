@@ -416,6 +416,14 @@ jobs:
               "prestate_addresses": [target, sender, attacker],
               "prestate_slots": [{"address": target, "slot": mapping_slot}],
               "metric_addresses": [sender, attacker],
+              "trace_expectations": [{
+                  "address": target,
+                  "control_min_calls": 1,
+                  "control_max_calls": 1,
+                  "attack_min_calls": 2,
+                  "attack_max_calls": 2,
+                  "description": "The attacker callback creates exactly one additional target withdrawal."
+              }],
               "scenario_parameters": [{
                   "name": "attacker_callback_mode",
                   "address": attacker,
@@ -454,7 +462,9 @@ jobs:
           attack_calls = sum(1 for row in result["runs"]["attack"]["call_trace"] if row.get("to") == target)
           assert control_calls == 1, result["runs"]["control"]["call_trace"]
           assert attack_calls == 2, result["runs"]["attack"]["call_trace"]
-          print("PASS: real Anvil control/attack traces share the same entry call and target pre-state; reentrancy adds one target call and a real ETH delta")
+          assert result["trace_delta_verified"] is True, result
+          assert result["trace_checks"][0]["verified"] is True, result
+          print("PASS: real Anvil control/attack traces match the manifest-declared reentrancy call delta and show a real ETH delta")
           PY
           cat > /tmp/lowkey-fixture/test/TraceReproduction.t.sol <<'EOF'
           // SPDX-License-Identifier: MIT
