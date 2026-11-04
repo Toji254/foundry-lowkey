@@ -69,6 +69,38 @@ class LowkeyCastTests(unittest.TestCase):
                 changed = {"rpc": "http://127.0.0.1:8545"}
                 self.assertIsNone(lk.project_fixture_rpc_info(changed))
 
+    def test_fixture_node_lineage_retains_original_managed_anvil(self):
+        managed = {
+            "auto_started": True,
+            "pid": 111,
+            "rpc": "http://127.0.0.1:8545",
+            "started": "2026-11-04T00:00:00",
+        }
+        old_fixture_pid, base = lk._fixture_anvil_lineage(
+            managed, "http://127.0.0.1:8545"
+        )
+        self.assertIsNone(old_fixture_pid)
+        self.assertEqual(base["pid"], 111)
+        self.assertEqual(base["rpc"], "http://127.0.0.1:8545")
+
+    def test_replacing_fixture_node_keeps_existing_base_anvil_lineage(self):
+        managed = {
+            "auto_started": True,
+            "purpose": "project-fixture-block-context",
+            "pid": 222,
+            "rpc": "http://127.0.0.1:8546",
+            "base_anvil": {
+                "auto_started": True,
+                "pid": 111,
+                "rpc": "http://127.0.0.1:8545",
+            },
+        }
+        old_fixture_pid, base = lk._fixture_anvil_lineage(
+            managed, "http://127.0.0.1:8546"
+        )
+        self.assertEqual(old_fixture_pid, 222)
+        self.assertEqual(base["pid"], 111)
+
     def test_repeated_fixture_promotion_preserves_original_global_rpc(self):
         current_rpc = "http://127.0.0.1:8546"
         managed_state = {

@@ -9745,6 +9745,36 @@ def _fixture_rpc_origin(config, current_rpc, managed_state):
     return ("rpc" in config, config.get("rpc"))
 
 
+
+def _fixture_anvil_lineage(managed_state, current_rpc):
+    """Separate a replaceable fixture node from its retained general Anvil node."""
+    if not isinstance(managed_state, dict):
+        return None, None
+    purpose = managed_state.get("purpose")
+    if purpose == "project-fixture-block-context":
+        old_fixture_pid = managed_state.get("pid")
+        base_anvil = managed_state.get("base_anvil")
+        if not isinstance(base_anvil, dict):
+            base_anvil = None
+        return (
+            old_fixture_pid if isinstance(old_fixture_pid, int) else None,
+            base_anvil,
+        )
+    managed_rpc = str(managed_state.get("rpc") or "").rstrip("/")
+    if (
+        managed_state.get("auto_started")
+        and managed_rpc == str(current_rpc or "").rstrip("/")
+        and isinstance(managed_state.get("pid"), int)
+    ):
+        return None, {
+            "auto_started": True,
+            "pid": managed_state["pid"],
+            "rpc": managed_state.get("rpc"),
+            "started": managed_state.get("started"),
+        }
+    return None, None
+
+
 def _ensure_fixture_context_anvil(config, root, current_rpc, context):
     """Start a clean, fixture-aligned Anvil without mutating the existing chain.
 
@@ -9757,14 +9787,10 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
     if not binary:
         return None, None, "the Anvil executable is unavailable"
 
-    old_managed_pid = None
     managed_state = read_project_anvil_state(root)
-    if isinstance(managed_state, dict):
-        managed_rpc = str(managed_state.get("rpc") or "").rstrip("/")
-        if managed_rpc == str(current_rpc or "").rstrip("/") and managed_state.get("auto_started"):
-            pid = managed_state.get("pid")
-            if isinstance(pid, int):
-                old_managed_pid = pid
+    old_fixture_pid, base_anvil = _fixture_anvil_lineage(
+        managed_state, current_rpc
+    )
 
     port = next(
         (candidate for candidate in range(8545, 8566)
@@ -9810,11 +9836,12 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
             "inspect .audit/anvil-fixture-context.log"
         )
 
-    # Never stop an Anvil the user started. Replace only a previous node that
-    # Lowkey itself owns, and only after the new context has been verified.
-    if old_managed_pid is not None:
+    # Replace only an older fixture-context node. Retain the original
+    # Lowkey-managed Anvil as the project's general-purpose node so other
+    # projects do not auto-discover this fixture-specific RPC by port scanning.
+    if old_fixture_pid is not None:
         try:
-            os.kill(old_managed_pid, 15)
+            os.kill(old_fixture_pid, 15)
         except OSError:
             pass
 
@@ -9830,6 +9857,7 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
         "fixture_context": context,
         "previous_rpc_present": previous_rpc_present,
         "previous_rpc": previous_rpc,
+        "base_anvil": base_anvil,
     })
     config["_fixture_rpc_scope"] = {
         "runtime_rpc": fixture_rpc,
@@ -10851,10 +10879,18 @@ def stop_project_anvil(root):
     if not isinstance(state, dict) or not state.get("auto_started"):
         print("Project Anvil: not managed by Lowkey.")
         return 0
+    pids = []
     pid = state.get("pid")
     if isinstance(pid, int):
+        pids.append(pid)
+    base_anvil = state.get("base_anvil")
+    if isinstance(base_anvil, dict) and base_anvil.get("auto_started"):
+        base_pid = base_anvil.get("pid")
+        if isinstance(base_pid, int) and base_pid not in pids:
+            pids.append(base_pid)
+    for managed_pid in pids:
         try:
-            os.kill(pid, 15)
+            os.kill(managed_pid, 15)
         except OSError:
             pass
     try:
