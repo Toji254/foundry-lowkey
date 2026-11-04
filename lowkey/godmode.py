@@ -567,6 +567,187 @@ def report(args):
     lines += ["","## Limitations","Static signals are leads, not findings. The green gate requires behavioral, control, coverage, mutation, economic and reproof evidence."]
     out=safe_out(root,ns.output); out.write_text("\n".join(lines)+"\n"); print("Report: "+str(out.relative_to(root))); return 0
 def provenance_cli(args): return provenance(args)
+
+def calldata_mine(args):
+    p=argparse.ArgumentParser(prog="lk calldata-mine"); p.add_argument("target"); p.add_argument("hash_file"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
+    target=addr(ns.target); url=rpc_url(ns.rpc_url); hashes=[]
+    for line in Path(ns.hash_file).expanduser().read_text(encoding="utf-8").splitlines():
+        value=line.strip()
+        if re.fullmatch(r"0x[0-9a-fA-F]{64}",value): hashes.append(value)
+    rows=[]; grouped={}
+    for tx_hash in dict.fromkeys(hashes):
+        tx=rpc(url,"eth_getTransactionByHash",[tx_hash])
+        if not tx or str(tx.get("to") or "").lower()!=target: continue
+        data=str(tx.get("input") or "0x"); selector=data[:10] if len(data)>=10 else None
+        row={"tx_hash":tx_hash,"selector":selector,"calldata_bytes":max(0,(len(data)-2)//2),
+             "from":tx.get("from"),"value":tx.get("value"),"block":tx.get("blockNumber")}
+        rows.append(row); grouped.setdefault(selector,[]).append(row)
+    return output({"target":target,"supplied_hashes":len(hashes),"matched_transactions":len(rows),
+                   "deduplicated_selectors":grouped,
+                   "limitation":"The supplied transaction list is the discovery boundary; full address history needs an explorer/indexer adapter."})
+
+def gas_ladder(args):
+    p=argparse.ArgumentParser(prog="lk gas-ladder"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    root=root_path(ns.root); mf=(root/ns.manifest).resolve()
+    if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Gas-ladder manifest must be inside the project.")
+    spec=json.loads(mf.read_text()); template=spec.get("argv")
+    if not isinstance(template,list) or not all(isinstance(x,str) for x in template): raise ValueError("manifest.argv must be an argv array containing {n}.")
+    if not any("{n}" in x for x in template): raise ValueError("At least one argv entry must contain {n}.")
+    low=int(spec.get("min",1)); high=int(spec.get("max",10000))
+    if low<0 or high<low or high-low>10_000_000: raise ValueError("Invalid search range (0..10,000,000).")
+    marker=re.compile(str(spec.get("oom_regex") or r"(?:out of gas|gas required exceeds allowance|\bOOG\b)"),re.I)
+    timeout=int(spec.get("timeout_seconds",300)); trials=[]
+    # First establish a non-OOG lower baseline and a failing upper bound.
+    def measure(n):
+        argv=[x.replace("{n}",str(n)) for x in template]; proc=run(argv,root,timeout); text=proc.stdout+"\n"+proc.stderr
+        hit=bool(marker.search(text))
+        trials.append({"n":n,"exit_code":proc.returncode,"oom":hit,"tail":text[-1200:]})
+        return hit
+    if low==high:
+        first=measure(low)
+        threshold=low if first else None
+    else:
+        high_hit=measure(high)
+        if not high_hit: threshold=None
+        else:
+            lo_hit=measure(low)
+            if lo_hit: threshold=low
+            else:
+                left,right=low,high
+                while right-left>1:
+                    mid=(left+right)//2
+                    if measure(mid): right=mid
+                    else: left=mid
+                threshold=right
+    payload={"first_reported_oom_size":threshold,"trials":trials,
+             "meaning":"First size matching the declared OOG marker, only within this harness and environment.",
+             "warning":"A revert, failed build, generic nonzero exit or timeout is not automatically counted as out-of-gas."}
+    write_json(safe_out(root,".audit/godmode/gas-ladder.json"),payload); print(json.dumps(payload,indent=2)); return 0 if threshold is not None else 2
+
+def symbolic_path(args):
+    p=argparse.ArgumentParser(prog="lk path"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    root=root_path(ns.root); mf=(root/ns.manifest).resolve()
+    if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Path manifest must be inside the project.")
+    spec=json.loads(mf.read_text()); argv=spec.get("argv")
+    if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv): raise ValueError("Manifest requires explicit argv, e.g. [\"halmos\", \"--function\", \"check_withdraw\"].")
+    if not shutil.which(argv[0]): print("BLOCKED: symbolic engine "+argv[0]+" is not installed."); return 2
+    proc=run(argv,root,int(spec.get("timeout_seconds",600))); print(proc.stdout,end="")
+    if proc.stderr: print(proc.stderr,file=sys.stderr,end="")
+    print("Symbolic execution is path-planning evidence, not an exploit proof.")
+    return proc.returncode
+
+def watch(args):
+    p=argparse.ArgumentParser(prog="lk watch"); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--count",type=int,default=1); p.add_argument("--interval",type=float,default=3); ns=p.parse_args(args)
+    target=addr(ns.target); url=rpc_url(ns.rpc_url)
+    if not 1<=ns.count<=100 or not 0<=ns.interval<=60: raise ValueError("Bounded watch accepts count 1..100 and interval 0..60 seconds.")
+    checks=[]; previous=None
+    for i in range(ns.count):
+        code=rpc(url,"eth_getCode",[target,"latest"]); block=rpc(url,"eth_blockNumber",[])
+        digest=hashlib.sha256(bytes.fromhex(code[2:])).hexdigest() if code and code!="0x" else None
+        checks.append({"block":block,"code_hash":digest,"has_code":bool(digest),"changed":i>0 and digest!=previous})
+        previous=digest
+        if i+1<ns.count: time.sleep(ns.interval)
+    payload={"target":target,"checks":checks,"mode":"bounded-one-shot",
+             "note":"Runtime bytecode only. No persistent daemon, TVL feed, deployment indexer or automatic TVL-risk estimate is configured."}
+    print(json.dumps(payload,indent=2)); return 0
+
+def upgrade_diff(args):
+    p=argparse.ArgumentParser(prog="lk upgrade-diff"); p.add_argument("old_address"); p.add_argument("new_address"); p.add_argument("--rpc-url"); p.add_argument("--old-layout"); p.add_argument("--new-layout"); ns=p.parse_args(args)
+    url=rpc_url(ns.rpc_url); old=addr(ns.old_address); new=addr(ns.new_address)
+    a=rpc(url,"eth_getCode",[old,"latest"]); b=rpc(url,"eth_getCode",[new,"latest"])
+    old_selectors=set(push4(a or "0x")); new_selectors=set(push4(b or "0x")); layout={"status":"not-supplied"}
+    if ns.old_layout and ns.new_layout:
+        before=json.loads(Path(ns.old_layout).expanduser().read_text()); after=json.loads(Path(ns.new_layout).expanduser().read_text())
+        aa=before.get("storageLayout",before).get("storage",[]); bb=after.get("storageLayout",after).get("storage",[])
+        am={(str(x.get("slot")),str(x.get("offset"))):x for x in aa}; bm={(str(x.get("slot")),str(x.get("offset"))):x for x in bb}
+        layout={"removed":[v for k,v in am.items() if k not in bm],
+                "changed":[v for k,v in am.items() if k in bm and (v.get("type")!=bm[k].get("type") or v.get("label")!=bm[k].get("label"))],
+                "added":[v for k,v in bm.items() if k not in am],"status":"compare"}
+    return output({"old":old,"new":new,"old_code_hash":hashlib.sha256(bytes.fromhex(a[2:])).hexdigest(),
+                   "new_code_hash":hashlib.sha256(bytes.fromhex(b[2:])).hexdigest(),
+                   "added_selectors":sorted(new_selectors-old_selectors),"removed_selectors":sorted(old_selectors-new_selectors),
+                   "storage_layout":layout,"warning":"PUSH4 extraction is a candidate selector set and can include constants. Use compiler storage layout before judging compatibility."})
+
+def verify_hack(args):
+    p=argparse.ArgumentParser(prog="lk verify-hack"); p.add_argument("tx_hash"); p.add_argument("--rpc-url",required=True); p.add_argument("--block",type=int,required=True); ns=p.parse_args(args)
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",ns.tx_hash) or ns.block<1: raise ValueError("Supply a transaction hash and positive attacked block.")
+    tx=rpc(rpc_url(ns.rpc_url),"eth_getTransactionByHash",[ns.tx_hash])
+    if not tx: raise RuntimeError("Transaction not found on this RPC.")
+    actual=int(str(tx.get("blockNumber") or "0x0"),16)
+    if actual!=ns.block: raise ValueError(f"Transaction is in block {actual}, not declared block {ns.block}.")
+    return output({"tx_hash":ns.tx_hash,"attacked_block":ns.block,"required_fork_block":ns.block-1,
+                   "from":tx.get("from"),"to":tx.get("to"),"input":tx.get("input"),"value":tx.get("value"),
+                   "status":"replay-harness-required",
+                   "next":"Fork at block N-1, replay the exact attacker sequence, and compare recipient/target balances. This lookup does not reproduce the hack."}) or 2
+
+def compose(args):
+    p=argparse.ArgumentParser(prog="lk compose"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); m=source_maps(root)
+    nodes=[{"id":"attacker","kind":"actor"},{"id":"asset","kind":"asset-impact","status":"not-measured"}]; edges=[]
+    signals=[("reentrancy",m["reentrancy_graph"]),("oracle",m["oracle_map"]),("signature",m["signature_map"]),("custody",m["custody_map"]),("initializer",m["initializer_map"])]
+    index=0
+    for kind,rows in signals:
+        for row in rows:
+            ident=kind+"-"+str(index); index+=1
+            nodes.append({"id":ident,"kind":kind,"source":row})
+            edges.append({"from":"attacker","to":ident,"relationship":"candidate reachability"})
+            edges.append({"from":ident,"to":"asset","relationship":"impact must be measured"})
+    payload={"nodes":nodes,"edges":edges,"candidate_signal_count":index,
+             "profitability":"not-computed","warning":"No path is profitable until an executable adapter measures asset gain after gas, fees and slippage."}
+    write_json(safe_out(root,".audit/godmode/compose.json"),payload); return output(payload)
+
+def skew_plan(args):
+    p=argparse.ArgumentParser(prog="lk skew"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    root=root_path(ns.root); mf=(root/ns.manifest).resolve()
+    if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Skew manifest must be inside the project.")
+    spec=json.loads(mf.read_text()); required=("pool","asset","oracle_read","consumer_call","amounts")
+    missing=[x for x in required if x not in spec]
+    if missing: raise ValueError("Missing skew manifest fields: "+", ".join(missing))
+    plan={"manifest_hash":sha(mf),"pool":spec["pool"],"asset":spec["asset"],"oracle_read":spec["oracle_read"],
+          "consumer_call":spec["consumer_call"],"amounts":spec["amounts"],
+          "required_assertions":["oracle deviation at the point of consumption","downstream debt/mint/withdraw impact",
+            "attacker recipient delta","pool unwind and residual loss","gas, pool fee and slippage deducted"],
+          "status":"adapter-and-harness-required"}
+    write_json(safe_out(root,".audit/godmode/skew-plan.json"),plan); return output(plan)
+
+def flashmax(args):
+    p=argparse.ArgumentParser(prog="lk flashmax"); p.add_argument("venue",choices=("aave","balancer","uniswap-v3")); p.add_argument("asset"); p.add_argument("--adapter",required=True); p.add_argument("--rpc-url"); ns=p.parse_args(args)
+    asset=addr(ns.asset); spec=json.loads(Path(ns.adapter).expanduser().read_text())
+    if str(spec.get("venue","")).lower()!=ns.venue or str(spec.get("asset","")).lower()!=asset: raise ValueError("Adapter venue/asset must match command.")
+    pool=addr(str(spec.get("pool") or "")); calldata=str(spec.get("liquidity_call") or "")
+    if not re.fullmatch(r"0x[0-9a-fA-F]*",calldata): raise ValueError("Adapter liquidity_call must be explicit 0x calldata.")
+    raw=rpc(rpc_url(ns.rpc_url),"eth_call",[{"to":pool,"data":calldata},"latest"])
+    liquidity=int(raw,16) if raw and raw!="0x" else 0
+    callback={"aave":"executeOperation","balancer":"receiveFlashLoan","uniswap-v3":"uniswapV3FlashCallback"}[ns.venue]
+    return output({"venue":ns.venue,"asset":asset,"pool":pool,"liquidity_raw":liquidity,
+                   "fee_bps":spec.get("fee_bps"),"max_borrow_raw":liquidity,
+                   "callback":callback,"status":"liquidity-read-only",
+                   "warning":"Adapter must encode the right reserve/liquidity read and fee. This does not borrow, deploy a callback, or prove a profitable attack."})
+
+def agent_split(args):
+    p=argparse.ArgumentParser(prog="lk agent-split"); p.add_argument("--root",default="."); p.add_argument("--harness"); ns=p.parse_args(args)
+    root=root_path(ns.root); m=source_maps(root); cheat=[]
+    if ns.harness:
+        h=(root/ns.harness).resolve()
+        if not h.is_relative_to(root) or not h.is_file(): raise ValueError("Harness must be inside project.")
+        rx=re.compile(r"\bvm\.(?:deal|store|etch|mockCall|warp|roll)\s*\(")
+        cheat=[{"line":i,"text":line.strip()} for i,line in enumerate(h.read_text(errors="replace").splitlines(),1) if rx.search(line)]
+    payload={"planner":{"candidate_reentrancy_paths":len(m["reentrancy_graph"]),"candidate_oracle_reads":len(m["oracle_map"])},
+             "attacker":{"families_with_signals":[k for k,v in (("reentrancy",m["reentrancy_graph"]),("oracle",m["oracle_map"]),("signature",m["signature_map"])) if v]},
+             "verifier":{"required":["measured attack delta","sequential control","target-line coverage","mutation score","positive net economics","cheatcode-free reproof"],"status":"not-run"},
+             "critic":{"harness_cheatcode_hits":cheat,"warnings":["Check actor authority and impersonation.","Check vm.deal/storage writes do not create the claimed exploit state.","Check control executes the same sequential calls."]}}
+    write_json(safe_out(root,".audit/godmode/agent-split.json"),payload); return output(payload)
+
+def bundle_simulate(args):
+    p=argparse.ArgumentParser(prog="lk bundle"); p.add_argument("--tx",action="append",required=True); p.add_argument("--target-block",type=int,required=True); p.add_argument("--relay-url",required=True); p.add_argument("--auth-signature",required=True); ns=p.parse_args(args)
+    if ns.target_block<1: raise ValueError("Target block must be positive.")
+    if not all(re.fullmatch(r"0x[0-9a-fA-F]+",x) for x in ns.tx): raise ValueError("Provide raw signed transactions as 0x hex.")
+    params={"txs":ns.tx,"blockNumber":hex(ns.target_block),"stateBlockNumber":"latest"}
+    body=json.dumps({"jsonrpc":"2.0","id":1,"method":"eth_callBundle","params":[params]}).encode()
+    req=Request(ns.relay_url,data=body,headers={"Content-Type":"application/json","X-Flashbots-Signature":ns.auth_signature})
+    with urlopen(req,timeout=30) as res: result=json.loads(res.read().decode())
+    if result.get("error"): raise RuntimeError(str(result["error"]))
+    return output({"simulation":result.get("result"),"broadcast":False,"note":"Simulation only; Lowkey does not call eth_sendBundle."})
+
 def main(argv=None):
     a=list(sys.argv[1:] if argv is None else argv)
     if not a or a[0] in {"-h","--help","help"}:
@@ -621,25 +802,20 @@ def main(argv=None):
         p=argparse.ArgumentParser(prog="lk time"); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/TimeLadder.template.t.sol"); ns=p.parse_args(rest); root=root_path(ns.root); out=safe_out(root,ns.output)
         offsets=(3600,86400,604800,2592000); body="\n".join(" function test_warp_"+str(x)+"() public { vm.warp(block.timestamp + "+str(x)+"); vm.roll(block.number + "+str(max(1,x//12))+"); /* invoke target and assert invariant */ }" for x in offsets)
         out.write_text("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\nimport \"forge-std/Test.sol\";\ncontract LowkeyTimeLadder is Test {\n"+body+"\n}\n"); print("Time ladder template: "+str(out.relative_to(root))); return 0
-    if cmd in {"compose","skew","flashmax","path","gas-ladder","watch","verify-hack","bundle","sandwich","jit","upgrade-diff","agent-split","calldata-mine"}:
-        reason={
-          "compose":"Build candidate composition graph from current source signals, then manually attach measured asset flows.",
-          "skew":"Requires a manifest with pool, asset, oracle read, consumer action, capital amounts and unwind assertion.",
-          "flashmax":"Requires real venue adapter for liquidity, fee and callback semantics.",
-          "path":"Requires Halmos and a manifest containing exact native argv and harness.",
-          "gas-ladder":"Requires a manifest with argv template containing {n} and an explicit out-of-gas regex.",
-          "watch":"Requires deployment/TVL feed for continuous monitoring; no daemon is started by default.",
-          "verify-hack":"Requires archive RPC, exact transaction block and a purpose-built local replay harness at N-1.",
-          "bundle":"Requires a Flashbots simulation/auth integration. No eth_sendBundle action is exposed here.",
-          "sandwich":"Requires pending transaction feed and pool simulator. No pending transaction is submitted.",
-          "jit":"Requires concentrated-liquidity pool simulator and pending transaction feed.",
-          "upgrade-diff":"Use on-chain runtime bytecode comparison plus compiler storage layout; adapter implementation is pending.",
-          "agent-split":"Planner, attacker, verifier and critic roles are planned; current report is the evidence/review checklist.",
-          "calldata-mine":"Needs a supplied transaction hash list or explorer/indexer adapter; full history discovery isn't generic JSON-RPC.",
-        }[cmd]
-        if cmd=="watch":
-            return 2
-        return output({"capability":cmd,"status":"adapter-required-or-manifest-required","reason":reason,"no_finding_claimed":True}) or 2
+    if cmd=="compose": return compose(rest)
+    if cmd=="skew": return skew_plan(rest)
+    if cmd=="flashmax": return flashmax(rest)
+    if cmd=="path": return symbolic_path(rest)
+    if cmd=="gas-ladder": return gas_ladder(rest)
+    if cmd=="watch": return watch(rest)
+    if cmd=="verify-hack": return verify_hack(rest)
+    if cmd=="bundle": return bundle_simulate(rest)
+    if cmd=="upgrade-diff": return upgrade_diff(rest)
+    if cmd=="agent-split": return agent_split(rest)
+    if cmd=="calldata-mine": return calldata_mine(rest)
+    if cmd in {"sandwich","jit"}:
+        print("BLOCKED: "+cmd+" requires a pending-transaction feed and pool-specific simulation adapter. No transaction was sent.")
+        return 2
     if cmd=="decompile":
         print("BLOCKED: install and configure a supported Heimdall adapter; no decompiler invocation guessed."); return 2
     if cmd=="flashmax":
