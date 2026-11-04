@@ -2656,7 +2656,7 @@ def _explain_evidence(path: str, root: Path | None = None) -> int:
     return 0
 
 
-def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any]) -> AttackResult:
+def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any], rpc_url: str | None = None) -> AttackResult:
     """Require matched controls; keep simulated successes distinct from confirmed proof."""
     if not result.break_condition:
         return result
@@ -2695,7 +2695,9 @@ def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any]) 
                 from . import godmode
             except ImportError:
                 import godmode
-            exit_code = godmode.run_control([str(manifest_path), "--root", str(root)])
+            if not rpc_url:
+                raise ValueError("The breaker did not provide its detected local Anvil RPC endpoint.")
+            exit_code = godmode.run_control([str(manifest_path), "--root", str(root), "--rpc-url", rpc_url])
             gate = {
                 "status": "passed" if exit_code == 0 else "failed",
                 "exit_code": exit_code,
@@ -2855,7 +2857,7 @@ def run(config, args=None, host=None):
                         result = _safe_run_family(
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
-                        result = _apply_sequential_control(host, result, opts)
+                        result = _apply_sequential_control(host, result, opts, rpc)
                         campaign_results.append(result)
 
                         marker = ("SIMULATED BREAK" if result.status == "SIMULATED_BREAK"
