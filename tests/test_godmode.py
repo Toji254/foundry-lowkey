@@ -53,8 +53,8 @@ class GodmodeTests(unittest.TestCase):
                 "metric_name": "attacker_gain",
                 "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
                 "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
-                "control": {"argv": [sys.executable, "-c", "print('CONTROL_GAIN 5')"]},
-                "attack": {"argv": [sys.executable, "-c", "print('ATTACK_GAIN 15')"]},
+                "control": {"argv": [sys.executable, "-c", "print('CONTROL_GAIN 5'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
+                "attack": {"argv": [sys.executable, "-c", "print('ATTACK_GAIN 15'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
             }
             (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
             with redirect_stdout(io.StringIO()):
@@ -64,6 +64,63 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["status"], "BREAK")
             self.assertEqual(saved["control_delta"], 10)
 
+    def test_control_rejects_mismatched_call_sequence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = {
+                "same_calls_id": "same-sequence-1",
+                "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
+                "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
+                "control": {"argv": [sys.executable, "-c", "print('CONTROL_GAIN 2'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
+                "attack": {"argv": [sys.executable, "-c", "print('ATTACK_GAIN 9'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'c'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
+            }
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                result = godmode.run_control(["control.json", "--root", str(root)])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertFalse(saved["same_calls_verified"])
+
+    def test_control_requires_runtime_digests_not_only_declared_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = {
+                "same_calls_id": "same-sequence-1",
+                "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
+                "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
+                "control": {"argv": [sys.executable, "-c", "print('CONTROL_GAIN 2')"]},
+                "attack": {"argv": [sys.executable, "-c", "print('ATTACK_GAIN 9')"]},
+            }
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                result = godmode.run_control(["control.json", "--root", str(root)])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertFalse(saved["same_calls_verified"])
+
+    def test_harness_fidelity_detects_synthetic_state_and_never_confirms(self):
+        source = """
+        vm.deal(TARGET, 100 ether);
+        vm.deal(address(attacker), 1 ether);
+        vm.prank(attacker);
+        vm.store(TARGET, bytes32(uint256(0)), bytes32(uint256(1)));
+        vm.mockCall(ORACLE, payload, response);
+        vm.warp(block.timestamp + 1 days);
+        """
+        result = godmode.analyze_harness_fidelity(source, "test/PoC.t.sol")
+        kinds = {item["kind"] for item in result["signals"]}
+        self.assertIn("synthetic_eth", kinds)
+        self.assertIn("caller_impersonation", kinds)
+        self.assertIn("storage_override", kinds)
+        self.assertIn("external_call_mock", kinds)
+        self.assertIn("time_or_block_override", kinds)
+        self.assertTrue(result["synthetic_state"])
+        self.assertEqual(result["classification"], "SIMULATED")
+        self.assertFalse(result["confirmation_eligible"])
+        self.assertFalse(result["net_profit_verified"])
+
     def test_control_rejects_non_positive_delta(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -71,8 +128,8 @@ class GodmodeTests(unittest.TestCase):
                 "same_calls_id": "same-sequence-1",
                 "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
                 "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
-                "control": {"argv": [sys.executable, "-c", "print('CONTROL_GAIN 15')"]},
-                "attack": {"argv": [sys.executable, "-c", "print('ATTACK_GAIN 15')"]},
+                "control": {"argv": [sys.executable, "-c", "print('CONTROL_GAIN 15'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
+                "attack": {"argv": [sys.executable, "-c", "print('ATTACK_GAIN 15'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
             }
             (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
             with redirect_stdout(io.StringIO()):
