@@ -872,6 +872,42 @@ def mutation(args):
     print("  Invalid/timeouts are excluded from the score and must be reviewed separately.")
     return 0 if passed else 1
 
+def inspect_reproduction_command(root, argv):
+    """Inspect the replay argv and referenced local scripts for state-fabricating RPCs."""
+    patterns={
+        "rpc_storage_override":r"\b(?:anvil|hardhat)_setStorageAt\b|\bevm_setAccountStorageAt\b",
+        "rpc_balance_override":r"\b(?:anvil|hardhat)_setBalance\b|\bevm_setAccountBalance\b",
+        "rpc_code_override":r"\b(?:anvil|hardhat)_setCode\b|\bevm_setAccountCode\b",
+        "rpc_impersonation":r"\b(?:anvil|hardhat)_impersonateAccount\b|\bev[m]?_unlockUnknownAccount\b",
+        "rpc_time_override":r"\b(?:anvil|hardhat)_setNextBlockTimestamp\b|\bevm_setNextBlockTimestamp\b|\b(?:anvil|hardhat)_setBlockTimestamp\b",
+    }
+    findings=[]
+    inspected=[]
+    candidates=[str(x) for x in argv]
+    for token in candidates:
+        for kind,pattern in patterns.items():
+            for match in re.finditer(pattern,token,re.I):
+                findings.append({"kind":kind,"source":"argv","token":match.group(0)})
+        possible=Path(token).expanduser()
+        if not possible.is_absolute():
+            possible=(root/possible).resolve()
+        else:
+            possible=possible.resolve()
+        if possible.is_relative_to(root) and possible.is_file() and possible not in inspected:
+            inspected.append(possible)
+            try: text_value=possible.read_text(encoding="utf-8",errors="replace")
+            except OSError: continue
+            for kind,pattern in patterns.items():
+                for line_number,line in enumerate(text_value.splitlines(),1):
+                    for match in re.finditer(pattern,line,re.I):
+                        findings.append({"kind":kind,"source":possible.relative_to(root).as_posix(),
+                                         "line":line_number,"token":match.group(0)})
+    return {"inspected_scripts":[x.relative_to(root).as_posix() for x in inspected],
+            "state_fabrication_calls":findings,
+            "blocked":bool(findings),
+            "policy":"Direct local RPC state/balance/code/time overrides and account impersonation are not accepted as fork-reproduction setup. Configure the attacker through real transactions instead."}
+
+
 def reprove(args):
     p=argparse.ArgumentParser(prog="lk reprove")
     p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
@@ -895,10 +931,17 @@ def reprove(args):
         write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 1
     tx_hash=ns.tx_hash
     command_result=None
+    execution_command={"inspected_scripts":[],"state_fabrication_calls":[],"blocked":False}
     if ns.argv_json:
         argv=json.loads(ns.argv_json)
         if not isinstance(argv,list) or not argv or not all(isinstance(x,str) for x in argv):
             raise ValueError("--argv-json must be a non-empty JSON string array.")
+        execution_command=inspect_reproduction_command(root,argv)
+        if execution_command["blocked"]:
+            payload={"status":"SIMULATED_BREAK","command_run":False,"fidelity":fidelity,
+                     "execution_command":execution_command,
+                     "reason":"Replay script contains a local RPC state-fabrication call; configure actors through actual transactions."}
+            write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 1
         env=os.environ.copy(); env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
         command_result=run(argv,root,900,env=env)
         if command_result.returncode:
@@ -933,6 +976,8 @@ def reprove(args):
     target=addr(ns.target_address)
     source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
     if ns.source_rpc_url:
+        if not ns.argv_json:
+            raise ValueError("Source-verified FORK_REPRODUCED/PROFITABLE status requires --argv-json so the replay command can be inspected.")
         source_url=rpc_url(ns.source_rpc_url)
         if local_rpc(source_url) or urlparse(source_url).hostname==urlparse(url).hostname:
             raise ValueError("--source-rpc-url must be an independent non-local source endpoint, not the local Anvil node.")
@@ -1011,6 +1056,7 @@ def reprove(args):
         "profit_addresses":balances,"gross_balance_delta_wei":gross_delta,
         "net_profit_wei":net_profit,
         "fidelity":fidelity,
+        "execution_command":execution_command,
         "promotion_policy":{
             "FORK_REPRODUCED":"Block-pinned parent state, real mined local Anvil transaction, successful receipt, callTracer match, declared target reached, no synthetic funding/storage/code/mock/time/caller cheatcodes.",
             "PROFITABLE":"FORK_REPRODUCED plus measured portfolio balance delta net of actual transaction gas is positive.",
