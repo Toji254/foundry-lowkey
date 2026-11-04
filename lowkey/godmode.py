@@ -979,8 +979,10 @@ def reprove(args):
                      "fidelity":fidelity,"reason":"Reproduction command did not complete successfully."}
             write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 1
         hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",command_result.stdout+"\n"+command_result.stderr)
-        if not tx_hash and len(hashes)==1: tx_hash=hashes[0]
-        if len(hashes)>1: raise ValueError("Reproof command must emit at most one LOWKEY_TRACE_TX_HASH.")
+        if len(hashes)!=1: raise ValueError("Reproof command must emit exactly one LOWKEY_TRACE_TX_HASH for the transaction it just executed.")
+        if tx_hash and tx_hash.lower()!=hashes[0].lower():
+            raise ValueError("--tx-hash does not match the transaction emitted by --argv-json.")
+        tx_hash=hashes[0]
     if not tx_hash or not re.fullmatch(r"0x[0-9a-fA-F]{64}",tx_hash):
         raise ValueError("Supply --tx-hash or make --argv-json emit LOWKEY_TRACE_TX_HASH <32-byte hash>.")
     tx_hash=tx_hash.lower()
@@ -1003,6 +1005,8 @@ def reprove(args):
         raise ValueError("The tested transaction must be the only transaction in its block.")
     chain_id=rpc(url,"eth_chainId",[])
     target=addr(ns.target_address)
+    profit_addresses=sorted({addr(x) for x in ns.profit_address})
+    if not profit_addresses: raise ValueError("At least one --profit-address is required.")
     source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
     if ns.source_rpc_url:
         if not ns.argv_json:
@@ -1027,6 +1031,8 @@ def reprove(args):
             if ":" not in raw_slot: raise ValueError("--prestate-slot must use ADDRESS:SLOT.")
             raw_address,raw_slot_value=raw_slot.split(":",1)
             slot_address=addr(raw_address)
+            if slot_address!=target:
+                raise ValueError("Source-verified reproof slots must belong to --target-address.")
             slot_value=raw_slot_value.lower()
             if re.fullmatch(r"0x[0-9a-f]{64}",slot_value) is None:
                 try: slot_value=hex(int(slot_value,0))
@@ -1037,10 +1043,18 @@ def reprove(args):
                 raise ValueError(f"Pre-state slot {slot_address}:{slot_value} differs between local fork and source chain.")
             checked_slots.append({"address":slot_address,"slot":slot_value,"value":local_value})
         source_sender_balance=int(str(rpc(source_url,"eth_getBalance",[str(tx.get("from")).lower(),hex(ns.fork_block)])),16)
+        source_profit_balances=[]
+        for address in profit_addresses:
+            local_balance=int(str(rpc(url,"eth_getBalance",[address,hex(ns.fork_block)])),16)
+            source_balance=int(str(rpc(source_url,"eth_getBalance",[address,hex(ns.fork_block)])),16)
+            if local_balance!=source_balance:
+                raise ValueError(f"Profit account {address} has a different fork-block balance on local Anvil and the independent source chain.")
+            source_profit_balances.append({"address":address,"balance_wei":source_balance})
         source_verification={"verified":True,"source_chain_id":source_chain_id,
                              "source_parent_hash":source_parent.get("hash"),
                              "target_code_sha256":hashlib.sha256(bytes.fromhex(str(source_target_code).removeprefix("0x"))).hexdigest(),
                              "sender_balance_at_fork_wei":source_sender_balance,
+                             "profit_account_balances":source_profit_balances,
                              "prestate_slots":checked_slots}
     trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
     if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
@@ -1050,7 +1064,6 @@ def reprove(args):
     calls=_trace_flatten(trace)
     if target not in {x.get("to") for x in calls}:
         raise ValueError("The transaction trace did not call --target-address.")
-    profit_addresses=sorted({addr(x) for x in ns.profit_address})
     sender=str(tx.get("from") or "").lower()
     if sender not in profit_addresses:
         # If the gas payer is omitted from the measured portfolio, subtract its actual fee explicitly below.
@@ -1071,9 +1084,14 @@ def reprove(args):
         raise ValueError("Transaction sender did not have enough native ETH on the source chain to pay the measured gas cost.")
     gross_delta=after_total-before_total
     net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
+    if command_result is None:
+        final_status="LOCAL_TRACE_ONLY"
+    elif source_verification["verified"]:
+        final_status="PROFITABLE" if net_profit>0 else "FORK_REPRODUCED"
+    else:
+        final_status="LOCAL_PROFITABLE" if net_profit>0 else "LOCAL_REPRODUCED"
     payload={
-        "status":(("PROFITABLE" if net_profit>0 else "FORK_REPRODUCED") if source_verification["verified"]
-                  else ("LOCAL_PROFITABLE" if net_profit>0 else "LOCAL_REPRODUCED")),
+        "status":final_status,
         "command_run":bool(command_result),
         "exit_code":command_result.returncode if command_result else None,
         "tx_hash":tx_hash,"chain_id":chain_id,"fork_parent_block":ns.fork_block,
