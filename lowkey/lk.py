@@ -3986,8 +3986,9 @@ def _unravel_rpc(url, method, params=None, timeout=20):
 def _unravel_call_decoder(config, target, calldata):
     """Resolve a function selector and decode arguments only when an ABI matches."""
     data = str(calldata or "0x")
+    # Contract creation input is initcode, not a function selector.
     if not is_address(target) or not re.fullmatch(r"0x[0-9a-fA-F]*", data):
-        return None, data[:10] if data.startswith("0x") and len(data) >= 10 else None
+        return None, None
     item, _abi = _trace_function_item(config, {"to": target, "input": data})
     if not item:
         return None, data[:10] if len(data) >= 10 else None
@@ -4030,7 +4031,11 @@ def _unravel_render_call(config, node, depth, identities, contract_cache, budget
     sender = node.get("from")
     recipient = node.get("to")
     calldata = node.get("input") or "0x"
-    decoded, selector = _unravel_call_decoder(config, recipient, calldata)
+    decoded, selector = (
+        (None, None)
+        if call_type in {"CREATE", "CREATE2"}
+        else _unravel_call_decoder(config, recipient, calldata)
+    )
     value_wei = _unravel_int(node.get("value"))
     gas_used = _unravel_int(node.get("gasUsed"))
     call_type = str(node.get("type") or "CALL").upper()
