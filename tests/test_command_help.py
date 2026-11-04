@@ -866,6 +866,9 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Balance:  1 ETH", rendered)
         self.assertIn(target, rendered)
 
+    def test_unravel_does_not_treat_creation_bytecode_as_a_selector(self):
+        self.assertEqual(lk._unravel_call_decoder({}, None, "0x60006000"), (None, None))
+
     def test_unravel_eth_formats_whole_and_fractional_wei_exactly(self):
         self.assertEqual(lk._unravel_eth(0), "0")
         self.assertEqual(lk._unravel_eth(10**18), "1")
