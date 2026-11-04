@@ -415,7 +415,7 @@ class LowkeyCastTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn("Address references (read-only getters):", rendered)
-        self.assertIn(f"target()                 Fallout ({linked}) [contract (2 bytes)]", rendered)
+        self.assertIn(f"target()                 Fallout ({linked}) [contract (4 bytes)]", rendered)
         self.assertIn(f"controller()             lab-deployer ({controller}) [no code (likely an EOA)]", rendered)
         self.assertNotIn("withdraw()", rendered)
         self.assertNotIn("lookup(", rendered)
