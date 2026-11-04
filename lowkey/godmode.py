@@ -305,7 +305,7 @@ def control(args):
     if not spec.get("same_calls_id"): raise ValueError("Declare same_calls_id to identify the matched call sequence.")
     if not isinstance(a.get("argv"),list) or not isinstance(c.get("argv"),list): raise ValueError("Manifest requires control.argv and attack.argv.")
     cr=re.compile(str(spec.get("control_metric_regex") or "")); ar=re.compile(str(spec.get("attack_metric_regex") or ""))
-    if not cr.pattern or not ar.pattern: raise ValueError("Both metric regexes are required.")
+    if not cr.pattern or not ar.pattern or cr.groups<1 or ar.groups<1: raise ValueError("Both metric regexes must contain a capture group for the numeric metric.")
     rows={}
     for name,entry,rx in (("control",c,cr),("attack",a,ar)):
         temp=Path(tempfile.mkdtemp(prefix="lk-control-")); work=temp/"project"
@@ -337,7 +337,9 @@ def coverage(args):
     if proc.returncode or not lcov: raise RuntimeError("Forge did not produce lcov.info; inspect coverage output.")
     current=None; rows=[]
     for line in lcov.read_text(errors="replace").splitlines():
-        if line.startswith("SF:"): current=Path(line[3:]).resolve()
+        if line.startswith("SF:"):
+            candidate=Path(line[3:])
+            current=(candidate if candidate.is_absolute() else root/candidate).resolve()
         elif line.startswith("DA:") and current==src:
             n,count=map(int,line[3:].split(",")[:2])
             if n>=ns.start_line and (ns.end_line is None or n<=ns.end_line): rows.append({"line":n,"hits":count,"covered":count>0})
@@ -675,10 +677,11 @@ def verify_hack(args):
     if not tx: raise RuntimeError("Transaction not found on this RPC.")
     actual=int(str(tx.get("blockNumber") or "0x0"),16)
     if actual!=ns.block: raise ValueError(f"Transaction is in block {actual}, not declared block {ns.block}.")
-    return output({"tx_hash":ns.tx_hash,"attacked_block":ns.block,"required_fork_block":ns.block-1,
+    print(json.dumps({"tx_hash":ns.tx_hash,"attacked_block":ns.block,"required_fork_block":ns.block-1,
                    "from":tx.get("from"),"to":tx.get("to"),"input":tx.get("input"),"value":tx.get("value"),
                    "status":"replay-harness-required",
-                   "next":"Fork at block N-1, replay the exact attacker sequence, and compare recipient/target balances. This lookup does not reproduce the hack."}) or 2
+                   "next":"Fork at block N-1, replay the exact attacker sequence, and compare recipient/target balances. This lookup does not reproduce the hack."}, indent=2))
+    return 2
 
 def compose(args):
     p=argparse.ArgumentParser(prog="lk compose"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); m=source_maps(root)
