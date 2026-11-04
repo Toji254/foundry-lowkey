@@ -388,10 +388,40 @@ def rpc_command(kind,args):
     p=argparse.ArgumentParser(prog="lk "+kind); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--slots",type=int,default=120); p.add_argument("--no-resolve",action="store_true"); p.add_argument("--key",action="append",default=[]); ns=p.parse_args(args); url=rpc_url(ns.rpc_url); target=addr(ns.target)
     if kind=="selectors-full": return output(selectors(target,url))
     if kind=="proxy-resolve": return output(proxy(target,url,ns.slots))
-    calls=[rpc(url,"eth_getStorageAt",[target,hex(i),"latest"]) for i in range(max(1,min(ns.slots,120)))]
+    count=max(1,min(ns.slots,120))
+    calls=[rpc(url,"eth_getStorageAt",[target,hex(i),"latest"]) for i in range(count)]
     nonzero=[{"slot":i,"word":v} for i,v in enumerate(calls) if v and int(v,16)]
-    return output({"target":target,"scanned_slots":len(calls),"nonzero_slots":nonzero,
-                   "known_key_probes_requested":ns.key,"warning":"Without known keys and compiler layout, mapping identification remains probabilistic."})
+    probes=[]; derivation="not-run"
+    if ns.key:
+        try:
+            from Crypto.Hash import keccak
+            derivation="pycryptodome-keccak"
+            for raw_key in ns.key:
+                key=addr(raw_key)
+                for anchor in range(count):
+                    packed=bytes.fromhex(key[2:].rjust(64,"0")+format(anchor,"064x"))
+                    digest=keccak.new(digest_bits=256); digest.update(packed)
+                    derived="0x"+digest.hexdigest()
+                    value=rpc(url,"eth_getStorageAt",[target,derived,"latest"])
+                    if value and int(value,16):
+                        probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,"value":value,"confidence":"known-key-probe-hit"})
+        except ImportError:
+            if shutil.which("cast"):
+                derivation="cast-index"
+                for raw_key in ns.key:
+                    key=addr(raw_key)
+                    for anchor in range(count):
+                        proc=run(["cast","index","address",key,str(anchor)],Path.cwd(),5)
+                        if proc.returncode: continue
+                        derived=proc.stdout.strip()
+                        if not re.fullmatch(r"0x[0-9a-fA-F]{64}",derived): continue
+                        value=rpc(url,"eth_getStorageAt",[target,derived,"latest"])
+                        if value and int(value,16):
+                            probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,"value":value,"confidence":"known-key-probe-hit"})
+            else: derivation="blocked-no-keccak-library-or-cast"
+    return output({"target":target,"scanned_slots":count,"nonzero_slots":nonzero,
+                   "known_key_probes":probes,"probe_derivation":derivation,
+                   "warning":"A hit supports a mapping candidate at that anchor. No hit does not disprove a mapping; nested mappings and struct offsets need explicit modelling."})
 def unravel(args):
     p=argparse.ArgumentParser(prog="lk unravel"); p.add_argument("tx_hash"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
     if not re.fullmatch(r"0x[0-9a-fA-F]{64}",ns.tx_hash): raise ValueError("Transaction hash must be 32-byte hex.")
@@ -446,13 +476,14 @@ contract WeirdERC20 {
  function setBlocked(address a,bool b) external {blocked[a]=b;}
  function mint(address a,uint256 n) external {balanceOf[a]+=n;totalSupply+=n;}
  function approve(address s,uint256 n) external returns(bool){allowance[msg.sender][s]=n;return true;}
- function transfer(address to,uint256 n) external returns(bool){_move(msg.sender,to,n);return !returnFalse;}
- function transferFrom(address f,address t,uint256 n) external returns(bool){uint256 a=allowance[f][msg.sender];require(a>=n);allowance[f][msg.sender]=a-n;_move(f,t,n);return !returnFalse;}
+ function transfer(address to,uint256 n) external returns(bool){if(returnFalse)return false;_move(msg.sender,to,n);return true;}
+ function transferFrom(address f,address t,uint256 n) external returns(bool){if(returnFalse)return false;uint256 a=allowance[f][msg.sender];require(a>=n);allowance[f][msg.sender]=a-n;_move(f,t,n);return true;}
+ function rebase(address account,int256 delta) external {if(delta>=0){balanceOf[account]+=uint256(delta);totalSupply+=uint256(delta);}else{uint256 cut=uint256(-delta);require(balanceOf[account]>=cut);balanceOf[account]-=cut;totalSupply-=cut;}}
  function _move(address f,address t,uint256 n) internal {require(!paused&&!blocked[f]&&!blocked[t]&&balanceOf[f]>=n);balanceOf[f]-=n;uint256 fee=n*feeBps/10000;balanceOf[t]+=n-fee;totalSupply-=fee;if(hook!=address(0)){(bool ok,)=hook.call(abi.encodeWithSignature("tokensReceived(address,address,uint256)",f,t,n));require(ok);}}
 }
 contract NoReturnERC20 {mapping(address=>uint256) public balanceOf;function mint(address a,uint n) external {balanceOf[a]+=n;}function transfer(address a,uint n) external {require(balanceOf[msg.sender]>=n);balanceOf[msg.sender]-=n;balanceOf[a]+=n;}}
 """)
-    print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Supports fee, rebase-like manual balance change, false-return, no-return, decimals, pause, blacklist and callback hooks. This is a test fixture, not a standard-complete ERC-20 suite."); return 0
+    print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Supports fee-on-transfer, explicit rebasing, false-return, no-return, configurable decimals, pause, blacklist and callback hooks. This is a test fixture, not a standard-complete ERC-20 suite."); return 0
 def run_control_alias(args): return control(args)
 def run_control(args):
     """Entry point used by break_engine for the mandatory control gate."""
