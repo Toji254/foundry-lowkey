@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# Native attack encyclopedia. Lookup is read-only; local lab instructions are
+# rendered by the dedicated module and never use the active RPC or wallet.
+if [[ "${1:-}" == "attack" || "${1:-}" == "attacks" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/attack_library.py" "$@"
+fi
+
 # Native Forge subcommands must own their own --help parsing. The generic
 # contextual-help interception below would otherwise turn 'lk forge debug --help'
 # into Lowkey's help for an unknown nested command rather than Forge's real usage.
