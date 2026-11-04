@@ -73,6 +73,66 @@ class BreakEngineTests(unittest.TestCase):
             self.assertEqual(signal["verification"]["status"], "OBSERVED")
             self.assertTrue(signal["verification"]["human_review_required"])
             self.assertEqual(signal["verification"]["fidelity"]["classification"], "SIMULATED")
+    def test_candidate_break_with_passed_control_remains_simulated_until_fidelity_is_realistic(self):
+        import json
+        import tempfile
+        from unittest.mock import patch
+
+        class Context:
+            def __init__(self, root):
+                self.root = root
+            def foundry_project_root(self):
+                return self.root
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = Context(root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = {
+                "target_address": "0x" + "1" * 40,
+                "function": "withdraw()",
+                "family": "reentrancy",
+                "same_calls_id": "local-control-v1",
+            }
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            evidence = root / "evidence.json"
+            evidence.write_text(json.dumps({
+                "output_tail": "LOWKEY_BREAK true",
+                "fidelity": {
+                    "classification": "SIMULATED",
+                    "confirmation_eligible": False,
+                    "synthetic_state": True,
+                },
+            }), encoding="utf-8")
+            result = break_engine.AttackResult(
+                family="reentrancy",
+                contract="Vault",
+                address="0x" + "1" * 40,
+                function="withdraw()",
+                status="BREAK",
+                summary="candidate behavioral break",
+                evidence_path=str(evidence),
+                break_condition=True,
+                detail={"fidelity": {
+                    "classification": "SIMULATED",
+                    "confirmation_eligible": False,
+                    "synthetic_state": True,
+                }},
+            )
+            with patch("godmode.run_control", return_value=0):
+                checked = break_engine._apply_sequential_control(
+                    Host(root), result, {"control_manifest": "control.json"},
+                    "http://127.0.0.1:8545",
+                )
+            saved = json.loads(evidence.read_text())
+            self.assertTrue(checked.break_condition)
+            self.assertEqual(checked.status, "SIMULATED_BREAK")
+            self.assertEqual(checked.detail["control_gate"]["status"], "passed")
+            self.assertEqual(checked.detail["control_gate"]["promotion_stage"], "SIMULATED_ONLY")
+            self.assertEqual(saved["verdict"], "SIMULATED_BREAK")
+
     def test_candidate_break_is_downgraded_without_control(self):
         import tempfile
 
