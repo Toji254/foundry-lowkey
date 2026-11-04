@@ -257,14 +257,32 @@ jobs:
           python3 -m json.tool /tmp/lowkey-fallback-map.json >/dev/null
           lk cheat fingerprint --root /tmp/lowkey-fixture > /tmp/lowkey-cheat-fingerprints.json
           python3 -m json.tool /tmp/lowkey-cheat-fingerprints.json >/dev/null
+          cat > /tmp/lowkey-fixture/fidelity.t.sol <<'EOF'
+          contract FidelityFixture {
+              function testSyntheticSetup() external {
+                  vm.deal(address(this), 1 ether);
+                  vm.prank(address(1));
+              }
+          }
+          EOF
+          lk fidelity --inspect fidelity.t.sol --root /tmp/lowkey-fixture > /tmp/lowkey-fidelity.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          fidelity = json.loads(Path("/tmp/lowkey-fidelity.json").read_text())
+          assert fidelity["synthetic_eth"] is True, fidelity
+          assert fidelity["caller_impersonation"] is True, fidelity
+          assert fidelity["confirmation_eligible"] is False, fidelity
+          print("PASS: harness fidelity scanner catches synthetic ETH and impersonation")
+          PY
           cat > /tmp/lowkey-fixture/.audit-control.json <<'EOF'
           {
             "same_calls_id": "ci-control-sequence-v1",
             "metric_name": "attacker_gain",
             "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
             "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
-            "control": {"argv": ["python3", "-c", "print('CONTROL_GAIN 3')"]},
-            "attack": {"argv": ["python3", "-c", "print('ATTACK_GAIN 8')"]}
+            "control": {"argv": ["python3", "-c", "print('CONTROL_GAIN 3'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]},
+            "attack": {"argv": ["python3", "-c", "print('ATTACK_GAIN 8'); print('LOWKEY_CALL_SEQUENCE_SHA256 ' + 'a'*64); print('LOWKEY_PRECONDITION_SHA256 ' + 'b'*64)"]}
           }
           EOF
           lk control .audit-control.json --root /tmp/lowkey-fixture
@@ -274,7 +292,9 @@ jobs:
           result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
           assert result["status"] == "BREAK", result
           assert result["control_delta"] == 5, result
-          print("PASS: sequential control requires a positive attack-control delta")
+          assert result["same_calls_verified"] is True, result
+          assert result["call_sequence_sha256"] == "a" * 64, result
+          print("PASS: sequential control verifies matching call/state digests and a positive delta")
           PY
           grep -q 'lk break --until-found' <(lk break --h)
           grep -q 'lk break --system' <(lk break --h)
