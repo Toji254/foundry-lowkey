@@ -1219,19 +1219,19 @@ def _render_repeat_test(
             (bool decimalsOk, bytes memory decimalsData) = assetToken.staticcall(
                 abi.encodeWithSignature("decimals()")
             );
-            if (decimalsOk && decimalsData.length >= 32) {
+            if (decimalsOk && decimalsData.length >= 32) {{
                 uint256 tokenDecimals = abi.decode(decimalsData, (uint256));
                 if (tokenDecimals <= 36) tokenUnit = 10 ** tokenDecimals;
-            }
-            if (tokenUnit == 0) {
+            }}
+            if (tokenUnit == 0) {{
                 assetReadOk = false;
-            } else {
+            }} else {{
                 deal(assetToken, ATTACKER, tokenUnit);
                 vm.prank(ATTACKER);
                 _safeApprove(assetToken, TARGET, 0);
                 vm.prank(ATTACKER);
                 _safeApprove(assetToken, TARGET, type(uint256).max);
-            }
+            }}
         }}
 """
         asset_baseline = """
