@@ -847,17 +847,19 @@ def main(argv=None):
             shutil.copytree(root,work,ignore=ignore_sensitive)
             home=Path.home()
             home_args=[]
-            # Mount only toolchain executables/compiler caches, never the user's
-            # complete home directory or wallet/config folders.
-            for parent in (Path("/home"), home):
-                if str(parent)!="/" and not parent.exists():
-                    home_args += ["--dir",str(parent)]
+            # Build an isolated home path inside the sandbox; do not expose the
+            # host home directory. Only Foundry executables and solc versions
+            # are selectively mounted read-only.
+            if str(home).startswith("/home/"):
+                home_args += ["--dir","/home"]
+            if str(home)!="/":
+                home_args += ["--dir",str(home)]
             foundry_bin=home/".foundry"/"bin"
             if foundry_bin.is_dir():
-                home_args += ["--ro-bind",str(foundry_bin),str(foundry_bin)]
+                home_args += ["--dir",str(home/".foundry"),"--ro-bind",str(foundry_bin),str(foundry_bin)]
             svm=home/".svm"
             if svm.is_dir():
-                home_args += ["--ro-bind",str(svm),str(svm)]
+                home_args += ["--dir",str(home/".svm"),"--ro-bind",str(svm),str(svm)]
             path_value=str(foundry_bin)+":/usr/local/bin:/usr/bin:/bin"
             argv=["bwrap","--die-with-parent","--unshare-net","--unshare-pid","--unshare-ipc","--unshare-uts",
                   "--clearenv","--setenv","HOME",str(home), "--setenv","PATH",path_value,
