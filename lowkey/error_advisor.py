@@ -340,7 +340,7 @@ def build_missing_import_repair_plan(
             "No installed dependency candidate matches math/SafeMath.sol. OpenZeppelin 3.4.2 provides the legacy contracts/math/SafeMath.sol layout used by Solidity 0.6-era projects."
         )
 
-    mapping_line = alias + target
+    mapping_line = alias + "=" + target
     if alias not in evidence.get("remapping_prefixes", []):
         commands.extend([
             "touch remappings.txt",
