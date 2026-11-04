@@ -14,6 +14,73 @@ RECON → ATTACK → PROVE
 
 Lowkey does not replace Forge or Cast. It orchestrates them and adds the local audit workflow around them.
 
+## Godmode / evidence-first attack engine
+
+The integrated Godmode layer exposes the full 44-capability roadmap through one inventory:
+
+```bash
+lk capabilities
+lk godmode
+lk godmode 0xTarget --rpc-url http://127.0.0.1:8545
+lk fallback-map
+lk cheat fingerprint
+lk oracle-map
+lk reentrancy-graph
+lk custody
+lk sig-matrix
+lk init-frontrun
+lk proxy-resolve 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
+lk storage-infer 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
+lk selectors-full 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
+lk target-coverage src/Vault.sol --start-line 40 --end-line 95
+lk provenance .audit/godmode/latest.json
+lk economic --gross-wei 1000000000000000000 --gas-used 180000 --max-fee-wei 20000000000
+lk time
+lk token-weird
+lk invariant-forge vault
+lk archetype lending
+lk report
+```
+
+The capability inventory uses three honest states: `implemented` means the command has a working local workflow; `partial` means it produces a useful lead, starter, bounded measurement, or needs protocol-specific input; `adapter-required` means an external runtime/provider integration is not available and Lowkey will stop rather than fake a result. A registered capability is not automatically an automated exploit.
+
+### Sequential control is mandatory for BREAK
+
+The `lk break` engine can still find candidate behavioral breaks, but a candidate is downgraded to `OBSERVED` unless a matching sequential-control manifest passes. Example:
+
+```json
+{
+  "target_address": "0x0000000000000000000000000000000000000001",
+  "function": "withdraw()",
+  "family": "reentrancy",
+  "same_calls_id": "withdraw-sequence-v1",
+  "metric_name": "attacker_gain_wei",
+  "control_metric_regex": "CONTROL_GAIN ([0-9]+)",
+  "attack_metric_regex": "ATTACK_GAIN ([0-9]+)",
+  "control": {
+    "argv": ["forge", "test", "--match-test", "test_sequential_control", "-vv"]
+  },
+  "attack": {
+    "argv": ["forge", "test", "--match-test", "test_reentrant_attack", "-vv"]
+  }
+}
+```
+
+Run it with:
+
+```bash
+lk control .audit/control.json
+lk break --family reentrancy --control-manifest .audit/control.json
+```
+
+The two commands must exercise the same declared call sequence and actor/precondition setup; only the callback/interleaving condition should differ. `same_calls_id` is a declaration tying those scenarios together, not an automatic proof that two arbitrary scripts are equivalent. Lowkey compares the explicit metrics and only lets the candidate through when both runs pass and the attack delta is positive.
+
+### Proof support and boundaries
+
+`lk target-coverage` runs Forge LCOV and reports reachability for the requested file/line range. `lk mutation-score` delegates to the existing baseline-first mutation runner. `lk provenance` hashes selected artifacts and records run metadata. `lk fidelity` stores the declared evidence strength in the existing append-only ledger. `lk reprove` rejects common state-fabricating cheatcodes and only accepts a local Anvil fork endpoint.
+
+The source maps (fallbacks, oracle reads, signatures, initializer and custody cues, CFG outline, and read/call/write candidates) are static signals. The storage/proxy/selector commands need an RPC endpoint. Historical replay needs an archive RPC and a dedicated harness; flash loans need actual venue callbacks and liquidity reads; symbolic path work needs Halmos and an explicit harness; Flashbots bundle simulation needs relay authentication. These are not silently substituted with mocks. No Godmode command submits a production transaction or calls `eth_sendBundle`.
+
 ## Integrated test-drive
 
 This branch is the integration candidate for the current Lowkey feature set. It keeps the local attack-lab/walkthrough stack and adds the project graph, reusable system bootstrap manifest, evidence engine, ripgrep evidence capture, and evidence-backed PoC generation.
