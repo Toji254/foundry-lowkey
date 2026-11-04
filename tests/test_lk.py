@@ -1314,8 +1314,113 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(value, address)
             rendered = output.getvalue()
             self.assertIn("Fallout", rendered)
-            self.assertIn("live remembered contracts", rendered)
+            self.assertIn("CONTRACTS ON THIS ANVIL", rendered)
             self.assertIn("live deployed contract is required", rendered)
+
+    def test_constructor_address_picker_groups_all_choices_and_shows_workspace_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = pathlib.Path(tmp) / "Smart-contract-development-journey" / "Ethernaut CTFs" / "Fallout"
+            project.mkdir(parents=True)
+            actor = "0x" + "1" * 40
+            wallet = "0x" + "2" * 40
+            contracts = [("Contract" + str(index), "0x" + format(index + 10, "040x")) for index in range(14)]
+            config = {
+                "wallets": {"Alice": {"address": wallet}},
+                "project_roots": {},
+                "_lab_rpc": "http://127.0.0.1:8545",
+            }
+            remembered = [
+                {"name": name, "address": address, "root": project}
+                for name, address in contracts
+            ]
+            choices = [("anvil:0", actor), ("Alice", wallet)] + contracts
+            with patch.object(lk, "_lab_workspace_remembered_targets", return_value=remembered):
+                entries = lk._lab_address_picker_entries(config, [actor], choices)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    lk._lab_print_address_picker(entries)
+
+        self.assertEqual(entries[0]["category"], "contracts")
+        self.assertEqual(entries[-1]["category"], "actors")
+        self.assertEqual(len(entries), 16)
+        rendered = output.getvalue()
+        self.assertIn("CONTRACTS ON THIS ANVIL (14)", rendered)
+        self.assertIn("SAVED WALLETS (1)", rendered)
+        self.assertIn("ANVIL ACCOUNTS (1)", rendered)
+        self.assertIn("Smart-contract-development-journey/Ethernaut CTFs/Fallout", rendered)
+        self.assertIn("Contract13", rendered)
+        self.assertNotIn("more; enter a contract name", rendered)
+
+    def test_constructor_address_picker_supports_partial_names_and_guided_search(self):
+        address = "0x" + "a" * 40
+        entries = [{
+            "name": "Fallout",
+            "address": address,
+            "category": "contracts",
+            "origin": "Smart-contract-development-journey/Ethernaut CTFs/Fallout",
+        }]
+        with patch("builtins.input", return_value="Fall"):
+            selected = lk._lab_prompt_address_selection(entries, "one")
+        self.assertEqual(selected, address)
+
+        with patch("builtins.input", side_effect=["?", "Ethernaut"]):
+            selected = lk._lab_prompt_address_selection(entries, "one")
+        self.assertEqual(selected, address)
+
+    def test_contract_typed_address_picker_excludes_actors_and_wallets_without_bytecode(self):
+        actor = "0x" + "1" * 40
+        wallet = "0x" + "2" * 40
+        contract = "0x" + "3" * 40
+        project = pathlib.Path("/tmp/Fallout")
+        config = {
+            "_lab_rpc": "http://127.0.0.1:8545",
+            "wallets": {"Alice": {"address": wallet}},
+            "project_roots": {},
+        }
+        choices = [
+            ("anvil:0", actor),
+            ("Alice", wallet),
+            ("Fallout", contract),
+        ]
+        with patch.object(
+            lk, "_lab_workspace_remembered_targets",
+            return_value=[{"name": "Fallout", "address": contract, "root": project}],
+        ), patch.object(
+            lk, "run_cast", return_value=lk.CommandResult("0x", 0)
+        ):
+            entries = lk._lab_address_picker_entries(
+                config, [actor], choices, requires_contract=True
+            )
+
+        self.assertEqual([(item["name"], item["address"]) for item in entries], [("Fallout", contract)])
+
+    def test_deployment_review_resolves_known_constructor_address_and_supports_edit(self):
+        address = "0x" + "5" * 40
+        config = {
+            "targets": {"Fallout": address},
+            "aliases": {"Fallout": address},
+            "wallets": {},
+        }
+        output = io.StringIO()
+        with redirect_stdout(output), patch.object(
+            lk.sys.stdin, "isatty", return_value=True
+        ), patch("builtins.input", return_value="2"):
+            action = lk._lab_review_deployment(
+                config,
+                pathlib.Path("/tmp/TargetHolder"),
+                "http://127.0.0.1:8545",
+                ["0x" + "1" * 40],
+                "TargetHolder",
+                [{"name": "one", "type": "address"}],
+                [address],
+            )
+
+        self.assertEqual(action, "edit")
+        rendered = output.getvalue()
+        self.assertIn("DEPLOYMENT REVIEW", rendered)
+        self.assertIn("Fallout · " + address, rendered)
+        self.assertIn("Change constructor values", rendered)
+        self.assertIn("Cancel deployment", rendered)
 
     def test_read_warns_for_state_changing_abi_function_without_contract_specific_names(self):
         target = "0x" + "1" * 40
