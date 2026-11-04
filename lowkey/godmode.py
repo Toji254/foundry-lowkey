@@ -549,7 +549,7 @@ contract WideDecimalsToken {uint256 public decimals=1000;}
 contract ERC1155ReceiverLike {function onERC1155Received(address,address,uint256,uint256,bytes calldata) external pure returns(bytes4){return this.onERC1155Received.selector;}function onERC1155BatchReceived(address,address,uint256[] calldata,uint256[] calldata,bytes calldata) external pure returns(bytes4){return this.onERC1155BatchReceived.selector;}}
 contract ERC777ReceiverLike {function tokensReceived(address,address,uint256) external pure {}}
 """)
-    print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Supports fee-on-transfer, explicit rebasing, false-return, no-return, configurable decimals, pause, blacklist and callback hooks. This is a test fixture, not a standard-complete ERC-20 suite."); return 0
+    print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Includes fee-on-transfer, explicit rebasing, false-return, no-return transfer/transferFrom, pause, blacklist, reentrant hooks, and ERC1155/777 receivers. WideDecimalsToken returns uint256(1000) deliberately; a standard IERC20Metadata decimals() returns uint8."); return 0
 def run_control_alias(args): return control(args)
 def run_control(args):
     """Entry point used by break_engine for the mandatory control gate."""
