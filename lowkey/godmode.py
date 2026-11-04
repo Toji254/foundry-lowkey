@@ -458,7 +458,7 @@ def _control_prestate_digest(url, receipt, addresses, slots):
     return digest,prestate
 
 
-def _trace_control_run(root, url, name, entry, metric_rx, spec, env):
+def _trace_control_run(root, url, name, entry, spec, env):
     snapshot=rpc(url,"evm_snapshot",[])
     if snapshot is None: raise RuntimeError("Anvil did not return an evm_snapshot ID.")
     try:
@@ -509,9 +509,25 @@ def _trace_control_run(root, url, name, entry, metric_rx, spec, env):
             if trace_entry_digest!=entry_digest:
                 raise ValueError(f"{name} callTracer root does not match eth_getTransactionByHash.")
             prestate_digest,prestate=_control_prestate_digest(url,receipt,addresses,slots)
+            metric_addresses=sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
+            sender=str(tx.get("from") or "").lower()
+            if not metric_addresses or sender not in metric_addresses:
+                raise ValueError("metric_addresses must include the actual transaction sender so gas expenditure is included in the measured portfolio.")
+            before_by_address={x["address"]:int(str(x["balance"]),16) for x in prestate["addresses"]}
+            after_by_address={address:int(str(rpc(url,"eth_getBalance",[address,hex(block_number)])),16)
+                              for address in metric_addresses}
+            metric=sum(after_by_address[x]-before_by_address[x] for x in metric_addresses)
+            gas_used=int(str(receipt.get("gasUsed") or "0x0"),16)
+            gas_price=int(str(receipt.get("effectiveGasPrice") or tx.get("gasPrice") or "0x0"),16)
+            gas_cost=gas_used*gas_price
             return {
                 "exit_code":proc.returncode,
-                "metric":float(metric.group(1)) if metric else None,
+                "metric":metric,
+                "metric_kind":"native_balance_delta_after_gas",
+                "metric_addresses":metric_addresses,
+                "gas_used":gas_used,
+                "effective_gas_price_wei":gas_price,
+                "gas_cost_wei":gas_cost,
                 "tx_hash":tx_hash,
                 "chain_id":chain_id,
                 "block_number":block_number,
@@ -542,15 +558,14 @@ def control(args):
     if not isinstance(attack.get("argv"),list) or not isinstance(control_run.get("argv"),list):
         raise ValueError("Manifest requires control.argv and attack.argv.")
     target=addr(spec.get("target_address"))
-    metric_c=re.compile(str(spec.get("control_metric_regex") or "")); metric_a=re.compile(str(spec.get("attack_metric_regex") or ""))
-    if not metric_c.pattern or not metric_a.pattern or metric_c.groups<1 or metric_a.groups<1:
-        raise ValueError("Both metric regexes must contain a capture group for the numeric metric.")
+    if not isinstance(spec.get("metric_addresses"),list) or not spec["metric_addresses"]:
+        raise ValueError("Declare metric_addresses for the attacker portfolio; include the transaction sender.")
     env=os.environ.copy()
     env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
     rows={}
-    for name,entry,rx in (("control",control_run,metric_c),("attack",attack,metric_a)):
+    for name,entry in (("control",control_run),("attack",attack)):
         try:
-            rows[name]=_trace_control_run(root,url,name,entry,rx,spec,env)
+            rows[name]=_trace_control_run(root,url,name,entry,spec,env)
         except Exception as exc:
             rows[name]={"exit_code":None,"metric":None,"trace_error":str(exc),"argv":entry.get("argv")}
     delta=None
