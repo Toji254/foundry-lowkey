@@ -4,6 +4,22 @@ This roadmap combines the agreed recon/fork/adapter/invariant/detector/report ar
 
 It is a capability roadmap, not a claim that the listed features currently exist. See [break coverage](break-coverage.md) for the current executable boundary.
 
+## Delivered in the current feature branch
+
+The following first tranche is implemented in this branch; it is not a claim that the full roadmap is complete:
+
+- Reentrancy now compares a callback-enabled run against a sequential callback-disabled control from the same snapshot and requires the attack to outperform that control.
+- Generic Cast repeat/access probes no longer promote successful calls, target outflows or privileged-looking names into BREAK without a protocol-specific oracle.
+- Time probes advance relative to the fork timestamp.
+- Repeat/accounting probes include the test sender's balance when measuring ETH flow, and the optional token seed is decimal-aware with no-return/bool-return safe approval handling.
+- Setup helper arguments are generated from supported ABI scalar types; discovery outcomes/errors are retained in evidence.
+- Break evidence records chain/observed block, target bytecode/artifact/harness hashes and detected cheatcodes. Synthetic funds and missing gas/net-profit verification are explicit.
+- Generated harnesses use `test/lowkey/` with exclusive creation.
+- CI has a generated-harness Solidity compilation gate, including the same via-IR fallback used by the production runner.
+- `lk unravel` reconstructs an existing transaction into a bounded call tree when the RPC supports callTracer, native ETH call flows, decoded ABI calls/events, gas fee and a saved JSON dossier. It falls back to Cast trace when callTracer is unavailable; this is not a net-profit or exploit verdict.
+
+The live compile/CI result for this branch must be checked before treating the new paths as validated. Dedicated end-to-end `lk unravel` tests and historical transaction reconstruction remain follow-up work.
+
 ## Design target
 
 The goal is not "more commands." The goal is a reproducible workflow from an unfamiliar contract or historical transaction to an evidence-backed, human-reviewable security conclusion.
