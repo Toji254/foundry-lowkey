@@ -622,6 +622,17 @@ ATTACK FAMILIES
   proxy         proxy/initialization/implementation probes
   storage       storage/invariant probes
 
+VERDICT RULES
+  A family name is not proof that a complete exploit adapter exists.
+  Reentrancy BREAK requires a callback-enabled run to outperform a sequential,
+  callback-disabled control from the same snapshot in attacker-side gain and
+  target loss. Replay/accounting requires an entitlement baseline.
+  Generic access/upgrade, boundary, time, callback, signature, DoS, oracle,
+  economic, ERC-20, proxy and storage probes are observational until a
+  protocol-specific invariant or state-change oracle is available.
+  A local BREAK is recorded as a review candidate, not a confirmed finding.
+  Every experiment records its discovery state and fidelity limitations.
+
 MODES
   --pattern ID  Attack using the family mapped from a recurring finding pattern.
                 IDs come from Lowkey's cross-language public-finding playbook.
