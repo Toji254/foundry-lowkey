@@ -121,7 +121,8 @@ class BreakEngineTests(unittest.TestCase):
                     "synthetic_state": True,
                 }},
             )
-            with patch("godmode.run_control", return_value=0):
+            from types import SimpleNamespace
+            with patch.dict(sys.modules, {"godmode": SimpleNamespace(run_control=lambda args: 0)}):
                 checked = break_engine._apply_sequential_control(
                     Host(root), result, {"control_manifest": "control.json"},
                     "http://127.0.0.1:8545",
