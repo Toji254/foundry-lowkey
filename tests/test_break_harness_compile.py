@@ -126,7 +126,7 @@ library console2 {
                 )
 
             result = subprocess.run(
-                ["forge", "build", "--root", str(root)],
+                ["forge", "build", "--root", str(root), "--via-ir", "--optimize"],
                 capture_output=True,
                 text=True,
                 timeout=120,
