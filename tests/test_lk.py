@@ -1239,6 +1239,49 @@ class LowkeyCastTests(unittest.TestCase):
                 1,
             )
 
+    def test_lab_address_choices_discover_targets_saved_only_in_sibling_project_contexts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = pathlib.Path(tmp) / "Smart-contract-development-journey"
+            active_root = workspace / "TargetHolder"
+            fallout_root = workspace / "Ethernaut CTFs" / "Fallout"
+            active_root.mkdir(parents=True)
+            fallout_root.mkdir(parents=True)
+            address = "0x" + "c" * 40
+            actor = "0x" + "1" * 40
+            config = {
+                "_lab_system_root": str(active_root),
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {},
+                "aliases": {},
+                "project_roots": {},
+            }
+
+            def fake_target(project):
+                if pathlib.Path(project).resolve() == fallout_root.resolve():
+                    return {
+                        "contract": "Fallout",
+                        "address": address,
+                        "artifact": None,
+                    }
+                return None
+
+            discovered = [
+                {"root": str(active_root)},
+                {"root": str(fallout_root)},
+            ]
+            with patch.object(
+                lk, "discover_nested_projects", return_value=discovered
+            ), patch.object(
+                lk, "project_context_target", side_effect=fake_target
+            ), patch.object(
+                lk, "run_cast", return_value=lk.CommandResult("0x6000", 0)
+            ):
+                choices = lk._lab_address_choices(config, [actor])
+
+            self.assertIn(("Fallout", address), choices)
+            self.assertIn(("anvil:0", actor), choices)
+
     def test_constructor_contract_address_prompt_resolves_remembered_project_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_root = pathlib.Path(tmp) / "Ethernaut CTFs" / "Fallout"
