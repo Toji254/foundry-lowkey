@@ -440,6 +440,56 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["net_profit_wei"], 2 * 10**18 - expected_fee)
             self.assertTrue(saved["human_confirmation_required"])
 
+    def test_replay_script_scanner_blocks_rpc_state_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            replay = scripts / "replay.py"
+            replay.write_text(
+                'rpc("anvil_setStorageAt", [target, slot, value])\n'
+                'rpc("anvil_setBalance", [attacker, balance])\n',
+                encoding="utf-8",
+            )
+            result = godmode.inspect_reproduction_command(
+                root, [sys.executable, "scripts/replay.py"]
+            )
+            kinds = {item["kind"] for item in result["state_fabrication_calls"]}
+            self.assertTrue(result["blocked"])
+            self.assertIn("rpc_storage_override", kinds)
+            self.assertIn("rpc_balance_override", kinds)
+            self.assertIn("scripts/replay.py", result["inspected_scripts"])
+
+    def test_reprove_blocks_state_override_in_replay_script_before_rpc_or_execution(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = root / "test" / "CleanLookingHarness.t.sol"
+            harness.parent.mkdir()
+            harness.write_text("contract CleanLookingHarness {}", encoding="utf-8")
+            scripts = root / "scripts"
+            scripts.mkdir()
+            replay = scripts / "replay.py"
+            replay.write_text('rpc("anvil_setStorageAt", [target, slot, value])\n', encoding="utf-8")
+            with patch.object(godmode, "rpc") as rpc_mock, \
+                 patch.object(godmode, "run") as run_mock, \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.reprove([
+                    "test/CleanLookingHarness.t.sol", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
+                    "--target-address", "0x" + "1" * 40,
+                    "--profit-address", "0x" + "2" * 40,
+                    "--argv-json", json.dumps([sys.executable, "scripts/replay.py"]),
+                ])
+            saved = json.loads((root / ".audit/godmode/reprove.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertEqual(saved["status"], "SIMULATED_BREAK")
+            self.assertEqual(saved["command_run"], False)
+            self.assertTrue(saved["execution_command"]["blocked"])
+            rpc_mock.assert_not_called()
+            run_mock.assert_not_called()
+
     def test_reprove_refuses_synthetic_funding_at_the_fork_stage(self):
         from unittest.mock import patch
 
