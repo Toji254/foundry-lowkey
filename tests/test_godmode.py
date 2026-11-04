@@ -63,12 +63,15 @@ class GodmodeTests(unittest.TestCase):
         return manifest, target, sender, wrapper
 
     def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678", control_gain=5, attack_gain=15):
-        state = {"tx_hash": None, "input": None}
+        state = {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
 
         def fake_rpc(url, method, params, timeout=20):
             if method == "evm_snapshot":
                 return "0x1"
             if method == "evm_revert":
+                return True
+            if method == "anvil_setStorageAt":
+                state["scenario_slot"] = params[2]
                 return True
             if method == "eth_chainId":
                 return "0x7a69"
@@ -107,6 +110,8 @@ class GodmodeTests(unittest.TestCase):
             if method == "eth_getCode":
                 return "0x6000" if params[0] == wrapper else "0x"
             if method == "eth_getStorageAt":
+                if params[0] == wrapper and params[1] == "0x0" and params[2] == "latest":
+                    return state["scenario_slot"]
                 return "0x" + "0" * 63 + "1"
             if method == "debug_traceTransaction":
                 return {
@@ -183,6 +188,101 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(saved["status"], "OBSERVED")
             self.assertFalse(saved["same_entry_call_verified"])
+
+    def test_control_records_attacker_scenario_parameter_before_transaction(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            manifest["scenario_parameters"] = [{
+                "name": "attacker_callback_flag",
+                "address": wrapper,
+                "slot": "0x0",
+                "control_value": "0x0",
+                "attack_value": "0x1",
+                "description": "attacker-only callback mode",
+            }]
+            manifest["control"] = {"prepare_argv": ["prepare", "0"], "argv": ["send"]}
+            manifest["attack"] = {"prepare_argv": ["prepare", "1"], "argv": ["send"]}
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            tx_hashes = iter(["0x" + "a" * 64, "0x" + "b" * 64])
+            gain_by_tx = {"0x" + "a" * 64: 5, "0x" + "b" * 64: 15}
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                if argv[0] == "prepare":
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+                tx_hash = next(tx_hashes)
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "")
+
+            rpc_mock = self._mock_trace_rpc(target, sender, wrapper)
+            def rpc_with_scenario(url, method, params, timeout=20):
+                if method == "eth_getBalance" and params[1] == "0x65":
+                    tx_hash = "0x" + "a" * 64 if params[0] == sender else "0x" + "b" * 64
+                    gain = gain_by_tx[tx_hash]
+                    if params[0] == sender:
+                        return hex(0x100 - 1)
+                    if params[0] == wrapper:
+                        return hex(0x100 + gain + 1)
+                return rpc_mock(url, method, params, timeout)
+
+            # The state toggle is written during prepare, read by Lowkey before
+            # the transaction, and then may be changed again by the callback.
+            original_rpc = rpc_mock
+            with patch.object(godmode, "rpc", side_effect=rpc_with_scenario), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 0)
+            self.assertEqual(saved["status"], "BREAK")
+            control_param = saved["runs"]["control"]["scenario_parameters"][0]
+            attack_param = saved["runs"]["attack"]["scenario_parameters"][0]
+            self.assertTrue(control_param["verified_before_transaction"])
+            self.assertTrue(attack_param["verified_before_transaction"])
+            self.assertEqual(int(control_param["observed_value"], 16), 0)
+            self.assertEqual(int(attack_param["observed_value"], 16), 1)
+
+    def test_control_blocks_unexpected_attacker_scenario_parameter_before_sending_tx(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            manifest["scenario_parameters"] = [{
+                "name": "attacker_callback_flag",
+                "address": wrapper,
+                "slot": "0x0",
+                "control_value": "0x0",
+                "attack_value": "0x1",
+            }]
+            manifest["control"] = {"prepare_argv": ["prepare", "0"], "argv": ["send"]}
+            manifest["attack"] = {"prepare_argv": ["prepare", "0"], "argv": ["send"]}
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            calls = []
+            def fake_run(argv, cwd, timeout=300, env=None):
+                calls.append(argv)
+                if argv[0] == "prepare":
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+                return subprocess.CompletedProcess(argv, 0, "LOWKEY_TRACE_TX_HASH " + "0x" + "a" * 64 + "\n", "")
+
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn("attacker_callback_flag", saved["reasons"][0])
+            # Control succeeds its prepare step and its transaction; attack fails
+            # during preparation, so the second send is never executed.
+            self.assertEqual([call[0] for call in calls], ["prepare", "send", "prepare"])
 
     def test_control_rejects_script_supplied_hashes_without_a_mined_trace(self):
         from unittest.mock import patch
