@@ -1354,15 +1354,21 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("ENTITLEMENT_AFTER_FIRST", entitlementAfterFirst);
         console2.log("ENTITLEMENT_AFTER_SECOND", entitlementAfterSecond);
 
-        // A second successful withdrawal is normal when the attacker still has entitlement.
-        // BREAK requires demonstrated payout greater than the entitlement recorded before attack.
-        bool breakByEntitlement = entitlementReadOk
-            && (
-                totalGain > entitlementBefore
-                || (assetReadOk && totalTokenGain > entitlementBefore)
-            );
-        // Without an entitlement baseline, repeated value movement is only an
-        // observation. Do not label a normal second payout as an accounting BREAK.
+        // Repeat/accounting BREAK requires two accepted calls and payout above
+        // the pre-attack entitlement. Compare the same asset unit on both sides.
+        // Target outflow must corroborate the value received by the attacker.
+        bool breakByEntitlement = false;
+        if (entitlementReadOk && first && second) {{
+            if (assetReadOk) {{
+                breakByEntitlement = totalTokenGain > entitlementBefore
+                    && totalTargetTokenOutflow >= totalTokenGain;
+            }} else {{
+                breakByEntitlement = totalGain > entitlementBefore
+                    && totalTargetOutflow >= totalGain;
+            }}
+        }}
+        // Without a readable entitlement baseline, repeated value movement is
+        // only an observation; Lowkey must not guess the accounting unit.
         if (breakByEntitlement) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
