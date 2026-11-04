@@ -4,9 +4,27 @@ set -euo pipefail
 # Native attack encyclopedia. Lookup is read-only; local lab instructions are
 # rendered by the dedicated module and never use the active RPC or wallet.
 if [[ "${1:-}" == "attack" || "${1:-}" == "attacks" ]]; then
+    if [[ "${2:-}" == "forge" ]]; then
+        shift 2
+        exec python3 "$HOME/.lowkey/godmode.py" attack-forge "$@"
+    fi
     shift
     exec python3 "$HOME/.lowkey/attack_library.py" "$@"
 fi
+
+# Teach the Solidity cheat catalogue to fingerprint source patterns.
+if [[ "${1:-}" == "cheat" && "${2:-}" == "fingerprint" ]]; then
+    shift 2
+    exec python3 "$HOME/.lowkey/godmode.py" cheat-fingerprint "$@"
+fi
+
+# Integrated offensive-security workflows. Native commands not listed here
+# continue through the original Lowkey router unchanged.
+case "${1:-}" in
+    capabilities|godmode|control|mutation-score|target-coverage|provenance|fidelity|sandbox|decompile|storage-infer|proxy-resolve|selectors-full|cfg|reentrancy-graph|fallback-map|calldata-mine|attack-forge|invariant-forge|archetype|token-weird|oracle-map|skew|flashmax|time|sig-matrix|init-frontrun|path|compose|reprove|economic|gas-ladder|state-diff|watch|custody|agent-split|verify-hack|unravel|bundle|sandwich|jit|fork-cache|upgrade-diff|cross-vm|learn|report|questions)
+        exec python3 "$HOME/.lowkey/godmode.py" "$@"
+        ;;
+esac
 
 # Native Forge subcommands must own their own --help parsing. The generic
 # contextual-help interception below would otherwise turn 'lk forge debug --help'
