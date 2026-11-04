@@ -397,6 +397,14 @@ jobs:
               "prestate_addresses": [target, sender, attacker],
               "prestate_slots": [{"address": target, "slot": mapping_slot}],
               "metric_addresses": [sender, attacker],
+              "scenario_parameters": [{
+                  "name": "attacker_reentry_flag",
+                  "address": attacker,
+                  "slot": "0x0",
+                  "control_value": "0x0",
+                  "attack_value": "0x1",
+                  "description": "Attacker-only callback toggle; explicitly allowed to differ while target accounting pre-state and outer execute() entry call remain identical."
+              }],
               "control": {"argv": ["python3", "scripts/trace-control.py", "0"]},
               "attack": {"argv": ["python3", "scripts/trace-control.py", "1"]}
           }
@@ -413,6 +421,8 @@ jobs:
           assert result["same_prestate_verified"] is True, result
           assert result["runs"]["control"]["metric"] > 0, result
           assert result["runs"]["attack"]["metric"] > result["runs"]["control"]["metric"], result
+          assert result["runs"]["control"]["scenario_parameters"][0]["observed_value"] == "0x" + "0" * 64, result
+          assert result["runs"]["attack"]["scenario_parameters"][0]["observed_value"].lower().endswith("01"), result
           target = result["target_address"].lower()
           control_calls = sum(1 for row in result["runs"]["control"]["call_trace"] if row.get("to") == target)
           attack_calls = sum(1 for row in result["runs"]["attack"]["call_trace"] if row.get("to") == target)
