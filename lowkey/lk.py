@@ -12183,13 +12183,13 @@ def _normalize_human_numeric_input(value, ptype, label=''):
         return grouped
 
     return value
-def _lab_remembered_contract_is_live(config, address, rpc):
+def _lab_remembered_contract_is_live(config, address, rpc, artifact_path=None):
     """Check a remembered contract against the exact RPC used by this lab."""
-    artifact_path = None
-    try:
-        artifact_path = resolve_abi_path(config, address)
-    except Exception:
-        artifact_path = None
+    if not artifact_path:
+        try:
+            artifact_path = resolve_abi_path(config, address)
+        except Exception:
+            artifact_path = None
 
     artifact = read_artifact(artifact_path) if artifact_path else None
     deployed_bytecode = artifact.get("deployedBytecode") if isinstance(artifact, dict) else None
@@ -12219,6 +12219,75 @@ def _lab_remembered_contract_is_live(config, address, rpc):
     return result.code == 0 and runtime.lower() not in {"", "0x", "0x0"}
 
 
+def _lab_workspace_remembered_targets(config):
+    """Read remembered targets from sibling projects in the nearest shared workspace."""
+    active_root = config.get("_lab_system_root")
+    try:
+        active_root = Path(
+            audit_context.foundry_project_root(active_root or Path.cwd())
+        ).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        active_root = Path.cwd().resolve()
+
+    if discover_nested_projects is None:
+        return []
+
+    # A workspace does not need a package-manager manifest to contain related
+    # projects. Walk upward only until the nearest ancestor that actually
+    # discovers this project alongside at least one sibling project.
+    workspace_projects = []
+    for parent in active_root.parents:
+        try:
+            discovered = discover_nested_projects(parent, max_depth=4)
+        except (OSError, TypeError, ValueError):
+            continue
+        roots = []
+        for item in discovered or []:
+            raw_root = item.get("root") if isinstance(item, dict) else None
+            if not raw_root:
+                continue
+            try:
+                project_root = Path(raw_root).expanduser().resolve()
+            except (OSError, TypeError, ValueError):
+                continue
+            if project_root not in roots:
+                roots.append(project_root)
+        if active_root in roots and len(roots) > 1:
+            workspace_projects = roots
+            break
+
+    remembered = []
+    for project_root in workspace_projects:
+        if project_root == active_root:
+            continue
+        try:
+            target = project_context_target(project_root)
+        except Exception:
+            target = None
+        if not isinstance(target, dict):
+            continue
+        address = target.get("address")
+        contract = str(target.get("contract") or project_root.name).strip()
+        if not contract or not is_address(address):
+            continue
+        artifact = target.get("artifact")
+        if artifact:
+            try:
+                artifact = Path(os.path.expanduser(str(artifact)))
+                if not artifact.is_absolute():
+                    artifact = project_root / artifact
+                artifact = str(artifact.resolve())
+            except OSError:
+                artifact = None
+        remembered.append({
+            "name": contract,
+            "address": str(address),
+            "root": project_root,
+            "artifact": artifact,
+        })
+    return remembered
+
+
 def _lab_address_choices(config, accounts, rpc=None):
     choices = []
 
@@ -12232,13 +12301,13 @@ def _lab_address_choices(config, accounts, rpc=None):
         if isinstance(entry, dict) and is_address(entry.get("address")):
             choices.append((str(name), str(entry["address"])))
 
-    # Also offer contracts remembered by Lowkey across projects. The global
-    # project_roots map establishes ownership; live bytecode is checked on this
-    # deployment's RPC so stale addresses from another Anvil instance never
-    # become selectable constructor dependencies.
+    # Offer globally registered targets and project-context targets from
+    # sibling projects. The latter matters for projects remembered only in
+    # their own .audit/context.json and not yet mirrored into global aliases.
+    # Every candidate is checked against this deployment's exact RPC.
     rpc = rpc or config.get("_lab_rpc")
     project_roots = config.get("project_roots", {})
-    if rpc and isinstance(project_roots, dict):
+    if rpc:
         remembered = []
         seen_contracts = set()
         named_targets = []
@@ -12263,7 +12332,20 @@ def _lab_address_choices(config, accounts, rpc=None):
                 "name": str(name).strip(),
                 "address": str(address),
                 "root": Path(owner_root).resolve(),
+                "artifact": None,
             })
+
+        for item in _lab_workspace_remembered_targets(config):
+            address = item.get("address")
+            address_key = str(address or "").lower()
+            if not address_key or address_key in seen_contracts:
+                continue
+            if not _lab_remembered_contract_is_live(
+                config, address, rpc, artifact_path=item.get("artifact")
+            ):
+                continue
+            seen_contracts.add(address_key)
+            remembered.append(item)
 
         # Make duplicate contract names unambiguous without making a unique
         # target awkward to type. The short name still resolves when unique.
