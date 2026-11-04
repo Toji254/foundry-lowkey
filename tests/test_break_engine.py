@@ -27,6 +27,41 @@ class BreakEngineTests(unittest.TestCase):
         opts = break_engine._parse_args(["--explain", "/tmp/example.json"])
         self.assertEqual(opts["explain"], "/tmp/example.json")
 
+    def test_parse_supports_sequential_control_manifest(self):
+        opts = break_engine._parse_args([
+            "--family", "reentrancy", "--control-manifest", ".audit/control.json"
+        ])
+        self.assertEqual(opts["control_manifest"], ".audit/control.json")
+
+    def test_candidate_break_is_downgraded_without_control(self):
+        import tempfile
+
+        class Context:
+            def __init__(self, root):
+                self.root = root
+
+            def foundry_project_root(self):
+                return self.root
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = Context(root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = break_engine.AttackResult(
+                family="reentrancy",
+                contract="Vault",
+                address="0x" + "1" * 40,
+                function="withdraw()",
+                status="BREAK",
+                summary="candidate",
+                break_condition=True,
+            )
+            checked = break_engine._apply_sequential_control(Host(tmp), result, {})
+        self.assertFalse(checked.break_condition)
+        self.assertEqual(checked.status, "OBSERVED")
+        self.assertEqual(checked.detail["control_gate"]["status"], "missing")
+
     def test_evidence_explainer_translates_replay_telemetry(self):
         import tempfile
 
