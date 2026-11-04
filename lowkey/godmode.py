@@ -842,6 +842,7 @@ def reprove(args):
     p.add_argument("--fork-block",required=True,type=int); p.add_argument("--tx-hash")
     p.add_argument("--target-address",required=True); p.add_argument("--profit-address",action="append",required=True)
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
+    p.add_argument("--prestate-slot",action="append",default=[],help="Storage slot to compare between local fork and source, as ADDRESS:SLOT.")
     p.add_argument("--argv-json")
     ns=p.parse_args(args)
     root=root_path(ns.root); harness=(root/ns.harness).resolve()
@@ -908,11 +909,28 @@ def reprove(args):
         source_target_code=rpc(source_url,"eth_getCode",[target,hex(ns.fork_block)])
         if not local_target_code or local_target_code=="0x" or str(local_target_code).lower()!=str(source_target_code or "").lower():
             raise ValueError("Target bytecode on the local fork does not match the independent source chain at --fork-block.")
+        if not ns.prestate_slot:
+            raise ValueError("Source-verified fork reproduction requires at least one --prestate-slot for the target's accounting or authorization state.")
+        checked_slots=[]
+        for raw_slot in ns.prestate_slot:
+            if ":" not in raw_slot: raise ValueError("--prestate-slot must use ADDRESS:SLOT.")
+            raw_address,raw_slot_value=raw_slot.split(":",1)
+            slot_address=addr(raw_address)
+            slot_value=raw_slot_value.lower()
+            if re.fullmatch(r"0x[0-9a-f]{64}",slot_value) is None:
+                try: slot_value=hex(int(slot_value,0))
+                except ValueError: raise ValueError("Invalid --prestate-slot slot value.")
+            local_value=rpc(url,"eth_getStorageAt",[slot_address,slot_value,hex(ns.fork_block)])
+            source_value=rpc(source_url,"eth_getStorageAt",[slot_address,slot_value,hex(ns.fork_block)])
+            if str(local_value).lower()!=str(source_value).lower():
+                raise ValueError(f"Pre-state slot {slot_address}:{slot_value} differs between local fork and source chain.")
+            checked_slots.append({"address":slot_address,"slot":slot_value,"value":local_value})
         source_sender_balance=int(str(rpc(source_url,"eth_getBalance",[str(tx.get("from")).lower(),hex(ns.fork_block)])),16)
         source_verification={"verified":True,"source_chain_id":source_chain_id,
                              "source_parent_hash":source_parent.get("hash"),
                              "target_code_sha256":hashlib.sha256(bytes.fromhex(str(source_target_code).removeprefix("0x"))).hexdigest(),
-                             "sender_balance_at_fork_wei":source_sender_balance}
+                             "sender_balance_at_fork_wei":source_sender_balance,
+                             "prestate_slots":checked_slots}
     trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
     if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
     tx_digest,entry=_control_entry_digest(tx,chain_id)
@@ -939,6 +957,8 @@ def reprove(args):
     gas_price=receipt.get("effectiveGasPrice") or tx.get("gasPrice") or "0x0"
     effective_gas_price=int(str(gas_price),16)
     gas_cost=gas_used*effective_gas_price
+    if source_verification["verified"] and source_verification["sender_balance_at_fork_wei"]<gas_cost:
+        raise ValueError("Transaction sender did not have enough native ETH on the source chain to pay the measured gas cost.")
     gross_delta=after_total-before_total
     net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
     payload={
