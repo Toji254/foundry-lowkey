@@ -202,6 +202,86 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["status"], "OBSERVED")
             self.assertIn("LOWKEY_TRACE_TX_HASH", saved["reasons"][0])
 
+    def test_reprove_reaches_profitable_only_with_a_pinned_mined_trace_and_real_gas(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = root / "test" / "RealForkPoC.t.sol"
+            harness.parent.mkdir()
+            harness.write_text("contract RealForkPoC { function test_path() external {} }", encoding="utf-8")
+            tx_hash = "0x" + "a" * 64
+            target = "0x" + "1" * 40
+            sender = "0x" + "2" * 40
+            recipient = "0x" + "3" * 40
+            before = 10**18
+            after = before + 2 * 10**18
+
+            def fake_rpc(url, method, params, timeout=20):
+                if method == "eth_getTransactionByHash":
+                    return {"hash": tx_hash, "from": sender, "to": target, "input": "0x12345678", "value": "0x0", "gasPrice": "0x3b9aca00"}
+                if method == "eth_getTransactionReceipt":
+                    return {"status": "0x1", "blockNumber": "0x65", "transactionIndex": "0x0",
+                            "gasUsed": "0x5208", "effectiveGasPrice": "0x3b9aca00"}
+                if method == "eth_getBlockByNumber":
+                    if params[0] == "0x64":
+                        return {"hash": "0x" + "4" * 64}
+                    if params[0] == "0x65":
+                        return {"transactions": [tx_hash]}
+                if method == "eth_chainId":
+                    return "0x7a69"
+                if method == "debug_traceTransaction":
+                    return {"type": "CALL", "from": sender, "to": target, "input": "0x12345678",
+                            "value": "0x0", "calls": []}
+                if method == "eth_getBalance":
+                    return hex(after if params[1] == "0x65" else before)
+                raise AssertionError("Unexpected RPC method: " + method)
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "")
+
+            with patch.object(godmode, "rpc", side_effect=fake_rpc), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.reprove([
+                    "test/RealForkPoC.t.sol", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
+                    "--target-address", target, "--profit-address", recipient,
+                    "--argv-json", json.dumps([sys.executable, "-c", "pass"]),
+                ])
+            saved = json.loads((root / ".audit/godmode/reprove.json").read_text())
+            expected_fee = 21000 * 10**9
+            self.assertEqual(result, 0)
+            self.assertEqual(saved["status"], "PROFITABLE")
+            self.assertEqual(saved["fork_parent_block"], 100)
+            self.assertEqual(saved["transaction_block"], 101)
+            self.assertEqual(saved["gas_cost_wei"], expected_fee)
+            self.assertEqual(saved["net_profit_wei"], 2 * 10**18 - expected_fee)
+            self.assertTrue(saved["human_confirmation_required"])
+
+    def test_reprove_refuses_synthetic_funding_at_the_fork_stage(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = root / "test" / "SyntheticPoC.t.sol"
+            harness.parent.mkdir()
+            harness.write_text("contract SyntheticPoC { function test_path() external { vm.deal(address(this), 1 ether); } }", encoding="utf-8")
+            with patch.object(godmode, "rpc") as rpc_mock, redirect_stdout(io.StringIO()):
+                result = godmode.reprove([
+                    "test/SyntheticPoC.t.sol", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
+                    "--target-address", "0x" + "1" * 40,
+                    "--profit-address", "0x" + "2" * 40,
+                    "--tx-hash", "0x" + "a" * 64,
+                ])
+            saved = json.loads((root / ".audit/godmode/reprove.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertEqual(saved["status"], "SIMULATED_BREAK")
+            self.assertIn("synthetic_eth", saved["blocked_cheatcodes"])
+            rpc_mock.assert_not_called()
+
     def test_harness_fidelity_detects_synthetic_state_and_never_confirms(self):
         source = """
         vm.deal(TARGET, 100 ether);
