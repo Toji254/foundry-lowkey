@@ -536,7 +536,7 @@ def validate_catalogue():
         if entry["severity"] not in SEVERITIES:
             problems.append("%s: invalid severity %s" % (entry["slug"], entry["severity"]))
         for source in entry["references"]:
-            if source not in REFERENCE_SOURCES and not re.fullmatch(r"OWASP-SCWE-\\d{3}", source):
+            if source not in REFERENCE_SOURCES and not re.fullmatch(r"OWASP-SCWE-\d{3}", source):
                 problems.append("%s: unknown reference %s" % (entry["slug"], source))
         seen_ids.add(entry["id"])
         seen_slugs.add(entry["slug"])
@@ -620,7 +620,7 @@ def _print_refs(entry):
         source = REFERENCE_SOURCES.get(source_id)
         if source:
             print("    %s: %s" % (source["name"], source["url"]))
-        elif re.fullmatch(r"OWASP-SCWE-\\d{3}", source_id):
+        elif re.fullmatch(r"OWASP-SCWE-\d{3}", source_id):
             # Keep individual weakness IDs searchable while linking to the
             # maintained OWASP catalogue rather than inventing an ID-specific URL.
             catalogue = REFERENCE_SOURCES.get("OWASP-SCWE")
