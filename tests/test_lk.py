@@ -1762,6 +1762,39 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertNotEqual(load_abi.call_args.args[0], selected_target)
 
 
+    def test_event_decoder_reuses_transaction_abi_for_matching_emitter(self):
+        target = "0x" + "1" * 40
+        topic0 = "0x" + "a" * 64
+        event = {
+            "type": "event",
+            "name": "EscrowCreated",
+            "inputs": [
+                {"name": "recipient", "type": "address", "indexed": True},
+            ],
+        }
+        log = {
+            "address": target,
+            "topics": [topic0, "0x" + "2" * 64],
+            "data": "0x",
+        }
+        with patch.object(lk, "load_abi", return_value=[]) as load_abi, \\
+             patch.object(lk, "cast_output", return_value=(0, topic0, "")), \\
+             patch.object(
+                 lk,
+                 "decode_event_values",
+                 side_effect=lambda _item, _data, _topics: print("Recipient: Bob") or 0,
+             ):
+            decoded = lk.decode_event_log(
+                {"target": target},
+                log,
+                target=target,
+                abi=[event],
+            )
+
+        self.assertEqual(decoded, ("EscrowCreated(address)", "Recipient: Bob"))
+        load_abi.assert_not_called()
+
+
     def test_event_decoder_identifies_generic_identifier_fields(self):
         event = {
             "type": "event",

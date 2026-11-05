@@ -3411,13 +3411,13 @@ def _record_event_identifiers(config, tx_hash, log, signature, details):
         return []
 
 
-def _transaction_event_report(config, logs, tx_hash=None):
+def _transaction_event_report(config, logs, tx_hash=None, target=None, abi=None):
     """Decode transaction logs against the ABI of each log's emitting address."""
     rendered = []
     for index, log in enumerate(logs or [], 1):
         if not isinstance(log, dict):
             continue
-        decoded = decode_event_log(config, log)
+        decoded = decode_event_log(config, log, target=target, abi=abi)
         if not decoded:
             continue
         signature, details = decoded
@@ -3588,7 +3588,13 @@ def _transaction_execution_report(
     """Build contract-level event, return, and linked-state output for one transaction."""
     sections = []
     logs = receipt.get("logs") if isinstance(receipt, dict) else []
-    event_lines = _transaction_event_report(config, logs, tx_hash=tx_hash)
+    event_lines = _transaction_event_report(
+        config,
+        logs,
+        tx_hash=tx_hash,
+        target=str((tx or {}).get("to") or config.get("target") or ""),
+        abi=abi,
+    )
     if event_lines:
         sections.append("\n".join(event_lines))
 
@@ -3811,7 +3817,11 @@ def run_receipt(config, tx_hash=None, args=None):
         lines.append("")
         lines.append(f"Events:    {len(logs)}")
         for index, log in enumerate(logs, 1):
-            decoded = decode_event_log(config, log) if isinstance(log, dict) else None
+            decoded = (
+                decode_event_log(config, log, target=tx.get("to"), abi=abi)
+                if isinstance(log, dict)
+                else None
+            )
             if decoded:
                 signature, details = decoded
                 _record_event_identifiers(config, tx_hash, log, signature, details)
@@ -3930,7 +3940,7 @@ def run_trace(config,args=None):
         data={"tx_hash":tx_hash, "returned_values": returned_lines or []},
     )
     return result_code
-def decode_event_log(config, log, target=None):
+def decode_event_log(config, log, target=None, abi=None):
     topics = log.get("topics", []) if isinstance(log, dict) else []
     data = log.get("data", "0x") if isinstance(log, dict) else "0x"
     if not topics:
@@ -3938,10 +3948,21 @@ def decode_event_log(config, log, target=None):
 
     # Receipt logs identify the contract that emitted them. Prefer that
     # address over the selected target so multi-contract transactions decode
-    # against the correct ABI.
+    # against the correct ABI. For the transaction's own target, reuse the ABI
+    # already resolved from its calldata instead of performing a second lookup.
     emitter = log.get("address") if isinstance(log, dict) else None
     event_target = emitter if is_address(emitter) else target or config.get("target")
-    event_abi = load_abi(event_target, config) if event_target else []
+    same_transaction_target = (
+        isinstance(abi, list)
+        and is_address(event_target)
+        and is_address(target)
+        and event_target.lower() == target.lower()
+    )
+    event_abi = (
+        abi if same_transaction_target
+        else load_abi(event_target, config) if event_target
+        else []
+    )
     topic0 = str(topics[0]).lower()
     for item in [x for x in event_abi if x.get("type") == "event" and not x.get("anonymous")]:
         signature=format_signature(item)
