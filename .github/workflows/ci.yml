@@ -401,8 +401,9 @@ jobs:
 
                   uint256 snapshotId = vm.snapshot();
                   bytes memory withdrawCall = abi.encodeWithSignature("withdraw()");
-                  // Each scenario has its own execution-time call-count assertion.
-                  vm.expectCall(address(target), withdrawCall, 1);
+                  // Foundry permits one counted expectation per target/calldata pair.
+                  // Scenario-specific 1-vs-2 counts are checked from each recorded artifact below.
+                  vm.expectCall(address(target), withdrawCall, 3);
                   vm.recordLogs();
                   _lowkeyStartTrace(address(target));
                   attacker.execute();
@@ -418,7 +419,6 @@ jobs:
                   require(vm.revertTo(snapshotId), "CONTROL_STATE_REVERT_FAILED");
                   // Same deployed target and attacker; switch mode outside the measured window.
                   attacker.setMode(2);
-                  vm.expectCall(address(target), withdrawCall, 2);
                   vm.recordLogs();
                   _lowkeyStartTrace(address(target));
                   attacker.execute();
