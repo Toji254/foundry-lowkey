@@ -83,19 +83,22 @@ def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="o
 
 def _referenced_inputs(root, spec):
     found = set()
+    candidates = [x for x in (spec.get("freeze_inputs") or []) if isinstance(x, str)]
     for scenario_name in ("control", "attack", "negative_control"):
         scenario = spec.get(scenario_name) or {}
-        candidates = []
-        for key in ("argv", "prepare_argv", "semantic_check_argv"):
-            argv = scenario.get(key) or []
-            if isinstance(argv, list):
-                candidates.extend(token for token in argv if isinstance(token, str))
-        if isinstance(scenario.get("harness"), str):
-            candidates.append(scenario["harness"])
-        for token in candidates:
-            candidate = Path(token).expanduser()
-            candidate = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-            if candidate.is_relative_to(root) and candidate.is_file(): found.add(candidate)
+        for key in ("argv", "prepare_argv", "semantic_check_argv", "support_files"):
+            values = scenario.get(key) or []
+            if isinstance(values, str):
+                candidates.append(values)
+            elif isinstance(values, list):
+                candidates.extend(token for token in values if isinstance(token, str))
+        for key in ("harness", "state_diff_file"):
+            if isinstance(scenario.get(key), str):
+                candidates.append(scenario[key])
+    for token in candidates:
+        candidate = Path(token).expanduser()
+        candidate = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        if candidate.is_relative_to(root) and candidate.is_file(): found.add(candidate)
     return [{"path": p.relative_to(root).as_posix(), "sha256": _sha256_file(p)} for p in sorted(found)]
 
 def _freeze_core(root, manifest_path, spec):
@@ -110,7 +113,11 @@ def _freeze_core(root, manifest_path, spec):
             "target_address": str(spec.get("target_address") or "").lower(),
             "target_authenticity": spec.get("target_authenticity", "unknown"),
             "trace_backend": spec.get("trace_backend", "anvil-calltracer"),
+            "freeze_inputs": spec.get("freeze_inputs") or [],
             "source_addresses": spec.get("source_addresses") or [],
+            "expected_chain_id": spec.get("expected_chain_id"),
+            "expected_fork_block": spec.get("expected_fork_block"),
+            "require_trace_storage": bool(spec.get("require_trace_storage", False)),
             "metric_addresses": spec.get("metric_addresses") or [],
             "non_economic": bool(spec.get("non_economic", False)),
             "require_negative_control": bool(spec.get("require_negative_control", False)),
