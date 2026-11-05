@@ -708,7 +708,13 @@ def _state_consumed_before_payout(
     body: str,
     root: Path | None = None,
     seen: set[str] | None = None,
+    *,
+    source: str | None = None,
+    source_path: Path | None = None,
+    contract_name: str | None = None,
+    scopes: list[dict[str, Any]] | None = None,
 ) -> bool:
+    """Recognize state consumption only in the exact contract/import/inheritance context."""
     payout = re.search(
         r"\.call\s*\{|\.transfer\s*\(|\.send\s*\(|\.safeTransfer(?:From)?\s*\(|"
         r"\.safeTransferNative\s*\(|_safeTransfer(?:ETH|Native)?\s*\(",
@@ -736,24 +742,57 @@ def _state_consumed_before_payout(
         re.I,
     ):
         return True
-    visited = seen or set()
+
+    project_root = (root or Path.cwd()).resolve()
+    visited = set(seen or ())
     helper_names = re.findall(
         r"\b(_(?:consume|markClaim|use|clear|decrement|settleEntitlement|claim)[A-Za-z0-9_]*)\s*\(",
         body[:payout_position],
     )
-    if helper_names:
-        for _path, source in _context_source_files(root or Path.cwd()):
-            for helper in helper_names:
-                if helper in visited:
-                    continue
-                helper_body = _named_block(source, helper)
-                if helper_body and _state_consumed_before_payout(
-                    helper_body, root or Path.cwd(), visited | {helper}
-                ):
-                    return True
+    if not helper_names:
+        return False
+    if scopes is None:
+        if source is None and source_path is not None:
+            try:
+                source = source_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                source = None
+        scopes = _authorization_scopes(
+            project_root, source or "", source_path=source_path,
+            contract_name=contract_name,
+        )
+    for helper in helper_names:
+        if helper in visited:
+            continue
+        matches: list[str] = []
+        for scope in scopes:
+            matches.extend(
+                member_body
+                for kind, member_body in _member_blocks(str(scope["body"]), helper)
+                if kind == "function"
+            )
+        # Do not guess across overloads or ambiguous declarations.
+        if len(matches) != 1:
+            continue
+        if _state_consumed_before_payout(
+            matches[0], project_root, visited | {helper},
+            source=source, source_path=source_path,
+            contract_name=contract_name, scopes=scopes,
+        ):
+            return True
     return False
 
-def _zero_output_guard(root: Path, body: str) -> bool:
+def _zero_output_guard(
+    root: Path,
+    body: str,
+    *,
+    source: str | None = None,
+    source_path: Path | None = None,
+    contract_name: str | None = None,
+    scopes: list[dict[str, Any]] | None = None,
+    seen: set[str] | None = None,
+) -> bool:
+    """Resolve zero-output checks only through helpers in the selected contract graph."""
     guard = re.compile(
         r"\b(?:shares|minted|receivedShares|shareAmount|assetsOut|amountOut)\s*(?:==|<=)\s*0"
         r"|(?:>\s*0|!=\s*0)[^;\n]{0,100}\b(?:shares|minted|receivedShares|shareAmount)\b"
@@ -766,11 +805,40 @@ def _zero_output_guard(root: Path, body: str) -> bool:
         r"\b(_(?:claim|request|finalize|settle|preview)[A-Za-z0-9_]*)\s*\(",
         body,
     )
-    for _path, source in _context_source_files(root):
-        for helper in helper_names:
-            helper_body = _named_block(source, helper)
-            if helper_body and guard.search(helper_body):
-                return True
+    if not helper_names:
+        return False
+    if source is None and source_path is not None:
+        try:
+            source = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source = None
+    if scopes is None:
+        scopes = _authorization_scopes(
+            root, source or "", source_path=source_path,
+            contract_name=contract_name,
+        )
+    visited = set(seen or ())
+    for helper in helper_names:
+        if helper in visited:
+            continue
+        matches: list[str] = []
+        for scope in scopes:
+            matches.extend(
+                member_body
+                for kind, member_body in _member_blocks(str(scope["body"]), helper)
+                if kind == "function"
+            )
+        if len(matches) != 1:
+            continue
+        visited.add(helper)
+        if guard.search(matches[0]):
+            return True
+        # Check direct, uniquely resolved request/finalize/claim helpers only.
+        if _zero_output_guard(
+            root, matches[0], source=source, source_path=source_path,
+            contract_name=contract_name, scopes=scopes, seen=visited,
+        ):
+            return True
     return False
 
 
@@ -874,7 +942,10 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             has_state_write = bool(re.search(r"\b(claimed|claimedAmount|withdrawn|used|spent|redeemed|nonce|balance|balances|entitled|remaining)\w*\s*\[?[^;=]*\]?\s*(?:[-+]?=|\+\+|--)", body))
             has_native_payout = bool(re.search(r"\.call\s*\{\s*value\s*:|\.transfer\s*\(|\.send\s*\(", body))
             if has_user_key or has_state_write or has_native_payout:
-                if not _state_consumed_before_payout(body, root):
+                if not _state_consumed_before_payout(
+                    body, root, source=source,
+                    source_path=(root / str(model.source)), contract_name=model.name,
+                ):
                     evidence = [
                         "This function looks like an economic claim/withdraw/redeem path.",
                         "Entitlement consumption or a terminal-state guard was not found before the payout in the inspected function/helper context.",
@@ -999,7 +1070,10 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
 
         # Zero-share / rounding candidate.
         if _sensitive_name(name, _pattern("ROUND-001")["keywords"]) and re.search(r"\/|mulDiv|divWad|mulWad|convertToShares|shares", body, re.I):
-            has_zero_guard = _zero_output_guard(root, body)
+            has_zero_guard = _zero_output_guard(
+                root, body, source=source,
+                source_path=(root / str(model.source)), contract_name=model.name,
+            )
             if not has_zero_guard:
                 async_flow = bool(re.search(r"request|finalize|claim|mint|redeem|refund|epoch|queue", name, re.I))
                 evidence = [
