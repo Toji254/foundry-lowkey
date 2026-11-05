@@ -65,8 +65,15 @@ def _source_matches(root: Path, graph: dict[str, Any]) -> list[dict[str, Any]]:
         path = (root / rel).resolve()
         try:
             path.relative_to(root.resolve())
+        except ValueError:
+            workspace = Path(project_detection.workspace_root(root)).resolve()
+            try:
+                path.relative_to(workspace)
+            except ValueError:
+                continue
+        try:
             source = path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, ValueError):
+        except OSError:
             continue
         stripped = project_tools._strip_source_comments(source, "solidity", mask_strings=True)
         original_lines = source.splitlines()
@@ -185,19 +192,33 @@ def main(argv: list[str] | None = None) -> int:
         return _fallback_to_native(raw)
     context = audit_context.load(project)
     target = context.get("target") if isinstance(context.get("target"), dict) else {}
-    has_target = bool(target.get("address") or target.get("contract"))
+    has_target = bool(target.get("address"))
+    has_rpc = bool(context.get("rpc"))
+    has_actor = bool(context.get("actor"))
+    missing_runtime = [
+        label for present, label in (
+            (has_target, "target contract address"),
+            (has_rpc, "RPC URL"),
+            (has_actor, "actor"),
+        ) if not present
+    ]
+    native_args = [
+        value for value in raw
+        if value not in {"--source", "--runtime", "--json"}
+    ]
 
     if args.runtime:
-        if not has_target:
+        if missing_runtime:
             print(
-                "Live runtime risk needs an explicitly configured target contract, RPC URL and actor. "
-                "No address, RPC, actor or chain state was invented. Configure the target/lab first, then rerun lk risk --runtime.",
+                "Live runtime risk cannot start; missing: " + ", ".join(missing_runtime) + ". "
+                "No address, RPC, actor or chain state was invented. Configure these through the existing target/lab setup, "
+                "then rerun lk risk --runtime.",
                 file=sys.stderr,
             )
             return 2
-        return _fallback_to_native(raw)
-    if has_target and not args.source:
-        return _fallback_to_native(raw)
+        return _fallback_to_native(native_args)
+    if has_target and has_rpc and has_actor and not args.source:
+        return _fallback_to_native(native_args)
     if remaining:
         if not args.source:
             return _fallback_to_native(raw)
