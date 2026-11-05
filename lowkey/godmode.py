@@ -1190,6 +1190,9 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
             raise ValueError("EIP-1967 beacon storage value is not a full bytes32 word.")
         implementation_int = int(implementation_word, 16)
         beacon_int = int(beacon_word, 16)
+        provider_proxy = target_source.get("proxy_resolution") or {}
+        if provider_proxy.get("proxyResolutionError"):
+            raise ValueError("Sourcify proxy resolution failed: " + str(provider_proxy["proxyResolutionError"]))
         if beacon_int:
             result["reason"] = (
                 "Target has a non-zero EIP-1967 beacon slot. Beacon-proxy implementation resolution "
@@ -1199,6 +1202,15 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
             return result
         if implementation_int:
             implementation = "0x" + implementation_word[-40:]
+            if provider_proxy.get("isProxy") is not True or provider_proxy.get("proxyType") != "EIP1967Proxy":
+                raise ValueError("Sourcify did not independently resolve the target as an EIP1967Proxy.")
+            provider_implementations = {
+                addr(item.get("address"))
+                for item in (provider_proxy.get("implementations") or [])
+                if isinstance(item, dict) and item.get("address")
+            }
+            if implementation not in provider_implementations:
+                raise ValueError("Sourcify proxyResolution does not contain the on-chain EIP-1967 implementation address.")
             if implementation not in trace_addresses:
                 raise ValueError("EIP-1967 implementation address was not observed in the recorded call tree.")
             proxy_spec = identity_spec.get("proxy") or {}
@@ -1240,13 +1252,17 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
                 raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
             identity["proxy"] = {
                 "type": "eip1967",
+                "sourcify_proxy_type": provider_proxy.get("proxyType"),
                 "implementation_address": implementation,
                 **implementation_deployment,
                 **implementation_source,
                 "implementation_slot": implementation_slot,
             }
-        elif identity_spec.get("proxy"):
-            raise ValueError("Manifest declares a proxy but the EIP-1967 implementation slot is zero at the pinned block.")
+        else:
+            if provider_proxy.get("isProxy") is not False:
+                raise ValueError("EIP-1967 slots are empty but Sourcify did not confirm a non-proxy target.")
+            if identity_spec.get("proxy"):
+                raise ValueError("Manifest declares a proxy but the EIP-1967 implementation slot is zero at the pinned block.")
     except Exception as exc:
         result["reason"] = "Proxy/implementation identity verification failed: " + str(exc)[:500]
         result["identity"] = identity
