@@ -3792,7 +3792,7 @@ def run_receipt(config, tx_hash=None, args=None):
     target = apply_labels(str(tx.get("to") or "unknown"), config)
     value_wei = _hex_to_int(tx.get("value", "0")) or 0
 
-    function_item, abi = _trace_function_item(config, tx)
+    function_item, abi = _trace_function_item(config, tx, root=root)
     function_text = format_signature(function_item) if function_item else "unknown"
 
     lines = [
@@ -3954,6 +3954,7 @@ def decode_event_log(config, log, target=None, abi=None):
     event_target = emitter if is_address(emitter) else target or config.get("target")
     same_transaction_target = (
         isinstance(abi, list)
+        and bool(abi)
         and is_address(event_target)
         and is_address(target)
         and event_target.lower() == target.lower()
@@ -5001,11 +5002,26 @@ def _trace_root_return(trace_text):
     matches = re.findall(r"← \[Return\] (.+)", str(trace_text or ""))
     return matches[0].strip() if matches else None
 
-def _trace_function_item(config, tx):
+def _trace_function_item(config, tx, root=None):
     if not isinstance(tx, dict):
         return None, []
     target = tx.get("to") if is_address(tx.get("to")) else config.get("target")
     abi = load_abi(target, config) if target else []
+
+    # A receipt/trace is often inspected in a fresh CLI process. If the
+    # persisted address-to-ABI mapping is absent or stale, recover the ABI
+    # from this project's exact build tree using the transaction destination.
+    # Supplying root is important: never discover an ABI from a neighbouring
+    # project or the caller's unrelated working directory.
+    if not abi and target and root is not None:
+        artifact_path = auto_abi_path(target, config, root=root)
+        artifact = read_artifact(artifact_path) if artifact_path else None
+        recovered_abi = artifact.get("abi", []) if isinstance(artifact, dict) else artifact
+        if isinstance(recovered_abi, list) and recovered_abi:
+            remember_abi_path(config, target, artifact_path)
+            save_config(config)
+            abi = recovered_abi
+
     input_data = tx.get("input") or tx.get("data") or "0x"
     if not isinstance(input_data, str) or len(input_data) < 10:
         return None, abi

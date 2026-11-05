@@ -1795,6 +1795,119 @@ class LowkeyCastTests(unittest.TestCase):
         load_abi.assert_not_called()
 
 
+    def test_receipt_recovers_missing_target_abi_from_project_artifact(self):
+        tx_hash = "0x" + "1" * 64
+        target = "0x" + "2" * 40
+        sender = "0x" + "3" * 40
+        topic0 = "0x" + "a" * 64
+        selector = "0x12345678"
+        function = {
+            "type": "function",
+            "name": "createEscrow",
+            "inputs": [{"name": "recipient", "type": "address"}],
+            "outputs": [],
+        }
+        event = {
+            "type": "event",
+            "name": "CreateEscrow",
+            "inputs": [
+                {"name": "recipient", "type": "address", "indexed": False},
+                {"name": "amount", "type": "uint256", "indexed": False},
+            ],
+        }
+        abi = [function, event]
+        log = {"address": target, "topics": [topic0], "data": "0x"}
+        receipt = {
+            "status": "0x1",
+            "blockNumber": "0xa",
+            "gasUsed": "0x1234",
+            "logs": [log],
+        }
+        tx = {
+            "to": target,
+            "from": sender,
+            "value": "0x0",
+            "input": selector,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifact_path = root / "out" / "EscrowFlow.sol" / "EscrowFlow.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(
+                json.dumps({"contractName": "EscrowFlow", "abi": abi}),
+                encoding="utf-8",
+            )
+            config = {
+                "last_tx": tx_hash,
+                "target": target,
+                "target_contract": "EscrowFlow",
+                "abi_paths": {},
+                "rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "labels": {},
+            }
+
+            def fake_rpc(_rpc, method, _params):
+                return receipt if method == "eth_getTransactionReceipt" else tx
+
+            def remember(config_arg, address, path):
+                config_arg.setdefault("abi_paths", {})[address] = str(path)
+                return str(path)
+
+            output = io.StringIO()
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                with patch.object(lk.audit_context, "set_latest"):
+                    with patch.object(lk.audit_context, "record_tool"):
+                        with patch.object(lk, "effective_rpc", return_value=config["rpc"]):
+                            with patch.object(lk, "rpc_json", side_effect=fake_rpc):
+                                with patch.object(lk, "load_abi", return_value=[]):
+                                    with patch.object(lk, "auto_abi_path", return_value=str(artifact_path)) as auto_abi:
+                                        with patch.object(lk, "remember_abi_path", side_effect=remember):
+                                            with patch.object(lk, "save_config"):
+                                                with patch.object(lk, "abi_selector", return_value=selector):
+                                                    with patch.object(lk, "cast_output", return_value=(0, topic0, "")):
+                                                        with patch.object(
+                                                            lk,
+                                                            "decode_event_values",
+                                                            side_effect=lambda *_: print("Field recipient: Bob") or 0,
+                                                        ):
+                                                            with patch.object(lk, "_record_event_identifiers"):
+                                                                with patch.object(lk, "_transaction_argument_values", return_value=[]):
+                                                                    with patch.object(lk, "_post_transaction_state_report", return_value=[]):
+                                                                        with patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash):
+                                                                            with redirect_stdout(output):
+                                                                                result = lk.run_receipt(config, tx_hash)
+
+        rendered = output.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("Call:      createEscrow(address)", rendered)
+        self.assertIn("CreateEscrow(address,uint256)", rendered)
+        self.assertIn("Field recipient: Bob", rendered)
+        auto_abi.assert_called_once_with(target, config, root=root)
+        self.assertEqual(config["abi_paths"][target], str(artifact_path))
+
+    def test_event_decoder_falls_back_when_transaction_abi_is_empty(self):
+        target = "0x" + "1" * 40
+        topic0 = "0x" + "a" * 64
+        event = {
+            "type": "event",
+            "name": "EscrowCreated",
+            "inputs": [{"name": "recipient", "type": "address", "indexed": True}],
+        }
+        log = {"address": target, "topics": [topic0, "0x" + "2" * 64], "data": "0x"}
+        with patch.object(lk, "load_abi", return_value=[event]) as load_abi:
+            with patch.object(lk, "cast_output", return_value=(0, topic0, "")):
+                with patch.object(lk, "decode_event_values", side_effect=lambda *_: print("Recipient: Bob") or 0):
+                    decoded = lk.decode_event_log(
+                        {"target": target},
+                        log,
+                        target=target,
+                        abi=[],
+                    )
+        self.assertEqual(decoded, ("EscrowCreated(address)", "Recipient: Bob"))
+        load_abi.assert_called_once_with(target, {"target": target})
+
     def test_event_decoder_identifies_generic_identifier_fields(self):
         event = {
             "type": "event",
