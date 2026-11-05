@@ -1113,6 +1113,72 @@ inspect-audit collects ABI, methods, errors, events, and storage layout.
 
 audit runs build, traced tests, and coverage; --checks additionally uses forge lint and forge geiger when those commands are available.
 
+## Workspace-aware builds and source-first audit
+
+Lowkey treats a monorepo as a workspace containing independent package scopes. A workspace overview does not merge sibling source trees into one audit target.
+
+~~~bash
+# At the workspace root
+lk project
+lk workspace list
+lk workspace select 2
+lk workspace status
+
+# From a concrete child package, that package wins over a saved workspace selection
+cd packages/perps
+lk project
+~~~
+
+Member selection accepts a stable 1-based list index, package name, relative path or absolute path. The saved selection lives in the workspace-local .audit/workspace.json. A real child package directory always overrides a stale workspace-level selection. If multiple Foundry members exist and none is selected, Lowkey stops rather than guessing or mixing them.
+
+Foundry builds use the nearest package-local foundry.toml, not an unrelated repository-root config:
+
+~~~bash
+lk build --plan
+lk build --scope production
+lk build --scope tests --plan
+lk build --scope scripts
+lk build --target TrancheVault --plan
+lk build --root packages/perps --scope production
+lk build --scope full --low-memory
+~~~
+
+Scopes:
+- full preserves the normal full-project build.
+- production passes the configured src directory; Forge follows its transitive import closure.
+- tests passes the configured test directory and its imports.
+- scripts passes the configured script directory and its imports.
+- target accepts a source path or a unique contract name and relies on Forge for the import closure.
+
+Before compiling, Lowkey reads the active Foundry config, available RAM, swap/zram, CPU availability and memory pressure where the host exposes them. It chooses a conservative worker count; an explicit Forge --threads override is preserved and may produce a warning. The planner does not estimate exact compiler memory use. It does not silently alter solc, optimizer, optimizer runs or via_ir; delete cache/artifacts; change host swap; kill unrelated processes; or retry a resource failure. Existing Foundry cache/artifacts are reused. OOM/resource termination is reported separately from Solidity diagnostics. A successful build is not a test pass or an audit-completeness claim.
+
+Source review does not require a deployment:
+
+~~~bash
+lk risk
+lk risk --source
+lk findings
+lk focus <SIGNAL-ID>
+lk context
+~~~
+
+With no live target, lk risk produces a read-only source risk surface and labels pattern matches as syntax-only leads. It does not compile, deploy, contact an RPC or send a transaction. Live runtime risk remains separate and requires a configured target contract address, RPC URL and actor; use lk risk --runtime to request that path explicitly.
+
+### Finding-specific AI review
+
+~~~bash
+lk findings
+lk ai preview --finding <SIGNAL-ID> --show-context
+lk ai explain-finding <SIGNAL-ID>
+lk ai test-plan --finding <SIGNAL-ID>
+~~~
+
+The preview is local-only: it makes no provider call and shows the exact bounded, redacted source and related test context prepared for that one native signal. The explanation/test-plan commands are explicit text-provider calls and may incur provider charges. They include the local commit/ref, containing function, reachable helper/modifier/base evidence, import closure and related tests within strict limits; they do not ship the whole repository.
+
+AI must argue both sides and return exact source references. Quote matching proves only that the quoted text exists. Every result remains unverified: it cannot change a native signal's human disposition, confirm/reject/close a finding, write or run tests, deploy, select a target, contact an RPC, sign or broadcast. lk ai test-plan --finding proposes tests only. Local Jev/Jevos decision triage is separate from the configured text provider; running Jev does not prove provider connectivity.
+
+This initial finding-specific path uses the local checkout as its source of truth. It does not fetch public GitHub/audit URLs; remote evidence retrieval must be a separate explicit step and must never override the exact local commit.
+
 ## Audit evidence
 
 ~~~bash
