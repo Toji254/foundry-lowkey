@@ -585,6 +585,7 @@ jobs:
               "family": "reentrancy",
               "non_economic": True,
               "same_calls_id": "ci-one-deployment-reentrancy-v1",
+              "control_rationale": "Disabling the callback rules out an ordinary single withdrawal as the cause of the second payout.",
               "target_address": target,
               "expected_chain_id": int(control["chain_id"]),
               "expected_fork_block": int(control["block_number"]),
@@ -773,6 +774,7 @@ jobs:
               "target_authenticity": "fixture",
               "family": "reentrancy",
               "same_calls_id": "ci-reentrancy-same-entry-call-v1",
+              "control_rationale": "The callback-disabled run rules out an ordinary single withdrawal from explaining the extra payout.",
               "metric_name": "attacker_portfolio_native_eth_delta_wei",
               "prestate_addresses": [target, sender, attacker],
               "prestate_slots": [{"address": target, "slot": mapping_slot}],
@@ -895,6 +897,31 @@ jobs:
           assert rejection["execution_attempted"] is False, rejection
           print("PASS: tampered frozen digest rejected with digest_mismatch; no command executed")
           PY
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path("/tmp/lowkey-fixture/.audit-control.json").read_text())
+          manifest["same_calls_id"] = "ci-reentrancy-control-passed-rejection-v1"
+          manifest["control_rationale"] = "Repeating the callback-disabled path rules out the attack-specific callback as the source of extra profit."
+          manifest["attack"]["prepare_argv"] = list(manifest["control"]["prepare_argv"])
+          manifest["scenario_parameters"][0]["attack_value"] = manifest["scenario_parameters"][0]["control_value"]
+          manifest["trace_expectations"][0]["attack_min_calls"] = 1
+          manifest["trace_expectations"][0]["attack_max_calls"] = 1
+          Path("/tmp/lowkey-fixture/.audit-control-reject.json").write_text(json.dumps(manifest, indent=2) + "\\n")
+          PY
+          lk control .audit-control-reject.json --root /tmp/lowkey-fixture --freeze-file .audit/godmode/control-reject.freeze.json --freeze
+          lk control --validate --root /tmp/lowkey-fixture --freeze-file .audit/godmode/control-reject.freeze.json --output .audit/godmode/control-reject-validation.json
+          lk control .audit-control-reject.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze-file .audit/godmode/control-reject.freeze.json --require-frozen --output .audit/godmode/control-rejected.json
+                    python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rejected = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control-rejected.json").read_text())
+          assert rejected["status"] == "REJECTED", rejected
+          assert "control_passed" in rejected["rejection_codes"], rejected
+          assert rejected["execution_attempted"] if "execution_attempted" in rejected else True
+          print("PASS: paired control that matches the attack is recorded REJECTED/control_passed")
+          PY
+
           cat > /tmp/lowkey-fixture/test/TraceReproduction.t.sol <<'EOF'
           // SPDX-License-Identifier: MIT
           pragma solidity ^0.8.20;

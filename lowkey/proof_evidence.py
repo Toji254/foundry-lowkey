@@ -259,7 +259,8 @@ def _freeze_core(root, manifest_path, spec):
         "manifest_sha256": _sha256_file(manifest_path), "inputs": _referenced_inputs(root, spec),
         "generator_hashes": _generator_fingerprints(root, spec),
         "experiment": {
-            "same_calls_id": spec.get("same_calls_id"), "family": normalize_family(spec.get("family")),
+            "same_calls_id": spec.get("same_calls_id"), "control_rationale": spec.get("control_rationale"),
+            "family": normalize_family(spec.get("family")),
             "target_address": str(spec.get("target_address") or "").lower(),
             "target_authenticity": spec.get("target_authenticity", "unknown"),
             "trace_backend": spec.get("trace_backend", "anvil-calltracer"),

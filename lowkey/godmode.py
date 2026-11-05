@@ -378,7 +378,7 @@ def analyze_harness_fidelity(source_text, path="<memory>"):
         "SIMULATED_BREAK":{"allowed":"All detected test cheatcodes are permitted only as disclosed simulation inputs; never label as realistic."},
         "FORK_REPRODUCED":{"allowed":["test_assumption"],"blocked":sorted(hard_blocked)},
         "REALISTIC":{"allowed":[],"blocked":sorted(hard_blocked | {"test_assumption"})},
-        "PROFITABLE":{"requirements":["FORK_REPRODUCED","measured recipient/attacker balance deltas","actual receipt gasUsed and effectiveGasPrice","net profit greater than zero"]},
+        "FORK_PROFITABLE":{"requirements":["FORK_REPRODUCED","measured recipient/attacker balance deltas","actual receipt gasUsed and effectiveGasPrice","net profit greater than zero"]},
         "HUMAN_CONFIRMED":{"requirements":["PROFITABLE or documented non-profit impact","native evidence reviewed","explicit human disposition in evidence ledger"]},
     }
     return {
@@ -1587,6 +1587,9 @@ def control(args):
             raise ValueError("paired_forge_experiment requires the same harness/argv/preparation and two distinct state_diff_file paths.")
     if not spec.get("same_calls_id"):
         raise ValueError("Declare same_calls_id as a human-readable label for the matched experiment.")
+    control_rationale=spec.get("control_rationale")
+    if not isinstance(control_rationale,str) or not control_rationale.strip():
+        raise ValueError("Declare control_rationale naming the alternative explanation ruled out by the paired control.")
     if not isinstance(attack.get("argv"),list) or not isinstance(control_run.get("argv"),list):
         raise ValueError("Manifest requires control.argv and attack.argv.")
     target=addr(spec.get("target_address"))
@@ -1821,15 +1824,16 @@ def control(args):
         else: fidelity="unknown"
 
     rejection_codes=[]
-    if not same_entry: rejection_codes.append("mismatch")
+    if not same_entry: rejection_codes.append("unverified_target")
     if (not same_prestate or not same_trace_storage_values or not same_chain or not same_block or not same_fork_anchor or
         (backend=="anvil-calltracer" and not same_envelope) or
-        (backend=="forge-state-diff" and not fork_pin_verified)): rejection_codes.append("mismatch")
-    if not trace_delta_verified: rejection_codes.append("control_path_mismatch")
-    if spec.get("require_negative_control") and not negative_control_verified: rejection_codes.append("negative_control_failed")
-    if non_economic and not semantic_invariant_verified: rejection_codes.append("semantic_invariant_failed")
+        (backend=="forge-state-diff" and not fork_pin_verified)): rejection_codes.append("unverified_target")
+    if not trace_delta_verified: rejection_codes.append("control_passed")
+    if spec.get("require_negative_control") and not negative_control_verified: rejection_codes.append("control_passed")
+    if non_economic and not semantic_invariant_verified: rejection_codes.append("semantic_default_missing")
+    if not evidence_requirements_verified: rejection_codes.append("fidelity_insufficient")
     if not non_economic and isinstance(attack_metric,int) and attack_metric<=0: rejection_codes.append("net_negative")
-    if not non_economic and isinstance(delta,int) and delta<=0: rejection_codes.append("control_not_outperformed")
+    if not non_economic and isinstance(delta,int) and delta<=0: rejection_codes.append("control_passed")
     rejected=execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
     outcome="profitable" if passed and not non_economic else ("observed" if passed or execution_attempted else "not_run")
     if rejected: outcome="rejected"
@@ -1868,7 +1872,7 @@ def control(args):
                                else "local-Anvil RPC transaction plus debug_traceTransaction callTracer"),
         "freeze":freeze_status,"negative_control_present":negative_control_present,
         "negative_control_verified":negative_control_verified,"control_delta":delta,
-        "metric_name":spec.get("metric_name","attacker_gain"),"same_calls_id":spec["same_calls_id"],
+        "metric_name":spec.get("metric_name","attacker_gain"),"same_calls_id":spec["same_calls_id"],"control_rationale":control_rationale,
         "same_entry_call_verified":same_entry,"same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,"same_trace_storage_values_verified":same_trace_storage_values,
         "trace_storage_shared_mismatches":trace_storage_mismatches,
@@ -2499,7 +2503,7 @@ def reprove(args):
         "execution_command":execution_command,
         "promotion_policy":{
             "FORK_REPRODUCED":"Block-pinned parent state, real mined local Anvil transaction, successful receipt, callTracer match, declared target reached, no synthetic funding/storage/code/mock/time/caller cheatcodes.",
-            "PROFITABLE":"FORK_REPRODUCED plus measured portfolio balance delta net of actual transaction gas is positive.",
+            "FORK_PROFITABLE":"FORK_REPRODUCED plus measured portfolio balance delta net of actual transaction gas is positive.",
             "HUMAN_CONFIRMED":"Never assigned automatically; requires explicit human disposition in the evidence ledger.",
         },
         "human_confirmation_required":True,
@@ -2510,7 +2514,7 @@ def reprove(args):
     }
     rejection_codes=[]
     if non_economic and not semantic_invariant_verified:
-        rejection_codes.append("semantic_invariant_failed")
+        rejection_codes.append("semantic_default_missing")
     if not non_economic and net_profit<=0:
         rejection_codes.append("net_negative")
     payload["rejection_codes"]=rejection_codes
