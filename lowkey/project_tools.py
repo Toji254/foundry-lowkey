@@ -15,6 +15,10 @@ import shutil
 import sys
 import subprocess
 from pathlib import Path
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    tomllib = None
 
 LOWKEY_MODULE_DIR = Path(__file__).resolve().parent
 if str(LOWKEY_MODULE_DIR) not in sys.path:
@@ -28,8 +32,12 @@ except ImportError:
 
 try:
     from project_detection import project_root as detected_project_root
+    from project_detection import is_workspace_root as detected_is_workspace_root
+    from project_detection import workspace_root as detected_workspace_root
 except ImportError:
     detected_project_root = None
+    detected_is_workspace_root = None
+    detected_workspace_root = None
 
 def _python_module_available(name: str) -> bool:
     try:
@@ -73,8 +81,15 @@ EXCLUDED_DIRS = {
 
 
 def project_root(root: str | Path = ".") -> Path:
-    """Use the same workspace-aware root resolver as the Lowkey CLI."""
+    """Resolve package roots normally, but preserve an explicitly requested workspace root."""
     path = Path(root).expanduser().resolve()
+    if path.is_dir() and detected_workspace_root is not None and detected_is_workspace_root is not None:
+        try:
+            workspace = Path(detected_workspace_root(path)).resolve()
+            if workspace == path and detected_is_workspace_root(path):
+                return path
+        except Exception:
+            pass
     if detected_project_root is not None:
         try:
             return Path(detected_project_root(path)).resolve()
@@ -582,15 +597,32 @@ def _resolve_local_import(importer: Path, raw: str, root: Path, language: str) -
 
 
 def _solidity_remappings(root: Path) -> list[tuple[str, str]]:
-    """Read Foundry remappings so dependency resolution matches Forge."""
+    """Read package-local Foundry remappings and then ask Forge for its effective set."""
     values: list[tuple[str, str]] = []
     remappings_file = root / "remappings.txt"
     try:
         lines = remappings_file.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         lines = []
+    if tomllib is not None and (root / "foundry.toml").is_file():
+        try:
+            config = tomllib.loads((root / "foundry.toml").read_text(encoding="utf-8", errors="replace"))
+        except (OSError, tomllib.TOMLDecodeError, ValueError):
+            config = {}
+        raw_values = config.get("remappings", [])
+        if isinstance(raw_values, list):
+            lines.extend(str(item) for item in raw_values)
+        profiles = config.get("profile", {})
+        if isinstance(profiles, dict):
+            active_profile = os.environ.get("FOUNDRY_PROFILE", "default")
+            selected = profiles.get(active_profile)
+            if isinstance(selected, dict) and isinstance(selected.get("remappings"), list):
+                lines.extend(str(item) for item in selected["remappings"])
+            default_profile = profiles.get("default")
+            if isinstance(default_profile, dict) and isinstance(default_profile.get("remappings"), list):
+                lines.extend(str(item) for item in default_profile["remappings"])
     for line in lines:
-        value = line.strip()
+        value = str(line).strip()
         if not value or value.startswith("#") or "=" not in value:
             continue
         prefix, destination = (part.strip() for part in value.split("=", 1))
@@ -660,11 +692,16 @@ def _solidity_external_candidates(raw: str, root: Path) -> list[Path]:
     return candidates
 
 
-def _resolve_solidity_import(importer: Path, raw: str, root: Path) -> Path | None:
+def _resolve_solidity_import(
+    importer: Path,
+    raw: str,
+    root: Path,
+    remappings: Sequence[tuple[str, str]] | None = None,
+) -> Path | None:
     local = _resolve_local_import(importer, raw, root, "solidity")
     if local:
         return local
-    for candidate in _solidity_external_candidates(raw, root):
+    for candidate in _solidity_external_candidates(raw, root, remappings):
         if candidate.is_file() and not any(part in {".git", ".audit", ".venv"} for part in candidate.parts):
             return candidate.resolve()
     return None
@@ -844,6 +881,65 @@ def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     return calls
 
 
+def _workspace_root_for(root: Path) -> Path:
+    if detected_workspace_root is not None:
+        try:
+            return Path(detected_workspace_root(root)).resolve()
+        except Exception:
+            pass
+    return root.resolve()
+
+
+def _is_declared_dependency(path: Path, package_root: Path) -> bool:
+    try:
+        from analysis_adapters import is_dependency_path
+        return bool(is_dependency_path(path, package_root))
+    except (ImportError, OSError, ValueError):
+        return False
+
+
+def _import_provenance(resolved: Path | None, package_root: Path) -> str:
+    if resolved is None:
+        return "unresolved"
+    resolved = resolved.resolve()
+    if _is_declared_dependency(resolved, package_root):
+        return "third-party"
+    try:
+        resolved.relative_to(package_root.resolve())
+        return "same-package"
+    except ValueError:
+        pass
+    workspace = _workspace_root_for(package_root)
+    try:
+        resolved.relative_to(workspace)
+    except ValueError:
+        return "third-party"
+    # A sibling package may have its own remapped lib/ directory. Respect that
+    # package's own Foundry configuration before calling the path first-party.
+    for parent in (resolved.parent, *resolved.parents):
+        if (parent / "foundry.toml").is_file():
+            if _is_declared_dependency(resolved, parent):
+                return "third-party"
+            break
+        if parent == workspace:
+            break
+    return "workspace"
+
+
+def _graph_relative(path: Path | None, root: Path) -> str | None:
+    if path is None:
+        return None
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        workspace = _workspace_root_for(root)
+        try:
+            path.resolve().relative_to(workspace)
+            return Path(os.path.relpath(path.resolve(), root.resolve())).as_posix()
+        except ValueError:
+            return str(path.resolve())
+
+
 def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
     root_path = project_root(root)
     files = project_source_files(root_path)
@@ -856,7 +952,41 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
         analysis_files = []
     if not files and analysis_files:
         files = [path for path in analysis_files if path.is_file()]
-    nodes: list[dict[str, Any]] = []
+
+    # Add transitive first-party imports, including sibling workspace packages.
+    # Third-party libraries remain edges, not protocol nodes.
+    remappings = _solidity_remappings(root_path)
+    queue = list(files)
+    known = {path.resolve() for path in files}
+    while queue:
+        importer = queue.pop(0)
+        language = "solidity" if importer.suffix.lower() == ".sol" else "vyper" if importer.suffix.lower() in {".vy", ".vyi"} else ""
+        if not language:
+            continue
+        source_text = _read(importer)
+        if language == "solidity":
+            imports = [
+                _resolve_solidity_import(importer, raw, root_path, remappings)
+                for raw, _line, _statement in _solidity_imports(source_text)
+            ]
+        else:
+            imports = [
+                _resolve_vyper_import(importer, raw, names, root_path)[0]
+                for raw, _line, _statement, names in _vyper_imports(source_text)
+            ]
+        for resolved in imports:
+            if resolved is None or resolved.suffix.lower() not in {".sol", ".vy", ".vyi"}:
+                continue
+            provenance = _import_provenance(resolved, root_path)
+            if provenance not in {"same-package", "workspace"}:
+                continue
+            candidate = resolved.resolve()
+            if candidate not in known and candidate.is_file():
+                known.add(candidate)
+                files.append(candidate)
+                queue.append(candidate)
+    files = sorted({path.resolve() for path in files})
+    nodes: list[dict[str, Any]] = [];
     edges: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
 
@@ -876,17 +1006,19 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
 
         if language == "solidity":
             for raw, line, statement in _solidity_imports(text):
-                local = _resolve_local_import(path, raw, root_path, language)
-                resolved = _resolve_solidity_import(path, raw, root_path)
+                resolved = _resolve_solidity_import(path, raw, root_path, remappings)
+                provenance = _import_provenance(resolved, root_path)
                 edge = {
                     "from": rel,
-                    "to": _relative(resolved, root_path) if resolved else raw,
+                    "to": _graph_relative(resolved, root_path) if resolved else raw,
                     "raw": raw,
                     "kind": "import",
                     "line": line,
                     "statement": statement,
                     "resolved": bool(resolved),
-                    "external": local is None,
+                    "external": provenance == "third-party",
+                    "provenance": provenance,
+                    "workspace_dependency": provenance == "workspace",
                 }
                 edges.append(edge)
                 if not edge["resolved"]:
@@ -908,13 +1040,15 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                     })
         else:
             for raw, line, statement, imported_names in _vyper_imports(text):
-                local = _resolve_local_import(path, raw, root_path, language)
                 resolved, external_root = _resolve_vyper_import(
                     path, raw, imported_names, root_path
                 )
+                provenance = _import_provenance(resolved, root_path) if resolved else (
+                    "third-party" if external_root is not None else "unresolved"
+                )
                 edge = {
                     "from": rel,
-                    "to": _relative(resolved, root_path) if resolved else (
+                    "to": _graph_relative(resolved, root_path) if resolved else (
                         str(external_root) if external_root else _vyper_import_label(raw, imported_names)
                     ),
                     "raw": raw,
@@ -923,7 +1057,9 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                     "statement": statement,
                     "symbols": imported_names,
                     "resolved": bool(resolved or external_root),
-                    "external": local is None and external_root is not None,
+                    "external": provenance == "third-party",
+                    "provenance": provenance,
+                    "workspace_dependency": provenance == "workspace",
                 }
                 edges.append(edge)
                 if not edge["resolved"]:
@@ -953,18 +1089,33 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                 1 for edge in edges
                 if edge["kind"] == "import" and edge.get("external")
             ),
+            "local_imports": sum(
+                1 for edge in edges
+                if edge["kind"] == "import" and edge.get("provenance") == "same-package"
+            ),
+            "workspace_imports": sum(
+                1 for edge in edges
+                if edge["kind"] == "import" and edge.get("provenance") == "workspace"
+            ),
             "external_call_sites": sum(len(node.get("calls", [])) for node in nodes),
         },
     }
 
 
 def _protocol_node(node: dict[str, Any]) -> bool:
-    """Keep the default human graph focused on application code, not generated helpers."""
+    """Keep the human graph focused on first-party source at any workspace depth."""
     rel = str(node.get("file") or "").replace("\\", "/").lstrip("./")
-    first = rel.split("/", 1)[0] if rel else ""
-    if first in {"test", "tests", "script", "scripts"}:
+    parts = [part for part in rel.split("/") if part]
+    support = {
+        "test", "tests", "script", "scripts", "deploy", "deployment",
+        "fixtures", "fixture", "mocks", "mock", "harness", "harnesses",
+        "benchmarks", "benchmark", "docs", "doc", "out", "cache",
+        "artifacts", "broadcast", "node_modules", ".audit",
+    }
+    if any(part.lower() in support for part in parts[:-1]):
         return False
-    return first in {"src", "contracts", "vyper", "interfaces"} or not first
+    source_roots = {"src", "contracts", "vyper", "interfaces", "programs"}
+    return any(part.lower() in source_roots for part in parts[:-1]) or bool(node.get("declarations"))
 
 
 def _display_name(node: dict[str, Any]) -> str:
