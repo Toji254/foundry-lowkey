@@ -25,7 +25,7 @@ class ProofEvidenceTests(unittest.TestCase):
     def test_simulated_caller_caps_fork_result(self):
         result = classify_proof("forked_deployment", "simulated_caller", "profitable",
                                 authenticity_verified=True)
-        self.assertEqual(result["status"], "SIMULATED_BREAK")
+        self.assertEqual(result["status"], "FORK_OBSERVED")
 
     def test_human_confirmation_is_never_inferred(self):
         self.assertEqual(classify_proof("forked_deployment", "real_funded", "profitable",
