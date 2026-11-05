@@ -155,7 +155,7 @@ def _http_get_public(url: str, *, max_bytes: int = MAX_REMOTE_ITEM_BYTES) -> tup
         content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().lower()
         if not (
             content_type.startswith("text/")
-            or content_type in {"application/json", "application/xml", "application/xhtml+xml"}
+            or content_type in {"application/json", "application/vnd.github+json", "application/xml", "application/xhtml+xml"}
         ):
             raise ValueError(f"unsupported remote content type: {content_type or 'unknown'}")
         length = response.getheader("Content-Length")
@@ -260,7 +260,7 @@ def _fetch_remote_evidence(root: Path, context: dict[str, Any], urls: list[str])
                     + github["commit"]
                 )
                 api_bytes, api_type = _http_get_public(api_url, max_bytes=48_000)
-                if api_type != "application/json":
+                if api_type not in {"application/json", "application/vnd.github+json"}:
                     raise ValueError("GitHub commit endpoint did not return JSON.")
                 try:
                     commit_doc = json.loads(api_bytes.decode("utf-8"))
@@ -399,7 +399,13 @@ def _preview_evidence_urls(context: dict[str, Any], urls: list[str]) -> None:
         "untrusted supplementary evidence; local checkout remains authoritative."
     )
     context["remote_fetch_performed"] = False
-    context["context_bytes"] = len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    context_bytes = len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    if context_bytes > MAX_CONTEXT_BYTES:
+        raise ValueError(
+            "the selected local context plus remote URL list exceeds the bounded preview size; "
+            "remove some URLs or narrow the finding context"
+        )
+    context["context_bytes"] = context_bytes
 
 
 
@@ -1116,6 +1122,17 @@ def explain_finding(
                 if isinstance(item, dict)
             ),
             "remote_evidence_urls": [item.get("url") for item in context.get("remote_evidence", []) if isinstance(item, dict)],
+            "remote_evidence": [
+                {
+                    "url": item.get("url"),
+                    "status": item.get("status"),
+                    "kind": item.get("kind"),
+                    "resolved_commit": item.get("resolved_commit"),
+                    "matches_local_commit": item.get("matches_local_commit"),
+                    "error": item.get("error"),
+                }
+                for item in context.get("remote_evidence", []) if isinstance(item, dict)
+            ],
         },
     })
 
@@ -1133,6 +1150,7 @@ def explain_finding(
                 "model": status.get("model"),
                 "verified": False,
                 "human_disposition_changed": False,
+                "remote_evidence": normalized.get("_lowkey_meta", {}).get("remote_evidence", []),
             },
         )
         return {"report_path": report_path, "event_id": event.get("event_id")}
@@ -1266,6 +1284,16 @@ def _render_explanation(report: Mapping[str, Any]) -> str:
     for item in report.get("references", []):
         lines.append(f"  {item.get('path')}::{item.get('symbol')} [{item.get('quote_status')}] {item.get('quote')}")
     meta = report.get("_lowkey_meta") or {}
+    remote_items = meta.get("remote_evidence") if isinstance(meta.get("remote_evidence"), list) else []
+    if remote_items:
+        lines += ["", "REMOTE SUPPLEMENTARY EVIDENCE (UNTRUSTED)"]
+        for item in remote_items:
+            lines.append(f"  {item.get('url')} [{item.get('status')}]")
+            if item.get("resolved_commit"):
+                match_label = "matches local commit" if item.get("matches_local_commit") is True else "differs from local commit" if item.get("matches_local_commit") is False else "local commit unavailable"
+                lines.append(f"    SHA: {item.get('resolved_commit')} ({match_label})")
+            if item.get("error"):
+                lines.append(f"    Note: {item.get('error')}")
     lines += [
         "",
         f"Report : {meta.get('report_path') or 'not saved'}",
