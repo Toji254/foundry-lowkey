@@ -510,8 +510,18 @@ class GodmodeTests(unittest.TestCase):
                 if method == "eth_getStorageAt":
                     return "0x" + "0" * 63 + "1"
                 if method == "debug_traceTransaction":
+                    if params[1].get("tracer") == "prestateTracer":
+                        return {
+                            target: {
+                                "balance": hex(before), "nonce": "0x0", "code": "0x6000",
+                                "storage": {"0x" + "0" * 64: "0x" + "0" * 63 + "1"},
+                            },
+                            sender: {"balance": hex(before), "nonce": "0x0", "code": "0x", "storage": {}},
+                        }
                     return {"type": "CALL", "from": sender, "to": target, "input": "0x12345678",
                             "value": "0x0", "calls": []}
+                if method == "eth_getTransactionCount":
+                    return "0x0"
                 if method == "eth_getBalance":
                     if url == "https://archive.example":
                         return hex(10**18)
