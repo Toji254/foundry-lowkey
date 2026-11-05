@@ -350,6 +350,55 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("TOKEN_APPROVAL_SUCCESS", body)
         self.assertIn("return _lowkeyApproveCall(token, spender, amount);", body)
 
+    def test_missing_token_decimals_uses_explicit_18_decimal_fallback_and_guards_token_profit(self):
+        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
+        repeat = break_engine._render_repeat_test(
+            target,
+            {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"},
+            "withdraw()", [], "0", "accounting", None,
+            setup_signature="deposit(uint256)",
+            setup_params=[{"type": "uint256"}],
+            setup_payable=False,
+            asset_signature="asset()",
+        )
+        reentrancy = break_engine._render_reentrancy_test(
+            target,
+            {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"},
+            "withdraw()", [], 2,
+            setup_signature="deposit(uint256)",
+            setup_params=[{"type": "uint256"}],
+            setup_payable=False,
+            asset_signature="asset()",
+        )
+        for body in (repeat, reentrancy):
+            self.assertIn("uint256 assetDecimals = 18;", body)
+            self.assertIn("uint256 tokenFundingAmount = 1e18;", body)
+            self.assertIn(
+                'console2.log("ASSET_DECIMALS_FALLBACK_18", assetReadOk && !assetDecimalsVerified);',
+                body,
+            )
+        self.assertIn(
+            "assetReadOk && assetDecimalsVerified && totalTokenGain > entitlementBefore",
+            repeat,
+        )
+        self.assertIn(
+            "bool exceededEntitlement = entitlementBeforeAttackOk\n"
+            "            && !assetReadOk\n",
+            reentrancy,
+        )
+        self.assertIn(
+            "bool exceededTokenEntitlement = assetReadOk\n"
+            "            && assetDecimalsVerified\n"
+            "            && entitlementBeforeAttackOk\n"
+            "            && hostile.successes() > 0",
+            reentrancy,
+        )
+        self.assertIn(
+            "bool genericTokenBreak = assetReadOk\n"
+            "            && assetDecimalsVerified",
+            reentrancy,
+        )
+
     def test_reentrancy_parser_reason_codes_setup_and_token_preparation_failures(self):
         target = break_engine.Target("TokenVault", "0x" + "1" * 40)
 
