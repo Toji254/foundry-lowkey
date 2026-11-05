@@ -157,6 +157,7 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
 
 
 def exercise(lk: str, root: Path, env: dict[str, str], contract: str, address: str, expected_markers: list[str]) -> None:
+    run([lk, "target", "reset"], root, env)
     run([lk, "target", contract, address], root, env)
     runs_dir = root / ".audit" / "break" / "runs"
     if runs_dir.exists():
