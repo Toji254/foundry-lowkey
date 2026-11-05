@@ -129,6 +129,36 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         self.assertIn('abi.encodeWithSignature("deposit(uint256)", 1)', body)
         self.assertNotIn("IERC20Lowkey(assetToken).approve", body)
 
+    def test_unsupported_abi_exception_emits_machine_readable_refusal(self):
+        from unittest.mock import patch
+
+        with patch.object(
+            break_engine,
+            "_run_family",
+            side_effect=ValueError("unsupported ABI type 'tuple'"),
+        ):
+            result = break_engine._safe_run_family(
+                self.host,
+                {},
+                "http://127.0.0.1:8545",
+                self.target,
+                {"name": "claim", "inputs": []},
+                "replay",
+                {},
+                random.Random(7),
+            )
+
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.detail["reason_code"], "unsupported_abi")
+        self.assertEqual(result.detail["refusal"], {
+            "target": self.target.address,
+            "family": "replay",
+            "reason": "unsupported_abi",
+            "detail": "unsupported ABI type 'tuple'",
+            "minimal_cmd": None,
+            "backend": None,
+        })
+
     def test_reentrancy_actor_has_standard_receiver_hooks(self):
         body = break_engine._render_reentrancy_test(
             self.target,
