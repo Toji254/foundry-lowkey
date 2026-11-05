@@ -117,6 +117,17 @@ class StepRendererTests(unittest.TestCase):
                     normalize_manifest(manifest)
                 self.assertEqual(caught.exception.refusal["reason"], "unsupported_abi")
 
+    def test_expectation_sidecar_path_cannot_replace_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest_path = root / ".audit/steps/ReentrancySteps.expectations.json"
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps(self._manifest()), encoding="utf-8")
+            original = manifest_path.read_text(encoding="utf-8")
+            with self.assertRaises(RefusalError):
+                render_manifest(root, manifest_path, force=True)
+            self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
+
     def test_output_cannot_clobber_manifest_or_expectations_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root_with_manifest(tmp)

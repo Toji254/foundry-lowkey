@@ -325,7 +325,7 @@ def render_manifest(root: Path, manifest_path: Path, output_path: Path | None = 
     if not expectation_path.is_relative_to(root):
         _fail(normalized["target_address"], normalized["family"], "out_of_scope",
               "Trace expectation output escaped the active project.")
-    if output_path == manifest_path or output_path == expectation_path:
+    if output_path == manifest_path or output_path == expectation_path or expectation_path == manifest_path:
         _fail(normalized["target_address"], normalized["family"], "out_of_scope",
               "Generated harness output cannot replace the input manifest or trace-expectations sidecar.")
     if not force and (output_path.exists() or expectation_path.exists()):

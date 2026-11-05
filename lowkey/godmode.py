@@ -1574,6 +1574,8 @@ def _load_step_expectations(root, spec, target, family, backend):
     }
     if (
         not isinstance(payload, dict)
+        or not isinstance(payload.get("policy"), str)
+        or not payload.get("policy").strip()
         or isinstance(payload.get("schema_version"), bool)
         or not isinstance(payload.get("schema_version"), int)
         or payload.get("schema_version") != 1
