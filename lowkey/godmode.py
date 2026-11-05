@@ -453,7 +453,7 @@ def _control_entry_digest(tx, chain_id):
     return hashlib.sha256(json.dumps(entry,sort_keys=True,separators=(",",":")).encode()).hexdigest(),entry
 
 
-def _control_prestate_digest(url, receipt, addresses, slots):
+def _control_prestate_digest(url, receipt, addresses, slots, comparison_excluded_slots=None):
     block_number=int(str(receipt.get("blockNumber") or "0x0"),16)
     tx_index=int(str(receipt.get("transactionIndex") or "0x0"),16)
     if block_number<1 or tx_index!=0:
@@ -479,11 +479,59 @@ def _control_prestate_digest(url, receipt, addresses, slots):
     # The parent hash itself includes the intentionally different attacker-only
     # scenario setup transaction. Keep it in evidence, but compare the execution
     # context and explicitly declared target/account state rather than the hash.
+    excluded={str(x.get("address","")).lower()+":"+str(x.get("slot","")).lower()
+              for x in (comparison_excluded_slots or []) if isinstance(x,dict)}
     comparable={key:value for key,value in prestate.items() if key!="parent_block_hash"}
+    if excluded:
+        comparable["storage"]=[
+            row for row in comparable["storage"]
+            if str(row.get("address","")).lower()+":"+str(row.get("slot","")).lower() not in excluded
+        ]
     digest=hashlib.sha256(json.dumps(comparable,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     prestate["equivalence_fields"] = sorted(comparable.keys())
-    prestate["equivalence_policy"] = "parent block hash is retained for provenance but excluded because a declared attacker-only setup transaction changes it; block number, timestamp, base fee, declared account balances/nonces/code and declared slots are compared."
+    prestate["comparison_excluded_slots"] = sorted(excluded)
+    prestate["equivalence_policy"] = "Parent block hash is retained for provenance but excluded because scenario preparation transactions differ. Explicit scenario-parameter slots are retained in evidence but excluded from equality only after their control/attack values are independently verified. All other trace-derived and declared account/storage pre-state is compared."
     return digest,prestate
+
+
+
+def _trace_storage_prestate(url, tx_hash):
+    """Best-effort Geth/Anvil prestateTracer read set for one mined transaction."""
+    try:
+        payload=rpc(url,"debug_traceTransaction",[
+            tx_hash,{"tracer":"prestateTracer","tracerConfig":{"diffMode":False}}
+        ],60)
+    except Exception as exc:
+        return {"supported":False,"reason":str(exc)[:500],"addresses":[],"slots":[]}
+    if not isinstance(payload,dict):
+        return {"supported":False,"reason":"prestateTracer returned a non-object result.","addresses":[],"slots":[]}
+    state=payload.get("pre") if isinstance(payload.get("pre"),dict) else payload
+    addresses=[]; slots=[]
+    for raw_address,account in state.items():
+        try:
+            address=addr(raw_address)
+        except ValueError:
+            continue
+        if not isinstance(account,dict):
+            continue
+        addresses.append(address)
+        storage=account.get("storage") or {}
+        if isinstance(storage,dict):
+            for raw_slot,raw_value in storage.items():
+                slot=str(raw_slot).lower()
+                value=str(raw_value).lower()
+                if re.fullmatch(r"0x[0-9a-f]{64}",slot) and re.fullmatch(r"0x[0-9a-f]{64}",value):
+                    slots.append({"address":address,"slot":slot,"value":value})
+    slots.sort(key=lambda item:(item["address"],item["slot"]))
+    return {
+        "supported":True,
+        "mode":"prestateTracer",
+        "addresses":sorted(set(addresses)),
+        "slots":slots,
+        "slot_count":len(slots),
+        "note":"prestateTracer read-set evidence is tracer-specific and may not cover all transitive dependency state.",
+    }
+
 
 
 def _trace_control_run(root, url, name, entry, spec, env):
