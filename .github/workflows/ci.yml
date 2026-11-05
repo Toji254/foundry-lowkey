@@ -864,12 +864,12 @@ jobs:
           }
           step_manifest_path = root / ".audit/godmode/reentrancy-steps.json"
           step_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-          step_manifest_path.write_text(json.dumps(step_manifest, indent=2) + "\\n", encoding="utf-8")
+          step_manifest_path.write_text(json.dumps(step_manifest, indent=2) + "\n", encoding="utf-8")
           rendered = subprocess.run(
               ["lk", "steps", ".audit/godmode/reentrancy-steps.json", "--root", str(root)],
               cwd=root, text=True, capture_output=True,
           )
-          assert rendered.returncode == 0, rendered.stdout + "\\n" + rendered.stderr
+          assert rendered.returncode == 0, rendered.stdout + "\n" + rendered.stderr
           manifest = {
               "target_address": target,
               "step_expectations_file": ".audit/steps/ReentrancyTraceExpectation.expectations.json",

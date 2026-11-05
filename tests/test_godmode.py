@@ -249,7 +249,7 @@ class GodmodeTests(unittest.TestCase):
             def fake_run(argv, cwd, timeout=300, env=None):
                 index = run_index["value"]
                 run_index["value"] += 1
-                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\\n", "")
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\n", "")
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
                  patch.object(godmode, "run", side_effect=fake_run), \\
                  redirect_stdout(io.StringIO()):
@@ -286,7 +286,7 @@ class GodmodeTests(unittest.TestCase):
             def fake_run(argv, cwd, timeout=300, env=None):
                 tx_hash = hashes[index["value"]]
                 index["value"] += 1
-                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\\n", "")
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "")
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
                  patch.object(godmode, "run", side_effect=fake_run), \\
                  redirect_stdout(io.StringIO()):
