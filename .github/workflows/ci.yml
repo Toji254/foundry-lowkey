@@ -506,6 +506,93 @@ jobs:
           assert comparison_prestate(control) == comparison_prestate(attack), "paired prestate differs beyond declared attacker mode slot"
 
           print("PASS: one deployment; matched prestate except declared mode; control=1 withdraw; attack=2; exact calldata, events and derived storage captured")
+
+          # Exercise the actual installed lk control paired runner, not only
+          # the standalone artifact normalizer above. The runner must execute
+          # this same single-harness experiment once and consume both artifacts.
+          from pathlib import Path
+
+          attacker = control_calls[0]["from"]
+          argv = [
+              "forge", "test", "--match-path", "test/LowkeyStateDiffRecorder.t.sol",
+              "--match-test", "test_lowkey_paired_one_deployment_reentrancy", "-vv"
+          ]
+          paired_manifest = {
+              "trace_backend": "forge-state-diff",
+              "paired_forge_experiment": True,
+              "target_authenticity": "fixture",
+              "family": "reentrancy",
+              "non_economic": True,
+              "same_calls_id": "ci-one-deployment-reentrancy-v1",
+              "target_address": target,
+              "expected_chain_id": int(control["chain_id"]),
+              "expected_fork_block": int(control["block_number"]),
+              "metric_addresses": [attacker],
+              "scenario_parameters": [{
+                  "name": "attacker_callback_mode",
+                  "address": attacker,
+                  "slot": "0x0",
+                  "control_value": "0x0",
+                  "attack_value": "0x2",
+                  "description": "The only declared difference is the attacker's callback mode; the packed re-entry guard remains false.",
+              }],
+              "trace_expectations": [{
+                  "address": target,
+                  "control_min_calls": 1,
+                  "control_max_calls": 1,
+                  "attack_min_calls": 2,
+                  "attack_max_calls": 2,
+                  "description": "The callback path adds exactly one nested withdrawal on the same deployment.",
+              }],
+              "control": {
+                  "harness": "test/LowkeyStateDiffRecorder.t.sol",
+                  "support_files": ["src/LowkeyForgeStateDiffRecorder.sol"],
+                  "state_diff_file": ".audit/godmode/control-state-diff.json",
+                  "argv": argv,
+              },
+              "attack": {
+                  "harness": "test/LowkeyStateDiffRecorder.t.sol",
+                  "support_files": ["src/LowkeyForgeStateDiffRecorder.sol"],
+                  "state_diff_file": ".audit/godmode/attack-state-diff.json",
+                  "argv": argv,
+                  "semantic_check_argv": argv,
+                  "semantic_check_test": "test_lowkey_paired_one_deployment_reentrancy",
+              },
+          }
+          manifest_path = Path("paired-control.json")
+          manifest_path.write_text(json.dumps(paired_manifest, indent=2) + "\\n", encoding="utf-8")
+          freeze = subprocess.run(
+              ["lk", "control", str(manifest_path), "--root", ".", "--rpc-url",
+               "http://127.0.0.1:8545", "--freeze"],
+              text=True, capture_output=True,
+          )
+          assert freeze.returncode == 0, freeze.stdout + "\\n" + freeze.stderr
+          paired_report_path = ".audit/godmode/paired-control-report.json"
+          execution = subprocess.run(
+              ["lk", "control", str(manifest_path), "--root", ".", "--rpc-url",
+               "http://127.0.0.1:8545", "--require-frozen", "--output", paired_report_path],
+              text=True, capture_output=True,
+          )
+          assert execution.returncode == 0, execution.stdout + "\\n" + execution.stderr
+          paired_report = json.loads(Path(paired_report_path).read_text(encoding="utf-8"))
+          assert paired_report["status"] == "SIMULATED_BREAK", paired_report
+          assert paired_report["paired_forge_experiment"] is True, paired_report
+          assert paired_report["freeze"]["verified"] is True, paired_report["freeze"]
+          assert paired_report["same_entry_call_verified"] is True, paired_report
+          assert paired_report["same_prestate_verified"] is True, paired_report
+          assert paired_report["same_chain_verified"] is True, paired_report
+          assert paired_report["same_block_verified"] is True, paired_report
+          assert paired_report["same_fork_anchor_verified"] is True, paired_report
+          assert paired_report["trace_delta_verified"] is True, paired_report["trace_checks"]
+          assert paired_report["evidence_requirements_verified"] is True, paired_report["evidence_requirements"]
+          assert paired_report["semantic_invariant_verified"] is True, paired_report
+          assert paired_report["runs"]["control"]["paired_execution"] is True
+          assert paired_report["runs"]["attack"]["paired_execution"] is True
+          assert paired_report["runs"]["control"]["trace_events"]
+          assert paired_report["runs"]["attack"]["trace_events"]
+          assert paired_report["economic_policy"]["economic"] is False
+          assert paired_report["proof_status"] == "SIMULATED_BREAK"
+          print("PASS: installed lk control froze and consumed both paired Forge artifacts; verdict capped at SIMULATED_BREAK")
           PY
           python3 - <<'PY'
           import json
