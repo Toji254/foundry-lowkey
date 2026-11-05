@@ -210,9 +210,8 @@ def workspace_overview(root: str | Path = ".") -> dict[str, Any]:
             scripts = _count_files(member_root, script, {".sol", ".vy", ".vyi"})
         else:
             try:
-                analysis = project_detection.inspect_repository_canonical(member_root) if hasattr(
-                    project_detection, "inspect_repository_canonical"
-                ) else {}
+                from analysis_adapters import inspect_repository
+                analysis = inspect_repository(member_root)
             except Exception:
                 analysis = {}
             languages = dict(item.get("languages") or analysis.get("languages") or {})
@@ -223,7 +222,7 @@ def workspace_overview(root: str | Path = ".") -> dict[str, Any]:
             )
             scripts = sum(
                 _count_files(member_root, directory, {".sol", ".vy", ".vyi", ".rs", ".cairo", ".move"})
-                for directory in ("script", "scripts", "scripts")
+                for directory in ("script", "scripts")
             )
         configs = [name for name in config_markers if (member_root / name).is_file()]
         rel = member_root.relative_to(workspace).as_posix()
