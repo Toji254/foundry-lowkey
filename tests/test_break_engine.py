@@ -928,7 +928,12 @@ class BreakEngineTests(unittest.TestCase):
             entitlement_signature="balances(address)",
             asset_signature="stakeToken()",
         )
-        self.assertIn("deal(assetToken, ATTACKER, 1 ether)", body)
+        self.assertIn("uint256 tokenFundingAmount = 1;", body)
+        self.assertIn('abi.encodeWithSignature("decimals()")', body)
+        self.assertIn("reportedDecimals <= 77", body)
+        self.assertIn("tokenFundingAmount = 10 ** assetDecimals;", body)
+        self.assertIn("deal(assetToken, ATTACKER, tokenFundingAmount);", body)
+        self.assertIn('console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);', body)
         self.assertIn("IERC20Lowkey(assetToken).balanceOf(ATTACKER)", body)
         self.assertIn('console2.log("TOTAL_ATTACKER_TOKEN_GAIN"', body)
         self.assertIn("assetReadOk && totalTokenGain > entitlementBefore", body)
