@@ -1553,7 +1553,7 @@ def control(args):
         rejection_codes.append("semantic_invariant_failed")
     if not non_economic and isinstance(attack_metric,int) and attack_metric<=0:
         rejection_codes.append("net_negative")
-    if isinstance(delta,int) and delta<=0:
+    if not non_economic and isinstance(delta,int) and delta<=0:
         rejection_codes.append("control_not_outperformed")
     rejected=(
         execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
@@ -1585,7 +1585,10 @@ def control(args):
             try:
                 from . import experience_memory
             except ImportError:
-                import experience_memory
+                try:
+                    import experience_memory
+                except ImportError:
+                    from lowkey import experience_memory
             memory_feedback=experience_memory.record_feedback(
                 kind="false-positive",
                 summary="Rejected control-gate hypothesis for "+str(spec.get("same_calls_id")),

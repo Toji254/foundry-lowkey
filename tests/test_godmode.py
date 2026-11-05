@@ -731,6 +731,53 @@ class GodmodeTests(unittest.TestCase):
         self.assertFalse(result["confirmation_eligible"])
         self.assertFalse(result["net_profit_verified"])
 
+    def test_non_economic_control_requires_semantics_and_caps_at_simulated_break(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            manifest["family"] = "dos"
+            semantic_argv = [
+                sys.executable, "-c", "print('LOWKEY_SEMANTIC_INVARIANT_PASS')"
+            ]
+            manifest["attack"]["semantic_check_argv"] = semantic_argv
+            manifest_path = root / "control.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
+
+            hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
+            run_index = {"value": 0}
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                if "LOWKEY_SEMANTIC_INVARIANT_PASS" in " ".join(argv):
+                    return subprocess.CompletedProcess(
+                        argv, 0, "LOWKEY_SEMANTIC_INVARIANT_PASS\n", ""
+                    )
+                index = run_index["value"]
+                run_index["value"] += 1
+                return subprocess.CompletedProcess(
+                    argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\n", ""
+                )
+
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(
+                     target, sender, wrapper, control_gain=15, attack_gain=15)), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 0)
+            self.assertEqual(saved["status"], "SIMULATED_BREAK")
+            self.assertTrue(saved["semantic_invariant_verified"])
+            self.assertTrue(saved["economic_policy"]["accepted"])
+            self.assertEqual(saved["economic_policy"]["promotion_cap"], "SIMULATED_BREAK")
+            self.assertEqual(saved["control_delta"], 0)
+            self.assertNotIn("control_not_outperformed", saved["rejection_codes"])
+
     def test_control_rejects_non_positive_rpc_measured_portfolio_delta(self):
         from unittest.mock import patch
         import subprocess
@@ -759,6 +806,11 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["outcome"], "rejected")
             self.assertIn("control_not_outperformed", saved["rejection_codes"])
             self.assertEqual(saved["control_delta"], 0)
+            feedback = saved["memory_feedback"]
+            self.assertEqual(feedback["status"], "recorded")
+            self.assertEqual(feedback["context"]["backend"], "anvil-calltracer")
+            self.assertTrue(feedback["context_key"])
+            self.assertIn("control_not_outperformed", feedback["evidence"])
 
     def test_source_maps_classify_oracle_and_time_patterns(self):
         with tempfile.TemporaryDirectory() as tmp:
