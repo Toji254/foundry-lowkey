@@ -390,20 +390,21 @@ def _fetch_remote_evidence(root: Path, context: dict[str, Any], urls: list[str])
     return records
 
 
-def _preview_evidence_urls(context: dict[str, Any], urls: list[str]) -> None:
+def _preview_evidence_urls(context: dict[str, Any], urls: list[str], *, root: Path) -> None:
     if len(urls) > MAX_REMOTE_URLS:
         raise ValueError(f"at most {MAX_REMOTE_URLS} explicit remote evidence URLs may be supplied.")
     context["remote_evidence_requested"] = [str(url)[:2048] for url in urls]
-    context["remote_evidence"] = (
-        "Preview only: no remote URL was fetched. These explicitly supplied URLs would be treated as "
-        "untrusted supplementary evidence; local checkout remains authoritative."
-    )
+    if urls:
+        # A preview may retrieve only the exact public links the user supplied. It
+        # never calls the text provider, writes a report, or executes source/tests.
+        _fetch_remote_evidence(root, context, urls)
+        context["remote_fetch_performed"] = True
+        return
     context["remote_fetch_performed"] = False
     context_bytes = len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8"))
     if context_bytes > MAX_CONTEXT_BYTES:
         raise ValueError(
-            "the selected local context plus remote URL list exceeds the bounded preview size; "
-            "remove some URLs or narrow the finding context"
+            "the local context exceeds the bounded preview size; narrow the finding context"
         )
     context["context_bytes"] = context_bytes
 
@@ -1015,13 +1016,25 @@ def _preview(context: dict[str, Any], show_context: bool = False) -> str:
         "Execution    : no tests, writes, deploys, RPC calls or transactions",
         "",
         "The explanation command sends only this redacted, bounded context to the configured text provider.",
-        "Remote repository/audit links are not fetched by this local-only preview.",
+        "No text-provider call is made. Only explicitly supplied --evidence-url links may be fetched into this local preview.",
     ]
-    requested_urls = context.get("remote_evidence_requested") or []
-    if requested_urls:
+    remote_items = context.get("remote_evidence")
+    if isinstance(remote_items, list) and remote_items:
+        lines.extend(["", "REMOTE SUPPLEMENTARY EVIDENCE (UNTRUSTED; EXACT PREVIEW EXCERPTS)"])
+        for item in remote_items:
+            lines.append(f"  - {item.get('url')} [{item.get('status')}]")
+            if item.get("resolved_commit"):
+                match_label = "matches local commit" if item.get("matches_local_commit") is True else "differs from local commit" if item.get("matches_local_commit") is False else "local commit unavailable"
+                lines.append(f"    SHA: {item.get('resolved_commit')} ({match_label})")
+            if item.get("error"):
+                lines.append(f"    Note: {item.get('error')}")
+            if item.get("content_excerpt"):
+                lines.append("    Context sent: " + str(item.get("content_excerpt")))
+        lines.append("Remote fetch: YES — only the explicit URLs above; provider call: NO.")
+    elif requested_urls:
         lines.extend(["", "EXPLICIT REMOTE REFERENCES (NOT FETCHED)"])
         lines.extend(f"  - {url}" for url in requested_urls)
-        lines.append("Remote fetch: NO — preview never opens these URLs.")
+        lines.append("Remote fetch: NO.")
     if show_context:
         for item in context["source_files"]:
             lines += [
@@ -1066,7 +1079,7 @@ def explain_finding(
     context, _sources, _tests = _source_records(root, signal)
     urls = [str(item).strip() for item in (evidence_urls or []) if str(item).strip()]
     if preview:
-        _preview_evidence_urls(context, urls)
+        _preview_evidence_urls(context, urls, root=root)
         return _preview(context, show_context=show_context)
     if urls:
         _fetch_remote_evidence(root, context, urls)
@@ -1334,7 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "preview":
             signal = _signal(root, args.finding)
             context, _sources, _tests = _source_records(root, signal)
-            _preview_evidence_urls(context, args.evidence_url)
+            _preview_evidence_urls(context, args.evidence_url, root=root)
             if args.json:
                 print(json.dumps(context, indent=2, sort_keys=True))
             else:
