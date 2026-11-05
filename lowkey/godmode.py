@@ -2326,7 +2326,7 @@ def reprove(args):
     source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
     if ns.source_rpc_url:
         if not ns.argv_json:
-            raise ValueError("Source-verified FORK_REPRODUCED/PROFITABLE status requires --argv-json so the replay command can be inspected.")
+            raise ValueError("Source-verified FORK_REPRODUCED/FORK_PROFITABLE status requires --argv-json so the replay command can be inspected.")
         source_url=rpc_url(ns.source_rpc_url)
         if local_rpc(source_url) or urlparse(source_url).hostname==urlparse(url).hostname:
             raise ValueError("--source-rpc-url must be an independent non-local source endpoint, not the local Anvil node.")
@@ -2427,9 +2427,9 @@ def reprove(args):
     gross_delta=after_total-before_total
     net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
     if command_result is None:
-        final_status="LOCAL_TRACE_ONLY"
+        final_status="OBSERVED"
     elif source_verification["verified"]:
-        final_status="PROFITABLE" if net_profit>0 else "FORK_REPRODUCED"
+        final_status="FORK_PROFITABLE" if net_profit>0 else "FORK_REPRODUCED"
     else:
         final_status="LOCAL_PROFITABLE" if net_profit>0 else "LOCAL_REPRODUCED"
     fidelity_label="real_funded"

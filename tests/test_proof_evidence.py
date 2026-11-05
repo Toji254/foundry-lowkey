@@ -39,7 +39,7 @@ class ProofEvidenceTests(unittest.TestCase):
 
     def test_human_confirmation_is_never_inferred(self):
         self.assertEqual(classify_proof("forked_deployment", "real_funded", "profitable",
-                                        authenticity_verified=True)["status"], "PROFITABLE")
+                                        authenticity_verified=True)["status"], "FORK_PROFITABLE")
         self.assertEqual(classify_proof("forked_deployment", "real_funded", "profitable",
                                         authenticity_verified=True, human_confirmed=True)["status"],
                          "HUMAN_CONFIRMED")

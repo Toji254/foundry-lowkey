@@ -388,7 +388,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "UNPROVEN")
+            self.assertEqual(saved["status"], "UNRESOLVED")
             self.assertIn("anvil_setStorageAt", saved["reasons"][0])
             run_mock.assert_not_called()
 
@@ -487,7 +487,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "UNPROVEN")
+            self.assertEqual(saved["status"], "UNRESOLVED")
             self.assertIn("attacker_callback_flag", saved["reasons"][0])
             # Control succeeds its prepare step and its transaction; attack fails
             # during preparation, so the second send is never executed.
@@ -550,7 +550,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "UNPROVEN")
+            self.assertEqual(saved["status"], "UNRESOLVED")
             self.assertIn("LOWKEY_TRACE_TX_HASH", saved["reasons"][0])
 
     def test_reprove_reaches_profitable_only_with_a_pinned_mined_trace_and_real_gas(self):
@@ -631,7 +631,7 @@ class GodmodeTests(unittest.TestCase):
             saved = json.loads((root / ".audit/godmode/reprove.json").read_text())
             expected_fee = 21000 * 10**9
             self.assertEqual(result, 0)
-            self.assertEqual(saved["status"], "PROFITABLE")
+            self.assertEqual(saved["status"], "FORK_PROFITABLE")
             self.assertEqual(saved["fork_parent_block"], 100)
             self.assertEqual(saved["transaction_block"], 101)
             self.assertEqual(saved["gas_cost_wei"], expected_fee)
@@ -964,10 +964,10 @@ class GodmodeTests(unittest.TestCase):
 
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 2)
-            self.assertEqual(saved["status"], "UNPROVEN")
+            self.assertEqual(saved["status"], "UNRESOLVED")
             self.assertEqual(saved["outcome"], "not_run")
             self.assertFalse(saved["execution_attempted"])
-            self.assertEqual(saved["rejection_codes"], [])
+            self.assertEqual(saved["rejection_codes"], ["digest_mismatch"])
             self.assertEqual(saved["freeze"]["reason_code"], "generator_drift")
             self.assertTrue(saved["freeze"]["requires_refreeze"])
             run_mock.assert_not_called()
