@@ -137,7 +137,18 @@ def _should_prune_directory(root: Path, current: Path, name: str, prefixes: set[
     if name in IGNORED_DIRS or name.startswith(".git"):
         return True
     candidate = current / name
-    return _is_dependency_path(candidate, root, prefixes)
+    if _is_dependency_path(candidate, root, prefixes):
+        return True
+    # A workspace aggregate is walked from its root, but each Foundry member
+    # owns independent remappings. Apply the nearest package's dependency
+    # boundary while descending so packages/*/lib dependencies do not leak
+    # into the workspace's first-party source inventory.
+    for package_root in (current, *current.parents):
+        if (package_root / "foundry.toml").is_file():
+            return _is_dependency_path(candidate, package_root)
+        if package_root == root:
+            break
+    return False
 
 SUPPORT_PATH_PARTS = {
     "test", "tests", "script", "scripts", "deploy", "deployment",
