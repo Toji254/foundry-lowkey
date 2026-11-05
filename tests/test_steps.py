@@ -83,6 +83,21 @@ class StepRendererTests(unittest.TestCase):
             normalize_manifest(manifest)
         self.assertEqual(caught.exception.refusal["reason"], "no_capability")
 
+    def test_address_arguments_and_targets_use_checksum_independent_solidity_literals(self):
+        manifest = self._manifest()
+        mixed_case = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        manifest["target_address"] = mixed_case
+        manifest["steps"] = [{
+            "kind": "call",
+            "target": mixed_case,
+            "selector": "0x12345678",
+            "args": [{"type": "address", "value": mixed_case}],
+        }]
+        normalized = normalize_manifest(manifest)
+        body = __import__("lowkey.step_renderer", fromlist=["_step_body"])._step_body(normalized["steps"])
+        self.assertIn('address(bytes20(hex"5fbdb2315678afecb367f032d93f642f64180aa3"))', body)
+        self.assertNotIn("address(0x5fbdb", body)
+
     def test_no_argument_selector_has_no_abi_zero_word_appended(self):
         manifest = self._manifest()
         manifest["steps"] = [{"kind":"call","selector":"0x12345678","args":[]}]

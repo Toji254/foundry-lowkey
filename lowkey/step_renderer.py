@@ -73,7 +73,9 @@ def _typed_value(item: Any, *, target: str | None, family: str | None) -> tuple[
         _fail(target, family, "unsupported_abi", "ABI argument type must be a string.")
     abi_type = abi_type.strip()
     if abi_type == "address":
-        return abi_type, f"address({_address(value, label='ABI address value', target=target, family=family)})"
+        literal = _address(value, label="ABI address value", target=target, family=family)
+        # bytes20(hex"...") avoids Solidity's checksum-sensitive address-literal parser.
+        return abi_type, f'address(bytes20(hex"{literal[2:]}"))'
     if abi_type == "bool":
         if not isinstance(value, bool):
             _fail(target, family, "unsupported_abi", "bool ABI values must be JSON true or false.")
@@ -245,7 +247,8 @@ def _step_body(steps: list[dict[str, Any]]) -> str:
             continue
         t, c, ret, ok = (f"stepTarget{index}", f"stepCalldata{index}",
                          f"stepResult{index}", f"stepOk{index}")
-        rendered.extend(["        {", f"            address {t} = address({step['target']});",
+        target_expr = f'address(bytes20(hex"{step["target"][2:]}"))'
+        rendered.extend(["        {", f"            address {t} = {target_expr};",
                          f"            bytes memory {c} = {calldata_expr};"])
         if step["kind"] == "read":
             rendered.append(f"            (bool {ok}, bytes memory {ret}) = {t}.staticcall({c});")
