@@ -109,6 +109,8 @@ class LabResourceBuildRoutingTests(unittest.TestCase):
                 self.assertEqual(captured["test_root"], ".audit/lab")
                 self.assertIn("--threads", captured["args"])
                 self.assertIn("1", captured["args"])
+                self.assertEqual(captured["args"].count(".audit/lab/Fixture.t.sol"), 1)
+                self.assertNotIn("--match-path", captured["args"])
                 self.assertEqual(lk.os.environ.get("FOUNDRY_TEST"), "original-tests")
             finally:
                 if original_present:

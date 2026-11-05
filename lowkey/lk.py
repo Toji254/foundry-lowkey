@@ -9934,7 +9934,6 @@ def _run_scoped_lab_fixture_test(root, relative_test, safe_name, threads):
     try:
         return run_foundry([
             "test", relative_test,
-            "--match-path", relative_test,
             "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
             "--match-test", "testLowkeyLabStateDump",
             "--threads", str(max(1, int(threads))),
