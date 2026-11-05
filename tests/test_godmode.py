@@ -885,7 +885,9 @@ class GodmodeTests(unittest.TestCase):
 
     def test_forge_archive_verification_checks_pinned_header_code_and_trace_storage(self):
         target = "0x" + "1" * 40
-        normalized = godmode.normalize_forge_state_diff(
+        from lowkey.forge_state_diff import normalize_forge_state_diff
+
+        normalized = normalize_forge_state_diff(
             self._forge_artifact(), expected_target=target
         )
         parent_hash = "0x" + "b" * 64
