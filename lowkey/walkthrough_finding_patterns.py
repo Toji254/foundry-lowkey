@@ -37,7 +37,7 @@ class PatternObservation:
     logic: str = ""
     next_step: str = ""
     provenance: list[str] = field(default_factory=list)
-    evidence_status: str = "needs-investigation"
+    evidence_status: str = "syntax-match"
 
 
 _SOURCE_CONTEXT_CACHE: dict[str, list[tuple[Path, str]]] = {}
@@ -260,7 +260,7 @@ def _result(
     next_step: str,
     provenance: list[str],
     status: str = "CANDIDATE",
-    evidence_status: str = "needs-investigation",
+    evidence_status: str = "syntax-match",
 ) -> PatternObservation:
     return PatternObservation(
         pattern_id=pattern,
