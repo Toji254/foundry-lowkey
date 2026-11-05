@@ -16,12 +16,17 @@ from typing import Any
 try:
     from . import walkthrough as core
     from . import audit_context
+    from . import project_detection
 except ImportError:
     import walkthrough as core
     try:
         import audit_context
     except ImportError:
         audit_context = None
+    try:
+        import project_detection
+    except ImportError:
+        project_detection = None
 
 
 @dataclass
@@ -386,6 +391,8 @@ def _resolve_import_file(
     importer: Path,
     import_value: str,
     remappings: list[tuple[str, str]],
+    *,
+    boundary: Path | None = None,
 ) -> Path | None:
     raw = import_value.strip()
     candidates: list[Path] = []
@@ -400,7 +407,7 @@ def _resolve_import_file(
     for candidate in candidates:
         try:
             resolved = candidate.resolve()
-            resolved.relative_to(root.resolve())
+            resolved.relative_to((boundary or root).resolve())
         except (OSError, RuntimeError, ValueError):
             continue
         if resolved.is_file() and resolved.suffix.lower() == ".sol":
@@ -413,8 +420,16 @@ def _imported_source_context(
     source_path: Path | None,
     source: str | None,
 ) -> list[tuple[Path, str]]:
-    """Return only the current file and its actually resolved import closure."""
+    """Return the selected source and import closure, including first-party workspace packages."""
     project = root.resolve()
+    boundary = project
+    if project_detection is not None:
+        try:
+            candidate_boundary = Path(project_detection.workspace_root(project)).resolve()
+            project.relative_to(candidate_boundary)
+            boundary = candidate_boundary
+        except (OSError, RuntimeError, ValueError, AttributeError):
+            boundary = project
     if source_path is None:
         return _context_source_files(project)
     try:
@@ -440,7 +455,7 @@ def _imported_source_context(
         current, current_text = queue.pop(0)
         try:
             current = current.resolve()
-            current.relative_to(project)
+            current.relative_to(boundary)
         except (OSError, RuntimeError, ValueError):
             continue
         if current in visited:
@@ -449,7 +464,9 @@ def _imported_source_context(
         resolved.append((current, current_text))
         clean = core._strip_source_comments(current_text, "solidity", mask_strings=True)
         for match in import_pattern.finditer(clean):
-            imported = _resolve_import_file(project, current, match.group(1), remappings)
+            imported = _resolve_import_file(
+                project, current, match.group(1), remappings, boundary=boundary,
+            )
             if imported is None or imported in visited:
                 continue
             try:
