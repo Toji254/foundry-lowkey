@@ -855,7 +855,7 @@ class GodmodeTests(unittest.TestCase):
             harness = root / "test" / "Attack.t.sol"
             harness.parent.mkdir()
             harness.write_text(
-                "contract Attack { function setUp() public { vm.createSelectFork(\\"mainnet\\", 20000000); } }",
+                'contract Attack { function setUp() public { vm.createSelectFork("mainnet", 20000000); } }',
                 encoding="utf-8",
             )
             artifact = self._forge_artifact()
