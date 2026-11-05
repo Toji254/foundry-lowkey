@@ -822,39 +822,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(feedback["context_key"])
             self.assertIn("did not exceed the control metric", feedback["evidence"])
 
-    def test_source_maps_classify_oracle_and_time_patterns(self):
     def test_successful_attack_is_rejected_when_net_profit_after_gas_is_negative(self):
-    def test_generator_drift_stops_control_without_rejecting_frozen_hypothesis(self):
-        from unittest.mock import patch
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            manifest, _, _, _ = self._control_manifest(root)
-            (root / "generator.py").write_text("print('v1')", encoding="utf-8")
-            manifest["generator_files"] = ["generator.py"]
-            manifest_path = root / "control.json"
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
-            (root / "generator.py").write_text("print('v2')", encoding="utf-8")
-
-            with patch.object(godmode, "run") as run_mock, \
-                 patch.object(godmode, "rpc") as rpc_mock, \
-                 redirect_stdout(io.StringIO()):
-                result = godmode.run_control([
-                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
-                ])
-
-            saved = json.loads((root / ".audit/godmode/control.json").read_text())
-            self.assertEqual(result, 2)
-            self.assertEqual(saved["status"], "UNPROVEN")
-            self.assertEqual(saved["outcome"], "not_run")
-            self.assertFalse(saved["execution_attempted"])
-            self.assertEqual(saved["rejection_codes"], [])
-            self.assertEqual(saved["freeze"]["reason_code"], "generator_drift")
-            self.assertTrue(saved["freeze"]["requires_refreeze"])
-            run_mock.assert_not_called()
-            rpc_mock.assert_not_called()
-
         from unittest.mock import patch
         import subprocess
 
@@ -868,13 +836,13 @@ class GodmodeTests(unittest.TestCase):
                 index = run_index["value"]
                 run_index["value"] += 1
                 return subprocess.CompletedProcess(
-                    argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\n", ""
+                    argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\\n", ""
                 )
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(
                      target, sender, wrapper, control_gain=20, attack_gain=10,
-                     gas_used=15, gas_price=1)), \
-                 patch.object(godmode, "run", side_effect=fake_run), \
+                     gas_used=15, gas_price=1)), \\
+                 patch.object(godmode, "run", side_effect=fake_run), \\
                  redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
@@ -892,6 +860,38 @@ class GodmodeTests(unittest.TestCase):
             self.assertIn("net_negative", saved["rejection_codes"])
             self.assertIn("control_not_outperformed", saved["rejection_codes"])
 
+    def test_generator_drift_stops_control_without_rejecting_frozen_hypothesis(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, _, _, _ = self._control_manifest(root)
+            (root / "generator.py").write_text("print('v1')", encoding="utf-8")
+            manifest["generator_files"] = ["generator.py"]
+            manifest_path = root / "control.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
+            (root / "generator.py").write_text("print('v2')", encoding="utf-8")
+
+            with patch.object(godmode, "run") as run_mock, \\
+                 patch.object(godmode, "rpc") as rpc_mock, \\
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 2)
+            self.assertEqual(saved["status"], "UNPROVEN")
+            self.assertEqual(saved["outcome"], "not_run")
+            self.assertFalse(saved["execution_attempted"])
+            self.assertEqual(saved["rejection_codes"], [])
+            self.assertEqual(saved["freeze"]["reason_code"], "generator_drift")
+            self.assertTrue(saved["freeze"]["requires_refreeze"])
+            run_mock.assert_not_called()
+            rpc_mock.assert_not_called()
+
+    def test_source_maps_classify_oracle_and_time_patterns(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "Oracle.sol").write_text("""
