@@ -622,14 +622,14 @@ def _semantic_execution_verified(exit_code, output):
     text_value = str(output or "")
     if "LOWKEY_SEMANTIC_INVARIANT_PASS" in text_value:
         return True
-    failed = re.search(r"\b[1-9][0-9]*\s+failed\\b", text_value, re.I)
+    failed = re.search(r"\b[1-9][0-9]*\s+failed\b", text_value, re.I)
     if failed:
         return False
     if re.search(r"\[PASS\]", text_value):
         return True
-    if re.search(r"\btest\s+result:\s*ok\\b", text_value, re.I):
+    if re.search(r"\btest\s+result:\s*ok\b", text_value, re.I):
         return True
-    if re.search(r"\b[1-9][0-9]*\s+passed\\b", text_value, re.I):
+    if re.search(r"\b[1-9][0-9]*\s+passed\b", text_value, re.I):
         return True
     return False
 
