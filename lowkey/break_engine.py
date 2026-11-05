@@ -189,16 +189,6 @@ class AttackResult:
     break_condition: bool = False
     detail: dict[str, Any] | None = None
 
-    def __post_init__(self) -> None:
-        self.detail = dict(self.detail or {})
-        fallback_codes = {
-            "BLOCKED": "blocked_unclassified",
-            "LAB_ISSUE": "lab_issue_unclassified",
-            "TIMEOUT": "execution_timeout",
-        }
-        if self.status in fallback_codes:
-            self.detail.setdefault("reason_code", fallback_codes[self.status])
-
 
 def _slug(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "target"))
@@ -1054,30 +1044,18 @@ def _run_simple_evm_family(
     signature = _format_signature(fn, host)
     actor_accounts = _anvil_accounts(host, config)
     if not actor_accounts:
-        return AttackResult(
-            family, target.contract, target.address, signature, "BLOCKED",
-            "No unlocked local Anvil accounts were detected.",
-            detail={"reason_code": "no_unlocked_anvil_accounts"},
-        )
+        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "No unlocked local Anvil accounts were detected.")
     actor = actor_accounts[1] if len(actor_accounts) > 1 else actor_accounts[0]
     mode = "one" if family in {"replay", "accounting", "access"} else "zero"
     values = _make_value(host, fn, rng, mode, config)
     calldata, error = _encode_call(host, config, target, fn, values)
     if not calldata:
-        return AttackResult(
-            family, target.contract, target.address, signature, "BLOCKED",
-            f"Could not encode a generic call: {error}",
-            detail={"reason_code": "call_encoding_failed", "error": str(error or "")},
-        )
+        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", f"Could not encode a generic call: {error}")
     value = _payable_value(fn, opts, "small")
 
     snapshot = _cast_snapshot(host, rpc)
     if not snapshot:
-        return AttackResult(
-            family, target.contract, target.address, signature, "BLOCKED",
-            "Local RPC does not expose evm_snapshot/anvil_snapshot.",
-            detail={"reason_code": "snapshot_unavailable"},
-        )
+        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "Local RPC does not expose evm_snapshot/anvil_snapshot.")
 
     try:
         before_target = _cast_balance(host, rpc, target.address)
@@ -1109,10 +1087,7 @@ def _run_simple_evm_family(
             max_data, max_error = _encode_call(host, config, target, fn, max_values)
             if not zero_data or not max_data:
                 reason = zero_error or max_error or "could not encode edge values"
-                return AttackResult(
-                    family, target.contract, target.address, signature, "BLOCKED", reason,
-                    detail={"reason_code": "edge_call_encoding_failed"},
-                )
+                return AttackResult(family, target.contract, target.address, signature, "BLOCKED", reason)
             _cast_revert(host, rpc, snapshot)
             zero = _cast_send(host, rpc, target, zero_data, value, actor)
             zero_success = zero.returncode == 0
@@ -1294,8 +1269,6 @@ def _render_repeat_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
-        bool tokenApprovalAttempted = false;
-        bool tokenApprovalSuccess = false;
         uint256 attackerTokenBefore = 0;
         uint256 attackerTokenMid = 0;
         uint256 attackerTokenAfter = 0;
@@ -1311,8 +1284,6 @@ def _render_repeat_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
-        bool tokenApprovalAttempted = false;
-        bool tokenApprovalSuccess = false;
         {{
             (bool ok, bytes memory data) = TARGET.staticcall(
                 abi.encodeWithSignature("{asset_signature}")
@@ -1342,8 +1313,7 @@ def _render_repeat_test(
                 }}
             }}
             deal(assetToken, ATTACKER, tokenFundingAmount);
-            tokenApprovalAttempted = true;
-            tokenApprovalSuccess = _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
+            _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
         }}
 """
         asset_baseline = """
@@ -1400,15 +1370,15 @@ contract LowkeyBreakRepeat is Test {{
         );
         if (!ok) return false;
         if (data.length == 0) return true;
-        if (data.length != 32) return false;
-        uint256 returned = abi.decode(data, (uint256));
-        return returned == 1;
+        require(data.length == 32, "MALFORMED_APPROVE_RETURN");
+        bool returned = abi.decode(data, (bool));
+        return returned;
     }}
 
-    function _lowkeySafeApprove(address token, address spender, uint256 amount) internal returns (bool) {{
-        if (_lowkeyApproveCall(token, spender, amount)) return true;
-        if (!_lowkeyApproveCall(token, spender, 0)) return false;
-        return _lowkeyApproveCall(token, spender, amount);
+    function _lowkeySafeApprove(address token, address spender, uint256 amount) internal {{
+        if (_lowkeyApproveCall(token, spender, amount)) return;
+        require(_lowkeyApproveCall(token, spender, 0), "APPROVE_RESET_FAILED");
+        require(_lowkeyApproveCall(token, spender, amount), "APPROVE_RETRY_FAILED");
     }}
 
     function test_break_repeat() public {{
@@ -1463,10 +1433,7 @@ contract LowkeyBreakRepeat is Test {{
         console2.logBytes(secondReturndata);
         console2.log("TOTAL_ATTACKER_GAIN", totalGain);
         console2.log("TOTAL_TARGET_OUTFLOW", totalTargetOutflow);
-        console2.log("ASSET_GETTER_DISCOVERED", {str(bool(asset_signature)).lower()});
         console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
-        console2.log("TOKEN_APPROVAL_ATTEMPTED", tokenApprovalAttempted);
-        console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
@@ -1713,8 +1680,6 @@ def _render_reentrancy_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
-        bool tokenApprovalAttempted = false;
-        bool tokenApprovalSuccess = false;
 """
     if asset_signature:
         asset_discovery = f"""
@@ -1723,8 +1688,6 @@ def _render_reentrancy_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
-        bool tokenApprovalAttempted = false;
-        bool tokenApprovalSuccess = false;
         {{
             (bool assetOk, bytes memory assetData) = TARGET.staticcall(
                 abi.encodeWithSignature("{asset_signature}")
@@ -1748,8 +1711,7 @@ def _render_reentrancy_test(
                 }}
             }}
             deal(assetToken, address(hostile), tokenFundingAmount);
-            tokenApprovalAttempted = true;
-            tokenApprovalSuccess = hostile.safeApproveToken(assetToken, TARGET, type(uint256).max);
+            hostile.safeApproveToken(assetToken, TARGET, type(uint256).max);
         }}
 """
     payload_expr = (
@@ -1847,15 +1809,14 @@ contract LowkeyBreakReentrant {{
         );
         if (!ok) return false;
         if (data.length == 0) return true;
-        if (data.length != 32) return false;
-        uint256 returned = abi.decode(data, (uint256));
-        return returned == 1;
+        require(data.length == 32, "MALFORMED_APPROVE_RETURN");
+        return abi.decode(data, (bool));
     }}
 
-    function safeApproveToken(address token, address spender, uint256 amount) external returns (bool) {{
-        if (_lowkeyApproveCall(token, spender, amount)) return true;
-        if (!_lowkeyApproveCall(token, spender, 0)) return false;
-        return _lowkeyApproveCall(token, spender, amount);
+    function safeApproveToken(address token, address spender, uint256 amount) external {{
+        if (_lowkeyApproveCall(token, spender, amount)) return;
+        require(_lowkeyApproveCall(token, spender, 0), "APPROVE_RESET_FAILED");
+        require(_lowkeyApproveCall(token, spender, amount), "APPROVE_RETRY_FAILED");
     }}
 
     function registerERC777() external returns (bool) {{
@@ -1980,11 +1941,7 @@ contract LowkeyBreakReentrancy is Test {{
         uint256 targetTokenLoss = targetTokenBefore > targetTokenAfter
             ? targetTokenBefore - targetTokenAfter : 0;
 
-        console2.log("ASSET_GETTER_DISCOVERED", {str(bool(asset_signature)).lower()});
         console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
-        console2.log("TOKEN_APPROVAL_ATTEMPTED", tokenApprovalAttempted);
-        console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
-        console2.log("SETUP_FUNCTION_DISCOVERED", {str(bool(setup_signature)).lower()});
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
@@ -2221,16 +2178,12 @@ def _result_from_output(
             summary="Generated Forge harness exceeded the safety timeout. No security conclusion is supported.",
             evidence_path=evidence_path,
             break_condition=False,
-            detail={
-                "reason_code": "forge_timeout",
-                "raw_tail": "\n".join(text_output.splitlines()[-80:]),
-            },
+            detail={"raw_tail": "\n".join(text_output.splitlines()[-80:])},
         )
     found = re.search(r"LOWKEY_BREAK\s+(true|false)", text_output, flags=re.I)
     is_break = bool(found and found.group(1).lower() == "true")
     structured = "LOWKEY_BREAK_FAMILY" in text_output
     status = "BREAK" if is_break else ("OBSERVED" if structured else "BLOCKED")
-    reason_code = "forge_no_lowkey_telemetry" if status == "BLOCKED" else None
     summary = {
         "BREAK": "Concrete break condition reached.",
         "OBSERVED": "Attack executed; no concrete break condition reached.",
@@ -2261,21 +2214,8 @@ def _result_from_output(
             _extract_console_bytes(text_output, "SECOND_RETURNDATA_LENGTH"),
         )
         function_name = _function_name(function or "target call")
-        asset_getter_discovered = _read_telemetry_bool(text_output, "ASSET_GETTER_DISCOVERED")
-        asset_tracking_available = _read_telemetry_bool(text_output, "ASSET_TRACKING_AVAILABLE")
-        approval_attempted = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_ATTEMPTED")
-        approval_success = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_SUCCESS")
-        if asset_getter_discovered is True and asset_tracking_available is False:
-            status = "BLOCKED"
-            reason_code = "asset_getter_unavailable"
-            summary = "The discovered asset getter did not return a usable deployed token contract; token-backed setup was not evaluated."
-        elif approval_attempted is True and approval_success is False:
-            status = "BLOCKED"
-            reason_code = "token_approval_failed"
-            summary = "The token approval attempt failed, including the optional-return/reset-and-retry path; token-backed setup was not evaluated."
-        elif setup_success is False:
+        if setup_success is False:
             status = "LAB_ISSUE"
-            reason_code = "setup_call_reverted"
             reason = decoded_setup or (
                 "No revert data was returned."
                 if not setup_len
@@ -2295,8 +2235,6 @@ def _result_from_output(
             # A rejected call with concrete revert evidence was executed and observed.
             # Keep BLOCKED only when the probe produced no evidence that the target handled it.
             status = "OBSERVED" if (decoded_first or first_len or target_revert_data) else "BLOCKED"
-            if status == "BLOCKED":
-                reason_code = "target_rejected_without_revert_evidence"
             reason = decoded_first or (
                 "No revert data was returned."
                 if not first_len
@@ -2318,34 +2256,6 @@ def _result_from_output(
                 f"First {function_name} attempt succeeded; the repeat attempt was rejected. "
                 f"No repeat break was demonstrated. {reason}"
             )
-
-    elif structured and family == "reentrancy":
-        setup_discovered = _read_telemetry_bool(text_output, "SETUP_FUNCTION_DISCOVERED")
-        setup_success = _read_telemetry_bool(text_output, "TARGET_SETUP_SUCCESS")
-        setup_len = _read_telemetry_uint(text_output, "TARGET_SETUP_RETURNDATA_LENGTH") or 0
-        asset_getter_discovered = _read_telemetry_bool(text_output, "ASSET_GETTER_DISCOVERED")
-        asset_tracking_available = _read_telemetry_bool(text_output, "ASSET_TRACKING_AVAILABLE")
-        approval_attempted = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_ATTEMPTED")
-        approval_success = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_SUCCESS")
-        if asset_getter_discovered is True and asset_tracking_available is False:
-            status = "BLOCKED"
-            reason_code = "asset_getter_unavailable"
-            summary = "The discovered asset getter did not return a usable deployed token contract; token-backed setup was not evaluated."
-        elif approval_attempted is True and approval_success is False:
-            status = "BLOCKED"
-            reason_code = "token_approval_failed"
-            summary = "The token approval attempt failed, including the optional-return/reset-and-retry path; token-backed setup was not evaluated."
-        elif setup_discovered is True and setup_success is False:
-            status = "LAB_ISSUE"
-            reason_code = "setup_call_reverted"
-            setup_revert = _decode_revert_data(
-                host, config, target,
-                _extract_console_bytes(text_output, "TARGET_SETUP_RETURNDATA_LENGTH"),
-            )
-            summary = (
-                "Target rejected the generated setup call before reentrancy could be evaluated. "
-                + (setup_revert or ("No revert data was returned." if not setup_len else f"Revert data length: {setup_len} bytes."))
-            )
     elif structured and target_rejected and not reentry_reached:
         summary = (
             "Target rejected the attack before the callback boundary. "
@@ -2360,8 +2270,6 @@ def _result_from_output(
     detail = {
         "raw_tail": raw_tail,
     }
-    if reason_code:
-        detail["reason_code"] = reason_code
     if structured and family in {"replay", "accounting"}:
         detail.update({
             "setup_revert": _decode_revert_data(
@@ -2501,7 +2409,6 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             function=signature,
             status="BLOCKED",
             summary=f"Could not encode a generic call: {error}",
-            detail={"reason_code": "call_encoding_failed", "error": str(error or "")},
         )
 
     value = _payable_value(fn, opts, "small")
@@ -2519,16 +2426,12 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         except ValueError as error:
             return AttackResult(family, target.contract, target.address, signature, "BLOCKED", str(error),
                                 detail={"reason_code": "unsupported_abi"})
-        except Exception as error:
-            return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED",
-                f"Could not inspect target ABI for setup/entitlement/asset discovery: {error}",
-                detail={
-                    "reason_code": "abi_discovery_failed",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                },
-            )
+        except Exception:
+            setup_signature = None
+            setup_params = []
+            setup_payable = False
+            entitlement_signature = None
+            asset_signature = None
         body = _render_repeat_test(
             target,
             fn,
@@ -2558,10 +2461,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         max_data, max_error = _encode_call(host, config, target, fn, max_values)
         if not zero_data or not max_data:
             reason = zero_error or max_error or "could not encode edge values"
-            return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED", reason,
-                detail={"reason_code": "edge_call_encoding_failed"},
-            )
+            return AttackResult(family, target.contract, target.address, signature, "BLOCKED", reason)
         body = _render_boundary_test(target, signature, zero_data, max_data, value)
     elif family == "time":
         body = _render_time_test(target, signature, calldata, value)
@@ -2602,16 +2502,6 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 family, target.contract, target.address, signature, "BLOCKED", str(error),
                 detail={"reason_code": "unsupported_abi"},
             )
-        except Exception as error:
-            return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED",
-                f"Could not inspect target ABI for setup/entitlement/asset discovery: {error}",
-                detail={
-                    "reason_code": "abi_discovery_failed",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                },
-            )
     elif family == "upgrade":
         body = _render_access_test(
             target,
@@ -2625,10 +2515,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         # protocol-specific invariant before Lowkey may call it a BREAK.
         body = _render_access_test(target, signature, calldata, value, break_on_success=False)
     else:
-        return AttackResult(
-            family, target.contract, target.address, signature, "BLOCKED", "Unknown family.",
-            detail={"reason_code": "unknown_attack_family"},
-        )
+        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "Unknown family.")
 
     harness = _write_harness(host, f"{target.contract}_{name}_{family}", body)
 
@@ -2647,7 +2534,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         return AttackResult(
             family, target.contract, target.address, signature, "BLOCKED",
             f"Forge execution failed to start: {exc}",
-            detail={"reason_code": "forge_execution_error", "harness": harness},
+            detail={"harness": harness},
         )
 
     archive_path = _archive_harness(host, harness)
@@ -2728,7 +2615,6 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             status="BLOCKED",
             summary=f"Attack generator failed safely: {exc}",
             detail={
-                "reason_code": "generator_error",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             },

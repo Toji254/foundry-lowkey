@@ -233,6 +233,11 @@ class BreakEngineTests(unittest.TestCase):
             break_engine._basic_solidity_expr("address[]", "[]"),
             "new address[](0)",
         )
+    def test_generic_array_expression_is_supported_for_dynamic_arrays(self):
+        self.assertEqual(
+            break_engine._basic_solidity_expr("address[]", "[]"),
+            "new address[](0)",
+        )
         self.assertEqual(
             break_engine._basic_solidity_expr("uint256[]", "[]"),
             "new uint256[](0)",
@@ -302,10 +307,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("tokenFundingAmount = 10 ** assetDecimals", body)
         self.assertIn("ASSET_DECIMALS_VERIFIED", body)
         self.assertIn("_lowkeySafeApprove(assetToken, TARGET", body)
-        self.assertIn("return _lowkeyApproveCall(token, spender, amount);", body)
-        self.assertIn("if (data.length != 32) return false;", body)
-        self.assertIn("TOKEN_APPROVAL_SUCCESS", body)
-        self.assertIn("ASSET_GETTER_DISCOVERED", body)
+        self.assertIn("APPROVE_RESET_FAILED", body)
         self.assertIn("vm.prank(ATTACKER);", body)
         self.assertNotIn("function approve(address spender, uint256 amount) external returns (bool)", body)
         self.assertIn('abi.encodeWithSignature("deposit(uint256)", tokenFundingAmount)', body)
@@ -342,69 +344,6 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('keccak256("ERC777TokensRecipient")', body)
         self.assertIn("0x4e2312e0", body)
         self.assertIn("ERC777_RECEIVER_REGISTERED", body)
-        self.assertIn("if (data.length != 32) return false;", body)
-        self.assertIn("SETUP_FUNCTION_DISCOVERED", body)
-        self.assertIn("ASSET_GETTER_DISCOVERED", body)
-        self.assertIn("TOKEN_APPROVAL_ATTEMPTED", body)
-        self.assertIn("TOKEN_APPROVAL_SUCCESS", body)
-        self.assertIn("return _lowkeyApproveCall(token, spender, amount);", body)
-
-    def test_reentrancy_parser_reason_codes_setup_and_token_preparation_failures(self):
-        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
-
-        setup_failed = break_engine._result_from_output(
-            type("Host", (), {"tool_path": lambda self, name: name})(),
-            family="reentrancy",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY reentrancy\\n"
-                "SETUP_FUNCTION_DISCOVERED true\\n"
-                "TARGET_SETUP_SUCCESS false\\n"
-                "TARGET_SETUP_RETURNDATA_LENGTH 0\\n"
-                "LOWKEY_BREAK false\\n"
-            ),
-            evidence_path=None,
-            config={},
-        )
-        self.assertEqual(setup_failed.status, "LAB_ISSUE")
-        self.assertEqual(setup_failed.detail["reason_code"], "setup_call_reverted")
-
-        asset_failed = break_engine._result_from_output(
-            type("Host", (), {})(),
-            family="reentrancy",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY reentrancy\\n"
-                "SETUP_FUNCTION_DISCOVERED false\\n"
-                "ASSET_GETTER_DISCOVERED true\\n"
-                "ASSET_TRACKING_AVAILABLE false\\n"
-                "LOWKEY_BREAK false\\n"
-            ),
-            evidence_path=None,
-        )
-        self.assertEqual(asset_failed.status, "BLOCKED")
-        self.assertEqual(asset_failed.detail["reason_code"], "asset_getter_unavailable")
-
-        approval_failed = break_engine._result_from_output(
-            type("Host", (), {})(),
-            family="reentrancy",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY reentrancy\\n"
-                "SETUP_FUNCTION_DISCOVERED false\\n"
-                "ASSET_GETTER_DISCOVERED true\\n"
-                "ASSET_TRACKING_AVAILABLE true\\n"
-                "TOKEN_APPROVAL_ATTEMPTED true\\n"
-                "TOKEN_APPROVAL_SUCCESS false\\n"
-                "LOWKEY_BREAK false\\n"
-            ),
-            evidence_path=None,
-        )
-        self.assertEqual(approval_failed.status, "BLOCKED")
-        self.assertEqual(approval_failed.detail["reason_code"], "token_approval_failed")
 
     def test_lifecycle_functions_do_not_get_irrelevant_generic_families(self):
         initialize = {
@@ -999,73 +938,6 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('console2.log("TOTAL_ATTACKER_TOKEN_GAIN"', body)
         self.assertIn("assetReadOk && totalTokenGain > entitlementBefore", body)
 
-    def test_repeat_parser_reason_codes_asset_and_optional_return_approval_failures(self):
-        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
-
-        asset_failed = break_engine._result_from_output(
-            type("Host", (), {})(),
-            family="accounting",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY accounting\\n"
-                "SETUP_SUCCESS true\\n"
-                "FIRST_SUCCESS true\\n"
-                "SECOND_SUCCESS false\\n"
-                "ASSET_GETTER_DISCOVERED true\\n"
-                "ASSET_TRACKING_AVAILABLE false\\n"
-                "LOWKEY_BREAK false\\n"
-            ),
-            evidence_path=None,
-            config={},
-        )
-        self.assertEqual(asset_failed.status, "BLOCKED")
-        self.assertEqual(asset_failed.detail["reason_code"], "asset_getter_unavailable")
-
-        approval_failed = break_engine._result_from_output(
-            type("Host", (), {})(),
-            family="accounting",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY accounting\\n"
-                "SETUP_SUCCESS true\\n"
-                "FIRST_SUCCESS true\\n"
-                "SECOND_SUCCESS false\\n"
-                "ASSET_GETTER_DISCOVERED true\\n"
-                "ASSET_TRACKING_AVAILABLE true\\n"
-                "TOKEN_APPROVAL_ATTEMPTED true\\n"
-                "TOKEN_APPROVAL_SUCCESS false\\n"
-                "LOWKEY_BREAK false\\n"
-            ),
-            evidence_path=None,
-            config={},
-        )
-        self.assertEqual(approval_failed.status, "BLOCKED")
-        self.assertEqual(approval_failed.detail["reason_code"], "token_approval_failed")
-
-    def test_repeat_parser_prioritizes_token_preparation_failure_over_setup_revert(self):
-        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
-        result = break_engine._result_from_output(
-            type("Host", (), {"tool_path": lambda self, name: name})(),
-            family="accounting",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY accounting\\n"
-                "SETUP_SUCCESS false\\n"
-                "SETUP_RETURNDATA_LENGTH 0\\n"
-                "ASSET_GETTER_DISCOVERED true\\n"
-                "ASSET_TRACKING_AVAILABLE true\\n"
-                "TOKEN_APPROVAL_ATTEMPTED true\\n"
-                "TOKEN_APPROVAL_SUCCESS false\\n"
-            ),
-            evidence_path=None,
-            config={},
-        )
-        self.assertEqual(result.status, "BLOCKED")
-        self.assertEqual(result.detail["reason_code"], "token_approval_failed")
-
     def test_result_parser_marks_invalid_setup_as_lab_issue(self):
         target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)
         output = """LOWKEY_BREAK_FAMILY accounting
@@ -1103,123 +975,6 @@ SECOND_RETURNDATA_LENGTH 0
         )
         self.assertEqual(result.status, "BLOCKED")
 
-
-
-    def test_attack_result_refusals_always_have_machine_readable_codes(self):
-        cases = [
-            ("BLOCKED", "blocked_unclassified"),
-            ("LAB_ISSUE", "lab_issue_unclassified"),
-            ("TIMEOUT", "execution_timeout"),
-        ]
-        for status, expected_code in cases:
-            with self.subTest(status=status):
-                result = break_engine.AttackResult(
-                    family="reentrancy",
-                    contract="Vault",
-                    address="0x" + "1" * 40,
-                    function="withdraw()",
-                    status=status,
-                    summary="refusal",
-                )
-                self.assertEqual(result.detail["reason_code"], expected_code)
-
-    def test_result_parser_assigns_specific_reason_codes_to_refusals(self):
-        target = break_engine.Target("Vault", "0x" + "1" * 40)
-        no_telemetry = break_engine._result_from_output(
-            type("Host", (), {})(),
-            family="reentrancy",
-            target=target,
-            function="withdraw()",
-            output="CompilerError: stack too deep",
-            evidence_path=None,
-        )
-        self.assertEqual(no_telemetry.status, "BLOCKED")
-        self.assertEqual(no_telemetry.detail["reason_code"], "forge_no_lowkey_telemetry")
-
-        setup_rejected = break_engine._result_from_output(
-            type("Host", (), {"tool_path": lambda self, name: name})(),
-            family="accounting",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY accounting\\n"
-                "SETUP_SUCCESS false\\n"
-                "SETUP_RETURNDATA_LENGTH 0\\n"
-            ),
-            evidence_path=None,
-            config={},
-        )
-        self.assertEqual(setup_rejected.status, "LAB_ISSUE")
-        self.assertEqual(setup_rejected.detail["reason_code"], "setup_call_reverted")
-
-        unexplained_rejection = break_engine._result_from_output(
-            type("Host", (), {"tool_path": lambda self, name: name})(),
-            family="accounting",
-            target=target,
-            function="withdraw()",
-            output=(
-                "LOWKEY_BREAK_FAMILY accounting\\n"
-                "SETUP_SUCCESS true\\n"
-                "FIRST_SUCCESS false\\n"
-                "FIRST_RETURNDATA_LENGTH 0\\n"
-                "SECOND_SUCCESS false\\n"
-                "SECOND_RETURNDATA_LENGTH 0\\n"
-                "TOTAL_TARGET_OUTFLOW 0\\n"
-                "LOWKEY_BREAK false\\n"
-            ),
-            evidence_path=None,
-            config={},
-        )
-        self.assertEqual(unexplained_rejection.status, "BLOCKED")
-        self.assertEqual(
-            unexplained_rejection.detail["reason_code"],
-            "target_rejected_without_revert_evidence",
-        )
-
-    def test_abi_discovery_errors_are_reason_coded_not_silently_ignored(self):
-        import random
-        import tempfile
-        from unittest.mock import patch
-
-        class Context:
-            def __init__(self, root):
-                self.root = root
-
-            def foundry_project_root(self):
-                return self.root
-
-        class Host:
-            def __init__(self, root):
-                self.audit_context = Context(root)
-
-        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
-        function = {
-            "name": "withdraw",
-            "inputs": [],
-            "stateMutability": "nonpayable",
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            for family in ("replay", "reentrancy"):
-                with self.subTest(family=family):
-                    with patch.object(
-                        break_engine, "_encode_call", return_value=("0x1234", None)
-                    ), patch.object(
-                        break_engine, "_discover_functions",
-                        side_effect=RuntimeError("ABI provider unavailable"),
-                    ):
-                        result = break_engine._run_family(
-                            Host(tmp),
-                            {},
-                            "http://127.0.0.1:8545",
-                            target,
-                            function,
-                            family,
-                            {},
-                            random.Random(1),
-                        )
-                    self.assertEqual(result.status, "BLOCKED")
-                    self.assertEqual(result.detail["reason_code"], "abi_discovery_failed")
-                    self.assertIn("ABI provider unavailable", result.detail["error"])
 
 if __name__ == "__main__":
     unittest.main()

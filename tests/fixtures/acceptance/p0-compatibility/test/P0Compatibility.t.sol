@@ -181,15 +181,30 @@ interface INoReturnApprovalFixture {
     function approve(address spender, uint256 amount) external;
 }
 
+contract MockFalseApprovalFixture {
+    function approve(address, uint256) external pure returns (bool) {
+        return false;
+    }
+}
+
+contract MockMalformedApprovalFixture {
+    fallback() external {
+        assembly {
+            mstore(0, 1)
+            return(31, 1)
+        }
+    }
+}
+
 contract LowkeySafeApproveFixture {
     function prime(address token, address spender, uint256 amount) external {
         require(_approveCall(token, spender, amount), "PRIME_FAILED");
     }
 
-    function safeApprove(address token, address spender, uint256 amount) external {
-        if (_approveCall(token, spender, amount)) return;
-        require(_approveCall(token, spender, 0), "APPROVE_RESET_FAILED");
-        require(_approveCall(token, spender, amount), "APPROVE_RETRY_FAILED");
+    function safeApprove(address token, address spender, uint256 amount) external returns (bool) {
+        if (_approveCall(token, spender, amount)) return true;
+        if (!_approveCall(token, spender, 0)) return false;
+        return _approveCall(token, spender, amount);
     }
 
     function _approveCall(address token, address spender, uint256 amount) private returns (bool) {
@@ -198,8 +213,9 @@ contract LowkeySafeApproveFixture {
         );
         if (!ok) return false;
         if (data.length == 0) return true;
-        require(data.length == 32, "MALFORMED_APPROVE_RETURN");
-        return abi.decode(data, (bool));
+        if (data.length != 32) return false;
+        uint256 returned = abi.decode(data, (uint256));
+        return returned == 1;
     }
 }
 
@@ -208,8 +224,20 @@ contract P0CompatibilityAcceptance {
         MockUSDTNoReturnFixture token = new MockUSDTNoReturnFixture();
         LowkeySafeApproveFixture probe = new LowkeySafeApproveFixture();
         probe.prime(address(token), address(probe), 7);
-        probe.safeApprove(address(token), address(probe), 99);
+        require(probe.safeApprove(address(token), address(probe), 99), "SAFE_APPROVE_FAILED");
         require(token.allowance(address(probe), address(probe)) == 99, "RESET_RETRY_FAILED");
+    }
+
+    function test_false_approval_return_fails_closed_without_reverting() external {
+        MockFalseApprovalFixture token = new MockFalseApprovalFixture();
+        LowkeySafeApproveFixture probe = new LowkeySafeApproveFixture();
+        require(!probe.safeApprove(address(token), address(probe), 99), "FALSE_RETURN_ACCEPTED");
+    }
+
+    function test_malformed_approval_return_fails_closed_without_reverting() external {
+        MockMalformedApprovalFixture token = new MockMalformedApprovalFixture();
+        LowkeySafeApproveFixture probe = new LowkeySafeApproveFixture();
+        require(!probe.safeApprove(address(token), address(probe), 99), "MALFORMED_RETURN_ACCEPTED");
     }
 
     function test_optional_decimals_metadata_sets_six_decimal_funding_unit() external {
