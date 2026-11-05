@@ -247,6 +247,70 @@ class BreakEngineTests(unittest.TestCase):
             "new bytes[](0)",
         )
 
+
+    def test_setup_abi_supports_dynamic_and_fixed_address_arrays(self):
+        function = {
+            "name": "deposit",
+            "inputs": [
+                {"name": "recipients", "type": "address[]"},
+                {"name": "reviewers", "type": "address[3]"},
+                {"name": "amount", "type": "uint256"},
+            ],
+            "stateMutability": "nonpayable",
+        }
+        setup = break_engine._find_setup_function([function])
+        self.assertEqual(break_engine._format_signature(setup), "deposit(address[],address[3],uint256)")
+        values = break_engine._setup_argument_samples(setup["inputs"])
+        self.assertEqual(len(break_engine._parse_array_samples(values[0])), 1)
+        self.assertEqual(len(break_engine._parse_array_samples(values[1], 3)), 3)
+        declarations, expressions = break_engine._solidity_argument_declarations(
+            setup["inputs"], values, "setup", address_expression="ATTACKER"
+        )
+        self.assertIn("address[] memory setupArg0 = new address[](1);", declarations)
+        self.assertIn("address[3] memory setupArg1;", declarations)
+        self.assertEqual(expressions, ["setupArg0", "setupArg1", "1"])
+
+    def test_setup_abi_refuses_tuple_instead_of_fabricating_value(self):
+        function = {
+            "name": "deposit",
+            "inputs": [{"name": "payload", "type": "tuple"}],
+            "stateMutability": "nonpayable",
+        }
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            break_engine._find_setup_function([function])
+
+    def test_fixed_array_values_must_match_declared_length(self):
+        with self.assertRaisesRegex(ValueError, "exactly 3"):
+            break_engine._parse_array_samples("[0x" + "1" * 40 + "]", 3)
+
+    def test_repeat_renderer_materializes_setup_arrays_and_respects_nonpayable(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_repeat_test(
+            target, {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"},
+            "withdraw()", [], "0", "accounting", None,
+            setup_signature="deposit(address[])", setup_params=[{"type": "address[]"}],
+            setup_payable=False,
+        )
+        self.assertIn("address[] memory setupArg0 = new address[](1);", body)
+        self.assertIn('abi.encodeWithSignature("deposit(address[])", setupArg0)', body)
+        self.assertIn("TARGET.call{value: 0}(setupData)", body)
+
+    def test_reentrancy_actor_implements_standard_token_receiver_hooks(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_reentrancy_test(
+            target, {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"},
+            "withdraw()", [], 2, setup_signature="deposit()", setup_params=[],
+            setup_payable=False,
+        )
+        self.assertIn("function tokensReceived(", body)
+        self.assertNotIn("onERC777Received", body)
+        self.assertIn("function onERC1155Received(", body)
+        self.assertIn("function onERC1155BatchReceived(", body)
+        self.assertIn("function onERC721Received(", body)
+        self.assertIn('keccak256("ERC777TokensRecipient")', body)
+        self.assertIn("0x4e2312e0", body)
+        self.assertIn("ERC777_RECEIVER_REGISTERED", body)
+
     def test_lifecycle_functions_do_not_get_irrelevant_generic_families(self):
         initialize = {
             "name": "initialize",
