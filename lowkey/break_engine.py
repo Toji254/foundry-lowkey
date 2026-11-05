@@ -1329,7 +1329,7 @@ contract LowkeyBreakRepeat is Test {{
         if (returndata.length == 0) return true;
         if (returndata.length != 32) return false;
         uint256 returned;
-        assembly {{ returned := mload(add(returndata, 32)) }}
+        assembly ("memory-safe") {{ returned := mload(add(returndata, 32)) }}
         return returned == 1;
     }}
 
