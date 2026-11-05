@@ -117,14 +117,75 @@ Use scenario_parameters to declare the *only* expected attacker-side setup diffe
 
 The attack metric is no longer printed by the scripts. Lowkey calculates the native-ETH balance delta for metric_addresses from the transaction's parent block to its mined block. The transaction sender must be included, so its actual gas spend is included in the portfolio delta. The control and attack are run from Anvil snapshots and reverted independently, then Lowkey compares their measured portfolio deltas. ERC20/token-share profit metrics are not yet supported by this control gate.
 
-Run it with:
+Freeze the manifest and every referenced command/support file before execution:
 
 ~~~bash
-lk control .audit/control.json --rpc-url http://127.0.0.1:8545
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --freeze
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --require-frozen
 lk break --family reentrancy --control-manifest .audit/control.json
 ~~~
 
-same_calls_id is a human-readable experiment label, not evidence. A BREAK from lk control means the on-chain root call and declared parent pre-state matched and the attack produced a larger measured native-ETH portfolio delta. It is not human confirmation, and unlisted storage or off-chain assumptions remain the operator's responsibility. The transaction scripts must not hard-code results or reuse old transaction hashes; Lowkey verifies that each hash is mined in the current local Anvil run.
+The freeze binds the manifest, scenario settings, trace expectations, command arrays, explicit harness/support files and their SHA-256 hashes. Any change invalidates the freeze; freeze again after reviewing the new inputs. A run without a verified freeze remains review-only and cannot be promoted.
+
+same_calls_id is a human-readable experiment label, not evidence. For compatibility, Anvil control retains `legacy_status: BREAK` when the old local break gate passes. The new `status` / `proof_status` are deliberately stricter: a local fixture or local reimplementation is not proof about a deployed target, and the example CI fixture therefore has legacy BREAK but proof status OBSERVED. The report keeps target authenticity, execution fidelity and outcome as separate axes. A local control result is not human confirmation. The transaction scripts must not hard-code results or reuse old transaction hashes; Lowkey verifies that each hash is mined in the current local Anvil run.
+
+The Anvil path attempts to derive a storage read-set with Geth/Anvil `prestateTracer`. Every discovered slot is retained and checked against its own transaction's parent block. Manifest-declared accounts/slots are used for control/attack state equivalence; shared discovered slots are compared for matching prestate values, while control-only and attack-only slots remain visible as path-specific evidence. Set `require_trace_storage: true` to fail closed when the node does not support `prestateTracer`. This read-set is tracer-specific and is not a completeness proof for all dependencies.
+
+### Forge state-diff backend
+
+For Foundry fork tests where the RPC provider does not expose a transaction tracer,
+Lowkey supports `trace_backend: "forge-state-diff"`. This backend consumes a
+`Vm.startStateDiffRecording()` / `vm.stopAndReturnStateDiff()` artifact generated
+inside the test. The reusable recorder is documented in
+`docs/forge-state-diff.md` and `docs/LowkeyForgeStateDiffRecorder.sol`.
+
+A Forge manifest must set `expected_chain_id` and `expected_fork_block`, include
+`target_address` in `source_addresses`, and give each control/attack run its
+own `harness`, `state_diff_file` and `forge test` command. List the protocol
+dependencies whose authenticity matters in `source_addresses`; list imported
+test helpers in each run's `support_files`. Freeze the manifest after those
+files and commands are final. Use an independent archive RPC when running
+`lk control` to compare the fork anchor, pinned block, deployed code, balances,
+nonces and trace-derived storage for those declared protocol addresses.
+
+Forge state-diff is execution evidence from a test VM, not a signed EOA transaction.
+It has no receipt, effective gas price or full transaction envelope. Consequently
+it can support `FORK_OBSERVED` (when deployment authenticity is independently
+checked) or a capped `SIMULATED_BREAK` for a semantic non-economic result, but it
+cannot independently earn `PROFITABLE`. Its state-access list is only what the
+recorded execution touched; dependencies not listed and reached slots not covered
+remain out of scope.
+
+### Negative controls and non-economic families
+
+A manifest can include `negative_control` and set `require_negative_control:
+true`. Each trace expectation then needs `negative_control_min_calls` and
+`negative_control_max_calls`. An Anvil negative control may set
+`expected_receipt_status: "0x0"` for a deliberately reverting transaction; the
+revert is recorded as the expected control result rather than being confused
+with a tool failure.
+
+For DoS/liveness, replay, signature or authorization claims where profit is not
+the correct measure, set `non_economic: true` or pass `--non-economic` and
+provide `semantic_check_argv` for each scenario. A successful command must
+execute a concrete assertion about the impact. This path does not claim positive
+economics and is capped at `SIMULATED_BREAK` until stronger family-specific
+evidence exists. Rejected completed experiments receive machine-readable
+`rejection_codes` and are added to Lowkey's private experience-memory feedback
+store. Tooling/setup failures remain unproven observations rather than being
+misreported as disproven vulnerabilities.
+
+The proof axes are:
+
+- `target_authenticity`: unknown, fixture, local_reimplementation, or independently verified forked_deployment.
+- `fidelity`: unknown, synthetic_state, simulated_caller, simulated_dependencies, constrained_inputs, or real_funded.
+- `outcome`: not_run, observed, profitable, or rejected.
+
+`PROFITABLE` requires independently verified deployed target authenticity,
+real-funded execution and positive measured net economics. A simulated caller
+or constrained fuzz input cannot be promoted to that label. `HUMAN_CONFIRMED`
+is never assigned automatically; a reviewer must explicitly record a disposition
+in the evidence ledger.
 
 ### Fidelity promotion ladder
 
