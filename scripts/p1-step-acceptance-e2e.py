@@ -89,7 +89,7 @@ def main() -> int:
         matches = [
             f"{line_no}: {line.strip()}"
             for line_no, line in enumerate(source_lines, start=1)
-            if re.search(rf"\\bfunction\\s+{name}\\s*\\(", line)
+            if re.search(rf"\bfunction\s+{name}\s*\(", line)
         ]
         if not matches:
             raise AssertionError(f"Installed Vm.sol does not contain function {name}(...).")
