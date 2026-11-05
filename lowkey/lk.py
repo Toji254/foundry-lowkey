@@ -23953,23 +23953,45 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 source="manual",
             )
         elif len(args)==2 and is_address(args[1]):
+            contract_name = str(args[0]).strip()
             artifact = config.get("abi_paths",{}).get(args[1])
+            if artifact:
+                artifact_data = read_artifact(os.path.expanduser(str(artifact)))
+                if (
+                    not artifact_data
+                    or artifact_contract_name(str(artifact), artifact_data).casefold()
+                    != contract_name.casefold()
+                ):
+                    artifact = None
+
+            # An explicit "contract name + address" selection must also bind
+            # the matching project artifact. Otherwise the target appears
+            # selected but ABI-driven commands still pass a bare function name
+            # to Cast. Resolve only an exact contract-name match in this project.
+            if not artifact and contract_name:
+                lookup_config = dict(config)
+                lookup_config["target"] = args[1]
+                lookup_config["target_contract"] = contract_name
+                artifact = auto_abi_path(args[1], lookup_config, root=root)
+
             validation = _validate_manual_target_runtime(
                 config,
                 root,
                 args[1],
-                args[0],
+                contract_name,
                 artifact,
             )
             if validation != 0:
                 return validation
-            remember_project_target(config, root, args[0], args[1])
-            config["target"]=args[1]
-            config["target_contract"]=args[0]
+            remember_project_target(config, root, contract_name, args[1])
+            config["target"] = args[1]
+            config["target_contract"] = contract_name
+            if artifact:
+                remember_abi_path(config, args[1], artifact)
             audit_context.set_target(
                 root,
                 address=args[1],
-                contract=args[0],
+                contract=contract_name,
                 artifact=artifact,
                 source="manual",
             )

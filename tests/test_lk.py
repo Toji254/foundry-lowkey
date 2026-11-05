@@ -3533,6 +3533,68 @@ contract Pool {
         self.assertEqual(config["target_contract"],"Escrow")
         self.assertIn("Target selected: escrow ->",output.getvalue())
 
+    def test_manual_target_name_resolves_matching_project_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source_dir = root / "src"
+            artifact_dir = root / "out" / "EscrowFlow.sol"
+            source_dir.mkdir(parents=True)
+            artifact_dir.mkdir(parents=True)
+            source = source_dir / "EscrowFlow.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20; contract EscrowFlow { "
+                "function createEscrow(address recipient) external payable {} }",
+                encoding="utf-8",
+            )
+            artifact = artifact_dir / "EscrowFlow.json"
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "EscrowFlow",
+                    "sourceName": "src/EscrowFlow.sol",
+                    "abi": [{
+                        "type": "function",
+                        "name": "createEscrow",
+                        "stateMutability": "payable",
+                        "inputs": [{"name": "recipient", "type": "address"}],
+                        "outputs": [{"name": "escrowId", "type": "bytes32"}],
+                    }],
+                    "bytecode": {"object": "0x60006000"},
+                    "deployedBytecode": {"object": "0x60006000"},
+                }),
+                encoding="utf-8",
+            )
+            address = "0x" + "e" * 40
+            config = {
+                "target": None,
+                "target_contract": None,
+                "rpc": None,
+                "aliases": {},
+                "targets": {},
+                "abi_paths": {},
+            }
+
+            with patch.object(lk, "activate_project_target", return_value=None), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "_validate_manual_target_runtime", return_value=0), \
+                 patch.object(lk, "save_config"), \
+                 patch.object(lk.audit_context, "set_target") as set_target:
+                result = lk._dispatch_command_impl(
+                    "target", ["EscrowFlow", address], config
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(config["target"], address)
+            self.assertEqual(config["target_contract"], "EscrowFlow")
+            self.assertEqual(
+                config["abi_paths"][address],
+                str(artifact.resolve()),
+            )
+            set_target.assert_called_once()
+            self.assertEqual(
+                set_target.call_args.kwargs["artifact"],
+                str(artifact.resolve()),
+            )
+
     def test_target_named_deployment_missing_is_error(self):
         with patch.object(
             lk,
