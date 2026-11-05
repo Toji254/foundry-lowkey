@@ -120,7 +120,8 @@ class GodmodeTests(unittest.TestCase):
                     tx.update(attack_tx_fields)
                 return tx
             if method == "eth_getTransactionReceipt":
-                return {"status": "0x1", "blockNumber": "0x65", "transactionIndex": "0x0"}
+                status = "0x0" if state["tx_hash"] == "0x" + "c" * 64 else "0x1"
+                return {"status": status, "blockNumber": "0x65", "transactionIndex": "0x0"}
             if method == "eth_getBalance":
                 if params[1] == "0x65":
                     gain = control_gain if state["tx_hash"] == "0x" + "a" * 64 else attack_gain
@@ -281,6 +282,51 @@ class GodmodeTests(unittest.TestCase):
             self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertEqual(saved["control_delta"], 3)
             self.assertFalse(saved["attack_metric_positive_after_gas"])
+
+    def test_control_supports_expected_revert_negative_control(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            manifest["require_negative_control"] = True
+            manifest["trace_expectations"][0]["negative_control_min_calls"] = 1
+            manifest["trace_expectations"][0]["negative_control_max_calls"] = 1
+            manifest["negative_control"] = {
+                "argv": [sys.executable, "-c", "pass"],
+                "expected_receipt_status": "0x0",
+            }
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
+
+            hashes = ["0x" + "a" * 64, "0x" + "b" * 64, "0x" + "c" * 64]
+            index = {"value": 0}
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                tx_hash = hashes[index["value"]]
+                index["value"] += 1
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\\n", "")
+
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
+                 patch.object(godmode, "run", side_effect=fake_run), \\
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            negative = saved["runs"]["negative_control"]
+            self.assertEqual(result, 0)
+            self.assertTrue(saved["negative_control_present"])
+            self.assertTrue(saved["negative_control_verified"])
+            self.assertEqual(negative["receipt_status"], "0x0")
+            self.assertEqual(negative["expected_receipt_status"], "0x0")
+            self.assertEqual(
+                saved["trace_checks"][0]["observed_call_counts"]["negative_control"], 1
+            )
+            self.assertEqual(saved["legacy_status"], "BREAK")
+            self.assertEqual(saved["proof_status"], "OBSERVED")
 
     def test_control_blocks_rpc_state_fabrication_in_prepare_and_attack_scripts(self):
         from unittest.mock import patch
