@@ -1343,24 +1343,27 @@ def control(args):
         elif "simulated_dependencies" in fidelity_labels: fidelity="simulated_dependencies"
         elif "constrained_inputs" in fidelity_labels: fidelity="constrained_inputs"
     else:
-        fidelity="real_funded" if all(
-            (rows.get(name,{}).get("fidelity") or {}).get("scan_complete",False) and
-            not (rows.get(name,{}).get("fidelity") or {}).get("synthetic_state",False) and
-            not (rows.get(name,{}).get("fidelity") or {}).get("fork_reproduction_blockers")
+        scanned_fidelity=[
+            rows.get(name,{}).get("fidelity") or {}
             for name in ("control","attack")
-        ) else (
-            "synthetic_state" if any(
-                (rows.get(name,{}).get("fidelity") or {}).get("synthetic_state",False)
-                for name in ("control","attack")
-            ) else (
-                "constrained_inputs" if any(
-                    (rows.get(name,{}).get("fidelity") or {}).get("signals",[]) and
-                    any(signal.get("kind")=="test_assumption"
-                        for signal in (rows.get(name,{}).get("fidelity") or {}).get("signals",[]))
-                    for name in ("control","attack")
-                ) else "unknown"
-            )
-        )
+        ]
+        if any(item.get("synthetic_state") for item in scanned_fidelity):
+            fidelity="synthetic_state"
+        elif any(any(signal.get("kind")=="caller_impersonation"
+                     for signal in item.get("signals",[])) for item in scanned_fidelity):
+            fidelity="simulated_caller"
+        elif any(any(signal.get("kind")=="external_call_mock"
+                     for signal in item.get("signals",[])) for item in scanned_fidelity):
+            fidelity="simulated_dependencies"
+        elif any(any(signal.get("kind")=="test_assumption"
+                     for signal in item.get("signals",[])) for item in scanned_fidelity):
+            fidelity="constrained_inputs"
+        elif all(item.get("scan_complete") and not item.get("fork_reproduction_blockers")
+                 for item in scanned_fidelity):
+            fidelity="real_funded"
+        else:
+            fidelity="unknown"
+
 
     rejection_codes=[]
     if not same_entry: rejection_codes.append("mismatch")
