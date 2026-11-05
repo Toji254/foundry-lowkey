@@ -1861,7 +1861,13 @@ class LowkeyCastTests(unittest.TestCase):
                     with patch.object(lk.audit_context, "record_tool"):
                         with patch.object(lk, "effective_rpc", return_value=config["rpc"]):
                             with patch.object(lk, "rpc_json", side_effect=fake_rpc):
-                                with patch.object(lk, "load_abi", return_value=[]):
+                                stale_abi = [{
+                                    "type": "function",
+                                    "name": "ping",
+                                    "inputs": [],
+                                    "outputs": [],
+                                }]
+                                with patch.object(lk, "load_abi", return_value=stale_abi):
                                     with patch.object(lk, "auto_abi_path", return_value=str(artifact_path)) as auto_abi:
                                         with patch.object(lk, "remember_abi_path", side_effect=remember):
                                             with patch.object(lk, "save_config"):
@@ -1886,6 +1892,45 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Field recipient: Bob", rendered)
         auto_abi.assert_called_once_with(target, config, root=root)
         self.assertEqual(config["abi_paths"][target], str(artifact_path))
+
+    def test_event_decoder_recovers_missing_event_from_project_artifact(self):
+        target = "0x" + "1" * 40
+        topic0 = "0x" + "a" * 64
+        event = {
+            "type": "event",
+            "name": "EscrowCreated",
+            "inputs": [{"name": "recipient", "type": "address", "indexed": True}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = pathlib.Path(tmp) / "EscrowFlow.json"
+            artifact_path.write_text(json.dumps({"abi": [event]}), encoding="utf-8")
+            stale_abi = [{
+                "type": "function",
+                "name": "createEscrow",
+                "inputs": [{"name": "recipient", "type": "address"}],
+                "outputs": [],
+            }]
+            config = {"target": target, "target_contract": "EscrowFlow"}
+            log = {
+                "address": target,
+                "topics": [topic0, "0x" + "2" * 64],
+                "data": "0x",
+            }
+            with patch.object(lk, "auto_abi_path", return_value=str(artifact_path)) as auto_abi:
+                with patch.object(lk, "cast_output", return_value=(0, topic0, "")):
+                    with patch.object(lk, "decode_event_values", side_effect=lambda *_: print("Recipient: Bob") or 0):
+                        with patch.object(lk, "remember_abi_path") as remember:
+                            with patch.object(lk, "save_config"):
+                                decoded = lk.decode_event_log(
+                                    config,
+                                    log,
+                                    target=target,
+                                    abi=stale_abi,
+                                    root=tmp,
+                                )
+        self.assertEqual(decoded, ("EscrowCreated(address)", "Recipient: Bob"))
+        auto_abi.assert_called_once_with(target, config, root=tmp)
+        remember.assert_called_once_with(config, target, str(artifact_path))
 
     def test_event_decoder_falls_back_when_transaction_abi_is_empty(self):
         target = "0x" + "1" * 40
