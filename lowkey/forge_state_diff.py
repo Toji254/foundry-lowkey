@@ -75,6 +75,35 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         raise ValueError("Forge state diff must include a 32-byte fork_parent_hash captured before the measured call.")
     if expected_target and target!=_address(expected_target,"expected_target"):
         raise ValueError("Forge state-diff target_address does not match the control manifest.")
+    def normalize_logs(key):
+        raw_logs = payload.get(key) or []
+        if not isinstance(raw_logs, list):
+            raise ValueError(f"{key} must be an array.")
+        normalized = []
+        for log_index, raw_log in enumerate(raw_logs):
+            if not isinstance(raw_log, dict):
+                raise ValueError(f"{key}[{log_index}] must be an object.")
+            emitter = _address(raw_log.get("emitter"), f"{key}[{log_index}].emitter")
+            raw_topics = raw_log.get("topics")
+            if not isinstance(raw_topics, list):
+                raise ValueError(f"{key}[{log_index}].topics must be an array.")
+            topics = []
+            for topic_index, raw_topic in enumerate(raw_topics):
+                topic = str(raw_topic or "").lower()
+                if not re.fullmatch(r"0x[0-9a-f]{64}", topic):
+                    raise ValueError(f"{key}[{log_index}].topics[{topic_index}] must be bytes32.")
+                topics.append(topic)
+            data = str(raw_log.get("data") or "0x").lower()
+            if not re.fullmatch(r"0x(?:[0-9a-f]{2})*", data):
+                raise ValueError(f"{key}[{log_index}].data must be even-length hex bytes.")
+            normalized.append({
+                "index": log_index, "emitter": emitter, "topics": topics,
+                "signature": topics[0] if topics else None, "data": data,
+            })
+        return normalized
+
+    setup_events = normalize_logs("setup_events")
+    domain_events = normalize_logs("domain_events")
     raw_accesses=payload.get("accesses")
     if not isinstance(raw_accesses,list) or not raw_accesses:
         raise ValueError("Forge state-diff artifact contains no account accesses.")
@@ -156,6 +185,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "chain_id":chain_id,"block_number":block_number,
         "target_address":target,"target_code_hash":code_hash,"fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
+        "setup_events":setup_events,"domain_events":domain_events,
         "prestate":prestate,"prestate_sha256":prestate_digest,"balance_deltas":balance_deltas,
         "raw_account_accesses":raw_accesses,"entry_call":entry_payload,
         "entry_call_sha256":entry_digest,

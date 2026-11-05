@@ -90,6 +90,39 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         json = string.concat(json, "]");
     }
 
+    function _serializeDomainLog(Vm.Log memory log)
+        private
+        pure
+        returns (string memory json)
+    {
+        string memory topicsJson = "[";
+        for (uint256 i; i < log.topics.length; ++i) {
+            if (i != 0) topicsJson = string.concat(topicsJson, ",");
+            topicsJson = string.concat(
+                topicsJson,
+                _quoted(_hex(abi.encodePacked(log.topics[i])))
+            );
+        }
+        topicsJson = string.concat(topicsJson, "]");
+        json = "{";
+        json = string.concat(json, '"emitter":', _quoted(_hex(abi.encodePacked(log.emitter))));
+        json = string.concat(json, ',"topics":', topicsJson);
+        json = string.concat(json, ',"data":', _quoted(_hex(log.data)), "}");
+    }
+
+    function _serializeDomainLogs(Vm.Log[] memory logs)
+        private
+        pure
+        returns (string memory json)
+    {
+        json = "[";
+        for (uint256 i; i < logs.length; ++i) {
+            if (i != 0) json = string.concat(json, ",");
+            json = string.concat(json, _serializeDomainLog(logs[i]));
+        }
+        json = string.concat(json, "]");
+    }
+
     function _serializeAccountAccess(Vm.AccountAccess memory access)
         private
         view
@@ -116,6 +149,22 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
     }
 
     function _lowkeyWriteTrace(string memory outputPath) internal {
+        Vm.Log[] memory emptyLogs = new Vm.Log[](0);
+        _lowkeyWriteTrace(outputPath, emptyLogs, emptyLogs);
+    }
+
+    function _lowkeyWriteTrace(string memory outputPath, Vm.Log[] memory domainEvents) internal {
+        Vm.Log[] memory emptyLogs = new Vm.Log[](0);
+        _lowkeyWriteTrace(outputPath, domainEvents, emptyLogs);
+    }
+
+    // setupEvents are emitted during target/actor setup before the state-diff
+    // window. domainEvents are recorded during the measured target execution.
+    function _lowkeyWriteTrace(
+        string memory outputPath,
+        Vm.Log[] memory domainEvents,
+        Vm.Log[] memory setupEvents
+    ) internal {
         address target = _lowkeyTarget;
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
         require(accesses.length != 0, "Lowkey: empty state-diff window");
@@ -132,6 +181,8 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         finalJson = string.concat(finalJson, ',"target_address":', _quoted(_hex(abi.encodePacked(target))));
         finalJson = string.concat(finalJson, ',"target_code_hash":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))));
         finalJson = string.concat(finalJson, ',"fork_parent_hash":', _quoted(_hex(abi.encodePacked(_lowkeyParentHash))));
+        finalJson = string.concat(finalJson, ',"setup_events":', _serializeDomainLogs(setupEvents));
+        finalJson = string.concat(finalJson, ',"domain_events":', _serializeDomainLogs(domainEvents));
         finalJson = string.concat(finalJson, ',"accesses":', accessesJson, "}");
 
         vm.createDir(".audit/godmode", true);

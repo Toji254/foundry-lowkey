@@ -19,6 +19,16 @@ def artifact():
         "target_address": TARGET,
         "target_code_hash": CODE_HASH,
         "fork_parent_hash": "0x" + "b" * 64,
+        "setup_events": [{
+            "emitter": TARGET,
+            "topics": ["0x" + "c" * 64],
+            "data": "0x1234",
+        }],
+        "domain_events": [{
+            "emitter": TARGET,
+            "topics": ["0x" + "d" * 64, "0x" + "0" * 64],
+            "data": "0x5678",
+        }],
         "accesses": [
             {
                 "kind": 0, "account": TARGET, "accessor": WRAPPER,
@@ -76,6 +86,10 @@ class ForgeStateDiffTests(unittest.TestCase):
         self.assertTrue(result["trace_events"][0]["storage"][0]["is_write"])
         self.assertEqual(result["fork_parent_hash"], "0x" + "b" * 64)
         self.assertEqual(result["prestate"][0]["storage"][0]["slot"], "0x" + "0" * 64)
+        self.assertEqual(result["setup_events"][0]["signature"], "0x" + "c" * 64)
+        self.assertEqual(result["domain_events"][0]["emitter"], TARGET)
+        self.assertEqual(result["domain_events"][0]["signature"], "0x" + "d" * 64)
+        self.assertEqual(result["domain_events"][0]["topics"][1], "0x" + "0" * 64)
 
     def test_rejects_wrong_target(self):
         with self.assertRaisesRegex(ValueError, "does not match"):
