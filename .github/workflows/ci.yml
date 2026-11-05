@@ -781,7 +781,7 @@ jobs:
           freeze = Path("/tmp/lowkey-fixture/.audit/godmode/control.freeze.json")
           payload = json.loads(freeze.read_text())
           payload["freeze_sha256"] = "0" * 64
-          freeze.write_text(json.dumps(payload, indent=2) + "\\n")
+          freeze.write_text(json.dumps(payload, indent=2) + "\n")
           PY
           set +e
           lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --require-frozen
