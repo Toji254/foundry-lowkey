@@ -134,6 +134,7 @@ def main():
         assert telemetry_bool(raw, "HOSTILE_WRAPPER_SUCCESS"), raw[-6000:]
         assert telemetry_bool(raw, "TARGET_OUTER_SUCCESS"), raw[-6000:]
         assert telemetry_bool(raw, "REENTRY_REACHED"), raw[-6000:]
+        assert telemetry_bool(raw, "ENTITLEMENT_BEFORE_ATTACK_READ_OK"), raw[-6000:]
         assert telemetry(raw, "REENTRY_SUCCESSES") >= 1, raw[-6000:]
         received = telemetry(raw, "ATTACKER_WITHDRAW_RECEIVED")
         entitlement = telemetry(raw, "ENTITLEMENT_BEFORE_ATTACK")
@@ -148,6 +149,9 @@ def main():
             "returndata.length == 0",
         ):
             assert marker in harness, f"{token_label}: missing generator feature {marker!r}"
+        assert telemetry_bool(raw, "TOKEN_DECIMALS_METADATA_READ"), raw[-6000:]
+        assert telemetry_bool(raw, "ASSET_TRACKING_AVAILABLE"), raw[-6000:]
+        assert telemetry_bool(raw, "ENTITLEMENT_READ_OK"), raw[-6000:]
         assert telemetry(raw, "TOKEN_DECIMALS") == 6, raw[-6000:]
         assert telemetry(raw, "TOKEN_FUNDING_AMOUNT") == 1_000_000, raw[-6000:]
         assert telemetry_bool(raw, "SETUP_SUCCESS"), raw[-6000:]
