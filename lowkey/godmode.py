@@ -1710,6 +1710,8 @@ def reprove(args):
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
     p.add_argument("--prestate-slot",action="append",default=[],help="Additional storage slot to compare between local fork and source, as ADDRESS:SLOT.")
     p.add_argument("--argv-json")
+    p.add_argument("--support-file",action="append",default=[],
+                   help="Additional project file imported by the harness/replay script; repeat for transitive helpers.")
     p.add_argument("--semantic-check-argv-json",help="Separate command whose passing assertion demonstrates the non-economic security invariant.")
     p.add_argument("--family",default="unknown")
     p.add_argument("--non-economic",action="store_true")
@@ -1729,7 +1731,32 @@ def reprove(args):
     url=rpc_url(ns.rpc_url)
     if not local_rpc(url): raise ValueError("Reproof accepts local Anvil fork endpoint only.")
     if ns.fork_block<0: raise ValueError("--fork-block must be non-negative.")
-    fidelity=analyze_harness_fidelity(harness.read_text(encoding="utf-8",errors="replace"),harness.relative_to(root).as_posix())
+    support_files=list(ns.support_file)
+    for value in support_files:
+        candidate=(root/value).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            raise ValueError("Support file must be an existing project file: "+value)
+    # Include directly referenced local scripts from both commands. Imported
+    # helpers beyond these files remain the operator's responsibility and are
+    # called out explicitly in the fidelity report.
+    command_candidates=[]
+    for raw_argv in (ns.argv_json,ns.semantic_check_argv_json):
+        if not raw_argv:
+            continue
+        try:
+            parsed=json.loads(raw_argv)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Replay/semantic command argv must be valid JSON.") from exc
+        if not isinstance(parsed,list) or not all(isinstance(x,str) for x in parsed):
+            raise ValueError("Replay/semantic command argv must be a string array.")
+        for token in parsed:
+            candidate=Path(token).expanduser()
+            candidate=(root/candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+            if candidate.is_relative_to(root) and candidate.is_file():
+                command_candidates.append(candidate.relative_to(root).as_posix())
+    scan_entry={"harness":harness.relative_to(root).as_posix(),
+                "support_files":sorted(set(support_files+command_candidates))}
+    fidelity=_analyze_control_fidelity(root,scan_entry,{})
     blockers=fidelity.get("fork_reproduction_blockers") or []
     if blockers:
         payload={"status":"SIMULATED_BREAK","command_run":False,"fidelity":fidelity,
@@ -1937,6 +1964,8 @@ def reprove(args):
         "profitable" if (net_profit>0 and not non_economic) else
         ("observed" if (not non_economic or semantic_invariant_verified) else "rejected")
     )
+    if not fidelity.get("scan_complete"):
+        fidelity_label="unknown"
     try:
         proof_axes=proof_evidence.classify_proof(
             "forked_deployment" if source_verification.get("verified") else "unknown",
