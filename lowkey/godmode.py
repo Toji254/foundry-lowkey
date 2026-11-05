@@ -1727,8 +1727,35 @@ def reprove(args):
         final_status="PROFITABLE" if net_profit>0 else "FORK_REPRODUCED"
     else:
         final_status="LOCAL_PROFITABLE" if net_profit>0 else "LOCAL_REPRODUCED"
+    fidelity_label="real_funded"
+    if fidelity.get("synthetic_state"):
+        fidelity_label="synthetic_state"
+    elif any(signal.get("kind")=="caller_impersonation" for signal in fidelity.get("signals",[])):
+        fidelity_label="simulated_caller"
+    elif any(signal.get("kind")=="external_call_mock" for signal in fidelity.get("signals",[])):
+        fidelity_label="simulated_dependencies"
+    proof_outcome="profitable" if net_profit>0 else "observed"
+    try:
+        try:
+            from . import proof_evidence
+        except ImportError:
+            import proof_evidence
+        proof_axes=proof_evidence.classify_proof(
+            "forked_deployment" if source_verification.get("verified") else "unknown",
+            fidelity_label,
+            proof_outcome,
+            authenticity_verified=bool(source_verification.get("verified")),
+        )
+    except Exception as exc:
+        proof_axes={
+            "status":"OBSERVED","target_authenticity":"unknown","fidelity":fidelity_label,
+            "outcome":proof_outcome,"policy_error":str(exc),
+        }
     payload={
-        "status":final_status,
+        "status":proof_axes["status"],
+        "proof_status":proof_axes["status"],
+        "legacy_status":final_status,
+        "proof_axes":proof_axes,
         "command_run":bool(command_result),
         "exit_code":command_result.returncode if command_result else None,
         "tx_hash":tx_hash,"chain_id":chain_id,"fork_parent_block":ns.fork_block,
@@ -1740,6 +1767,9 @@ def reprove(args):
         "profit_addresses":balances,"gross_balance_delta_wei":gross_delta,
         "net_profit_wei":net_profit,
         "fidelity":fidelity,
+        "fidelity_label":fidelity_label,
+        "target_authenticity":"forked_deployment" if source_verification.get("verified") else "unknown",
+        "outcome":proof_outcome,
         "execution_command":execution_command,
         "promotion_policy":{
             "FORK_REPRODUCED":"Block-pinned parent state, real mined local Anvil transaction, successful receipt, callTracer match, declared target reached, no synthetic funding/storage/code/mock/time/caller cheatcodes.",
