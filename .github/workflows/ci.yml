@@ -337,50 +337,156 @@ jobs:
           // SPDX-License-Identifier: MIT
           pragma solidity ^0.8.20;
           import {LowkeyForgeStateDiffRecorder} from "../src/LowkeyForgeStateDiffRecorder.sol";
-
-          contract LowkeyStateDiffReceiver {
-              uint256 public received;
-              function receivePing() external { received += 1; }
-          }
+          import {Vm} from "forge-std/Vm.sol";
 
           contract LowkeyStateDiffTarget {
-              uint256 public hits;
-              function ping(address receiver) external {
-                  hits += 1;
-                  (bool ok,) = receiver.call(abi.encodeWithSignature("receivePing()"));
-                  require(ok, "CALLBACK_FAILED");
+              mapping(address => uint256) public credit;
+              event Deposited(address indexed account, uint256 amount);
+              event Withdrawn(address indexed account, uint256 amount);
+
+              constructor() payable {}
+              function depositFor(address account) external payable {
+                  credit[account] += msg.value;
+                  emit Deposited(account, msg.value);
+              }
+              function withdraw() external {
+                  uint256 amount = credit[msg.sender];
+                  require(amount != 0, "NO_CREDIT");
+                  (bool ok,) = payable(msg.sender).call{value: amount}("");
+                  require(ok, "TRANSFER_FAILED");
+                  credit[msg.sender] = 0;
+                  emit Withdrawn(msg.sender, amount);
+              }
+          }
+
+          contract LowkeyStateDiffAttacker {
+              LowkeyStateDiffTarget private immutable target;
+              uint8 private mode;
+              bool private entered;
+
+              constructor(address target_) { target = LowkeyStateDiffTarget(target_); }
+              function setMode(uint8 value) external { mode = value; }
+              function execute() external { target.withdraw(); }
+              receive() external payable {
+                  if (mode == 2 && !entered) {
+                      entered = true;
+                      target.withdraw();
+                  }
               }
           }
 
           contract LowkeyStateDiffRecorderTest is LowkeyForgeStateDiffRecorder {
-              function test_lowkey_state_diff_recorder() external {
-                  LowkeyStateDiffTarget target = new LowkeyStateDiffTarget();
-                  LowkeyStateDiffReceiver receiver = new LowkeyStateDiffReceiver();
+              function _countEvent(Vm.Log[] memory logs, address emitter, bytes32 signature)
+                  private pure returns (uint256 count)
+              {
+                  for (uint256 i; i < logs.length; ++i) {
+                      if (logs[i].emitter == emitter && logs[i].topics.length != 0 &&
+                          logs[i].topics[0] == signature) ++count;
+                  }
+              }
+
+              function test_lowkey_paired_one_deployment_reentrancy() external {
+                  vm.deal(address(this), 11 ether);
+                  LowkeyStateDiffTarget target = new LowkeyStateDiffTarget{value: 10 ether}();
+                  LowkeyStateDiffAttacker attacker = new LowkeyStateDiffAttacker(address(target));
+                  attacker.setMode(0);
+
+                  vm.recordLogs();
+                  target.depositFor{value: 1 ether}(address(attacker));
+                  Vm.Log[] memory setupEvents = vm.getRecordedLogs();
+                  require(
+                      _countEvent(setupEvents, address(target), keccak256("Deposited(address,uint256)")) == 1,
+                      "SETUP_DEPOSIT_EVENT_MISSING"
+                  );
+
+                  uint256 snapshotId = vm.snapshot();
+                  bytes memory withdrawCall = abi.encodeWithSignature("withdraw()");
+                  // Exactly three matching target calls: one sequential, two reentrant.
+                  vm.expectCall(address(target), withdrawCall, 3);
+
+                  vm.recordLogs();
                   _lowkeyStartTrace(address(target));
-                  target.ping(address(receiver));
-                  _lowkeyWriteTrace(".audit/godmode/forge-state-diff.json");
+                  attacker.execute();
+                  Vm.Log[] memory controlEvents = vm.getRecordedLogs();
+                  require(
+                      _countEvent(controlEvents, address(target), keccak256("Withdrawn(address,uint256)")) == 1,
+                      "CONTROL_WITHDRAW_EVENT_COUNT"
+                  );
+                  _lowkeyWriteTrace(
+                      ".audit/godmode/control-state-diff.json", controlEvents, setupEvents
+                  );
+
+                  require(vm.revertTo(snapshotId), "CONTROL_STATE_REVERT_FAILED");
+                  // Same deployed target and attacker; switch mode outside the measured window.
+                  attacker.setMode(2);
+                  vm.recordLogs();
+                  _lowkeyStartTrace(address(target));
+                  attacker.execute();
+                  Vm.Log[] memory attackEvents = vm.getRecordedLogs();
+                  require(
+                      _countEvent(attackEvents, address(target), keccak256("Withdrawn(address,uint256)")) == 2,
+                      "ATTACK_WITHDRAW_EVENT_COUNT"
+                  );
+                  _lowkeyWriteTrace(
+                      ".audit/godmode/attack-state-diff.json", attackEvents, setupEvents
+                  );
+                  require(address(attacker).balance == 2 ether, "ATTACKER_DID_NOT_RECEIVE_TWO_WITHDRAWALS");
               }
           }
           EOF
-          forge test --match-path test/LowkeyStateDiffRecorder.t.sol --match-test test_lowkey_state_diff_recorder -vv
+          forge test --match-path test/LowkeyStateDiffRecorder.t.sol --match-test test_lowkey_paired_one_deployment_reentrancy -vv
           python3 - "$HOME/.lowkey" <<'PY'
           import json
           import pathlib
+          import subprocess
           import sys
+
           sys.path.insert(0, sys.argv[1])
           from forge_state_diff import normalize_forge_state_diff
 
-          artifact_path = pathlib.Path(".audit/godmode/forge-state-diff.json")
-          artifact_text = artifact_path.read_text()
-          print("LOWKEY_FORGE_STATE_DIFF_RAW=" + artifact_text[:20000])
-          artifact = json.loads(artifact_text)
-          print("LOWKEY_FORGE_STATE_DIFF_TOP_LEVEL_KEYS=" + repr(sorted(artifact.keys())))
-          normalized = normalize_forge_state_diff(artifact, expected_target=artifact.get("target_address"))
-          assert len(normalized["calls"]) >= 2, normalized
-          assert normalized["storage_accesses"], normalized
-          assert any(item["is_write"] for item in normalized["storage_accesses"]), normalized
-          assert normalized["target_address"] in {item["to"] for item in normalized["calls"]}
-          print("PASS: Foundry state-diff recorder compiled, executed, serialized and normalized")
+          base = pathlib.Path(".audit/godmode")
+          control_raw = json.loads((base / "control-state-diff.json").read_text())
+          attack_raw = json.loads((base / "attack-state-diff.json").read_text())
+          control = normalize_forge_state_diff(control_raw, expected_target=control_raw["target_address"])
+          attack = normalize_forge_state_diff(attack_raw, expected_target=attack_raw["target_address"])
+
+          target = control["target_address"]
+          assert target == attack["target_address"], "paired scenarios deployed different target addresses"
+          assert control["target_code_hash"] == attack["target_code_hash"], "paired target code differs"
+          assert control["chain_id"] == attack["chain_id"]
+          assert control["block_number"] == attack["block_number"]
+          assert control["fork_parent_hash"] == attack["fork_parent_hash"]
+
+          def target_calls(row):
+              return [call for call in row["calls"] if call["to"] == target]
+          control_calls, attack_calls = target_calls(control), target_calls(attack)
+          assert len(control_calls) == 1, control_calls
+          assert len(attack_calls) == 2, attack_calls
+          assert control_calls[0]["input"] == attack_calls[0]["input"] == attack_calls[1]["input"]
+
+          withdraw_topic = subprocess.check_output(
+              ["cast", "keccak", "Withdrawn(address,uint256)"], text=True
+          ).strip().lower()
+          deposit_topic = subprocess.check_output(
+              ["cast", "keccak", "Deposited(address,uint256)"], text=True
+          ).strip().lower()
+          assert sum(e["signature"] == withdraw_topic for e in control["domain_events"]) == 1
+          assert sum(e["signature"] == withdraw_topic for e in attack["domain_events"]) == 2
+          assert sum(e["signature"] == deposit_topic for e in control["setup_events"]) == 1
+          assert sum(e["signature"] == deposit_topic for e in attack["setup_events"]) == 1
+
+          attacker = control_calls[0]["from"]
+          assert attacker == attack_calls[0]["from"] == attack_calls[1]["from"], "attacker address changed"
+          mode_slot = "0x" + "0" * 64
+          def storage_value(row, account, slot):
+              pre = next(item for item in row["prestate"] if item["address"] == account)
+              return next(item["value"] for item in pre["storage"] if item["slot"] == slot)
+          assert int(storage_value(control, attacker, mode_slot), 16) == 0
+          assert int(storage_value(attack, attacker, mode_slot), 16) == 2
+          target_prestate = lambda row: next(item for item in row["prestate"] if item["address"] == target)
+          assert target_prestate(control)["storage"] == target_prestate(attack)["storage"], "target prestate changed between paired runs"
+
+          print("PASS: one deployment; control=1 withdraw; attack=2 withdrawals; exact calldata, events and derived storage captured")
           PY
           python3 - <<'PY'
           import json

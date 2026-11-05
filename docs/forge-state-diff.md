@@ -54,6 +54,22 @@ be excluded from pre-state equality only when it is declared as a scenario
 parameter and the runner verifies each scenario's expected value independently.
 This is a fixture pattern, not a way to mutate a production fork target.
 
+## Paired Forge fixture
+
+The paired Foundry acceptance fixture deploys one target and one attacker. It
+executes a sequential withdrawal, records its state diff and domain logs, reverts
+to the snapshot, switches the attacker's callback mode outside the measured
+window, then executes the callback path against the same deployment. One
+vm.expectCall assertion checks the three matching calls across the paired test;
+the two artifacts independently prove one target call for control and two for
+attack. The target address, runtime code hash, chain, block and target pre-state
+must match. The declared attacker mode slot is zero in control and two in attack.
+Setup events are preserved separately from measured domain events.
+
+The recorder stores raw event emitter, topics and data; it does not guess an ABI
+for unknown fixture or protocol events. Forge calldata is available from
+AccountAccess.data and is normalized as exact calldata evidence.
+
 ## Shared normalized trace schema
 
 Both evidence backends emit TraceEvent schema version 1 with index, kind, accessor,
