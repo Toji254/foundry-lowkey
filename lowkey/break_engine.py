@@ -1256,7 +1256,7 @@ def _render_repeat_test(
             tokenSeedAmount = 10 ** tokenDecimals;
             deal(assetToken, ATTACKER, tokenSeedAmount);
             vm.startPrank(ATTACKER);
-            _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
+            _lowkeySafeApprove(assetToken, ATTACKER, TARGET, type(uint256).max);
             vm.stopPrank();
             console2.log("TOKEN_DECIMALS", tokenDecimals);
             console2.log("TOKEN_DECIMALS_METADATA_READ", tokenDecimalsReadOk);
@@ -1323,9 +1323,9 @@ contract LowkeyBreakRepeat is Test {{
         return returned == 1;
     }}
 
-    function _lowkeySafeApprove(address token, address spender, uint256 amount) internal {{
+    function _lowkeySafeApprove(address token, address owner, address spender, uint256 amount) internal {{
         (bool allowanceOk, bytes memory allowanceData) = token.staticcall(
-            abi.encodeWithSelector(bytes4(0xdd62ed3e), msg.sender, spender)
+            abi.encodeWithSelector(bytes4(0xdd62ed3e), owner, spender)
         );
         if (allowanceOk && allowanceData.length >= 32) {{
             uint256 currentAllowance = abi.decode(allowanceData, (uint256));
