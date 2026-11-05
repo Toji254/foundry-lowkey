@@ -432,7 +432,10 @@ def _normalize_rpc_trace_events(calls):
     try:
         from .trace_evidence import normalize_rpc_trace_events
     except ImportError:
-        from lowkey.trace_evidence import normalize_rpc_trace_events
+        try:
+            from lowkey.trace_evidence import normalize_rpc_trace_events
+        except ImportError:
+            from trace_evidence import normalize_rpc_trace_events
     return normalize_rpc_trace_events(calls, backend="anvil-calltracer")
 
 

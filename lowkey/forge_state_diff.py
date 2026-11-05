@@ -10,7 +10,10 @@ TRACE_KINDS = CALL_KINDS | {"Create","Create2"}
 try:
     from .trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
 except ImportError:
-    from lowkey.trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
+    try:
+        from lowkey.trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
+    except ImportError:
+        from trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
 
 def _address(value, label):
     if not isinstance(value,str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}",value):

@@ -38,6 +38,16 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(cheatsheet.exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "ai_harness.py").exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "experience_memory.py").exists())
+            self.assertTrue((pathlib.Path(home) / ".lowkey" / "trace_evidence.py").exists())
+            trace_import = subprocess.run(
+                ["python3", "-c", "import forge_state_diff, godmode; print('TRACE_IMPORT_OK')"],
+                cwd=ROOT,
+                env={**env, "PYTHONPATH": str(pathlib.Path(home) / ".lowkey")},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(trace_import.returncode, 0, trace_import.stdout + trace_import.stderr)
+            self.assertIn("TRACE_IMPORT_OK", trace_import.stdout)
 
             version = subprocess.run(
                 [str(installed_lk), "--version"],
