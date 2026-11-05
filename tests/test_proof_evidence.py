@@ -163,6 +163,10 @@ class ProofEvidenceTests(unittest.TestCase):
             "storage_corruption", anvil_with_tracer,
             {"storage": "per_access"}
         )["accepted"])
+        self.assertFalse(evaluate_evidence_requirements(
+            "storage_corruption", anvil_with_tracer,
+            {"storage": "declared_only"}, require_trace_storage=True
+        )["accepted"] is False)
         no_observation = trace_evidence_capabilities(
             "anvil-calltracer", storage_trace_supported=True, storage_observations=0
         )

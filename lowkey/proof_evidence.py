@@ -93,8 +93,10 @@ def evaluate_evidence_requirements(
         if unknown:
             raise ValueError("Unknown evidence requirement dimension(s): " + ", ".join(sorted(unknown)))
         requirements.update(configured)
-    if require_trace_storage and "storage" not in requirements:
-        requirements["storage"] = "derived"
+    if require_trace_storage:
+        current_storage = requirements.get("storage", "declared_only")
+        if current_storage == "declared_only":
+            requirements["storage"] = "derived"
 
     missing = []
     for dimension, required in requirements.items():
