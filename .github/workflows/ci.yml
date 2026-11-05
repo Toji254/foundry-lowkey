@@ -40,6 +40,11 @@ jobs:
           forge --version
           cast --version
           anvil --version
+      - name: P0 setup and receiver compatibility acceptance
+        run: |
+          set -euo pipefail
+          cd tests/fixtures/acceptance/p0-compatibility
+          forge test -vv
       - name: Install Lowkey
         run: ./install.sh
       - name: Exercise project-aware Chisel contract preload
