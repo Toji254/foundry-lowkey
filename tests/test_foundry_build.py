@@ -105,9 +105,9 @@ class FoundryBuildPlannerTests(unittest.TestCase):
     def test_build_plan_honors_cli_config_path_over_environment_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\n')
-            self.write(root, "foundry-env.toml", '[profile.default]\\nsrc = "env-src"\\n')
-            self.write(root, "foundry-cli.toml", '[profile.default]\\nsrc = "contracts"\\n')
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "src"\n')
+            self.write(root, "foundry-env.toml", '[profile.default]\nsrc = "env-src"\n')
+            self.write(root, "foundry-cli.toml", '[profile.default]\nsrc = "contracts"\n')
             self.write(root, "src/Default.sol", "contract Default {}")
             self.write(root, "env-src/Environment.sol", "contract Environment {}")
             self.write(root, "contracts/Cli.sol", "contract Cli {}")
@@ -121,8 +121,8 @@ class FoundryBuildPlannerTests(unittest.TestCase):
                 "memory_psi_some_avg10": 0.0,
                 "memory_psi_full_avg10": 0.0,
             }
-            with patch.dict(foundry_build.os.environ, {"FOUNDRY_CONFIG": "foundry-env.toml"}), \\
-                 patch.object(foundry_build.forge_tools, "forge_path", return_value=None), \\
+            with patch.dict(foundry_build.os.environ, {"FOUNDRY_CONFIG": "foundry-env.toml"}), \
+                 patch.object(foundry_build.forge_tools, "forge_path", return_value=None), \
                  patch.object(foundry_build, "collect_resources", return_value=resources):
                 plan = foundry_build.build_plan(
                     root,
