@@ -638,6 +638,68 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["net_profit_wei"], 2 * 10**18 - expected_fee)
             self.assertTrue(saved["human_confirmation_required"])
 
+    def test_reprove_require_trace_storage_rejects_empty_prestate_diff(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = root / "test" / "EmptyStorageDiff.t.sol"
+            harness.parent.mkdir()
+            harness.write_text("contract EmptyStorageDiff { function test_path() external {} }", encoding="utf-8")
+            tx_hash = "0x" + "a" * 64
+            target = "0x" + "1" * 40
+            sender = "0x" + "2" * 40
+            parent_hash = "0x" + "b" * 64
+
+            def fake_rpc(url, method, params, timeout=20):
+                if method == "eth_getTransactionByHash":
+                    return {
+                        "hash": tx_hash, "from": sender, "to": target,
+                        "input": "0x12345678", "value": "0x0",
+                        "gasPrice": "0x1", "nonce": "0x0",
+                    }
+                if method == "eth_getTransactionReceipt":
+                    return {
+                        "status": "0x1", "blockNumber": "0x65",
+                        "transactionIndex": "0x0", "gasUsed": "0x5208",
+                        "effectiveGasPrice": "0x1",
+                    }
+                if method == "eth_getBlockByNumber":
+                    if params[0] == "0x64":
+                        return {"hash": parent_hash}
+                    if params[0] == "0x65":
+                        return {"transactions": [tx_hash]}
+                if method == "eth_chainId":
+                    return "0x7a69"
+                if method == "debug_traceTransaction" and params[1].get("tracer") == "callTracer":
+                    return {
+                        "type": "CALL", "from": sender, "to": target,
+                        "input": "0x12345678", "value": "0x0", "calls": [],
+                    }
+                if method == "debug_traceTransaction" and params[1].get("tracer") == "prestateTracer":
+                    # The tracer responds successfully but reports no changed storage.
+                    return {
+                        "pre": {
+                            target: {"balance": "0x1", "nonce": "0x1", "storage": {}},
+                            sender: {"balance": "0x1", "nonce": "0x1", "storage": {}},
+                        },
+                        "post": {
+                            target: {"balance": "0x2", "nonce": "0x1", "storage": {}},
+                            sender: {"balance": "0x1", "nonce": "0x1", "storage": {}},
+                        },
+                    }
+                raise AssertionError("Unexpected RPC call: " + method)
+
+            with patch.object(godmode, "rpc", side_effect=fake_rpc), \
+                 redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "no changed storage slots"):
+                    godmode.reprove([
+                        "test/EmptyStorageDiff.t.sol", "--root", str(root),
+                        "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
+                        "--target-address", target, "--profit-address", sender,
+                        "--tx-hash", tx_hash, "--require-trace-storage",
+                    ])
+
     def test_replay_script_scanner_blocks_rpc_state_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

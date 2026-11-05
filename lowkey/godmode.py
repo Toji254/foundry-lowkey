@@ -2455,10 +2455,17 @@ def reprove(args):
     trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
     if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
     storage_trace=_trace_storage_prestate(url,tx_hash)
-    if ns.require_trace_storage and not storage_trace.get("supported"):
-        raise ValueError("The node does not support the required prestateTracer storage read-set: "+str(storage_trace.get("reason")))
-    if ns.source_rpc_url and not storage_trace.get("supported"):
-        raise ValueError("Source-verified reproof requires prestateTracer-derived storage; use a tracer-capable local fork RPC.")
+    trace_storage_observed=bool(storage_trace.get("slots"))
+    if ns.require_trace_storage and (
+        not storage_trace.get("supported") or not trace_storage_observed
+    ):
+        detail=storage_trace.get("reason") or "prestateTracer diff returned no changed storage slots for this transaction."
+        raise ValueError("The required derived-storage evidence is unavailable: "+str(detail))
+    if ns.source_rpc_url and (
+        not storage_trace.get("supported") or not trace_storage_observed
+    ):
+        detail=storage_trace.get("reason") or "prestateTracer diff returned no changed storage slots for this transaction."
+        raise ValueError("Source-verified reproof requires at least one prestateTracer-derived changed storage slot: "+str(detail))
     source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
     if ns.source_rpc_url:
         if not ns.argv_json:
