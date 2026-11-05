@@ -814,6 +814,40 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         )
         self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
 
+    def test_reverting_if_with_or_weakened_owner_guard_is_not_authorization(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                bool public paused;
+                function pause() external {
+                    if (msg.sender != owner || paused) revert();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_reverting_if_with_unconditional_owner_comparison_branch_is_not_authorization(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                bool public paused;
+                function pause() external {
+                    if (msg.sender != owner || msg.sender != address(0)) revert();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

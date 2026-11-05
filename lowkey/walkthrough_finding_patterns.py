@@ -628,6 +628,29 @@ def _top_level_comparison(value: str) -> tuple[str, str, str] | None:
     return None
 
 
+def _has_top_level_logic_or_comparison(value: str) -> bool:
+    """Reject a caller comparison whose apparent trusted operand hides boolean logic."""
+    parens = brackets = 0
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+        elif parens == 0 and brackets == 0:
+            if value.startswith(("&&", "||", "==", "!=", "<=", ">="), index):
+                return True
+            if char in "?:<>":
+                return True
+        index += 1
+    return False
+
+
 def _auth_term_polarity(value: str, caller: str) -> int:
     """Return +1 for a positive authorization predicate, -1 for its inverse."""
     term = _unwrap_boolean_parentheses(value)
@@ -667,6 +690,8 @@ def _auth_term_polarity(value: str, caller: str) -> int:
         else:
             return 0
         trusted = _unwrap_boolean_parentheses(trusted)
+        if _has_top_level_logic_or_comparison(trusted):
+            return 0
         compact = re.sub(r"\s+", "", trusted).lower()
         if (
             not trusted
