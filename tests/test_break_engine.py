@@ -339,6 +339,68 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('keccak256("ERC777TokensRecipient")', body)
         self.assertIn("0x4e2312e0", body)
         self.assertIn("ERC777_RECEIVER_REGISTERED", body)
+        self.assertIn("SETUP_FUNCTION_DISCOVERED", body)
+        self.assertIn("ASSET_GETTER_DISCOVERED", body)
+        self.assertIn("TOKEN_APPROVAL_ATTEMPTED", body)
+        self.assertIn("TOKEN_APPROVAL_SUCCESS", body)
+        self.assertIn("return _lowkeyApproveCall(token, spender, amount);", body)
+
+    def test_reentrancy_parser_reason_codes_setup_and_token_preparation_failures(self):
+        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
+
+        setup_failed = break_engine._result_from_output(
+            type("Host", (), {"tool_path": lambda self, name: name})(),
+            family="reentrancy",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY reentrancy\\n"
+                "SETUP_FUNCTION_DISCOVERED true\\n"
+                "TARGET_SETUP_SUCCESS false\\n"
+                "TARGET_SETUP_RETURNDATA_LENGTH 0\\n"
+                "LOWKEY_BREAK false\\n"
+            ),
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(setup_failed.status, "LAB_ISSUE")
+        self.assertEqual(setup_failed.detail["reason_code"], "setup_call_reverted")
+
+        asset_failed = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="reentrancy",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY reentrancy\\n"
+                "SETUP_FUNCTION_DISCOVERED false\\n"
+                "ASSET_GETTER_DISCOVERED true\\n"
+                "ASSET_TRACKING_AVAILABLE false\\n"
+                "LOWKEY_BREAK false\\n"
+            ),
+            evidence_path=None,
+        )
+        self.assertEqual(asset_failed.status, "BLOCKED")
+        self.assertEqual(asset_failed.detail["reason_code"], "asset_getter_unavailable")
+
+        approval_failed = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="reentrancy",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY reentrancy\\n"
+                "SETUP_FUNCTION_DISCOVERED false\\n"
+                "ASSET_GETTER_DISCOVERED true\\n"
+                "ASSET_TRACKING_AVAILABLE true\\n"
+                "TOKEN_APPROVAL_ATTEMPTED true\\n"
+                "TOKEN_APPROVAL_SUCCESS false\\n"
+                "LOWKEY_BREAK false\\n"
+            ),
+            evidence_path=None,
+        )
+        self.assertEqual(approval_failed.status, "BLOCKED")
+        self.assertEqual(approval_failed.detail["reason_code"], "token_approval_failed")
 
     def test_lifecycle_functions_do_not_get_irrelevant_generic_families(self):
         initialize = {

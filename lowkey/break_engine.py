@@ -1705,6 +1705,8 @@ def _render_reentrancy_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
+        bool tokenApprovalAttempted = false;
+        bool tokenApprovalSuccess = false;
 """
     if asset_signature:
         asset_discovery = f"""
@@ -1713,6 +1715,8 @@ def _render_reentrancy_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
+        bool tokenApprovalAttempted = false;
+        bool tokenApprovalSuccess = false;
         {{
             (bool assetOk, bytes memory assetData) = TARGET.staticcall(
                 abi.encodeWithSignature("{asset_signature}")
@@ -1736,7 +1740,8 @@ def _render_reentrancy_test(
                 }}
             }}
             deal(assetToken, address(hostile), tokenFundingAmount);
-            hostile.safeApproveToken(assetToken, TARGET, type(uint256).max);
+            tokenApprovalAttempted = true;
+            tokenApprovalSuccess = hostile.safeApproveToken(assetToken, TARGET, type(uint256).max);
         }}
 """
     payload_expr = (
@@ -1838,10 +1843,10 @@ contract LowkeyBreakReentrant {{
         return abi.decode(data, (bool));
     }}
 
-    function safeApproveToken(address token, address spender, uint256 amount) external {{
-        if (_lowkeyApproveCall(token, spender, amount)) return;
-        require(_lowkeyApproveCall(token, spender, 0), "APPROVE_RESET_FAILED");
-        require(_lowkeyApproveCall(token, spender, amount), "APPROVE_RETRY_FAILED");
+    function safeApproveToken(address token, address spender, uint256 amount) external returns (bool) {{
+        if (_lowkeyApproveCall(token, spender, amount)) return true;
+        if (!_lowkeyApproveCall(token, spender, 0)) return false;
+        return _lowkeyApproveCall(token, spender, amount);
     }}
 
     function registerERC777() external returns (bool) {{
@@ -1966,7 +1971,11 @@ contract LowkeyBreakReentrancy is Test {{
         uint256 targetTokenLoss = targetTokenBefore > targetTokenAfter
             ? targetTokenBefore - targetTokenAfter : 0;
 
+        console2.log("ASSET_GETTER_DISCOVERED", {str(bool(asset_signature)).lower()});
         console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
+        console2.log("TOKEN_APPROVAL_ATTEMPTED", tokenApprovalAttempted);
+        console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
+        console2.log("SETUP_FUNCTION_DISCOVERED", {str(bool(setup_signature)).lower()});
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
@@ -2288,6 +2297,34 @@ def _result_from_output(
                 f"First {function_name} attempt succeeded; the repeat attempt was rejected. "
                 f"No repeat break was demonstrated. {reason}"
             )
+    elif structured and family == "reentrancy":
+        setup_discovered = _read_telemetry_bool(text_output, "SETUP_FUNCTION_DISCOVERED")
+        setup_success = _read_telemetry_bool(text_output, "TARGET_SETUP_SUCCESS")
+        setup_len = _read_telemetry_uint(text_output, "TARGET_SETUP_RETURNDATA_LENGTH") or 0
+        if setup_discovered is True and setup_success is False:
+            status = "LAB_ISSUE"
+            reason_code = "setup_call_reverted"
+            setup_revert = _decode_revert_data(
+                host, config, target,
+                _extract_console_bytes(text_output, "TARGET_SETUP_RETURNDATA_LENGTH"),
+            )
+            summary = (
+                "Target rejected the generated setup call before reentrancy could be evaluated. "
+                + (setup_revert or ("No revert data was returned." if not setup_len else f"Revert data length: {setup_len} bytes."))
+            )
+        else:
+            asset_getter_discovered = _read_telemetry_bool(text_output, "ASSET_GETTER_DISCOVERED")
+            asset_tracking_available = _read_telemetry_bool(text_output, "ASSET_TRACKING_AVAILABLE")
+            approval_attempted = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_ATTEMPTED")
+            approval_success = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_SUCCESS")
+            if asset_getter_discovered is True and asset_tracking_available is False:
+                status = "BLOCKED"
+                reason_code = "asset_getter_unavailable"
+                summary = "The discovered asset getter did not return a usable deployed token contract; token-backed setup was not evaluated."
+            elif approval_attempted is True and approval_success is False:
+                status = "BLOCKED"
+                reason_code = "token_approval_failed"
+                summary = "The token approval attempt failed, including the optional-return/reset-and-retry path; token-backed setup was not evaluated."
     elif structured and target_rejected and not reentry_reached:
         summary = (
             "Target rejected the attack before the callback boundary. "
