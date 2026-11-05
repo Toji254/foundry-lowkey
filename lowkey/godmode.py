@@ -1598,23 +1598,32 @@ def control(args):
         root, mf, spec, required=ns.require_frozen, freeze_path=ns.freeze_file
     )
     if freeze_status.get("requires_refreeze"):
+        digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
+        rejected_status = "REJECTED" if digest_rejected else "UNPROVEN"
+        rejection_codes = [freeze_status["reason_code"]] if digest_rejected else []
         payload = {
             "created_at": now(),
-            "status": "UNPROVEN",
-            "proof_status": "UNPROVEN",
-            "outcome": "not_run",
+            "status": rejected_status,
+            "proof_status": rejected_status,
+            "outcome": "rejected" if digest_rejected else "not_run",
             "family": proof_evidence.normalize_family(spec.get("family")),
             "target_address": target,
             "trace_backend": backend,
             "freeze": freeze_status,
             "execution_attempted": False,
-            "rejection_codes": [],
+            "rejection_codes": rejection_codes,
             "reasons": [freeze_status.get("reason")],
-            "next_action": "Run lk control <manifest> --freeze again, then rerun validation. No attack or control command was executed.",
+            "next_action": (
+                "Restore the expected manifest and freeze file, review the mismatch, then freeze again. "
+                "No control or attack command was executed."
+            ),
         }
         out = safe_out(root, ns.output)
         write_json(out, payload)
-        print("UNPROVEN: generator drift; re-freeze required; no experiment executed.")
+        if digest_rejected:
+            print("REJECTED: frozen expectations digest mismatch; no control or attack command was executed.")
+        else:
+            print("UNPROVEN: generator drift; re-freeze required; no experiment executed.")
         print("  evidence " + out.relative_to(root).as_posix())
         return 2
     if backend=="anvil-calltracer" and not local_rpc(url):

@@ -767,6 +767,33 @@ jobs:
           print("Prepared live trace-control fixture", target, attacker, mapping_slot)
           PY
           lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          freeze = Path("/tmp/lowkey-fixture/.audit/godmode/control.freeze.json")
+          payload = json.loads(freeze.read_text())
+          payload["freeze_sha256"] = "0" * 64
+          freeze.write_text(json.dumps(payload, indent=2) + "\\n")
+          PY
+          set +e
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --require-frozen
+          TAMPER_EXIT=$?
+          set -e
+          test "$TAMPER_EXIT" -eq 2
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
+          assert result["status"] == "REJECTED", result
+          assert result["proof_status"] == "REJECTED", result
+          assert result["outcome"] == "rejected", result
+          assert result["rejection_codes"] == ["digest_mismatch"], result
+          assert result["freeze"]["reason_code"] == "digest_mismatch", result
+          assert result["execution_attempted"] is False, result
+          print("PASS: tampered frozen digest is rejected as digest_mismatch before any control/attack execution")
+          PY
+          # Re-freeze the original manifest before executing the real paired experiment.
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze
           set +e
           lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --require-frozen
           CONTROL_EXIT=$?
@@ -809,6 +836,10 @@ jobs:
           assert result["same_entry_call_verified"] is True, result
           assert result["same_transaction_envelope_verified"] is True, result
           assert result["same_prestate_verified"] is True, result
+          assert result["same_chain_verified"] is True, result
+          assert result["same_block_verified"] is True, result
+          assert result["same_fork_anchor_verified"] is True, result
+          assert result["same_trace_storage_values_verified"] is True, result
           assert result["runs"]["control"]["metric"] > 0, result
           assert result["runs"]["attack"]["metric"] > result["runs"]["control"]["metric"], result
           assert result["runs"]["control"]["scenario_parameters"][0]["observed_value"].lower().endswith("01"), result
@@ -820,7 +851,17 @@ jobs:
           assert attack_calls == 2, result["runs"]["attack"]["call_trace"]
           assert result["trace_delta_verified"] is True, result
           assert result["trace_checks"][0]["verified"] is True, result
-          print("PASS: real Anvil control/attack traces match the manifest-declared reentrancy call delta and show a real ETH delta")
+          for scenario in ("control", "attack"):
+              row = result["runs"][scenario]
+              storage = row["storage_trace"]
+              assert storage["supported"] is True, (scenario, storage)
+              assert storage["slot_count"] > 0, (scenario, storage)
+              assert row["derived_storage_slots"], (scenario, row)
+              assert any(
+                  item["address"].lower() == target
+                  for item in row["derived_storage_slots"]
+              ), (scenario, row["derived_storage_slots"])
+          print("PASS: paired Anvil control/attack has matched prestate, verified call delta, and trace-derived target storage state")
           PY
           cat > /tmp/lowkey-fixture/test/TraceReproduction.t.sol <<'EOF'
           // SPDX-License-Identifier: MIT
@@ -867,7 +908,12 @@ jobs:
           assert result["gas_cost_wei"] > 0, result
           assert result["net_profit_wei"] > 0, result
           assert result["human_confirmation_required"] is True, result
-          print("PASS: local replay measures positive net ETH after gas; legacy LOCAL_PROFITABLE retained while proof status remains OBSERVED for unknown target authenticity")
+          assert result["storage_trace"]["supported"] is True, result
+          assert result["storage_trace"]["slot_count"] > 0, result
+          assert result["derived_storage_slots"], result
+          target = result["target_address"].lower()
+          assert any(item["address"].lower() == target for item in result["derived_storage_slots"]), result
+          print("PASS: LOCAL_PROFITABLE replay has positive net ETH after gas and populated trace-derived target storage evidence; proof status remains OBSERVED for unknown target authenticity")
           PY
           grep -q 'lk break --until-found' <(lk break --h)
           grep -q 'lk break --system' <(lk break --h)

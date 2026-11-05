@@ -317,7 +317,16 @@ def validate_control_freeze(root, manifest_path, spec, *, required=False, freeze
     stored_core = {key: stored.get(key) for key in core_fields}
     stored_digest = _sha256_bytes(_canonical(stored_core).encode("utf-8"))
     if stored.get("freeze_sha256") != stored_digest:
-        raise ValueError("Frozen expectations integrity digest is invalid; regenerate the freeze before validation.")
+        return {
+            "present": True,
+            "verified": False,
+            "requires_refreeze": True,
+            "reason_code": "digest_mismatch",
+            "reason": "Frozen expectations integrity digest is invalid; no control or attack command was executed.",
+            "path": freeze.relative_to(root).as_posix(),
+            "stored_freeze_sha256": stored.get("freeze_sha256"),
+            "computed_freeze_sha256": stored_digest,
+        }
     current = _freeze_core(root, Path(manifest_path), spec)
     stable_fields = (
         "schema_version", "manifest_path", "manifest_sha256", "inputs", "experiment",

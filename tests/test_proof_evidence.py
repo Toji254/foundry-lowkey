@@ -131,10 +131,13 @@ class ProofEvidenceTests(unittest.TestCase):
             frozen = json.loads(freeze_path.read_text(encoding="utf-8"))
             frozen["freeze_sha256"] = "0" * 64
             freeze_path.write_text(json.dumps(frozen), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "Frozen expectations"):
-                validate_control_freeze(
-                    root, root / "control.json", {"family": "reentrancy"}, required=True
-                )
+            status = validate_control_freeze(
+                root, root / "control.json", {"family": "reentrancy"}, required=True
+            )
+            self.assertFalse(status["verified"])
+            self.assertTrue(status["requires_refreeze"])
+            self.assertEqual(status["reason_code"], "digest_mismatch")
+            self.assertIn("integrity digest is invalid", status["reason"])
 
     def test_freeze_rejects_legacy_schema_one(self):
         with tempfile.TemporaryDirectory() as tmp:
