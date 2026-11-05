@@ -778,109 +778,164 @@ def _trace_control_run(root, url, name, entry, spec, env):
 def _forge_source_verification(source_url, fork_url, normalized, spec):
     result = {
         "verified": False,
-        "method": "independent archive RPC: chain/block anchor, EIP-1186 code hashes and trace-derived storage",
+        "method": "independent archive comparison at pinned fork block: parent/header, code, balances, nonces and trace-derived storage",
         "checked_addresses": [],
         "checked_storage_slots": [],
+        "unverified_trace_addresses": [],
     }
     if not source_url:
         result["reason"] = "No independent --source-rpc-url was supplied."
         return result
+
     source = rpc_url(source_url)
     if urlparse(source).hostname == urlparse(fork_url).hostname:
         result["reason"] = "Source RPC host must differ from the Foundry fork RPC host."
         return result
+
     chain_id = int(normalized["chain_id"])
     block_number = int(normalized["block_number"])
     if block_number < 1:
-        result["reason"] = "Fork block must be at least 1 to verify its parent hash."
+        result["reason"] = "Pinned fork block must be at least 1."
         return result
+
     source_chain = rpc(source, "eth_chainId", [])
+    local_chain = rpc(fork_url, "eth_chainId", [])
     try:
         source_chain_int = int(str(source_chain), 16)
     except ValueError:
         source_chain_int = int(source_chain)
-    if source_chain_int != chain_id:
-        result["reason"] = "Archive RPC chain ID differs from the Foundry state-diff chain ID."
+    try:
+        local_chain_int = int(str(local_chain), 16)
+    except ValueError:
+        local_chain_int = int(local_chain)
+    if source_chain_int != chain_id or local_chain_int != chain_id:
+        result["reason"] = "Forge artifact, fork RPC and archive RPC chain IDs do not all match."
         return result
-    source_parent = rpc(source, "eth_getBlockByNumber", [hex(block_number - 1), False])
-    if not isinstance(source_parent, dict):
-        result["reason"] = "Archive RPC did not return the fork parent block."
-        return result
+
     expected_parent = str(normalized.get("fork_parent_hash") or "").lower()
     if not expected_parent or expected_parent == "0x" + "0" * 64:
-        result["reason"] = "Recorder artifact has no usable fork parent block hash."
+        result["reason"] = "Recorder artifact has no usable parent-block hash."
+        return result
+    local_parent = rpc(fork_url, "eth_getBlockByNumber", [hex(block_number - 1), False])
+    source_parent = rpc(source, "eth_getBlockByNumber", [hex(block_number - 1), False])
+    if not isinstance(local_parent, dict) or not isinstance(source_parent, dict):
+        result["reason"] = "Fork or archive RPC did not return the block preceding the pinned fork block."
+        return result
+    if str(local_parent.get("hash") or "").lower() != expected_parent:
+        result["reason"] = "Fork RPC parent hash does not match the recorder artifact."
         return result
     if str(source_parent.get("hash") or "").lower() != expected_parent:
-        result["reason"] = "Archive parent block hash does not match the test's recorded fork anchor."
+        result["reason"] = "Archive parent hash does not match the recorder artifact."
         return result
+
+    local_block = rpc(fork_url, "eth_getBlockByNumber", [hex(block_number), False])
+    source_block = rpc(source, "eth_getBlockByNumber", [hex(block_number), False])
+    if not isinstance(local_block, dict) or not isinstance(source_block, dict):
+        result["reason"] = "Fork or archive RPC did not return the pinned fork block."
+        return result
+    for field in ("hash", "parentHash", "stateRoot", "timestamp"):
+        local_value = str(local_block.get(field) or "").lower()
+        source_value = str(source_block.get(field) or "").lower()
+        if not local_value or local_value != source_value:
+            result["reason"] = "Pinned fork block " + field + " differs between fork and archive RPC."
+            return result
+
     target = str(normalized["target_address"]).lower()
-    source_addresses = sorted({addr(x) for x in (spec.get("source_addresses") or [target])})
-    if target not in source_addresses:
+    protocol_addresses = sorted({addr(x) for x in (spec.get("source_addresses") or [target])})
+    if target not in protocol_addresses:
         raise ValueError("source_addresses must include target_address.")
-    prestate_by_address = {item["address"]: item for item in normalized.get("prestate") or []}
-    for address in source_addresses:
-        prestate = prestate_by_address.get(address)
-        if prestate is None:
-            result["reason"] = "Source address " + address + " was not observed in the Forge state-diff."
-            return result
-        expected_code_hash = (
-            normalized["target_code_hash"] if address == target else prestate.get("code_hash")
-        )
-        if not expected_code_hash:
-            result["reason"] = "No code hash was captured for source address " + address + "."
-            return result
+
+    prestate_by_address = {
+        item["address"]: item for item in (normalized.get("prestate") or [])
+    }
+    trace_addresses = sorted(set(prestate_by_address))
+    missing = [address for address in protocol_addresses if address not in trace_addresses]
+    if missing:
+        result["reason"] = "Declared protocol source address(es) were not touched in the state diff: " + ", ".join(missing)
+        return result
+
+    for address in protocol_addresses:
         try:
-            proof = rpc(source, "eth_getProof", [address, [], hex(block_number)])
+            local_code = str(rpc(fork_url, "eth_getCode", [address, hex(block_number)]) or "0x").lower()
+            source_code = str(rpc(source, "eth_getCode", [address, hex(block_number)]) or "0x").lower()
+            local_balance = int(str(rpc(fork_url, "eth_getBalance", [address, hex(block_number)])), 16)
+            source_balance = int(str(rpc(source, "eth_getBalance", [address, hex(block_number)])), 16)
+            local_nonce = int(str(rpc(fork_url, "eth_getTransactionCount", [address, hex(block_number)])), 16)
+            source_nonce = int(str(rpc(source, "eth_getTransactionCount", [address, hex(block_number)])), 16)
         except Exception as exc:
-            result["reason"] = "Archive RPC eth_getProof unavailable or rejected: " + str(exc)[:300]
+            result["reason"] = "Could not compare declared protocol address " + address + ": " + str(exc)[:300]
             return result
-        actual_code_hash = str((proof or {}).get("codeHash") or "").lower()
-        if actual_code_hash != str(expected_code_hash).lower():
-            result["reason"] = "EIP-1186 code hash differs for source address " + address + "."
+        if local_code != source_code:
+            result["reason"] = "Protocol bytecode differs between fork and archive at " + address + "."
             return result
-        if prestate.get("balance_wei") is not None:
+        if local_balance != source_balance or local_nonce != source_nonce:
+            result["reason"] = "Protocol account balance or nonce differs at the pinned fork block: " + address
+            return result
+
+        if address == target:
             try:
-                actual_balance = int(str((proof or {}).get("balance")), 16)
-            except (TypeError, ValueError):
-                result["reason"] = "Archive eth_getProof omitted a parseable balance for " + address + "."
+                proof = rpc(source, "eth_getProof", [address, [], hex(block_number)])
+            except Exception as exc:
+                result["reason"] = "Archive eth_getProof unavailable for target code identity: " + str(exc)[:300]
                 return result
-            if actual_balance != int(prestate["balance_wei"]):
-                result["reason"] = "Source balance differs for " + address + "."
+            actual_code_hash = str((proof or {}).get("codeHash") or "").lower()
+            expected_code_hash = str(normalized.get("target_code_hash") or "").lower()
+            if not expected_code_hash or actual_code_hash != expected_code_hash:
+                result["reason"] = "Target EIP-1186 code hash differs from the recorder's pre-execution target code hash."
                 return result
-        if prestate.get("nonce") is not None:
-            try:
-                actual_nonce = int(str((proof or {}).get("nonce")), 16)
-            except (TypeError, ValueError):
-                result["reason"] = "Archive eth_getProof omitted a parseable nonce for " + address + "."
-                return result
-            if actual_nonce != int(prestate["nonce"]):
-                result["reason"] = "Source nonce differs for " + address + "."
-                return result
+        else:
+            actual_code_hash = None
+
         result["checked_addresses"].append({
-            "address": address, "code_hash": actual_code_hash,
-            "balance_wei": prestate.get("balance_wei"), "nonce": prestate.get("nonce"),
+            "address": address,
+            "code_hash": actual_code_hash,
+            "code_bytes_match": True,
+            "balance_wei": local_balance,
+            "nonce": local_nonce,
         })
+
+        prestate = prestate_by_address[address]
         for storage in prestate.get("storage") or []:
             slot = str(storage["slot"]).lower()
             expected_value = str(storage["value"]).lower()
             try:
-                actual_value = str(rpc(
+                local_value = str(rpc(
+                    fork_url, "eth_getStorageAt", [address, slot, hex(block_number)]
+                )).lower()
+                source_value = str(rpc(
                     source, "eth_getStorageAt", [address, slot, hex(block_number)]
                 )).lower()
             except Exception as exc:
-                result["reason"] = "Archive storage read failed for " + address + ":" + slot + ": " + str(exc)[:200]
+                result["reason"] = "Storage comparison failed for " + address + ":" + slot + ": " + str(exc)[:200]
                 return result
-            if actual_value != expected_value:
-                result["reason"] = "Trace-derived prestate slot differs for " + address + ":" + slot + "."
+            if local_value != source_value:
+                result["reason"] = "Fork and archive storage differ for " + address + ":" + slot + "."
                 return result
-            result["checked_storage_slots"].append(
-                {"address": address, "slot": slot, "value": actual_value}
-            )
+            if local_value != expected_value:
+                result["reason"] = (
+                    "The first recorded StorageAccess previous_value is not the pinned-block prestate for "
+                    + address + ":" + slot + "."
+                )
+                return result
+            result["checked_storage_slots"].append({
+                "address": address, "slot": slot, "value": local_value
+            })
+
+    result["unverified_trace_addresses"] = sorted(set(trace_addresses) - set(protocol_addresses))
     result["verified"] = True
     result["source_chain_id"] = source_chain
+    result["fork_chain_id"] = local_chain
     result["fork_block"] = block_number
     result["fork_parent_hash"] = expected_parent
+    result["fork_block_hash"] = str(local_block.get("hash") or "").lower()
+    result["protocol_addresses_checked"] = protocol_addresses
+    result["trace_addresses_observed"] = trace_addresses
+    result["scope_note"] = (
+        "Source verification covers only declared source_addresses and storage slots observed for those accounts. "
+        "Other trace-touched accounts (including local test actors) are listed but not treated as deployed dependencies."
+    )
     return result
+
 
 
 def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
@@ -913,10 +968,7 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
     if command_audit["blocked"]:
         raise ValueError(name + " command contains local RPC state-fabrication calls: " +
                          str(command_audit["state_fabrication_calls"]))
-    fidelity = analyze_harness_fidelity(
-        harness.read_text(encoding="utf-8", errors="replace"),
-        harness.relative_to(root).as_posix(),
-    )
+    fidelity = _analyze_control_fidelity(root, entry, spec)
     temp = Path(tempfile.mkdtemp(prefix="lk-forge-control-"))
     work = temp / "project"
     try:
