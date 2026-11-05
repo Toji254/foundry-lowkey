@@ -1156,52 +1156,47 @@ def _render_repeat_test(
     setup_signature: str | None = None,
     entitlement_signature: str | None = None,
     asset_signature: str | None = None,
+    setup_abi: dict[str, Any] | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
-    expressions = []
-    for item, raw_value in zip(params, values):
-        ptype = str(item.get("type") or "").lower()
-        if ptype == "address":
-            expressions.append("address(ATTACKER)")
-        else:
-            expressions.append(_basic_solidity_expr(ptype, str(raw_value)))
+    argument_declarations, expressions = _render_abi_arguments(
+        params, values, actor_expr="address(ATTACKER)", prefix="lowkeyAttackArg"
+    )
     payload_expr = (
         f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
         if expressions else f'abi.encodeWithSignature("{signature}")'
     )
 
     setup_block = ""
-    if seed_fund:
-        seed_amount = _solidity_amount_literal(seed_fund)
-        if setup_signature:
-            setup_arg = ", 1" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
-            setup_value = f"{{value: setupValue}}" if asset_signature else f"{{value: {seed_amount}}}"
-            setup_value_decl = (
-                f"        uint256 setupValue = assetReadOk ? 0 : {seed_amount};\n"
-                if asset_signature else ""
-            )
-            setup_block += f"""
-        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_arg});
-{setup_value_decl}        vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{setup_value}(setupData);
-        console2.log("SETUP_SUCCESS", setupSuccess);
-        console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
-        console2.logBytes(setupReturndata);
-        console2.logBytes(setupReturndata);
-        """
+    if setup_abi is None and setup_signature:
+        setup_abi = {"name": setup_signature.split("(", 1)[0], "inputs": [], "stateMutability": "payable"}
+    if setup_abi is not None:
+        setup_signature = _format_signature(setup_abi)
+        setup_inputs = list(setup_abi.get("inputs") or [])
+        setup_declarations, setup_expressions = _render_setup_arguments(
+            setup_inputs, actor_expr="address(ATTACKER)", prefix="lowkeySetupArg"
+        )
+        setup_args = ", " + ", ".join(setup_expressions) if setup_expressions else ""
+        setup_mutability = str(setup_abi.get("stateMutability") or "").lower()
+        if asset_signature:
+            setup_value = "assetReadOk ? 0 : 2 wei" if setup_mutability == "payable" else "0"
+        elif setup_mutability == "payable":
+            setup_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
         else:
-            setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
-    elif setup_signature:
-        setup_arg = ", 1 ether" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
-        setup_block += """
-        bytes memory setupData = abi.encodeWithSignature("%s"%s);
-        uint256 setupValue = assetReadOk ? 0 : 2 wei;
+            setup_value = "0"
+        setup_block = f"""
+        {setup_declarations}
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_args});
         vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{value: setupValue}(setupData);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: {setup_value}}}(setupData);
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
-        """ % (setup_signature, setup_arg)
+        console2.logBytes(setupReturndata);
+"""
+    elif seed_fund:
+        seed_amount = _solidity_amount_literal(seed_fund)
+        setup_block += f"        vm.deal(TARGET, {seed_amount});\n"
 
     entitlement_before = """
         uint256 entitlementBefore = 0;
@@ -1228,6 +1223,9 @@ def _render_repeat_test(
         asset_discovery = f"""
         address assetToken = address(0);
         bool assetReadOk = false;
+        uint256 tokenSeedAmount = 0;
+        uint256 tokenDecimals = 18;
+        bool tokenDecimalsReadOk = false;
         {{
             (bool ok, bytes memory data) = TARGET.staticcall(
                 abi.encodeWithSignature("{asset_signature}")
@@ -1245,11 +1243,25 @@ def _render_repeat_test(
         uint256 targetTokenMid = 0;
         uint256 targetTokenAfter = 0;
         if (assetReadOk) {{
-            // Seed the actor with the project's actual ERC-20 asset in the local
-            // Forge VM and approve the target before attempting token-valued setup.
-            deal(assetToken, ATTACKER, 1 ether);
-            vm.prank(ATTACKER);
-            IERC20Lowkey(assetToken).approve(TARGET, type(uint256).max);
+            (bool decimalsOk, bytes memory decimalsData) = assetToken.staticcall(
+                abi.encodeWithSignature("decimals()")
+            );
+            if (decimalsOk && decimalsData.length >= 32) {{
+                uint256 reportedDecimals = abi.decode(decimalsData, (uint256));
+                if (reportedDecimals <= 77) {{
+                    tokenDecimals = reportedDecimals;
+                    tokenDecimalsReadOk = true;
+                }}
+            }}
+            tokenSeedAmount = 10 ** tokenDecimals;
+            deal(assetToken, ATTACKER, tokenSeedAmount);
+            vm.startPrank(ATTACKER);
+            _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
+            vm.stopPrank();
+            console2.log("TOKEN_DECIMALS", tokenDecimals);
+            console2.log("TOKEN_DECIMALS_METADATA_READ", tokenDecimalsReadOk);
+            console2.log("TOKEN_DECIMALS_SOURCE", tokenDecimalsReadOk ? "metadata" : "fallback-18");
+            console2.log("TOKEN_FUNDING_AMOUNT", tokenSeedAmount);
         }}
 """
         asset_baseline = """
@@ -1293,28 +1305,48 @@ def _render_repeat_test(
     return _render_common_header() + f"""
 interface IERC20Lowkey {{
     function balanceOf(address account) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
 }}
 
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
 
+    function _lowkeyApproveCall(address token, address spender, uint256 amount) internal returns (bool) {{
+        (bool ok, bytes memory returndata) = token.call(
+            abi.encodeWithSelector(bytes4(0x095ea7b3), spender, amount)
+        );
+        if (!ok) return false;
+        if (returndata.length == 0) return true;
+        if (returndata.length != 32) return false;
+        uint256 returned;
+        assembly {{ returned := mload(add(returndata, 32)) }}
+        return returned == 1;
+    }}
+
+    function _lowkeySafeApprove(address token, address spender, uint256 amount) internal {{
+        (bool allowanceOk, bytes memory allowanceData) = token.staticcall(
+            abi.encodeWithSelector(bytes4(0xdd62ed3e), msg.sender, spender)
+        );
+        if (allowanceOk && allowanceData.length >= 32) {{
+            uint256 currentAllowance = abi.decode(allowanceData, (uint256));
+            if (currentAllowance != 0) {{
+                require(_lowkeyApproveCall(token, spender, 0), "LOWKEY_APPROVE_RESET_FAILED");
+            }}
+        }}
+        require(_lowkeyApproveCall(token, spender, amount), "LOWKEY_APPROVE_FAILED");
+    }}
+
     function test_break_repeat() public {{
-        // Fund the attacker before any payable setup call. Otherwise a seeded
-        // deposit/credit path can revert for lack of ETH and masquerade as a
-        // protocol-level accounting observation.
         vm.deal(ATTACKER, 100 ether);
+{argument_declarations}
 {asset_discovery}
 {setup_block}
 {entitlement_before}
 {asset_baseline}
         bytes memory data = {payload_expr};
 
-        // Measure withdrawal gains only after setup has established the attacker's entitlement.
         uint256 targetBefore = TARGET.balance;
         uint256 attackerBefore = ATTACKER.balance;
-
         vm.prank(ATTACKER);
         (bool first, bytes memory firstReturndata) = TARGET.call{{value: {value}}}(data);
 
@@ -1359,25 +1391,12 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("ENTITLEMENT_AFTER_FIRST", entitlementAfterFirst);
         console2.log("ENTITLEMENT_AFTER_SECOND", entitlementAfterSecond);
 
-        // A second successful withdrawal is normal when the attacker still has entitlement.
-        // BREAK requires demonstrated payout greater than the entitlement recorded before attack.
         bool breakByEntitlement = entitlementReadOk
-            && (
-                totalGain > entitlementBefore
-                || (assetReadOk && totalTokenGain > entitlementBefore)
-            );
-        // Without an entitlement baseline, repeated value movement is only an
-        // observation. Do not label a normal second payout as an accounting BREAK.
-        if (breakByEntitlement) {{
-            console2.log("LOWKEY_BREAK", true);
-        }} else {{
-            console2.log("LOWKEY_BREAK", false);
-        }}
-
+            && (totalGain > entitlementBefore || (assetReadOk && totalTokenGain > entitlementBefore));
+        console2.log("LOWKEY_BREAK", breakByEntitlement);
         targetMid; attackerMid;
     }}
-}}
-"""
+}}"""
 
 
 def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
