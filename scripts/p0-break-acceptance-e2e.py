@@ -159,9 +159,11 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
 def exercise(lk: str, root: Path, env: dict[str, str], contract: str, address: str, expected_markers: list[str]) -> None:
     run([lk, "target", contract, address], root, env)
     output = run([lk, "break", "--family", "accounting", "--function", "withdraw", "--rounds", "1"], root, env, timeout=360)
-    report_path = root / ".audit" / "break" / "campaign.json"
-    if not report_path.is_file():
-        raise AssertionError(f"lk break did not write campaign evidence: {report_path}\n{output.stdout[-10000:]}")
+    runs_dir = root / ".audit" / "break" / "runs"
+    reports = sorted(runs_dir.glob("*_campaign_*.json")) if runs_dir.is_dir() else []
+    if not reports:
+        raise AssertionError(f"lk break did not write campaign evidence under {runs_dir}\\n{output.stdout[-10000:]}")
+    report_path = reports[-1]
     report = json.loads(report_path.read_text(encoding="utf-8"))
     results = report.get("results") or []
     if len(results) != 1:

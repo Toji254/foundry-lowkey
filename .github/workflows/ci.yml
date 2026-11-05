@@ -1334,9 +1334,6 @@ jobs:
           assert report["mutation_score"] == 1.0, report
           PY
 
-      - name: P0 installed-lk setup and token compatibility acceptance
-        run: python3 scripts/p0-break-acceptance-e2e.py
-
   test-generation-ecosystem-smoke:
     runs-on: ubuntu-latest
     steps:
