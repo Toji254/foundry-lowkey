@@ -844,6 +844,19 @@ class GodmodeTests(unittest.TestCase):
             ],
         }
 
+    def test_semantic_invariant_requires_a_recognized_passing_assertion(self):
+        self.assertTrue(godmode._semantic_execution_verified(0, "[PASS] test_no_blocking_when_entitlement_missing"))
+        self.assertTrue(godmode._semantic_execution_verified(
+            0, "Suite result: ok. 1 passed; 0 failed; 0 skipped"
+        ))
+        self.assertTrue(godmode._semantic_execution_verified(0, "LOWKEY_SEMANTIC_INVARIANT_PASS"))
+        self.assertFalse(godmode._semantic_execution_verified(0, "Forge build succeeded"))
+        self.assertFalse(godmode._semantic_execution_verified(0, "No tests found"))
+        self.assertFalse(godmode._semantic_execution_verified(
+            0, "Suite result: ok. 0 passed; 1 failed; 0 skipped"
+        ))
+        self.assertFalse(godmode._semantic_execution_verified(1, "[PASS] test_something"))
+
     def test_forge_control_adapter_consumes_real_forge_artifact_without_claiming_eoa_profit(self):
         import subprocess
         from unittest.mock import patch
