@@ -1635,6 +1635,26 @@ def reprove(args):
         tx_hash=hashes[0]
     if not tx_hash or not re.fullmatch(r"0x[0-9a-fA-F]{64}",tx_hash):
         raise ValueError("Supply --tx-hash or make --argv-json emit LOWKEY_TRACE_TX_HASH <32-byte hash>.")
+    semantic_check=None
+    if ns.semantic_check_argv_json:
+        semantic_argv=json.loads(ns.semantic_check_argv_json)
+        if not isinstance(semantic_argv,list) or not semantic_argv or not all(isinstance(x,str) for x in semantic_argv):
+            raise ValueError("--semantic-check-argv-json must be a non-empty JSON string array.")
+        semantic_audit=inspect_reproduction_command(root,semantic_argv)
+        if semantic_audit["blocked"]:
+            raise ValueError("Semantic check command contains local RPC state-fabrication calls.")
+        semantic_env=os.environ.copy()
+        semantic_env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
+        semantic_proc=run(semantic_argv,root,900,env=semantic_env)
+        semantic_output=(semantic_proc.stdout or "")+"\\n"+(semantic_proc.stderr or "")
+        semantic_check={
+            "argv":semantic_argv,"exit_code":semantic_proc.returncode,
+            "verified":semantic_proc.returncode==0,"output_tail":semantic_output[-1600:],
+        }
+    elif non_economic:
+        semantic_check={
+            "verified":False,"reason":"Non-economic reproof requires --semantic-check-argv-json."
+        }
     tx_hash=tx_hash.lower()
     tx=rpc(url,"eth_getTransactionByHash",[tx_hash])
     receipt=rpc(url,"eth_getTransactionReceipt",[tx_hash])
@@ -1780,16 +1800,19 @@ def reprove(args):
         fidelity_label="simulated_caller"
     elif any(signal.get("kind")=="external_call_mock" for signal in fidelity.get("signals",[])):
         fidelity_label="simulated_dependencies"
-    proof_outcome="profitable" if net_profit>0 else "observed"
+    semantic_invariant_verified=bool((semantic_check or {}).get("verified"))
+    economic_policy=proof_evidence.evaluate_economic_policy(
+        family,net_profit,non_economic=non_economic,
+        semantic_invariant_verified=semantic_invariant_verified,
+    )
+    proof_outcome=(
+        "profitable" if (net_profit>0 and not non_economic) else
+        ("observed" if (not non_economic or semantic_invariant_verified) else "rejected")
+    )
     try:
-        try:
-            from . import proof_evidence
-        except ImportError:
-            import proof_evidence
         proof_axes=proof_evidence.classify_proof(
             "forked_deployment" if source_verification.get("verified") else "unknown",
-            fidelity_label,
-            proof_outcome,
+            fidelity_label,proof_outcome,
             authenticity_verified=bool(source_verification.get("verified")),
         )
     except Exception as exc:
@@ -1797,6 +1820,12 @@ def reprove(args):
             "status":"OBSERVED","target_authenticity":"unknown","fidelity":fidelity_label,
             "outcome":proof_outcome,"policy_error":str(exc),
         }
+    if non_economic and semantic_invariant_verified:
+        proof_axes["status"]="SIMULATED_BREAK"
+    if non_economic and not semantic_invariant_verified:
+        proof_axes["status"]="REJECTED"
+    if not economic_policy.get("accepted") and not non_economic and net_profit<=0:
+        proof_axes["status"]="REJECTED"
     payload={
         "status":proof_axes["status"],
         "proof_status":proof_axes["status"],
@@ -1816,6 +1845,12 @@ def reprove(args):
         "fidelity_label":fidelity_label,
         "target_authenticity":"forked_deployment" if source_verification.get("verified") else "unknown",
         "outcome":proof_outcome,
+        "family":family,
+        "economic_policy":economic_policy,
+        "semantic_check":semantic_check,
+        "semantic_invariant_verified":semantic_invariant_verified,
+        "storage_trace":storage_trace,
+        "derived_storage_slots":storage_trace.get("slots",[]),
         "execution_command":execution_command,
         "promotion_policy":{
             "FORK_REPRODUCED":"Block-pinned parent state, real mined local Anvil transaction, successful receipt, callTracer match, declared target reached, no synthetic funding/storage/code/mock/time/caller cheatcodes.",
@@ -1828,9 +1863,31 @@ def reprove(args):
                        "An independent source check verifies chain ID, parent block hash, target bytecode, and transaction-sender ETH balance; it does not prove that every dependency or storage slot is identical.",
                        "A replayed transaction proves only the tested path and state; it is not a completeness guarantee."],
     }
+    rejection_codes=[]
+    if non_economic and not semantic_invariant_verified:
+        rejection_codes.append("semantic_invariant_failed")
+    if not non_economic and net_profit<=0:
+        rejection_codes.append("net_negative")
+    payload["rejection_codes"]=rejection_codes
+    if rejection_codes:
+        try:
+            try:
+                from . import experience_memory
+            except ImportError:
+                import experience_memory
+            payload["memory_feedback"]=experience_memory.record_feedback(
+                kind="false-positive",
+                summary="Rejected reproof hypothesis for "+family,
+                evidence="Reproof did not satisfy the economic/semantic gate: "+", ".join(rejection_codes)+
+                         "; net_profit_wei="+str(net_profit),
+                root=root,
+            )
+        except Exception as exc:
+            payload["memory_feedback"]={"recorded":False,"reason":str(exc)[:300]}
     out=safe_out(root,".audit/godmode/reprove.json"); write_json(out,payload)
     print(json.dumps(payload,indent=2))
-    return 0
+    return 0 if (economic_policy.get("accepted") and
+                  (not non_economic or semantic_invariant_verified)) else 1
 
 def fork_cache(args):
     p=argparse.ArgumentParser(prog="lk fork-cache"); p.add_argument("action",choices=("snapshot","revert","list")); p.add_argument("--id"); p.add_argument("--rpc-url"); p.add_argument("--root",default="."); ns=p.parse_args(args)
