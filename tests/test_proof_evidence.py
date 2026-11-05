@@ -53,6 +53,23 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertFalse(evaluate_economic_policy("reentrancy", 0)["accepted"])
         self.assertTrue(evaluate_economic_policy("reentrancy", 1)["accepted"])
 
+    def test_replay_signature_and_access_control_remain_economic_by_default(self):
+        for family in ("replay", "signature_replay", "access_control", "authorization_bypass"):
+            with self.subTest(family=family):
+                result = evaluate_economic_policy(family, -1)
+                self.assertTrue(result["economic"])
+                self.assertFalse(result["accepted"])
+                self.assertEqual(result["promotion_cap"], "OBSERVED")
+
+    def test_only_availability_families_default_to_non_economic(self):
+        for family in ("dos", "denial_of_service", "griefing", "liveness"):
+            with self.subTest(family=family):
+                denied = evaluate_economic_policy(family, -1, semantic_invariant_verified=False)
+                accepted = evaluate_economic_policy(family, -1, semantic_invariant_verified=True)
+                self.assertFalse(denied["accepted"])
+                self.assertTrue(accepted["accepted"])
+                self.assertEqual(accepted["promotion_cap"], "SIMULATED_BREAK")
+
     def test_freeze_binds_manifest_and_referenced_command_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
