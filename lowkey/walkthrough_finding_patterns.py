@@ -736,15 +736,9 @@ def _state_consumed_before_payout(
         for match in re.finditer(pattern, body, re.I):
             if match.start() < payout_position:
                 return True
-    if re.search(
-        r"\b(?:require|if|assert)\s*\([^)]*(?:!claimed|claimed[^)]*(?:==\s*false|!=\s*true)|"
-        r"remaining[^)]*(?:>\s*0|!=\s*0)|currentStatus[^)]*(?:==|!=)|"
-        r"status[^)]*(?:==|!=)|alreadyClaimed)",
-        body,
-        re.I,
-    ):
-        return True
-
+    # A precondition alone (for example require(remaining > 0) or
+    # require(!claimed[msg.sender])) is not replay protection. The entitlement
+    # must be consumed or moved to a terminal state before the external payout.
     project_root = (root or Path.cwd()).resolve()
     visited = set(seen or ())
     helper_names = re.findall(
@@ -856,7 +850,16 @@ def _array_attacker_growable(
     )
     if fixed:
         return False
-    functions = _function_blocks(source, "solidity")
+    scopes = _authorization_scopes(
+        root, source, source_path=source_path, contract_name=contract_name,
+    )
+    if not scopes:
+        # If the selected contract cannot be identified, do not mix symbols
+        # from unrelated contracts in the same Solidity file.
+        return False
+    functions: list[tuple[str, int, str, str]] = []
+    for scope in scopes:
+        functions.extend(_function_blocks(str(scope["body"]), "solidity"))
     mutators: list[tuple[str, str, str]] = []
     write_pattern = re.compile(
         r"\b" + re.escape(collection) + r"\s*(?:\.\s*(?:push|pop)\s*\(|\[[^\]]+\]\s*=)",
