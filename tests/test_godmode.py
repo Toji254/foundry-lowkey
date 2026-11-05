@@ -223,6 +223,81 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["verification_method"].split()[0], "local-Anvil")
             self.assertEqual(saved["runs"]["attack"]["call_trace"][1]["to"], target)
 
+    def test_control_validates_frozen_step_expectations_against_attack_call_trace(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            sidecar = {
+                "schema_version": 1,
+                "family": "reentrancy",
+                "target_address": target,
+                "trace_expectations": [{
+                    "step": 2, "target": target, "selector": "0xdeadbeef",
+                    "count": 2, "must_revert": False,
+                }],
+            }
+            (root / "steps.expectations.json").write_text(json.dumps(sidecar), encoding="utf-8")
+            manifest["step_expectations_file"] = "steps.expectations.json"
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
+
+            hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
+            run_index = {"value": 0}
+            def fake_run(argv, cwd, timeout=300, env=None):
+                index = run_index["value"]
+                run_index["value"] += 1
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\\n", "")
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
+                 patch.object(godmode, "run", side_effect=fake_run), \\
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 0)
+            self.assertTrue(saved["step_expectations_verified"], saved["step_trace_checks"])
+            self.assertEqual(saved["step_trace_checks"][0]["observed_count"], 2)
+            self.assertTrue(saved["step_trace_checks"][0]["revert_matched"])
+
+    def test_control_rejects_step_expectation_count_mismatch(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            sidecar = {
+                "schema_version": 1, "family": "reentrancy", "target_address": target,
+                "trace_expectations": [{
+                    "step": 2, "target": target, "selector": "0xdeadbeef",
+                    "count": 1, "must_revert": False,
+                }],
+            }
+            (root / "steps.expectations.json").write_text(json.dumps(sidecar), encoding="utf-8")
+            manifest["step_expectations_file"] = "steps.expectations.json"
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
+
+            hashes = ["0x" + "a" * 64, "0x" + "b" * 64]
+            index = {"value": 0}
+            def fake_run(argv, cwd, timeout=300, env=None):
+                tx_hash = hashes[index["value"]]
+                index["value"] += 1
+                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\\n", "")
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
+                 patch.object(godmode, "run", side_effect=fake_run), \\
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+            saved = json.loads((root / ".audit/godmode/control.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertFalse(saved["step_expectations_verified"])
+            self.assertIn("control_passed", saved["rejection_codes"])
+
     def test_control_rejects_different_root_calldata_even_when_metric_is_positive(self):
         from unittest.mock import patch
         import subprocess

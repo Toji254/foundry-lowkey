@@ -196,6 +196,8 @@ def _referenced_inputs(root, spec):
     found = set()
     candidates = [x for x in (spec.get("freeze_inputs") or []) if isinstance(x, str)]
     candidates.extend(x for x in (spec.get("fidelity_sources") or []) if isinstance(x, str))
+    if isinstance(spec.get("step_expectations_file"), str):
+        candidates.append(spec["step_expectations_file"])
     generator_files = spec.get("generator_files") or []
     if not isinstance(generator_files, list) or not all(isinstance(x, str) and x.strip() for x in generator_files):
         raise ValueError("generator_files must be an array of project-relative file paths.")
@@ -260,6 +262,7 @@ def _freeze_core(root, manifest_path, spec):
         "generator_hashes": _generator_fingerprints(root, spec),
         "experiment": {
             "same_calls_id": spec.get("same_calls_id"), "control_rationale": spec.get("control_rationale"),
+            "step_expectations_file": spec.get("step_expectations_file"),
             "family": normalize_family(spec.get("family")),
             "target_address": str(spec.get("target_address") or "").lower(),
             "target_authenticity": spec.get("target_authenticity", "unknown"),

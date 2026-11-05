@@ -1533,6 +1533,84 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
 
 
 
+def _load_step_expectations(root, spec, target, family, backend):
+    """Load the Step[] sidecar as a frozen, Anvil-callTracer-validated input."""
+    name = spec.get("step_expectations_file")
+    if name is None:
+        return None, [], None
+
+    refusal = {
+        "target": target,
+        "family": family,
+        "reason": None,
+        "detail": None,
+        "minimal_cmd": "lk control <manifest> --freeze",
+        "backend": backend,
+    }
+    def denied(reason, detail):
+        payload = dict(refusal)
+        payload["reason"] = reason
+        payload["detail"] = detail
+        return None, [], payload
+
+    if backend != "anvil-calltracer":
+        return denied("backend_unsupported",
+                      "Step[] selector/revert expectations currently require the Anvil callTracer backend.")
+    if not isinstance(name, str) or not name.strip():
+        return denied("out_of_scope", "step_expectations_file must be a non-empty project-relative path.")
+    rel = Path(name)
+    if rel.is_absolute() or ".." in rel.parts:
+        return denied("out_of_scope", "step_expectations_file must stay inside the project.")
+    path = (root / rel).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        return denied("no_capability", "Step expectations sidecar is missing inside the project: " + name)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return denied("unsupported_abi", "Step expectations sidecar is not valid JSON: " + str(exc)[:300])
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return denied("unsupported_abi", "Step expectations sidecar must use schema_version 1.")
+    sidecar_family = payload.get("family")
+    if sidecar_family and proof_family := family:
+        if sidecar_family != proof_family:
+            return denied("unsupported_abi", "Step expectations family does not match the control manifest family.")
+    sidecar_target = payload.get("target_address")
+    if not isinstance(sidecar_target, str) or sidecar_target.lower() != str(target).lower():
+        return denied("unverified_target", "Step expectations target_address does not match the control target.")
+    expectations = payload.get("trace_expectations")
+    if not isinstance(expectations, list) or not expectations:
+        return denied("no_capability", "Step expectations sidecar contains no kind=expect entries.")
+
+    normalized = []
+    for index, item in enumerate(expectations, 1):
+        if not isinstance(item, dict) or set(item) != {"step", "target", "selector", "count", "must_revert"}:
+            return denied("unsupported_abi", f"Step expectation #{index} must contain exactly step, target, selector, count and must_revert.")
+        step_number = item.get("step")
+        count = item.get("count")
+        selector = item.get("selector")
+        must_revert = item.get("must_revert")
+        try:
+            expectation_target = addr(item.get("target"))
+        except (TypeError, ValueError) as exc:
+            return denied("unsupported_abi", f"Step expectation #{index} target is invalid: {exc}")
+        if isinstance(step_number, bool) or not isinstance(step_number, int) or step_number < 1:
+            return denied("unsupported_abi", f"Step expectation #{index} step must be a positive integer.")
+        if not isinstance(selector, str) or not re.fullmatch(r"0x[0-9a-fA-F]{8}", selector):
+            return denied("unsupported_abi", f"Step expectation #{index} selector must be bytes4.")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return denied("unsupported_abi", f"Step expectation #{index} count must be a non-negative integer.")
+        if not isinstance(must_revert, bool):
+            return denied("unsupported_abi", f"Step expectation #{index} must_revert must be a boolean.")
+        normalized.append({
+            "step": step_number,
+            "target": expectation_target,
+            "selector": selector.lower(),
+            "count": count,
+            "must_revert": must_revert,
+        })
+    return rel.as_posix(), normalized, None
+
+
 def control(args):
     p=argparse.ArgumentParser(prog="lk control")
     p.add_argument("manifest",nargs="?")
@@ -1595,6 +1673,16 @@ def control(args):
     target=addr(spec.get("target_address"))
     if not isinstance(spec.get("metric_addresses"),list) or not spec["metric_addresses"]:
         raise ValueError("Declare metric_addresses for the attacker portfolio.")
+    family_for_steps=proof_evidence.normalize_family(spec.get("family"))
+    step_expectations_file, step_expectations, step_refusal = _load_step_expectations(
+        root, spec, target, family_for_steps, backend
+    )
+    if step_refusal:
+        refusal_path=safe_out(root, ".audit/godmode/refusal.json")
+        write_json(refusal_path, step_refusal)
+        print("BLOCKED: "+str(step_refusal["reason"])+": "+str(step_refusal["detail"]))
+        print("  refusal: "+refusal_path.relative_to(root).as_posix())
+        return 2
 
     if ns.freeze:
         frozen, freeze_path = proof_evidence.freeze_control_manifest(root, mf, spec, ns.freeze_file)
@@ -1706,17 +1794,23 @@ def control(args):
 
     trace_expectations=spec.get("trace_expectations") or []
     trace_checks=[]
-    trace_delta_verified=bool(trace_expectations)
-    reasons_placeholder="Manifest must declare trace_expectations for the expected target/callback path delta."
+    step_trace_checks=[]
+    trace_delta_verified=bool(trace_expectations or step_expectations)
+    reasons_placeholder="Manifest must declare trace_expectations or a step_expectations_file for the expected target/callback path delta."
     for expectation in trace_expectations:
         if not isinstance(expectation,dict):
             trace_delta_verified=False; trace_checks.append({"verified":False,"reason":"trace_expectation must be an object"}); continue
         address=addr(expectation.get("address")); counts={}; expected={}
-        names=["control","attack"]
-        if negative is not None: names.append("negative_control")
-        for name in names:
+        selector=expectation.get("selector")
+        if selector is not None and (not isinstance(selector,str) or not re.fullmatch(r"0x[0-9a-fA-F]{8}",selector)):
+            trace_delta_verified=False
+            trace_checks.append({"address":address,"verified":False,"reason":"selector must be bytes4"})
+            continue
+        for name in ["control","attack"]+ (["negative_control"] if negative is not None else []):
             calls=rows.get(name,{}).get("call_trace") or []
-            counts[name]=sum(1 for call in calls if str(call.get("to") or "").lower()==address)
+            selected=[call for call in calls if str(call.get("to") or "").lower()==address and
+                      (selector is None or str(call.get("input") or "").lower().startswith(selector.lower()))]
+            counts[name]=len(selected)
             lo=expectation.get(name+"_min_calls"); hi=expectation.get(name+"_max_calls")
             if lo is None or hi is None or int(lo)<0 or int(hi)<int(lo):
                 if name=="negative_control" and not spec.get("require_negative_control"):
@@ -1726,12 +1820,49 @@ def control(args):
             else:
                 expected[name]={"min":int(lo),"max":int(hi),"matched":int(lo)<=counts[name]<=int(hi)}
                 if not expected[name]["matched"]: trace_delta_verified=False
-        trace_checks.append({"address":address,"description":expectation.get("description"),
-            "observed_call_counts":counts,"expected":expected,
+        if expectation.get("attack_must_revert") is not None:
+            must_revert=expectation.get("attack_must_revert")
+            attack_calls=[call for call in rows.get("attack",{}).get("call_trace",[]) if
+                          str(call.get("to") or "").lower()==address and
+                          (selector is None or str(call.get("input") or "").lower().startswith(selector.lower()))]
+            revert_match=(not attack_calls and not must_revert) or (
+                bool(attack_calls) and all(bool(call.get("error")) is must_revert for call in attack_calls)
+            )
+            expected["attack_revert"]={"must_revert":must_revert,"matched":revert_match}
+            if not revert_match: trace_delta_verified=False
+        trace_checks.append({"address":address,"selector":selector,
+            "description":expectation.get("description"),"observed_call_counts":counts,
+            "expected":expected,
             "verified":all(item.get("matched",True) is not False for item in expected.values())})
     trace_delta_verified=trace_delta_verified and all(item.get("verified",False) for item in trace_checks)
+
+    for expectation in step_expectations:
+        calls=[
+            call for call in (rows.get("attack",{}).get("call_trace") or [])
+            if str(call.get("to") or "").lower()==expectation["target"] and
+               str(call.get("input") or "").lower().startswith(expectation["selector"])
+        ]
+        observed_count=len(calls)
+        observed_reverted=[bool(call.get("error")) for call in calls]
+        count_matched=observed_count==expectation["count"]
+        revert_matched=(
+            (not calls and not expectation["must_revert"]) or
+            (bool(calls) and all(value is expectation["must_revert"] for value in observed_reverted))
+        )
+        step_trace_checks.append({
+            "step":expectation["step"],"target":expectation["target"],
+            "selector":expectation["selector"],"observed_count":observed_count,
+            "expected_count":expectation["count"],"observed_reverted":observed_reverted,
+            "expected_must_revert":expectation["must_revert"],
+            "count_matched":count_matched,"revert_matched":revert_matched,
+            "verified":count_matched and revert_matched,
+        })
+    step_expectations_verified=(all(item["verified"] for item in step_trace_checks)
+                                if step_expectations_file else None)
+    if step_expectations_file:
+        trace_delta_verified=trace_delta_verified and bool(step_trace_checks) and bool(step_expectations_verified)
     negative_control_present=negative is not None
-    negative_control_verified=(negative_control_present and all(
+    negative_control_verified=(negative_control_present and bool(trace_checks) and all(
         "negative_control" in check.get("expected",{}) and check["expected"]["negative_control"].get("matched") is True
         for check in trace_checks))
     if spec.get("require_negative_control") and not negative_control_verified: trace_delta_verified=False
@@ -1792,8 +1923,10 @@ def control(args):
     if backend=="forge-state-diff" and not fork_pin_verified: rejection_reasons.append("Forge runs do not match expected chain/block pins.")
     if backend=="anvil-calltracer" and not same_envelope: rejection_reasons.append("RPC-derived transaction envelope differs.")
     if not trace_delta_verified:
-        rejection_reasons.append(reasons_placeholder if not trace_expectations else
-            "Observed nested-call trace did not match the frozen manifest expectations.")
+        rejection_reasons.append(reasons_placeholder if not (trace_expectations or step_expectations_file) else
+            "Observed nested-call trace did not match the frozen manifest or Step[] expectations.")
+    if step_expectations_file and not step_expectations_verified:
+        rejection_reasons.append("Generated Step[] target/selector/count/revert expectations did not match the attack call trace.")
     if spec.get("require_negative_control") and not negative_control_verified:
         rejection_reasons.append("Required negative control is missing or did not match its expected callback/path behavior.")
     if not freeze_status.get("verified"): rejection_reasons.append("Frozen expectations are missing or were not verified; this run cannot be promoted.")
@@ -1829,6 +1962,7 @@ def control(args):
         (backend=="anvil-calltracer" and not same_envelope) or
         (backend=="forge-state-diff" and not fork_pin_verified)): rejection_codes.append("unverified_target")
     if not trace_delta_verified: rejection_codes.append("control_passed")
+    if step_expectations_file and not step_expectations_verified: rejection_codes.append("control_passed")
     if spec.get("require_negative_control") and not negative_control_verified: rejection_codes.append("control_passed")
     if non_economic and not semantic_invariant_verified: rejection_codes.append("semantic_default_missing")
     if not evidence_requirements_verified: rejection_codes.append("fidelity_insufficient")
@@ -1880,6 +2014,9 @@ def control(args):
         "same_chain_verified":same_chain,"same_block_verified":same_block,
         "same_fork_anchor_verified":same_fork_anchor,"fork_pin_verified":fork_pin_verified,
         "trace_delta_verified":trace_delta_verified,"trace_checks":trace_checks,
+        "step_expectations_file":step_expectations_file,
+        "step_expectations_verified":step_expectations_verified,
+        "step_trace_checks":step_trace_checks,
         "attack_metric_positive_after_gas":attack_metric_positive if backend=="anvil-calltracer" else None,
         "semantic_invariant_verified":semantic_invariant_verified,"target_address":target,
         "prestate_slots_declared":spec.get("prestate_slots") or [],

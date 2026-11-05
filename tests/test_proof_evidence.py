@@ -103,6 +103,19 @@ class ProofEvidenceTests(unittest.TestCase):
             self.assertEqual(status["reason_code"], "generator_drift")
             self.assertIn("generator.py", status["changed_generators"])
 
+    def test_freeze_binds_step_expectations_sidecar_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "control.json").write_text("{}", encoding="utf-8")
+            sidecar = root / "steps.expectations.json"
+            sidecar.write_text('{"schema_version":1,"trace_expectations":[]}', encoding="utf-8")
+            spec = {"family": "reentrancy", "step_expectations_file": "steps.expectations.json"}
+            freeze_control_manifest(root, root / "control.json", spec)
+            self.assertTrue(validate_control_freeze(root, root / "control.json", spec, required=True)["verified"])
+            sidecar.write_text('{"schema_version":1,"trace_expectations":[{"count":1}]}', encoding="utf-8")
+            changed = validate_control_freeze(root, root / "control.json", spec, required=True)
+            self.assertFalse(changed["verified"])
+
     def test_freeze_does_not_bind_generated_state_diff_output_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
