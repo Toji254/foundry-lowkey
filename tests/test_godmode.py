@@ -314,7 +314,10 @@ class GodmodeTests(unittest.TestCase):
             def fake_run(argv, cwd, timeout=300, env=None):
                 tx_hash = hashes[index["value"]]
                 index["value"] += 1
-                return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\\n", "")
+                exit_code = 1 if tx_hash == "0x" + "c" * 64 else 0
+                return subprocess.CompletedProcess(
+                    argv, exit_code, f"LOWKEY_TRACE_TX_HASH {tx_hash}\\n", "transaction reverted"
+                )
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
                  patch.object(godmode, "run", side_effect=fake_run), \\
@@ -330,6 +333,8 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(saved["negative_control_verified"])
             self.assertEqual(negative["receipt_status"], "0x0")
             self.assertEqual(negative["expected_receipt_status"], "0x0")
+            self.assertEqual(negative["exit_code"], 1)
+            self.assertTrue(negative["execution_verified"])
             self.assertEqual(
                 saved["trace_checks"][0]["observed_call_counts"]["negative_control"], 1
             )
