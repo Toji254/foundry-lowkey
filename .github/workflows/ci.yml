@@ -501,7 +501,11 @@ jobs:
           print("Prepared live trace-control fixture", target, attacker, mapping_slot)
           PY
           lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze
+          set +e
           lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --require-frozen
+          CONTROL_EXIT=$?
+          set -e
+          echo "LOWKEY_CONTROL_EXIT=$CONTROL_EXIT"
           python3 - <<'PY'
           import json
           from pathlib import Path
