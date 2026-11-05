@@ -203,6 +203,31 @@ def main() -> int:
                 "step_count": payload["steps_rendered"],
             })
 
+        invalid_cases = [
+            ("malformed-json", "broken.json", "{not-json", "unsupported_abi"),
+            ("missing-manifest", "missing.json", None, "out_of_scope"),
+        ]
+        for label, manifest_name, manifest_body, expected_reason in invalid_cases:
+            if manifest_body is not None:
+                (root / manifest_name).write_text(manifest_body, encoding="utf-8")
+            refusal_relative = f"refusals/{label}.json"
+            result = subprocess.run(
+                [lk, "steps", manifest_name, "--root", str(root),
+                 "--refusal-output", refusal_relative],
+                cwd=Path.cwd(), text=True, capture_output=True, check=False,
+            )
+            if result.returncode != 2:
+                raise AssertionError(
+                    f"Expected exit 2 for {label}; received {result.returncode}. "
+                    f"stdout={result.stdout[-3000:]} stderr={result.stderr[-3000:]}"
+                )
+            refusal_path = root / refusal_relative
+            refusal = json.loads(refusal_path.read_text(encoding="utf-8"))
+            if refusal.get("reason") != expected_reason:
+                raise AssertionError(f"{label} did not emit the expected machine-readable refusal: {refusal}")
+            shutil.copy2(refusal_path, evidence_root / "refusals" / f"{label}.json")
+            refusals.append({"kind": label, "reason": refusal["reason"], "exit_code": result.returncode})
+
         for kind in ("flash_borrow", "reenter"):
             family = "reentrancy"
             manifest = {
