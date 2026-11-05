@@ -1065,11 +1065,21 @@ def control(args):
             for name in ("control","attack")
         ) else "synthetic_state"
 
+    rejection_codes=[]
+    if not same_entry: rejection_codes.append("mismatch")
+    if not same_prestate or not same_chain or (backend=="anvil-calltracer" and not same_envelope):
+        rejection_codes.append("mismatch")
+    if not trace_delta_verified: rejection_codes.append("control_path_mismatch")
+    if spec.get("require_negative_control") and not negative_control_verified:
+        rejection_codes.append("negative_control_failed")
+    if non_economic and not semantic_invariant_verified:
+        rejection_codes.append("semantic_invariant_failed")
+    if not non_economic and isinstance(attack_metric,int) and attack_metric<=0:
+        rejection_codes.append("net_negative")
+    if isinstance(delta,int) and delta<=0:
+        rejection_codes.append("control_not_outperformed")
     rejected=(
-        execution_attempted and not passed and
-        not scenario_errors and same_entry and same_prestate and same_chain and
-        (not trace_delta_verified or (non_economic and not semantic_invariant_verified) or
-         (not non_economic and isinstance(delta,int) and delta<=0))
+        execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
     )
     outcome="profitable" if passed and not non_economic else (
         "observed" if passed or execution_attempted else "not_run"
@@ -1134,7 +1144,8 @@ def control(args):
             for name in ("control","attack","negative_control")
             for item in rows.get(name,{}).get("derived_storage_accesses",[])
         }),
-        "runs":rows,"reasons":rejection_reasons,"memory_feedback":memory_feedback,
+        "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
+        "memory_feedback":memory_feedback,
         "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff is test-execution evidence and cannot prove EOA gas or net profitability.",
     }
     out=safe_out(root,ns.output)
