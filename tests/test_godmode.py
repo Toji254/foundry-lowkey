@@ -196,7 +196,7 @@ class GodmodeTests(unittest.TestCase):
             def fake_run(argv, cwd, timeout=300, env=None):
                 i = run_index["value"]
                 run_index["value"] += 1
-                output = f"LOWKEY_TRACE_TX_HASH {hashes[i]}\\n"
+                output = f"LOWKEY_TRACE_TX_HASH {hashes[i]}\n"
                 return subprocess.CompletedProcess(argv, 0, output, "")
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \
@@ -229,7 +229,7 @@ class GodmodeTests(unittest.TestCase):
             def fake_run(argv, cwd, timeout=300, env=None):
                 i = run_index["value"]
                 run_index["value"] += 1
-                output = f"LOWKEY_TRACE_TX_HASH {hashes[i]}\\n"
+                output = f"LOWKEY_TRACE_TX_HASH {hashes[i]}\n"
                 return subprocess.CompletedProcess(argv, 0, output, "")
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper, "0xaabbccdd")), \
@@ -326,7 +326,7 @@ class GodmodeTests(unittest.TestCase):
                 index["value"] += 1
                 exit_code = 1 if tx_hash == "0x" + "c" * 64 else 0
                 return subprocess.CompletedProcess(
-                    argv, exit_code, f"LOWKEY_TRACE_TX_HASH {tx_hash}\\n", "transaction reverted"
+                    argv, exit_code, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "transaction reverted"
                 )
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \
@@ -836,13 +836,13 @@ class GodmodeTests(unittest.TestCase):
                 index = run_index["value"]
                 run_index["value"] += 1
                 return subprocess.CompletedProcess(
-                    argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\\n", ""
+                    argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\n", ""
                 )
 
             with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(
                      target, sender, wrapper, control_gain=20, attack_gain=10,
-                     gas_used=15, gas_price=1)), \\
-                 patch.object(godmode, "run", side_effect=fake_run), \\
+                     gas_used=15, gas_price=1)), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
                  redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
@@ -873,8 +873,8 @@ class GodmodeTests(unittest.TestCase):
             proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
             (root / "generator.py").write_text("print('v2')", encoding="utf-8")
 
-            with patch.object(godmode, "run") as run_mock, \\
-                 patch.object(godmode, "rpc") as rpc_mock, \\
+            with patch.object(godmode, "run") as run_mock, \
+                 patch.object(godmode, "rpc") as rpc_mock, \
                  redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
