@@ -479,6 +479,8 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("TARGET_SETUP_RETURNDATA_LENGTH", body)
         self.assertIn("TARGET_CODE_LENGTH", body)
         self.assertIn("TARGET_BALANCE_AFTER_SETUP", body)
+        self.assertIn("vm.deal(address(this), 1 wei);", body)
+        self.assertIn("0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24", body)
 
     def test_entitlement_getter_discovery_prefers_balances(self):
         functions = [
@@ -830,10 +832,15 @@ class BreakEngineTests(unittest.TestCase):
             entitlement_signature="balances(address)",
             asset_signature="stakeToken()",
         )
-        self.assertIn("deal(assetToken, ATTACKER, 1 ether)", body)
+        self.assertIn('abi.encodeWithSignature("decimals()")', body)
+        self.assertIn("reportedDecimals <= 77", body)
+        self.assertIn("tokenSeedAmount = 10 ** tokenDecimals", body)
+        self.assertIn("deal(assetToken, ATTACKER, tokenSeedAmount)", body)
+        self.assertIn('console2.log("TOKEN_DECIMALS_SOURCE"', body)
         self.assertIn("IERC20Lowkey(assetToken).balanceOf(ATTACKER)", body)
         self.assertIn('console2.log("TOTAL_ATTACKER_TOKEN_GAIN"', body)
         self.assertIn("assetReadOk && totalTokenGain > entitlementBefore", body)
+        self.assertIn('assembly ("memory-safe")', body)
 
     def test_result_parser_marks_invalid_setup_as_lab_issue(self):
         target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)

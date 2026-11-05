@@ -81,7 +81,7 @@ FALLBACK = {
 "erc721_receiver":r"\bonERC721Received\s*\(",
 "erc1155_single":r"\bonERC1155Received\s*\(",
 "erc1155_batch":r"\bonERC1155BatchReceived\s*\(",
-"erc777_hook":r"\bonTokensReceived\s*\(",
+"erc777_hook":r"\btokensReceived\s*\(",
 "erc1363_hook":r"\bonTransferReceived\s*\(",
 "erc1363_approval_hook":r"\bonApprovalReceived\s*\(",
 "callback":r"\b(?:callback|executeOperation|uniswapV3FlashCallback|receiveFlashLoan)\s*\(",
@@ -2241,10 +2241,18 @@ contract WeirdERC20 {
 }
 contract NoReturnERC20 {mapping(address=>uint256) public balanceOf;mapping(address=>mapping(address=>uint256)) public allowance;function mint(address a,uint n) external {balanceOf[a]+=n;}function approve(address s,uint n) external {allowance[msg.sender][s]=n;}function transfer(address a,uint n) external {require(balanceOf[msg.sender]>=n);balanceOf[msg.sender]-=n;balanceOf[a]+=n;}function transferFrom(address f,address t,uint n) external {require(allowance[f][msg.sender]>=n&&balanceOf[f]>=n);allowance[f][msg.sender]-=n;balanceOf[f]-=n;balanceOf[t]+=n;}}
 contract WideDecimalsToken {uint256 public decimals=1000;mapping(address=>uint256) public balanceOf;function mint(address a,uint256 n) external {balanceOf[a]+=n;}function transfer(address to,uint256 n) external returns(bool){require(balanceOf[msg.sender]>=n);balanceOf[msg.sender]-=n;balanceOf[to]+=n;return true;}}
-contract ERC1155ReceiverLike {function onERC1155Received(address,address,uint256,uint256,bytes calldata) external pure returns(bytes4){return this.onERC1155Received.selector;}function onERC1155BatchReceived(address,address,uint256[] calldata,uint256[] calldata,bytes calldata) external pure returns(bytes4){return this.onERC1155BatchReceived.selector;}}
+contract ERC1155ReceiverLike {
+ function supportsInterface(bytes4 id) external pure returns(bool){return id==0x01ffc9a7||id==0x4e2312e0;}
+ function onERC1155Received(address,address,uint256,uint256,bytes calldata) external pure returns(bytes4){return 0xf23a6e61;}
+ function onERC1155BatchReceived(address,address,uint256[] calldata,uint256[] calldata,bytes calldata) external pure returns(bytes4){return 0xbc197c81;}
+}
+contract ERC721ReceiverLike {
+ function supportsInterface(bytes4 id) external pure returns(bool){return id==0x01ffc9a7;}
+ function onERC721Received(address,address,uint256,bytes calldata) external pure returns(bytes4){return 0x150b7a02;}
+}
 contract ERC777ReceiverLike {function tokensReceived(address,address,address,uint256,bytes calldata,bytes calldata) external pure {}}
 """)
-    print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Includes fee-on-transfer, explicit rebasing, false-return, no-return transfer/transferFrom, pause, blacklist, reentrant hooks, and ERC1155/777 receivers. WideDecimalsToken returns uint256(1000) deliberately; a standard IERC20Metadata decimals() returns uint8."); return 0
+    print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Includes fee-on-transfer, explicit rebasing, false-return, no-return transfer/transferFrom, pause, blacklist, reentrant hooks, and ERC721/1155/777 receiver examples. WideDecimalsToken returns uint256(1000) deliberately; a standard IERC20Metadata decimals() returns uint8."); return 0
 def run_control_alias(args): return control(args)
 def run_control(args):
     """Entry point used by break_engine for the mandatory control gate."""

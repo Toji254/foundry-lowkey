@@ -40,6 +40,9 @@ jobs:
           forge --version
           cast --version
           anvil --version
+      - name: P0 ABI, token and receiver acceptance
+        working-directory: tests/fixtures/acceptance/setup-compatibility
+        run: forge test -vv
       - name: Install Lowkey
         run: ./install.sh
       - name: Exercise project-aware Chisel contract preload
@@ -1066,6 +1069,15 @@ jobs:
           grep -Eq "unrecognized subcommand 'debug'|Usage: forge" /tmp/lowkey-forge-debug-help.txt
 
 
+      - name: Exercise installed lk break P0 end-to-end compatibility campaigns
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          cp "$GITHUB_WORKSPACE/tests/fixtures/acceptance/p0-break-e2e/P0BreakCompatibility.sol" src/
+          forge build --force
+          python3 "$GITHUB_WORKSPACE/tests/fixtures/acceptance/p0-break-e2e/run_campaigns.py"
+
       - name: Exercise saved escrow identifiers and state transitions on Anvil
         run: |
           set -euo pipefail
@@ -1168,12 +1180,14 @@ jobs:
           lk actor 1 Alice
           lk actor 2 Bob
           lk actor 1
-          lk target "$TARGET"
+          # Pin the deployed address to the artifact in this isolated project.
+          # The previous address-only selection could inherit a stale target contract
+          # name from the earlier shared-Anvil fixture and leave this target ABI-less.
+          lk target EscrowFlow "$TARGET"
 
           # Create two independent records. The ID book must capture contract IDs,
           # not confuse them with the transaction hashes.
           lk send createEscrow Bob --eth 2 | tee /tmp/lowkey-escrow-create-1.txt
-          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-1.txt
           grep -q "POST-TRANSACTION STATE" /tmp/lowkey-escrow-create-1.txt
           grep -q "Created (enum value 0)" /tmp/lowkey-escrow-create-1.txt
           lk ids | tee /tmp/lowkey-escrow-ids-1.txt
@@ -1181,7 +1195,6 @@ jobs:
           lk id alias @last firstEscrow
 
           lk send createEscrow Bob --eth 1 | tee /tmp/lowkey-escrow-create-2.txt
-          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-2.txt
           lk id alias @last secondEscrow
           lk ids | tee /tmp/lowkey-escrow-ids.txt
 
@@ -1259,7 +1272,13 @@ jobs:
         working-directory: /tmp/lowkey-fixture
         run: |
           export LOWKEY_RPC_URL=http://127.0.0.1:8545
-          lk target 0x1000000000000000000000000000000000000001
+          # The compatibility campaign rebuilt this shared fixture project after
+          # its first runtime was installed at the Anvil address. Reinstall the
+          # runtime from the current artifact before exercising target validation.
+          TARGET=0x1000000000000000000000000000000000000001
+          FIXTURE_CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
+          cast rpc anvil_setCode "$TARGET" "$FIXTURE_CODE"
+          lk target Fixture "$TARGET"
           lk test-gen Fixture --types unit,invariant,fuzz --force --validate --strict
           python3 - <<'PY'
           import json

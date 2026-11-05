@@ -3411,13 +3411,13 @@ def _record_event_identifiers(config, tx_hash, log, signature, details):
         return []
 
 
-def _transaction_event_report(config, logs, tx_hash=None):
+def _transaction_event_report(config, logs, tx_hash=None, target=None, abi=None):
     """Decode transaction logs against the ABI of each log's emitting address."""
     rendered = []
     for index, log in enumerate(logs or [], 1):
         if not isinstance(log, dict):
             continue
-        decoded = decode_event_log(config, log)
+        decoded = decode_event_log(config, log, target=target, abi=abi)
         if not decoded:
             continue
         signature, details = decoded
@@ -3588,7 +3588,13 @@ def _transaction_execution_report(
     """Build contract-level event, return, and linked-state output for one transaction."""
     sections = []
     logs = receipt.get("logs") if isinstance(receipt, dict) else []
-    event_lines = _transaction_event_report(config, logs, tx_hash=tx_hash)
+    event_lines = _transaction_event_report(
+        config,
+        logs,
+        tx_hash=tx_hash,
+        target=str((tx or {}).get("to") or config.get("target") or ""),
+        abi=abi,
+    )
     if event_lines:
         sections.append("\n".join(event_lines))
 
@@ -3786,7 +3792,7 @@ def run_receipt(config, tx_hash=None, args=None):
     target = apply_labels(str(tx.get("to") or "unknown"), config)
     value_wei = _hex_to_int(tx.get("value", "0")) or 0
 
-    function_item, abi = _trace_function_item(config, tx)
+    function_item, abi = _trace_function_item(config, tx, root=root)
     function_text = format_signature(function_item) if function_item else "unknown"
 
     lines = [
@@ -3811,7 +3817,11 @@ def run_receipt(config, tx_hash=None, args=None):
         lines.append("")
         lines.append(f"Events:    {len(logs)}")
         for index, log in enumerate(logs, 1):
-            decoded = decode_event_log(config, log) if isinstance(log, dict) else None
+            decoded = (
+                decode_event_log(config, log, target=tx.get("to"), abi=abi, root=root)
+                if isinstance(log, dict)
+                else None
+            )
             if decoded:
                 signature, details = decoded
                 _record_event_identifiers(config, tx_hash, log, signature, details)
@@ -3930,7 +3940,7 @@ def run_trace(config,args=None):
         data={"tx_hash":tx_hash, "returned_values": returned_lines or []},
     )
     return result_code
-def decode_event_log(config, log, target=None):
+def decode_event_log(config, log, target=None, abi=None, root=None):
     topics = log.get("topics", []) if isinstance(log, dict) else []
     data = log.get("data", "0x") if isinstance(log, dict) else "0x"
     if not topics:
@@ -3938,27 +3948,68 @@ def decode_event_log(config, log, target=None):
 
     # Receipt logs identify the contract that emitted them. Prefer that
     # address over the selected target so multi-contract transactions decode
-    # against the correct ABI.
+    # against the correct ABI. For the transaction's own target, try its
+    # already-resolved ABI first.
     emitter = log.get("address") if isinstance(log, dict) else None
     event_target = emitter if is_address(emitter) else target or config.get("target")
-    event_abi = load_abi(event_target, config) if event_target else []
+    same_transaction_target = (
+        is_address(event_target)
+        and is_address(target)
+        and event_target.lower() == target.lower()
+    )
+    event_abi = (
+        abi if same_transaction_target and isinstance(abi, list) and bool(abi)
+        else load_abi(event_target, config) if event_target
+        else []
+    )
     topic0 = str(topics[0]).lower()
-    for item in [x for x in event_abi if x.get("type") == "event" and not x.get("anonymous")]:
-        signature=format_signature(item)
-        event_topic=cast_output(["cast","sig-event",signature])[1]
-        if event_topic.lower().strip()==topic0:
+
+    def decode_from(candidate_abi):
+        for item in [
+            entry for entry in candidate_abi
+            if isinstance(entry, dict)
+            and entry.get("type") == "event"
+            and not entry.get("anonymous")
+        ]:
+            signature = format_signature(item)
+            event_topic = cast_output(["cast", "sig-event", signature])[1]
+            if str(event_topic).lower().strip() != topic0:
+                continue
             if item.get("inputs"):
-                output=io.StringIO()
-                with redirect_stdout(output): code=decode_event_values(item,data,topics)
-                return signature,output.getvalue().strip() if code==0 else output.getvalue().strip()
-            try: payload=event_payload(data,topics)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    code = decode_event_values(item, data, topics)
+                return signature, output.getvalue().strip() if code == 0 else output.getvalue().strip()
+            try:
+                payload = event_payload(data, topics)
             except ValueError as error:
                 record_status(2)
-                return signature,str(error)
-            code,decoded,error=cast_output(["cast","decode-event","--sig",signature,payload])
+                return signature, str(error)
+            code, decoded, error = cast_output(["cast", "decode-event", "--sig", signature, payload])
             record_status(code)
-            if error and not decoded: decoded=error
-            return signature,decoded
+            if error and not decoded:
+                decoded = error
+            return signature, decoded
+        return None
+
+    decoded = decode_from(event_abi)
+    if decoded:
+        return decoded
+
+    # A function ABI can be non-empty but omit events, or can be stale from a
+    # previous target. If this is the transaction's own emitter, retry against
+    # the current project's exact target artifact rather than silently falling
+    # back to another globally remembered ABI.
+    if same_transaction_target and root is not None:
+        artifact_path = auto_abi_path(event_target, config, root=root)
+        artifact = read_artifact(artifact_path) if artifact_path else None
+        recovered_abi = artifact.get("abi", []) if isinstance(artifact, dict) else artifact
+        if isinstance(recovered_abi, list) and recovered_abi:
+            decoded = decode_from(recovered_abi)
+            if decoded:
+                remember_abi_path(config, event_target, artifact_path)
+                save_config(config)
+                return decoded
     return None
 
 def run_logs(config,args):
@@ -4980,7 +5031,7 @@ def _trace_root_return(trace_text):
     matches = re.findall(r"← \[Return\] (.+)", str(trace_text or ""))
     return matches[0].strip() if matches else None
 
-def _trace_function_item(config, tx):
+def _trace_function_item(config, tx, root=None):
     if not isinstance(tx, dict):
         return None, []
     target = tx.get("to") if is_address(tx.get("to")) else config.get("target")
@@ -4989,9 +5040,33 @@ def _trace_function_item(config, tx):
     if not isinstance(input_data, str) or len(input_data) < 10:
         return None, abi
     selector = input_data[:10].lower()
-    for item in abi_functions(abi):
-        if (abi_selector(format_signature(item)) or "").lower() == selector:
-            return item, abi
+
+    def matching_function(candidate_abi):
+        for item in abi_functions(candidate_abi):
+            if (abi_selector(format_signature(item)) or "").lower() == selector:
+                return item
+        return None
+
+    function_item = matching_function(abi)
+    if function_item:
+        return function_item, abi
+
+    # A non-empty ABI can still be stale or incomplete. Treat it as usable only
+    # when it actually describes this transaction's selector. Otherwise recover
+    # the target's ABI from this project's exact build tree before giving up.
+    # This is deliberately scoped to root so a neighbouring project cannot
+    # supply a coincidentally matching contract ABI.
+    if target and root is not None:
+        artifact_path = auto_abi_path(target, config, root=root)
+        artifact = read_artifact(artifact_path) if artifact_path else None
+        recovered_abi = artifact.get("abi", []) if isinstance(artifact, dict) else artifact
+        if isinstance(recovered_abi, list) and recovered_abi:
+            recovered_function = matching_function(recovered_abi)
+            if recovered_function:
+                remember_abi_path(config, target, artifact_path)
+                save_config(config)
+                return recovered_function, recovered_abi
+
     return None, abi
 
 def _trace_identifier_info(config, tx, trace_text):
@@ -23953,23 +24028,45 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 source="manual",
             )
         elif len(args)==2 and is_address(args[1]):
+            contract_name = str(args[0]).strip()
             artifact = config.get("abi_paths",{}).get(args[1])
+            if artifact:
+                artifact_data = read_artifact(os.path.expanduser(str(artifact)))
+                if (
+                    not artifact_data
+                    or artifact_contract_name(str(artifact), artifact_data).casefold()
+                    != contract_name.casefold()
+                ):
+                    artifact = None
+
+            # An explicit "contract name + address" selection must also bind
+            # the matching project artifact. Otherwise the target appears
+            # selected but ABI-driven commands still pass a bare function name
+            # to Cast. Resolve only an exact contract-name match in this project.
+            if not artifact and contract_name:
+                lookup_config = dict(config)
+                lookup_config["target"] = args[1]
+                lookup_config["target_contract"] = contract_name
+                artifact = auto_abi_path(args[1], lookup_config, root=root)
+
             validation = _validate_manual_target_runtime(
                 config,
                 root,
                 args[1],
-                args[0],
+                contract_name,
                 artifact,
             )
             if validation != 0:
                 return validation
-            remember_project_target(config, root, args[0], args[1])
-            config["target"]=args[1]
-            config["target_contract"]=args[0]
+            remember_project_target(config, root, contract_name, args[1])
+            config["target"] = args[1]
+            config["target_contract"] = contract_name
+            if artifact:
+                remember_abi_path(config, args[1], artifact)
             audit_context.set_target(
                 root,
                 address=args[1],
-                contract=args[0],
+                contract=contract_name,
                 artifact=artifact,
                 source="manual",
             )

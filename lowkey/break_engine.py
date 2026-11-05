@@ -671,65 +671,81 @@ def _anvil_accounts(host, config) -> list[str]:
         return []
 
 
+def _abi_array_type(ptype: str) -> tuple[str, int | None] | None:
+    """Return (element type, fixed length); None means the ABI type is not an array."""
+    match = re.fullmatch(r"(.+)\[(\d*)\]", str(ptype or "").strip().lower())
+    if not match:
+        return None
+    base, length_text = match.groups()
+    if "[" in base or "]" in base:
+        raise ValueError(f"nested ABI array '{ptype}' requires a protocol-specific generator")
+    fixed_length = int(length_text) if length_text else None
+    if fixed_length is not None and (fixed_length < 1 or fixed_length > 32):
+        raise ValueError(f"fixed ABI array '{ptype}' has unsupported length; supported range is 1..32")
+    return base, fixed_length
+
+
+def _integer_probe_value(ptype: str, mode: str, rng: random.Random) -> str:
+    match = re.fullmatch(r"u?int(\d*)", ptype)
+    if not match:
+        raise ValueError(f"unsupported ABI array element type '{ptype}'")
+    bits = int(match.group(1) or "256")
+    if bits < 8 or bits > 256 or bits % 8:
+        raise ValueError(f"invalid integer ABI width '{ptype}'")
+    signed = ptype.startswith("int")
+    if mode == "zero":
+        return "0"
+    if mode == "max":
+        return str((1 << (bits - (1 if signed else 0))) - 1)
+    if mode == "one":
+        return "1"
+    return str(rng.choice([-1, 0, 1, 2]) if signed else rng.choice([0, 1, 2, 10]))
+
+
 def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str, config=None) -> list[str]:
-    args = []
+    """Create conservative ABI inputs; unsupported types fail closed by name."""
+    args: list[str] = []
     accounts = _anvil_accounts(host, config or {})
     fallback = accounts[0] if accounts else "0x" + "11" * 20
+    attacker = accounts[1] if mode == "one" and len(accounts) > 1 else fallback
+    zero_address = "0x0000000000000000000000000000000000000000"
+
     for item in fn.get("inputs") or []:
         ptype = str(item.get("type") or "").lower()
-        if ptype == "address":
-            if mode == "zero":
-                args.append("0x0000000000000000000000000000000000000000")
-            elif mode == "one" and len(accounts) > 1:
-                args.append(accounts[1])
+        array_type = _abi_array_type(ptype)
+        if array_type is not None:
+            base, fixed_length = array_type
+            if base != "address" and not re.fullmatch(r"u?int\d*", base):
+                raise ValueError(f"ABI array '{ptype}' is unsupported; supported array elements are address and integers")
+            count = fixed_length if fixed_length is not None else (0 if mode == "zero" else 1)
+            if count > 32:
+                raise ValueError(f"ABI array '{ptype}' exceeds the generic probe limit of 32 elements")
+            if base == "address":
+                element = zero_address if mode == "zero" else attacker
+                values = [element] * count
             else:
-                args.append(fallback)
+                element = _integer_probe_value(base, mode, rng)
+                values = [element] * count
+            args.append("[" + ",".join(values) + "]")
+            continue
+
+        if ptype == "address":
+            args.append(zero_address if mode == "zero" else attacker)
         elif ptype == "bool":
             args.append("true" if mode == "one" else "false")
-        elif ptype.startswith("uint"):
-            bits = 256
-            m = re.match(r"uint(\d+)", ptype)
-            if m:
-                bits = int(m.group(1))
-            if mode == "zero":
-                args.append("0")
-            elif mode == "max":
-                args.append(str((1 << bits) - 1))
-            elif mode == "one":
-                args.append("1")
-            else:
-                choices = [0, 1, 2, 10]
-                args.append(str(rng.choice(choices)))
-        elif ptype.startswith("int"):
-            bits = 256
-            m = re.match(r"int(\d+)", ptype)
-            if m:
-                bits = int(m.group(1))
-            if mode == "zero":
-                args.append("0")
-            elif mode == "max":
-                args.append(str((1 << (bits - 1)) - 1))
-            elif mode == "one":
-                args.append("1")
-            else:
-                args.append(str(rng.choice([-1, 0, 1, 2])))
+        elif re.fullmatch(r"uint\d*", ptype) or re.fullmatch(r"int\d*", ptype):
+            args.append(_integer_probe_value(ptype, mode, rng))
         elif ptype == "bytes":
             args.append("0x" if mode != "one" else "0x01")
-        elif ptype.startswith("bytes"):
-            n = int(ptype[5:] or "1")
-            args.append("0x" + ("00" * n if mode != "one" else ("01" * n)))
+        elif re.fullmatch(r"bytes(?:[1-9]|[12]\d|3[0-2])", ptype):
+            size = int(ptype[5:])
+            args.append("0x" + (("01" if mode == "one" else "00") * size))
         elif ptype == "string":
             args.append("lowkey" if mode == "one" else "")
-        elif ptype.endswith("[]"):
-            # Empty dynamic arrays are valid ABI values and are intentionally useful
-            # for probing missing non-empty constraints.
-            args.append("[]")
         elif ptype.startswith("tuple"):
-            # Generic tuple/struct values are protocol-specific; do not fabricate
-            # an apparently valid tuple that could produce misleading evidence.
-            raise ValueError("tuple/struct argument requires a protocol-specific generator")
+            raise ValueError(f"tuple/struct ABI type '{ptype}' requires a protocol-specific generator")
         else:
-            args.append("0")
+            raise ValueError(f"unsupported ABI type '{ptype}'")
     return args
 
 
@@ -1140,52 +1156,47 @@ def _render_repeat_test(
     setup_signature: str | None = None,
     entitlement_signature: str | None = None,
     asset_signature: str | None = None,
+    setup_abi: dict[str, Any] | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
-    expressions = []
-    for item, raw_value in zip(params, values):
-        ptype = str(item.get("type") or "").lower()
-        if ptype == "address":
-            expressions.append("address(ATTACKER)")
-        else:
-            expressions.append(_basic_solidity_expr(ptype, str(raw_value)))
+    argument_declarations, expressions = _render_abi_arguments(
+        params, values, actor_expr="address(ATTACKER)", prefix="lowkeyAttackArg"
+    )
     payload_expr = (
         f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
         if expressions else f'abi.encodeWithSignature("{signature}")'
     )
 
     setup_block = ""
-    if seed_fund:
-        seed_amount = _solidity_amount_literal(seed_fund)
-        if setup_signature:
-            setup_arg = ", 1" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
-            setup_value = f"{{value: setupValue}}" if asset_signature else f"{{value: {seed_amount}}}"
-            setup_value_decl = (
-                f"        uint256 setupValue = assetReadOk ? 0 : {seed_amount};\n"
-                if asset_signature else ""
-            )
-            setup_block += f"""
-        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_arg});
-{setup_value_decl}        vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{setup_value}(setupData);
-        console2.log("SETUP_SUCCESS", setupSuccess);
-        console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
-        console2.logBytes(setupReturndata);
-        console2.logBytes(setupReturndata);
-        """
+    if setup_abi is None and setup_signature:
+        setup_abi = {"name": setup_signature.split("(", 1)[0], "inputs": [], "stateMutability": "payable"}
+    if setup_abi is not None:
+        setup_signature = _format_signature(setup_abi)
+        setup_inputs = list(setup_abi.get("inputs") or [])
+        setup_declarations, setup_expressions = _render_setup_arguments(
+            setup_inputs, actor_expr="address(ATTACKER)", prefix="lowkeySetupArg"
+        )
+        setup_args = ", " + ", ".join(setup_expressions) if setup_expressions else ""
+        setup_mutability = str(setup_abi.get("stateMutability") or "").lower()
+        if asset_signature:
+            setup_value = "assetReadOk ? 0 : 2 wei" if setup_mutability == "payable" else "0"
+        elif setup_mutability == "payable":
+            setup_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
         else:
-            setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
-    elif setup_signature:
-        setup_arg = ", 1 ether" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
-        setup_block += """
-        bytes memory setupData = abi.encodeWithSignature("%s"%s);
-        uint256 setupValue = assetReadOk ? 0 : 2 wei;
+            setup_value = "0"
+        setup_block = f"""
+        {setup_declarations}
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_args});
         vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{value: setupValue}(setupData);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: {setup_value}}}(setupData);
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
-        """ % (setup_signature, setup_arg)
+        console2.logBytes(setupReturndata);
+"""
+    elif seed_fund:
+        seed_amount = _solidity_amount_literal(seed_fund)
+        setup_block += f"        vm.deal(TARGET, {seed_amount});\n"
 
     entitlement_before = """
         uint256 entitlementBefore = 0;
@@ -1212,6 +1223,9 @@ def _render_repeat_test(
         asset_discovery = f"""
         address assetToken = address(0);
         bool assetReadOk = false;
+        uint256 tokenSeedAmount = 0;
+        uint256 tokenDecimals = 18;
+        bool tokenDecimalsReadOk = false;
         {{
             (bool ok, bytes memory data) = TARGET.staticcall(
                 abi.encodeWithSignature("{asset_signature}")
@@ -1229,11 +1243,25 @@ def _render_repeat_test(
         uint256 targetTokenMid = 0;
         uint256 targetTokenAfter = 0;
         if (assetReadOk) {{
-            // Seed the actor with the project's actual ERC-20 asset in the local
-            // Forge VM and approve the target before attempting token-valued setup.
-            deal(assetToken, ATTACKER, 1 ether);
-            vm.prank(ATTACKER);
-            IERC20Lowkey(assetToken).approve(TARGET, type(uint256).max);
+            (bool decimalsOk, bytes memory decimalsData) = assetToken.staticcall(
+                abi.encodeWithSignature("decimals()")
+            );
+            if (decimalsOk && decimalsData.length >= 32) {{
+                uint256 reportedDecimals = abi.decode(decimalsData, (uint256));
+                if (reportedDecimals <= 77) {{
+                    tokenDecimals = reportedDecimals;
+                    tokenDecimalsReadOk = true;
+                }}
+            }}
+            tokenSeedAmount = 10 ** tokenDecimals;
+            deal(assetToken, ATTACKER, tokenSeedAmount);
+            vm.startPrank(ATTACKER);
+            _lowkeySafeApprove(assetToken, ATTACKER, TARGET, type(uint256).max);
+            vm.stopPrank();
+            console2.log("TOKEN_DECIMALS", tokenDecimals);
+            console2.log("TOKEN_DECIMALS_METADATA_READ", tokenDecimalsReadOk);
+            console2.log("TOKEN_DECIMALS_SOURCE", tokenDecimalsReadOk ? "metadata" : "fallback-18");
+            console2.log("TOKEN_FUNDING_AMOUNT", tokenSeedAmount);
         }}
 """
         asset_baseline = """
@@ -1274,31 +1302,61 @@ def _render_repeat_test(
         }}
 """
 
+    break_verdict_block = (
+        """
+        bool breakByEntitlement = entitlementReadOk
+            && (totalGain > entitlementBefore || (assetReadOk && totalTokenGain > entitlementBefore));
+        console2.log("LOWKEY_BREAK", breakByEntitlement);
+"""
+        if entitlement_signature
+        else '        console2.log("LOWKEY_BREAK", false);\n'
+    )
+
     return _render_common_header() + f"""
 interface IERC20Lowkey {{
     function balanceOf(address account) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
 }}
 
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
 
+    function _lowkeyApproveCall(address token, address spender, uint256 amount) internal returns (bool) {{
+        (bool ok, bytes memory returndata) = token.call(
+            abi.encodeWithSelector(bytes4(0x095ea7b3), spender, amount)
+        );
+        if (!ok) return false;
+        if (returndata.length == 0) return true;
+        if (returndata.length != 32) return false;
+        uint256 returned;
+        assembly ("memory-safe") {{ returned := mload(add(returndata, 32)) }}
+        return returned == 1;
+    }}
+
+    function _lowkeySafeApprove(address token, address owner, address spender, uint256 amount) internal {{
+        (bool allowanceOk, bytes memory allowanceData) = token.staticcall(
+            abi.encodeWithSelector(bytes4(0xdd62ed3e), owner, spender)
+        );
+        if (allowanceOk && allowanceData.length >= 32) {{
+            uint256 currentAllowance = abi.decode(allowanceData, (uint256));
+            if (currentAllowance != 0) {{
+                require(_lowkeyApproveCall(token, spender, 0), "LOWKEY_APPROVE_RESET_FAILED");
+            }}
+        }}
+        require(_lowkeyApproveCall(token, spender, amount), "LOWKEY_APPROVE_FAILED");
+    }}
+
     function test_break_repeat() public {{
-        // Fund the attacker before any payable setup call. Otherwise a seeded
-        // deposit/credit path can revert for lack of ETH and masquerade as a
-        // protocol-level accounting observation.
         vm.deal(ATTACKER, 100 ether);
+{argument_declarations}
 {asset_discovery}
 {setup_block}
 {entitlement_before}
 {asset_baseline}
         bytes memory data = {payload_expr};
 
-        // Measure withdrawal gains only after setup has established the attacker's entitlement.
         uint256 targetBefore = TARGET.balance;
         uint256 attackerBefore = ATTACKER.balance;
-
         vm.prank(ATTACKER);
         (bool first, bytes memory firstReturndata) = TARGET.call{{value: {value}}}(data);
 
@@ -1343,25 +1401,10 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("ENTITLEMENT_AFTER_FIRST", entitlementAfterFirst);
         console2.log("ENTITLEMENT_AFTER_SECOND", entitlementAfterSecond);
 
-        // A second successful withdrawal is normal when the attacker still has entitlement.
-        // BREAK requires demonstrated payout greater than the entitlement recorded before attack.
-        bool breakByEntitlement = entitlementReadOk
-            && (
-                totalGain > entitlementBefore
-                || (assetReadOk && totalTokenGain > entitlementBefore)
-            );
-        // Without an entitlement baseline, repeated value movement is only an
-        // observation. Do not label a normal second payout as an accounting BREAK.
-        if (breakByEntitlement) {{
-            console2.log("LOWKEY_BREAK", true);
-        }} else {{
-            console2.log("LOWKEY_BREAK", false);
-        }}
-
+{break_verdict_block}
         targetMid; attackerMid;
     }}
-}}
-"""
+}}"""
 
 
 def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
@@ -1451,49 +1494,142 @@ contract LowkeyBreakTime is Test {{
 
 
 def _basic_solidity_expr(ptype: str, value: str) -> str:
-    """Render a safe generic Solidity expression for generated attack calldata."""
+    """Render one supported scalar ABI value as a Solidity expression."""
     raw = str(value)
     lower = ptype.lower().strip()
-
+    array_type = _abi_array_type(lower)
+    if array_type is not None:
+        base, fixed_length = array_type
+        if raw == "[]" and fixed_length is None:
+            supported_base = (
+                base == "address"
+                or base in {"bool", "bytes", "string"}
+                or re.fullmatch(r"u?int\d*", base)
+                or re.fullmatch(r"bytes(?:[1-9]|[12]\d|3[0-2])", base)
+            )
+            if supported_base:
+                return f"new {base}[](0)"
+        raise ValueError(f"array ABI type '{ptype}' needs an explicitly rendered memory array")
     if lower == "address":
         return f"address({raw})"
     if lower == "bool":
-        return "true" if raw.lower() == "true" else "false"
+        if raw.lower() not in {"true", "false"}:
+            raise ValueError(f"invalid bool ABI value '{raw}'")
+        return raw.lower()
     if lower == "string":
-        # _make_value only emits simple ASCII values, so repr via JSON is sufficient
-        # and avoids accidentally producing invalid Solidity string literals.
         import json as _json
         return _json.dumps(raw)
-
-    # Handle dynamic arrays before primitive numeric/bytes checks because ABI
-    # types such as uint256[] and bytes[] also start with those primitive names.
-    if lower.endswith("[]"):
-        base = lower[:-2]
-        if base.startswith("tuple") or base.startswith("("):
-            raise ValueError(
-                f"dynamic array element type '{ptype}' requires a protocol-specific generator"
-            )
-        if raw.strip() != "[]":
-            raise ValueError(
-                f"generic dynamic array '{ptype}' accepts only an empty array in this attack mode"
-            )
-        return f"new {base}[](0)"
-
     if lower == "bytes":
-        return raw if raw.startswith("0x") else "0x"
-    if lower.startswith(("uint", "int", "bytes")):
+        if not re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", raw):
+            raise ValueError(f"invalid bytes ABI value '{raw}'")
         return raw
-
-    if re.fullmatch(r"(?:address|bool|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bytes(?:1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32))\[[0-9]+\]", lower):
-        raise ValueError(f"fixed-size array '{ptype}' requires a specialized attack generator")
-
-    if lower.startswith("tuple") or lower.startswith("("):
+    if lower.startswith(("uint", "int")):
+        if not re.fullmatch(r"-?\d+", raw):
+            raise ValueError(f"invalid integer ABI value '{raw}' for {ptype}")
+        return raw
+    if re.fullmatch(r"bytes(?:[1-9]|[12]\d|3[0-2])", lower):
+        size = int(lower[5:])
+        if not re.fullmatch(r"0x[0-9a-fA-F]{%d}" % (size * 2), raw):
+            raise ValueError(f"invalid fixed-bytes ABI value '{raw}' for {ptype}")
+        return raw
+    if lower.startswith("tuple"):
         raise ValueError(f"tuple/struct argument '{ptype}' requires a specialized attack generator")
-
     raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
 
 
-def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
+def _render_abi_arguments(
+    inputs: list[dict[str, Any]],
+    values: list[str],
+    *,
+    actor_expr: str | None,
+    prefix: str,
+) -> tuple[str, list[str]]:
+    """Render scalar and one-dimensional address/integer arrays without guessing layouts."""
+    if len(inputs) != len(values):
+        raise ValueError(f"ABI argument count mismatch: {len(inputs)} inputs, {len(values)} values")
+    declarations: list[str] = []
+    expressions: list[str] = []
+    for index, (item, raw_value) in enumerate(zip(inputs, values)):
+        ptype = str(item.get("type") or "").lower()
+        array_type = _abi_array_type(ptype)
+        if array_type is None:
+            if ptype == "address" and actor_expr:
+                expressions.append(actor_expr)
+            else:
+                expressions.append(_basic_solidity_expr(ptype, str(raw_value)))
+            continue
+
+        base, fixed_length = array_type
+        if base != "address" and not re.fullmatch(r"u?int\d*", base):
+            raise ValueError(f"ABI array '{ptype}' is unsupported; supported array elements are address and integers")
+        raw = str(raw_value).strip()
+        if not (raw.startswith("[") and raw.endswith("]")):
+            raise ValueError(f"array ABI value for '{ptype}' must use bracket notation")
+        inner = raw[1:-1].strip()
+        elements = [] if not inner else [part.strip() for part in inner.split(",")]
+        if fixed_length is not None and len(elements) != fixed_length:
+            raise ValueError(f"fixed ABI array '{ptype}' needs {fixed_length} elements, received {len(elements)}")
+        if len(elements) > 32:
+            raise ValueError(f"ABI array '{ptype}' exceeds the generic render limit of 32 elements")
+
+        variable = f"{prefix}_{index}"
+        if fixed_length is None:
+            declarations.append(f"{base}[] memory {variable} = new {base}[]({len(elements)});")
+        else:
+            declarations.append(f"{base}[{fixed_length}] memory {variable};")
+        for element_index, element in enumerate(elements):
+            if base == "address" and actor_expr:
+                expression = actor_expr
+            else:
+                expression = _basic_solidity_expr(base, element)
+            declarations.append(f"{variable}[{element_index}] = {expression};")
+        expressions.append(variable)
+    return ("\n        ".join(declarations), expressions)
+
+
+def _render_setup_arguments(
+    inputs: list[dict[str, Any]],
+    *,
+    actor_expr: str,
+    prefix: str = "lowkeySetupArg",
+) -> tuple[str, list[str]]:
+    """Create conservative setup arguments from ABI metadata only."""
+    values: list[str] = []
+    for item in inputs:
+        ptype = str(item.get("type") or "").lower()
+        array_type = _abi_array_type(ptype)
+        if array_type is None:
+            if ptype == "address":
+                values.append(actor_expr)
+            elif re.fullmatch(r"uint\d*", ptype):
+                values.append("1")
+            else:
+                raise ValueError(f"setup ABI type '{ptype}' is unsupported; only address and uint are generic")
+            continue
+
+        base, fixed_length = array_type
+        if base not in {"address"} and not re.fullmatch(r"uint\d*", base):
+            raise ValueError(f"setup ABI array '{ptype}' is unsupported; only address and uint arrays are generic")
+        count = fixed_length if fixed_length is not None else 1
+        if count > 32:
+            raise ValueError(f"setup ABI array '{ptype}' exceeds the generic setup limit of 32 elements")
+        values.append("[" + ",".join([actor_expr if base == "address" else "1"] * count) + "]")
+    # The renderer handles the actor expression specially for scalar and array addresses.
+    normalized_values = [
+        ("[" + ",".join(["1"] * (len(v[1:-1].split(",")) if v[1:-1] else 0)) + "]")
+        if _abi_array_type(str(item.get("type") or "").lower()) is not None
+        and _abi_array_type(str(item.get("type") or "").lower())[0] == "address"
+        else ("1" if str(item.get("type") or "").lower() == "address" else v)
+        for item, v in zip(inputs, values)
+    ]
+    declarations, expressions = _render_abi_arguments(
+        inputs, normalized_values, actor_expr=actor_expr, prefix=prefix
+    )
+    return declarations, expressions
+
+
+def _find_setup_abi(functions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Select a setup function only when every argument has a deterministic ABI renderer."""
     for item in functions:
         if not isinstance(item, dict):
             continue
@@ -1502,15 +1638,24 @@ def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
         if not SETUP_RE.search(name):
             continue
         mutability = str(item.get("stateMutability") or "").lower()
-        if len(inputs) == 0 and mutability == "payable":
-            return _format_signature(item)
-        if (
-            len(inputs) == 1
-            and str(inputs[0].get("type") or "").lower().startswith("uint")
-            and mutability in {"payable", "nonpayable"}
-        ):
-            return _format_signature(item)
+        if mutability not in {"payable", "nonpayable"}:
+            continue
+        if not inputs:
+            if mutability == "payable":
+                return item
+            continue
+        try:
+            _render_setup_arguments(inputs, actor_expr="address(ATTACKER)")
+        except ValueError:
+            continue
+        return item
     return None
+
+
+def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
+    """Backward-compatible signature view of the ABI-driven setup selector."""
+    item = _find_setup_abi(functions)
+    return _format_signature(item) if item else None
 
 
 def _find_entitlement_getter_signature(functions: list[dict[str, Any]]) -> str | None:
@@ -1554,20 +1699,16 @@ def _render_reentrancy_test(
     setup_signature: str | None = None,
     seed_fund: str | None = None,
     entitlement_signature: str | None = None,
+    setup_abi: dict[str, Any] | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
-    expressions = [
-        _basic_solidity_expr(str(item.get("type") or ""), str(value))
-        for item, value in zip(params, values)
-    ]
-    encoded_args = [
-        "address(hostile)" if str(item.get("type") or "").lower() == "address" else expr
-        for item, expr in zip(params, expressions)
-    ]
+    argument_declarations, expressions = _render_abi_arguments(
+        params, values, actor_expr="address(hostile)", prefix="lowkeyAttackArg"
+    )
     payload_expr = (
-        f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
-        if encoded_args else f'abi.encodeWithSignature("{signature}")'
+        f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
+        if expressions else f'abi.encodeWithSignature("{signature}")'
     )
     setup_block = """        uint256 targetBalanceBeforeFunding = TARGET.balance;
 """
@@ -1576,11 +1717,23 @@ def _render_reentrancy_test(
         setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
     setup_block += """        uint256 targetBalanceBeforeSetup = TARGET.balance;
 """
-    if setup_signature:
-        seed_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
-        setup_block += f'        vm.deal(address(hostile), ({seed_value}) + 1 wei);\n'
+    if setup_abi is None and setup_signature:
+        setup_abi = {"name": setup_signature.split("(", 1)[0], "inputs": [], "stateMutability": "payable"}
+    if setup_abi is not None:
+        setup_signature = _format_signature(setup_abi)
+        setup_declarations, setup_expressions = _render_setup_arguments(
+            list(setup_abi.get("inputs") or []), actor_expr="address(hostile)", prefix="lowkeySetupArg"
+        )
+        setup_args = ", " + ", ".join(setup_expressions) if setup_expressions else ""
+        setup_mutability = str(setup_abi.get("stateMutability") or "").lower()
+        seed_value = (
+            _solidity_amount_literal(seed_fund) if seed_fund
+            else ("2 wei" if setup_mutability == "payable" else "0")
+        )
+        setup_block += f"        vm.deal(address(hostile), ({seed_value}) + 1 wei);\n"
         setup_block += f"""
-        bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
+        {setup_declarations}
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_args});
         (bool seeded, ) = address(hostile).call{{value: {seed_value}}}(
             abi.encodeWithSignature("seed(bytes)", setupData)
         );
@@ -1630,6 +1783,10 @@ def _render_reentrancy_test(
 """
 
     return _render_common_header() + f"""
+interface ILowkeyERC1820Registry {{
+    function setInterfaceImplementer(address account, bytes32 interfaceHash, address implementer) external;
+}}
+
 contract LowkeyBreakReentrant {{
     address public immutable target;
     bytes public payload;
@@ -1642,6 +1799,43 @@ contract LowkeyBreakReentrant {{
 
     constructor(address _target) {{
         target = _target;
+        address registry = 0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24;
+        if (registry.code.length != 0) {{
+            try ILowkeyERC1820Registry(registry).setInterfaceImplementer(
+                address(this), keccak256("ERC777TokensRecipient"), address(this)
+            ) {{ }} catch {{ }}
+        }}
+    }}
+
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {{
+        return interfaceId == 0x01ffc9a7 || interfaceId == 0x4e2312e0 || interfaceId == 0x150b7a02;
+    }}
+
+    function tokensReceived(
+        address, address, address, uint256, bytes calldata, bytes calldata
+    ) external {{
+        _reenter();
+    }}
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external returns (bytes4)
+    {{
+        _reenter();
+        return 0xf23a6e61;
+    }}
+
+    function onERC1155BatchReceived(address, address, uint256[] calldata, uint256[] calldata, bytes calldata)
+        external returns (bytes4)
+    {{
+        _reenter();
+        return 0xbc197c81;
+    }}
+
+    function onERC721Received(address, address, uint256, bytes calldata)
+        external returns (bytes4)
+    {{
+        _reenter();
+        return 0x150b7a02;
     }}
 
     function setPayload(bytes calldata _payload) external {{
@@ -1685,6 +1879,7 @@ contract LowkeyBreakReentrancy is Test {{
 
     function test_break_reentrancy() public {{
         LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET);
+{argument_declarations}
         bytes memory payload = {payload_expr};
         hostile.setPayload(payload);
 {setup_block}
@@ -1695,6 +1890,7 @@ contract LowkeyBreakReentrancy is Test {{
 
 {entitlement_before_attack_block}
 
+        vm.deal(address(this), 1 wei);
         (bool outer, ) = address(hostile).call{{value: 1 wei}}(
             abi.encodeWithSignature("attack()")
         );
@@ -2158,13 +2354,15 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     values = _make_value(host, fn, rng, mode, config)
     calldata, error = _encode_call(host, config, target, fn, values)
     if not calldata:
+        message = f"Could not encode a generic ABI call: {error}"
         return AttackResult(
             family=family,
             contract=target.contract,
             address=target.address,
             function=signature,
             status="BLOCKED",
-            summary=f"Could not encode a generic call: {error}",
+            summary=message,
+            detail=_abi_refusal_detail(target, family, message),
         )
 
     value = _payable_value(fn, opts, "small")
@@ -2173,11 +2371,11 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     if family in {"replay", "accounting"}:
         try:
             all_functions = _discover_functions(host, config, target)
-            setup_signature = _find_setup_signature(all_functions)
+            setup_abi = _find_setup_abi(all_functions)
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
             asset_signature = _find_asset_getter_signature(all_functions)
         except Exception:
-            setup_signature = None
+            setup_abi = None
             entitlement_signature = None
             asset_signature = None
         body = _render_repeat_test(
@@ -2188,9 +2386,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             value,
             family,
             seed_fund,
-            setup_signature=setup_signature,
             entitlement_signature=entitlement_signature,
             asset_signature=asset_signature,
+            setup_abi=setup_abi,
         )
     elif family == "access":
         body = _render_access_test(
@@ -2207,23 +2405,17 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         max_data, max_error = _encode_call(host, config, target, fn, max_values)
         if not zero_data or not max_data:
             reason = zero_error or max_error or "could not encode edge values"
-            return AttackResult(family, target.contract, target.address, signature, "BLOCKED", reason)
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED", reason,
+                detail=_abi_refusal_detail(target, family, reason),
+            )
         body = _render_boundary_test(target, signature, zero_data, max_data, value)
     elif family == "time":
         body = _render_time_test(target, signature, calldata, value)
     elif family == "reentrancy":
-        if any(
-            str(item.get("type") or "").lower().startswith(("tuple", "bytes", "string"))
-            or str(item.get("type") or "").lower().endswith("[]")
-            for item in (fn.get("inputs") or [])
-        ):
-            return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED",
-                "Generic reentrancy generation needs only simple ABI types.",
-            )
         try:
             all_functions = _discover_functions(host, config, target)
-            setup_signature = _find_setup_signature(all_functions)
+            setup_abi = _find_setup_abi(all_functions)
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
             body = _render_reentrancy_test(
                 target,
@@ -2231,13 +2423,24 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 signature,
                 values,
                 opts.get("depth", 3),
-                setup_signature,
                 seed_fund=seed_fund,
                 entitlement_signature=entitlement_signature,
+                setup_abi=setup_abi,
             )
         except ValueError as error:
+            message = str(error)
+            detail = (
+                _abi_refusal_detail(target, family, message)
+                if re.search(
+                    r"\bABI\b|tuple/struct|complex ABI|fixed-size array|array .*unsupported",
+                    message,
+                    flags=re.I,
+                )
+                else None
+            )
             return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED", str(error)
+                family, target.contract, target.address, signature, "BLOCKED", message,
+                detail=detail,
             )
     elif family == "upgrade":
         body = _render_access_test(
@@ -2338,12 +2541,58 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     return result
 
 
+REFUSAL_REASON_CODES = {
+    "control_passed", "net_negative", "fidelity_insufficient", "no_capability",
+    "unclassified", "unsupported_abi", "unverified_target", "backend_unsupported",
+    "empty_trace", "digest_mismatch", "mutation_not_killed", "harness_compile_failed",
+    "flake", "semantic_default_missing", "out_of_scope",
+}
+
+
+def _refusal_record(
+    target: Target,
+    family: str | None,
+    reason: str,
+    detail: str,
+    *,
+    minimal_cmd: str | None = None,
+    backend: str | None = None,
+) -> dict[str, Any]:
+    """Build DeepSeek's machine-readable refusal shape; never put a verdict in prose only."""
+    if reason not in REFUSAL_REASON_CODES:
+        raise ValueError(f"Unknown Lowkey refusal reason code: {reason}")
+    return {
+        "target": target.address,
+        "family": family,
+        "reason": reason,
+        "detail": str(detail),
+        "minimal_cmd": minimal_cmd,
+        "backend": backend,
+    }
+
+
+def _abi_refusal_detail(target: Target, family: str, detail: str) -> dict[str, Any]:
+    record = _refusal_record(target, family, "unsupported_abi", detail)
+    return {"reason_code": "unsupported_abi", "refusal": record}
+
+
 def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_info=None) -> AttackResult:
     """Run one attack family without allowing a generator failure to abort the campaign."""
     try:
         return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)
     except Exception as exc:
         signature = _format_signature(fn, host)
+        message = str(exc)
+        detail = {
+            "error_type": type(exc).__name__,
+            "error": message,
+        }
+        if isinstance(exc, ValueError) and re.search(
+            r"\bABI\b|tuple/struct|complex ABI|fixed-size array|array .*unsupported",
+            message,
+            flags=re.I,
+        ):
+            detail.update(_abi_refusal_detail(target, family, message))
         return AttackResult(
             family=family,
             contract=target.contract,
@@ -2351,10 +2600,7 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             function=signature,
             status="BLOCKED",
             summary=f"Attack generator failed safely: {exc}",
-            detail={
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
+            detail=detail,
         )
 
 
