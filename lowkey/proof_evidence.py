@@ -85,14 +85,17 @@ def _referenced_inputs(root, spec):
     found = set()
     for scenario_name in ("control", "attack", "negative_control"):
         scenario = spec.get(scenario_name) or {}
+        candidates = []
         for key in ("argv", "prepare_argv", "semantic_check_argv"):
             argv = scenario.get(key) or []
-            if not isinstance(argv, list): continue
-            for token in argv:
-                if not isinstance(token, str): continue
-                candidate = Path(token).expanduser()
-                candidate = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-                if candidate.is_relative_to(root) and candidate.is_file(): found.add(candidate)
+            if isinstance(argv, list):
+                candidates.extend(token for token in argv if isinstance(token, str))
+        if isinstance(scenario.get("harness"), str):
+            candidates.append(scenario["harness"])
+        for token in candidates:
+            candidate = Path(token).expanduser()
+            candidate = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+            if candidate.is_relative_to(root) and candidate.is_file(): found.add(candidate)
     return [{"path": p.relative_to(root).as_posix(), "sha256": _sha256_file(p)} for p in sorted(found)]
 
 def _freeze_core(root, manifest_path, spec):
@@ -106,13 +109,19 @@ def _freeze_core(root, manifest_path, spec):
             "same_calls_id": spec.get("same_calls_id"), "family": normalize_family(spec.get("family")),
             "target_address": str(spec.get("target_address") or "").lower(),
             "target_authenticity": spec.get("target_authenticity", "unknown"),
+            "trace_backend": spec.get("trace_backend", "anvil-calltracer"),
+            "source_addresses": spec.get("source_addresses") or [],
+            "metric_addresses": spec.get("metric_addresses") or [],
+            "non_economic": bool(spec.get("non_economic", False)),
+            "require_negative_control": bool(spec.get("require_negative_control", False)),
             "trace_expectations": spec.get("trace_expectations") or [],
             "semantic_expectations": spec.get("semantic_expectations") or [],
             "scenario_parameters": spec.get("scenario_parameters") or [],
             "prestate_addresses": spec.get("prestate_addresses") or [],
             "prestate_slots": spec.get("prestate_slots") or [],
             "commands": {
-                name: {key: (spec.get(name) or {}).get(key) for key in ("prepare_argv", "argv", "semantic_check_argv")}
+                name: {key: (spec.get(name) or {}).get(key) for key in
+                       ("prepare_argv", "argv", "semantic_check_argv", "harness", "state_diff_file")}
                 for name in ("control", "attack", "negative_control") if spec.get(name)
             },
         },
