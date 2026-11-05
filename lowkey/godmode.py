@@ -1047,6 +1047,35 @@ def control(args):
         rows.get("control",{}).get("chain_id") is not None and
         str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower()
     )
+    same_block=bool(
+        rows.get("control",{}).get("block_number") is not None and
+        rows.get("control",{}).get("block_number")==rows.get("attack",{}).get("block_number")
+    )
+    same_fork_anchor=(
+        backend!="forge-state-diff" or bool(
+            rows.get("control",{}).get("fork_parent_hash") and
+            str(rows.get("control",{}).get("fork_parent_hash")).lower()==
+            str(rows.get("attack",{}).get("fork_parent_hash","")).lower()
+        )
+    )
+    fork_pin_verified=True
+    if backend=="forge-state-diff":
+        expected_block=spec.get("expected_fork_block")
+        expected_chain=spec.get("expected_chain_id")
+        if expected_block is None or expected_chain is None:
+            fork_pin_verified=False
+        else:
+            try:
+                expected_block_int=int(str(expected_block),16) if str(expected_block).lower().startswith("0x") else int(expected_block)
+                expected_chain_int=int(str(expected_chain),16) if str(expected_chain).lower().startswith("0x") else int(expected_chain)
+            except (TypeError,ValueError):
+                raise ValueError("expected_fork_block and expected_chain_id must be integers or 0x quantities.")
+            fork_pin_verified=(
+                rows.get("control",{}).get("block_number")==expected_block_int and
+                rows.get("attack",{}).get("block_number")==expected_block_int and
+                int(rows.get("control",{}).get("chain_id") or -1)==expected_chain_int and
+                int(rows.get("attack",{}).get("chain_id") or -1)==expected_chain_int
+            )
 
     trace_expectations=spec.get("trace_expectations") or []
     trace_checks=[]
@@ -1112,15 +1141,15 @@ def control(args):
         rows.get(name,{}).get("exit_code")==0 for name in ("control","attack")
     )
     base_valid=(
-        same_entry and same_prestate and same_chain and trace_delta_verified and
-        not scenario_errors and freeze_status.get("verified",False)
+        same_entry and same_prestate and same_chain and same_block and same_fork_anchor and
+        trace_delta_verified and not scenario_errors and freeze_status.get("verified",False)
     )
     if backend=="anvil-calltracer":
         base_valid=base_valid and same_envelope
     else:
         # Forge has no signed transaction envelope or EOA receipt gas. Require a
         # block-pinned, independently verified target before calling it fork evidence.
-        base_valid=base_valid and all(
+        base_valid=base_valid and fork_pin_verified and all(
             rows.get(name,{}).get("target_authenticity_verified",False)
             for name in ("control","attack")
         )
@@ -1140,6 +1169,10 @@ def control(args):
     if not same_entry: rejection_reasons.append("Control and attack do not share the same target entry call.")
     if not same_prestate: rejection_reasons.append("Control and attack pre-state digests differ.")
     if not same_chain: rejection_reasons.append("Control and attack were executed on different chain IDs.")
+    if not same_block: rejection_reasons.append("Control and attack used different block numbers.")
+    if not same_fork_anchor: rejection_reasons.append("Control and attack used different fork parent hashes.")
+    if backend=="forge-state-diff" and not fork_pin_verified:
+        rejection_reasons.append("Forge runs do not match the manifest's expected_chain_id and expected_fork_block pins.")
     if backend=="anvil-calltracer" and not same_envelope:
         rejection_reasons.append("RPC-derived transaction nonce/gas/fee/type/access-list envelope differs.")
     if not trace_delta_verified:
@@ -1178,7 +1211,9 @@ def control(args):
 
     rejection_codes=[]
     if not same_entry: rejection_codes.append("mismatch")
-    if not same_prestate or not same_chain or (backend=="anvil-calltracer" and not same_envelope):
+    if (not same_prestate or not same_chain or not same_block or not same_fork_anchor or
+        (backend=="anvil-calltracer" and not same_envelope) or
+        (backend=="forge-state-diff" and not fork_pin_verified)):
         rejection_codes.append("mismatch")
     if not trace_delta_verified: rejection_codes.append("control_path_mismatch")
     if spec.get("require_negative_control") and not negative_control_verified:
@@ -1246,6 +1281,8 @@ def control(args):
         "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,"same_chain_verified":same_chain,
+        "same_block_verified":same_block,"same_fork_anchor_verified":same_fork_anchor,
+        "fork_pin_verified":fork_pin_verified,
         "trace_delta_verified":trace_delta_verified,"trace_checks":trace_checks,
         "attack_metric_positive_after_gas":attack_metric_positive if backend=="anvil-calltracer" else None,
         "semantic_invariant_verified":semantic_invariant_verified,
