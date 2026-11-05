@@ -386,8 +386,23 @@ def _fetch_remote_evidence(root: Path, context: dict[str, Any], urls: list[str])
             "local finding context already exceeds the bounded provider context limit; "
             "no remote evidence was passed to the provider"
         )
-    context["context_bytes"] = base_size
+    final_size = _set_context_byte_count(context)
+    if final_size > MAX_CONTEXT_BYTES:
+        raise ValueError(
+            "finding context exceeds the hard provider limit after metadata accounting; "
+            "no provider request was made"
+        )
     return records
+
+
+def _set_context_byte_count(context: dict[str, Any]) -> int:
+    context["context_bytes"] = 0
+    for _ in range(4):
+        size = len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        if context.get("context_bytes") == size:
+            return size
+        context["context_bytes"] = size
+    return len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8"))
 
 
 def _preview_evidence_urls(context: dict[str, Any], urls: list[str], *, root: Path) -> None:
@@ -401,12 +416,12 @@ def _preview_evidence_urls(context: dict[str, Any], urls: list[str], *, root: Pa
         context["remote_fetch_performed"] = True
         return
     context["remote_fetch_performed"] = False
-    context_bytes = len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    context_bytes = _set_context_byte_count(context)
     if context_bytes > MAX_CONTEXT_BYTES:
         raise ValueError(
             "the local context exceeds the bounded preview size; narrow the finding context"
         )
-    context["context_bytes"] = context_bytes
+    _set_context_byte_count(context)
 
 
 
@@ -888,8 +903,10 @@ def validate_explanation(raw: Mapping[str, Any], context: Mapping[str, Any]) -> 
         if not isinstance(item, dict):
             continue
         quote = _normal(item.get("quote"), 900)
+        raw_path = str(item.get("path") or "")
+        remote_reference = _is_remote_reference(raw_path, context)
         references.append({
-            "path": _normal(item.get("path"), 300),
+            "path": _normal(raw_path, 2048 if remote_reference else 300),
             "symbol": _normal(item.get("symbol"), 120),
             "role": _normal(item.get("role"), 80),
             "quote": quote,
@@ -904,8 +921,10 @@ def validate_explanation(raw: Mapping[str, Any], context: Mapping[str, Any]) -> 
         if not isinstance(item, dict):
             continue
         quote = _normal(item.get("quote"), 900)
+        raw_path = str(item.get("path") or "")
+        remote_reference = _is_remote_reference(raw_path, context)
         contrary.append({
-            "path": _normal(item.get("path"), 300),
+            "path": _normal(raw_path, 2048 if remote_reference else 300),
             "symbol": _normal(item.get("symbol"), 120),
             "quote": quote,
             "quote_status": (
