@@ -901,13 +901,20 @@ def scan_project(root: Path, models: list[core.ContractModel]) -> list[PatternOb
         if any(token in name for token in ("mock", "test", "erc20", "token")):
             continue
         results.extend(scan_model(root, model))
-    deduplicated: dict[tuple[str, str, str, str], PatternObservation] = {}
+    deduplicated: dict[tuple[str, str, str, tuple[str, ...]], PatternObservation] = {}
     for item in results:
+        # Collapse repeated alerts only when their complete evidence is the
+        # same. Using evidence[0] alone could merge two overloads with the same
+        # generic detector sentence but different guards, paths or impacts.
+        normalized_evidence = tuple(
+            re.sub(r"\\s+", " ", str(value)).strip()
+            for value in item.evidence
+        )
         key = (
             item.pattern_id,
             str(item.source),
             str(item.function),
-            str(item.evidence[0] if item.evidence else ""),
+            normalized_evidence,
         )
         existing = deduplicated.get(key)
         if existing is None:

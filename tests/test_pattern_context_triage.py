@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from lowkey import walkthrough_finding_patterns as patterns
 
@@ -257,6 +258,63 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
             ["claimDeposit"],
         )
         self.assertEqual(self.matches(root, model, "ROUND-001"), [])
+
+    def test_scan_project_deduplicates_repeated_alerts_but_keeps_distinct_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repeated = patterns.PatternObservation(
+                pattern_id="AUTH-001",
+                title="Authorization candidate",
+                status="candidate",
+                contract="Vault",
+                function="withdraw",
+                source="src/Vault.sol",
+                line=20,
+                evidence=["The caller boundary is not obvious.", "No helper guard was found."],
+                provenance=["fixture A"],
+                evidence_status="needs-investigation",
+            )
+            same_issue_nearby = patterns.PatternObservation(
+                pattern_id="AUTH-001",
+                title="Authorization candidate",
+                status="candidate",
+                contract="Vault",
+                function="withdraw",
+                source="src/Vault.sol",
+                line=34,
+                evidence=["The caller boundary is not obvious.", "No helper guard was found."],
+                provenance=["fixture B"],
+                evidence_status="needs-investigation",
+            )
+            independent_path = patterns.PatternObservation(
+                pattern_id="AUTH-001",
+                title="Authorization candidate",
+                status="candidate",
+                contract="Vault",
+                function="withdraw",
+                source="src/Vault.sol",
+                line=48,
+                evidence=["The caller boundary is not obvious.", "The second overload reaches an unguarded admin write."],
+                provenance=["fixture C"],
+                evidence_status="needs-investigation",
+            )
+            models = [
+                SimpleNamespace(name="Vault", kind="contract"),
+                SimpleNamespace(name="Vault", kind="contract"),
+                SimpleNamespace(name="Vault", kind="contract"),
+            ]
+            with patch.object(
+                patterns,
+                "scan_model",
+                side_effect=[[repeated], [same_issue_nearby], [independent_path]],
+            ):
+                findings = patterns.scan_project(root, models)
+
+            self.assertEqual(len(findings), 2)
+            self.assertEqual(findings[0].line, 20)
+            self.assertEqual(findings[0].provenance, ["fixture A", "fixture B"])
+            self.assertEqual(findings[1].line, 48)
+            self.assertIn("second overload", findings[1].evidence[1])
 
 
 if __name__ == "__main__":
