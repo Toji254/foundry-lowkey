@@ -3,9 +3,10 @@
 Statuses distinguish implementation, isolated component coverage, installed-command acceptance, and phase acceptance. A generated-string assertion or unrelated green CI job is not sufficient to accept a phase.
 
 **Branch:** `integration-test-drive`  
-**Pre-follow-up code snapshot:** `5f481a9d1377da9fa4a0b579a2f48c25a2eed941`  
-**Historical P0 CI:** [CI run 7228](https://github.com/Toji254/foundry-lowkey/actions/runs/42012621666), on `4199f4190588a7c567f656db78744946c5e4f968`, completed successfully. Its `foundry-integration` job confirms the three original installed-`lk` scenarios and the receiver fixture passed.  
-**Current P0 follow-up:** explicit 18-decimal fallback telemetry, a no-metadata installed-`lk` scenario, and conservative token-profit guards are implemented in the follow-up commits below. CI on the new head is pending; do not treat the historical run as evidence for the added fourth scenario.
+**P0/P1 code baseline:** `140346858b4c398605c28f0389f6185fa358ea89`  
+**Historical P0 CI:** [run 7228](https://github.com/Toji254/foundry-lowkey/actions/runs/42012621666), on `4199f4190588a7c567f656db78744946c5e4f968`, passed the original three installed-`lk` cases and receiver fixture.  
+**P0 follow-up CI:** [run 7285](https://github.com/Toji254/foundry-lowkey/actions/runs/42021562930), on `cc6e5e1ea21f772635ef7a913737157411cc6897`, passed Foundry integration including all four installed-`lk` compatibility cases. Its Python unit job failed with five unrelated/stale regression reports; later branch commits update the stale fallback expectation, DoS pattern coverage, workspace metadata, and project-scope handling. Current-head CI remains the acceptance authority.  
+**P1 follow-up:** Step[] template, installed command routing, installer hashing, all-family compile acceptance and refusal checks are now wired. The current phase gate must pass before P2 starts.
 
 | Capability | Current status | Evidence and limits |
 |---|---|---|
@@ -17,11 +18,12 @@ Statuses distinguish implementation, isolated component coverage, installed-comm
 | ERC-1155 receiver | ACCEPTED for P0 scope | Foundry fixture exercises single and batch callbacks plus ERC-165/ERC-1155 interface support. |
 | ERC-721 receiver | ACCEPTED for P0 scope | Foundry fixture exercises the standard `onERC721Received` selector. |
 | Machine-readable refusals | ACCEPTED for P0 scope | Python unit suite passes with fallback and specific refusal codes including `abi_discovery_failed`, `unsupported_abi`, `setup_call_reverted`, `asset_getter_unavailable`, `token_approval_failed`, `target_rejected_without_revert_evidence`, and `forge_no_lowkey_telemetry`. |
-| P1 paired control/attack | SIMULATED_BREAK — not phase accepted | The paired Forge workflow demonstrates matched control/attack execution for its fixture, but its verdict is capped at `SIMULATED_BREAK`. It does not satisfy the requested `LOCAL_PROFITABLE` reentrancy result with populated state diff and tampered frozen-digest rejection. |
+| P1 paired control, state diff and reproof | IMPLEMENTED; current-head CI pending | The Forge fixture uses one deployment, switches attacker mode outside measured windows, verifies control=1 vs attack=2 target calls, and normalizes populated per-access storage. The installed `lk control` runner checks matched entry calldata, transaction envelope, prestate, chain/block/fork anchor, trace delta, and semantic assertions. The fixture's status is intentionally capped at `SIMULATED_BREAK`; a separate funded Anvil reproof must report legacy `LOCAL_PROFITABLE`, positive net after gas and trace-derived target storage, while proof status remains `OBSERVED` because target authenticity is unknown. CI also tampers with the frozen digest and requires `REJECTED/digest_mismatch` with no execution. Current-head CI must pass all checks before P1 is accepted. |
+| P1 Step[] renderer | IMPLEMENTED; compile gate pending | `lk steps` now routes through the installed CLI; `lowkey/templates/step_harness.sol.tmpl` is installed and included in the install manifest hash. CI renders all 15 declared family labels with typed scalar/array arguments, compiles the generated Foundry harnesses, and checks `flash_borrow`/`reenter` refusals as `backend_unsupported`. Generic callback execution remains unsupported and is not claimed. |
 
 ## P0 evidence and reproducibility
 
-The installed-command acceptance is committed in `scripts/p0-break-acceptance-e2e.py` and wired into the Foundry CI job. It deploys local Anvil fixtures and runs four cases through the installed `lk` executable: `address[]` setup, six-decimal USDC, USDT-style empty-return approval with allowance reset, and missing-decimals fallback. Each case must reach `OBSERVED` and assert its setup/funding/approval telemetry. The fourth case is added by this follow-up and is not accepted until current-head CI reports green.
+The installed-command acceptance is committed in `scripts/p0-break-acceptance-e2e.py` and wired into the Foundry CI job. It deploys local Anvil fixtures and runs four cases through the installed `lk` executable: `address[]` setup, six-decimal USDC, USDT-style empty-return approval with allowance reset, and missing-decimals fallback. Each case must reach `OBSERVED` and assert its setup/funding/approval telemetry. The fourth case (missing-decimals fallback) passed the installed-CLI portion of run 7285; the entire P0 phase remains pending current-head CI because that run's Python unit suite failed elsewhere.
 
 The workflow now copies campaign JSON, experiment JSON, and the generated harness archive into `.audit/p0-break-acceptance/`, then uploads that directory as a CI artifact even if an acceptance assertion fails. Artifact-upload validation is pending the current workflow run.
 
@@ -29,6 +31,6 @@ The workflow now copies campaign JSON, experiment JSON, and the generated harnes
 
 P0 is accepted for the stated ABI setup, decimal-aware funding, optional-return/reset approval, standard receiver-hook, and refusal-reporting scope. This does not mean every ERC-20 implementation, ABI shape, or receiver extension is supported.
 
-P1 remains separate and unaccepted. A simulated or cheatcode-funded break is not a fork-backed reproof, and no profitability or human-confirmation claim is made.
+P1 remains gated until the current-head workflow passes. A Forge fixture's `SIMULATED_BREAK` is not represented as deployment proof; the separate Anvil `LOCAL_PROFITABLE` reproof is kept distinct from the `OBSERVED` proof status for an unauthenticated target. No `HUMAN_CONFIRMED` claim is made.
 
 The full real-project corpus job is a broader repository gate and was still running on the referenced CI run; it is not being represented as passed here.
