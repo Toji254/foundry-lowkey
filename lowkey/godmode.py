@@ -589,7 +589,23 @@ def _analyze_control_fidelity(root, entry, spec):
 
 
 def _trace_control_run(root, url, name, entry, spec, env):
-    fidelity=_analyze_control_fidelity(root,entry,spec)
+    fidelity_entry=dict(entry)
+    support_files=list(entry.get("support_files") or [])
+    for raw_argv in (entry.get("prepare_argv"),entry.get("argv"),entry.get("semantic_check_argv")):
+        if not isinstance(raw_argv,list):
+            continue
+        for token in raw_argv:
+            if not isinstance(token,str):
+                continue
+            candidate=Path(token).expanduser()
+            candidate=(root/candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+            if (candidate.is_relative_to(root) and candidate.is_file() and
+                candidate.suffix.lower() in {".sol",".vy",".py",".sh",".js",".ts",".rs",".move",".cairo"}):
+                support_files.append(candidate.relative_to(root).as_posix())
+    fidelity_entry["support_files"]=sorted(set(
+        value for value in support_files if isinstance(value,str)
+    ))
+    fidelity=_analyze_control_fidelity(root,fidelity_entry,spec)
     snapshot=rpc(url,"evm_snapshot",[])
     if snapshot is None: raise RuntimeError("Anvil did not return an evm_snapshot ID.")
     try:
