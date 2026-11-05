@@ -373,6 +373,7 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
             }
             """,
             ["withdrawAll"],
+            arrays=["members"],
         )
         self.assertEqual(self.matches(root, model, "DOS-001"), [])
 
