@@ -356,8 +356,11 @@ jobs:
           from forge_state_diff import normalize_forge_state_diff
 
           artifact_path = pathlib.Path(".audit/godmode/forge-state-diff.json")
-          artifact = json.loads(artifact_path.read_text())
-          normalized = normalize_forge_state_diff(artifact, expected_target=artifact["target_address"])
+          artifact_text = artifact_path.read_text()
+          print("LOWKEY_FORGE_STATE_DIFF_RAW=" + artifact_text[:20000])
+          artifact = json.loads(artifact_text)
+          print("LOWKEY_FORGE_STATE_DIFF_TOP_LEVEL_KEYS=" + repr(sorted(artifact.keys())))
+          normalized = normalize_forge_state_diff(artifact, expected_target=artifact.get("target_address"))
           assert len(normalized["calls"]) >= 2, normalized
           assert normalized["storage_accesses"], normalized
           assert any(item["is_write"] for item in normalized["storage_accesses"]), normalized
