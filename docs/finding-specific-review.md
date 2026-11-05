@@ -50,4 +50,4 @@ Preview lists the exact supplied URLs but does not fetch them, resolve DNS, cont
 lk verification run-test SIGNAL_ID test/Vault.t.sol test_withdrawRejectsUnauthorized
 ```
 
-This executes only that file/function via Forge. The result is appended as evidence; passing or failing does not automatically confirm, reject or close the native finding. The auditor must inspect what the assertion actually measures.
+This executes only that file/function via Forge. Forge may compile as needed and update `out/` or `cache/`. Inspect the selected test and its imports for fork/RPC use, broadcast cheatcodes or other external effects before running: test code can do more than a local assertion. Lowkey itself does not choose a live target, sign or broadcast a transaction. The result is appended as evidence; passing or failing does not automatically confirm, reject or close the native finding. The auditor must inspect what the assertion actually measures.
