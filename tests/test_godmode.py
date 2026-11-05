@@ -33,6 +33,7 @@ class GodmodeTests(unittest.TestCase):
         self.assertEqual(short, full)
         self.assertEqual(len(short), 66)
         self.assertEqual(godmode.storage_slot_key("17"), "0x" + format(17, "064x"))
+        self.assertEqual(godmode.storage_slot_key("01"), "0x" + format(1, "064x"))
 
     def test_push4_skips_push_data(self):
         # PUSH2 consumes 0x6311 as immediate data, including the 0x63 byte.
