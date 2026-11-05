@@ -190,9 +190,11 @@ declared `source_addresses`, and trace-derived storage slots for those same
 accounts. For a `forked_deployment` claim, `target_identity.deployment_block`
 must identify the first block where runtime code exists (code is absent in the
 previous block and matches at the declared block). Lowkey queries Sourcify API v2
-for only the verified `sources` and `proxyResolution` fields, requires exact
-runtime and creation matches, and records SHA-256 hashes for each source file
-plus a stable source-bundle digest. For EIP-1967 proxies it reads the implementation
+for only the verified `sources`, `proxyResolution` and
+`deployment.blockNumber` fields, requires exact runtime and creation matches,
+cross-checks the provider deployment block against the declared block, and
+records SHA-256 hashes for each source file plus a stable source-bundle digest.
+For EIP-1967 proxies it reads the implementation
 slot at the pinned block, checks that Sourcify independently reports the same
 proxy type and implementation address, then verifies the implementation's
 deployment block, call-trace presence, EIP-1186 code hash and exact Sourcify
