@@ -156,9 +156,9 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
-            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "root-src"\\n')
-            self.write(root, "packages/perps/foundry.toml", '[profile.default]\\nsrc = "src"\\n')
-            self.write(root, "packages/spot/foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "root-src"\n')
+            self.write(root, "packages/perps/foundry.toml", '[profile.default]\nsrc = "src"\n')
+            self.write(root, "packages/spot/foundry.toml", '[profile.default]\nsrc = "src"\n')
 
             selected, error = foundry_build._resolve_project_root(root)
 
@@ -175,8 +175,8 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
-            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "root-src"\\n')
-            self.write(root, "packages/perps/foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "root-src"\n')
+            self.write(root, "packages/perps/foundry.toml", '[profile.default]\nsrc = "src"\n')
 
             selected, error = foundry_build._resolve_project_root(root)
 
@@ -187,7 +187,7 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
-            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "src"\n')
             self.write(root, "packages/frontend/package.json", '{"name":"frontend","scripts":{"build":"vite build"}}')
 
             selected, error = foundry_build._resolve_project_root(root / "packages/frontend")
@@ -198,12 +198,12 @@ class FoundryBuildPlannerTests(unittest.TestCase):
     def test_build_plan_honors_explicit_foundry_config_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\ntest = "test"\\n')
-            self.write(root, "foundry-ci.toml", '[profile.default]\\nsrc = "contracts"\\ntest = "spec"\\n')
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "src"\ntest = "test"\n')
+            self.write(root, "foundry-ci.toml", '[profile.default]\nsrc = "contracts"\ntest = "spec"\n')
             self.write(root, "src/Vault.sol", "contract Vault {}")
             self.write(root, "contracts/Vault.sol", "contract Vault {}")
-            with patch.dict(foundry_build.os.environ, {"FOUNDRY_CONFIG": "foundry-ci.toml"}), \\
-                 patch.object(foundry_build.forge_tools, "forge_path", return_value=None), \\
+            with patch.dict(foundry_build.os.environ, {"FOUNDRY_CONFIG": "foundry-ci.toml"}), \
+                 patch.object(foundry_build.forge_tools, "forge_path", return_value=None), \
                  patch.object(foundry_build, "collect_resources", return_value={
                      "memory_total_bytes": 8 * 1024 ** 3,
                      "memory_available_bytes": 6 * 1024 ** 3,
