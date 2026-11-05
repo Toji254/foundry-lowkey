@@ -1069,6 +1069,15 @@ jobs:
           grep -Eq "unrecognized subcommand 'debug'|Usage: forge" /tmp/lowkey-forge-debug-help.txt
 
 
+      - name: Exercise installed lk break P0 end-to-end compatibility campaigns
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          cp "$GITHUB_WORKSPACE/tests/fixtures/acceptance/p0-break-e2e/P0BreakCompatibility.sol" src/
+          forge build --force
+          python3 "$GITHUB_WORKSPACE/tests/fixtures/acceptance/p0-break-e2e/run_campaigns.py"
+
       - name: Exercise saved escrow identifiers and state transitions on Anvil
         run: |
           set -euo pipefail
