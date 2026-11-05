@@ -1580,11 +1580,24 @@ def reprove(args):
     p.add_argument("--fork-block",required=True,type=int); p.add_argument("--tx-hash")
     p.add_argument("--target-address",required=True); p.add_argument("--profit-address",action="append",required=True)
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
-    p.add_argument("--prestate-slot",action="append",default=[],help="Storage slot to compare between local fork and source, as ADDRESS:SLOT.")
+    p.add_argument("--prestate-slot",action="append",default=[],help="Additional storage slot to compare between local fork and source, as ADDRESS:SLOT.")
     p.add_argument("--argv-json")
+    p.add_argument("--semantic-check-argv-json",help="Separate command whose passing assertion demonstrates the non-economic security invariant.")
+    p.add_argument("--family",default="unknown")
+    p.add_argument("--non-economic",action="store_true")
+    p.add_argument("--require-trace-storage",action="store_true")
     ns=p.parse_args(args)
     root=root_path(ns.root); harness=(root/ns.harness).resolve()
     if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be inside project.")
+    try:
+        try:
+            from . import proof_evidence
+        except ImportError:
+            import proof_evidence
+    except ImportError as exc:
+        raise RuntimeError("Proof evidence policy module is unavailable: "+str(exc)) from exc
+    family=proof_evidence.normalize_family(ns.family)
+    non_economic=bool(ns.non_economic or family in proof_evidence.NON_ECONOMIC_FAMILIES)
     url=rpc_url(ns.rpc_url)
     if not local_rpc(url): raise ValueError("Reproof accepts local Anvil fork endpoint only.")
     if ns.fork_block<0: raise ValueError("--fork-block must be non-negative.")
