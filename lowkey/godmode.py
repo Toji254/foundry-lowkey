@@ -762,16 +762,47 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         if not expected_code_hash:
             result["reason"] = "No code hash was captured for source address " + address + "."
             return result
-        proof = rpc(source, "eth_getProof", [address, [], hex(block_number)])
+        try:
+            proof = rpc(source, "eth_getProof", [address, [], hex(block_number)])
+        except Exception as exc:
+            result["reason"] = "Archive RPC eth_getProof unavailable or rejected: " + str(exc)[:300]
+            return result
         actual_code_hash = str((proof or {}).get("codeHash") or "").lower()
         if actual_code_hash != str(expected_code_hash).lower():
             result["reason"] = "EIP-1186 code hash differs for source address " + address + "."
             return result
-        result["checked_addresses"].append({"address": address, "code_hash": actual_code_hash})
+        if prestate.get("balance_wei") is not None:
+            try:
+                actual_balance = int(str((proof or {}).get("balance")), 16)
+            except (TypeError, ValueError):
+                result["reason"] = "Archive eth_getProof omitted a parseable balance for " + address + "."
+                return result
+            if actual_balance != int(prestate["balance_wei"]):
+                result["reason"] = "Source balance differs for " + address + "."
+                return result
+        if prestate.get("nonce") is not None:
+            try:
+                actual_nonce = int(str((proof or {}).get("nonce")), 16)
+            except (TypeError, ValueError):
+                result["reason"] = "Archive eth_getProof omitted a parseable nonce for " + address + "."
+                return result
+            if actual_nonce != int(prestate["nonce"]):
+                result["reason"] = "Source nonce differs for " + address + "."
+                return result
+        result["checked_addresses"].append({
+            "address": address, "code_hash": actual_code_hash,
+            "balance_wei": prestate.get("balance_wei"), "nonce": prestate.get("nonce"),
+        })
         for storage in prestate.get("storage") or []:
             slot = str(storage["slot"]).lower()
             expected_value = str(storage["value"]).lower()
-            actual_value = str(rpc(source, "eth_getStorageAt", [address, slot, hex(block_number)])).lower()
+            try:
+                actual_value = str(rpc(
+                    source, "eth_getStorageAt", [address, slot, hex(block_number)]
+                )).lower()
+            except Exception as exc:
+                result["reason"] = "Archive storage read failed for " + address + ":" + slot + ": " + str(exc)[:200]
+                return result
             if actual_value != expected_value:
                 result["reason"] = "Trace-derived prestate slot differs for " + address + ":" + slot + "."
                 return result
