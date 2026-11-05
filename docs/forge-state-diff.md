@@ -189,14 +189,17 @@ the fork parent hash, the pinned block header, code, balances and nonces for
 declared `source_addresses`, and trace-derived storage slots for those same
 accounts. For a `forked_deployment` claim, `target_identity.deployment_block`
 must identify the first block where runtime code exists (code is absent in the
-previous block and matches at the declared block). Lowkey separately queries
-Sourcify API v2 and requires exact runtime and creation matches for the target.
-For EIP-1967 proxies it reads the implementation slot at the pinned block, checks
-the declared implementation address if provided, and independently verifies
-the implementation's deployment block and exact Sourcify match. A non-zero
-EIP-1967 beacon slot is currently unsupported and blocks authenticity promotion.
-If archive or Sourcify identity checks are unavailable, Lowkey leaves authenticity
-unverified and will not promote the result to deployment proof.
+previous block and matches at the declared block). Lowkey queries Sourcify API v2
+for only the verified `sources` and `proxyResolution` fields, requires exact
+runtime and creation matches, and records SHA-256 hashes for each source file
+plus a stable source-bundle digest. For EIP-1967 proxies it reads the implementation
+slot at the pinned block, checks that Sourcify independently reports the same
+proxy type and implementation address, then verifies the implementation's
+deployment block, call-trace presence, EIP-1186 code hash and exact Sourcify
+source match. A non-zero EIP-1967 beacon slot is currently unsupported and blocks
+authenticity promotion. If archive or Sourcify identity checks are unavailable,
+Lowkey leaves authenticity unverified and will not promote the result to deployment
+proof.
 
 ## Deterministic Anvil re-prove
 
