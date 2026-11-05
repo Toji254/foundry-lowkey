@@ -460,6 +460,21 @@ def _imported_source_context(
     return resolved
 
 
+def _named_block(source: str, name: str) -> str:
+    """Compatibility helper used by claim/rounding analysis to trace local helper bodies."""
+    stripped = core._strip_source_comments(source, "solidity", mask_strings=True)
+    pattern = re.compile(
+        r"\b(?:function|modifier)\s+" + re.escape(name) + r"\b[^{;]*\{",
+        re.S,
+    )
+    match = pattern.search(stripped)
+    if not match:
+        return ""
+    opening = stripped.find("{", match.start(), match.end())
+    block = core._balanced_block(stripped, opening)
+    return source[match.start():match.end() + len(block)] if block else ""
+
+
 def _member_blocks(contract_body: str, name: str) -> list[tuple[str, str]]:
     """Return exact function/modifier blocks for one member inside a contract body."""
     stripped = core._strip_source_comments(contract_body, "solidity", mask_strings=True)
