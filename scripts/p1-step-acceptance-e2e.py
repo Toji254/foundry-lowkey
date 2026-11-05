@@ -147,6 +147,7 @@ def main() -> int:
                 "kind": "expect",
                 "target": TARGET,
                 "selector": SELECTOR,
+                "args": [{"type": "uint256[2]", "value": [1, 2]}],
                 "expect": {"count": 1, "must_revert": True},
             },
             {
