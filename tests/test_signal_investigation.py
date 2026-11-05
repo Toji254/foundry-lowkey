@@ -115,10 +115,34 @@ contract Vault {
             command = run.call_args.args[0]
             self.assertEqual(command[1:3], ["test", "--match-path"])
             self.assertIn("--match-test", command)
-            self.assertEqual(command[-1], "^test_guard$")
+            self.assertEqual(command[-1], r"^test_guard(?:\(\))?$")
+            self.assertIn("-vv", command)
             self.assertFalse(result["security_finding_confirmed"])
             self.assertTrue(result["evidence_attached"])
 
+    def test_forge_failure_with_reason_is_recognized_as_an_executed_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp))
+            signal = self._signal(root)
+            test_dir = root / "test"
+            test_dir.mkdir()
+            (test_dir / "Vault.t.sol").write_text(
+                "contract VaultTest { function test_guard() public {} }",
+                encoding="utf-8",
+            )
+            with patch("lowkey.signal_investigation.shutil.which", return_value="/usr/bin/forge"), \
+                 patch("lowkey.signal_investigation.subprocess.run") as run:
+                run.return_value.returncode = 1
+                run.return_value.stdout = "[FAIL: next call did not revert] test_guard() (gas: 1234)"
+                run.return_value.stderr = ""
+                result = signal_investigation.execute_inspected_test(
+                    signal["id"], "test/Vault.t.sol", "test_guard",
+                    project_root=root, audit_context=audit_context,
+                )
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["exit_code"], 1)
+            self.assertTrue(result["evidence_attached"])
+            self.assertIn("did not revert", result["stdout"])
     def test_forge_zero_exit_without_exact_test_result_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp))

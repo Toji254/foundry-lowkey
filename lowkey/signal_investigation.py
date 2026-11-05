@@ -219,9 +219,9 @@ def execute_inspected_test(
 
     relative = selected.relative_to(root).as_posix()
     argv = [
-        forge, "test",
+        forge, "test", "-vv",
         "--match-path", "^" + re.escape(relative) + "$",
-        "--match-test", "^" + re.escape(name) + "$",
+        "--match-test", "^" + re.escape(name) + r"(?:\(\))?$",
     ]
     timeout = max(1, min(int(timeout_seconds), 900))
     try:
@@ -236,7 +236,7 @@ def execute_inspected_test(
         # code alone is therefore insufficient evidence that this exact test ran.
         combined_output = re.sub(r"\x1b\[[0-9;]*m", "", stdout + "\n" + stderr)
         executed = re.search(
-            r"(?m)^\s*\[(PASS|FAIL|SKIP)\]\s+"
+            r"(?m)^\s*\[(PASS|FAIL|SKIP)(?::[^\]]*)?\]\s+"
             + re.escape(name) + r"\s*\(",
             combined_output,
             re.I,

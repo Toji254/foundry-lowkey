@@ -70,8 +70,9 @@ def inspected_test(lk: str, root: Path, audit_context, signal_id: str,
         raise AssertionError("Test execution changed human disposition")
     if evidence.get("test_sha256") != hashlib.sha256(file_path.read_bytes()).hexdigest():
         raise AssertionError("Evidence is not bound to the inspected test bytes")
-    if evidence.get("forge_argv", [])[-1:] != ["^" + test_name + "$"]:
-        raise AssertionError("Forge command was not constrained to the exact test function")
+    expected_match = "^" + test_name + r"(?:\(\))?$"
+    if evidence.get("forge_argv", [])[-1:] != [expected_match]:
+        raise AssertionError("Forge command was not constrained to the exact test function signature")
     output = result.stdout + result.stderr + str(evidence.get("stdout_tail") or "") + str(evidence.get("stderr_tail") or "")
     return output, evidence
 
