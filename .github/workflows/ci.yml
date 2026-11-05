@@ -500,12 +500,15 @@ jobs:
           (root / ".audit-control.json").write_text(json.dumps(manifest, indent=2) + "\n")
           print("Prepared live trace-control fixture", target, attacker, mapping_slot)
           PY
-          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --require-frozen
           python3 - <<'PY'
           import json
           from pathlib import Path
           result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
-          assert result["status"] == "BREAK", result
+          assert result["legacy_status"] == "BREAK", result
+          assert result["status"] == "OBSERVED", result
+          assert result["freeze"]["verified"] is True, result
           assert result["same_entry_call_verified"] is True, result
           assert result["same_transaction_envelope_verified"] is True, result
           assert result["same_prestate_verified"] is True, result
