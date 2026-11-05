@@ -162,21 +162,28 @@ class FindingExplainerTests(unittest.TestCase):
         self.assertIn("Remote fetch: NO", preview)
 
     def test_remote_url_policy_rejects_plain_http_private_hosts_credentials_and_unpinned_github(self):
-        invalid = [
+        invalid_urls = [
             "http://example.org/report",
             "https://localhost/report",
             "https://127.0.0.1/report",
             "https://user:pass@example.org/report",
             "https://example.org/report?api_key=not-a-key",
-            "https://github.com/example/protocol/blob/main/src/Vault.sol",
-            "https://github.com/example/protocol/blob/" + ("a" * 40) + "/.env",
-            "https://github.com/example/protocol",
         ]
-        for url in invalid:
+        for url in invalid_urls:
             with self.subTest(url=url):
                 parsed, error = finding_explainer._public_https_url(url)
                 self.assertIsNone(parsed)
                 self.assertTrue(error)
+
+        invalid_github = [
+            "https://github.com/example/protocol/blob/main/src/Vault.sol",
+            "https://github.com/example/protocol/blob/" + ("a" * 40) + "/.env",
+            "https://github.com/example/protocol",
+        ]
+        for url in invalid_github:
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    finding_explainer._github_reference(url)
 
     def test_remote_git_file_is_pinned_to_commit_and_compared_with_local_checkout(self):
         root, signal = self.fixture()
