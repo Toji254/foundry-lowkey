@@ -786,7 +786,7 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
             local_deploy: bool, constructor_values: list[str] | None,
             is_abstract: bool, fuzz_property: dict[str, str] | None,
             analysis: dict[str, Any] | None = None,
-            source_pragma: str = "^0.8.20") -> str:
+            test_pragma: str = "^0.8.20") -> str:
     if kind == "formal":
         return _formal_template(name, fuzz_property)[1]
     if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:

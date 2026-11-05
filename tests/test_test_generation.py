@@ -26,6 +26,22 @@ class TestGenerationTests(unittest.TestCase):
         self.assertEqual(generation._solidity_test_pragma("^0.8.10"), "^0.8.20")
         self.assertEqual(generation._solidity_test_pragma("^0.8.26"), "^0.8.26")
 
+    def test_legacy_target_render_uses_modern_harness_pragma(self):
+        rendered = generation._render(
+            "unit",
+            "Counter",
+            "../src/Counter.sol",
+            None,
+            True,
+            [],
+            False,
+            {"state": "value", "setter": "setValue", "type": "uint256"},
+            {},
+            "^0.8.20",
+        )
+        self.assertIn("pragma solidity ^0.8.20;", rendered)
+        self.assertIn("new Counter()", rendered)
+
     def test_parse_types_deduplicates_and_rejects_unknown_values(self):
         self.assertEqual(generation.parse_types("unit,fuzz,unit"), ["unit", "fuzz"])
         self.assertEqual(generation.parse_types("exploit"), ["exploit"])
