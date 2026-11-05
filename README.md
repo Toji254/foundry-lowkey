@@ -1432,3 +1432,8 @@ lk balance remains intentionally read-only and may inspect EOAs or empty address
 does not claim that the address is a deployed contract.
 
 <!-- unified regression gate: keep branch tip continuously validated -->
+
+
+## Finding-specific source review
+
+See [Finding-specific investigation and remote evidence](docs/finding-specific-review.md) for the local-first finding explainer, preview-only behaviour, explicitly requested public URLs, remote-source safety limits, and the plan-first verification/test-execution boundary.
