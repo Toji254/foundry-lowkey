@@ -503,53 +503,139 @@ def _named_block(source: str, name: str) -> str:
     return source[match.start():end] if end > match.start() else ""
 
 
-def _member_blocks(contract_body: str, name: str) -> list[tuple[str, str]]:
-    """Return exact function/modifier blocks for one member inside a contract body."""
+def _member_signatures(contract_body: str, name: str) -> list[tuple[str, str, str]]:
+    """Return exact member kind, header and balanced body for a contract-local declaration."""
     stripped = core._strip_source_comments(contract_body, "solidity", mask_strings=True)
     pattern = re.compile(
         r"\b(function|modifier)\s+" + re.escape(name) + r"\b[^{;]*\{",
         re.S,
     )
-    blocks: list[tuple[str, str]] = []
+    blocks: list[tuple[str, str, str]] = []
     for match in pattern.finditer(stripped):
         opening = stripped.find("{", match.start(), match.end())
         block = core._balanced_block(stripped, opening)
         if block:
-            blocks.append((match.group(1), block))
+            blocks.append((match.group(1), stripped[match.start():opening], block))
     return blocks
 
 
-def _has_auth_expression(value: str) -> bool:
-    """Recognize an enforced caller check, not a merely computed sender boolean."""
-    caller = r"(?:msg\s*\.\s*sender|_msgSender\s*\(\s*\))"
+def _member_blocks(contract_body: str, name: str) -> list[tuple[str, str]]:
+    """Compatibility view used by existing focused helper/data-flow checks."""
+    return [
+        (kind, body)
+        for kind, _header, body in _member_signatures(contract_body, name)
+    ]
+
+
+def _split_solidity_arguments(value: str) -> list[str]:
+    arguments: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(value):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            arguments.append(value[start:index].strip())
+            start = index + 1
+    tail = value[start:].strip()
+    if tail:
+        arguments.append(tail)
+    return arguments
+
+
+def _caller_parameter_aliases(header: str, arguments: str) -> list[str]:
+    """Propagate msg.sender only into matching parameters of a resolved helper call."""
+    signature = re.search(r"\bfunction\s+[A-Za-z_]\w*\s*\((.*?)\)", header, re.S)
+    if not signature:
+        return []
+    parameters = _split_solidity_arguments(signature.group(1))
+    actuals = _split_solidity_arguments(arguments)
+    aliases: list[str] = []
+    for index, actual in enumerate(actuals):
+        if index >= len(parameters):
+            break
+        if not re.search(r"\bmsg\s*\.\s*sender\b|_msgSender\s*\(\s*\)", actual):
+            continue
+        names = re.findall(r"\b[A-Za-z_]\w*\b", parameters[index])
+        if names:
+            aliases.append(names[-1])
+    return aliases
+
+
+def _has_auth_expression(
+    value: str,
+    caller_aliases: list[str] | None = None,
+) -> bool:
+    """Recognize an enforced caller guard, not a suggestive helper name or unused boolean."""
+    aliases = [r"msg\s*\.\s*sender", r"_msgSender\s*\(\s*\)"]
+    aliases.extend(re.escape(item) for item in (caller_aliases or []) if re.fullmatch(r"[A-Za-z_]\w*", item))
+    caller = r"(?:" + "|".join(aliases) + r")"
     comparison = (
         r"\b" + caller + r"\s*(?:==|!=)\s*[^;\n{}]+"
         r"|\b[A-Za-z_]\w*(?:\s*\([^;\n{}]*\))?\s*(?:==|!=)\s*" + caller
-    )
-    role_predicate = (
-        r"\b(?:hasRole|isAuthorized|isGuardian|isController|isOperator|"
-        r"isPool|isEngine|isTrustedCaller|_is[A-Z][A-Za-z0-9_]*)\s*\("
     )
     membership = (
         r"\b(?:_?guardian|guardians|controller|controllers|operator|operators|"
         r"pool|engine|router|allowlist|whitelist|roles|_roles|roleMembers|"
         r"authorizedCallers|permissions)\b\s*"
         r"(?:\[[^\]]+\]\s*)*\[\s*" + caller
+        + r"\s*\]"
+        r"|\b_roles\s*\[[^\]]+\]\s*\.\s*has\s*\(\s*" + caller + r"\s*\)"
     )
-    hard_check = (
-        r"\b(?:_checkRole|_checkOwner|_require[A-Za-z_]\w*|"
-        r"_onlySelfCall|routerSelf)\s*\("
-    )
-    predicate = "(?:" + comparison + "|" + role_predicate + "|" + membership + ")"
+    predicate = "(?:" + comparison + "|" + membership + ")"
     enforced_predicate = (
         r"\b(?:require|assert)\s*\([^;]*?" + predicate
         + r"|\bif\s*\([^{};]*?" + predicate
         + r"[^{};]*\)\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()"
     )
-    return bool(
-        re.search(hard_check, value, re.I)
-        or re.search(enforced_predicate, value, re.I | re.S)
+    return bool(re.search(enforced_predicate, value, re.I | re.S))
+
+
+def _block_has_reachable_guard(
+    block: str,
+    scopes: list[dict[str, Any]],
+    *,
+    seen: set[str] | None = None,
+    depth: int = 0,
+    caller_aliases: list[str] | None = None,
+) -> tuple[bool, str]:
+    if depth > 8:
+        return False, ""
+    seen = set(seen or ())
+    clean = core._strip_source_comments(block, "solidity", mask_strings=True)
+    if _has_auth_expression(clean, caller_aliases):
+        return True, "The resolved source block contains an enforced caller/role/self-call guard."
+
+    helper_pattern = re.compile(
+        r"\b(_(?:require|only|check|authorize|assert|validate)[A-Za-z0-9_]*|"
+        r"routerSelf|only[A-Z][A-Za-z0-9_]*|hasRole|isAuthorized|isGuardian|"
+        r"isController|isOperator|isPool|isEngine|isTrustedCaller|"
+        r"_is[A-Z][A-Za-z0-9_]*)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
+        re.S,
     )
+    for call in helper_pattern.finditer(clean):
+        helper = call.group(1)
+        if helper in seen:
+            continue
+        seen.add(helper)
+        arguments = call.group(2)
+        matches: list[tuple[str, str, str]] = []
+        for scope in scopes:
+            matches.extend(_member_signatures(str(scope["body"]), helper))
+        # A same-name declaration in unrelated bases or an overload set must not be guessed.
+        if len(matches) != 1:
+            continue
+        kind, header, helper_body = matches[0]
+        aliases = _caller_parameter_aliases(header, arguments)
+        guarded, _reason = _block_has_reachable_guard(
+            helper_body, scopes, seen=seen, depth=depth + 1,
+            caller_aliases=aliases,
+        )
+        if guarded:
+            return True, f"Resolved {kind} {helper} contains or reaches a caller guard."
+    return False, ""
 
 
 def _authorization_scopes(
@@ -653,7 +739,7 @@ def _has_authorization_boundary(
 ) -> tuple[bool, str]:
     """Accept only authorization checks resolved inside this contract's import/inheritance graph."""
     if _has_auth_expression(header + "\n" + body):
-        return True, "The function contains a direct caller/role/self-call check."
+        return True, "The function contains a direct enforced caller check."
 
     if source is None:
         if source_path is None:
