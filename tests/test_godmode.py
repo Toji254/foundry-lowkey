@@ -250,9 +250,7 @@ class GodmodeTests(unittest.TestCase):
                 index = run_index["value"]
                 run_index["value"] += 1
                 return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {hashes[index]}\n", "")
-            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
-                 patch.object(godmode, "run", side_effect=fake_run), \\
-                 redirect_stdout(io.StringIO()):
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), patch.object(godmode, "run", side_effect=fake_run), redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
                 ])
@@ -287,9 +285,7 @@ class GodmodeTests(unittest.TestCase):
                 tx_hash = hashes[index["value"]]
                 index["value"] += 1
                 return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "")
-            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), \\
-                 patch.object(godmode, "run", side_effect=fake_run), \\
-                 redirect_stdout(io.StringIO()):
+            with patch.object(godmode, "rpc", side_effect=self._mock_trace_rpc(target, sender, wrapper)), patch.object(godmode, "run", side_effect=fake_run), redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
                 ])
