@@ -1657,6 +1657,13 @@ def reprove(args):
     target=addr(ns.target_address)
     profit_addresses=sorted({addr(x) for x in ns.profit_address})
     if not profit_addresses: raise ValueError("At least one --profit-address is required.")
+    trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
+    if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
+    storage_trace=_trace_storage_prestate(url,tx_hash)
+    if ns.require_trace_storage and not storage_trace.get("supported"):
+        raise ValueError("The node does not support the required prestateTracer storage read-set: "+str(storage_trace.get("reason")))
+    if ns.source_rpc_url and not storage_trace.get("supported"):
+        raise ValueError("Source-verified reproof requires prestateTracer-derived storage; use a tracer-capable local fork RPC.")
     source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
     if ns.source_rpc_url:
         if not ns.argv_json:
@@ -1674,8 +1681,8 @@ def reprove(args):
         source_target_code=rpc(source_url,"eth_getCode",[target,hex(ns.fork_block)])
         if not local_target_code or local_target_code=="0x" or str(local_target_code).lower()!=str(source_target_code or "").lower():
             raise ValueError("Target bytecode on the local fork does not match the independent source chain at --fork-block.")
-        if not ns.prestate_slot:
-            raise ValueError("Source-verified fork reproduction requires at least one --prestate-slot for the target's accounting or authorization state.")
+        if not ns.prestate_slot and not storage_trace.get("slots"):
+            raise ValueError("Source-verified fork reproduction needs trace-derived or explicitly declared target storage slots.")
         checked_slots=[]
         for raw_slot in ns.prestate_slot:
             if ":" not in raw_slot: raise ValueError("--prestate-slot must use ADDRESS:SLOT.")
@@ -1692,6 +1699,31 @@ def reprove(args):
             if str(local_value).lower()!=str(source_value).lower():
                 raise ValueError(f"Pre-state slot {slot_address}:{slot_value} differs between local fork and source chain.")
             checked_slots.append({"address":slot_address,"slot":slot_value,"value":local_value})
+        trace_addresses=sorted(set(storage_trace.get("addresses",[])) | {target} | set(profit_addresses) | {str(tx.get("from")).lower()})
+        checked_trace_accounts=[]
+        for address in trace_addresses:
+            local_code=rpc(url,"eth_getCode",[address,hex(ns.fork_block)])
+            source_code=rpc(source_url,"eth_getCode",[address,hex(ns.fork_block)])
+            if str(local_code or "0x").lower()!=str(source_code or "0x").lower():
+                raise ValueError("Trace-touched account code differs between the local fork and source chain: "+address)
+            local_balance=int(str(rpc(url,"eth_getBalance",[address,hex(ns.fork_block)])),16)
+            source_balance=int(str(rpc(source_url,"eth_getBalance",[address,hex(ns.fork_block)])),16)
+            local_nonce=int(str(rpc(url,"eth_getTransactionCount",[address,hex(ns.fork_block)])),16)
+            source_nonce=int(str(rpc(source_url,"eth_getTransactionCount",[address,hex(ns.fork_block)])),16)
+            if local_balance!=source_balance or local_nonce!=source_nonce:
+                raise ValueError("Trace-touched account balance/nonce differs at fork block: "+address)
+            checked_trace_accounts.append({"address":address,"code_sha256":hashlib.sha256(
+                bytes.fromhex(str(source_code or "0x").removeprefix("0x"))).hexdigest(),
+                "balance_wei":source_balance,"nonce":source_nonce})
+        checked_trace_slots=[]
+        for item in storage_trace.get("slots",[]):
+            address=item["address"]; slot_value=item["slot"]; expected_value=item["value"]
+            local_value=rpc(url,"eth_getStorageAt",[address,slot_value,hex(ns.fork_block)])
+            source_value=rpc(source_url,"eth_getStorageAt",[address,slot_value,hex(ns.fork_block)])
+            if (str(local_value).lower()!=str(expected_value).lower() or
+                str(source_value).lower()!=str(expected_value).lower()):
+                raise ValueError("Trace-derived prestate slot differs between replay, local fork and source: "+address+":"+slot_value)
+            checked_trace_slots.append({"address":address,"slot":slot_value,"value":expected_value})
         source_sender_balance=int(str(rpc(source_url,"eth_getBalance",[str(tx.get("from")).lower(),hex(ns.fork_block)])),16)
         source_profit_balances=[]
         for address in profit_addresses:
@@ -1705,9 +1737,10 @@ def reprove(args):
                              "target_code_sha256":hashlib.sha256(bytes.fromhex(str(source_target_code).removeprefix("0x"))).hexdigest(),
                              "sender_balance_at_fork_wei":source_sender_balance,
                              "profit_account_balances":source_profit_balances,
-                             "prestate_slots":checked_slots}
-    trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
-    if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
+                             "prestate_slots":checked_slots,
+                             "trace_touched_accounts":checked_trace_accounts,
+                             "trace_derived_storage_slots":checked_trace_slots,
+                             "storage_trace_supported":True}
     tx_digest,entry=_control_entry_digest(tx,chain_id)
     trace_digest,_=_control_entry_digest(trace,chain_id)
     if tx_digest!=trace_digest: raise ValueError("CallTracer root does not match the mined transaction.")
