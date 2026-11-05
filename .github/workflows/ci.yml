@@ -49,6 +49,8 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.9.0
+        env:
+          FOUNDRYUP_MAX_RETRIES: "8"
       - name: Verify and package pinned Foundry binaries
         shell: bash
         run: |
