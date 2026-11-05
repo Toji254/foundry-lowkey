@@ -106,7 +106,8 @@ class ProofEvidenceTests(unittest.TestCase):
     def test_freeze_binds_step_expectations_sidecar_and_generated_harness_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            (root / "control.json").write_text("{}", encoding="utf-8")
+            spec = {"family": "reentrancy", "step_expectations_file": "steps.expectations.json"}
+            (root / "control.json").write_text(json.dumps(spec), encoding="utf-8")
             harness = root / "test/lowkey/GeneratedSteps.sol"
             harness.parent.mkdir(parents=True)
             harness.write_text("contract GeneratedSteps {}", encoding="utf-8")
@@ -123,20 +124,19 @@ class ProofEvidenceTests(unittest.TestCase):
             }
             sidecar = root / "steps.expectations.json"
             sidecar.write_text(json.dumps(sidecar_payload), encoding="utf-8")
-            spec = {"family": "reentrancy", "step_expectations_file": "steps.expectations.json"}
             frozen, _ = freeze_control_manifest(root, root / "control.json", spec)
             frozen_inputs = {item["path"] for item in frozen["inputs"]}
             self.assertIn("steps.expectations.json", frozen_inputs)
             self.assertIn("test/lowkey/GeneratedSteps.sol", frozen_inputs)
             self.assertTrue(validate_control_freeze(root, root / "control.json", spec, required=True)["verified"])
             harness.write_text("contract GeneratedSteps { function changed() external {} }", encoding="utf-8")
-            changed_harness = validate_control_freeze(root, root / "control.json", spec, required=True)
-            self.assertFalse(changed_harness["verified"])
+            with self.assertRaises(ValueError):
+                validate_control_freeze(root, root / "control.json", spec, required=True)
             harness.write_text("contract GeneratedSteps {}", encoding="utf-8")
             sidecar_payload["trace_expectations"][0]["count"] = 2
             sidecar.write_text(json.dumps(sidecar_payload), encoding="utf-8")
-            changed_sidecar = validate_control_freeze(root, root / "control.json", spec, required=True)
-            self.assertFalse(changed_sidecar["verified"])
+            with self.assertRaises(ValueError):
+                validate_control_freeze(root, root / "control.json", spec, required=True)
 
     def test_freeze_does_not_bind_generated_state_diff_output_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,8 +194,9 @@ class ProofEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             manifest = root / "control.json"
-            manifest.write_text("{}", encoding="utf-8")
-            _, freeze_path = freeze_control_manifest(root, manifest, {"family": "reentrancy"})
+            manifest_spec = {"family": "reentrancy"}
+            manifest.write_text(json.dumps(manifest_spec), encoding="utf-8")
+            _, freeze_path = freeze_control_manifest(root, manifest, manifest_spec)
             valid = validate_frozen_control(root)
             self.assertTrue(valid["verified"], valid)
             self.assertEqual(valid["status"], "PROPOSED")

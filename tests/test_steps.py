@@ -35,7 +35,7 @@ class StepRendererTests(unittest.TestCase):
             source = output.read_text(encoding="utf-8")
             self.assertEqual(normalized["contract_name"], "ReentrancySteps")
             self.assertLess(source.index("0x12345678"), source.index("0xabcdef01"))
-            self.assertIn("abi.encode(address(0x2222222222222222222222222222222222222222), uint256(1))", source)
+            self.assertIn('abi.encode(address(bytes20(hex"2222222222222222222222222222222222222222")), uint256(1))', source)
             self.assertNotIn("_stepCallCount", source)
             expected = json.loads((root / ".audit/steps/ReentrancySteps.expectations.json").read_text())
             self.assertEqual(expected["trace_expectations"], [{

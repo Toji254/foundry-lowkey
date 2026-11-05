@@ -68,6 +68,7 @@ class GodmodeTests(unittest.TestCase):
         manifest = {
             "target_address": target,
             "same_calls_id": "withdraw-same-entrypoint-v1",
+            "family": "reentrancy",
             "control_rationale": "The paired control disables the callback and rules out an ordinary single withdrawal being mistaken for reentrancy.",
             "metric_name": "attacker_portfolio_native_delta_wei",
             "prestate_addresses": [target, sender, wrapper],
@@ -408,7 +409,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(saved["same_entry_call_verified"])
             self.assertFalse(saved["same_transaction_envelope_verified"])
             self.assertTrue(saved["same_prestate_verified"])
-            self.assertTrue(any("transaction nonce/gas/fee/type/access-list envelope differs" in reason for reason in saved["reasons"]))
+            self.assertTrue(any("RPC-derived transaction envelope differs" in reason for reason in saved["reasons"]))
 
     def test_control_rejects_relative_improvement_without_positive_attack_profit(self):
         from unittest.mock import patch
@@ -652,7 +653,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(saved["same_entry_call_verified"])
             self.assertFalse(saved["same_transaction_envelope_verified"])
             self.assertTrue(saved["same_prestate_verified"])
-            self.assertTrue(any("transaction nonce/gas/fee/type/access-list envelope differs" in reason for reason in saved["reasons"]))
+            self.assertTrue(any("RPC-derived transaction envelope differs" in reason for reason in saved["reasons"]))
 
     def test_control_rejects_script_supplied_hashes_without_a_mined_trace(self):
         from unittest.mock import patch
