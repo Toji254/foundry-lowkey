@@ -461,7 +461,7 @@ def _imported_source_context(
 
 
 def _named_block(source: str, name: str) -> str:
-    """Compatibility helper used by claim/rounding analysis to trace local helper bodies."""
+    """Return the first exact local function/modifier block for legacy data-flow checks."""
     stripped = core._strip_source_comments(source, "solidity", mask_strings=True)
     pattern = re.compile(
         r"\b(?:function|modifier)\s+" + re.escape(name) + r"\b[^{;]*\{",
@@ -471,8 +471,17 @@ def _named_block(source: str, name: str) -> str:
     if not match:
         return ""
     opening = stripped.find("{", match.start(), match.end())
-    block = core._balanced_block(stripped, opening)
-    return source[match.start():match.end() + len(block)] if block else ""
+    depth = 0
+    end = opening
+    for index in range(opening, len(stripped)):
+        if stripped[index] == "{":
+            depth += 1
+        elif stripped[index] == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    return source[match.start():end] if end > match.start() else ""
 
 
 def _member_blocks(contract_body: str, name: str) -> list[tuple[str, str]]:
