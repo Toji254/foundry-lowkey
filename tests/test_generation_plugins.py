@@ -37,7 +37,7 @@ class GenerationPluginTests(unittest.TestCase):
             config = root / ".audit" / "lowkey-ecosystem-foundry.toml"
             config.parent.mkdir(parents=True)
             config.write_text(
-                '[profile.default]\\nsrc = "src"\\ntest = "test"\\n',
+                '[profile.default]\nsrc = "src"\ntest = "test"\n',
                 encoding="utf-8",
             )
             project = {
@@ -86,7 +86,7 @@ class GenerationPluginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "src").mkdir()
-            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
             (root / "src" / "Counter.sol").write_text(
                 "pragma solidity ^0.8.20; contract Counter { uint256 public count; "
                 "function setCount(uint256 value) external { count = value; } }",
@@ -103,7 +103,7 @@ class GenerationPluginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "src").mkdir()
-            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
             (root / "src" / "Counter.sol").write_text(
                 "pragma solidity ^0.8.20; contract Counter { uint256 public count; "
                 "function setCount(uint256 value) external { count = value; } }",
@@ -137,7 +137,7 @@ class GenerationPluginTests(unittest.TestCase):
             root = Path(directory)
             (root / "src").mkdir()
             (root / "foundry.toml").write_text(
-                '[profile.default]\\nsrc = "src"\\n', encoding="utf-8"
+                '[profile.default]\nsrc = "src"\n', encoding="utf-8"
             )
             source = (
                 "pragma solidity ^0.8.20; contract Counter { uint256 public count; "

@@ -98,9 +98,9 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             root = Path(tmp)
             config = root / "foundry.toml"
             config.write_text(
-                '[profile.default]\\n'
-                'libs = ["../../../../lib"]\\n'
-                'remappings = ["@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/"]\\n',
+                '[profile.default]\n'
+                'libs = ["../../../../lib"]\n'
+                'remappings = ["@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/"]\n',
                 encoding="utf-8",
             )
             self.assertTrue(BENCHMARK._config_uses_node_modules(config))
@@ -192,12 +192,27 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
                 report_dir.mkdir(parents=True, exist_ok=True)
                 if command[command.index("--types") + 1] == "all":
                     (report_dir / "report.json").write_text(
-                        json.dumps({"generation_assessment": {"unit": {"level": "executable-candidate"}}}),
+                        json.dumps({
+                            "requested_types": ["unit"],
+                            "generation_assessment": {
+                                "unit": {
+                                    "level": "executable-candidate",
+                                    "note": "Grounded direct setter/getter assertion.",
+                                }
+                            },
+                            "generated": ["LowkeyGeneratedUnit_UnfamiliarContract.t.sol"],
+                            "skipped": [],
+                        }),
                         encoding="utf-8",
                     )
                     return {"command": command, "exit_code": 1, "stdout_tail": "", "stderr_tail": "generation error"}
                 (report_dir / "report.json").write_text(
-                    json.dumps({"validation": {"status": "passed"}}), encoding="utf-8"
+                    json.dumps({
+                        "validation": {
+                            "status": "passed",
+                            "test_executions": [{"path": "LowkeyGeneratedUnit_UnfamiliarContract.t.sol", "exit_code": 0}],
+                        }
+                    }), encoding="utf-8"
                 )
                 return {"command": command, "exit_code": 0, "stdout_tail": "", "stderr_tail": ""}
 
@@ -219,12 +234,27 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
                 report_dir.mkdir(parents=True, exist_ok=True)
                 if command[command.index("--types") + 1] == "all":
                     (report_dir / "report.json").write_text(
-                        json.dumps({"generation_assessment": {"unit": {"level": "executable-candidate"}}}),
+                        json.dumps({
+                            "requested_types": ["unit"],
+                            "generation_assessment": {
+                                "unit": {
+                                    "level": "executable-candidate",
+                                    "note": "Grounded direct setter/getter assertion.",
+                                }
+                            },
+                            "generated": ["LowkeyGeneratedUnit_UnfamiliarContract.t.sol"],
+                            "skipped": [],
+                        }),
                         encoding="utf-8",
                     )
                 else:
                     (report_dir / "report.json").write_text(
-                        json.dumps({"validation": {"status": "passed"}}), encoding="utf-8"
+                        json.dumps({
+                        "validation": {
+                            "status": "passed",
+                            "test_executions": [{"path": "LowkeyGeneratedUnit_UnfamiliarContract.t.sol", "exit_code": 0}],
+                        }
+                    }), encoding="utf-8"
                     )
                 return {"command": command, "exit_code": 0, "stdout_tail": "", "stderr_tail": ""}
 
