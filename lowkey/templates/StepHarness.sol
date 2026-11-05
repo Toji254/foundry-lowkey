@@ -2,19 +2,14 @@
 pragma solidity ^0.8.20;
 
 /// @notice Lowkey Step[] harness template.
-/// @dev The harness emits transactions only when run() is explicitly called.
-///      Nested execution evidence must be obtained from the selected trace backend;
-///      _stepCallCount records only calls emitted by this generated harness.
+/// @dev Calls are deliberately low-level and ordered. Reverts, return bytes and
+///      nested call paths must be inspected from the selected execution backend.
+///      The companion expectations JSON is declarative and is not proof.
 contract {{CONTRACT_NAME}} {
-    uint256 private _stepCallCount;
-    bool private _lastCallReverted;
-    bytes private _lastReturnData;
-
     receive() external payable {}
 
     function run() external payable returns (bytes[] memory results) {
         results = new bytes[]({{STEP_COUNT}});
 {{STEP_BODY}}
-        _lastReturnData;
     }
 }

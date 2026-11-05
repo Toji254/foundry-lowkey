@@ -229,7 +229,7 @@ def _generator_fingerprints(root, spec):
         module_path = Path(__file__).with_name(module_name)
         if module_path.is_file():
             paths.add(module_path.resolve())
-    step_template = Path(__file__).resolve().parent.parent / "templates" / "StepHarness.sol"
+    step_template = Path(__file__).resolve().parent / "templates" / "StepHarness.sol"
     if step_template.is_file():
         paths.add(step_template.resolve())
     declared = spec.get("generator_files") or []
