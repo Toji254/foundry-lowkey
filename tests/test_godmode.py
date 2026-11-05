@@ -13,6 +13,12 @@ SPEC = importlib.util.spec_from_file_location("lowkey_godmode_tested", MODULE)
 godmode = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = godmode
 SPEC.loader.exec_module(godmode)
+PROOF_SPEC = importlib.util.spec_from_file_location(
+    "lowkey_proof_evidence_tested", ROOT / "lowkey" / "proof_evidence.py"
+)
+proof_evidence = importlib.util.module_from_spec(PROOF_SPEC)
+sys.modules[PROOF_SPEC.name] = proof_evidence
+PROOF_SPEC.loader.exec_module(proof_evidence)
 
 
 class GodmodeTests(unittest.TestCase):
@@ -67,7 +73,9 @@ class GodmodeTests(unittest.TestCase):
             "control": {"argv": [sys.executable, "-c", "pass"]},
             "attack": {"argv": [sys.executable, "-c", "pass"]},
         }
-        (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+        manifest_path = root / "control.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
         return manifest, target, sender, wrapper
 
     def _mock_trace_rpc(self, target, sender, wrapper, attack_calldata="0x12345678", control_gain=5, attack_gain=15, external_state=None, attack_tx_fields=None):
@@ -180,7 +188,8 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 0)
-            self.assertEqual(saved["status"], "BREAK")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
+            self.assertEqual(saved["legacy_status"], "BREAK")
             self.assertEqual(saved["control_delta"], 10)
             self.assertTrue(saved["same_entry_call_verified"])
             self.assertTrue(saved["same_transaction_envelope_verified"])
@@ -325,6 +334,7 @@ class GodmodeTests(unittest.TestCase):
             manifest["control"] = {"prepare_argv": ["prepare", "0"], "argv": ["send"]}
             manifest["attack"] = {"prepare_argv": ["prepare", "1"], "argv": ["send"]}
             (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
             tx_hashes = iter(["0x" + "a" * 64, "0x" + "b" * 64])
             gain_by_tx = {"0x" + "a" * 64: 5, "0x" + "b" * 64: 15}
 
