@@ -506,6 +506,33 @@ jobs:
           import json
           from pathlib import Path
           result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
+          print("LOWKEY_CONTROL_PROOF_DIAGNOSTICS=" + json.dumps({
+              "status": result.get("status"),
+              "legacy_status": result.get("legacy_status"),
+              "outcome": result.get("outcome"),
+              "proof_axes": result.get("proof_axes"),
+              "rejection_codes": result.get("rejection_codes"),
+              "reasons": result.get("reasons"),
+              "economic_policy": result.get("economic_policy"),
+              "same_entry_call_verified": result.get("same_entry_call_verified"),
+              "same_transaction_envelope_verified": result.get("same_transaction_envelope_verified"),
+              "same_prestate_verified": result.get("same_prestate_verified"),
+              "same_trace_storage_values_verified": result.get("same_trace_storage_values_verified"),
+              "same_chain_verified": result.get("same_chain_verified"),
+              "same_block_verified": result.get("same_block_verified"),
+              "same_fork_anchor_verified": result.get("same_fork_anchor_verified"),
+              "trace_delta_verified": result.get("trace_delta_verified"),
+              "attack_metric_positive_after_gas": result.get("attack_metric_positive_after_gas"),
+              "freeze": result.get("freeze"),
+              "runs": {name: {
+                  "fidelity_label": row.get("fidelity_label"),
+                  "fidelity": row.get("fidelity"),
+                  "trace_error": row.get("trace_error"),
+                  "metric": row.get("metric"),
+                  "derived_storage_slots": row.get("derived_storage_slots"),
+                  "storage_trace": row.get("storage_trace"),
+              } for name,row in result.get("runs",{}).items()},
+          }, sort_keys=True))
           assert result["legacy_status"] == "BREAK", result
           assert result["status"] == "OBSERVED", result
           assert result["freeze"]["verified"] is True, result
