@@ -43,6 +43,9 @@ class StepRendererTests(unittest.TestCase):
                 "selector": "0x12345678", "count": 2, "must_revert": False,
             }])
             self.assertIn("proves execution", expected["policy"])
+            self.assertEqual(expected["harness_path"], "test/lowkey/ReentrancySteps.sol")
+            import hashlib
+            self.assertEqual(expected["harness_sha256"], hashlib.sha256(source.encode("utf-8")).hexdigest())
 
     def test_reenter_is_a_one_shot_native_eth_callback_configuration(self):
         manifest = self._manifest()
@@ -97,6 +100,32 @@ class StepRendererTests(unittest.TestCase):
         body = __import__("lowkey.step_renderer", fromlist=["_step_body"])._step_body(normalized["steps"])
         self.assertIn('address(bytes20(hex"5fbdb2315678afecb367f032d93f642f64180aa3"))', body)
         self.assertNotIn("address(0x5fbdb", body)
+
+    def test_args_must_be_array_or_null_and_schema_version_must_be_integer(self):
+        for invalid_args in ({}, "", 0, False):
+            with self.subTest(args=invalid_args):
+                manifest = self._manifest()
+                manifest["steps"][0]["args"] = invalid_args
+                with self.assertRaises(RefusalError) as caught:
+                    normalize_manifest(manifest)
+                self.assertEqual(caught.exception.refusal["reason"], "unsupported_abi")
+        for invalid_version in (True, 1.0, "1"):
+            with self.subTest(schema_version=invalid_version):
+                manifest = self._manifest()
+                manifest["schema_version"] = invalid_version
+                with self.assertRaises(RefusalError) as caught:
+                    normalize_manifest(manifest)
+                self.assertEqual(caught.exception.refusal["reason"], "unsupported_abi")
+
+    def test_output_cannot_clobber_manifest_or_expectations_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root_with_manifest(tmp)
+            with self.assertRaises(RefusalError):
+                render_manifest(root, root / "steps.json", root / "steps.json", force=True)
+            with self.assertRaises(RefusalError):
+                render_manifest(root, root / "steps.json",
+                                root / ".audit/steps/ReentrancySteps.expectations.json",
+                                force=True)
 
     def test_no_argument_selector_has_no_abi_zero_word_appended(self):
         manifest = self._manifest()

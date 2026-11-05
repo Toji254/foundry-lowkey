@@ -198,6 +198,15 @@ def _referenced_inputs(root, spec):
     candidates.extend(x for x in (spec.get("fidelity_sources") or []) if isinstance(x, str))
     if isinstance(spec.get("step_expectations_file"), str):
         candidates.append(spec["step_expectations_file"])
+        sidecar_path = (root / spec["step_expectations_file"]).resolve()
+        if sidecar_path.is_relative_to(root) and sidecar_path.is_file():
+            try:
+                sidecar_payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                sidecar_payload = {}
+            harness_name = sidecar_payload.get("harness_path") if isinstance(sidecar_payload, dict) else None
+            if isinstance(harness_name, str):
+                candidates.append(harness_name)
     generator_files = spec.get("generator_files") or []
     if not isinstance(generator_files, list) or not all(isinstance(x, str) and x.strip() for x in generator_files):
         raise ValueError("generator_files must be an array of project-relative file paths.")

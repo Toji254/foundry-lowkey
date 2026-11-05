@@ -1571,8 +1571,25 @@ def _load_step_expectations(root, spec, target, family, backend):
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         return denied("unsupported_abi", "Step expectations sidecar must use schema_version 1.")
     sidecar_family = payload.get("family")
-    if sidecar_family and family and sidecar_family != family:
+    if sidecar_family is not None and (
+        not isinstance(sidecar_family, str) or not family or sidecar_family != family
+    ):
         return denied("unsupported_abi", "Step expectations family does not match the control manifest family.")
+    harness_name = payload.get("harness_path")
+    harness_digest = payload.get("harness_sha256")
+    if not isinstance(harness_name, str) or not harness_name.strip():
+        return denied("no_capability", "Step expectations sidecar does not identify its generated Solidity harness.")
+    harness_rel = Path(harness_name)
+    if harness_rel.is_absolute() or ".." in harness_rel.parts:
+        return denied("out_of_scope", "Generated Step[] harness path must stay inside the project.")
+    harness_path = (root / harness_rel).resolve()
+    if not harness_path.is_relative_to(root) or not harness_path.is_file():
+        return denied("no_capability", "Generated Step[] Solidity harness is missing: " + harness_name)
+    if not isinstance(harness_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", harness_digest):
+        return denied("unsupported_abi", "Step expectations harness_sha256 must be a lowercase 32-byte digest.")
+    actual_harness_digest = hashlib.sha256(harness_path.read_bytes()).hexdigest()
+    if actual_harness_digest != harness_digest:
+        return denied("digest_mismatch", "Generated Step[] Solidity harness bytes do not match the sidecar SHA-256.")
     sidecar_target = payload.get("target_address")
     if not isinstance(sidecar_target, str) or sidecar_target.lower() != str(target).lower():
         return denied("unverified_target", "Step expectations target_address does not match the control target.")

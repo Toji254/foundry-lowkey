@@ -7,6 +7,7 @@ exploitability, profitability, target authenticity, or verdict promotion.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -169,8 +170,10 @@ def _normalize_step(raw: Any, index: int, default_target: str | None,
     if not isinstance(selector, str) or not SELECTOR_RE.fullmatch(selector):
         _fail(default_target, family, "unsupported_abi",
               f"Step #{index} selector must be exactly four bytes (0x plus eight hex characters).")
-    args = raw.get("args") or []
-    if not isinstance(args, list):
+    args = raw.get("args")
+    if args is None:
+        args = []
+    elif not isinstance(args, list):
         _fail(default_target, family, "unsupported_abi", f"Step #{index} args must be an array or null.")
     typed_args = [_typed_value(arg, target=default_target, family=family) for arg in args]
     value = _wei(raw.get("value"), target=default_target, family=family)
@@ -201,9 +204,10 @@ def normalize_manifest(manifest: Any) -> dict[str, Any]:
     steps = manifest.get("steps")
     if not isinstance(steps, list) or not steps:
         _fail(default_target, family, "no_capability", "steps must be a non-empty array.")
-    if manifest.get("schema_version", 1) != 1:
-        _fail(default_target, family, "unsupported_abi", "Only Step manifest schema_version 1 is supported.")
-    contract_name = manifest.get("contract_name") or "LowkeyStepHarness"
+    schema_version = manifest.get("schema_version", 1)
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != 1:
+        _fail(default_target, family, "unsupported_abi", "Only integer Step manifest schema_version 1 is supported.")
+    contract_name = manifest.get("contract_name", "LowkeyStepHarness")
     if not isinstance(contract_name, str) or not CONTRACT_RE.fullmatch(contract_name):
         _fail(default_target, family, "unsupported_abi", "contract_name must be a Solidity identifier.")
     normalized = [_normalize_step(item, i, default_target, family) for i, item in enumerate(steps, 1)]
@@ -276,16 +280,22 @@ def render_source(manifest: dict[str, Any], template_text: str) -> str:
     return output
 
 
-def _trace_expectations(manifest: dict[str, Any]) -> dict[str, Any]:
+def _trace_expectations(manifest: dict[str, Any], harness_path: str, source: str) -> dict[str, Any]:
     expectations = []
     for index, step in enumerate(manifest["steps"], 1):
         if step["kind"] == "expect":
             expectations.append({"step": index, "target": step["target"], "selector": step["selector"],
                                  "count": step["expect"]["count"], "must_revert": step["expect"]["must_revert"]})
-    return {"schema_version": 1, "family": manifest["family"],
-            "target_address": manifest["target_address"], "trace_expectations": expectations,
-            "policy": ("Declarative only. Validate target, selector, count and reverted state against "
-                       "the selected backend's emitted trace. Neither this file nor the harness proves execution.")}
+    return {
+        "schema_version": 1,
+        "family": manifest["family"],
+        "target_address": manifest["target_address"],
+        "harness_path": harness_path,
+        "harness_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "trace_expectations": expectations,
+        "policy": ("Declarative only. Validate target, selector, count and reverted state against "
+                   "the selected backend's emitted trace. Neither this file nor the harness proves execution."),
+    }
 
 
 def render_manifest(root: Path, manifest_path: Path, output_path: Path | None = None,
@@ -315,14 +325,23 @@ def render_manifest(root: Path, manifest_path: Path, output_path: Path | None = 
     if not expectation_path.is_relative_to(root):
         _fail(normalized["target_address"], normalized["family"], "out_of_scope",
               "Trace expectation output escaped the active project.")
+    if output_path == manifest_path or output_path == expectation_path:
+        _fail(normalized["target_address"], normalized["family"], "out_of_scope",
+              "Generated harness output cannot replace the input manifest or trace-expectations sidecar.")
     if not force and (output_path.exists() or expectation_path.exists()):
         _fail(normalized["target_address"], normalized["family"], "out_of_scope",
               "Refusing to overwrite an existing generated harness or expectation file; pass --force explicitly.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     expectation_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(source, encoding="utf-8")
-    expectation_path.write_text(json.dumps(_trace_expectations(normalized), indent=2, sort_keys=True) + "\n",
-                                 encoding="utf-8")
+    expectation_path.write_text(
+        json.dumps(
+            _trace_expectations(normalized, output_path.relative_to(root).as_posix(), source),
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
     return output_path, normalized
 
 

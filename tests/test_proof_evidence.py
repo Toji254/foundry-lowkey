@@ -103,18 +103,40 @@ class ProofEvidenceTests(unittest.TestCase):
             self.assertEqual(status["reason_code"], "generator_drift")
             self.assertIn("generator.py", status["changed_generators"])
 
-    def test_freeze_binds_step_expectations_sidecar_bytes(self):
+    def test_freeze_binds_step_expectations_sidecar_and_generated_harness_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "control.json").write_text("{}", encoding="utf-8")
+            harness = root / "test/lowkey/GeneratedSteps.sol"
+            harness.parent.mkdir(parents=True)
+            harness.write_text("contract GeneratedSteps {}", encoding="utf-8")
+            import hashlib
+            harness_digest = hashlib.sha256(harness.read_bytes()).hexdigest()
+            sidecar_payload = {
+                "schema_version": 1,
+                "family": "reentrancy",
+                "target_address": "0x1111111111111111111111111111111111111111",
+                "harness_path": "test/lowkey/GeneratedSteps.sol",
+                "harness_sha256": harness_digest,
+                "trace_expectations": [{"step": 1, "target": "0x1111111111111111111111111111111111111111",
+                                        "selector": "0x12345678", "count": 1, "must_revert": False}],
+            }
             sidecar = root / "steps.expectations.json"
-            sidecar.write_text('{"schema_version":1,"trace_expectations":[]}', encoding="utf-8")
+            sidecar.write_text(json.dumps(sidecar_payload), encoding="utf-8")
             spec = {"family": "reentrancy", "step_expectations_file": "steps.expectations.json"}
-            freeze_control_manifest(root, root / "control.json", spec)
+            frozen, _ = freeze_control_manifest(root, root / "control.json", spec)
+            frozen_inputs = {item["path"] for item in frozen["inputs"]}
+            self.assertIn("steps.expectations.json", frozen_inputs)
+            self.assertIn("test/lowkey/GeneratedSteps.sol", frozen_inputs)
             self.assertTrue(validate_control_freeze(root, root / "control.json", spec, required=True)["verified"])
-            sidecar.write_text('{"schema_version":1,"trace_expectations":[{"count":1}]}', encoding="utf-8")
-            changed = validate_control_freeze(root, root / "control.json", spec, required=True)
-            self.assertFalse(changed["verified"])
+            harness.write_text("contract GeneratedSteps { function changed() external {} }", encoding="utf-8")
+            changed_harness = validate_control_freeze(root, root / "control.json", spec, required=True)
+            self.assertFalse(changed_harness["verified"])
+            harness.write_text("contract GeneratedSteps {}", encoding="utf-8")
+            sidecar_payload["trace_expectations"][0]["count"] = 2
+            sidecar.write_text(json.dumps(sidecar_payload), encoding="utf-8")
+            changed_sidecar = validate_control_freeze(root, root / "control.json", spec, required=True)
+            self.assertFalse(changed_sidecar["verified"])
 
     def test_freeze_does_not_bind_generated_state_diff_output_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
