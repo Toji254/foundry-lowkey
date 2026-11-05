@@ -20,7 +20,12 @@ contract Vault {
 """
 
     def _project(self, root: Path, source: str | None = None) -> Path:
-        (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\ntest = "test"\\n', encoding="utf-8")
+        (root / "foundry.toml").write_text(
+            '[profile.default]\n'
+            'src = "src"\n'
+            'test = "test"\n',
+            encoding="utf-8",
+        )
         (root / "src").mkdir()
         (root / "src" / "Vault.sol").write_text(source or self.SOURCE, encoding="utf-8")
         return root
