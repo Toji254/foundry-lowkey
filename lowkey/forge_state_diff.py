@@ -58,6 +58,9 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     if payload.get("backend")!="forge-state-diff":
         raise ValueError("Expected a Lowkey forge-state-diff JSON artifact.")
     if payload.get("schema_version")!=1: raise ValueError("Unsupported Forge state-diff artifact schema_version.")
+    trace_schema_version=payload.get("trace_schema_version",TRACE_SCHEMA_VERSION)
+    if trace_schema_version!=TRACE_SCHEMA_VERSION:
+        raise ValueError("Unsupported Forge TraceEvent schema version.")
     chain_id=_uint(payload.get("chain_id"),"chain_id")
     block_number=_uint(payload.get("block_number"),"block_number")
     target=_address(payload.get("target_address"),"target_address")

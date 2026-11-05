@@ -36,12 +36,33 @@ contract VaultForkPoC is LowkeyForgeStateDiffRecorder {
 ```
 
 The sequential control test should use the same recorder calls and same target
-entrypoint. Its artifact path should be different. The recorder emits ordinary
-JSON directly (it does not rely on Foundry's keyed JSON serializer), with a
-top-level `accesses` array and nested `storage_accesses` arrays.
+entrypoint. Its artifact path should be different. For callback/reentrancy
+fixtures, also assert the exact target-call count with vm.expectCall (one in the
+sequential control and two in the callback attack), and emit fixture domain events
+such as Deposited and Withdrawn where useful. Those semantic assertions complement
+the parsed trace; they do not replace it. Keep setup and any zero-value mode switch
+outside the measured window. Stop recording immediately after the target path.
+The normalizer rejects an empty AccountAccess array rather than treating it as a
+successful trace. The recorder emits ordinary JSON directly (it does not rely on
+Foundry's keyed JSON serializer), with a top-level `accesses` array and nested
+`storage_accesses` arrays.
+
+## Shared normalized trace schema
+
+Both evidence backends emit TraceEvent schema version 1 with index, kind, accessor,
+account, depth, value, reverted, selector, input, storage, error and source_backend.
+A missing field remains null; it is not inferred as zero or an empty list.
+
+Forge obtains calldata from AccountAccess.data and includes the storage accesses
+captured in the same state-diff window. Anvil callTracer supplies call frames and
+calldata but no storage read/write set, so its TraceEvent.storage is null. The
+backend is explicit on every event. The selector is derived from the first four
+calldata bytes only; no external selector database is silently consulted.
 
 The recorder stores the fork chain ID, block number, parent hash and target runtime
-code hash **before** the tested call. It then stores the full ordered
+code hash **before** the tested call. The normalized artifact must preserve the
+32-byte fork_parent_hash; source verification rejects artifacts without it. It
+then stores the full ordered
 `AccountAccess[]` sequence, with each account access's nested `StorageAccess[]`.
 Storage slots are therefore derived from the executed test rather than being
 limited to a hand-written slot list.
@@ -104,8 +125,10 @@ lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 \
 ```
 
 The freeze binds the manifest, trace expectations, commands, explicit harnesses,
-support files, and their SHA-256 hashes. Any change to those inputs invalidates
-the freeze and requires a new freeze before rerunning.
+support files, the active Lowkey gate/policy source hashes, and any project-local
+generator files named in the manifest's generator_files array. Any change to those
+inputs invalidates the freeze and requires a new freeze before rerunning. Freeze
+schema-v1 artifacts must be recreated with lk control --freeze.
 
 The independent source RPC is used alongside the fork RPC to check chain ID,
 the fork parent hash, the pinned block header, code, balances and nonces for

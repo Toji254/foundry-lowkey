@@ -12,6 +12,7 @@ CODE_HASH = "0x" + "a" * 64
 def artifact():
     return {
         "schema_version": 1,
+        "trace_schema_version": 1,
         "backend": "forge-state-diff",
         "chain_id": 1,
         "block_number": 20_000_000,

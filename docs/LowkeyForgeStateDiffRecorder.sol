@@ -118,6 +118,7 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
     function _lowkeyWriteTrace(string memory outputPath) internal {
         address target = _lowkeyTarget;
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        require(accesses.length != 0, "Lowkey: empty state-diff window");
         string memory accessesJson = "[";
         for (uint256 i; i < accesses.length; ++i) {
             if (i != 0) accessesJson = string.concat(accessesJson, ",");
@@ -125,7 +126,7 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         }
         accessesJson = string.concat(accessesJson, "]");
 
-        string memory finalJson = '{"backend":"forge-state-diff","schema_version":1';
+        string memory finalJson = '{"backend":"forge-state-diff","schema_version":1,"trace_schema_version":1';
         finalJson = string.concat(finalJson, ',"chain_id":', _uintString(_lowkeyChainId));
         finalJson = string.concat(finalJson, ',"block_number":', _uintString(_lowkeyBlockNumber));
         finalJson = string.concat(finalJson, ',"target_address":', _quoted(_hex(abi.encodePacked(target))));
