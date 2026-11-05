@@ -840,6 +840,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("IERC20Lowkey(assetToken).balanceOf(ATTACKER)", body)
         self.assertIn('console2.log("TOTAL_ATTACKER_TOKEN_GAIN"', body)
         self.assertIn("assetReadOk && totalTokenGain > entitlementBefore", body)
+        self.assertIn('assembly ("memory-safe")', body)
 
     def test_result_parser_marks_invalid_setup_as_lab_issue(self):
         target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)
