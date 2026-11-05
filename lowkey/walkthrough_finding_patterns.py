@@ -567,6 +567,8 @@ def _caller_parameter_aliases(header: str, arguments: str) -> list[str]:
 def _has_auth_expression(
     value: str,
     caller_aliases: list[str] | None = None,
+    *,
+    allow_return_expression: bool = False,
 ) -> bool:
     """Recognize an enforced caller guard, not a suggestive helper name or unused boolean."""
     aliases = [r"msg\s*\.\s*sender", r"_msgSender\s*\(\s*\)"]
@@ -590,7 +592,30 @@ def _has_auth_expression(
         + r"|\bif\s*\([^{};]*?" + predicate
         + r"[^{};]*\)\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()"
     )
-    return bool(re.search(enforced_predicate, value, re.I | re.S))
+    if re.search(enforced_predicate, value, re.I | re.S):
+        return True
+    return bool(
+        allow_return_expression
+        and re.search(r"\breturn\s*" + predicate + r"\s*;", value, re.I | re.S)
+    )
+
+
+def _call_is_in_enforced_condition(value: str, start: int, end: int) -> bool:
+    """A boolean helper is a guard only when its result controls a revert."""
+    prefix = value[:start]
+    suffix = value[end:]
+    if re.search(r"\b(?:require|assert)\s*\([^;]*$", prefix, re.I | re.S):
+        return True
+    if re.search(r"\bif\s*\([^{};]*$", prefix, re.I | re.S):
+        close = suffix.find(")")
+        if close >= 0:
+            tail = suffix[close + 1:close + 100]
+            return bool(re.match(
+                r"\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()",
+                tail,
+                re.I,
+            ))
+    return False
 
 
 def _block_has_reachable_guard(
@@ -600,12 +625,15 @@ def _block_has_reachable_guard(
     seen: set[str] | None = None,
     depth: int = 0,
     caller_aliases: list[str] | None = None,
+    allow_return_expression: bool = False,
 ) -> tuple[bool, str]:
     if depth > 8:
         return False, ""
     seen = set(seen or ())
     clean = core._strip_source_comments(block, "solidity", mask_strings=True)
-    if _has_auth_expression(clean, caller_aliases):
+    if _has_auth_expression(
+        clean, caller_aliases, allow_return_expression=allow_return_expression,
+    ):
         return True, "The resolved source block contains an enforced caller/role/self-call guard."
 
     helper_pattern = re.compile(
@@ -629,9 +657,11 @@ def _block_has_reachable_guard(
             continue
         kind, header, helper_body = matches[0]
         aliases = _caller_parameter_aliases(header, arguments)
+        enforced = _call_is_in_enforced_condition(clean, call.start(), call.end())
         guarded, _reason = _block_has_reachable_guard(
             helper_body, scopes, seen=seen, depth=depth + 1,
             caller_aliases=aliases,
+            allow_return_expression=enforced,
         )
         if guarded:
             return True, f"Resolved {kind} {helper} contains or reaches a caller guard."
