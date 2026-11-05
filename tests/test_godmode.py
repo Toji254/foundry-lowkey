@@ -1531,6 +1531,29 @@ class GodmodeTests(unittest.TestCase):
         self.assertEqual(raised.exception.reason_code, "backend_unsupported")
 
 
+
+    def test_step_renderer_refuses_expectation_value_mismatch(self):
+        with self.assertRaises(godmode.StepPlanError) as raised:
+            godmode.render_step_harness({
+                "family": "reentrancy",
+                "target_address": "0x" + "1" * 40,
+                "steps": [
+                    {
+                        "kind": "expect",
+                        "selector": "0x12345678",
+                        "value": 1,
+                        "expect": {"count": 1},
+                    },
+                    {
+                        "kind": "call",
+                        "selector": "0x12345678",
+                        "value": 2,
+                        "optional": True,
+                    },
+                ],
+            })
+        self.assertEqual(raised.exception.reason_code, "backend_unsupported")
+
     def test_step_renderer_refuses_protocol_specific_callbacks_with_defined_reason(self):
         for kind in ("flash_borrow", "reenter"):
             with self.subTest(kind=kind):
