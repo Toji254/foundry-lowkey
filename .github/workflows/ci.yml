@@ -150,6 +150,7 @@ jobs:
           src = "src"
           test = "test"
           libs = ["lib"]
+          fs_permissions = [{ access = "read-write", path = "./.audit/godmode" }]
           EOF
           cd /tmp/lowkey-fixture
           git init -q
@@ -315,6 +316,54 @@ jobs:
           }
           EOF
           forge build --force
+          mkdir -p docs
+          cp "$GITHUB_WORKSPACE/docs/LowkeyForgeStateDiffRecorder.sol" docs/LowkeyForgeStateDiffRecorder.sol
+          cat > test/LowkeyStateDiffRecorder.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          import {LowkeyForgeStateDiffRecorder} from "../docs/LowkeyForgeStateDiffRecorder.sol";
+
+          contract LowkeyStateDiffReceiver {
+              uint256 public received;
+              function receivePing() external { received += 1; }
+          }
+
+          contract LowkeyStateDiffTarget {
+              uint256 public hits;
+              function ping(address receiver) external {
+                  hits += 1;
+                  (bool ok,) = receiver.call(abi.encodeWithSignature("receivePing()"));
+                  require(ok, "CALLBACK_FAILED");
+              }
+          }
+
+          contract LowkeyStateDiffRecorderTest is LowkeyForgeStateDiffRecorder {
+              function test_lowkey_state_diff_recorder() external {
+                  LowkeyStateDiffTarget target = new LowkeyStateDiffTarget();
+                  LowkeyStateDiffReceiver receiver = new LowkeyStateDiffReceiver();
+                  _lowkeyStartTrace(address(target));
+                  target.ping(address(receiver));
+                  _lowkeyWriteTrace(".audit/godmode/forge-state-diff.json");
+              }
+          }
+          EOF
+          forge test --match-path test/LowkeyStateDiffRecorder.t.sol --match-test test_lowkey_state_diff_recorder -vv
+          python3 - "$HOME/.lowkey" <<'PY'
+          import json
+          import pathlib
+          import sys
+          sys.path.insert(0, sys.argv[1])
+          from forge_state_diff import normalize_forge_state_diff
+
+          artifact_path = pathlib.Path(".audit/godmode/forge-state-diff.json")
+          artifact = json.loads(artifact_path.read_text())
+          normalized = normalize_forge_state_diff(artifact, expected_target=artifact["target_address"])
+          assert len(normalized["calls"]) >= 2, normalized
+          assert normalized["storage_accesses"], normalized
+          assert any(item["is_write"] for item in normalized["storage_accesses"]), normalized
+          assert normalized["target_address"] in {item["to"] for item in normalized["calls"]}
+          print("PASS: Foundry state-diff recorder compiled, executed, serialized and normalized")
+          PY
           python3 - <<'PY'
           import json
           import pathlib
