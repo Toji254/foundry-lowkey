@@ -41,6 +41,25 @@ def artifact():
 
 
 class ForgeStateDiffTests(unittest.TestCase):
+    def test_unwraps_foundry_serialize_object_keys(self):
+        value = artifact()
+        value["accesses"] = [
+            {"lowkey.access.0": {
+                **value["accesses"][0],
+                "storage_accesses": [
+                    {"lowkey.storage.0.0": value["accesses"][0]["storage_accesses"][0]}
+                ],
+            }},
+            {"lowkey.access.1": value["accesses"][1]},
+        ]
+        wrapped = {"lowkey.root": {
+            key: item for key, item in value.items() if key != "accesses"
+        }}
+        wrapped["lowkey.root"]["accesses"] = value["accesses"]
+        result = normalize_forge_state_diff(wrapped, expected_target=TARGET)
+        self.assertEqual(len(result["calls"]), 2)
+        self.assertTrue(result["storage_accesses"][0]["is_write"])
+
     def test_normalizes_ordered_calls_and_storage_slots(self):
         result = normalize_forge_state_diff(artifact(), expected_target=TARGET)
         self.assertEqual(result["backend"], "forge-state-diff")
