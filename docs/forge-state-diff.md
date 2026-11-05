@@ -59,8 +59,9 @@ This is a fixture pattern, not a way to mutate a production fork target.
 The paired Foundry acceptance fixture deploys one target and one attacker. It
 executes a sequential withdrawal, records its state diff and domain logs, reverts
 to the snapshot, switches the attacker's callback mode outside the measured
-window, then executes the callback path against the same deployment. One
-one counted `vm.expectCall` assertion requires three calls across the paired test; Foundry allows only one counted expectation per target/calldata pair;
+window, then executes the callback path against the same deployment. A single
+counted `vm.expectCall` assertion requires three calls across the paired test;
+Foundry allows only one counted expectation per target/calldata pair;
 the two artifacts independently prove one target call for control and two for
 attack. The target address, runtime code hash, chain, block and target pre-state
 must match. The declared attacker mode slot is zero in control and two in attack.
