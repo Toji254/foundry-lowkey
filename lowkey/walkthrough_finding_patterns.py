@@ -800,7 +800,10 @@ def _array_attacker_growable(
             if not re.search(r"\b(?:external|public)\b", header):
                 continue
             if any(re.search(r"\b" + re.escape(helper) + r"\s*\(", body) for helper in internal_names):
-                guarded, _reason = _has_authorization_boundary(root, header, body)
+                guarded, _reason = _has_authorization_boundary(
+                    root, header, body, source=source, source_path=source_path,
+                    contract_name=contract_name,
+                )
                 if not guarded:
                     return True
     return False
