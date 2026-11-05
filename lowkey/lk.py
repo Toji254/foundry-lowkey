@@ -3958,7 +3958,7 @@ def decode_event_log(config, log, target=None, abi=None, root=None):
         and event_target.lower() == target.lower()
     )
     event_abi = (
-        abi if same_transaction_target and isinstance(abi, list)
+        abi if same_transaction_target and isinstance(abi, list) and bool(abi)
         else load_abi(event_target, config) if event_target
         else []
     )
