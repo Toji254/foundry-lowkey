@@ -1316,6 +1316,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         return run_test_audit(rest)
     if command in {"inspect-audit", "recon"}:
         return run_inspect_audit(rest)
+    if command == "build":
+        try:
+            from foundry_build import run_build
+        except ImportError:
+            from lowkey.foundry_build import run_build
+        return run_build(rest, root=_project_root(), fallback_to_native=False)
     if command == "lint":
         return run_forge_diagnostics(["lint", *rest], "lint")
     if command == "geiger":
