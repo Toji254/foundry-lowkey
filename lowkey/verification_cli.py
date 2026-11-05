@@ -533,6 +533,10 @@ def run_cli(args: list[str]) -> int:
         if len(args) != 4:
             print("Error: usage: lk verification run-test <SIGNAL_ID> <TEST_PATH> <TEST_NAME>", file=sys.stderr)
             return 2
+        print(
+            "Forge will compile as needed and run only this exact test file/function. It may update Foundry out/cache. "
+            "Inspect the test for fork/RPC use or broadcast cheatcodes first; Lowkey does not choose a live target or sign a transaction."
+        )
         try:
             try:
                 import signal_investigation
