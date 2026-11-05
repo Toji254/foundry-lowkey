@@ -612,6 +612,207 @@ def _trace_control_run(root, url, name, entry, spec, env):
         if reverted is not True: raise RuntimeError("Could not revert the local Anvil snapshot after the control run.")
 
 
+
+def _forge_source_verification(source_url, fork_url, normalized, spec):
+    result = {
+        "verified": False,
+        "method": "independent archive RPC: chain/block anchor, EIP-1186 code hashes and trace-derived storage",
+        "checked_addresses": [],
+        "checked_storage_slots": [],
+    }
+    if not source_url:
+        result["reason"] = "No independent --source-rpc-url was supplied."
+        return result
+    source = rpc_url(source_url)
+    if urlparse(source).hostname == urlparse(fork_url).hostname:
+        result["reason"] = "Source RPC host must differ from the Foundry fork RPC host."
+        return result
+    chain_id = int(normalized["chain_id"])
+    block_number = int(normalized["block_number"])
+    if block_number < 1:
+        result["reason"] = "Fork block must be at least 1 to verify its parent hash."
+        return result
+    source_chain = rpc(source, "eth_chainId", [])
+    try:
+        source_chain_int = int(str(source_chain), 16)
+    except ValueError:
+        source_chain_int = int(source_chain)
+    if source_chain_int != chain_id:
+        result["reason"] = "Archive RPC chain ID differs from the Foundry state-diff chain ID."
+        return result
+    source_parent = rpc(source, "eth_getBlockByNumber", [hex(block_number - 1), False])
+    if not isinstance(source_parent, dict):
+        result["reason"] = "Archive RPC did not return the fork parent block."
+        return result
+    expected_parent = str(normalized.get("fork_parent_hash") or "").lower()
+    if not expected_parent or expected_parent == "0x" + "0" * 64:
+        result["reason"] = "Recorder artifact has no usable fork parent block hash."
+        return result
+    if str(source_parent.get("hash") or "").lower() != expected_parent:
+        result["reason"] = "Archive parent block hash does not match the test's recorded fork anchor."
+        return result
+    target = str(normalized["target_address"]).lower()
+    source_addresses = sorted({addr(x) for x in (spec.get("source_addresses") or [target])})
+    if target not in source_addresses:
+        raise ValueError("source_addresses must include target_address.")
+    prestate_by_address = {item["address"]: item for item in normalized.get("prestate") or []}
+    for address in source_addresses:
+        prestate = prestate_by_address.get(address)
+        if prestate is None:
+            result["reason"] = "Source address " + address + " was not observed in the Forge state-diff."
+            return result
+        expected_code_hash = (
+            normalized["target_code_hash"] if address == target else prestate.get("code_hash")
+        )
+        if not expected_code_hash:
+            result["reason"] = "No code hash was captured for source address " + address + "."
+            return result
+        proof = rpc(source, "eth_getProof", [address, [], hex(block_number)])
+        actual_code_hash = str((proof or {}).get("codeHash") or "").lower()
+        if actual_code_hash != str(expected_code_hash).lower():
+            result["reason"] = "EIP-1186 code hash differs for source address " + address + "."
+            return result
+        result["checked_addresses"].append({"address": address, "code_hash": actual_code_hash})
+        for storage in prestate.get("storage") or []:
+            slot = str(storage["slot"]).lower()
+            expected_value = str(storage["value"]).lower()
+            actual_value = str(rpc(source, "eth_getStorageAt", [address, slot, hex(block_number)])).lower()
+            if actual_value != expected_value:
+                result["reason"] = "Trace-derived prestate slot differs for " + address + ":" + slot + "."
+                return result
+            result["checked_storage_slots"].append(
+                {"address": address, "slot": slot, "value": actual_value}
+            )
+    result["verified"] = True
+    result["source_chain_id"] = source_chain
+    result["fork_block"] = block_number
+    result["fork_parent_hash"] = expected_parent
+    return result
+
+
+def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
+    try:
+        try:
+            from .forge_state_diff import normalize_forge_state_diff
+        except ImportError:
+            from forge_state_diff import normalize_forge_state_diff
+    except ImportError as exc:
+        raise RuntimeError("Forge state-diff normalizer is unavailable: " + str(exc)) from exc
+
+    harness_name = entry.get("harness") or spec.get("harness")
+    if not isinstance(harness_name, str) or not harness_name:
+        raise ValueError(name + " requires harness pointing to the Foundry test file.")
+    harness = (root / harness_name).resolve()
+    if not harness.is_relative_to(root) or not harness.is_file():
+        raise ValueError(name + " harness must be an existing file inside the project.")
+    artifact_name = entry.get("state_diff_file")
+    if not isinstance(artifact_name, str) or not artifact_name:
+        raise ValueError(name + " requires state_diff_file written by LowkeyForgeStateDiffRecorder.")
+    artifact_rel = Path(artifact_name)
+    if artifact_rel.is_absolute() or ".." in artifact_rel.parts:
+        raise ValueError(name + " state_diff_file must be a safe project-relative path.")
+    argv = entry.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
+        raise ValueError(name + " argv must be a non-empty string array.")
+    if Path(argv[0]).name not in {"forge", "forge.exe"}:
+        raise ValueError(name + " Forge backend argv must invoke forge directly.")
+    command_audit = inspect_reproduction_command(root, argv)
+    if command_audit["blocked"]:
+        raise ValueError(name + " command contains local RPC state-fabrication calls: " +
+                         str(command_audit["state_fabrication_calls"]))
+    fidelity = analyze_harness_fidelity(
+        harness.read_text(encoding="utf-8", errors="replace"),
+        harness.relative_to(root).as_posix(),
+    )
+    temp = Path(tempfile.mkdtemp(prefix="lk-forge-control-"))
+    work = temp / "project"
+    try:
+        shutil.copytree(
+            root, work,
+            ignore=shutil.ignore_patterns(".git", ".audit", "out", "cache", "node_modules", "__pycache__"),
+        )
+        artifact_path = (work / artifact_rel).resolve()
+        if not artifact_path.is_relative_to(work):
+            raise ValueError("state_diff_file escaped the isolated Forge project.")
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            artifact_path.unlink()
+        except FileNotFoundError:
+            pass
+        prepare_argv = entry.get("prepare_argv")
+        if prepare_argv:
+            prepare_audit = inspect_reproduction_command(root, prepare_argv)
+            if prepare_audit["blocked"]:
+                raise ValueError(name + " prepare_argv contains state fabrication.")
+            prepared = run([str(x) for x in prepare_argv], work,
+                           int(spec.get("prepare_timeout_seconds", 120)), env=env)
+            if prepared.returncode != 0:
+                raise RuntimeError(name + " Forge preparation failed: " +
+                                   ((prepared.stdout or "") + (prepared.stderr or ""))[-1200:])
+        proc = run(argv, work, int(spec.get("timeout_seconds", 600)), env=env)
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        if proc.returncode != 0:
+            raise RuntimeError(name + " Forge test command failed (exit " +
+                               str(proc.returncode) + "): " + combined[-1600:])
+        if not artifact_path.is_file():
+            raise ValueError(name + " Forge test passed but did not write state_diff_file; " +
+                             "ensure _lowkeyStartTrace/_lowkeyWriteTrace wrap the target call.")
+        raw = json.loads(artifact_path.read_text(encoding="utf-8"))
+        target = addr(spec.get("target_address"))
+        normalized = normalize_forge_state_diff(raw, expected_target=target)
+        semantic_check = None
+        semantic_argv = entry.get("semantic_check_argv")
+        if semantic_argv:
+            audit = inspect_reproduction_command(root, semantic_argv)
+            if audit["blocked"]:
+                raise ValueError(name + " semantic_check_argv contains state fabrication.")
+            semantic_proc = run([str(x) for x in semantic_argv], work,
+                                int(spec.get("semantic_timeout_seconds", 600)), env=env)
+            semantic_check = {
+                "argv": semantic_argv, "exit_code": semantic_proc.returncode,
+                "verified": semantic_proc.returncode == 0,
+                "output_tail": ((semantic_proc.stdout or "") + (semantic_proc.stderr or ""))[-1200:],
+            }
+        metrics = {x["address"]: x["delta_wei"] for x in normalized.get("balance_deltas", [])}
+        metric_addresses = sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
+        metric = None
+        if metric_addresses and all(address in metrics for address in metric_addresses):
+            metric = sum(metrics[address] for address in metric_addresses)
+        source_verification = _forge_source_verification(source_url, fork_url, normalized, spec)
+        fidelity_label = "simulated_caller"
+        if fidelity.get("synthetic_state"):
+            fidelity_label = "synthetic_state"
+        elif any(signal.get("kind") == "external_call_mock" for signal in fidelity.get("signals", [])):
+            fidelity_label = "simulated_dependencies"
+        return {
+            "backend": "forge-state-diff", "exit_code": proc.returncode, "metric": metric,
+            "metric_kind": "forge_account_balance_delta_without_eoa_gas",
+            "metric_addresses": metric_addresses, "gas_verified": False,
+            "transaction_envelope_verified": False, "tx_hash": None,
+            "chain_id": normalized["chain_id"], "block_number": normalized["block_number"],
+            "fork_parent_hash": normalized.get("fork_parent_hash"),
+            "entry_call_sha256": normalized["entry_call_sha256"],
+            "entry_call": normalized["entry_call"],
+            "prestate_sha256": normalized["prestate_sha256"], "prestate": normalized["prestate"],
+            "derived_storage_accesses": normalized["storage_accesses"],
+            "derived_storage_slots": [
+                {"address": item["account"], "slot": item["slot"],
+                 "prestate_value": item["previous_value"]}
+                for item in normalized["storage_accesses"]
+            ],
+            "balance_deltas": normalized.get("balance_deltas", []),
+            "call_trace": normalized["calls"], "raw_account_accesses": normalized["raw_account_accesses"],
+            "target_code_hash": normalized["target_code_hash"],
+            "source_verification": source_verification,
+            "target_authenticity_verified": source_verification["verified"],
+            "fidelity": fidelity, "fidelity_label": fidelity_label, "semantic_check": semantic_check,
+            "state_diff_file": artifact_rel.as_posix(), "argv": argv, "output_tail": combined[-2500:],
+            "limitations": normalized["limitations"],
+        }
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+
+
 def control(args):
     p=argparse.ArgumentParser(prog="lk control")
     p.add_argument("manifest"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
