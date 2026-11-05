@@ -9,7 +9,16 @@ cost or net profitability.
 
 ## Recorder
 
-Copy or import `docs/LowkeyForgeStateDiffRecorder.sol` into the test project.
+Copy the recorder into the Foundry source tree so Forge's isolated test modes
+can resolve the same import (the `docs/` folder is not guaranteed to be copied
+into generated workspaces):
+
+```bash
+mkdir -p src
+cp /path/to/foundry-lowkey/docs/LowkeyForgeStateDiffRecorder.sol src/
+```
+
+Import it from `../src/LowkeyForgeStateDiffRecorder.sol` in the test file.
 Inherit `LowkeyForgeStateDiffRecorder`, configure and pin the fork, deploy or
 prepare test-only actors, and start recording immediately before the exact target
 call. Stop and write immediately after it:
