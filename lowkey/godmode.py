@@ -614,6 +614,27 @@ def _analyze_control_fidelity(root, entry, spec):
 
 
 
+
+def _semantic_execution_verified(exit_code, output):
+    """Require test-runner evidence, not merely a successful shell exit."""
+    if exit_code != 0:
+        return False
+    text_value = str(output or "")
+    if "LOWKEY_SEMANTIC_INVARIANT_PASS" in text_value:
+        return True
+    failed = re.search(r"\\b[1-9][0-9]*\\s+failed\\b", text_value, re.I)
+    if failed:
+        return False
+    if re.search(r"\\[PASS\\]", text_value):
+        return True
+    if re.search(r"\\btest\\s+result:\\s*ok\\b", text_value, re.I):
+        return True
+    if re.search(r"\\b[1-9][0-9]*\\s+passed\\b", text_value, re.I):
+        return True
+    return False
+
+
+
 def _trace_control_run(root, url, name, entry, spec, env):
     fidelity_entry=dict(entry)
     support_files=list(entry.get("support_files") or [])
@@ -776,8 +797,9 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 semantic_output=(semantic_proc.stdout or "")+"\\n"+(semantic_proc.stderr or "")
                 semantic_check={
                     "argv":semantic_argv,"exit_code":semantic_proc.returncode,
-                    "verified":semantic_proc.returncode==0,
+                    "verified":_semantic_execution_verified(semantic_proc.returncode,semantic_output),
                     "output_tail":semantic_output[-1600:],
+                    "verification_rule":"requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
                 }
             return {
                 "exit_code":proc.returncode,
@@ -1060,10 +1082,12 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
                 raise ValueError(name + " semantic_check_argv contains state fabrication.")
             semantic_proc = run([str(x) for x in semantic_argv], work,
                                 int(spec.get("semantic_timeout_seconds", 600)), env=env)
+            semantic_output = (semantic_proc.stdout or "") + "\\n" + (semantic_proc.stderr or "")
             semantic_check = {
                 "argv": semantic_argv, "exit_code": semantic_proc.returncode,
-                "verified": semantic_proc.returncode == 0,
-                "output_tail": ((semantic_proc.stdout or "") + (semantic_proc.stderr or ""))[-1200:],
+                "verified": _semantic_execution_verified(semantic_proc.returncode, semantic_output),
+                "output_tail": semantic_output[-1200:],
+                "verification_rule": "requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
             }
         metrics = {x["address"]: x["delta_wei"] for x in normalized.get("balance_deltas", [])}
         metric_addresses = sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
@@ -1894,7 +1918,9 @@ def reprove(args):
         semantic_output=(semantic_proc.stdout or "")+"\\n"+(semantic_proc.stderr or "")
         semantic_check={
             "argv":semantic_argv,"exit_code":semantic_proc.returncode,
-            "verified":semantic_proc.returncode==0,"output_tail":semantic_output[-1600:],
+            "verified":_semantic_execution_verified(semantic_proc.returncode,semantic_output),
+            "output_tail":semantic_output[-1600:],
+            "verification_rule":"requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
         }
     elif non_economic:
         semantic_check={
