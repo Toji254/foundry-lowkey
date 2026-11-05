@@ -2349,11 +2349,11 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     if family in {"replay", "accounting"}:
         try:
             all_functions = _discover_functions(host, config, target)
-            setup_signature = _find_setup_signature(all_functions)
+            setup_abi = _find_setup_abi(all_functions)
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
             asset_signature = _find_asset_getter_signature(all_functions)
         except Exception:
-            setup_signature = None
+            setup_abi = None
             entitlement_signature = None
             asset_signature = None
         body = _render_repeat_test(
@@ -2364,9 +2364,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             value,
             family,
             seed_fund,
-            setup_signature=setup_signature,
             entitlement_signature=entitlement_signature,
             asset_signature=asset_signature,
+            setup_abi=setup_abi,
         )
     elif family == "access":
         body = _render_access_test(
@@ -2388,18 +2388,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     elif family == "time":
         body = _render_time_test(target, signature, calldata, value)
     elif family == "reentrancy":
-        if any(
-            str(item.get("type") or "").lower().startswith(("tuple", "bytes", "string"))
-            or str(item.get("type") or "").lower().endswith("[]")
-            for item in (fn.get("inputs") or [])
-        ):
-            return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED",
-                "Generic reentrancy generation needs only simple ABI types.",
-            )
         try:
             all_functions = _discover_functions(host, config, target)
-            setup_signature = _find_setup_signature(all_functions)
+            setup_abi = _find_setup_abi(all_functions)
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
             body = _render_reentrancy_test(
                 target,
@@ -2407,9 +2398,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 signature,
                 values,
                 opts.get("depth", 3),
-                setup_signature,
                 seed_fund=seed_fund,
                 entitlement_signature=entitlement_signature,
+                setup_abi=setup_abi,
             )
         except ValueError as error:
             return AttackResult(
