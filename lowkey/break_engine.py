@@ -1292,8 +1292,8 @@ def _render_repeat_test(
         address assetToken = address(0);
         bool assetReadOk = false;
         bool assetDecimalsVerified = false;
-        uint256 assetDecimals = 0;
-        uint256 tokenFundingAmount = 1;
+        uint256 assetDecimals = 18;
+        uint256 tokenFundingAmount = 1e18;
         bool tokenApprovalAttempted = false;
         bool tokenApprovalSuccess = false;
         uint256 attackerTokenBefore = 0;
@@ -1309,8 +1309,8 @@ def _render_repeat_test(
         address assetToken = address(0);
         bool assetReadOk = false;
         bool assetDecimalsVerified = false;
-        uint256 assetDecimals = 0;
-        uint256 tokenFundingAmount = 1;
+        uint256 assetDecimals = 18;
+        uint256 tokenFundingAmount = 1e18;
         bool tokenApprovalAttempted = false;
         bool tokenApprovalSuccess = false;
         {{
@@ -1471,6 +1471,7 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("TOKEN_APPROVAL_RESET_ATTEMPTED", tokenApprovalResetAttempted);
         console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
+        console2.log("ASSET_DECIMALS_FALLBACK_18", assetReadOk && !assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
         console2.log("TOTAL_ATTACKER_TOKEN_GAIN", totalTokenGain);
@@ -1484,8 +1485,8 @@ contract LowkeyBreakRepeat is Test {{
         // BREAK requires demonstrated payout greater than the entitlement recorded before attack.
         bool breakByEntitlement = entitlementReadOk
             && (
-                totalGain > entitlementBefore
-                || (assetReadOk && totalTokenGain > entitlementBefore)
+                (!assetReadOk && totalGain > entitlementBefore)
+                || (assetReadOk && assetDecimalsVerified && totalTokenGain > entitlementBefore)
             );
         // Without an entitlement baseline, repeated value movement is only an
         // observation. Do not label a normal second payout as an accounting BREAK.
@@ -1714,8 +1715,8 @@ def _render_reentrancy_test(
         address assetToken = address(0);
         bool assetReadOk = false;
         bool assetDecimalsVerified = false;
-        uint256 assetDecimals = 0;
-        uint256 tokenFundingAmount = 1;
+        uint256 assetDecimals = 18;
+        uint256 tokenFundingAmount = 1e18;
         bool tokenApprovalAttempted = false;
         bool tokenApprovalSuccess = false;
 """
@@ -1724,8 +1725,8 @@ def _render_reentrancy_test(
         address assetToken = address(0);
         bool assetReadOk = false;
         bool assetDecimalsVerified = false;
-        uint256 assetDecimals = 0;
-        uint256 tokenFundingAmount = 1;
+        uint256 assetDecimals = 18;
+        uint256 tokenFundingAmount = 1e18;
         bool tokenApprovalAttempted = false;
         bool tokenApprovalSuccess = false;
         {{
@@ -1989,6 +1990,7 @@ contract LowkeyBreakReentrancy is Test {{
         console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
         console2.log("SETUP_FUNCTION_DISCOVERED", {str(bool(setup_signature)).lower()});
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
+        console2.log("ASSET_DECIMALS_FALLBACK_18", assetReadOk && !assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
         console2.log("ATTACKER_TOKEN_RECEIVED", tokenReceived);
@@ -2018,16 +2020,20 @@ contract LowkeyBreakReentrancy is Test {{
         console2.log("TARGET_LOSS", targetLoss);
 
         bool exceededEntitlement = entitlementBeforeAttackOk
+            && !assetReadOk
             && hostile.successes() > 0
             && received > entitlementBeforeAttack;
         bool genericValueBreak = !entitlementBeforeAttackOk
             && hostile.successes() > 0
             && received > 1 wei
             && targetLoss > 1 wei;
-        bool exceededTokenEntitlement = entitlementBeforeAttackOk
+        bool exceededTokenEntitlement = assetReadOk
+            && assetDecimalsVerified
+            && entitlementBeforeAttackOk
             && hostile.successes() > 0
             && tokenReceived > entitlementBeforeAttack;
         bool genericTokenBreak = assetReadOk
+            && assetDecimalsVerified
             && hostile.successes() > 0
             && tokenReceived > 1
             && targetTokenLoss > 1;
