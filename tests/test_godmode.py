@@ -1219,11 +1219,23 @@ class GodmodeTests(unittest.TestCase):
             raise AssertionError("Unexpected RPC method: " + method)
 
         def exact_sourcify(chain_id, address):
+            is_target = address == target
             return {
                 "chainId": str(chain_id), "address": address,
                 "match": "exact_match", "runtimeMatch": "exact_match",
                 "creationMatch": "exact_match", "verifiedAt": "2026-11-05T00:00:00Z",
                 "matchId": "123",
+                "sources": {
+                    "src/Proxy.sol" if is_target else "src/Logic.sol":
+                    "contract Proxy {}" if is_target else "contract Logic {}"
+                },
+                "proxyResolution": (
+                    {
+                        "isProxy": True, "proxyType": "EIP1967Proxy",
+                        "implementations": [{"address": implementation, "name": "Logic"}],
+                    } if is_target else
+                    {"isProxy": False, "proxyType": None, "implementations": []}
+                ),
             }
 
         spec = {
@@ -1253,6 +1265,12 @@ class GodmodeTests(unittest.TestCase):
         )
         self.assertEqual(
             verified["identity"]["proxy"]["runtime_match"], "exact_match"
+        )
+        self.assertEqual(verified["identity"]["target"]["source_file_count"], 1)
+        self.assertEqual(len(verified["identity"]["target"]["source_bundle_sha256"]), 64)
+        self.assertEqual(
+            verified["identity"]["proxy"]["source_file_hashes"]["src/Logic.sol"],
+            hashlib.sha256(b"contract Logic {}").hexdigest(),
         )
 
     def test_fork_identity_fails_closed_when_sourcify_is_not_exact(self):

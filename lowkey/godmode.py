@@ -896,11 +896,14 @@ def _sourcify_contract_identity(chain_id, address):
         return dict(_SOURCIFY_IDENTITY_CACHE[cache_key])
     endpoint = (
         "https://sourcify.dev/server/v2/contract/"
-        + str(chain_id) + "/" + address + "?fields=all"
+        + str(chain_id) + "/" + address + "?fields=sources,proxyResolution"
     )
     request = Request(
         endpoint,
-        headers={"Accept": "application/json", "User-Agent": "Lowkey-Security-Research/1.0"},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Lowkey/0.2.0 (+https://github.com/Toji254/foundry-lowkey)",
+        },
     )
     with urlopen(request, timeout=12) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -924,6 +927,17 @@ def _verify_sourcify_exact(chain_id, address):
     missing = [name for name, value in fields.items() if value != "exact_match"]
     if missing:
         raise ValueError("Sourcify did not return exact runtime and creation matches: " + ", ".join(missing))
+    sources = payload.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError("Sourcify did not return verified source file contents.")
+    source_file_hashes = {}
+    for path, source_text in sorted(sources.items()):
+        if not isinstance(path, str) or not isinstance(source_text, str):
+            raise ValueError("Sourcify source files must be path-to-string entries.")
+        source_file_hashes[path] = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+    source_bundle_sha256 = hashlib.sha256(
+        json.dumps(source_file_hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return {
         "provider": "sourcify-v2",
         "match": fields["match"],
@@ -931,6 +945,10 @@ def _verify_sourcify_exact(chain_id, address):
         "creation_match": fields["creationMatch"],
         "verified_at": payload.get("verifiedAt"),
         "match_id": payload.get("matchId"),
+        "source_file_count": len(source_file_hashes),
+        "source_file_hashes": source_file_hashes,
+        "source_bundle_sha256": source_bundle_sha256,
+        "proxy_resolution": payload.get("proxyResolution"),
     }
 
 
