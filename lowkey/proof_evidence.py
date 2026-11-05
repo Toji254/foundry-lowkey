@@ -64,8 +64,9 @@ def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="o
     if outcome == "rejected": status = "REJECTED"
     elif outcome == "not_run": status = "UNPROVEN"
     elif authenticity in {"fixture", "local_reimplementation"} or fidelity in {
-        "synthetic_state", "simulated_caller", "simulated_dependencies"
+        "synthetic_state", "simulated_dependencies"
     }: status = "SIMULATED_BREAK"
+    elif authentic_fork and fidelity == "simulated_caller": status = "FORK_OBSERVED"
     elif authentic_fork and realistic and outcome == "profitable": status = "PROFITABLE"
     elif authentic_fork and realistic: status = "FORK_REPRODUCED"
     elif authentic_fork: status = "FORK_OBSERVED"
