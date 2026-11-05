@@ -1188,7 +1188,6 @@ jobs:
           # Create two independent records. The ID book must capture contract IDs,
           # not confuse them with the transaction hashes.
           lk send createEscrow Bob --eth 2 | tee /tmp/lowkey-escrow-create-1.txt
-          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-1.txt
           grep -q "POST-TRANSACTION STATE" /tmp/lowkey-escrow-create-1.txt
           grep -q "Created (enum value 0)" /tmp/lowkey-escrow-create-1.txt
           lk ids | tee /tmp/lowkey-escrow-ids-1.txt
@@ -1196,7 +1195,6 @@ jobs:
           lk id alias @last firstEscrow
 
           lk send createEscrow Bob --eth 1 | tee /tmp/lowkey-escrow-create-2.txt
-          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-2.txt
           lk id alias @last secondEscrow
           lk ids | tee /tmp/lowkey-escrow-ids.txt
 

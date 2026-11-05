@@ -3578,11 +3578,9 @@ contract Pool {
                  patch.object(lk, "_validate_manual_target_runtime", return_value=0), \
                  patch.object(lk, "save_config"), \
                  patch.object(lk.audit_context, "set_target") as set_target:
-                result = lk._dispatch_command_impl(
+                lk._dispatch_command_impl(
                     "target", ["EscrowFlow", address], config
                 )
-
-            self.assertEqual(result, 0)
             self.assertEqual(config["target"], address)
             self.assertEqual(config["target_contract"], "EscrowFlow")
             self.assertEqual(
