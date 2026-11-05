@@ -275,5 +275,31 @@ class FindingExplainerTests(unittest.TestCase):
         self.assertFalse(report["human_disposition_changed"])
 
 
+    def test_long_remote_url_is_preserved_and_remains_unverified(self):
+        url = "https://docs.example.org/" + ("path-segment/" * 35) + "audit"
+        report = finding_explainer.validate_explanation({
+            "classification": "needs-investigation",
+            "references": [{
+                "path": url,
+                "symbol": "AuditReport",
+                "quote": "only owner can withdraw",
+            }],
+        }, {
+            "source_files": [],
+            "test_files": [],
+            "remote_evidence": [{"url": url, "status": "fetched", "content_excerpt": "only owner can withdraw"}],
+        })
+        self.assertEqual(report["references"][0]["path"], url)
+        self.assertEqual(report["references"][0]["quote_status"], "remote-unverified")
+
+    def test_context_byte_count_matches_final_serialized_payload(self):
+        context = {"source": "bounded", "context_bytes": 0}
+        size = finding_explainer._set_context_byte_count(context)
+        self.assertEqual(
+            size,
+            len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8")),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
