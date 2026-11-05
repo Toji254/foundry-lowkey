@@ -82,6 +82,7 @@ class GodmodeTests(unittest.TestCase):
             "control": {"argv": [sys.executable, "-c", "pass"]},
             "attack": {"argv": [sys.executable, "-c", "pass"]},
         }
+        (root / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n", encoding="utf-8")
         manifest_path = root / "control.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
@@ -374,6 +375,7 @@ class GodmodeTests(unittest.TestCase):
             }
             manifest["attack"] = manifest["control"]
             (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
             with patch.object(godmode, "rpc", side_effect=lambda url, method, params, timeout=20:
                               "0x1" if method == "evm_snapshot" else True), \
                  patch.object(godmode, "run") as run_mock, \
@@ -437,7 +439,7 @@ class GodmodeTests(unittest.TestCase):
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
-            self.assertEqual(result, 0)
+            self.assertEqual(result, 0, saved.get("reasons") or saved.get("rejection_codes"))
             self.assertEqual(saved["status"], "OBSERVED")
             self.assertEqual(saved["legacy_status"], "BREAK")
             control_param = saved["runs"]["control"]["scenario_parameters"][0]
@@ -464,6 +466,7 @@ class GodmodeTests(unittest.TestCase):
             manifest["control"] = {"prepare_argv": ["prepare", "0"], "argv": ["send"]}
             manifest["attack"] = {"prepare_argv": ["prepare", "0"], "argv": ["send"]}
             (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
             calls = []
             rpc_state = {"tx_hash": None, "input": None, "scenario_slot": "0x" + "0" * 64}
             def fake_run(argv, cwd, timeout=300, env=None):
@@ -544,7 +547,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
+            self.assertEqual(saved["status"], "UNPROVEN")
             self.assertIn("LOWKEY_TRACE_TX_HASH", saved["reasons"][0])
 
     def test_reprove_reaches_profitable_only_with_a_pinned_mined_trace_and_real_gas(self):
@@ -583,11 +586,20 @@ class GodmodeTests(unittest.TestCase):
                 if method == "debug_traceTransaction":
                     if params[1].get("tracer") == "prestateTracer":
                         return {
-                            target: {
-                                "balance": hex(before), "nonce": "0x0", "code": "0x6000",
-                                "storage": {"0x" + "0" * 64: "0x" + "0" * 63 + "1"},
+                            "pre": {
+                                target: {
+                                    "balance": hex(before), "nonce": "0x0", "code": "0x6000",
+                                    "storage": {"0x" + "0" * 64: "0x" + "0" * 63 + "1"},
+                                },
+                                sender: {"balance": hex(before), "nonce": "0x0", "code": "0x", "storage": {}},
                             },
-                            sender: {"balance": hex(before), "nonce": "0x0", "code": "0x", "storage": {}},
+                            "post": {
+                                target: {
+                                    "balance": hex(after), "nonce": "0x0", "code": "0x6000",
+                                    "storage": {"0x" + "0" * 64: "0x" + "0" * 63 + "0"},
+                                },
+                                sender: {"balance": hex(before), "nonce": "0x0", "code": "0x", "storage": {}},
+                            },
                         }
                     return {"type": "CALL", "from": sender, "to": target, "input": "0x12345678",
                             "value": "0x0", "calls": []}
@@ -713,7 +725,7 @@ class GodmodeTests(unittest.TestCase):
                 {},
             )
             self.assertTrue(fidelity["scan_complete"])
-            self.assertTrue(fidelity["static_scan_clear"])
+            self.assertFalse(fidelity["static_scan_clear"])
             self.assertFalse(fidelity["confirmation_eligible"])
             self.assertEqual(
                 set(fidelity["scanned_files"]),
@@ -755,6 +767,9 @@ class GodmodeTests(unittest.TestCase):
                 sys.executable, "-c", "print('LOWKEY_SEMANTIC_INVARIANT_PASS')"
             ]
             manifest["attack"]["semantic_check_argv"] = semantic_argv
+            manifest["attack"]["semantic_check_test"] = "test_dos_without_credit"
+            semantic_marker = "LOWKEY_SEMANTIC_INVARIANT_PASS:test_dos_without_credit"
+            manifest_path = root / "control.json"
             manifest_path = root / "control.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
@@ -763,9 +778,9 @@ class GodmodeTests(unittest.TestCase):
             run_index = {"value": 0}
 
             def fake_run(argv, cwd, timeout=300, env=None):
-                if "LOWKEY_SEMANTIC_INVARIANT_PASS" in " ".join(argv):
+                if semantic_marker in " ".join(argv):
                     return subprocess.CompletedProcess(
-                        argv, 0, "LOWKEY_SEMANTIC_INVARIANT_PASS\n", ""
+                        argv, 0, semantic_marker + "\n", ""
                     )
                 index = run_index["value"]
                 run_index["value"] += 1
@@ -979,11 +994,24 @@ class GodmodeTests(unittest.TestCase):
         }
 
     def test_semantic_invariant_requires_a_recognized_passing_assertion(self):
-        self.assertTrue(godmode._semantic_execution_verified(0, "[PASS] test_no_blocking_when_entitlement_missing"))
         self.assertTrue(godmode._semantic_execution_verified(
-            0, "Suite result: ok. 1 passed; 0 failed; 0 skipped"
+            0, "[PASS] test_no_blocking_when_entitlement_missing()",
+            "test_no_blocking_when_entitlement_missing"
         ))
-        self.assertTrue(godmode._semantic_execution_verified(0, "LOWKEY_SEMANTIC_INVARIANT_PASS"))
+        self.assertFalse(godmode._semantic_execution_verified(
+            0, "[PASS] test_no_blocking_when_entitlement_missing()"
+        ))
+        self.assertFalse(godmode._semantic_execution_verified(
+            0, "Suite result: ok. 1 passed; 0 failed; 0 skipped",
+            "test_no_blocking_when_entitlement_missing"
+        ))
+        self.assertTrue(godmode._semantic_execution_verified(
+            0, "LOWKEY_SEMANTIC_INVARIANT_PASS:test_dos_without_credit",
+            "test_dos_without_credit"
+        ))
+        self.assertFalse(godmode._semantic_execution_verified(
+            0, "LOWKEY_SEMANTIC_INVARIANT_PASS", "test_dos_without_credit"
+        ))
         self.assertFalse(godmode._semantic_execution_verified(0, "Forge build succeeded"))
         self.assertFalse(godmode._semantic_execution_verified(0, "No tests found"))
         self.assertFalse(godmode._semantic_execution_verified(
@@ -1099,6 +1127,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(result["derived_storage_slots"][0]["prestate_value"].endswith("05"))
 
     def test_forge_archive_verification_checks_pinned_header_code_and_trace_storage(self):
+        from unittest.mock import patch
         target = "0x" + "1" * 40
         from lowkey.forge_state_diff import normalize_forge_state_diff
 
@@ -1127,8 +1156,6 @@ class GodmodeTests(unittest.TestCase):
             if method == "eth_getTransactionCount":
                 return "0x1"
             if method == "eth_getProof":
-                if params[0] == implementation:
-                    return {"codeHash": "0x" + "e" * 64}
                 return {"codeHash": target_hash}
             if method == "eth_getStorageAt":
                 return storage_value
@@ -1209,7 +1236,7 @@ class GodmodeTests(unittest.TestCase):
             if method == "eth_getTransactionCount":
                 return "0x1"
             if method == "eth_getProof":
-                return {"codeHash": target_hash}
+                return {"codeHash": ("0x" + "e" * 64) if params[0] == implementation else target_hash}
             if method == "eth_getStorageAt":
                 address, slot, tag = params
                 if address == target and slot == implementation_slot:

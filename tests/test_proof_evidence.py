@@ -137,6 +137,19 @@ class ProofEvidenceTests(unittest.TestCase):
                 )
 
     def test_freeze_rejects_legacy_schema_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest_path = root / "control.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            _, freeze_path = freeze_control_manifest(
+                root, manifest_path, {"family": "reentrancy"}
+            )
+            frozen = json.loads(freeze_path.read_text(encoding="utf-8"))
+            frozen["schema_version"] = 1
+            freeze_path.write_text(json.dumps(frozen), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "older schema"):
+                validate_control_freeze(root, manifest_path, {"family": "reentrancy"}, required=True)
+
     def test_trace_capabilities_preserve_anvil_dimensions_and_forge_storage_strength(self):
         anvil_without_tracer = trace_evidence_capabilities(
             "anvil-calltracer", storage_trace_supported=False

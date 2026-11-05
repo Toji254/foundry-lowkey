@@ -989,6 +989,9 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         "checked_addresses": [],
         "checked_storage_slots": [],
         "unverified_trace_addresses": [],
+        "archive_state_verified": False,
+        "identity_verified": False,
+        "identity": None,
     }
     if not source_url:
         result["reason"] = "No independent --source-rpc-url was supplied."
