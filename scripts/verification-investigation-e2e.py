@@ -61,9 +61,8 @@ def inspected_test(lk: str, root: Path, audit_context, signal_id: str,
     ]
     if missing:
         raise AssertionError(
-            f"CLI result/evidence/disposition missing {missing}; rc={result.returncode}\\n"
-            f"stdout:\\n{result.stdout[-10000:]}\\nstderr:\\n{result.stderr[-10000:]}"
-        )
+            f"CLI result/evidence/disposition missing {missing}; rc={result.returncode}\n"
+            f"stdout:\n{result.stdout[-10000:]}\nstderr:\n{result.stderr[-10000:]}"        )
     file_path = (root / test_path).resolve(strict=True)
     signal = next((item for item in audit_context.signals(root) if item.get("id") == signal_id), None)
     if not signal:

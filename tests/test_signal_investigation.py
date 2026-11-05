@@ -117,7 +117,7 @@ contract Vault {
             self.assertIn("-vv", command)
             self.assertEqual(
                 command[command.index("--match-path") + 1],
-                r"^test/Vault\.t\.sol$",
+                "test/Vault.t.sol",
             )
             self.assertEqual(
                 command[command.index("--match-test") + 1],
@@ -195,7 +195,7 @@ contract Vault {
             self.assertEqual(result["exit_code"], 0)
             self.assertTrue(result["evidence_attached"])
             command = run.call_args.args[0]
-            self.assertEqual(command[command.index("--match-path") + 1], "^test/Vault\\.t\\.sol$")
+            self.assertEqual(command[command.index("--match-path") + 1], "test/Vault.t.sol")
 
     def test_inspected_test_rejects_outside_test_directory_before_forge(self):
         with tempfile.TemporaryDirectory() as tmp:

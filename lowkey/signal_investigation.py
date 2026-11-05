@@ -220,7 +220,10 @@ def execute_inspected_test(
     relative = selected.relative_to(root).as_posix()
     argv = [
         forge, "test", "-vv",
-        "--match-path", "^" + re.escape(relative) + "$",
+        # Foundry's --match-path accepts a glob, unlike --match-test
+        # which accepts a regular expression. The exact project-relative path
+        # is already validated and is the safest glob for this single file.
+        "--match-path", relative,
         "--match-test", "^" + re.escape(name) + r"(?:\(\))?$",
     ]
     timeout = max(1, min(int(timeout_seconds), 900))
