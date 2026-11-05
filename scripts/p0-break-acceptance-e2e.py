@@ -147,7 +147,7 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
     output = run([
         forge, "create", f"src/P0Targets.sol:{contract}",
         "--rpc-url", RPC, "--private-key", ANVIL_KEY0, "--broadcast", "--json",
-        *args,
+        *(["--constructor-args", *args] if args else []),
     ], root, env)
     payload = json.loads(output.stdout)
     address = payload.get("deployedTo")
