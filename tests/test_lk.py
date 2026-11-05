@@ -7319,6 +7319,7 @@ contract BountyArena {
                     answer;
                     roundId; startedAt; updatedAt; answeredInRound;
                 }
+                function addItem(uint256 item) external { items.push(item); }
                 function processAll() external {
                     for (uint256 i = 0; i < items.length; ++i) { items[i] += 1; }
                 }
@@ -7336,7 +7337,7 @@ contract BountyArena {
             (root / "src" / "PatternFixture.sol").write_text(source, encoding="utf-8")
             abi = [
                 {"type": "function", "name": name, "stateMutability": "nonpayable", "inputs": []}
-                for name in ("processAll", "verify", "initialize", "unsafeToken", "claim", "oracle", "feePath", "callbackPrice")
+                for name in ("addItem", "processAll", "verify", "initialize", "unsafeToken", "claim", "oracle", "feePath", "callbackPrice")
             ]
             abi += [{"type": "function", "name": "randomWinner", "stateMutability": "nonpayable", "inputs": []}]
             model = lk.walkthrough.ContractModel(
