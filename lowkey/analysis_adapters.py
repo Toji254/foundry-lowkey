@@ -101,6 +101,10 @@ def _is_dependency_path(path: Path, root: Path, prefixes: set[str] | None = None
         relative = path.as_posix().strip("./")
     if not relative:
         return False
+    # Node package trees are third-party dependencies even without Foundry
+    # remappings or Git submodule declarations.
+    if "node_modules" in relative.split("/"):
+        return True
     known = prefixes if prefixes is not None else _dependency_prefixes(root)
     for prefix in known:
         if relative == prefix or relative.startswith(prefix + "/"):
@@ -552,6 +556,7 @@ def _capabilities(backend: str, stacks: list[str], languages: set[str]) -> dict[
 def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     requested = _safe_resolve(root)
     requested_file = requested.is_file()
+    requested_source = requested if requested_file else None
     if requested_file:
         requested = requested.parent
 
@@ -574,7 +579,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     )
     project_root = requested if explicit_workspace else canonical_project_root(requested)
     scan_root = requested if requested_file else project_root
-    files = _source_files(scan_root)
+    files = _source_files(requested_source if requested_file else scan_root)
     counts = _source_counts(files)
     stacks, language_names = _manifest_stack(project_root)
 
