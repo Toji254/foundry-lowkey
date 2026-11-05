@@ -48,6 +48,56 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             found = BENCHMARK.find_contracts(root)
             self.assertEqual(set(found), {"srcArtifact"})
 
+    def test_nearest_foundry_root_resolves_nested_package_from_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "packages" / "example" / "evm"
+            (package / "contracts").mkdir(parents=True)
+            (package / "foundry.toml").write_text("[profile.default]\nsrc = \"contracts\"\n", encoding="utf-8")
+            source = package / "contracts" / "Target.sol"
+            source.write_text("contract Target {}", encoding="utf-8")
+            found = BENCHMARK._nearest_foundry_root(root, source.relative_to(root).as_posix())
+            self.assertEqual(found, package)
+
+    def test_synthetic_config_is_isolated_and_infers_nested_contract_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "packages" / "legacy" / "contracts" / "Target.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text("contract Target {}", encoding="utf-8")
+            config, synthetic = BENCHMARK._synthetic_foundry_config(
+                root, ["packages/legacy/contracts/Target.sol"]
+            )
+            self.assertTrue(synthetic)
+            self.assertEqual(config, root / ".audit" / "lowkey-ecosystem-foundry.toml")
+            content = config.read_text(encoding="utf-8")
+            self.assertIn('src = "packages/legacy/contracts"', content)
+            self.assertFalse((root / "foundry.toml").exists())
+
+    def test_abstract_contract_detection_is_source_anchored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "contracts").mkdir()
+            (root / "contracts" / "Targets.sol").write_text(
+                "abstract contract AbstractTarget {} contract ConcreteTarget {}",
+                encoding="utf-8",
+            )
+            self.assertTrue(BENCHMARK._is_abstract_contract(root, "contracts/Targets.sol", "AbstractTarget"))
+            self.assertFalse(BENCHMARK._is_abstract_contract(root, "contracts/Targets.sol", "ConcreteTarget"))
+
+    def test_report_assessment_requires_a_reason_for_every_requested_type(self):
+        report = {
+            "requested_types": ["unit", "formal"],
+            "generation_assessment": {
+                "unit": {"level": "executable-candidate", "note": "A grounded getter/setter property."},
+                "formal": {"level": "not-generated", "note": "No verifier specification."},
+            },
+            "generated": [],
+        }
+        self.assertTrue(BENCHMARK._report_accounts_for_every_type(report))
+        report["generation_assessment"].pop("formal")
+        self.assertFalse(BENCHMARK._report_accounts_for_every_type(report))
+
     def test_manifest_negative_control_is_recorded_as_expected_unsupported(self):
         outcome = BENCHMARK.expected_unsupported_outcome({
             "id": "non-protocol-fixture",

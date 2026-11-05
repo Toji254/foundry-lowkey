@@ -27,10 +27,18 @@ DECLARATION = re.compile(
 )
 
 
-def run(command: list[str], cwd: Path | None = None, timeout: int = 1800) -> dict[str, Any]:
+def run(
+    command: list[str],
+    cwd: Path | None = None,
+    timeout: int = 1800,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    process_env = os.environ.copy()
+    if env:
+        process_env.update(env)
     try:
         completed = subprocess.run(
-            command, cwd=cwd, capture_output=True, text=True,
+            command, cwd=cwd, env=process_env, capture_output=True, text=True,
             timeout=timeout, check=False,
         )
         return {
@@ -232,26 +240,34 @@ def _nearest_foundry_root(project_root: Path, source_path: str | Path) -> Path |
 
 
 def _infer_source_directory(project_root: Path, source_paths: list[str]) -> str:
-    """Infer a source directory from selected files, not a repository name."""
+    """Infer a source root from conventional Solidity folders in selected paths."""
     root = project_root.resolve()
-    directories = [(root / source).resolve().parent for source in source_paths]
-    if not directories:
+    candidates: list[Path] = []
+    for raw in source_paths:
+        parts = Path(raw).parts
+        conventional = [i for i, part in enumerate(parts) if part in {"src", "contracts"}]
+        if conventional:
+            candidates.append(Path(*parts[:conventional[-1] + 1]))
+        elif parts:
+            candidates.append(Path(*parts[:-1]))
+    if not candidates:
         return "src" if (root / "src").is_dir() else "contracts"
-    common = Path(os.path.commonpath([str(path) for path in directories]))
-    if common == root:
-        first_parts = {Path(source).parts[0] for source in source_paths if Path(source).parts}
-        if len(first_parts) == 1:
-            return next(iter(first_parts))
+    common = Path(os.path.commonpath([str(root / item) for item in candidates]))
+    try:
+        relative = common.relative_to(root)
+    except ValueError:
         return "src" if (root / "src").is_dir() else "contracts"
-    return common.relative_to(root).as_posix()
+    return relative.as_posix() or ("src" if (root / "src").is_dir() else "contracts")
 
 
 def _synthetic_foundry_config(project_root: Path, source_paths: list[str]) -> tuple[Path, bool]:
-    """Create a disposable Foundry profile for a project without one."""
+    """Create an isolated Foundry config under .audit for non-Foundry Solidity projects."""
     root = project_root.resolve()
-    config_path = root / "foundry.toml"
-    if config_path.is_file():
-        return config_path, False
+    existing = root / "foundry.toml"
+    if existing.is_file():
+        return existing, False
+    config_path = root / ".audit" / "lowkey-ecosystem-foundry.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     source_dir = _infer_source_directory(root, source_paths)
     config_text = (
         "[profile.default]\n"
@@ -267,7 +283,6 @@ def _synthetic_foundry_config(project_root: Path, source_paths: list[str]) -> tu
     )
     config_path.write_text(config_text, encoding="utf-8")
     return config_path, True
-
 
 def _is_abstract_contract(project_root: Path, relative_source: str, contract: str) -> bool:
     path = project_root / relative_source
@@ -306,6 +321,9 @@ def evaluate_target(
     output_root: Path,
     *,
     constructor_args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    source_path: str | None = None,
+    abstract_contract: bool = False,
 ) -> dict[str, Any]:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", contract)
     all_dir = output_root / (slug + "-all")
@@ -316,11 +334,13 @@ def evaluate_target(
     generation = run(
         common + ["--types", "all", "--output-dir", str(all_dir)],
         cwd=project_root,
+        env=env,
     )
     generation_report = load_report(all_dir / slug / "report.json")
     validation = run(
         common + ["--types", SOLIDITY_TYPES, "--output-dir", str(solidity_dir), "--validate"],
         cwd=project_root,
+        env=env,
     )
     validation_report = load_report(solidity_dir / slug / "report.json")
     assessments = (generation_report or {}).get("generation_assessment", {})
@@ -333,6 +353,12 @@ def evaluate_target(
         and not (generation_report or {}).get("skipped")
     )
     executions = validation_data.get("test_executions", [])
+    executable_kinds = {"unit", "fuzz", "invariant"}
+    executable_expected = any(
+        isinstance(assessments.get(kind), dict)
+        and assessments[kind].get("level") == "executable-candidate"
+        for kind in executable_kinds
+    )
     validation_succeeded = (
         validation.get("exit_code") == 0
         and validation_report is not None
@@ -341,20 +367,34 @@ def evaluate_target(
         and bool(executions)
         and all(isinstance(item, dict) and item.get("exit_code") == 0 for item in executions)
     )
-    if generation_succeeded and validation_succeeded:
-        honest_result = "generation-and-validation-passed"
-    elif not generation_assessed or generation_report is None or validation_report is None:
+    no_executable_candidate = (
+        not executable_expected
+        and validation_report is not None
+        and validation_status in {"not-applicable", "compiled-only"}
+        and isinstance(executions, list)
+        and not executions
+    )
+    if generation_report is None or validation_report is None or not generation_assessed:
         honest_result = "tool-or-report-failure"
+    elif executable_expected and not validation_succeeded:
+        honest_result = "execution-failed"
+    elif not executable_expected and not no_executable_candidate and not validation_succeeded:
+        honest_result = "validation-incomplete"
+    elif generation_succeeded and validation_succeeded:
+        honest_result = "generation-and-validation-passed"
     else:
         honest_result = "assessed-with-evidence-gaps"
     return {
         "contract": contract,
+        "source_path": source_path,
+        "abstract_contract": abstract_contract,
         "constructor_args_supplied": constructor_args is not None,
         "generation_command": generation,
         "generation_report_found": generation_report is not None,
         "generation_assessment_complete": generation_assessed,
         "generation_succeeded": generation_succeeded,
         "generation_assessment": assessments,
+        "generation_skipped": (generation_report or {}).get("skipped", []),
         "validation_command": validation,
         "validation_status": validation_status,
         "validation_report_found": validation_report is not None,
@@ -453,19 +493,79 @@ def main() -> int:
                 results.append(item)
                 continue
 
-            build = run(["forge", "build"], cwd=clone_dir, timeout=1800)
-            item["baseline_build"] = build
-            item["targets"] = [
-                evaluate_target(clone_dir, name, clone_dir / ".audit" / "ecosystem-benchmark")
-                for name in candidates
-            ]
-            if build.get("exit_code") != 0:
+            # Resolve the closest Foundry package for each target. Legacy Solidity
+            # repositories get a disposable config with source roots inferred from
+            # the selected source paths; existing project configs are never rewritten.
+            grouped: dict[Path, list[tuple[str, str]]] = {}
+            configs: dict[Path, tuple[Path, bool]] = {}
+            for name in candidates:
+                relative_source = item["candidate_sources"][name]
+                package_root = _nearest_foundry_root(clone_dir, relative_source)
+                if package_root is None:
+                    package_root = clone_dir.resolve()
+                    config = _synthetic_foundry_config(clone_dir, list(item["candidate_sources"].values()))
+                else:
+                    config = (package_root / "foundry.toml", False)
+                configs[package_root] = config
+                local_source = (clone_dir / relative_source).resolve().relative_to(package_root).as_posix()
+                grouped.setdefault(package_root, []).append((name, local_source))
+
+            item["targets"] = []
+            item["baseline_builds"] = []
+            for package_root, target_group in grouped.items():
+                config_path, synthetic_config = configs[package_root]
+                forge_env = {"FOUNDRY_CONFIG": str(config_path.resolve())}
+                baseline_key = str(package_root)
+                if baseline_key not in {entry["root"] for entry in item["baseline_builds"]}:
+                    build = run(["forge", "build"], cwd=package_root, timeout=1800, env=forge_env)
+                    item["baseline_builds"].append({
+                        "root": baseline_key,
+                        "config": str(config_path),
+                        "synthetic_config": synthetic_config,
+                        "result": build,
+                    })
+                else:
+                    build = next(entry["result"] for entry in item["baseline_builds"] if entry["root"] == baseline_key)
+                if build.get("exit_code") != 0:
+                    for name, source_local in target_group:
+                        item["targets"].append({
+                            "contract": name,
+                            "source_path": source_local,
+                            "abstract_contract": _is_abstract_contract(package_root, source_local, name),
+                            "honest_result": "baseline-build-failed",
+                            "baseline_build": build,
+                        })
+                    continue
+
+                for name, source_local in target_group:
+                    setup = (project.get("target_setup") or {}).get(name, {})
+                    constructor_args = setup.get("constructor_args") if isinstance(setup, dict) else None
+                    abstract_contract = _is_abstract_contract(package_root, source_local, name)
+                    target_result = evaluate_target(
+                        package_root,
+                        name,
+                        package_root / ".audit" / "ecosystem-benchmark",
+                        constructor_args=constructor_args,
+                        env=forge_env,
+                        source_path=source_local,
+                        abstract_contract=abstract_contract,
+                    )
+                    item["targets"].append(target_result)
+
+            baseline_failed = any(
+                entry["result"].get("exit_code") != 0 for entry in item["baseline_builds"]
+            )
+            target_outcomes = {target.get("honest_result") for target in item["targets"]}
+            fully_passed = bool(item["targets"]) and target_outcomes == {"generation-and-validation-passed"}
+            assessed = bool(item["targets"]) and target_outcomes.issubset({
+                "generation-and-validation-passed", "assessed-with-evidence-gaps"
+            })
+            if baseline_failed:
                 item["status"] = "baseline-build-failed"
-            elif item["targets"] and all(
-                target.get("honest_result") == "generation-and-validation-passed"
-                for target in item["targets"]
-            ):
+            elif fully_passed:
                 item["status"] = "evaluated"
+            elif assessed:
+                item["status"] = "assessed-with-evidence-gaps"
             else:
                 item["status"] = "generation-validation-failed"
             results.append(item)
@@ -479,8 +579,10 @@ def main() -> int:
             "baseline_build_failed_count": sum(item["status"] == "baseline-build-failed" for item in results),
             "generation_validation_failed_count": sum(item["status"] == "generation-validation-failed" for item in results),
             "expected_unsupported_count": sum(item["status"] == "expected-unsupported" for item in results),
+            "assessed_with_evidence_gaps_count": sum(item["status"] == "assessed-with-evidence-gaps" for item in results),
             "unresolved_project_count": sum(
-                item["status"] not in {"evaluated", "expected-unsupported"} for item in results
+                item["status"] not in {"evaluated", "assessed-with-evidence-gaps", "expected-unsupported"}
+                for item in results
             ),
             "revision_pin_failed_count": sum(
                 "revision" in item.get("status", "") or "submodule" in item.get("status", "")
@@ -496,10 +598,11 @@ def main() -> int:
         }
         output_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         print(f"Benchmark report: {output_path}")
-        print(f"Projects: {len(results)}; baseline builds successful: {summary['evaluated_count']}")
+        print(f"Projects fully generated and validated: {summary['evaluated_count']}")
+        print(f"Projects assessed with explicit evidence gaps: {summary['assessed_with_evidence_gaps_count']}")
         for item in results:
             print(f"  {item['id']}: {item['status']}")
-        accepted = {"evaluated", "expected-unsupported"}
+        accepted = {"evaluated", "assessed-with-evidence-gaps", "expected-unsupported"}
         return 0 if results and all(item["status"] in accepted for item in results) else 1
     finally:
         if owned_temp is not None and not args.keep_workspaces:

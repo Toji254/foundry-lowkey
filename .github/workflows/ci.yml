@@ -1811,7 +1811,8 @@ jobs:
               raise SystemExit("Full benchmark did not produce a report")
           report = json.loads(path.read_text(encoding="utf-8"))
           print(f"Projects recorded: {report.get('project_count')}")
-          print(f"Projects fully evaluated by the current runner: {report.get('evaluated_count')}")
+          print(f"Projects fully generated and behaviorally validated: {report.get('evaluated_count')}")
+          print(f"Projects assessed with explicit evidence gaps: {report.get('assessed_with_evidence_gaps_count')}")
           print(f"Baseline build failures: {report.get('baseline_build_failed_count')}")
           print(f"Generation/validation failures or coverage gaps: {report.get('generation_validation_failed_count')}")
           print(f"Revision pin failures: {report.get('revision_pin_failed_count')}")
@@ -1844,7 +1845,7 @@ jobs:
           expected = report.get("project_count")
           if not isinstance(expected, int) or expected < 1 or len(results) != expected:
               raise SystemExit(f"Incomplete benchmark report: expected {expected} projects, got {len(results)}")
-          accepted = {"evaluated", "expected-unsupported"}
+          accepted = {"evaluated", "assessed-with-evidence-gaps", "expected-unsupported"}
           rejected = [item for item in results if item.get("status") not in accepted]
           if rejected:
               summary = ", ".join(f"{item.get('id')}={item.get('status')}" for item in rejected)
