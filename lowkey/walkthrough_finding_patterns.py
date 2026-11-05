@@ -907,7 +907,7 @@ def scan_project(root: Path, models: list[core.ContractModel]) -> list[PatternOb
         # same. Using evidence[0] alone could merge two overloads with the same
         # generic detector sentence but different guards, paths or impacts.
         normalized_evidence = tuple(
-            re.sub(r"\\s+", " ", str(value)).strip()
+            re.sub(r"\s+", " ", str(value)).strip()
             for value in item.evidence
         )
         key = (
