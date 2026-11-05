@@ -4,6 +4,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from urllib.parse import urlparse
 from contextlib import redirect_stdout
 import io
 import sys
@@ -1179,7 +1180,7 @@ class GodmodeTests(unittest.TestCase):
             result = fake_rpc(url, method, params, timeout)
             # Mutate only the independent archive response. If both RPCs are
             # changed identically, the test no longer exercises a fork/archive mismatch.
-            if (url == "https://archive.example" and
+            if (urlparse(url).hostname == "archive.example" and
                 method == "eth_getBlockByNumber" and
                 params[0] == hex(20_000_000)):
                 return {**block, "stateRoot": "0x" + "e" * 64}
