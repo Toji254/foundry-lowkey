@@ -3164,8 +3164,16 @@ def render_step_harness(spec):
         raise StepPlanError("Installed step_harness.sol.tmpl is missing; reinstall Lowkey from the matching branch.", "no_capability", family=family)
     template = template_path.read_text(encoding="utf-8")
     rendered_steps = []
-    pending_revert = False
+    pending_expectation = None
     saw_call = False
+
+    def call_identity(target_expr, selector_value, args_value):
+        return (
+            target_expr,
+            str(selector_value or "").lower(),
+            json.dumps(args_value, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+        )
+
     for index, step in enumerate(steps_value):
         label = f"steps[{index}]"
         if not isinstance(step, dict) or set(step) - STEP_FIELDS:
@@ -3191,6 +3199,13 @@ def render_step_harness(spec):
         target_expr = default_target if target_raw is None else _step_address(target_raw, label + ".target")
         selector_raw = step.get("selector")
         needs_call = kind in {"call", "read", "unwind", "skew", "expect"}
+
+        if pending_expectation is not None and not needs_call:
+            raise StepPlanError(
+                f"{label} must immediately consume the previous expect step with a matching call target, selector and args.",
+                "backend_unsupported", family=family
+            )
+
         if needs_call and (target_expr is None or selector_raw is None):
             raise StepPlanError(f"{label} kind '{kind}' requires target and selector.", family=family)
         if needs_call:
@@ -3210,39 +3225,62 @@ def render_step_harness(spec):
             if declarations:
                 body.extend(declarations)
             body.append(f"bytes memory {data_name} = {calldata_expr};")
-            if expect["count"] is not None:
-                body.append(f"vm.expectCall({target_expr}, {data_name}, uint64({expect['count']}));")
+
             if kind == "expect":
+                if pending_expectation is not None:
+                    raise StepPlanError(f"{label} cannot arm a second pending call expectation.", family=family)
                 if expect["count"] is None:
                     raise StepPlanError(f"{label} kind 'expect' requires expect.count.", family=family)
-                if expect["must_revert"]:
-                    if pending_revert:
-                        raise StepPlanError(f"{label} cannot arm a second pending revert expectation.", family=family)
-                    pending_revert = True
+                if step.get("value") is not None:
+                    raise StepPlanError(f"{label} kind 'expect' cannot declare value; put value on the consuming call step.", family=family)
+                body.append(f"vm.expectCall({target_expr}, {data_name}, uint64({expect['count']}));")
                 body.append(f"emit LowkeyStep({index}, {json.dumps(kind)}, {target_expr}, true, bytes32(0));")
+                pending_expectation = {
+                    "identity": call_identity(target_expr, selector_raw, raw_args),
+                    "must_revert": expect["must_revert"],
+                    "source_step": index,
+                }
+                rendered_steps.append("        {\n            " + "\n            ".join(body) + "\n        }")
+                continue
+
+            raw_value = step.get("value")
+            value_wei = 0 if raw_value is None else _step_uint(raw_value, label + ".value")
+            if kind == "read" and value_wei != 0:
+                raise StepPlanError(f"{label} read steps cannot send native value.", family=family)
+
+            pending_revert = False
+            if pending_expectation is not None:
+                current_identity = call_identity(target_expr, selector_raw, raw_args)
+                if current_identity != pending_expectation["identity"]:
+                    raise StepPlanError(
+                        f"{label} does not match the immediately preceding expect step's target, selector and typed args.",
+                        "backend_unsupported", target=step.get("target") or spec.get("target_address"), family=family
+                    )
+                if expect["count"] is not None:
+                    raise StepPlanError(
+                        f"{label} cannot declare a second expect.count while consuming a pending expect step.",
+                        "backend_unsupported", family=family
+                    )
+                pending_revert = pending_expectation["must_revert"]
+                pending_expectation = None
+            elif expect["count"] is not None:
+                body.append(f"vm.expectCall({target_expr}, {data_name}, uint64({expect['count']}));")
+
+            if kind == "read":
+                body.append(f"(bool step{index}Success, bytes memory step{index}ReturnData) = {target_expr}.staticcall({data_name});")
             else:
-                if pending_revert and kind not in {"call", "unwind", "skew"}:
-                    raise StepPlanError(f"{label} must consume the pending expect.must_revert with a call/unwind/skew step.", family=family)
-                raw_value = step.get("value")
-                value_wei = 0 if raw_value is None else _step_uint(raw_value, label + ".value")
-                if kind == "read" and value_wei != 0:
-                    raise StepPlanError(f"{label} read steps cannot send native value.", family=family)
-                call_method = "staticcall" if kind == "read" else "call"
-                if call_method == "staticcall":
-                    body.append(f"(bool step{index}Success, bytes memory step{index}ReturnData) = {target_expr}.staticcall({data_name});")
-                else:
-                    body.append(f"(bool step{index}Success, bytes memory step{index}ReturnData) = {target_expr}.call{{value: {value_wei}}}({data_name});")
-                body.append(f"lastSuccess = step{index}Success;")
-                body.append(f"lastReturndata = step{index}ReturnData;")
-                body.append(f"emit LowkeyStep({index}, {json.dumps(kind)}, {target_expr}, step{index}Success, keccak256(step{index}ReturnData));")
-                if expect["must_revert"] or pending_revert:
-                    body.append(f'require(!step{index}Success, "STEP_{index}_EXPECTED_REVERT");')
-                    pending_revert = False
-                elif not optional:
-                    body.append(f'require(step{index}Success, "STEP_{index}_FAILED");')
-                saw_call = True
+                body.append(f"(bool step{index}Success, bytes memory step{index}ReturnData) = {target_expr}.call{{value: {value_wei}}}({data_name});")
+            body.append(f"lastSuccess = step{index}Success;")
+            body.append(f"lastReturndata = step{index}ReturnData;")
+            body.append(f"emit LowkeyStep({index}, {json.dumps(kind)}, {target_expr}, step{index}Success, keccak256(step{index}ReturnData));")
+            if expect["must_revert"] or pending_revert:
+                body.append(f'require(!step{index}Success, "STEP_{index}_EXPECTED_REVERT");')
+            elif not optional:
+                body.append(f'require(step{index}Success, "STEP_{index}_FAILED");')
+            saw_call = True
             rendered_steps.append("        {\n            " + "\n            ".join(body) + "\n        }")
             continue
+
         if kind == "assert":
             if not saw_call:
                 raise StepPlanError(f"{label} assert requires a prior call/read step.", family=family)
@@ -3273,8 +3311,12 @@ def render_step_harness(spec):
             rendered_steps.append('        require(snapshotAvailable, "STEP_REVERT_WITHOUT_SNAPSHOT");\n        require(vm.revertTo(snapshotId), "STEP_SNAPSHOT_REVERT_FAILED");\n        snapshotAvailable = false;')
             continue
         raise StepPlanError(f"{label} kind '{kind}' is not yet rendered.", "backend_unsupported", family=family)
-    if pending_revert:
-        raise StepPlanError("Step plan ends with an unconsumed expect.must_revert.", family=family)
+
+    if pending_expectation is not None:
+        raise StepPlanError(
+            "Step plan ends with an unconsumed expect step.",
+            "backend_unsupported", family=family
+        )
     if not saw_call:
         raise StepPlanError("Step plan must execute at least one call or read.", family=family)
     contract_name = "LowkeySteps_" + family
