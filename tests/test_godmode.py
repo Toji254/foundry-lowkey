@@ -810,7 +810,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(feedback["status"], "recorded")
             self.assertEqual(feedback["context"]["backend"], "anvil-calltracer")
             self.assertTrue(feedback["context_key"])
-            self.assertIn("control_not_outperformed", feedback["evidence"])
+            self.assertIn("did not exceed the control metric", feedback["evidence"])
 
     def test_source_maps_classify_oracle_and_time_patterns(self):
         with tempfile.TemporaryDirectory() as tmp:
