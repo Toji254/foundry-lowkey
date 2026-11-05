@@ -1278,6 +1278,26 @@ def control(args):
     freeze_status=proof_evidence.validate_control_freeze(
         root, mf, spec, required=ns.require_frozen, freeze_path=ns.freeze_file
     )
+    if freeze_status.get("requires_refreeze"):
+        payload = {
+            "created_at": now(),
+            "status": "UNPROVEN",
+            "proof_status": "UNPROVEN",
+            "outcome": "not_run",
+            "family": proof_evidence.normalize_family(spec.get("family")),
+            "target_address": target,
+            "trace_backend": backend,
+            "freeze": freeze_status,
+            "execution_attempted": False,
+            "rejection_codes": [],
+            "reasons": [freeze_status.get("reason")],
+            "next_action": "Run lk control <manifest> --freeze again, then rerun validation. No attack or control command was executed.",
+        }
+        out = safe_out(root, ns.output)
+        write_json(out, payload)
+        print("UNPROVEN: generator drift; re-freeze required; no experiment executed.")
+        print("  evidence " + out.relative_to(root).as_posix())
+        return 2
     if backend=="anvil-calltracer" and not local_rpc(url):
         raise ValueError("Anvil callTracer control accepts a local Anvil RPC endpoint only.")
     if backend=="forge-state-diff" and not url:
@@ -1436,6 +1456,25 @@ def control(args):
     semantic_check=rows.get("attack",{}).get("semantic_check") or {}
     semantic_invariant_verified=bool(semantic_check.get("verified"))
     family=proof_evidence.normalize_family(spec.get("family"))
+    evidence_capabilities={}
+    evidence_checks={}
+    for scenario_name in ("control", "attack"):
+        scenario_row=rows.get(scenario_name,{})
+        storage_supported=(
+            True if backend=="forge-state-diff" else
+            bool((scenario_row.get("storage_trace") or {}).get("supported"))
+        )
+        capabilities=proof_evidence.trace_evidence_capabilities(
+            backend, storage_trace_supported=storage_supported
+        )
+        evidence_capabilities[scenario_name]=capabilities
+        evidence_checks[scenario_name]=proof_evidence.evaluate_evidence_requirements(
+            family, capabilities, spec.get("evidence_requirements"),
+            require_trace_storage=bool(spec.get("require_trace_storage",False)),
+        )
+    evidence_requirements_verified=all(
+        item.get("accepted") for item in evidence_checks.values()
+    )
     non_economic=bool(ns.non_economic or spec.get("non_economic") or
                       family in proof_evidence.NON_ECONOMIC_FAMILIES)
     economics=proof_evidence.evaluate_economic_policy(
@@ -1453,6 +1492,7 @@ def control(args):
     base_valid=(
         same_entry and same_prestate and same_trace_storage_values and same_chain and
         same_block and same_fork_anchor and trace_delta_verified and
+        evidence_requirements_verified and
         not scenario_errors and freeze_status.get("verified",False)
     )
     if backend=="anvil-calltracer":
@@ -1484,6 +1524,13 @@ def control(args):
     if not same_chain: rejection_reasons.append("Control and attack were executed on different chain IDs.")
     if not same_block: rejection_reasons.append("Control and attack used different block numbers.")
     if not same_fork_anchor: rejection_reasons.append("Control and attack used different fork parent hashes.")
+    if not evidence_requirements_verified:
+        for scenario_name, check in evidence_checks.items():
+            for item in check.get("missing", []):
+                rejection_reasons.append(
+                    scenario_name + " lacks required " + item["dimension"] +
+                    " evidence (" + str(item["actual"]) + " < " + str(item["required"]) + ")."
+                )
     if backend=="forge-state-diff" and not fork_pin_verified:
         rejection_reasons.append("Forge runs do not match the manifest's expected_chain_id and expected_fork_block pins.")
     if backend=="anvil-calltracer" and not same_envelope:
@@ -1578,6 +1625,8 @@ def control(args):
         proof_status="SIMULATED_BREAK"
     if not freeze_status.get("verified"):
         proof_status="OBSERVED"
+    if not evidence_requirements_verified and not rejected:
+        proof_status="UNPROVEN"
 
     memory_feedback=None
     if rejected:
@@ -1615,6 +1664,9 @@ def control(args):
         "target_authenticity":authenticity,"fidelity":fidelity,
         "outcome":outcome,"family":family,"economic_policy":economics,
         "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
+        "evidence_capabilities":evidence_capabilities,
+        "evidence_requirements":evidence_checks,
+        "evidence_requirements_verified":evidence_requirements_verified,
         "verification_method":(
             "Foundry Vm.startStateDiffRecording/stopAndReturnStateDiff" if backend=="forge-state-diff"
             else "local-Anvil RPC transaction plus debug_traceTransaction callTracer"

@@ -5,7 +5,8 @@ import unittest
 
 from lowkey.proof_evidence import (
     classify_proof, evaluate_economic_policy, freeze_control_manifest,
-    validate_control_freeze,
+    validate_control_freeze, trace_evidence_capabilities,
+    evaluate_evidence_requirements,
 )
 
 
