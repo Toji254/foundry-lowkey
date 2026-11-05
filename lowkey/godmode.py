@@ -896,7 +896,7 @@ def _sourcify_contract_identity(chain_id, address):
         return dict(_SOURCIFY_IDENTITY_CACHE[cache_key])
     endpoint = (
         "https://sourcify.dev/server/v2/contract/"
-        + str(chain_id) + "/" + address + "?fields=sources,proxyResolution"
+        + str(chain_id) + "/" + address + "?fields=sources,proxyResolution,deployment.blockNumber"
     )
     request = Request(
         endpoint,
@@ -938,6 +938,11 @@ def _verify_sourcify_exact(chain_id, address):
     source_bundle_sha256 = hashlib.sha256(
         json.dumps(source_file_hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    deployment = payload.get("deployment") or {}
+    try:
+        sourcify_deployment_block = int(deployment.get("blockNumber"))
+    except (TypeError, ValueError):
+        raise ValueError("Sourcify response did not include a valid deployment.blockNumber.")
     return {
         "provider": "sourcify-v2",
         "match": fields["match"],
@@ -948,6 +953,7 @@ def _verify_sourcify_exact(chain_id, address):
         "source_file_count": len(source_file_hashes),
         "source_file_hashes": source_file_hashes,
         "source_bundle_sha256": source_bundle_sha256,
+        "deployment_block": sourcify_deployment_block,
         "proxy_resolution": payload.get("proxyResolution"),
     }
 
@@ -1161,6 +1167,8 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
             source_code_by_address.get(target),
         )
         target_source = _verify_sourcify_exact(chain_id, target)
+        if target_source["deployment_block"] != target_deployment_block:
+            raise ValueError("Sourcify deployment.blockNumber does not match target_identity.deployment_block.")
     except Exception as exc:
         result["reason"] = "Target source identity verification failed: " + str(exc)[:500]
         return result
@@ -1238,6 +1246,8 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
                 implementation_code,
             )
             implementation_source = _verify_sourcify_exact(chain_id, implementation)
+            if implementation_source["deployment_block"] != implementation_deployment_block:
+                raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
             implementation_prestate = prestate_by_address.get(implementation) or {}
             trace_implementation_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
             if not re.fullmatch(r"0x[0-9a-f]{64}", trace_implementation_code_hash):

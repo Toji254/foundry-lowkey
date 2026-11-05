@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import pathlib
 import tempfile
@@ -1225,6 +1226,9 @@ class GodmodeTests(unittest.TestCase):
                 "match": "exact_match", "runtimeMatch": "exact_match",
                 "creationMatch": "exact_match", "verifiedAt": "2026-11-05T00:00:00Z",
                 "matchId": "123",
+                "deployment": {
+                    "blockNumber": "20000000" if is_target else "19000000",
+                },
                 "sources": {
                     "src/Proxy.sol" if is_target else "src/Logic.sol":
                     "contract Proxy {}" if is_target else "contract Logic {}"
