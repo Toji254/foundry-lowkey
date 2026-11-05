@@ -481,8 +481,16 @@ jobs:
           def storage_value(row, account, slot):
               pre = next(item for item in row["prestate"] if item["address"] == account)
               return next(item["value"] for item in pre["storage"] if item["slot"] == slot)
-          assert int(storage_value(control, attacker, mode_slot), 16) == 0
-          assert int(storage_value(attack, attacker, mode_slot), 16) == 2
+          control_mode_word = int(storage_value(control, attacker, mode_slot), 16)
+          attack_mode_word = int(storage_value(attack, attacker, mode_slot), 16)
+          # uint8 mode occupies the low byte; bool entered is packed into byte 1.
+          # Only the low mode byte may differ. The re-entry guard must be false
+          # in both parent states, and every other packed bit must match.
+          assert (control_mode_word & 0xff) == 0
+          assert (attack_mode_word & 0xff) == 2
+          assert (control_mode_word & 0xff00) == 0
+          assert (attack_mode_word & 0xff00) == 0
+          assert (control_mode_word & ~0xff) == (attack_mode_word & ~0xff)
           # Compare every touched account's parent state after excluding only
           # the explicitly declared attacker mode slot (address, slot 0).
           def comparison_prestate(row):

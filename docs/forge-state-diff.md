@@ -64,7 +64,10 @@ vm.expectCall assertion checks the three matching calls across the paired test;
 the two artifacts independently prove one target call for control and two for
 attack. The target address, runtime code hash, chain, block and target pre-state
 must match. The declared attacker mode slot is zero in control and two in attack.
-Setup events are preserved separately from measured domain events.
+Because the fixture packs `uint8 mode` and `bool entered` into one storage word,
+the acceptance check masks only the low mode byte, asserts the guard byte is false
+in both parent states, and compares every other bit for equality. Setup events are
+preserved separately from measured domain events.
 
 The recorder stores raw event emitter, topics and data; it does not guess an ABI
 for unknown fixture or protocol events. Forge calldata is available from
