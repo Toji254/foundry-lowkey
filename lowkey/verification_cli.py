@@ -20,6 +20,14 @@ except ImportError:
     except ImportError:
         audit_context = None
 
+# The installed runtime is a flat set of sibling modules under ~/.lowkey.
+# Resolve signal_investigation relative to this module when packaged, or from
+# the same directory when run as the installed top-level verification_cli.
+if __package__:
+    from . import signal_investigation
+else:
+    import signal_investigation
+
 
 def _project_root() -> Path:
     try:
@@ -499,10 +507,6 @@ def run_cli(args: list[str]) -> int:
             print("Error: usage: lk verification investigate <SIGNAL_ID>", file=sys.stderr)
             return 2
         try:
-            try:
-                from lowkey import signal_investigation
-            except ImportError:
-                import signal_investigation
             report = signal_investigation.plan_signal_investigation(
                 args[1], project_root=_project_root(), audit_context=audit_context,
             )
@@ -538,10 +542,6 @@ def run_cli(args: list[str]) -> int:
             "Inspect the test for fork/RPC use or broadcast cheatcodes first; Lowkey does not choose a live target or sign a transaction."
         )
         try:
-            try:
-                from lowkey import signal_investigation
-            except ImportError:
-                import signal_investigation
             result = signal_investigation.execute_inspected_test(
                 args[1], args[2], args[3],
                 project_root=_project_root(), audit_context=audit_context,

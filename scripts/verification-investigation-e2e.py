@@ -52,8 +52,18 @@ def inspected_test(lk: str, root: Path, audit_context, signal_id: str,
     if result.returncode != expected_exit:
         raise AssertionError(f"Expected test rc={expected_exit}, got {result.returncode}; stdout={result.stdout[-10000:]}; stderr={result.stderr[-10000:]}")
     status = "passed" if expected_exit == 0 else "failed"
-    if status not in result.stdout or "attached" not in result.stdout or "Disposition: unchanged" not in result.stdout:
-        raise AssertionError(f"CLI result/evidence/disposition missing: {result.stdout}")
+    missing = [
+        label for label, present in (
+            ("status", status in result.stdout),
+            ("evidence attachment", "attached" in result.stdout),
+            ("unchanged disposition", "Disposition: unchanged" in result.stdout),
+        ) if not present
+    ]
+    if missing:
+        raise AssertionError(
+            f"CLI result/evidence/disposition missing {missing}; rc={result.returncode}\\n"
+            f"stdout:\\n{result.stdout[-10000:]}\\nstderr:\\n{result.stderr[-10000:]}"
+        )
     file_path = (root / test_path).resolve(strict=True)
     signal = next((item for item in audit_context.signals(root) if item.get("id") == signal_id), None)
     if not signal:

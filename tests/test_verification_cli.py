@@ -40,6 +40,42 @@ class VerificationCliTests(unittest.TestCase):
             code = verification_cli.run_cli(["run-test", "SIG-1", "test/Vault.t.sol"])
         self.assertEqual(code, 2)
 
+    def test_run_test_reports_failed_evidence_without_changing_disposition(self):
+        root = Path("/tmp/lowkey-verification-cli-test")
+        result = {
+            "signal_id": "SIG-1",
+            "status": "failed",
+            "test_file": "test/Vault.t.sol",
+            "test_name": "test_guard",
+            "evidence_attached": True,
+            "exit_code": 1,
+            "stdout": "[FAIL: next call did not revert] test_guard()",
+            "stderr": "",
+            "security_finding_confirmed": False,
+            "human_disposition_changed": False,
+        }
+        output = io.StringIO()
+        with patch.object(
+            verification_cli.signal_investigation,
+            "execute_inspected_test",
+            return_value=result,
+        ) as execute:
+            with patch.object(verification_cli, "_project_root", return_value=root):
+                with redirect_stdout(output):
+                    code = verification_cli.run_cli([
+                        "run-test", "SIG-1", "test/Vault.t.sol", "test_guard",
+                    ])
+
+        self.assertEqual(code, 1)
+        rendered = output.getvalue()
+        self.assertIn("Status    : failed", rendered)
+        self.assertIn("Evidence  : attached", rendered)
+        self.assertIn("Disposition: unchanged", rendered)
+        self.assertIn("next call did not revert", rendered)
+        self.assertFalse(result["security_finding_confirmed"])
+        self.assertFalse(result["human_disposition_changed"])
+        execute.assert_called_once()
+
     def test_engine_inventory_exposes_installation_and_compatibility(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
