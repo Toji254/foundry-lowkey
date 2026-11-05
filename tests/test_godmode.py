@@ -233,7 +233,7 @@ class GodmodeTests(unittest.TestCase):
             manifest, target, sender, wrapper = self._control_manifest(root)
             harness = root / "test/lowkey/GeneratedSteps.sol"
             harness.parent.mkdir(parents=True)
-            harness_bytes = b"contract GeneratedSteps {}\\n"
+            harness_bytes = b"contract GeneratedSteps {}"
             harness.write_bytes(harness_bytes)
             import hashlib
             sidecar = {
@@ -300,9 +300,7 @@ class GodmodeTests(unittest.TestCase):
             proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
             harness.write_bytes(harness_bytes + b"// changed")
 
-            with patch.object(godmode, "rpc") as rpc_mock, \\
-                 patch.object(godmode, "run") as run_mock, \\
-                 redirect_stdout(io.StringIO()):
+            with patch.object(godmode, "rpc") as rpc_mock, patch.object(godmode, "run") as run_mock, redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
                     "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
                 ])
@@ -321,7 +319,7 @@ class GodmodeTests(unittest.TestCase):
             manifest, target, sender, wrapper = self._control_manifest(root)
             harness = root / "test/lowkey/GeneratedSteps.sol"
             harness.parent.mkdir(parents=True)
-            harness_bytes = b"contract GeneratedSteps {}\\n"
+            harness_bytes = b"contract GeneratedSteps {}"
             harness.write_bytes(harness_bytes)
             import hashlib
             sidecar = {
