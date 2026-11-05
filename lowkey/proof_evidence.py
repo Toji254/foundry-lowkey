@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AUTHENTICITIES = {"unknown", "fixture", "local_reimplementation", "forked_deployment"}
-FIDELITIES = {"unknown", "synthetic_state", "simulated_caller", "simulated_dependencies", "real_funded"}
+FIDELITIES = {"unknown", "synthetic_state", "simulated_caller", "simulated_dependencies", "constrained_inputs", "real_funded"}
 OUTCOMES = {"not_run", "observed", "profitable", "rejected"}
 NON_ECONOMIC_FAMILIES = {
     "dos", "denial_of_service", "griefing", "liveness", "signature_replay",
@@ -66,7 +66,7 @@ def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="o
     elif authenticity in {"fixture", "local_reimplementation"} or fidelity in {
         "synthetic_state", "simulated_dependencies"
     }: status = "SIMULATED_BREAK"
-    elif authentic_fork and fidelity == "simulated_caller": status = "FORK_OBSERVED"
+    elif authentic_fork and fidelity in {"simulated_caller", "constrained_inputs"}: status = "FORK_OBSERVED"
     elif authentic_fork and realistic and outcome == "profitable": status = "PROFITABLE"
     elif authentic_fork and realistic: status = "FORK_REPRODUCED"
     elif authentic_fork: status = "FORK_OBSERVED"
