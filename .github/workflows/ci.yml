@@ -1180,7 +1180,10 @@ jobs:
           lk actor 1 Alice
           lk actor 2 Bob
           lk actor 1
-          lk target "$TARGET"
+          # Pin the deployed address to the artifact in this isolated project.
+          # The previous address-only selection could inherit a stale target contract
+          # name from the earlier shared-Anvil fixture and leave this target ABI-less.
+          lk target EscrowFlow "$TARGET"
 
           # Create two independent records. The ID book must capture contract IDs,
           # not confuse them with the transaction hashes.
