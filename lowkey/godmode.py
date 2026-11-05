@@ -815,43 +815,117 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
 
 def control(args):
     p=argparse.ArgumentParser(prog="lk control")
-    p.add_argument("manifest"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
-    p.add_argument("--output",default=".audit/godmode/control.json"); ns=p.parse_args(args)
-    root=root_path(ns.root); url=rpc_url(ns.rpc_url)
-    if not local_rpc(url): raise ValueError("Trace-backed control accepts a local Anvil RPC endpoint only.")
+    p.add_argument("manifest")
+    p.add_argument("--root",default=".")
+    p.add_argument("--rpc-url",required=True)
+    p.add_argument("--source-rpc-url")
+    p.add_argument("--output",default=".audit/godmode/control.json")
+    p.add_argument("--freeze",action="store_true",help="Freeze the manifest, commands, harnesses and expectations without running them.")
+    p.add_argument("--freeze-file",default=".audit/godmode/control.freeze.json")
+    p.add_argument("--require-frozen",action="store_true",help="Refuse to execute unless a matching frozen manifest exists.")
+    p.add_argument("--non-economic",action="store_true",help="Require a passing semantic invariant instead of positive profit.")
+    ns=p.parse_args(args)
+
+    root=root_path(ns.root)
+    url=rpc_url(ns.rpc_url)
     mf=(root/ns.manifest).resolve()
-    if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Manifest must be an existing file inside project.")
-    spec=json.loads(mf.read_text()); attack=spec.get("attack") or {}; control_run=spec.get("control") or {}
-    if not spec.get("same_calls_id"): raise ValueError("Declare same_calls_id as a human-readable label for the matched experiment.")
+    if not mf.is_relative_to(root) or not mf.is_file():
+        raise ValueError("Manifest must be an existing file inside project.")
+    spec=json.loads(mf.read_text(encoding="utf-8"))
+    attack=spec.get("attack") or {}
+    control_run=spec.get("control") or {}
+    backend=str(spec.get("trace_backend") or "anvil-calltracer").lower()
+    if backend not in {"anvil-calltracer","forge-state-diff"}:
+        raise ValueError("trace_backend must be anvil-calltracer or forge-state-diff.")
+    if not spec.get("same_calls_id"):
+        raise ValueError("Declare same_calls_id as a human-readable label for the matched experiment.")
     if not isinstance(attack.get("argv"),list) or not isinstance(control_run.get("argv"),list):
         raise ValueError("Manifest requires control.argv and attack.argv.")
     target=addr(spec.get("target_address"))
     if not isinstance(spec.get("metric_addresses"),list) or not spec["metric_addresses"]:
-        raise ValueError("Declare metric_addresses for the attacker portfolio; include the transaction sender.")
+        raise ValueError("Declare metric_addresses for the attacker portfolio.")
+
+    try:
+        try:
+            from . import proof_evidence
+        except ImportError:
+            import proof_evidence
+    except ImportError as exc:
+        raise RuntimeError("Proof evidence policy module is unavailable: " + str(exc)) from exc
+
+    if ns.freeze:
+        frozen, freeze_path = proof_evidence.freeze_control_manifest(
+            root, mf, spec, ns.freeze_file
+        )
+        print("CONTROL EXPECTATIONS FROZEN")
+        print("  file: " + str(freeze_path.relative_to(root)))
+        print("  sha256: " + frozen["freeze_sha256"])
+        print("  manifest: " + frozen["manifest_sha256"])
+        print("No attack or control command was executed.")
+        return 0
+
+    freeze_status=proof_evidence.validate_control_freeze(
+        root, mf, spec, required=ns.require_frozen, freeze_path=ns.freeze_file
+    )
+    if backend=="anvil-calltracer" and not local_rpc(url):
+        raise ValueError("Anvil callTracer control accepts a local Anvil RPC endpoint only.")
+    if backend=="forge-state-diff" and not url:
+        raise ValueError("Forge state-diff requires a fork RPC URL via --rpc-url.")
+
     env=os.environ.copy()
     env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
     rows={}
-    for name,entry in (("control",control_run),("attack",attack)):
+    scenarios=[("control",control_run),("attack",attack)]
+    negative=spec.get("negative_control")
+    if negative is not None:
+        if not isinstance(negative,dict) or not isinstance(negative.get("argv"),list):
+            raise ValueError("negative_control must contain an argv string array.")
+        scenarios.append(("negative_control",negative))
+    elif spec.get("require_negative_control"):
+        raise ValueError("Manifest requires negative_control but does not define it.")
+
+    for name,entry in scenarios:
         try:
-            rows[name]=_trace_control_run(root,url,name,entry,spec,env)
+            if backend=="forge-state-diff":
+                rows[name]=_forge_control_run(
+                    root,url,name,entry,spec,env,source_url=ns.source_rpc_url
+                )
+            else:
+                rows[name]=_trace_control_run(root,url,name,entry,spec,env)
         except Exception as exc:
-            rows[name]={"exit_code":None,"metric":None,"trace_error":str(exc),"argv":entry.get("argv")}
+            rows[name]={
+                "exit_code":None,"metric":None,"trace_error":str(exc),
+                "argv":entry.get("argv"),"backend":backend,
+            }
+
+    control_metric=rows.get("control",{}).get("metric")
+    attack_metric=rows.get("attack",{}).get("metric")
     delta=None
-    if rows.get("control",{}).get("metric") is not None and rows.get("attack",{}).get("metric") is not None:
-        delta=rows["attack"]["metric"]-rows["control"]["metric"]
-    same_entry=bool(rows.get("control",{}).get("entry_call_sha256") and
-                    rows.get("control",{}).get("entry_call_sha256")==rows.get("attack",{}).get("entry_call_sha256"))
-    same_envelope=bool(rows.get("control",{}).get("transaction_envelope_sha256") and
-                       rows.get("control",{}).get("transaction_envelope_sha256")==rows.get("attack",{}).get("transaction_envelope_sha256"))
-    same_prestate=bool(rows.get("control",{}).get("prestate_sha256") and
-                       rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256"))
-    same_chain=bool(rows.get("control",{}).get("chain_id") and
-                    str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower())
+    if isinstance(control_metric,int) and isinstance(attack_metric,int):
+        delta=attack_metric-control_metric
+    same_entry=bool(
+        rows.get("control",{}).get("entry_call_sha256") and
+        rows.get("control",{}).get("entry_call_sha256")==rows.get("attack",{}).get("entry_call_sha256")
+    )
+    same_envelope=(
+        backend=="forge-state-diff" or bool(
+            rows.get("control",{}).get("transaction_envelope_sha256") and
+            rows.get("control",{}).get("transaction_envelope_sha256")==rows.get("attack",{}).get("transaction_envelope_sha256")
+        )
+    )
+    same_prestate=bool(
+        rows.get("control",{}).get("prestate_sha256") and
+        rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256")
+    )
+    same_chain=bool(
+        rows.get("control",{}).get("chain_id") is not None and
+        str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower()
+    )
+
     trace_expectations=spec.get("trace_expectations") or []
     trace_checks=[]
     trace_delta_verified=bool(trace_expectations)
-    if not trace_expectations:
-        reasons_placeholder="Manifest must declare trace_expectations for the expected target/callback path delta."
+    reasons_placeholder="Manifest must declare trace_expectations for the expected target/callback path delta."
     for expectation in trace_expectations:
         if not isinstance(expectation,dict):
             trace_delta_verified=False
@@ -859,52 +933,200 @@ def control(args):
             continue
         address=addr(expectation.get("address"))
         counts={}
-        for name in ("control","attack"):
+        expected={}
+        names=["control","attack"]
+        if negative is not None:
+            names.append("negative_control")
+        for name in names:
             calls=rows.get(name,{}).get("call_trace") or []
             counts[name]=sum(1 for call in calls if str(call.get("to") or "").lower()==address)
-        expected={}
-        for name in ("control","attack"):
             lo=expectation.get(name+"_min_calls")
             hi=expectation.get(name+"_max_calls")
             if lo is None or hi is None or int(lo)<0 or int(hi)<int(lo):
-                trace_delta_verified=False
-                expected[name]={"valid":False,"reason":"min/max calls are missing or invalid"}
+                if name=="negative_control" and not spec.get("require_negative_control"):
+                    expected[name]={"configured":False,"matched":None}
+                else:
+                    trace_delta_verified=False
+                    expected[name]={"valid":False,"reason":"min/max calls are missing or invalid"}
             else:
                 expected[name]={"min":int(lo),"max":int(hi),
                                 "matched":int(lo)<=counts[name]<=int(hi)}
-                if not expected[name]["matched"]: trace_delta_verified=False
-        trace_checks.append({"address":address,"description":expectation.get("description"),
-                             "observed_call_counts":counts,"expected":expected,
-                             "verified":all(item.get("matched",False) for item in expected.values())})
+                if not expected[name]["matched"]:
+                    trace_delta_verified=False
+        trace_checks.append({
+            "address":address,"description":expectation.get("description"),
+            "observed_call_counts":counts,"expected":expected,
+            "verified":all(item.get("matched",True) is not False for item in expected.values()),
+        })
     trace_delta_verified=trace_delta_verified and all(item.get("verified",False) for item in trace_checks)
-    attack_metric_positive=bool(rows.get("attack",{}).get("metric") is not None and rows["attack"]["metric"]>0)
-    passed=same_entry and same_envelope and same_prestate and same_chain and trace_delta_verified and attack_metric_positive and delta is not None and delta>0
-    reasons=[]
-    for name in ("control","attack"):
-        if rows.get(name,{}).get("trace_error"): reasons.append(name+": "+rows[name]["trace_error"])
-    if not same_entry: reasons.append("RPC-derived root transaction sender/target/calldata/value differ or a trace is missing.")
-    if not same_envelope: reasons.append("RPC-derived transaction nonce/gas/fee/type/access-list envelope differs.")
-    if not same_prestate: reasons.append("RPC-derived parent-block pre-state for the declared accounts/slots differs.")
-    if not same_chain: reasons.append("Control and attack transactions were executed on different chain IDs.")
-    if not trace_delta_verified: reasons.append(reasons_placeholder if not trace_expectations else "Observed nested-call trace did not match the manifest-declared path/callback expectations.")
-    if delta is None or delta<=0: reasons.append("Attack metric did not exceed the control metric.")
-    if not attack_metric_positive: reasons.append("Attack portfolio native-ETH delta after gas is not positive.")
-    out=safe_out(root,ns.output)
+
+    negative_control_present=negative is not None
+    negative_control_verified=(
+        negative_control_present and
+        all("negative_control" in check.get("expected",{}) and
+            check["expected"]["negative_control"].get("matched") is True
+            for check in trace_checks)
+    )
+    if spec.get("require_negative_control") and not negative_control_verified:
+        trace_delta_verified=False
+
+    attack_metric_positive=bool(isinstance(attack_metric,int) and attack_metric>0)
+    semantic_check=rows.get("attack",{}).get("semantic_check") or {}
+    semantic_invariant_verified=bool(semantic_check.get("verified"))
+    family=proof_evidence.normalize_family(spec.get("family"))
+    non_economic=bool(ns.non_economic or spec.get("non_economic") or
+                      family in proof_evidence.NON_ECONOMIC_FAMILIES)
+    economics=proof_evidence.evaluate_economic_policy(
+        family,attack_metric,non_economic=non_economic,
+        semantic_invariant_verified=semantic_invariant_verified,
+    )
+
+    scenario_errors=[name for name,_ in scenarios if rows.get(name,{}).get("trace_error")]
+    execution_attempted=all(
+        rows.get(name,{}).get("exit_code")==0 for name in ("control","attack")
+    )
+    base_valid=(
+        same_entry and same_prestate and same_chain and trace_delta_verified and
+        not scenario_errors and freeze_status.get("verified",False)
+    )
+    if backend=="anvil-calltracer":
+        base_valid=base_valid and same_envelope
+    else:
+        # Forge has no signed transaction envelope or EOA receipt gas. Require a
+        # block-pinned, independently verified target before calling it fork evidence.
+        base_valid=base_valid and all(
+            rows.get(name,{}).get("target_authenticity_verified",False)
+            for name in ("control","attack")
+        )
+
+    if non_economic:
+        passed=base_valid and economics["accepted"] and semantic_invariant_verified
+    else:
+        # Anvil's metric is net of actual receipt gas. Forge's is a state-diff
+        # balance delta without gas, so it can never satisfy this profit gate.
+        passed=(base_valid and backend=="anvil-calltracer" and economics["accepted"] and
+                attack_metric_positive and isinstance(delta,int) and delta>0)
+
+    rejection_reasons=[]
+    for name in ("control","attack","negative_control"):
+        if rows.get(name,{}).get("trace_error"):
+            rejection_reasons.append(name+": "+rows[name]["trace_error"])
+    if not same_entry: rejection_reasons.append("Control and attack do not share the same target entry call.")
+    if not same_prestate: rejection_reasons.append("Control and attack pre-state digests differ.")
+    if not same_chain: rejection_reasons.append("Control and attack were executed on different chain IDs.")
+    if backend=="anvil-calltracer" and not same_envelope:
+        rejection_reasons.append("RPC-derived transaction nonce/gas/fee/type/access-list envelope differs.")
+    if not trace_delta_verified:
+        rejection_reasons.append(reasons_placeholder if not trace_expectations else
+            "Observed nested-call trace did not match the frozen manifest expectations.")
+    if spec.get("require_negative_control") and not negative_control_verified:
+        rejection_reasons.append("Required negative control is missing or did not match its expected callback/path behavior.")
+    if not freeze_status.get("verified"):
+        rejection_reasons.append("Frozen expectations are missing or were not verified; this run cannot be promoted.")
+    if non_economic and not semantic_invariant_verified:
+        rejection_reasons.append("Non-economic attack requires a passing semantic_check_argv.")
+    if not non_economic and backend=="forge-state-diff":
+        rejection_reasons.append("Forge state-diff has no EOA receipt gas accounting; it cannot prove net profitability.")
+    if not non_economic and (delta is None or delta<=0):
+        rejection_reasons.append("Attack metric did not exceed the control metric.")
+    if not non_economic and not attack_metric_positive:
+        rejection_reasons.append("Attack metric is not positive after measured costs.")
+
+    authenticity=(
+        "forked_deployment" if all(
+            rows.get(name,{}).get("target_authenticity_verified",False)
+            for name in ("control","attack")
+        ) else str(spec.get("target_authenticity") or "unknown")
+    )
+    fidelity_labels=[rows.get(name,{}).get("fidelity_label") for name in ("control","attack")]
+    if backend=="forge-state-diff":
+        fidelity="simulated_caller"
+        if "synthetic_state" in fidelity_labels: fidelity="synthetic_state"
+        elif "simulated_dependencies" in fidelity_labels: fidelity="simulated_dependencies"
+    else:
+        fidelity="real_funded" if all(
+            not (rows.get(name,{}).get("fidelity") or {}).get("synthetic_state",False) and
+            not (rows.get(name,{}).get("fidelity") or {}).get("fork_reproduction_blockers")
+            for name in ("control","attack")
+        ) else "synthetic_state"
+
+    rejected=(
+        execution_attempted and not passed and
+        not scenario_errors and same_entry and same_prestate and same_chain and
+        (not trace_delta_verified or (non_economic and not semantic_invariant_verified) or
+         (not non_economic and isinstance(delta,int) and delta<=0))
+    )
+    outcome="profitable" if passed and not non_economic else (
+        "observed" if passed or execution_attempted else "not_run"
+    )
+    if rejected:
+        outcome="rejected"
+    proof=proof_evidence.classify_proof(
+        authenticity,fidelity,outcome,
+        authenticity_verified=authenticity=="forked_deployment" and all(
+            rows.get(name,{}).get("target_authenticity_verified",False)
+            for name in ("control","attack")
+        ),
+    )
+    legacy_status="BREAK" if passed else ("REJECTED" if rejected else "OBSERVED")
+    proof_status=proof["status"]
+    # Non-economic attacks and Forge-only state diffs must not be promoted as
+    # profitable deployment exploits even when their semantic assertions pass.
+    if non_economic and passed:
+        proof_status="SIMULATED_BREAK"
+    if not freeze_status.get("verified"):
+        proof_status="OBSERVED"
+
+    memory_feedback=None
+    if rejected:
+        try:
+            try:
+                from . import experience_memory
+            except ImportError:
+                import experience_memory
+            memory_feedback=experience_memory.record_feedback(
+                kind="false-positive",
+                summary="Rejected control-gate hypothesis for "+str(spec.get("same_calls_id")),
+                evidence="Control evidence rejected this attempted exploit. Reasons: "+
+                         "; ".join(rejection_reasons)[:1000],
+                finding_id="",
+                root=root,
+            )
+        except Exception as exc:
+            memory_feedback={"recorded":False,"reason":str(exc)[:300]}
+
     payload={
-        "created_at":now(),"status":"BREAK" if passed else "OBSERVED","verification_method":"local-Anvil RPC transaction plus debug_traceTransaction callTracer",
+        "created_at":now(),"status":proof_status,"proof_status":proof_status,
+        "legacy_status":legacy_status,"proof_axes":proof,
+        "target_authenticity":authenticity,"fidelity":fidelity,
+        "outcome":outcome,"family":family,"economic_policy":economics,
+        "trace_backend":backend,"verification_method":(
+            "Foundry Vm.startStateDiffRecording/stopAndReturnStateDiff" if backend=="forge-state-diff"
+            else "local-Anvil RPC transaction plus debug_traceTransaction callTracer"
+        ),
+        "freeze":freeze_status,"negative_control_present":negative_control_present,
+        "negative_control_verified":negative_control_verified,
         "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
         "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,"same_chain_verified":same_chain,
         "trace_delta_verified":trace_delta_verified,"trace_checks":trace_checks,
-        "attack_metric_positive_after_gas":attack_metric_positive,
-        "target_address":target,"prestate_slots_checked":spec.get("prestate_slots") or [],
-        "runs":rows,"reasons":reasons,
-        "gate":"Only trace-backed local transactions with identical root invocation, transaction envelope and declared parent-block pre-state, manifest-matching nested-call deltas, a positive attack portfolio delta after gas, and a positive attack-minus-control delta can produce BREAK.",
+        "attack_metric_positive_after_gas":attack_metric_positive if backend=="anvil-calltracer" else None,
+        "semantic_invariant_verified":semantic_invariant_verified,
+        "target_address":target,"prestate_slots_declared":spec.get("prestate_slots") or [],
+        "storage_slots_derived_from_trace":sorted({
+            (item.get("address") or item.get("account","")).lower()+":"+str(item.get("slot","")).lower()
+            for name in ("control","attack","negative_control")
+            for item in rows.get(name,{}).get("derived_storage_accesses",[])
+        }),
+        "runs":rows,"reasons":rejection_reasons,"memory_feedback":memory_feedback,
+        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff is test-execution evidence and cannot prove EOA gas or net profitability.",
     }
+    out=safe_out(root,ns.output)
     write_json(out,payload)
-    print(f"{payload['status']}: delta {delta}; entry call {'matched' if same_entry else 'DIFFERENT'}; tx envelope {'matched' if same_envelope else 'DIFFERENT'}; parent pre-state {'matched' if same_prestate else 'DIFFERENT'}; evidence {out.relative_to(root)}")
+    print(f"{proof_status}: {backend}; delta {delta}; entry {'matched' if same_entry else 'DIFFERENT'}; pre-state {'matched' if same_prestate else 'DIFFERENT'}; frozen {'verified' if freeze_status.get('verified') else 'NO'}; evidence {out.relative_to(root)}")
     return 0 if passed else 1
+
 
 
 def coverage(args):
