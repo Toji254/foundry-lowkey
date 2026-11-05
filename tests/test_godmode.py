@@ -764,12 +764,12 @@ class GodmodeTests(unittest.TestCase):
             manifest, target, sender, wrapper = self._control_manifest(root)
             manifest["family"] = "dos"
             semantic_argv = [
-                sys.executable, "-c", "print('LOWKEY_SEMANTIC_INVARIANT_PASS')"
+                sys.executable, "-c",
+                "print('LOWKEY_SEMANTIC_INVARIANT_PASS:test_dos_without_credit')"
             ]
             manifest["attack"]["semantic_check_argv"] = semantic_argv
             manifest["attack"]["semantic_check_test"] = "test_dos_without_credit"
             semantic_marker = "LOWKEY_SEMANTIC_INVARIANT_PASS:test_dos_without_credit"
-            manifest_path = root / "control.json"
             manifest_path = root / "control.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             proof_evidence.freeze_control_manifest(root, manifest_path, manifest)
