@@ -108,6 +108,14 @@ def _block_at(source: str, symbol: str | None = None, line: int | None = None) -
         before = [item for item in candidates if source.count("\n", 0, item.start()) + 1 <= line]
         if before:
             candidates = [before[-1]]
+    if not candidates and symbol:
+        declaration = re.search(
+            r"\b(?:abstract\s+)?(?:contract|interface|library)\s+"
+            + re.escape(symbol) + r"\b[^\{]*\{",
+            stripped,
+        )
+        if declaration:
+            candidates = [declaration]
     if not candidates:
         return None
     match = candidates[0]
@@ -309,7 +317,7 @@ def _source_records(root: Path, signal: dict[str, Any]) -> tuple[dict[str, Any],
 
     # Pull only helper/modifier/base declarations referenced by the affected
     # function. The transitive import closure is kept first-party and bounded.
-    candidate_paths = [path for path, _ in closure]
+    candidate_paths = [affected, *[path for path, _ in closure]]
     for path in candidate_paths:
         if len(records) >= MAX_SOURCE_FILES or budget >= MAX_CONTEXT_BYTES - 2500:
             break
