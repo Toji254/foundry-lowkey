@@ -17,7 +17,7 @@ Lowkey's finding explainer is anchored to an existing native signal. It is a ske
    lk ai explain-finding SIGNAL_ID
    ```
 
-The preview makes no provider request and performs no network request. Explanation is opt-in and may incur provider charges. It does not run tests, write Solidity, deploy, choose an RPC/actor/target, sign or broadcast transactions. The report remains unverified and cannot change native finding disposition.
+A preview without external URLs is fully local and network-free. When you explicitly supply `--evidence-url`, preview fetches only those public links, keeps bounded/redacted excerpts local, and displays the exact remote text that would be included; it still makes no provider request. Explanation is opt-in and may incur provider charges. It does not run tests, write Solidity, deploy, choose an RPC/actor/target, sign or broadcast transactions. The report remains unverified and cannot change native finding disposition.
 
 ## Optional public evidence links
 
