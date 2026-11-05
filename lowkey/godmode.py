@@ -761,7 +761,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                     "synthetic_state" if fidelity.get("synthetic_state") else
                     ("simulated_caller" if any(x.get("kind")=="caller_impersonation" for x in fidelity.get("signals",[])) else
                      ("simulated_dependencies" if any(x.get("kind")=="external_call_mock" for x in fidelity.get("signals",[])) else
-                      ("unknown" if not fidelity.get("scan_complete") else "real_funded")))
+                      ("constrained_inputs" if any(x.get("kind")=="test_assumption" for x in fidelity.get("signals",[])) else
+                       ("unknown" if not fidelity.get("scan_complete") else "real_funded"))))
                 ),
                 "semantic_check":semantic_check,
                 "call_trace":calls,
@@ -1324,6 +1325,7 @@ def control(args):
         fidelity="simulated_caller"
         if "synthetic_state" in fidelity_labels: fidelity="synthetic_state"
         elif "simulated_dependencies" in fidelity_labels: fidelity="simulated_dependencies"
+        elif "constrained_inputs" in fidelity_labels: fidelity="constrained_inputs"
     else:
         fidelity="real_funded" if all(
             (rows.get(name,{}).get("fidelity") or {}).get("scan_complete",False) and
@@ -1334,7 +1336,14 @@ def control(args):
             "synthetic_state" if any(
                 (rows.get(name,{}).get("fidelity") or {}).get("synthetic_state",False)
                 for name in ("control","attack")
-            ) else "unknown"
+            ) else (
+                "constrained_inputs" if any(
+                    (rows.get(name,{}).get("fidelity") or {}).get("signals",[]) and
+                    any(signal.get("kind")=="test_assumption"
+                        for signal in (rows.get(name,{}).get("fidelity") or {}).get("signals",[]))
+                    for name in ("control","attack")
+                ) else "unknown"
+            )
         )
 
     rejection_codes=[]
@@ -1955,6 +1964,10 @@ def reprove(args):
         fidelity_label="simulated_caller"
     elif any(signal.get("kind")=="external_call_mock" for signal in fidelity.get("signals",[])):
         fidelity_label="simulated_dependencies"
+    elif any(signal.get("kind")=="test_assumption" for signal in fidelity.get("signals",[])):
+        fidelity_label="constrained_inputs"
+    if not fidelity.get("scan_complete"):
+        fidelity_label="unknown"
     semantic_invariant_verified=bool((semantic_check or {}).get("verified"))
     economic_policy=proof_evidence.evaluate_economic_policy(
         family,net_profit,non_economic=non_economic,
