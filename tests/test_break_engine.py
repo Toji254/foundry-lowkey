@@ -295,6 +295,23 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('abi.encodeWithSignature("deposit(address[])", setupArg0)', body)
         self.assertIn("TARGET.call{value: 0}(setupData)", body)
 
+    def test_repeat_renderer_uses_decimal_metadata_and_optional_return_approve(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_repeat_test(
+            target, {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"},
+            "withdraw()", [], "0", "accounting", "1ether",
+            setup_signature="deposit(uint256)", setup_params=[{"type": "uint256"}],
+            setup_payable=False, asset_signature="asset()",
+        )
+        self.assertIn('abi.encodeWithSignature("decimals()")', body)
+        self.assertIn("tokenFundingAmount = 10 ** assetDecimals", body)
+        self.assertIn("ASSET_DECIMALS_VERIFIED", body)
+        self.assertIn("_lowkeySafeApprove(assetToken, TARGET", body)
+        self.assertIn("APPROVE_RESET_FAILED", body)
+        self.assertNotIn("function approve(address spender, uint256 amount) external returns (bool)", body)
+        self.assertIn('abi.encodeWithSignature("deposit(uint256)", tokenFundingAmount)', body)
+        self.assertIn("TARGET.call{value: 0}(setupData)", body)
+
     def test_reentrancy_actor_implements_standard_token_receiver_hooks(self):
         target = break_engine.Target("Vault", "0x" + "1" * 40)
         body = break_engine._render_reentrancy_test(

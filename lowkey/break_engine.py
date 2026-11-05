@@ -764,7 +764,7 @@ def _setup_argument_samples(params: list[dict[str, Any]]) -> list[str]:
     return values
 
 
-def _solidity_argument_declarations(params, values, prefix, address_expression="address(ATTACKER)"):
+def _solidity_argument_declarations(params, values, prefix, address_expression="address(ATTACKER)", uint_expression="1"):
     """Materialize one-dimensional arrays as Solidity memory variables."""
     declarations = []
     expressions = []
@@ -782,11 +782,16 @@ def _solidity_argument_declarations(params, values, prefix, address_expression="
             else:
                 declarations.append(f"{base}[{fixed}] memory {variable};")
             for position, entry in enumerate(entries):
-                expression = address_expression if base == "address" else _basic_solidity_expr(base, entry)
+                expression = address_expression if base == "address" else (
+                    uint_expression if base.startswith("uint") and uint_expression != "1"
+                    else _basic_solidity_expr(base, entry)
+                )
                 declarations.append(f"{variable}[{position}] = {expression};")
             expressions.append(variable)
         elif ptype == "address":
             expressions.append(address_expression)
+        elif ptype.startswith("uint") and uint_expression != "1":
+            expressions.append(uint_expression)
         else:
             expressions.append(_basic_solidity_expr(ptype, str(raw)))
     return "\n".join("        " + line for line in declarations), expressions
@@ -1210,12 +1215,13 @@ def _render_repeat_test(
     setup_params = list(setup_params) if setup_params is not None else []
     setup_values = _setup_argument_samples(setup_params) if setup_signature else []
     setup_declarations, setup_expressions = _solidity_argument_declarations(
-        setup_params, setup_values, "setup", address_expression="ATTACKER"
+        setup_params, setup_values, "setup", address_expression="ATTACKER",
+        uint_expression="tokenFundingAmount" if asset_signature else "1",
     ) if setup_signature else ("", [])
     setup_suffix = ", " + ", ".join(setup_expressions) if setup_expressions else ""
     setup_call = f'abi.encodeWithSignature("{setup_signature}"{setup_suffix})' if setup_signature else ""
     payable_setup = True if setup_payable is None else setup_payable
-    setup_value = _solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0")
+    setup_value = "0" if asset_signature else (_solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0"))
     payload_expr = (
         f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
         if expressions else f'abi.encodeWithSignature("{signature}")'
@@ -1260,6 +1266,9 @@ def _render_repeat_test(
     asset_discovery = """
         address assetToken = address(0);
         bool assetReadOk = false;
+        bool assetDecimalsVerified = false;
+        uint256 assetDecimals = 0;
+        uint256 tokenFundingAmount = 1;
         uint256 attackerTokenBefore = 0;
         uint256 attackerTokenMid = 0;
         uint256 attackerTokenAfter = 0;
@@ -1272,6 +1281,9 @@ def _render_repeat_test(
         asset_discovery = f"""
         address assetToken = address(0);
         bool assetReadOk = false;
+        bool assetDecimalsVerified = false;
+        uint256 assetDecimals = 0;
+        uint256 tokenFundingAmount = 1;
         {{
             (bool ok, bytes memory data) = TARGET.staticcall(
                 abi.encodeWithSignature("{asset_signature}")
@@ -1289,14 +1301,21 @@ def _render_repeat_test(
         uint256 targetTokenMid = 0;
         uint256 targetTokenAfter = 0;
         if (assetReadOk) {{
-            // Seed the actor with the project's actual ERC-20 asset in the local
-            // Forge VM and approve the target before attempting token-valued setup.
-            deal(assetToken, ATTACKER, 1 ether);
-            vm.prank(ATTACKER);
-            IERC20Lowkey(assetToken).approve(TARGET, type(uint256).max);
+            (bool decimalsOk, bytes memory decimalsData) = assetToken.staticcall(
+                abi.encodeWithSignature("decimals()")
+            );
+            if (decimalsOk && decimalsData.length == 32) {{
+                uint256 reportedDecimals = abi.decode(decimalsData, (uint256));
+                if (reportedDecimals <= 77) {{
+                    assetDecimals = reportedDecimals;
+                    assetDecimalsVerified = true;
+                    tokenFundingAmount = 10 ** assetDecimals;
+                }}
+            }}
+            deal(assetToken, ATTACKER, tokenFundingAmount);
+            _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
         }}
-"""
-        asset_baseline = """
+""        asset_baseline = """
         if (assetReadOk) {
             attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
             targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
@@ -1337,12 +1356,31 @@ def _render_repeat_test(
     return _render_common_header() + f"""
 interface IERC20Lowkey {{
     function balanceOf(address account) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
 }}
 
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
+
+    function _lowkeyApproveCall(address token, address spender, uint256 amount) internal returns (bool) {{
+        (bool ok, bytes memory data) = token.call(
+            abi.encodeWithSignature("approve(address,uint256)", spender, amount)
+        );
+        if (!ok) return false;
+        if (data.length == 0) return true;
+        require(data.length == 32, "MALFORMED_APPROVE_RETURN");
+        uint256 returned;
+        assembly {{ returned := mload(add(data, 32)) }}
+        if (returned == 1) return true;
+        require(returned == 0, "MALFORMED_APPROVE_BOOL");
+        return false;
+    }}
+
+    function _lowkeySafeApprove(address token, address spender, uint256 amount) internal {{
+        if (_lowkeyApproveCall(token, spender, amount)) return;
+        require(_lowkeyApproveCall(token, spender, 0), "APPROVE_RESET_FAILED");
+        require(_lowkeyApproveCall(token, spender, amount), "APPROVE_RETRY_FAILED");
+    }}
 
     function test_break_repeat() public {{
         // Fund the attacker before any payable setup call. Otherwise a seeded
@@ -1397,6 +1435,9 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("TOTAL_ATTACKER_GAIN", totalGain);
         console2.log("TOTAL_TARGET_OUTFLOW", totalTargetOutflow);
         console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
+        console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
+        console2.log("ASSET_DECIMALS", assetDecimals);
+        console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
         console2.log("TOTAL_ATTACKER_TOKEN_GAIN", totalTokenGain);
         console2.log("TOTAL_TARGET_TOKEN_OUTFLOW", totalTargetTokenOutflow);
         console2.log("ENTITLEMENT_READ_OK", entitlementReadOk);

@@ -81,7 +81,7 @@ FALLBACK = {
 "erc721_receiver":r"\bonERC721Received\s*\(",
 "erc1155_single":r"\bonERC1155Received\s*\(",
 "erc1155_batch":r"\bonERC1155BatchReceived\s*\(",
-"erc777_hook":r"\bonTokensReceived\s*\(",
+"erc777_hook":r"\btokensReceived\s*\(",
 "erc1363_hook":r"\bonTransferReceived\s*\(",
 "erc1363_approval_hook":r"\bonApprovalReceived\s*\(",
 "callback":r"\b(?:callback|executeOperation|uniswapV3FlashCallback|receiveFlashLoan)\s*\(",
