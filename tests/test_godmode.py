@@ -803,5 +803,142 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue((root / ".audit/godmode/report.md.sha256").is_file())
 
 
+    def _forge_artifact(self):
+        target = "0x" + "1" * 40
+        attacker = "0x" + "2" * 40
+        wrapper = "0x" + "3" * 40
+        code_hash = "0x" + "a" * 64
+        return {
+            "schema_version": 1,
+            "backend": "forge-state-diff",
+            "chain_id": 1,
+            "block_number": 20_000_000,
+            "target_address": target,
+            "target_code_hash": code_hash,
+            "fork_parent_hash": "0x" + "b" * 64,
+            "accesses": [
+                {
+                    "kind": 0, "account": target, "accessor": wrapper,
+                    "depth": 1, "value": 0, "data": "0x12345678",
+                    "old_balance": 1000, "new_balance": 900,
+                    "old_nonce": 1, "new_nonce": 1, "code_hash": code_hash,
+                    "reverted": False,
+                    "storage_accesses": [{
+                        "account": target, "slot": 0, "previous_value": 5,
+                        "new_value": 0, "is_write": True, "reverted": False,
+                    }],
+                },
+                {
+                    "kind": 0, "account": wrapper, "accessor": attacker,
+                    "depth": 0, "value": 0, "data": "0xabcdef01",
+                    "old_balance": 50, "new_balance": 150,
+                    "old_nonce": 1, "new_nonce": 1,
+                    "code_hash": "0x" + "c" * 64,
+                    "reverted": False, "storage_accesses": [],
+                },
+            ],
+        }
+
+    def test_forge_control_adapter_consumes_real_forge_artifact_without_claiming_eoa_profit(self):
+        import subprocess
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = "0x" + "1" * 40
+            wrapper = "0x" + "3" * 40
+            harness = root / "test" / "Attack.t.sol"
+            harness.parent.mkdir()
+            harness.write_text(
+                "contract Attack { function setUp() public { vm.createSelectFork(\\"mainnet\\", 20000000); } }",
+                encoding="utf-8",
+            )
+            artifact = self._forge_artifact()
+            entry = {
+                "harness": "test/Attack.t.sol",
+                "state_diff_file": ".audit/godmode/attack-state-diff.json",
+                "argv": ["forge", "test", "--match-path", "test/Attack.t.sol", "-vv"],
+            }
+            spec = {"target_address": target, "metric_addresses": [wrapper]}
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                output = pathlib.Path(cwd) / entry["state_diff_file"]
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps(artifact), encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, "Forge test passed", "")
+
+            with patch.object(godmode, "run", side_effect=fake_run):
+                result = godmode._forge_control_run(
+                    root, "http://127.0.0.1:8545", "attack", entry, spec, {}
+                )
+
+            self.assertEqual(result["backend"], "forge-state-diff")
+            self.assertEqual(result["metric"], 100)
+            self.assertEqual(result["metric_kind"], "forge_account_balance_delta_without_eoa_gas")
+            self.assertFalse(result["gas_verified"])
+            self.assertFalse(result["transaction_envelope_verified"])
+            self.assertIsNone(result["tx_hash"])
+            self.assertFalse(result["target_authenticity_verified"])
+            self.assertEqual(result["fidelity_label"], "simulated_caller")
+            self.assertEqual(result["derived_storage_slots"][0]["address"], target)
+            self.assertTrue(result["derived_storage_slots"][0]["prestate_value"].endswith("05"))
+
+    def test_forge_archive_verification_checks_pinned_header_code_and_trace_storage(self):
+        target = "0x" + "1" * 40
+        normalized = godmode.normalize_forge_state_diff(
+            self._forge_artifact(), expected_target=target
+        )
+        parent_hash = "0x" + "b" * 64
+        target_hash = "0x" + "a" * 64
+        block_hash = "0x" + "c" * 64
+        state_root = "0x" + "d" * 64
+        block = {
+            "hash": block_hash, "parentHash": parent_hash,
+            "stateRoot": state_root, "timestamp": "0x1234",
+        }
+        storage_value = "0x" + "0" * 63 + "5"
+
+        def fake_rpc(url, method, params, timeout=20):
+            if method == "eth_chainId":
+                return "0x1"
+            if method == "eth_getBlockByNumber":
+                return ({"hash": parent_hash} if params[0] == hex(19_999_999) else block)
+            if method == "eth_getCode":
+                return "0x6000"
+            if method == "eth_getBalance":
+                return hex(1000)
+            if method == "eth_getTransactionCount":
+                return "0x1"
+            if method == "eth_getProof":
+                return {"codeHash": target_hash}
+            if method == "eth_getStorageAt":
+                return storage_value
+            raise AssertionError("Unexpected RPC method: " + method)
+
+        with patch.object(godmode, "rpc", side_effect=fake_rpc):
+            verified = godmode._forge_source_verification(
+                "https://archive.example", "http://127.0.0.1:8545",
+                normalized, {"source_addresses": [target]},
+            )
+        self.assertTrue(verified["verified"], verified)
+        self.assertEqual(verified["fork_block"], 20_000_000)
+        self.assertEqual(verified["checked_addresses"][0]["address"], target)
+        self.assertEqual(len(verified["checked_storage_slots"]), 1)
+
+        def mismatched_rpc(url, method, params, timeout=20):
+            result = fake_rpc(url, method, params, timeout)
+            if method == "eth_getBlockByNumber" and params[0] == hex(20_000_000):
+                return {**block, "stateRoot": "0x" + "e" * 64}
+            return result
+
+        with patch.object(godmode, "rpc", side_effect=mismatched_rpc):
+            rejected = godmode._forge_source_verification(
+                "https://archive.example", "http://127.0.0.1:8545",
+                normalized, {"source_addresses": [target]},
+            )
+        self.assertFalse(rejected["verified"])
+        self.assertIn("stateRoot differs", rejected["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()
