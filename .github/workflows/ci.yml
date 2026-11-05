@@ -345,7 +345,7 @@ jobs:
               }
           }
           EOF
-          grep -nE 'function (etch|deal|recordLogs|getRecordedLogs)\\(' lib/forge-std/src/Vm.sol
+          grep -nE 'function (etch|deal|recordLogs|getRecordedLogs)\(' lib/forge-std/src/Vm.sol
           forge build --force
           forge test --match-path test/P1StepReenter.t.sol -vv
       - name: Run installed integration checks
