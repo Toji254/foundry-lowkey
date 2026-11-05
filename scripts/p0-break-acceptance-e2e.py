@@ -183,15 +183,6 @@ def exercise(
     if len(results) != 1:
         raise AssertionError(f"Expected one accounting result for {contract}, got {len(results)}: {report}")
     result = results[0]
-    if result.get("status") != "OBSERVED":
-        raise AssertionError(f"{contract} did not reach OBSERVED: {json.dumps(result, indent=2)}")
-    tail = str((result.get("detail") or {}).get("raw_tail") or "")
-    for marker in expected_markers:
-        if marker not in tail:
-            raise AssertionError(
-                f"{contract} evidence missing {marker!r}.\n"
-                f"Raw tail:\n{tail}\nCLI output:\n{output.stdout[-10000:]}"
-            )
     scenario_evidence = evidence_root / contract
     scenario_evidence.mkdir(parents=True, exist_ok=True)
     for evidence_file in runs_dir.glob("*.json"):
@@ -199,6 +190,15 @@ def exercise(
     harness_archive = (result.get("detail") or {}).get("harness_archive")
     if harness_archive and Path(harness_archive).is_file():
         shutil.copy2(harness_archive, scenario_evidence / Path(harness_archive).name)
+    if result.get("status") != "OBSERVED":
+        raise AssertionError(f"{contract} did not reach OBSERVED: {json.dumps(result, indent=2)}")
+    tail = str((result.get("detail") or {}).get("raw_tail") or "")
+    for marker in expected_markers:
+        if marker not in tail:
+            raise AssertionError(
+                f"{contract} evidence missing {marker!r}.\\n"
+                f"Raw tail:\\n{tail}\\nCLI output:\\n{output.stdout[-10000:]}"
+            )
     print(f"PASS: {contract} reached OBSERVED through installed lk break; evidence: {scenario_evidence}")
 
 
