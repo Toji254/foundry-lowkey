@@ -242,5 +242,26 @@ class FindingExplainerTests(unittest.TestCase):
             finding_explainer._fetch_remote_evidence(root, context, ["https://docs.example.org"] * 6)
 
 
+    def test_remote_reference_quotes_are_never_mislabeled_as_local_source_matches(self):
+        root, signal = self.fixture()
+        url = "https://docs.example.org/audit/report"
+        report = finding_explainer.validate_explanation({
+            "classification": "needs-investigation",
+            "references": [{
+                "path": url,
+                "symbol": "Report",
+                "quote": "permission check",
+                "role": "remote audit report",
+            }],
+        }, {
+            "source_files": [],
+            "test_files": [],
+            "remote_evidence": [{"url": url, "status": "fetched", "content_excerpt": "permission check"}],
+        })
+        self.assertEqual(report["references"][0]["quote_status"], "remote-unverified")
+        self.assertFalse(report["verified"])
+        self.assertFalse(report["human_disposition_changed"])
+
+
 if __name__ == "__main__":
     unittest.main()
