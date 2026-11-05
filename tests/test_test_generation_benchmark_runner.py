@@ -48,6 +48,43 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             found = BENCHMARK.find_contracts(root)
             self.assertEqual(set(found), {"srcArtifact"})
 
+    def test_lockfile_dependency_install_command_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"packageManager": "yarn@4.0.2"}), encoding="utf-8"
+            )
+            (root / "yarn.lock").write_text("# yarn lockfile v1\n", encoding="utf-8")
+            (root / ".yarn" / "releases").mkdir(parents=True)
+            (root / ".yarn" / "releases" / "yarn-4.0.2.cjs").write_text("", encoding="utf-8")
+            self.assertEqual(
+                BENCHMARK._dependency_install_command(root),
+                ["node", str(root / ".yarn" / "releases" / "yarn-4.0.2.cjs"),
+                 "install", "--immutable", "--mode=skip-builds"],
+            )
+
+    def test_npm_lockfile_uses_clean_reproducible_dependency_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text("{}", encoding="utf-8")
+            (root / "package-lock.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(
+                BENCHMARK._dependency_install_command(root),
+                ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+            )
+
+    def test_foundry_node_modules_detection_reads_declared_library_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "foundry.toml"
+            config.write_text(
+                '[profile.default]\nlibs = ["lib", "node_modules"]\n',
+                encoding="utf-8",
+            )
+            self.assertTrue(BENCHMARK._config_uses_node_modules(config))
+            config.write_text('[profile.default]\nlibs = ["lib"]\n', encoding="utf-8")
+            self.assertFalse(BENCHMARK._config_uses_node_modules(config))
+
     def test_nearest_foundry_root_resolves_nested_package_from_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

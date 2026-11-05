@@ -46,7 +46,14 @@
         "regression",
         "formal"
       ],
-      "revision": "11565e5f6277a320408025e649240056ba6a3919"
+      "revision": "11565e5f6277a320408025e649240056ba6a3919",
+      "target_setup": {
+        "ERC2771Forwarder": {
+          "constructor_args": [
+            "\"LowkeyForwarder\""
+          ]
+        }
+      }
     },
     {
       "id": "uniswap-v2-core",
@@ -78,7 +85,14 @@
         "regression",
         "formal"
       ],
-      "revision": "6a9e7c97860676e0992f22a49665760444c1cdf5"
+      "revision": "6a9e7c97860676e0992f22a49665760444c1cdf5",
+      "target_setup": {
+        "UniswapV2Factory": {
+          "constructor_args": [
+            "address(this)"
+          ]
+        }
+      }
     },
     {
       "id": "uniswap-v4-core",
@@ -111,7 +125,14 @@
         "regression",
         "formal"
       ],
-      "revision": "bea7f6d1c11cd5dc4f0d5151ffa37a1c239feee6"
+      "revision": "bea7f6d1c11cd5dc4f0d5151ffa37a1c239feee6",
+      "target_setup": {
+        "PoolManager": {
+          "constructor_args": [
+            "address(this)"
+          ]
+        }
+      }
     },
     {
       "id": "aave-v3-core",
@@ -178,7 +199,14 @@
         "regression",
         "formal"
       ],
-      "revision": "9cf6d5b844625ba108e36d1cf911f5d2faf7c136"
+      "revision": "9cf6d5b844625ba108e36d1cf911f5d2faf7c136",
+      "target_setup": {
+        "Morpho": {
+          "constructor_args": [
+            "address(this)"
+          ]
+        }
+      }
     },
     {
       "id": "layerzero-v2",
@@ -211,16 +239,22 @@
         "regression",
         "formal"
       ],
-      "revision": "9c741e7f9790639537b1710a203bcdfd73b0b9ac"
+      "revision": "9c741e7f9790639537b1710a203bcdfd73b0b9ac",
+      "target_setup": {
+        "EndpointV2": {
+          "constructor_args": [
+            "40161",
+            "address(this)"
+          ]
+        }
+      }
     },
     {
       "id": "solady",
       "repository": "https://github.com/Vectorized/solady",
       "target_candidates": [
-        "ERC20",
-        "ERC721",
-        "SafeTransferLib",
-        "LibString"
+        "WETH",
+        "ERC1967Factory"
       ],
       "architectural_challenges": [
         "assembly-heavy code",

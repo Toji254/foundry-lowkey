@@ -296,6 +296,45 @@ def _is_abstract_contract(project_root: Path, relative_source: str, contract: st
     ))
 
 
+def _dependency_install_command(root: Path) -> list[str] | None:
+    """Resolve a lockfile-backed dependency install without guessing a build command."""
+    package_path = root / "package.json"
+    if not package_path.is_file():
+        return None
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    manager = str(package.get("packageManager") or "").lower()
+    if (root / "package-lock.json").is_file():
+        return ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+    if (root / "pnpm-lock.yaml").is_file():
+        return ["corepack", "pnpm", "install", "--frozen-lockfile", "--ignore-scripts"]
+    if (root / "yarn.lock").is_file():
+        bundled = sorted((root / ".yarn" / "releases").glob("yarn-*.cjs"))
+        if bundled and (manager.startswith("yarn@4") or (root / ".yarnrc.yml").is_file()):
+            return ["node", str(bundled[-1]), "install", "--immutable", "--mode=skip-builds"]
+        if manager.startswith("yarn@4"):
+            return ["corepack", "yarn", "install", "--immutable", "--mode=skip-builds"]
+        return ["corepack", "yarn@1.22.22", "install", "--frozen-lockfile", "--ignore-scripts"]
+    return None
+
+
+def _config_uses_node_modules(config_path: Path) -> bool:
+    """Check declared Foundry library paths for node_modules dependencies."""
+    try:
+        import tomllib
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        profiles = config.get("profile", {})
+        active = os.environ.get("FOUNDRY_PROFILE", "default")
+        selected = profiles.get(active, {})
+        default = profiles.get("default", {})
+        libs = selected.get("libs", default.get("libs", config.get("libs", [])))
+    except (OSError, ValueError, ImportError, AttributeError):
+        return False
+    return isinstance(libs, list) and any("node_modules" in str(value) for value in libs)
+
+
 def _report_accounts_for_every_type(report: dict[str, Any] | None) -> bool:
     """A complete report may explain evidence gaps, but cannot omit categories."""
     if not isinstance(report, dict):
@@ -512,10 +551,29 @@ def main() -> int:
 
             item["targets"] = []
             item["baseline_builds"] = []
+            item["dependency_setup"] = []
+            dependency_roots: set[Path] = set()
             for package_root, target_group in grouped.items():
                 config_path, synthetic_config = configs[package_root]
                 forge_env = {"FOUNDRY_CONFIG": str(config_path.resolve())}
                 baseline_key = str(package_root)
+                if _config_uses_node_modules(config_path):
+                    dependency_root = clone_dir.resolve()
+                    if dependency_root not in dependency_roots:
+                        dependency_roots.add(dependency_root)
+                        dependency_command = _dependency_install_command(dependency_root)
+                        if dependency_command is not None:
+                            dependency_result = run(dependency_command, cwd=dependency_root, timeout=3600)
+                            item["dependency_setup"].append({
+                                "root": str(dependency_root),
+                                "command": dependency_command,
+                                "result": dependency_result,
+                            })
+                        else:
+                            item["dependency_setup"].append({
+                                "root": str(dependency_root),
+                                "status": "no-lockfile-backed-install-declared",
+                            })
                 if baseline_key not in {entry["root"] for entry in item["baseline_builds"]}:
                     build = run(["forge", "build"], cwd=package_root, timeout=1800, env=forge_env)
                     item["baseline_builds"].append({
