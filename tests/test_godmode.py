@@ -1177,7 +1177,11 @@ class GodmodeTests(unittest.TestCase):
 
         def mismatched_rpc(url, method, params, timeout=20):
             result = fake_rpc(url, method, params, timeout)
-            if method == "eth_getBlockByNumber" and params[0] == hex(20_000_000):
+            # Mutate only the independent archive response. If both RPCs are
+            # changed identically, the test no longer exercises a fork/archive mismatch.
+            if (url == "https://archive.example" and
+                method == "eth_getBlockByNumber" and
+                params[0] == hex(20_000_000)):
                 return {**block, "stateRoot": "0x" + "e" * 64}
             return result
 
