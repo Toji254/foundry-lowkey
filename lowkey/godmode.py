@@ -3107,7 +3107,7 @@ def _step_abi_argument(abi_value, prefix):
         raise StepPlanError("Each ABIValue must be an object with exactly 'type' and 'value'.")
     abi_type = str(abi_value.get("type") or "").strip()
     value = abi_value.get("value")
-    array_match = re.fullmatch(r"(.+)\\[([0-9]*)\\]", abi_type)
+    array_match = re.fullmatch(r"(.+)\[([0-9]*)\]", abi_type)
     if not array_match:
         return [], _step_scalar_expression(abi_type, value, prefix)
     base_type, fixed_count = array_match.groups()
@@ -3241,7 +3241,7 @@ def render_step_harness(spec):
                 elif not optional:
                     body.append(f'require(step{index}Success, "STEP_{index}_FAILED");')
                 saw_call = True
-            rendered_steps.append("        {\\n            " + "\\n            ".join(body) + "\\n        }")
+            rendered_steps.append("        {\n            " + "\n            ".join(body) + "\n        }")
             continue
         if kind == "assert":
             if not saw_call:
@@ -3265,12 +3265,12 @@ def render_step_harness(spec):
         if kind == "snapshot":
             if target_raw is not None or selector_raw is not None or raw_args or step.get("value") is not None:
                 raise StepPlanError(f"{label} snapshot accepts no target, selector, args or value.", family=family)
-            rendered_steps.append("        snapshotId = vm.snapshot();\\n        snapshotAvailable = true;")
+            rendered_steps.append("        snapshotId = vm.snapshot();\n        snapshotAvailable = true;")
             continue
         if kind == "revert":
             if target_raw is not None or selector_raw is not None or raw_args or step.get("value") is not None:
                 raise StepPlanError(f"{label} revert accepts no target, selector, args or value.", family=family)
-            rendered_steps.append('        require(snapshotAvailable, "STEP_REVERT_WITHOUT_SNAPSHOT");\\n        require(vm.revertTo(snapshotId), "STEP_SNAPSHOT_REVERT_FAILED");\\n        snapshotAvailable = false;')
+            rendered_steps.append('        require(snapshotAvailable, "STEP_REVERT_WITHOUT_SNAPSHOT");\n        require(vm.revertTo(snapshotId), "STEP_SNAPSHOT_REVERT_FAILED");\n        snapshotAvailable = false;')
             continue
         raise StepPlanError(f"{label} kind '{kind}' is not yet rendered.", "backend_unsupported", family=family)
     if pending_revert:
@@ -3279,7 +3279,7 @@ def render_step_harness(spec):
         raise StepPlanError("Step plan must execute at least one call or read.", family=family)
     contract_name = "LowkeySteps_" + family
     source = template.replace("__LOWKEY_CONTRACT_NAME__", contract_name)
-    source = source.replace("__LOWKEY_STEP_CODE__", "\\n".join(rendered_steps))
+    source = source.replace("__LOWKEY_STEP_CODE__", "\n".join(rendered_steps))
     return source
 
 
