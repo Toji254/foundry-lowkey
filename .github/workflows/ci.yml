@@ -40,6 +40,9 @@ jobs:
           forge --version
           cast --version
           anvil --version
+      - name: P0 ABI, token and receiver acceptance
+        working-directory: tests/fixtures/acceptance/setup-compatibility
+        run: forge test -vv
       - name: Install Lowkey
         run: ./install.sh
       - name: Exercise project-aware Chisel contract preload
