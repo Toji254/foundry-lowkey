@@ -6,12 +6,70 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  foundry-toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore cached pinned Foundry binaries
+        id: foundry-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.foundry/bin
+          key: foundry-binaries-${{ runner.os }}-${{ runner.arch }}-v1.9.0
+      - name: Validate cached pinned Foundry binaries
+        id: validate-foundry-cache
+        if: steps.foundry-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          valid=true
+          for tool in forge cast anvil; do
+            binary="$HOME/.foundry/bin/$tool"
+            if [[ ! -x "$binary" ]]; then
+              valid=false
+              break
+            fi
+            version="$("$binary" --version 2>&1)"
+            if ! grep -Fq "1.9.0" <<< "$version"; then
+              valid=false
+              break
+            fi
+          done
+          echo "valid=$valid" >> "$GITHUB_OUTPUT"
+          if [[ "$valid" != "true" ]]; then
+            rm -rf "$HOME/.foundry/bin"
+          fi
+      - name: Install pinned Foundry binaries
+        if: steps.validate-foundry-cache.outputs.valid != 'true'
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+      - name: Verify and package pinned Foundry binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          for tool in forge cast anvil; do
+            binary="$HOME/.foundry/bin/$tool"
+            test -x "$binary"
+            version="$("$binary" --version 2>&1)"
+            printf '%s\n' "$version"
+            grep -Fq "1.9.0" <<< "$version"
+          done
+          tar -czf "$RUNNER_TEMP/foundry-bin.tar.gz" -C "$HOME/.foundry" bin
+      - name: Upload verified Foundry binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundry-binaries-v1.9.0
+          path: ${{ runner.temp }}/foundry-bin.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   python:
     runs-on: ubuntu-latest
     steps:
@@ -33,12 +91,26 @@ jobs:
 
   foundry-integration:
     runs-on: ubuntu-latest
+    needs: foundry-toolchain
     steps:
       - uses: actions/checkout@v4
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - name: Download pinned Foundry binaries
+        uses: actions/download-artifact@v4
         with:
-          version: v1.9.0
+          name: foundry-binaries-v1.9.0
+          path: ${{ runner.temp }}/foundry-artifact
+      - name: Restore pinned Foundry binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.foundry"
+          tar -xzf "$RUNNER_TEMP/foundry-artifact/foundry-bin.tar.gz" -C "$HOME/.foundry"
+          chmod +x "$HOME/.foundry/bin/"*
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          for tool in forge cast anvil; do
+            test -x "$HOME/.foundry/bin/$tool"
+            "$HOME/.foundry/bin/$tool" --version
+          done
       - name: Verify dependencies
         run: |
           forge --version
@@ -1430,14 +1502,30 @@ jobs:
 
   test-generation-ecosystem-smoke:
     runs-on: ubuntu-latest
+    needs: foundry-toolchain
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           check-latest: true
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - name: Download pinned Foundry binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-binaries-v1.9.0
+          path: ${{ runner.temp }}/foundry-artifact
+      - name: Restore pinned Foundry binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.foundry"
+          tar -xzf "$RUNNER_TEMP/foundry-artifact/foundry-bin.tar.gz" -C "$HOME/.foundry"
+          chmod +x "$HOME/.foundry/bin/"*
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          for tool in forge cast anvil; do
+            test -x "$HOME/.foundry/bin/$tool"
+            "$HOME/.foundry/bin/$tool" --version
+          done
       - name: Install Lowkey
         run: |
           ./install.sh
@@ -1524,6 +1612,7 @@ jobs:
 
   test-generation-ecosystem-full:
     runs-on: ubuntu-latest
+    needs: foundry-toolchain
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
@@ -1531,8 +1620,23 @@ jobs:
         with:
           python-version: "3.11"
           check-latest: true
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - name: Download pinned Foundry binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-binaries-v1.9.0
+          path: ${{ runner.temp }}/foundry-artifact
+      - name: Restore pinned Foundry binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.foundry"
+          tar -xzf "$RUNNER_TEMP/foundry-artifact/foundry-bin.tar.gz" -C "$HOME/.foundry"
+          chmod +x "$HOME/.foundry/bin/"*
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          for tool in forge cast anvil; do
+            test -x "$HOME/.foundry/bin/$tool"
+            "$HOME/.foundry/bin/$tool" --version
+          done
       - name: Install Lowkey
         run: |
           ./install.sh
@@ -1546,6 +1650,36 @@ jobs:
             --targets-per-project 2 \
             --work-dir /tmp/lowkey-full-ecosystem-work \
             --output .audit/test-gen-ecosystem-full.json
+      - name: Ensure a diagnostic full-corpus report exists
+        if: always()
+        env:
+          BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          path = Path(".audit/test-gen-ecosystem-full.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          if path.is_file():
+              report = json.loads(path.read_text(encoding="utf-8"))
+          print(f"Benchmark step outcome: {report.get('ci_benchmark_step_outcome')}")
+          print(f"Execution status: {report.get('execution_status', 'completed')}")
+          else:
+              report = {
+                  "schema_version": 1,
+                  "execution_status": "report-not-produced",
+                  "project_count": 0,
+                  "evaluated_count": 0,
+                  "baseline_build_failed_count": 0,
+                  "generation_validation_failed_count": 0,
+                  "revision_pin_failed_count": 0,
+                  "results": [],
+                  "diagnostic": "The benchmark did not write its report. Inspect the benchmark step logs; it may have been cancelled, timed out, or failed before report serialization."
+              }
+          report["ci_benchmark_step_outcome"] = os.environ.get("BENCHMARK_OUTCOME", "unknown")
+          path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          PY
       - name: Summarize the full corpus without equating gaps with passes
         if: always()
         run: |
@@ -1554,7 +1688,7 @@ jobs:
           from pathlib import Path
           path = Path(".audit/test-gen-ecosystem-full.json")
           if not path.is_file():
-              raise SystemExit("Full benchmark did not produce a report")
+              raise SystemExit("Diagnostic report creation failed before the summary step")
           report = json.loads(path.read_text(encoding="utf-8"))
           print(f"Projects recorded: {report.get('project_count')}")
           print(f"Projects fully evaluated by the current runner: {report.get('evaluated_count')}")
@@ -1572,9 +1706,19 @@ jobs:
           name: test-generation-ecosystem-full
           path: .audit/test-gen-ecosystem-full.json
           if-no-files-found: error
+      - name: Enforce full-corpus evaluation outcome
+        if: always()
+        env:
+          BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
+        run: |
+          if [[ "$BENCHMARK_OUTCOME" != "success" ]]; then
+            echo "::error::Full real-project corpus did not complete successfully (benchmark outcome: $BENCHMARK_OUTCOME). The diagnostic report was retained as an artifact."
+            exit 1
+          fi
 
   vyper-integration:
     runs-on: ubuntu-latest
+    needs: foundry-toolchain
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -1583,8 +1727,23 @@ jobs:
           check-latest: true
       - name: Install Vyper and Titanoboa test runtime
         run: python -m pip install "vyper>=0.4,<0.5" titanoboa pytest hypothesis
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - name: Download pinned Foundry binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-binaries-v1.9.0
+          path: ${{ runner.temp }}/foundry-artifact
+      - name: Restore pinned Foundry binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.foundry"
+          tar -xzf "$RUNNER_TEMP/foundry-artifact/foundry-bin.tar.gz" -C "$HOME/.foundry"
+          chmod +x "$HOME/.foundry/bin/"*
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          for tool in forge cast anvil; do
+            test -x "$HOME/.foundry/bin/$tool"
+            "$HOME/.foundry/bin/$tool" --version
+          done
       - name: Install Lowkey
         run: ./install.sh
       - name: Build Vyper fixture
@@ -1658,15 +1817,30 @@ jobs:
 
   verification-live-foundry:
     runs-on: ubuntu-latest
-    needs: foundry-integration
+    needs: [foundry-toolchain, foundry-integration]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           check-latest: true
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - name: Download pinned Foundry binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-binaries-v1.9.0
+          path: ${{ runner.temp }}/foundry-artifact
+      - name: Restore pinned Foundry binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.foundry"
+          tar -xzf "$RUNNER_TEMP/foundry-artifact/foundry-bin.tar.gz" -C "$HOME/.foundry"
+          chmod +x "$HOME/.foundry/bin/"*
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          for tool in forge cast anvil; do
+            test -x "$HOME/.foundry/bin/$tool"
+            "$HOME/.foundry/bin/$tool" --version
+          done
       - name: Install Lowkey
         run: |
           ./install.sh
@@ -1752,14 +1926,30 @@ jobs:
 
   verification-live-external-engines:
     runs-on: ubuntu-latest
+    needs: foundry-toolchain
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           check-latest: true
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - name: Download pinned Foundry binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-binaries-v1.9.0
+          path: ${{ runner.temp }}/foundry-artifact
+      - name: Restore pinned Foundry binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.foundry"
+          tar -xzf "$RUNNER_TEMP/foundry-artifact/foundry-bin.tar.gz" -C "$HOME/.foundry"
+          chmod +x "$HOME/.foundry/bin/"*
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          for tool in forge cast anvil; do
+            test -x "$HOME/.foundry/bin/$tool"
+            "$HOME/.foundry/bin/$tool" --version
+          done
       - name: Install Lowkey
         run: |
           ./install.sh
