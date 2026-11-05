@@ -6,6 +6,7 @@ pragma solidity ^0.8.20;
 // Start recording immediately before the exact call under investigation and
 // write the artifact immediately after that call.
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 interface ILowkeyJson {
     function serializeString(string calldata objectKey, string calldata valueKey, string calldata value)
