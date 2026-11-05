@@ -3307,7 +3307,7 @@ def steps(args):
             "backend": "forge_state_diff",
         }
         refusal_path = safe_out(root, ns.refusal_output)
-        refusal_path.write_text(json.dumps(refusal, indent=2) + "\\n", encoding="utf-8")
+        refusal_path.write_text(json.dumps(refusal, indent=2) + "\n", encoding="utf-8")
         print("REFUSAL " + json.dumps(refusal, sort_keys=True))
         return 2
     output_path = safe_out(root, ns.output)
