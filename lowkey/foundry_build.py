@@ -10,7 +10,10 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    tomllib = None
 from typing import Any, Sequence
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -115,6 +118,8 @@ def _explicit_threads(args: Sequence[str]) -> int | None:
 
 
 def _toml_config(root: Path, profile: str) -> dict[str, Any]:
+    if tomllib is None:
+        return {}
     try:
         data = tomllib.loads((root / "foundry.toml").read_text(encoding="utf-8", errors="replace"))
     except (OSError, tomllib.TOMLDecodeError, ValueError):
@@ -362,8 +367,17 @@ def select_threads(
     if explicit is not None:
         chosen = max(1, explicit)
         reason = f"explicit user override ({chosen})"
-        if available is not None and chosen > 1 and available < 4 * GIB:
-            warnings.append("The explicit thread override is aggressive for the currently available memory.")
+        if available is None and chosen > 1:
+            warnings.append("The explicit thread override exceeds the conservative fallback because memory could not be measured.")
+        elif chosen > 1:
+            conservative = 1 if (total is not None and total <= 8 * GIB) or available < 4 * GIB else min(
+                cpus, max(1, int((available - 3 * GIB) // (1.5 * GIB))), 4
+            )
+            if chosen > conservative:
+                warnings.append(
+                    f"The explicit {chosen}-thread override exceeds Lowkey's current conservative bound of {conservative}; "
+                    "the user override is preserved, but memory exhaustion is more likely."
+                )
         return chosen, reason, warnings
     if low_memory:
         return 1, "low-memory mode forces one compiler worker", warnings
@@ -386,7 +400,9 @@ def select_threads(
             budget_workers = max(1, int((available - 3 * GIB) // (1.5 * GIB)))
             chosen = min(cpus, budget_workers, 4)
             reason = "bounded by available memory, CPU availability and a conservative reserve"
-    if available < 2 * GIB:
+    if available < 1.5 * GIB:
+        warnings.append("Available memory may be too low even for one compiler process; narrow the scope before compiling.")
+    elif available < 2 * GIB:
         warnings.append(
             "Available memory is below 2 GiB. Even one compiler process may be terminated; "
             "prefer --scope production or --target and inspect host memory pressure."
