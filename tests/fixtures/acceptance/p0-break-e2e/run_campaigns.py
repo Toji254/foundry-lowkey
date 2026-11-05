@@ -79,6 +79,13 @@ def telemetry(raw: str, label: str) -> int:
     return int(match.group(1))
 
 
+def telemetry_bool(raw: str, label: str) -> bool:
+    match = re.search(rf"{re.escape(label)}\s*:?\s*(true|false)", raw, flags=re.IGNORECASE)
+    if not match:
+        raise AssertionError(f"Missing boolean telemetry {label!r}:\n{raw[-8000:]}")
+    return match.group(1).lower() == "true"
+
+
 def campaign(contract_name: str, address: str, function: str, family: str, label: str, checks):
     artifact = f"out/P0BreakCompatibility.sol/{contract_name}.json"
     run_lk(["lk", "target", address], f"{label}-target")
@@ -123,7 +130,10 @@ def main():
     def check_array(raw: str, harness: str):
         assert "new address[](1)" in harness, "dynamic address[] not rendered as memory array"
         assert "withdraw(address[])" in harness, "array attack selector missing"
-        assert telemetry(raw, "REENTRY_REACHED") >= 1, raw[-6000:]
+        assert telemetry_bool(raw, "TARGET_SETUP_SUCCESS"), raw[-6000:]
+        assert telemetry_bool(raw, "HOSTILE_WRAPPER_SUCCESS"), raw[-6000:]
+        assert telemetry_bool(raw, "TARGET_OUTER_SUCCESS"), raw[-6000:]
+        assert telemetry_bool(raw, "REENTRY_REACHED"), raw[-6000:]
         assert telemetry(raw, "REENTRY_SUCCESSES") >= 1, raw[-6000:]
         received = telemetry(raw, "ATTACKER_WITHDRAW_RECEIVED")
         entitlement = telemetry(raw, "ENTITLEMENT_BEFORE_ATTACK")
@@ -140,6 +150,8 @@ def main():
             assert marker in harness, f"{token_label}: missing generator feature {marker!r}"
         assert telemetry(raw, "TOKEN_DECIMALS") == 6, raw[-6000:]
         assert telemetry(raw, "TOKEN_FUNDING_AMOUNT") == 1_000_000, raw[-6000:]
+        assert telemetry_bool(raw, "SETUP_SUCCESS"), raw[-6000:]
+        assert telemetry_bool(raw, "FIRST_SUCCESS"), raw[-6000:]
         entitlement = telemetry(raw, "ENTITLEMENT_BEFORE")
         token_gain = telemetry(raw, "TOTAL_ATTACKER_TOKEN_GAIN")
         target_outflow = telemetry(raw, "TOTAL_TARGET_TOKEN_OUTFLOW")
