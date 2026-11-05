@@ -1072,7 +1072,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);', body)
         self.assertIn("IERC20Lowkey(assetToken).balanceOf(ATTACKER)", body)
         self.assertIn('console2.log("TOTAL_ATTACKER_TOKEN_GAIN"', body)
-        self.assertIn("assetReadOk && totalTokenGain > entitlementBefore", body)
+        self.assertIn("assetReadOk && assetDecimalsVerified && totalTokenGain > entitlementBefore", body)
 
     def test_repeat_parser_reason_codes_asset_and_optional_return_approval_failures(self):
         target = break_engine.Target("TokenVault", "0x" + "1" * 40)
