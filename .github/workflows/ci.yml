@@ -573,8 +573,23 @@ jobs:
                "http://127.0.0.1:8545", "--require-frozen", "--output", paired_report_path],
               text=True, capture_output=True,
           )
-          assert execution.returncode == 0, execution.stdout + "\n" + execution.stderr
           paired_report = json.loads(Path(paired_report_path).read_text(encoding="utf-8"))
+          if execution.returncode != 0:
+              diagnostics = {
+                  key: paired_report.get(key) for key in (
+                      "status", "reasons", "rejection_codes", "trace_checks",
+                      "same_entry_call_verified", "same_prestate_verified",
+                      "same_chain_verified", "same_block_verified",
+                      "same_fork_anchor_verified", "fork_pin_verified",
+                      "trace_delta_verified", "evidence_requirements",
+                      "evidence_requirements_verified", "semantic_invariant_verified",
+                  )
+              }
+              diagnostics["control_trace_error"] = paired_report.get("runs", {}).get("control", {}).get("trace_error")
+              diagnostics["attack_trace_error"] = paired_report.get("runs", {}).get("attack", {}).get("trace_error")
+              diagnostics["attack_semantic_check"] = paired_report.get("runs", {}).get("attack", {}).get("semantic_check")
+              print("PAIRED_CONTROL_DIAGNOSTICS=" + json.dumps(diagnostics, sort_keys=True))
+          assert execution.returncode == 0, execution.stdout + "\n" + execution.stderr
           assert paired_report["status"] == "SIMULATED_BREAK", paired_report
           assert paired_report["paired_forge_experiment"] is True, paired_report
           assert paired_report["freeze"]["verified"] is True, paired_report["freeze"]
