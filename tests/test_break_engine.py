@@ -1063,7 +1063,8 @@ class BreakEngineTests(unittest.TestCase):
             entitlement_signature="balances(address)",
             asset_signature="stakeToken()",
         )
-        self.assertIn("uint256 tokenFundingAmount = 1;", body)
+        self.assertIn("uint256 tokenFundingAmount = 1e18;", body)
+        self.assertIn('console2.log("ASSET_DECIMALS_FALLBACK_18", assetReadOk && !assetDecimalsVerified);', body)
         self.assertIn('abi.encodeWithSignature("decimals()")', body)
         self.assertIn("reportedDecimals <= 77", body)
         self.assertIn("tokenFundingAmount = 10 ** assetDecimals;", body)
