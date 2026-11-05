@@ -2334,13 +2334,15 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     values = _make_value(host, fn, rng, mode, config)
     calldata, error = _encode_call(host, config, target, fn, values)
     if not calldata:
+        message = f"Could not encode a generic ABI call: {error}"
         return AttackResult(
             family=family,
             contract=target.contract,
             address=target.address,
             function=signature,
             status="BLOCKED",
-            summary=f"Could not encode a generic call: {error}",
+            summary=message,
+            detail=_abi_refusal_detail(target, family, message),
         )
 
     value = _payable_value(fn, opts, "small")
@@ -2505,12 +2507,58 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     return result
 
 
+REFUSAL_REASON_CODES = {
+    "control_passed", "net_negative", "fidelity_insufficient", "no_capability",
+    "unclassified", "unsupported_abi", "unverified_target", "backend_unsupported",
+    "empty_trace", "digest_mismatch", "mutation_not_killed", "harness_compile_failed",
+    "flake", "semantic_default_missing", "out_of_scope",
+}
+
+
+def _refusal_record(
+    target: Target,
+    family: str | None,
+    reason: str,
+    detail: str,
+    *,
+    minimal_cmd: str | None = None,
+    backend: str | None = None,
+) -> dict[str, Any]:
+    """Build DeepSeek's machine-readable refusal shape; never put a verdict in prose only."""
+    if reason not in REFUSAL_REASON_CODES:
+        raise ValueError(f"Unknown Lowkey refusal reason code: {reason}")
+    return {
+        "target": target.address,
+        "family": family,
+        "reason": reason,
+        "detail": str(detail),
+        "minimal_cmd": minimal_cmd,
+        "backend": backend,
+    }
+
+
+def _abi_refusal_detail(target: Target, family: str, detail: str) -> dict[str, Any]:
+    record = _refusal_record(target, family, "unsupported_abi", detail)
+    return {"reason_code": "unsupported_abi", "refusal": record}
+
+
 def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_info=None) -> AttackResult:
     """Run one attack family without allowing a generator failure to abort the campaign."""
     try:
         return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)
     except Exception as exc:
         signature = _format_signature(fn, host)
+        message = str(exc)
+        detail = {
+            "error_type": type(exc).__name__,
+            "error": message,
+        }
+        if isinstance(exc, ValueError) and re.search(
+            r"\\bABI\\b|tuple/struct|complex ABI|fixed-size array|array .*unsupported",
+            message,
+            flags=re.I,
+        ):
+            detail.update(_abi_refusal_detail(target, family, message))
         return AttackResult(
             family=family,
             contract=target.contract,
@@ -2518,10 +2566,7 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             function=signature,
             status="BLOCKED",
             summary=f"Attack generator failed safely: {exc}",
-            detail={
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
+            detail=detail,
         )
 
 
