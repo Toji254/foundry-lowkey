@@ -2,6 +2,7 @@
 """Installed-lk P1 Step[] acceptance: render all families, compile, and verify refusals."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -45,6 +46,24 @@ def main() -> int:
         raise AssertionError(f"Installed Step template is missing: {template_path}")
     if not install_manifest_path.is_file():
         raise AssertionError(f"Installed runtime manifest is missing: {install_manifest_path}")
+
+    installed_godmode_path = install_root / "godmode.py"
+    if not installed_godmode_path.is_file():
+        raise AssertionError(f"Installed Godmode module is missing: {installed_godmode_path}")
+    module_tree = ast.parse(installed_godmode_path.read_text(encoding="utf-8"))
+    family_nodes = [
+        node for node in module_tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(name, ast.Name) and name.id == "STEP_FAMILIES" for name in node.targets)
+    ]
+    if len(family_nodes) != 1:
+        raise AssertionError("Installed Godmode must declare STEP_FAMILIES exactly once.")
+    try:
+        families = sorted(ast.literal_eval(family_nodes[0].value))
+    except (ValueError, TypeError) as error:
+        raise AssertionError(f"Installed STEP_FAMILIES is not a literal set/list: {error}") from error
+    if not families or any(not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in families):
+        raise AssertionError(f"Installed STEP_FAMILIES contains invalid entries: {families!r}")
 
     template_digest = hashlib.sha256(template_path.read_bytes()).hexdigest()
     installed_manifest = json.loads(install_manifest_path.read_text(encoding="utf-8"))
@@ -102,11 +121,6 @@ def main() -> int:
     (evidence_root / "manifests").mkdir(parents=True, exist_ok=True)
     (evidence_root / "refusals").mkdir(parents=True, exist_ok=True)
 
-    families = [
-        "reentrancy", "replay", "access", "accounting", "boundary", "time",
-        "upgrade", "callback", "oracle", "economic", "erc20", "proxy",
-        "storage", "signature", "dos",
-    ]
     generated = []
     refusals = []
     forge_output = ""
