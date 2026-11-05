@@ -1309,7 +1309,7 @@ def _render_repeat_test(
         console2.log("LOWKEY_BREAK", breakByEntitlement);
 """
         if entitlement_signature
-        else '        console2.log("LOWKEY_BREAK", false);\\n'
+        else '        console2.log("LOWKEY_BREAK", false);\n'
     )
 
     return _render_common_header() + f"""
@@ -1504,8 +1504,8 @@ def _basic_solidity_expr(ptype: str, value: str) -> str:
             supported_base = (
                 base == "address"
                 or base in {"bool", "bytes", "string"}
-                or re.fullmatch(r"u?int\\d*", base)
-                or re.fullmatch(r"bytes(?:[1-9]|[12]\\d|3[0-2])", base)
+                or re.fullmatch(r"u?int\d*", base)
+                or re.fullmatch(r"bytes(?:[1-9]|[12]\d|3[0-2])", base)
             )
             if supported_base:
                 return f"new {base}[](0)"
