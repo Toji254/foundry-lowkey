@@ -1400,9 +1400,9 @@ contract LowkeyBreakRepeat is Test {{
         );
         if (!ok) return false;
         if (data.length == 0) return true;
-        require(data.length == 32, "MALFORMED_APPROVE_RETURN");
-        bool returned = abi.decode(data, (bool));
-        return returned;
+        if (data.length != 32) return false;
+        uint256 returned = abi.decode(data, (uint256));
+        return returned == 1;
     }}
 
     function _lowkeySafeApprove(address token, address spender, uint256 amount) internal returns (bool) {{
@@ -1847,8 +1847,9 @@ contract LowkeyBreakReentrant {{
         );
         if (!ok) return false;
         if (data.length == 0) return true;
-        require(data.length == 32, "MALFORMED_APPROVE_RETURN");
-        return abi.decode(data, (bool));
+        if (data.length != 32) return false;
+        uint256 returned = abi.decode(data, (uint256));
+        return returned == 1;
     }}
 
     function safeApproveToken(address token, address spender, uint256 amount) external returns (bool) {{
@@ -2260,7 +2261,19 @@ def _result_from_output(
             _extract_console_bytes(text_output, "SECOND_RETURNDATA_LENGTH"),
         )
         function_name = _function_name(function or "target call")
-        if setup_success is False:
+        asset_getter_discovered = _read_telemetry_bool(text_output, "ASSET_GETTER_DISCOVERED")
+        asset_tracking_available = _read_telemetry_bool(text_output, "ASSET_TRACKING_AVAILABLE")
+        approval_attempted = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_ATTEMPTED")
+        approval_success = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_SUCCESS")
+        if asset_getter_discovered is True and asset_tracking_available is False:
+            status = "BLOCKED"
+            reason_code = "asset_getter_unavailable"
+            summary = "The discovered asset getter did not return a usable deployed token contract; token-backed setup was not evaluated."
+        elif approval_attempted is True and approval_success is False:
+            status = "BLOCKED"
+            reason_code = "token_approval_failed"
+            summary = "The token approval attempt failed, including the optional-return/reset-and-retry path; token-backed setup was not evaluated."
+        elif setup_success is False:
             status = "LAB_ISSUE"
             reason_code = "setup_call_reverted"
             reason = decoded_setup or (
@@ -2306,19 +2319,6 @@ def _result_from_output(
                 f"No repeat break was demonstrated. {reason}"
             )
 
-        if status != "LAB_ISSUE":
-            asset_getter_discovered = _read_telemetry_bool(text_output, "ASSET_GETTER_DISCOVERED")
-            asset_tracking_available = _read_telemetry_bool(text_output, "ASSET_TRACKING_AVAILABLE")
-            approval_attempted = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_ATTEMPTED")
-            approval_success = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_SUCCESS")
-            if asset_getter_discovered is True and asset_tracking_available is False:
-                status = "BLOCKED"
-                reason_code = "asset_getter_unavailable"
-                summary = "The discovered asset getter did not return a usable deployed token contract; token-backed setup was not evaluated."
-            elif approval_attempted is True and approval_success is False:
-                status = "BLOCKED"
-                reason_code = "token_approval_failed"
-                summary = "The token approval attempt failed, including the optional-return/reset-and-retry path; token-backed setup was not evaluated."
     elif structured and family == "reentrancy":
         setup_discovered = _read_telemetry_bool(text_output, "SETUP_FUNCTION_DISCOVERED")
         setup_success = _read_telemetry_bool(text_output, "TARGET_SETUP_SUCCESS")

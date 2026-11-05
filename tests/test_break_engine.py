@@ -303,6 +303,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("ASSET_DECIMALS_VERIFIED", body)
         self.assertIn("_lowkeySafeApprove(assetToken, TARGET", body)
         self.assertIn("return _lowkeyApproveCall(token, spender, amount);", body)
+        self.assertIn("if (data.length != 32) return false;", body)
         self.assertIn("TOKEN_APPROVAL_SUCCESS", body)
         self.assertIn("ASSET_GETTER_DISCOVERED", body)
         self.assertIn("vm.prank(ATTACKER);", body)
@@ -341,6 +342,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('keccak256("ERC777TokensRecipient")', body)
         self.assertIn("0x4e2312e0", body)
         self.assertIn("ERC777_RECEIVER_REGISTERED", body)
+        self.assertIn("if (data.length != 32) return false;", body)
         self.assertIn("SETUP_FUNCTION_DISCOVERED", body)
         self.assertIn("ASSET_GETTER_DISCOVERED", body)
         self.assertIn("TOKEN_APPROVAL_ATTEMPTED", body)
@@ -1041,6 +1043,28 @@ class BreakEngineTests(unittest.TestCase):
         )
         self.assertEqual(approval_failed.status, "BLOCKED")
         self.assertEqual(approval_failed.detail["reason_code"], "token_approval_failed")
+
+    def test_repeat_parser_prioritizes_token_preparation_failure_over_setup_revert(self):
+        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
+        result = break_engine._result_from_output(
+            type("Host", (), {"tool_path": lambda self, name: name})(),
+            family="accounting",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY accounting\\n"
+                "SETUP_SUCCESS false\\n"
+                "SETUP_RETURNDATA_LENGTH 0\\n"
+                "ASSET_GETTER_DISCOVERED true\\n"
+                "ASSET_TRACKING_AVAILABLE true\\n"
+                "TOKEN_APPROVAL_ATTEMPTED true\\n"
+                "TOKEN_APPROVAL_SUCCESS false\\n"
+            ),
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.detail["reason_code"], "token_approval_failed")
 
     def test_result_parser_marks_invalid_setup_as_lab_issue(self):
         target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)
