@@ -2385,7 +2385,10 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         max_data, max_error = _encode_call(host, config, target, fn, max_values)
         if not zero_data or not max_data:
             reason = zero_error or max_error or "could not encode edge values"
-            return AttackResult(family, target.contract, target.address, signature, "BLOCKED", reason)
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED", reason,
+                detail=_abi_refusal_detail(target, family, reason),
+            )
         body = _render_boundary_test(target, signature, zero_data, max_data, value)
     elif family == "time":
         body = _render_time_test(target, signature, calldata, value)
@@ -2405,8 +2408,19 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 setup_abi=setup_abi,
             )
         except ValueError as error:
+            message = str(error)
+            detail = (
+                _abi_refusal_detail(target, family, message)
+                if re.search(
+                    r"\bABI\b|tuple/struct|complex ABI|fixed-size array|array .*unsupported",
+                    message,
+                    flags=re.I,
+                )
+                else None
+            )
             return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED", str(error)
+                family, target.contract, target.address, signature, "BLOCKED", message,
+                detail=detail,
             )
     elif family == "upgrade":
         body = _render_access_test(
