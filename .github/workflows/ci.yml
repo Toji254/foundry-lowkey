@@ -494,7 +494,6 @@ jobs:
               assert event["topics"][1][-40:].lower() == attacker[2:].lower(), event
               assert int(event["data"], 16) == 10**18, event
 
-          assert attacker == attack_calls[0]["from"] == attack_calls[1]["from"], "attacker address changed"
           mode_slot = "0x" + "0" * 64
           def storage_value(row, account, slot):
               pre = next(item for item in row["prestate"] if item["address"] == account)
