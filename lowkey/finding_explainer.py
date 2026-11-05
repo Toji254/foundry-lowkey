@@ -120,7 +120,9 @@ def _block_at(source: str, symbol: str | None = None, line: int | None = None) -
         return None
     match = candidates[0]
     start = match.start()
-    opening = stripped.find("{", match.end())
+    opening = stripped.find("{", match.start(), match.end())
+    if opening < 0:
+        opening = stripped.find("{", match.end())
     semicolon = stripped.find(";", match.end())
     if opening < 0 or (semicolon >= 0 and semicolon < opening):
         end = semicolon + 1 if semicolon >= 0 else min(len(source), match.end() + 800)
@@ -140,7 +142,11 @@ def _block_at(source: str, symbol: str | None = None, line: int | None = None) -
     text = source[start:end]
     start_line = source.count("\n", 0, start) + 1
     end_line = source.count("\n", 0, end) + 1
-    name = str(match.group(1) or symbol or "anonymous")
+    try:
+        matched_name = match.group(1)
+    except IndexError:
+        matched_name = symbol
+    name = str(matched_name or symbol or "anonymous")
     return text, start_line, end_line, name
 
 
