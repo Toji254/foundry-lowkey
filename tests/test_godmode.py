@@ -670,6 +670,31 @@ class GodmodeTests(unittest.TestCase):
             self.assertIn("synthetic_eth", saved["blocked_cheatcodes"])
             rpc_mock.assert_not_called()
 
+    def test_control_fidelity_scan_includes_transitive_support_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = root / "test" / "Attack.t.sol"
+            helper = root / "test" / "helpers" / "Setup.sol"
+            harness.parent.mkdir(parents=True)
+            helper.parent.mkdir(parents=True)
+            harness.write_text("contract AttackHarness {}", encoding="utf-8")
+            helper.write_text(
+                "library Setup { function fund() internal { vm.deal(address(1), 1 ether); } }",
+                encoding="utf-8",
+            )
+            fidelity = godmode._analyze_control_fidelity(
+                root,
+                {"harness": "test/Attack.t.sol", "support_files": ["test/helpers/Setup.sol"]},
+                {},
+            )
+            self.assertTrue(fidelity["scan_complete"])
+            self.assertEqual(
+                set(fidelity["scanned_files"]),
+                {"test/Attack.t.sol", "test/helpers/Setup.sol"},
+            )
+            self.assertTrue(fidelity["synthetic_state"])
+            self.assertIn("synthetic_eth", {row["kind"] for row in fidelity["signals"]})
+
     def test_harness_fidelity_detects_synthetic_state_and_never_confirms(self):
         source = """
         vm.deal(TARGET, 100 ether);
