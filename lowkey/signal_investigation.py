@@ -123,7 +123,7 @@ def plan_signal_investigation(
 
     # Keep this recommendation advisory and read-only.  The command does not
     # generate tests or execute a provider-backed workflow.
-    suggested = "lk ai test-plan"
+    suggested = f"lk ai test-plan --finding {signal_id}"
     return {
         "signal_id": str(signal_id),
         "status": "plan-only",
@@ -220,7 +220,7 @@ def execute_inspected_test(
     relative = selected.relative_to(root).as_posix()
     argv = [
         forge, "test",
-        "--match-path", relative,
+        "--match-path", "^" + re.escape(relative) + "$",
         "--match-test", "^" + re.escape(name) + "$",
     ]
     timeout = max(1, min(int(timeout_seconds), 900))

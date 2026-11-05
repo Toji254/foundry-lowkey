@@ -607,6 +607,213 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
             self.assertEqual(findings[1].line, 48)
             self.assertIn("second overload", findings[1].evidence[1])
 
+    def test_zero_address_sanity_check_does_not_count_as_authorization(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                bool public paused;
+                function pause() external {
+                    require(msg.sender != address(0));
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_inverted_owner_require_does_not_suppress_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                bool public paused;
+                function pause() external {
+                    require(msg.sender != owner);
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_reverting_for_the_authorized_owner_is_not_an_auth_guard(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                bool public paused;
+                function pause() external {
+                    if (msg.sender == owner) revert();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_fail_closed_non_owner_revert_is_recognized(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                bool public paused;
+                function pause() external {
+                    if (msg.sender != owner) revert();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(self.matches(root, model, "AUTH-001"), [])
+
+    def test_require_with_unconditional_or_branch_is_not_authorization(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                bool public paused;
+                function pause() external {
+                    require(msg.sender == owner || true);
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_require_with_two_authorized_alternatives_is_recognized(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                address public guardian;
+                bool public paused;
+                function pause() external {
+                    require(msg.sender == owner || msg.sender == guardian);
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(self.matches(root, model, "AUTH-001"), [])
+
+    def test_negative_guardian_membership_require_is_not_authorization(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                mapping(address => bool) guardian;
+                bool public paused;
+                function pause() external {
+                    require(!guardian[msg.sender]);
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_inherited_only_role_chain_resolves_check_role_and_has_role(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            abstract contract AccessBase {
+                mapping(bytes32 => mapping(address => bool)) internal _roles;
+                modifier onlyRole(bytes32 role) {
+                    _checkRole(role);
+                    _;
+                }
+                function _checkRole(bytes32 role) internal view {
+                    if (!_hasRole(role, _msgSender())) revert();
+                }
+                function _hasRole(bytes32 role, address account) internal view returns (bool) {
+                    return _roles[role][account];
+                }
+            }
+            contract Vault is AccessBase {
+                bool public paused;
+                function pause() external onlyRole(keccak256("PAUSER")) {
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(self.matches(root, model, "AUTH-001"), [])
+
+    def test_reverting_when_boolean_role_helper_is_true_is_not_authorization(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                mapping(address => bool) guardian;
+                bool public paused;
+                function isGuardian(address account) internal view returns (bool) {
+                    return guardian[account];
+                }
+                function pause() external {
+                    if (isGuardian(msg.sender)) revert();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_negated_boolean_role_helper_revert_is_recognized(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                mapping(address => bool) guardian;
+                bool public paused;
+                function isGuardian(address account) internal view returns (bool) {
+                    return guardian[account];
+                }
+                function pause() external {
+                    if (!isGuardian(msg.sender)) revert();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(self.matches(root, model, "AUTH-001"), [])
+
+    def test_non_auth_condition_cannot_weaken_helper_revert_guard(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                mapping(address => bool) guardian;
+                bool public paused;
+                function isGuardian(address account) internal view returns (bool) {
+                    return guardian[account];
+                }
+                function pause() external {
+                    if (!isGuardian(msg.sender) && paused) revert();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

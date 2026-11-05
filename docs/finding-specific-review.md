@@ -38,7 +38,7 @@ At most five URLs are accepted. Lowkey rejects local/private network destination
 
 The output labels these pages as **remote untrusted supplementary evidence**. For GitHub links it records the resolved SHA and whether it matches the local checkout's commit. A different SHA is clearly identified; it does not replace the local snapshot. Remote quotes are labelled `remote-unverified`, never as matched local source quotes. Remote reports, snippets and documentation are not proof that the checked-out code is vulnerable.
 
-Preview lists the exact supplied URLs but does not fetch them, resolve DNS, contact GitHub or call the text provider. To inspect the final context, use `--show-context` or `--json` before opting in to the actual explanation.
+Preview without `--evidence-url` is fully local and network-free. When one or more explicit URLs are supplied, preview fetches those bounded public references locally and displays the exact excerpts eligible for a later provider request; it still does not call the text provider. Use `--show-context` or `--json` to inspect the final bounded context. An unsafe or unavailable URL is reported as unavailable; local finding context remains usable and authoritative.
 
 ## Test planning and execution boundary
 

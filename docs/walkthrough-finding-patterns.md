@@ -101,3 +101,12 @@ That is why the terminal categories are:
 - **BLOCKED** — the lab could not safely execute the probe.
 
 The generated evidence records the source location, observed behavior, reasoning, and the next verification step so a human auditor can turn a signal into a real finding test.
+
+
+## Authorization condition polarity
+
+An authorization match is not established by seeing a caller comparison or role lookup anywhere in a function. Lowkey accepts a direct `require/assert` only when each top-level OR alternative positively establishes a caller-bound trusted identity or role. It accepts an `if`-revert guard only when the reverting condition is made entirely of fail-closed negative caller/role predicates. This deliberately rejects common false proofs such as `require(msg.sender != address(0))`, `require(msg.sender != owner)`, `require(msg.sender == owner || true)`, and `if (msg.sender == owner) revert()`.
+
+For helper/modifier predicates, Lowkey resolves the declaration inside the selected contract/import/inheritance context and traces caller arguments into the helper. A boolean helper is accepted only when its returned authorization predicate is used in the positive `require/assert` direction or negated in a reverting `if` branch. A no-op `only*` modifier, unrelated same-name function, always-true role helper or inverted helper condition does not suppress a candidate.
+
+The `context-checked` label means the source guard context was inspected; it does not mean a vulnerability has been proven. `likely-false-positive`, `needs-investigation`, `plausible-vulnerability` and `reproduced` remain evidence-strength labels, not automatic human dispositions. Heuristics and AI cannot independently promote a signal to a confirmed finding.

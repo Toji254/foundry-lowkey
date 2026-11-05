@@ -811,17 +811,27 @@ Correlate the saved results with an existing audit finding (use its exact signal
 lk verification correlate .audit/verification/campaign.json --signal SLITHER-XXXXXXXXXX
 ~~~
 
-Investigate an existing access-control signal with a targeted local test:
+Plan the investigation for an existing native signal without writing or running a test:
 
 ~~~bash
 lk verification investigate SLITHER-XXXXXXXXXX
 ~~~
 
+After reviewing one complete existing test file, its setup/imports and assertions, explicitly execute exactly one selected test:
+
+~~~bash
+lk verification run-test SLITHER-XXXXXXXXXX test/Vault.t.sol test_withdrawRejectsUnauthorized
+~~~
+
+The plan command is read-only. The run-test command may compile and update Foundry `out/` and `cache/`; it validates the file under the active Foundry test directory and the exact existing test/invariant function before invoking Forge. Inspect fork/RPC and broadcast cheatcodes in the selected test first. Its evidence never changes human finding disposition.
+
 Use `lk mutation-check manifest.json` to test whether an existing suite detects explicit behavioral mutants, and `lk verification-benchmark manifest.json` to evaluate multiple project cases. Baseline failures, compiler/setup errors, timeouts, and mutants not killed are reported separately.
 
 `lk verification correlate <campaign-report.json> --signal <SIGNAL_ID>` joins normalized engine outcomes and attaches one repeat-safe evidence record to an existing finding. A campaign manifest may instead name `investigation.signal_ids` (or `investigation.signal_id`) and a stable `investigation.property_id`. The correlator preserves the native report by reference and hash. It does not create missing findings or mark a vulnerability as proven: property failures remain review leads, and passing engines do not certify the protocol.
 
-`lk verification investigate <SIGNAL_ID>` currently supports only an explicitly classified access-control finding that maps to one source-backed, simple `onlyOwner` state-changing function. It generates a non-owner-revert assertion, uses the existing generator validation path to compile and execute it with Forge, and attaches the run evidence to the originating signal. Findings without a defensible local test oracle are reported as unsupported with no test emitted. Required constructor arguments must be supplied with `--constructor-args`.
+`lk verification investigate <SIGNAL_ID>` is a read-only source investigation plan anchored to one existing native signal. It maps the detector, source file and function, proposes a property hypothesis, and recommends the next safe command. It does not generate test code, write files, compile, call Forge, contact a provider or change finding disposition.
+
+After inspecting a complete existing test file, its setup/imports and assertions, execute one exact test explicitly with `lk verification run-test <SIGNAL_ID> <TEST_PATH> <TEST_NAME>`. Lowkey validates that the existing `.t.sol` file is inside the active Foundry test directory and that the exact `test*` or `invariant*` function exists, then invokes Forge with file and function filters. Forge may compile and update `out/` or `cache/`; inspect the test for fork/RPC use or broadcast cheatcodes first. Captured output and hashes become evidence only. A pass or failure never confirms, rejects or closes the finding.
 
 ## Project-aware test generation
 
@@ -1174,11 +1184,11 @@ lk ai explain-finding <SIGNAL-ID>
 lk ai test-plan --finding <SIGNAL-ID>
 ~~~
 
-The preview is local-only: it makes no provider call and shows the exact bounded, redacted source and related test context prepared for that one native signal. The explanation/test-plan commands are explicit text-provider calls and may incur provider charges. They include the local commit/ref, containing function, reachable helper/modifier/base evidence, import closure and related tests within strict limits; they do not ship the whole repository.
+The preview makes no text-provider call and shows the exact bounded, redacted source and related test context prepared for that one native signal. It is network-free by default. Repeated `--evidence-url` flags explicitly opt into bounded public HTTPS retrieval for preview or explanation; GitHub source links must pin an exact commit SHA. Remote text is untrusted supplementary evidence, compared with the local commit, and never replaces the checked-out source. Redirects, private/internal destinations, credential-like URLs, sensitive paths, binary content and secret-like responses are rejected. Remote-only quotations are not marked as matched local-source evidence. Preview still does not call the text provider; explanation/test-plan commands are explicit provider calls and may incur charges. They include the local commit/ref, containing function, reachable helper/modifier/base evidence, import closure and related tests within strict limits; they do not ship the whole repository.
 
 AI must argue both sides and return exact source references. Quote matching proves only that the quoted text exists. Every result remains unverified: it cannot change a native signal's human disposition, confirm/reject/close a finding, write or run tests, deploy, select a target, contact an RPC, sign or broadcast. lk ai test-plan --finding proposes tests only. Local Jev/Jevos decision triage is separate from the configured text provider; running Jev does not prove provider connectivity.
 
-This initial finding-specific path uses the local checkout as its source of truth. It does not fetch public GitHub/audit URLs; remote evidence retrieval must be a separate explicit step and must never override the exact local commit.
+Public GitHub/audit references are fetched only when an explicit `--evidence-url` is supplied; see `docs/finding-specific-review.md` for exact-SHA pinning, retrieval limits and trust boundaries. The local checkout always remains the source of truth.
 
 ## Audit evidence
 

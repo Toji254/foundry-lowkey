@@ -564,59 +564,232 @@ def _caller_parameter_aliases(header: str, arguments: str) -> list[str]:
     return aliases
 
 
+def _split_boolean_expression(value: str, operator: str) -> list[str]:
+    """Split a Solidity boolean expression at the requested top-level operator."""
+    parts: list[str] = []
+    start = 0
+    parens = brackets = 0
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+        elif parens == 0 and brackets == 0 and value.startswith(operator, index):
+            parts.append(value[start:index].strip())
+            index += len(operator)
+            start = index
+            continue
+        index += 1
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
+def _unwrap_boolean_parentheses(value: str) -> str:
+    expression = value.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        depth = 0
+        closes_at_end = False
+        for index, char in enumerate(expression):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    closes_at_end = index == len(expression) - 1
+                    break
+        if not closes_at_end:
+            break
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _top_level_comparison(value: str) -> tuple[str, str, str] | None:
+    parens = brackets = 0
+    index = 0
+    while index < len(value) - 1:
+        char = value[index]
+        if char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+        if parens == 0 and brackets == 0 and value[index:index + 2] in {"==", "!="}:
+            return value[:index].strip(), value[index:index + 2], value[index + 2:].strip()
+        index += 1
+    return None
+
+
+def _auth_term_polarity(value: str, caller: str) -> int:
+    """Return +1 for a positive authorization predicate, -1 for its inverse."""
+    term = _unwrap_boolean_parentheses(value)
+    if not term:
+        return 0
+
+    # Caller-keyed role/allowlist storage. A leading ! reverses the predicate;
+    # explicit boolean comparisons are folded into that same polarity.
+    membership = (
+        r"(?:\b(?:_?guardian|guardians|controller|controllers|operator|operators|"
+        r"pool|engine|router|allowlist|whitelist|roles|_roles|roleMembers|"
+        r"authorizedCallers|permissions)\b\s*(?:\[[^\]]+\]\s*)*\[\s*" + caller + r"\s*\]"
+        r"|\b_roles\s*\[[^\]]+\]\s*\.\s*has\s*\(\s*" + caller + r"\s*\))"
+    )
+    member = re.fullmatch(r"(!\s*)?(" + membership + r")(.*)", term, re.I | re.S)
+    if member:
+        negative = bool(member.group(1))
+        suffix = member.group(3).strip()
+        if suffix:
+            boolean = re.fullmatch(r"(==|!=)\s*(true|false)", suffix, re.I)
+            if not boolean:
+                return 0
+            operator, literal = boolean.groups()
+            truth = literal.lower() == "true"
+            if operator == "!=":
+                truth = not truth
+            negative = negative ^ (not truth)
+        return -1 if negative else 1
+
+    comparison = _top_level_comparison(term)
+    if comparison:
+        left, operator, right = comparison
+        if re.fullmatch(caller, left, re.I):
+            trusted = right
+        elif re.fullmatch(caller, right, re.I):
+            trusted = left
+        else:
+            return 0
+        trusted = _unwrap_boolean_parentheses(trusted)
+        compact = re.sub(r"\s+", "", trusted).lower()
+        if (
+            not trusted
+            or re.fullmatch(r"(?:address\(0+\)|address\(0x0+\)|0x0+|0|false|tx\.origin|address\(tx\.origin\))", compact)
+            or re.fullmatch(caller, trusted, re.I)
+        ):
+            return 0
+        # msg.sender == owner is positive; msg.sender != owner is the exact
+        # inverse used in a fail-closed reverting branch.
+        return 1 if operator == "==" else -1
+    return 0
+
+
+def _require_has_authorization(value: str, caller: str) -> bool:
+    """Every OR alternative must positively establish caller/role authorization."""
+    alternatives = _split_boolean_expression(_unwrap_boolean_parentheses(value), "||")
+    if not alternatives:
+        return False
+    for alternative in alternatives:
+        terms = _split_boolean_expression(_unwrap_boolean_parentheses(alternative), "&&")
+        if not terms or not any(_auth_term_polarity(term, caller) == 1 for term in terms):
+            return False
+    return True
+
+
+def _revert_condition_rejects_unauthorized(value: str, caller: str) -> bool:
+    """A reverting if-condition is safe only when every conjunct rejects an unauthorized caller."""
+    terms = _split_boolean_expression(_unwrap_boolean_parentheses(value), "&&")
+    return bool(terms) and all(_auth_term_polarity(term, caller) == -1 for term in terms)
+
+
+def _parenthesized_conditions(value: str, keyword: str):
+    for match in re.finditer(r"\b" + re.escape(keyword) + r"\s*\(", value):
+        opening = value.find("(", match.start(), match.end())
+        depth = 0
+        for index in range(opening, len(value)):
+            if value[index] == "(":
+                depth += 1
+            elif value[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    yield value[opening + 1:index], value[index + 1:]
+                    break
+
+
 def _has_auth_expression(
     value: str,
     caller_aliases: list[str] | None = None,
     *,
     allow_return_expression: bool = False,
 ) -> bool:
-    """Recognize an enforced caller guard, not a suggestive helper name or unused boolean."""
+    """Recognize only fail-closed auth predicates with correct boolean polarity."""
     aliases = [r"msg\s*\.\s*sender", r"_msgSender\s*\(\s*\)"]
-    aliases.extend(re.escape(item) for item in (caller_aliases or []) if re.fullmatch(r"[A-Za-z_]\w*", item))
+    aliases.extend(
+        re.escape(item) for item in (caller_aliases or [])
+        if re.fullmatch(r"[A-Za-z_]\w*", item)
+    )
     caller = r"(?:" + "|".join(aliases) + r")"
-    comparison = (
-        r"\b" + caller + r"\s*(?:==|!=)\s*[^;\n{}]+"
-        r"|\b[A-Za-z_]\w*(?:\s*\([^;\n{}]*\))?\s*(?:==|!=)\s*" + caller
-    )
-    membership = (
-        r"\b(?:_?guardian|guardians|controller|controllers|operator|operators|"
-        r"pool|engine|router|allowlist|whitelist|roles|_roles|roleMembers|"
-        r"authorizedCallers|permissions)\b\s*"
-        r"(?:\[[^\]]+\]\s*)*\[\s*" + caller
-        + r"\s*\]"
-        r"|\b_roles\s*\[[^\]]+\]\s*\.\s*has\s*\(\s*" + caller + r"\s*\)"
-    )
-    predicate = "(?:" + comparison + "|" + membership + ")"
-    enforced_predicate = (
-        r"\b(?:require|assert)\s*\([^;]*?" + predicate
-        + r"|\bif\s*\([^{};]*?" + predicate
-        + r"[^{};]*\)\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()"
-    )
-    if re.search(enforced_predicate, value, re.I | re.S):
-        return True
-    return bool(
-        allow_return_expression
-        and re.search(r"\breturn\s*" + predicate + r"\s*;", value, re.I | re.S)
-    )
+    clean = core._strip_source_comments(value, "solidity", mask_strings=True)
+
+    for keyword in ("require", "assert"):
+        for condition, _tail in _parenthesized_conditions(clean, keyword):
+            # Ignore revert strings/metadata after the first top-level comma.
+            args = _split_solidity_arguments(condition)
+            if args and _require_has_authorization(args[0], caller):
+                return True
+
+    for condition, tail in _parenthesized_conditions(clean, "if"):
+        if re.match(
+            r"\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()",
+            tail,
+            re.I,
+        ) and _revert_condition_rejects_unauthorized(condition, caller):
+            return True
+
+    if allow_return_expression:
+        for match in re.finditer(r"\breturn\s+([^;]+);", clean, re.I | re.S):
+            if _require_has_authorization(match.group(1), caller):
+                return True
+    return False
+
+
 
 
 def _call_is_in_enforced_condition(value: str, start: int, end: int) -> bool:
-    """A boolean helper is a guard only when its result controls a revert."""
-    prefix = value[:start]
-    suffix = value[end:]
-    if re.search(r"\b(?:require|assert)\s*\([^;]*$", prefix, re.I | re.S):
-        return True
-    if re.search(r"\bif\s*\([^{};]*$", prefix, re.I | re.S):
-        close = suffix.find(")")
-        if close >= 0:
-            tail = suffix[close + 1:close + 100]
-            return bool(re.match(
-                r"\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()",
-                tail,
-                re.I,
-            ))
-    return False
+    """A boolean auth helper is trusted only when its truth polarity is enforced."""
+    call_text = _unwrap_boolean_parentheses(value[start:end])
+    if not call_text:
+        return False
 
+    def is_positive_call(term: str) -> bool:
+        return _unwrap_boolean_parentheses(term) == call_text
+
+    def is_negative_call(term: str) -> bool:
+        expression = _unwrap_boolean_parentheses(term)
+        if not expression.startswith("!"):
+            return False
+        return _unwrap_boolean_parentheses(expression[1:]) == call_text
+
+    for keyword in ("require", "assert"):
+        for condition, _tail in _parenthesized_conditions(value, keyword):
+            if not (start >= 0 and value.find(condition) <= start and start + (end - start) <= value.find(condition) + len(condition)):
+                continue
+            args = _split_solidity_arguments(condition)
+            if not args:
+                continue
+            alternatives = _split_boolean_expression(_unwrap_boolean_parentheses(args[0]), "||")
+            if alternatives and all(
+                any(is_positive_call(term) for term in _split_boolean_expression(_unwrap_boolean_parentheses(part), "&&"))
+                for part in alternatives
+            ):
+                return True
+
+    for condition, tail in _parenthesized_conditions(value, "if"):
+        condition_start = value.find(condition)
+        if not (condition_start <= start and end <= condition_start + len(condition)):
+            continue
+        if not re.match(r"\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()", tail, re.I):
+            continue
+        terms = _split_boolean_expression(_unwrap_boolean_parentheses(condition), "&&")
+        if terms and all(is_negative_call(term) for term in terms):
+            return True
+    return False
 
 def _block_has_reachable_guard(
     block: str,
@@ -638,7 +811,7 @@ def _block_has_reachable_guard(
 
     helper_pattern = re.compile(
         r"\b(_(?:require|only|check|authorize|assert|validate)[A-Za-z0-9_]*|"
-        r"routerSelf|only[A-Z][A-Za-z0-9_]*|hasRole|isAuthorized|isGuardian|"
+        r"routerSelf|only[A-Z][A-Za-z0-9_]*|hasRole|_hasRole|isAuthorized|isGuardian|"
         r"isController|isOperator|isPool|isEngine|isTrustedCaller|"
         r"_is[A-Z][A-Za-z0-9_]*)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
         re.S,

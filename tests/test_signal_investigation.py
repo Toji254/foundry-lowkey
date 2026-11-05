@@ -86,6 +86,7 @@ contract Vault {
                     signal["id"], project_root=root, audit_context=audit_context,
                 )
             self.assertEqual(report["status"], "plan-only")
+            self.assertEqual(report["recommended_next_command"], f"lk ai test-plan --finding {signal['id']}")
             self.assertFalse(report["effects"]["writes"])
             self.assertFalse(report["effects"]["tests_run"])
             self.assertFalse((root / ".audit" / "investigations").exists())
@@ -141,7 +142,7 @@ contract Vault {
             self.assertEqual(result["exit_code"], 0)
             self.assertTrue(result["evidence_attached"])
             command = run.call_args.args[0]
-            self.assertEqual(command[command.index("--match-path") + 1], "test/Vault.t.sol")
+            self.assertEqual(command[command.index("--match-path") + 1], "^test/Vault\\.t\\.sol$")
 
     def test_inspected_test_rejects_outside_test_directory_before_forge(self):
         with tempfile.TemporaryDirectory() as tmp:
