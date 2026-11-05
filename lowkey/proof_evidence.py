@@ -103,9 +103,10 @@ def _referenced_inputs(root, spec):
                 candidates.append(values)
             elif isinstance(values, list):
                 candidates.extend(token for token in values if isinstance(token, str))
-        for key in ("harness", "state_diff_file"):
-            if isinstance(scenario.get(key), str):
-                candidates.append(scenario[key])
+        # Recorder artifacts are outputs, not frozen inputs. Hash their paths
+        # through the manifest, but never hash prior-run bytes into expectations.
+        if isinstance(scenario.get("harness"), str):
+            candidates.append(scenario["harness"])
     for token in candidates:
         candidate = Path(token).expanduser()
         candidate = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
@@ -114,9 +115,10 @@ def _referenced_inputs(root, spec):
 
 def _generator_fingerprints(root, spec):
     paths = {Path(__file__).resolve()}
-    orchestrator = Path(__file__).with_name("godmode.py")
-    if orchestrator.is_file():
-        paths.add(orchestrator.resolve())
+    for module_name in ("godmode.py", "forge_state_diff.py", "trace_evidence.py"):
+        module_path = Path(__file__).with_name(module_name)
+        if module_path.is_file():
+            paths.add(module_path.resolve())
     declared = spec.get("generator_files") or []
     if not isinstance(declared, list) or not all(isinstance(item, str) and item.strip() for item in declared):
         raise ValueError("generator_files must be an array of project-relative file paths.")

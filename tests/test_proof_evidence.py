@@ -86,6 +86,28 @@ class ProofEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "generator hashes"):
                 validate_control_freeze(root, root / "control.json", spec, required=True)
 
+    def test_freeze_does_not_bind_generated_state_diff_output_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "control.json").write_text("{}", encoding="utf-8")
+            control_artifact = ".audit/godmode/control-state-diff.json"
+            attack_artifact = ".audit/godmode/attack-state-diff.json"
+            spec = {
+                "family": "reentrancy",
+                "control": {"harness": "test/Control.t.sol", "state_diff_file": control_artifact},
+                "attack": {"harness": "test/Attack.t.sol", "state_diff_file": attack_artifact},
+            }
+            (root / "test").mkdir()
+            (root / "test/Control.t.sol").write_text("contract Control {}", encoding="utf-8")
+            (root / "test/Attack.t.sol").write_text("contract Attack {}", encoding="utf-8")
+            freeze_control_manifest(root, root / "control.json", spec)
+            (root / control_artifact).parent.mkdir(parents=True)
+            (root / control_artifact).write_text('{"run":1}', encoding="utf-8")
+            (root / attack_artifact).write_text('{"run":1}', encoding="utf-8")
+            self.assertTrue(validate_control_freeze(
+                root, root / "control.json", spec, required=True
+            )["verified"])
+
     def test_freeze_rejects_legacy_schema_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
