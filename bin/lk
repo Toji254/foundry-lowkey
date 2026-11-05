@@ -60,7 +60,7 @@ fi
 # Workspace overview and member selection. A plain project command is
 # intercepted only at a workspace root; package-local project commands retain
 # the original router and its selected-package behavior.
-if [[ "\${1:-}" == "project" && "$#" -eq 1 ]]; then
+if [[ "${1:-}" == "project" && "$#" -eq 1 ]]; then
     if python3 "$HOME/.lowkey/workspace_tools.py" project; then
         exit 0
     else
@@ -71,7 +71,7 @@ if [[ "\${1:-}" == "project" && "$#" -eq 1 ]]; then
     fi
 fi
 
-if [[ "\${1:-}" == "workspace" && ( "\${2:-}" == "select" || "\${2:-}" == "list" || "\${2:-}" == "status" ) ]]; then
+if [[ "${1:-}" == "workspace" && ( "${2:-}" == "select" || "${2:-}" == "list" || "${2:-}" == "status" ) ]]; then
     shift
     exec python3 "$HOME/.lowkey/workspace_tools.py" "$@"
 fi
@@ -79,26 +79,26 @@ fi
 # The Foundry build front door performs package selection and a read-only
 # resource/config plan first. Non-Foundry projects fall back to the original
 # repository-native build router rather than being forced through Forge.
-if [[ "\${1:-}" == "build" ]]; then
+if [[ "${1:-}" == "build" ]]; then
     shift
     exec python3 "$HOME/.lowkey/foundry_build.py" "$@"
 fi
 
 # Source risk is available before deployment. Live risk still uses the native
 # router when a target exists or the user explicitly requests runtime mode.
-if [[ "\${1:-}" == "risk" ]]; then
+if [[ "${1:-}" == "risk" ]]; then
     shift
     exec python3 "$HOME/.lowkey/source_risk.py" "$@"
 fi
 
 # Finding-scoped AI routes are opt-in and bounded. Ordinary AI commands keep
 # their existing handler.
-if [[ "\${1:-}" == "ai" && "\${2:-}" == "explain-finding" ]]; then
+if [[ "${1:-}" == "ai" && "${2:-}" == "explain-finding" ]]; then
     shift 2
     exec python3 "$HOME/.lowkey/finding_explainer.py" explain-finding "$@"
 fi
-if [[ "\${1:-}" == "ai" && "\${2:-}" == "preview" ]]; then
-    for arg in "\${@:3}"; do
+if [[ "${1:-}" == "ai" && "${2:-}" == "preview" ]]; then
+    for arg in "${@:3}"; do
         case "$arg" in
             --finding|--finding=*)
                 shift 2
@@ -107,8 +107,8 @@ if [[ "\${1:-}" == "ai" && "\${2:-}" == "preview" ]]; then
         esac
     done
 fi
-if [[ "\${1:-}" == "ai" && "\${2:-}" == "test-plan" ]]; then
-    for arg in "\${@:3}"; do
+if [[ "${1:-}" == "ai" && "${2:-}" == "test-plan" ]]; then
+    for arg in "${@:3}"; do
         case "$arg" in
             --finding|--finding=*)
                 shift 2
@@ -119,7 +119,7 @@ if [[ "\${1:-}" == "ai" && "\${2:-}" == "test-plan" ]]; then
 fi
 
 # Optional constrained reasoning; never used as a general chatbot.
-if [[ "\${1:-}" == "ai" ]]; then
+if [[ "${1:-}" == "ai" ]]; then
     shift
     exec python3 "$HOME/.lowkey/ai_harness.py" "$@"
 fi
