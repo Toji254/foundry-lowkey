@@ -27,7 +27,9 @@ contract VaultForkPoC is LowkeyForgeStateDiffRecorder {
 ```
 
 The sequential control test should use the same recorder calls and same target
-entrypoint. Its artifact path should be different.
+entrypoint. Its artifact path should be different. The recorder emits ordinary
+JSON directly (it does not rely on Foundry's keyed JSON serializer), with a
+top-level `accesses` array and nested `storage_accesses` arrays.
 
 The recorder stores the fork chain ID, block number, parent hash and target runtime
 code hash **before** the tested call. It then stores the full ordered
@@ -54,6 +56,8 @@ Foundry command, recorder harness path and recorder artifact path:
   "trace_backend": "forge-state-diff",
   "target_authenticity": "forked_deployment",
   "family": "reentrancy",
+  "expected_chain_id": 1,
+  "expected_fork_block": 20000000,
   "target_address": "0x...",
   "source_addresses": ["0x..."],
   "same_calls_id": "vault-withdraw-v1",
@@ -69,22 +73,40 @@ Foundry command, recorder harness path and recorder artifact path:
   ],
   "control": {
     "harness": "test/VaultControl.t.sol",
+    "support_files": ["test/helpers/ActorSetup.sol"],
     "state_diff_file": ".audit/godmode/control-state-diff.json",
     "argv": ["forge", "test", "--match-path", "test/VaultControl.t.sol", "--match-test", "test_control", "-vv"]
   },
   "attack": {
     "harness": "test/VaultAttack.t.sol",
+    "support_files": ["test/helpers/ActorSetup.sol"],
     "state_diff_file": ".audit/godmode/attack-state-diff.json",
     "argv": ["forge", "test", "--match-path", "test/VaultAttack.t.sol", "--match-test", "test_attack", "-vv"]
   }
 }
 ```
 
-Run `lk control <manifest> --rpc-url <fork-rpc> --source-rpc-url <independent-archive-rpc>`.
-The independent source RPC is used to check the fork anchor, target code hash,
-source-address code hashes (via `eth_getProof`) and every trace-derived slot's
-prestate. If the archive endpoint does not support `eth_getProof`, Lowkey will
-not mark the target authenticity as independently verified.
+First freeze the experiment, then execute it:
+
+```bash
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --freeze
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 \
+  --source-rpc-url "$ARCHIVE_RPC" --require-frozen
+```
+
+The freeze binds the manifest, trace expectations, commands, explicit harnesses,
+support files, and their SHA-256 hashes. Any change to those inputs invalidates
+the freeze and requires a new freeze before rerunning.
+
+The independent source RPC is used alongside the fork RPC to check chain ID,
+the fork parent hash, the pinned block header, code, balances and nonces for
+declared `source_addresses`, and trace-derived storage slots for those same
+accounts. Include the target and actual protocol dependencies (for example, a
+proxy implementation or oracle) in `source_addresses`; do not list test actors
+or helper contracts as deployed dependencies. A dependency that was not touched
+in the state-diff must not be claimed as source-verified. If the archive endpoint
+does not support the required state queries, Lowkey will leave authenticity
+unverified and will not promote the result to deployment proof.
 
 ## Interpretation limits
 
@@ -103,3 +125,30 @@ not mark the target authenticity as independently verified.
 - A proxy target's runtime code hash identifies the proxy bytecode, not its
   implementation. Include implementation addresses in `source_addresses` and
   rely on trace-derived EIP-1967 slot checks when the test path reads those slots.
+
+
+## Non-economic and negative controls
+
+For liveness/DoS, signature-replay, authorization, or other non-economic
+families, use a separate semantic assertion command. A non-economic result
+requires that command to pass and is capped at `SIMULATED_BREAK`; it is never
+labelled profitable. An intentional revert can be used as a negative-control
+scenario:
+
+```json
+{
+  "require_negative_control": true,
+  "negative_control": {
+    "harness": "test/VaultNoEntitlement.t.sol",
+    "state_diff_file": ".audit/godmode/no-entitlement-state-diff.json",
+    "expected_receipt_status": "0x0",
+    "argv": ["forge", "test", "--match-path", "test/VaultNoEntitlement.t.sol", "-vv"]
+  }
+}
+```
+
+The trace expectation must also declare the negative control's expected call
+count range. The expected revert is recorded as a control result, not treated
+as a successful exploit or a tooling failure. Use the Anvil backend when a
+mined transaction/receipt is needed; Forge state diffs remain test-execution
+evidence and do not contain signed EOA gas accounting.
