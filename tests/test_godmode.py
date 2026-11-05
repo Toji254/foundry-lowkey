@@ -241,6 +241,7 @@ class GodmodeTests(unittest.TestCase):
                 "target_address": target,
                 "harness_path": "test/lowkey/GeneratedSteps.sol",
                 "harness_sha256": hashlib.sha256(harness_bytes).hexdigest(),
+                "policy": "Declarative trace-only metadata.",
                 "trace_expectations": [{
                     "step": 2, "target": target, "selector": "0xdeadbeef",
                     "count": 2, "must_revert": False,
@@ -285,6 +286,7 @@ class GodmodeTests(unittest.TestCase):
                 "target_address": target,
                 "harness_path": "test/lowkey/GeneratedSteps.sol",
                 "harness_sha256": hashlib.sha256(harness_bytes).hexdigest(),
+                "policy": "Declarative trace-only metadata.",
                 "trace_expectations": [{
                     "step": 2, "target": target, "selector": "0xdeadbeef",
                     "count": 2, "must_revert": False,
@@ -325,6 +327,7 @@ class GodmodeTests(unittest.TestCase):
                 "schema_version": 1, "family": "reentrancy", "target_address": target,
                 "harness_path": "test/lowkey/GeneratedSteps.sol",
                 "harness_sha256": hashlib.sha256(harness_bytes).hexdigest(),
+                "policy": "Declarative trace-only metadata.",
                 "trace_expectations": [{
                     "step": 2, "target": target, "selector": "0xdeadbeef",
                     "count": 1, "must_revert": False,
