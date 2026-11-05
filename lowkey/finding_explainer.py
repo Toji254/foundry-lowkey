@@ -1018,6 +1018,7 @@ def _preview(context: dict[str, Any], show_context: bool = False) -> str:
         "The explanation command sends only this redacted, bounded context to the configured text provider.",
         "No text-provider call is made. Only explicitly supplied --evidence-url links may be fetched into this local preview.",
     ]
+    requested_urls = context.get("remote_evidence_requested") or []
     remote_items = context.get("remote_evidence")
     if isinstance(remote_items, list) and remote_items:
         lines.extend(["", "REMOTE SUPPLEMENTARY EVIDENCE (UNTRUSTED; EXACT PREVIEW EXCERPTS)"])
