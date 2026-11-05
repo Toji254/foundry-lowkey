@@ -339,6 +339,75 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             )
             self.assertTrue(all(call["line"] > 1 for call in calls))
 
+    def test_package_local_foundry_remappings_classify_same_workspace_and_external_imports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
+            self.write(
+                root,
+                "packages/perps/foundry.toml",
+                """[profile.default]
+src = "src"
+remappings = [
+  "@perps/=src/",
+  "@shared/=../shared/src/",
+  "@openzeppelin/=lib/openzeppelin-contracts/contracts/"
+]
+""",
+            )
+            self.write(root, "packages/shared/foundry.toml", '[profile.default]\nsrc = "src"\n')
+            self.write(
+                root,
+                "packages/perps/src/Engine.sol",
+                """pragma solidity ^0.8.20;
+import "@perps/Types.sol";
+import "@shared/IOracle.sol";
+import "@openzeppelin/access/Ownable.sol";
+contract Engine is IOracle, Ownable {}
+""",
+            )
+            self.write(root, "packages/perps/src/Types.sol", "pragma solidity ^0.8.20; library Types {}")
+            self.write(root, "packages/shared/src/IOracle.sol", "pragma solidity ^0.8.20; interface IOracle {}")
+            self.write(
+                root,
+                "packages/perps/lib/openzeppelin-contracts/contracts/access/Ownable.sol",
+                "pragma solidity ^0.8.20; abstract contract Ownable {}",
+            )
+
+            graph = project_tools.build_dependency_graph(root / "packages/perps")
+            imports = [edge for edge in graph["edges"] if edge["kind"] == "import"]
+            provenance = {edge["raw"]: edge.get("provenance") for edge in imports}
+
+            self.assertEqual(provenance["@perps/Types.sol"], "same-package")
+            self.assertEqual(provenance["@shared/IOracle.sol"], "workspace")
+            self.assertEqual(provenance["@openzeppelin/access/Ownable.sol"], "third-party")
+            self.assertEqual(graph["summary"]["local_imports"], 1)
+            self.assertEqual(graph["summary"]["workspace_imports"], 1)
+            self.assertEqual(graph["summary"]["external_imports"], 1)
+            self.assertTrue(any("packages/shared/src/IOracle.sol" in node["file"] for node in graph["nodes"]))
+
+    def test_workspace_root_project_map_includes_nested_package_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
+            self.write(root, "packages/perps/foundry.toml", '[profile.default]\nsrc = "src"\ntest = "test"\n')
+            self.write(root, "packages/perps/src/Perps.sol", "pragma solidity ^0.8.20; contract Perps {}")
+            self.write(root, "packages/perps/test/Perps.t.sol", "contract PerpsTest {}")
+            self.write(root, "packages/shared/foundry.toml", '[profile.default]\nsrc = "src"\n')
+            self.write(root, "packages/shared/src/Shared.sol", "pragma solidity ^0.8.20; library Shared {}")
+
+            project = project_tools.detect_project(root)
+            graph = project_tools.build_dependency_graph(root)
+            node_paths = {node["file"] for node in graph["nodes"]}
+
+            self.assertEqual(project["scope_type"], "workspace")
+            self.assertEqual(project["source_file_count"], 2)
+            self.assertEqual(len(project["workspace_members"]), 2)
+            self.assertIn("packages/perps/src/Perps.sol", node_paths)
+            self.assertIn("packages/shared/src/Shared.sol", node_paths)
+            self.assertTrue(project_tools._protocol_node({"file": "packages/perps/src/Perps.sol", "declarations": []}))
+            self.assertFalse(project_tools._protocol_node({"file": "packages/perps/test/Perps.t.sol", "declarations": []}))
+
     def test_graph_render_is_human_and_excludes_generated_support_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
