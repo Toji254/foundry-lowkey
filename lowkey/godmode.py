@@ -1113,7 +1113,7 @@ def _forge_scenario_prestate(normalized, spec, scenario_name):
 
 
 
-def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
+def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, paired_entry=None):
     try:
         try:
             from .forge_state_diff import normalize_forge_state_diff
@@ -1122,28 +1122,47 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
     except ImportError as exc:
         raise RuntimeError("Forge state-diff normalizer is unavailable: " + str(exc)) from exc
 
-    harness_name = entry.get("harness") or spec.get("harness")
-    if not isinstance(harness_name, str) or not harness_name:
-        raise ValueError(name + " requires harness pointing to the Foundry test file.")
-    harness = (root / harness_name).resolve()
-    if not harness.is_relative_to(root) or not harness.is_file():
-        raise ValueError(name + " harness must be an existing file inside the project.")
-    artifact_name = entry.get("state_diff_file")
-    if not isinstance(artifact_name, str) or not artifact_name:
-        raise ValueError(name + " requires state_diff_file written by LowkeyForgeStateDiffRecorder.")
-    artifact_rel = Path(artifact_name)
-    if artifact_rel.is_absolute() or ".." in artifact_rel.parts:
-        raise ValueError(name + " state_diff_file must be a safe project-relative path.")
-    argv = entry.get("argv")
-    if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
-        raise ValueError(name + " argv must be a non-empty string array.")
-    if Path(argv[0]).name not in {"forge", "forge.exe"}:
-        raise ValueError(name + " Forge backend argv must invoke forge directly.")
-    command_audit = inspect_reproduction_command(root, argv)
-    if command_audit["blocked"]:
-        raise ValueError(name + " command contains local RPC state-fabrication calls: " +
-                         str(command_audit["state_fabrication_calls"]))
-    fidelity = _analyze_control_fidelity(root, entry, spec)
+    entries = [(name, entry)]
+    if paired_entry is not None:
+        paired_name = "attack" if name == "control" else "control"
+        entries.append((paired_name, paired_entry))
+
+    if paired_entry is not None:
+        same_commands = entry.get("argv") == paired_entry.get("argv")
+        same_harness = (entry.get("harness") or spec.get("harness")) == (
+            paired_entry.get("harness") or spec.get("harness")
+        )
+        same_prepare = entry.get("prepare_argv") == paired_entry.get("prepare_argv")
+        distinct_artifacts = entry.get("state_diff_file") != paired_entry.get("state_diff_file")
+        if name != "control" or not (same_commands and same_harness and same_prepare and distinct_artifacts):
+            raise ValueError("Paired Forge requires the same control/attack harness, argv and preparation, plus two distinct artifact paths.")
+
+    validated = []
+    for scenario_name, scenario_entry in entries:
+        harness_name = scenario_entry.get("harness") or spec.get("harness")
+        if not isinstance(harness_name, str) or not harness_name:
+            raise ValueError(scenario_name + " requires harness pointing to the Foundry test file.")
+        harness = (root / harness_name).resolve()
+        if not harness.is_relative_to(root) or not harness.is_file():
+            raise ValueError(scenario_name + " harness must be an existing file inside the project.")
+        artifact_name = scenario_entry.get("state_diff_file")
+        if not isinstance(artifact_name, str) or not artifact_name:
+            raise ValueError(scenario_name + " requires state_diff_file written by LowkeyForgeStateDiffRecorder.")
+        artifact_rel = Path(artifact_name)
+        if artifact_rel.is_absolute() or ".." in artifact_rel.parts:
+            raise ValueError(scenario_name + " state_diff_file must be a safe project-relative path.")
+        argv = scenario_entry.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
+            raise ValueError(scenario_name + " argv must be a non-empty string array.")
+        if Path(argv[0]).name not in {"forge", "forge.exe"}:
+            raise ValueError(scenario_name + " Forge backend argv must invoke forge directly.")
+        command_audit = inspect_reproduction_command(root, argv)
+        if command_audit["blocked"]:
+            raise ValueError(scenario_name + " command contains local RPC state-fabrication calls: " +
+                             str(command_audit["state_fabrication_calls"]))
+        fidelity = _analyze_control_fidelity(root, scenario_entry, spec)
+        validated.append((scenario_name, scenario_entry, artifact_rel, argv, fidelity))
+
     temp = Path(tempfile.mkdtemp(prefix="lk-forge-control-"))
     work = temp / "project"
     try:
@@ -1151,14 +1170,18 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
             root, work,
             ignore=shutil.ignore_patterns(".git", ".audit", "out", "cache", "node_modules", "__pycache__"),
         )
-        artifact_path = (work / artifact_rel).resolve()
-        if not artifact_path.is_relative_to(work):
-            raise ValueError("state_diff_file escaped the isolated Forge project.")
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            artifact_path.unlink()
-        except FileNotFoundError:
-            pass
+        artifact_paths = {}
+        for scenario_name, _, artifact_rel, _, _ in validated:
+            artifact_path = (work / artifact_rel).resolve()
+            if not artifact_path.is_relative_to(work):
+                raise ValueError(scenario_name + " state_diff_file escaped the isolated Forge project.")
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                artifact_path.unlink()
+            except FileNotFoundError:
+                pass
+            artifact_paths[scenario_name] = artifact_path
+
         prepare_argv = entry.get("prepare_argv")
         if prepare_argv:
             prepare_audit = inspect_reproduction_command(root, prepare_argv)
@@ -1169,82 +1192,94 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
             if prepared.returncode != 0:
                 raise RuntimeError(name + " Forge preparation failed: " +
                                    ((prepared.stdout or "") + (prepared.stderr or ""))[-1200:])
+
+        argv = validated[0][3]
         proc = run(argv, work, int(spec.get("timeout_seconds", 600)), env=env)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
         if proc.returncode != 0:
             raise RuntimeError(name + " Forge test command failed (exit " +
                                str(proc.returncode) + "): " + combined[-1600:])
-        if not artifact_path.is_file():
-            raise ValueError(name + " Forge test passed but did not write state_diff_file; " +
-                             "ensure _lowkeyStartTrace/_lowkeyWriteTrace wrap the target call.")
-        raw = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+        results = {}
         target = addr(spec.get("target_address"))
-        normalized = normalize_forge_state_diff(raw, expected_target=target)
-        prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots = (
-            _forge_scenario_prestate(normalized, spec, name)
-        )
-        semantic_check = None
-        semantic_argv = entry.get("semantic_check_argv")
-        if semantic_argv:
-            audit = inspect_reproduction_command(root, semantic_argv)
-            if audit["blocked"]:
-                raise ValueError(name + " semantic_check_argv contains state fabrication.")
-            semantic_proc = run([str(x) for x in semantic_argv], work,
-                                int(spec.get("semantic_timeout_seconds", 600)), env=env)
-            semantic_output = (semantic_proc.stdout or "") + "\\n" + (semantic_proc.stderr or "")
-            semantic_check = {
-                "argv": semantic_argv, "exit_code": semantic_proc.returncode,
-                "verified": _semantic_execution_verified(
-                    semantic_proc.returncode, semantic_output,
-                    entry.get("semantic_check_test") or spec.get("semantic_check_test"),
-                ),
-                "expected_test": entry.get("semantic_check_test") or spec.get("semantic_check_test"),
-                "output_tail": semantic_output[-1200:],
-                "verification_rule": "requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
+        for scenario_name, scenario_entry, artifact_rel, scenario_argv, fidelity in validated:
+            artifact_path = artifact_paths[scenario_name]
+            if not artifact_path.is_file():
+                raise ValueError(scenario_name + " Forge test passed but did not write state_diff_file; " +
+                                 "ensure _lowkeyStartTrace/_lowkeyWriteTrace wrap the target call.")
+            raw = json.loads(artifact_path.read_text(encoding="utf-8"))
+            normalized = normalize_forge_state_diff(raw, expected_target=target)
+            prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots = (
+                _forge_scenario_prestate(normalized, spec, scenario_name)
+            )
+            semantic_check = None
+            semantic_argv = scenario_entry.get("semantic_check_argv")
+            if semantic_argv:
+                audit = inspect_reproduction_command(root, semantic_argv)
+                if audit["blocked"]:
+                    raise ValueError(scenario_name + " semantic_check_argv contains state fabrication.")
+                semantic_proc = run([str(x) for x in semantic_argv], work,
+                                    int(spec.get("semantic_timeout_seconds", 600)), env=env)
+                semantic_output = (semantic_proc.stdout or "") + "\n" + (semantic_proc.stderr or "")
+                semantic_check = {
+                    "argv": semantic_argv, "exit_code": semantic_proc.returncode,
+                    "verified": _semantic_execution_verified(
+                        semantic_proc.returncode, semantic_output,
+                        scenario_entry.get("semantic_check_test") or spec.get("semantic_check_test"),
+                    ),
+                    "expected_test": scenario_entry.get("semantic_check_test") or spec.get("semantic_check_test"),
+                    "output_tail": semantic_output[-1200:],
+                    "verification_rule": "requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
+                }
+            metrics = {x["address"]: x["delta_wei"] for x in normalized.get("balance_deltas", [])}
+            metric_addresses = sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
+            metric = None
+            if metric_addresses and all(address in metrics for address in metric_addresses):
+                metric = sum(metrics[address] for address in metric_addresses)
+            source_verification = _forge_source_verification(source_url, fork_url, normalized, spec)
+            fidelity_label = "simulated_caller"
+            if fidelity.get("synthetic_state"):
+                fidelity_label = "synthetic_state"
+            elif any(signal.get("kind") == "external_call_mock" for signal in fidelity.get("signals", [])):
+                fidelity_label = "simulated_dependencies"
+            results[scenario_name] = {
+                "backend": "forge-state-diff", "exit_code": proc.returncode,
+                "execution_verified": proc.returncode == 0, "metric": metric,
+                "metric_kind": "forge_account_balance_delta_without_eoa_gas",
+                "metric_addresses": metric_addresses, "gas_verified": False,
+                "transaction_envelope_verified": False, "tx_hash": None,
+                "chain_id": normalized["chain_id"], "block_number": normalized["block_number"],
+                "fork_parent_hash": normalized.get("fork_parent_hash"),
+                "entry_call_sha256": normalized["entry_call_sha256"],
+                "entry_call": normalized["entry_call"],
+                "prestate_sha256": prestate_digest, "prestate": full_prestate,
+                "scenario_parameters": scenario_parameters,
+                "comparison_excluded_scenario_slots": excluded_scenario_slots,
+                "derived_storage_accesses": normalized["storage_accesses"],
+                "derived_storage_slots": [
+                    {"address": item["account"], "slot": item["slot"],
+                     "prestate_value": item["previous_value"]}
+                    for item in normalized["storage_accesses"]
+                ],
+                "balance_deltas": normalized.get("balance_deltas", []),
+                "trace_schema_version": normalized["trace_schema_version"],
+                "trace_events": normalized["trace_events"],
+                "setup_events": normalized.get("setup_events", []),
+                "domain_events": normalized.get("domain_events", []),
+                "call_trace": normalized["calls"], "raw_account_accesses": normalized["raw_account_accesses"],
+                "target_code_hash": normalized["target_code_hash"],
+                "source_verification": source_verification,
+                "target_authenticity_verified": source_verification["verified"],
+                "fidelity": fidelity, "fidelity_label": fidelity_label, "semantic_check": semantic_check,
+                "state_diff_file": artifact_rel.as_posix(), "argv": scenario_argv,
+                "paired_execution": paired_entry is not None,
+                "output_tail": combined[-2500:],
+                "limitations": normalized["limitations"],
             }
-        metrics = {x["address"]: x["delta_wei"] for x in normalized.get("balance_deltas", [])}
-        metric_addresses = sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
-        metric = None
-        if metric_addresses and all(address in metrics for address in metric_addresses):
-            metric = sum(metrics[address] for address in metric_addresses)
-        source_verification = _forge_source_verification(source_url, fork_url, normalized, spec)
-        fidelity_label = "simulated_caller"
-        if fidelity.get("synthetic_state"):
-            fidelity_label = "synthetic_state"
-        elif any(signal.get("kind") == "external_call_mock" for signal in fidelity.get("signals", [])):
-            fidelity_label = "simulated_dependencies"
-        return {
-            "backend": "forge-state-diff", "exit_code": proc.returncode,
-            "execution_verified": proc.returncode == 0, "metric": metric,
-            "metric_kind": "forge_account_balance_delta_without_eoa_gas",
-            "metric_addresses": metric_addresses, "gas_verified": False,
-            "transaction_envelope_verified": False, "tx_hash": None,
-            "chain_id": normalized["chain_id"], "block_number": normalized["block_number"],
-            "fork_parent_hash": normalized.get("fork_parent_hash"),
-            "entry_call_sha256": normalized["entry_call_sha256"],
-            "entry_call": normalized["entry_call"],
-            "prestate_sha256": prestate_digest, "prestate": full_prestate,
-            "scenario_parameters": scenario_parameters,
-            "comparison_excluded_scenario_slots": excluded_scenario_slots,
-            "derived_storage_accesses": normalized["storage_accesses"],
-            "derived_storage_slots": [
-                {"address": item["account"], "slot": item["slot"],
-                 "prestate_value": item["previous_value"]}
-                for item in normalized["storage_accesses"]
-            ],
-            "balance_deltas": normalized.get("balance_deltas", []),
-            "trace_schema_version": normalized["trace_schema_version"],
-            "trace_events": normalized["trace_events"],
-            "call_trace": normalized["calls"], "raw_account_accesses": normalized["raw_account_accesses"],
-            "target_code_hash": normalized["target_code_hash"],
-            "source_verification": source_verification,
-            "target_authenticity_verified": source_verification["verified"],
-            "fidelity": fidelity, "fidelity_label": fidelity_label, "semantic_check": semantic_check,
-            "state_diff_file": artifact_rel.as_posix(), "argv": argv, "output_tail": combined[-2500:],
-            "limitations": normalized["limitations"],
-        }
+        return results if paired_entry is not None else results[name]
     finally:
         shutil.rmtree(temp, ignore_errors=True)
+
 
 
 def control(args):
@@ -1271,6 +1306,16 @@ def control(args):
     backend=str(spec.get("trace_backend") or "anvil-calltracer").lower()
     if backend not in {"anvil-calltracer","forge-state-diff"}:
         raise ValueError("trace_backend must be anvil-calltracer or forge-state-diff.")
+    paired_forge = bool(spec.get("paired_forge_experiment", False))
+    if paired_forge:
+        if backend != "forge-state-diff":
+            raise ValueError("paired_forge_experiment is supported only by the forge-state-diff backend.")
+        if (control_run.get("argv") != attack.get("argv") or
+            (control_run.get("harness") or spec.get("harness")) !=
+            (attack.get("harness") or spec.get("harness")) or
+            control_run.get("prepare_argv") != attack.get("prepare_argv") or
+            control_run.get("state_diff_file") == attack.get("state_diff_file")):
+            raise ValueError("paired_forge_experiment requires the same harness/argv/preparation and two distinct state_diff_file paths.")
     if not spec.get("same_calls_id"):
         raise ValueError("Declare same_calls_id as a human-readable label for the matched experiment.")
     if not isinstance(attack.get("argv"),list) or not isinstance(control_run.get("argv"),list):
@@ -1339,18 +1384,29 @@ def control(args):
         raise ValueError("Manifest requires negative_control but does not define it.")
 
     for name,entry in scenarios:
+        if paired_forge and name=="attack":
+            continue
         try:
             if backend=="forge-state-diff":
-                rows[name]=_forge_control_run(
-                    root,url,name,entry,spec,env,source_url=ns.source_rpc_url
-                )
+                if paired_forge and name=="control":
+                    rows.update(_forge_control_run(
+                        root,url,name,entry,spec,env,source_url=ns.source_rpc_url,
+                        paired_entry=attack,
+                    ))
+                else:
+                    rows[name]=_forge_control_run(
+                        root,url,name,entry,spec,env,source_url=ns.source_rpc_url
+                    )
             else:
                 rows[name]=_trace_control_run(root,url,name,entry,spec,env)
         except Exception as exc:
-            rows[name]={
-                "exit_code":None,"execution_verified":False,"metric":None,
-                "trace_error":str(exc),"argv":entry.get("argv"),"backend":backend,
-            }
+            failed_names = ("control", "attack") if paired_forge and name=="control" else (name,)
+            for failed_name in failed_names:
+                failed_entry = control_run if failed_name=="control" else attack if failed_name=="attack" else entry
+                rows[failed_name]={
+                    "exit_code":None,"execution_verified":False,"metric":None,
+                    "trace_error":str(exc),"argv":failed_entry.get("argv"),"backend":backend,
+                }
 
     control_metric=rows.get("control",{}).get("metric")
     attack_metric=rows.get("attack",{}).get("metric")
@@ -1693,6 +1749,7 @@ def control(args):
         "target_authenticity":authenticity,"fidelity":fidelity,
         "outcome":outcome,"family":family,"economic_policy":economics,
         "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
+        "paired_forge_experiment":paired_forge,
         "evidence_capabilities":evidence_capabilities,
         "evidence_requirements":evidence_checks,
         "evidence_requirements_verified":evidence_requirements_verified,

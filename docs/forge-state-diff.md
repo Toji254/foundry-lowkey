@@ -117,12 +117,17 @@ fs_permissions = [
 
 ## Manifest shape
 
-Select `trace_backend = "forge-state-diff"`. Each scenario provides its own
-Foundry command, recorder harness path and recorder artifact path:
+Select `trace_backend = "forge-state-diff"`. Independent scenarios can use
+separate Forge invocations. For a true one-deployment pair, set
+`paired_forge_experiment: true`; control and attack must share the same harness,
+Forge argv and preparation command, while writing distinct control/attack
+artifact paths. `lk control` executes that harness once and loads both artifacts
+from the same isolated workspace. Each scenario provides its recorder artifact path:
 
 ```json
 {
   "trace_backend": "forge-state-diff",
+  "paired_forge_experiment": true,
   "target_authenticity": "forked_deployment",
   "family": "reentrancy",
   "expected_chain_id": 1,

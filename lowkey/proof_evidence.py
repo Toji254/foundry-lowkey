@@ -256,6 +256,7 @@ def _freeze_core(root, manifest_path, spec):
             "target_address": str(spec.get("target_address") or "").lower(),
             "target_authenticity": spec.get("target_authenticity", "unknown"),
             "trace_backend": spec.get("trace_backend", "anvil-calltracer"),
+            "paired_forge_experiment": bool(spec.get("paired_forge_experiment", False)),
             "freeze_inputs": spec.get("freeze_inputs") or [],
             "generator_files": spec.get("generator_files") or [],
             "source_addresses": spec.get("source_addresses") or [],

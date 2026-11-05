@@ -1001,6 +1001,54 @@ class GodmodeTests(unittest.TestCase):
         self.assertIsNone(events[0]["storage"])
         self.assertEqual(events[0]["source_backend"], "anvil-calltracer")
 
+    def test_paired_forge_runner_executes_shared_harness_once_and_reads_both_artifacts(self):
+        import subprocess
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = "0x" + "1" * 40
+            wrapper = "0x" + "3" * 40
+            harness = root / "test" / "Paired.t.sol"
+            harness.parent.mkdir()
+            harness.write_text("contract Paired { function test_pair() external {} }", encoding="utf-8")
+            control_entry = {
+                "harness": "test/Paired.t.sol",
+                "state_diff_file": ".audit/godmode/control-state-diff.json",
+                "argv": ["forge", "test", "--match-path", "test/Paired.t.sol", "-vv"],
+            }
+            attack_entry = {
+                "harness": "test/Paired.t.sol",
+                "state_diff_file": ".audit/godmode/attack-state-diff.json",
+                "argv": ["forge", "test", "--match-path", "test/Paired.t.sol", "-vv"],
+            }
+            artifact = self._forge_artifact()
+            invocations = {"count": 0}
+
+            def fake_run(argv, cwd, timeout=300, env=None):
+                invocations["count"] += 1
+                for entry in (control_entry, attack_entry):
+                    path = pathlib.Path(cwd) / entry["state_diff_file"]
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(artifact), encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, "paired Forge test passed", "")
+
+            with patch.object(godmode, "run", side_effect=fake_run):
+                rows = godmode._forge_control_run(
+                    root, "http://127.0.0.1:8545", "control",
+                    control_entry, {"target_address": target, "metric_addresses": [wrapper]},
+                    {}, paired_entry=attack_entry,
+                )
+
+            self.assertEqual(invocations["count"], 1)
+            self.assertEqual(set(rows), {"control", "attack"})
+            self.assertTrue(rows["control"]["paired_execution"])
+            self.assertTrue(rows["attack"]["paired_execution"])
+            self.assertEqual(rows["control"]["target_code_hash"], rows["attack"]["target_code_hash"])
+            self.assertEqual(rows["control"]["prestate_sha256"], rows["attack"]["prestate_sha256"])
+            self.assertEqual(rows["control"]["trace_events"][0]["selector"], "0x12345678")
+            self.assertEqual(rows["attack"]["trace_events"][0]["selector"], "0x12345678")
+
     def test_forge_control_adapter_consumes_real_forge_artifact_without_claiming_eoa_profit(self):
         import subprocess
         from unittest.mock import patch
