@@ -462,7 +462,9 @@ def _imported_source_context(
             continue
         visited.add(current)
         resolved.append((current, current_text))
-        clean = core._strip_source_comments(current_text, "solidity", mask_strings=True)
+        # Preserve quoted import paths while stripping comments; masking strings
+        # here would erase the very path that Foundry must resolve.
+        clean = core._strip_source_comments(current_text, "solidity")
         for match in import_pattern.finditer(clean):
             imported = _resolve_import_file(
                 project, current, match.group(1), remappings, boundary=boundary,
