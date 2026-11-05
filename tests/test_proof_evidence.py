@@ -5,7 +5,7 @@ import unittest
 
 from lowkey.proof_evidence import (
     classify_proof, evaluate_economic_policy, freeze_control_manifest,
-    validate_control_freeze, trace_evidence_capabilities,
+    validate_control_freeze, validate_frozen_control, trace_evidence_capabilities,
     evaluate_evidence_requirements,
 )
 
@@ -13,15 +13,17 @@ from lowkey.proof_evidence import (
 class ProofEvidenceTests(unittest.TestCase):
     def test_fixture_profit_never_becomes_deployment_profit(self):
         result = classify_proof("fixture", "real_funded", "profitable")
-        self.assertEqual(result["status"], "SIMULATED_BREAK")
+        self.assertEqual(result["status"], "LOCAL_PROFITABLE")
         self.assertEqual(result["status_axes"]["target_authenticity"], "fixture")
+        simulated = classify_proof("fixture", "synthetic_state", "profitable")
+        self.assertEqual(simulated["status"], "SIMULATED_BREAK")
 
     def test_forked_deployment_needs_independent_authenticity_verification(self):
         unverified = classify_proof("forked_deployment", "real_funded", "profitable")
         verified = classify_proof("forked_deployment", "real_funded", "profitable",
                                    authenticity_verified=True)
         self.assertEqual(unverified["status"], "OBSERVED")
-        self.assertEqual(verified["status"], "PROFITABLE")
+        self.assertEqual(verified["status"], "FORK_PROFITABLE")
 
     def test_simulated_caller_caps_fork_result(self):
         result = classify_proof("forked_deployment", "simulated_caller", "profitable",
@@ -41,6 +43,8 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertEqual(classify_proof("forked_deployment", "real_funded", "profitable",
                                         authenticity_verified=True, human_confirmed=True)["status"],
                          "HUMAN_CONFIRMED")
+        self.assertEqual(classify_proof("fixture", "real_funded", "profitable",
+                                        human_confirmed=True)["status"], "LOCAL_PROFITABLE")
 
     def test_non_economic_requires_semantic_invariant_and_caps_status(self):
         denied = evaluate_economic_policy("dos", -100, semantic_invariant_verified=False)
@@ -149,6 +153,32 @@ class ProofEvidenceTests(unittest.TestCase):
             freeze_path.write_text(json.dumps(frozen), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "older schema"):
                 validate_control_freeze(root, manifest_path, {"family": "reentrancy"}, required=True)
+
+
+    def test_validate_only_reads_frozen_manifest_and_rejects_tampered_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = root / "control.json"
+            manifest.write_text("{}", encoding="utf-8")
+            _, freeze_path = freeze_control_manifest(root, manifest, {"family": "reentrancy"})
+            valid = validate_frozen_control(root)
+            self.assertTrue(valid["verified"], valid)
+            self.assertEqual(valid["status"], "PROPOSED")
+            self.assertFalse(valid["execution_attempted"])
+            frozen = json.loads(freeze_path.read_text(encoding="utf-8"))
+            frozen["freeze_sha256"] = "0" * 64
+            freeze_path.write_text(json.dumps(frozen), encoding="utf-8")
+            tampered = validate_frozen_control(root)
+            self.assertFalse(tampered["verified"])
+            self.assertEqual(tampered["status"], "REJECTED")
+            self.assertEqual(tampered["reason_code"], "digest_mismatch")
+            self.assertFalse(tampered["execution_attempted"])
+
+    def test_fixture_without_real_funded_execution_cannot_be_local_profitable(self):
+        for fidelity in ("synthetic_state", "simulated_caller", "simulated_dependencies"):
+            with self.subTest(fidelity=fidelity):
+                result = classify_proof("fixture", fidelity, "profitable")
+                self.assertEqual(result["status"], "SIMULATED_BREAK")
 
     def test_trace_capabilities_preserve_anvil_dimensions_and_forge_storage_strength(self):
         anvil_without_tracer = trace_evidence_capabilities(

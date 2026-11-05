@@ -1535,19 +1535,37 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
 
 def control(args):
     p=argparse.ArgumentParser(prog="lk control")
-    p.add_argument("manifest")
+    p.add_argument("manifest",nargs="?")
     p.add_argument("--root",default=".")
-    p.add_argument("--rpc-url",required=True)
+    p.add_argument("--rpc-url")
     p.add_argument("--source-rpc-url")
-    p.add_argument("--output",default=".audit/godmode/control.json")
+    p.add_argument("--output")
     p.add_argument("--freeze",action="store_true",help="Freeze the manifest, commands, harnesses and expectations without running them.")
+    p.add_argument("--validate",action="store_true",help="Validate only an existing frozen file and referenced inputs; never execute commands.")
     p.add_argument("--freeze-file",default=".audit/godmode/control.freeze.json")
-    p.add_argument("--require-frozen",action="store_true",help="Refuse to execute unless a matching frozen manifest exists.")
+    p.add_argument("--require-frozen",action="store_true",help="Refuse execution unless a matching frozen manifest exists.")
     p.add_argument("--non-economic",action="store_true",help="Require a passing semantic invariant instead of positive profit.")
     ns=p.parse_args(args)
-
     root=root_path(ns.root)
-    url=rpc_url(ns.rpc_url)
+    try:
+        try: from . import proof_evidence
+        except ImportError: import proof_evidence
+    except ImportError as exc:
+        raise RuntimeError("Proof evidence policy module is unavailable: " + str(exc)) from exc
+
+    if ns.validate:
+        if ns.manifest or ns.rpc_url or ns.source_rpc_url or ns.freeze or ns.require_frozen or ns.non_economic:
+            p.error("--validate reads the frozen file only; do not supply a manifest, RPC URL, --freeze or execution flags.")
+        validation=proof_evidence.validate_frozen_control(root, ns.freeze_file)
+        out=safe_out(root, ns.output or ".audit/godmode/control-validation.json")
+        write_json(out, validation)
+        print(str(validation.get("status","REJECTED")) + ": " + str(validation.get("reason","Frozen validation did not complete.")))
+        print("  execution attempted: no")
+        print("  evidence: " + out.relative_to(root).as_posix())
+        return 0 if validation.get("verified") else 2
+
+    if not ns.manifest:
+        p.error("a manifest is required unless --validate is used.")
     mf=(root/ns.manifest).resolve()
     if not mf.is_relative_to(root) or not mf.is_file():
         raise ValueError("Manifest must be an existing file inside project.")
@@ -1575,46 +1593,33 @@ def control(args):
     if not isinstance(spec.get("metric_addresses"),list) or not spec["metric_addresses"]:
         raise ValueError("Declare metric_addresses for the attacker portfolio.")
 
-    try:
-        try:
-            from . import proof_evidence
-        except ImportError:
-            import proof_evidence
-    except ImportError as exc:
-        raise RuntimeError("Proof evidence policy module is unavailable: " + str(exc)) from exc
-
     if ns.freeze:
-        frozen, freeze_path = proof_evidence.freeze_control_manifest(
-            root, mf, spec, ns.freeze_file
-        )
+        frozen, freeze_path = proof_evidence.freeze_control_manifest(root, mf, spec, ns.freeze_file)
         print("CONTROL EXPECTATIONS FROZEN")
         print("  file: " + str(freeze_path.relative_to(root)))
         print("  sha256: " + frozen["freeze_sha256"])
         print("  manifest: " + frozen["manifest_sha256"])
         print("No attack or control command was executed.")
         return 0
+    if not ns.rpc_url:
+        p.error("--rpc-url is required when executing the control/attack experiment.")
+    url=rpc_url(ns.rpc_url)
 
     freeze_status=proof_evidence.validate_control_freeze(
         root, mf, spec, required=ns.require_frozen, freeze_path=ns.freeze_file
     )
     if freeze_status.get("requires_refreeze"):
         payload = {
-            "created_at": now(),
-            "status": "UNPROVEN",
-            "proof_status": "UNPROVEN",
-            "outcome": "not_run",
-            "family": proof_evidence.normalize_family(spec.get("family")),
-            "target_address": target,
-            "trace_backend": backend,
-            "freeze": freeze_status,
-            "execution_attempted": False,
-            "rejection_codes": [],
+            "created_at": now(), "status": "UNRESOLVED", "proof_status": "UNRESOLVED",
+            "outcome": "not_run", "family": proof_evidence.normalize_family(spec.get("family")),
+            "target_address": target, "trace_backend": backend, "freeze": freeze_status,
+            "execution_attempted": False, "rejection_codes": ["digest_mismatch"],
             "reasons": [freeze_status.get("reason")],
-            "next_action": "Run lk control <manifest> --freeze again, then rerun validation. No attack or control command was executed.",
+            "next_action": "Run lk control <manifest> --freeze again, then validate. No experiment was executed.",
         }
-        out = safe_out(root, ns.output)
-        write_json(out, payload)
-        print("UNPROVEN: generator drift; re-freeze required; no experiment executed.")
+        out=safe_out(root, ns.output or ".audit/godmode/control.json")
+        write_json(out,payload)
+        print("UNRESOLVED: generator drift; re-freeze required; no experiment executed.")
         print("  evidence " + out.relative_to(root).as_posix())
         return 2
     if backend=="anvil-calltracer" and not local_rpc(url):
@@ -1635,104 +1640,66 @@ def control(args):
         raise ValueError("Manifest requires negative_control but does not define it.")
 
     for name,entry in scenarios:
-        if paired_forge and name=="attack":
-            continue
+        if paired_forge and name=="attack": continue
         try:
             if backend=="forge-state-diff":
                 if paired_forge and name=="control":
-                    rows.update(_forge_control_run(
-                        root,url,name,entry,spec,env,source_url=ns.source_rpc_url,
-                        paired_entry=attack,
-                    ))
+                    rows.update(_forge_control_run(root,url,name,entry,spec,env,source_url=ns.source_rpc_url,paired_entry=attack))
                 else:
-                    rows[name]=_forge_control_run(
-                        root,url,name,entry,spec,env,source_url=ns.source_rpc_url
-                    )
+                    rows[name]=_forge_control_run(root,url,name,entry,spec,env,source_url=ns.source_rpc_url)
             else:
                 rows[name]=_trace_control_run(root,url,name,entry,spec,env)
         except Exception as exc:
-            failed_names = ("control", "attack") if paired_forge and name=="control" else (name,)
+            failed_names=("control","attack") if paired_forge and name=="control" else (name,)
             for failed_name in failed_names:
-                failed_entry = control_run if failed_name=="control" else attack if failed_name=="attack" else entry
-                rows[failed_name]={
-                    "exit_code":None,"execution_verified":False,"metric":None,
-                    "trace_error":str(exc),"argv":failed_entry.get("argv"),"backend":backend,
-                }
+                failed_entry=control_run if failed_name=="control" else attack if failed_name=="attack" else entry
+                rows[failed_name]={"exit_code":None,"execution_verified":False,"metric":None,
+                                   "trace_error":str(exc),"argv":failed_entry.get("argv"),"backend":backend}
 
     control_metric=rows.get("control",{}).get("metric")
     attack_metric=rows.get("attack",{}).get("metric")
-    delta=None
-    if isinstance(control_metric,int) and isinstance(attack_metric,int):
-        delta=attack_metric-control_metric
-    same_entry=bool(
-        rows.get("control",{}).get("entry_call_sha256") and
-        rows.get("control",{}).get("entry_call_sha256")==rows.get("attack",{}).get("entry_call_sha256")
-    )
-    same_envelope=(
-        backend=="forge-state-diff" or bool(
-            rows.get("control",{}).get("transaction_envelope_sha256") and
-            rows.get("control",{}).get("transaction_envelope_sha256")==rows.get("attack",{}).get("transaction_envelope_sha256")
-        )
-    )
-    same_prestate=bool(
-        rows.get("control",{}).get("prestate_sha256") and
-        rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256")
-    )
-    same_chain=bool(
-        rows.get("control",{}).get("chain_id") is not None and
-        str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower()
-    )
+    delta=attack_metric-control_metric if isinstance(control_metric,int) and isinstance(attack_metric,int) else None
+    same_entry=bool(rows.get("control",{}).get("entry_call_sha256") and
+                    rows.get("control",{}).get("entry_call_sha256")==rows.get("attack",{}).get("entry_call_sha256"))
+    same_envelope=(backend=="forge-state-diff" or bool(
+        rows.get("control",{}).get("transaction_envelope_sha256") and
+        rows.get("control",{}).get("transaction_envelope_sha256")==rows.get("attack",{}).get("transaction_envelope_sha256")))
+    same_prestate=bool(rows.get("control",{}).get("prestate_sha256") and
+                       rows.get("control",{}).get("prestate_sha256")==rows.get("attack",{}).get("prestate_sha256"))
+    same_chain=bool(rows.get("control",{}).get("chain_id") is not None and
+                    str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower())
 
-    scenario_excluded_keys={
-        addr(item.get("address"))+":"+storage_slot_key(item.get("slot"))
-        for item in (spec.get("scenario_parameters") or []) if isinstance(item,dict)
-    }
+    scenario_excluded_keys={addr(item.get("address"))+":"+storage_slot_key(item.get("slot"))
+                            for item in (spec.get("scenario_parameters") or []) if isinstance(item,dict)}
     def _trace_slot_values(run_row):
-        return {
-            addr(item.get("address"))+":"+storage_slot_key(item.get("slot")):
-            str(item.get("value","")).lower()
-            for item in ((run_row.get("storage_trace") or {}).get("slots") or [])
-        }
+        return {addr(item.get("address"))+":"+storage_slot_key(item.get("slot")):str(item.get("value","")).lower()
+                for item in ((run_row.get("storage_trace") or {}).get("slots") or [])}
     control_trace_slots=_trace_slot_values(rows.get("control",{}))
     attack_trace_slots=_trace_slot_values(rows.get("attack",{}))
     shared_trace_slot_keys=(set(control_trace_slots)&set(attack_trace_slots))-scenario_excluded_keys
-    trace_storage_mismatches=[
-        {"slot":key,"control_value":control_trace_slots[key],"attack_value":attack_trace_slots[key]}
-        for key in sorted(shared_trace_slot_keys)
-        if control_trace_slots[key]!=attack_trace_slots[key]
-    ]
+    trace_storage_mismatches=[{"slot":key,"control_value":control_trace_slots[key],"attack_value":attack_trace_slots[key]}
+                              for key in sorted(shared_trace_slot_keys) if control_trace_slots[key]!=attack_trace_slots[key]]
     trace_storage_control_only=sorted(set(control_trace_slots)-set(attack_trace_slots)-scenario_excluded_keys)
     trace_storage_attack_only=sorted(set(attack_trace_slots)-set(control_trace_slots)-scenario_excluded_keys)
     same_trace_storage_values=not trace_storage_mismatches
-    same_block=bool(
-        rows.get("control",{}).get("block_number") is not None and
-        rows.get("control",{}).get("block_number")==rows.get("attack",{}).get("block_number")
-    )
-    same_fork_anchor=(
-        backend!="forge-state-diff" or bool(
-            rows.get("control",{}).get("fork_parent_hash") and
-            str(rows.get("control",{}).get("fork_parent_hash")).lower()==
-            str(rows.get("attack",{}).get("fork_parent_hash","")).lower()
-        )
-    )
+    same_block=bool(rows.get("control",{}).get("block_number") is not None and
+                    rows.get("control",{}).get("block_number")==rows.get("attack",{}).get("block_number"))
+    same_fork_anchor=(backend!="forge-state-diff" or bool(rows.get("control",{}).get("fork_parent_hash") and
+        str(rows.get("control",{}).get("fork_parent_hash")).lower()==str(rows.get("attack",{}).get("fork_parent_hash","")).lower()))
     fork_pin_verified=True
     if backend=="forge-state-diff":
-        expected_block=spec.get("expected_fork_block")
-        expected_chain=spec.get("expected_chain_id")
-        if expected_block is None or expected_chain is None:
-            fork_pin_verified=False
+        expected_block=spec.get("expected_fork_block"); expected_chain=spec.get("expected_chain_id")
+        if expected_block is None or expected_chain is None: fork_pin_verified=False
         else:
             try:
                 expected_block_int=int(str(expected_block),16) if str(expected_block).lower().startswith("0x") else int(expected_block)
                 expected_chain_int=int(str(expected_chain),16) if str(expected_chain).lower().startswith("0x") else int(expected_chain)
             except (TypeError,ValueError):
                 raise ValueError("expected_fork_block and expected_chain_id must be integers or 0x quantities.")
-            fork_pin_verified=(
-                rows.get("control",{}).get("block_number")==expected_block_int and
+            fork_pin_verified=(rows.get("control",{}).get("block_number")==expected_block_int and
                 rows.get("attack",{}).get("block_number")==expected_block_int and
                 int(rows.get("control",{}).get("chain_id") or -1)==expected_chain_int and
-                int(rows.get("attack",{}).get("chain_id") or -1)==expected_chain_int
-            )
+                int(rows.get("attack",{}).get("chain_id") or -1)==expected_chain_int)
 
     trace_expectations=spec.get("trace_expectations") or []
     trace_checks=[]
@@ -1740,162 +1707,100 @@ def control(args):
     reasons_placeholder="Manifest must declare trace_expectations for the expected target/callback path delta."
     for expectation in trace_expectations:
         if not isinstance(expectation,dict):
-            trace_delta_verified=False
-            trace_checks.append({"verified":False,"reason":"trace_expectation must be an object"})
-            continue
-        address=addr(expectation.get("address"))
-        counts={}
-        expected={}
+            trace_delta_verified=False; trace_checks.append({"verified":False,"reason":"trace_expectation must be an object"}); continue
+        address=addr(expectation.get("address")); counts={}; expected={}
         names=["control","attack"]
-        if negative is not None:
-            names.append("negative_control")
+        if negative is not None: names.append("negative_control")
         for name in names:
             calls=rows.get(name,{}).get("call_trace") or []
             counts[name]=sum(1 for call in calls if str(call.get("to") or "").lower()==address)
-            lo=expectation.get(name+"_min_calls")
-            hi=expectation.get(name+"_max_calls")
+            lo=expectation.get(name+"_min_calls"); hi=expectation.get(name+"_max_calls")
             if lo is None or hi is None or int(lo)<0 or int(hi)<int(lo):
                 if name=="negative_control" and not spec.get("require_negative_control"):
                     expected[name]={"configured":False,"matched":None}
                 else:
-                    trace_delta_verified=False
-                    expected[name]={"valid":False,"reason":"min/max calls are missing or invalid"}
+                    trace_delta_verified=False; expected[name]={"valid":False,"reason":"min/max calls are missing or invalid"}
             else:
-                expected[name]={"min":int(lo),"max":int(hi),
-                                "matched":int(lo)<=counts[name]<=int(hi)}
-                if not expected[name]["matched"]:
-                    trace_delta_verified=False
-        trace_checks.append({
-            "address":address,"description":expectation.get("description"),
+                expected[name]={"min":int(lo),"max":int(hi),"matched":int(lo)<=counts[name]<=int(hi)}
+                if not expected[name]["matched"]: trace_delta_verified=False
+        trace_checks.append({"address":address,"description":expectation.get("description"),
             "observed_call_counts":counts,"expected":expected,
-            "verified":all(item.get("matched",True) is not False for item in expected.values()),
-        })
+            "verified":all(item.get("matched",True) is not False for item in expected.values())})
     trace_delta_verified=trace_delta_verified and all(item.get("verified",False) for item in trace_checks)
-
     negative_control_present=negative is not None
-    negative_control_verified=(
-        negative_control_present and
-        all("negative_control" in check.get("expected",{}) and
-            check["expected"]["negative_control"].get("matched") is True
-            for check in trace_checks)
-    )
-    if spec.get("require_negative_control") and not negative_control_verified:
-        trace_delta_verified=False
+    negative_control_verified=(negative_control_present and all(
+        "negative_control" in check.get("expected",{}) and check["expected"]["negative_control"].get("matched") is True
+        for check in trace_checks))
+    if spec.get("require_negative_control") and not negative_control_verified: trace_delta_verified=False
 
     attack_metric_positive=bool(isinstance(attack_metric,int) and attack_metric>0)
     semantic_check=rows.get("attack",{}).get("semantic_check") or {}
     semantic_invariant_verified=bool(semantic_check.get("verified"))
     family=proof_evidence.normalize_family(spec.get("family"))
-    evidence_capabilities={}
-    evidence_checks={}
-    for scenario_name in ("control", "attack"):
+    evidence_capabilities={}; evidence_checks={}
+    for scenario_name in ("control","attack"):
         scenario_row=rows.get(scenario_name,{})
         storage_trace_row=scenario_row.get("storage_trace") or {}
-        storage_observations=(
-            len(scenario_row.get("derived_storage_accesses") or []) if backend=="forge-state-diff"
-            else len(storage_trace_row.get("slots") or [])
-        )
-        storage_supported=(
-            True if backend=="forge-state-diff" else
-            bool(storage_trace_row.get("supported"))
-        )
-        capabilities=proof_evidence.trace_evidence_capabilities(
-            backend, storage_trace_supported=storage_supported,
-            storage_observations=storage_observations,
-        )
+        storage_observations=(len(scenario_row.get("derived_storage_accesses") or []) if backend=="forge-state-diff"
+                              else len(storage_trace_row.get("slots") or []))
+        storage_supported=True if backend=="forge-state-diff" else bool(storage_trace_row.get("supported"))
+        capabilities=proof_evidence.trace_evidence_capabilities(backend,
+            storage_trace_supported=storage_supported,storage_observations=storage_observations)
         evidence_capabilities[scenario_name]=capabilities
         evidence_checks[scenario_name]=proof_evidence.evaluate_evidence_requirements(
-            family, capabilities, spec.get("evidence_requirements"),
-            require_trace_storage=bool(spec.get("require_trace_storage",False)),
-        )
-    evidence_requirements_verified=all(
-        item.get("accepted") for item in evidence_checks.values()
-    )
-    non_economic=bool(ns.non_economic or spec.get("non_economic") or
-                      family in proof_evidence.NON_ECONOMIC_FAMILIES)
-    economics=proof_evidence.evaluate_economic_policy(
-        family,attack_metric,non_economic=non_economic,
-        semantic_invariant_verified=semantic_invariant_verified,
-    )
+            family,capabilities,spec.get("evidence_requirements"),
+            require_trace_storage=bool(spec.get("require_trace_storage",False)))
+    evidence_requirements_verified=all(item.get("accepted") for item in evidence_checks.values())
+    non_economic=bool(ns.non_economic or spec.get("non_economic") or family in proof_evidence.NON_ECONOMIC_FAMILIES)
+    economics=proof_evidence.evaluate_economic_policy(family,attack_metric,non_economic=non_economic,
+        semantic_invariant_verified=semantic_invariant_verified)
 
     scenario_errors=[name for name,_ in scenarios if rows.get(name,{}).get("trace_error")]
-    execution_names=["control","attack"]
-    if negative is not None:
-        execution_names.append("negative_control")
-    execution_attempted=all(
-        rows.get(name,{}).get("execution_verified") is True for name in execution_names
-    )
-    base_valid=(
-        same_entry and same_prestate and same_trace_storage_values and same_chain and
-        same_block and same_fork_anchor and trace_delta_verified and
-        evidence_requirements_verified and
-        not scenario_errors and freeze_status.get("verified",False)
-    )
-    if backend=="anvil-calltracer":
-        base_valid=base_valid and same_envelope
+    execution_names=["control","attack"]+([ "negative_control" ] if negative is not None else [])
+    execution_attempted=all(rows.get(name,{}).get("execution_verified") is True for name in execution_names)
+    base_valid=(same_entry and same_prestate and same_trace_storage_values and same_chain and same_block and
+        same_fork_anchor and trace_delta_verified and evidence_requirements_verified and not scenario_errors and
+        freeze_status.get("verified",False))
+    if backend=="anvil-calltracer": base_valid=base_valid and same_envelope
     else:
-        # Forge has no signed transaction envelope or EOA receipt gas. Require a
-        # block-pinned, independently verified target before calling it fork evidence.
-        identity_required = str(spec.get("target_authenticity") or "unknown").lower() == "forked_deployment"
-        base_valid = base_valid and fork_pin_verified
+        identity_required=str(spec.get("target_authenticity") or "unknown").lower()=="forked_deployment"
+        base_valid=base_valid and fork_pin_verified
         if identity_required:
-            base_valid = base_valid and all(
-                rows.get(name,{}).get("target_authenticity_verified",False)
-                for name in ("control","attack")
-            )
-
-    if non_economic:
-        passed=base_valid and economics["accepted"] and semantic_invariant_verified
-    else:
-        # Anvil's metric is net of actual receipt gas. Forge's is a state-diff
-        # balance delta without gas, so it can never satisfy this profit gate.
-        passed=(base_valid and backend=="anvil-calltracer" and economics["accepted"] and
-                attack_metric_positive and isinstance(delta,int) and delta>0)
+            base_valid=base_valid and all(rows.get(name,{}).get("target_authenticity_verified",False)
+                                          for name in ("control","attack"))
+    if non_economic: passed=base_valid and economics["accepted"] and semantic_invariant_verified
+    else: passed=(base_valid and backend=="anvil-calltracer" and economics["accepted"] and attack_metric_positive
+                  and isinstance(delta,int) and delta>0)
 
     rejection_reasons=[]
     for name in ("control","attack","negative_control"):
-        if rows.get(name,{}).get("trace_error"):
-            rejection_reasons.append(name+": "+rows[name]["trace_error"])
+        if rows.get(name,{}).get("trace_error"): rejection_reasons.append(name+": "+rows[name]["trace_error"])
     if not same_entry: rejection_reasons.append("Control and attack do not share the same target entry call.")
     if not same_prestate: rejection_reasons.append("Control and attack manifest-declared pre-state digests differ.")
-    if not same_trace_storage_values:
-        rejection_reasons.append("A storage slot read in both traces had different prestate values.")
+    if not same_trace_storage_values: rejection_reasons.append("A storage slot read in both traces had different prestate values.")
     if not same_chain: rejection_reasons.append("Control and attack were executed on different chain IDs.")
     if not same_block: rejection_reasons.append("Control and attack used different block numbers.")
     if not same_fork_anchor: rejection_reasons.append("Control and attack used different fork parent hashes.")
     if not evidence_requirements_verified:
-        for scenario_name, check in evidence_checks.items():
-            for item in check.get("missing", []):
-                rejection_reasons.append(
-                    scenario_name + " lacks required " + item["dimension"] +
-                    " evidence (" + str(item["actual"]) + " < " + str(item["required"]) + ")."
-                )
-    if backend=="forge-state-diff" and not fork_pin_verified:
-        rejection_reasons.append("Forge runs do not match the manifest's expected_chain_id and expected_fork_block pins.")
-    if backend=="anvil-calltracer" and not same_envelope:
-        rejection_reasons.append("RPC-derived transaction nonce/gas/fee/type/access-list envelope differs.")
+        for name,check in evidence_checks.items():
+            for item in check.get("missing",[]):
+                rejection_reasons.append(name+" lacks required "+item["dimension"]+" evidence ("+
+                    str(item["actual"])+" < "+str(item["required"])+").")
+    if backend=="forge-state-diff" and not fork_pin_verified: rejection_reasons.append("Forge runs do not match expected chain/block pins.")
+    if backend=="anvil-calltracer" and not same_envelope: rejection_reasons.append("RPC-derived transaction envelope differs.")
     if not trace_delta_verified:
         rejection_reasons.append(reasons_placeholder if not trace_expectations else
             "Observed nested-call trace did not match the frozen manifest expectations.")
     if spec.get("require_negative_control") and not negative_control_verified:
         rejection_reasons.append("Required negative control is missing or did not match its expected callback/path behavior.")
-    if not freeze_status.get("verified"):
-        rejection_reasons.append("Frozen expectations are missing or were not verified; this run cannot be promoted.")
-    if non_economic and not semantic_invariant_verified:
-        rejection_reasons.append("Non-economic attack requires a passing semantic_check_argv.")
-    if not non_economic and backend=="forge-state-diff":
-        rejection_reasons.append("Forge state-diff has no EOA receipt gas accounting; it cannot prove net profitability.")
-    if not non_economic and (delta is None or delta<=0):
-        rejection_reasons.append("Attack metric did not exceed the control metric.")
-    if not non_economic and not attack_metric_positive:
-        rejection_reasons.append("Attack metric is not positive after measured costs.")
+    if not freeze_status.get("verified"): rejection_reasons.append("Frozen expectations are missing or were not verified; this run cannot be promoted.")
+    if non_economic and not semantic_invariant_verified: rejection_reasons.append("Non-economic attack requires a passing semantic_check_argv.")
+    if not non_economic and backend=="forge-state-diff": rejection_reasons.append("Forge state-diff cannot prove EOA gas or net profitability.")
+    if not non_economic and (delta is None or delta<=0): rejection_reasons.append("Attack metric did not exceed the control metric.")
+    if not non_economic and not attack_metric_positive: rejection_reasons.append("Attack metric is not positive after measured costs.")
 
-    authenticity=(
-        "forked_deployment" if all(
-            rows.get(name,{}).get("target_authenticity_verified",False)
-            for name in ("control","attack")
-        ) else str(spec.get("target_authenticity") or "unknown")
-    )
+    authenticity=("forked_deployment" if all(rows.get(name,{}).get("target_authenticity_verified",False)
+                    for name in ("control","attack")) else str(spec.get("target_authenticity") or "unknown"))
     fidelity_labels=[rows.get(name,{}).get("fidelity_label") for name in ("control","attack")]
     if backend=="forge-state-diff":
         fidelity="simulated_caller"
@@ -1903,141 +1808,85 @@ def control(args):
         elif "simulated_dependencies" in fidelity_labels: fidelity="simulated_dependencies"
         elif "constrained_inputs" in fidelity_labels: fidelity="constrained_inputs"
     else:
-        scanned_fidelity=[
-            rows.get(name,{}).get("fidelity") or {}
-            for name in ("control","attack")
-        ]
-        if any(item.get("synthetic_state") for item in scanned_fidelity):
-            fidelity="synthetic_state"
-        elif any(any(signal.get("kind")=="caller_impersonation"
-                     for signal in item.get("signals",[])) for item in scanned_fidelity):
-            fidelity="simulated_caller"
-        elif any(any(signal.get("kind")=="external_call_mock"
-                     for signal in item.get("signals",[])) for item in scanned_fidelity):
-            fidelity="simulated_dependencies"
-        elif any(any(signal.get("kind")=="test_assumption"
-                     for signal in item.get("signals",[])) for item in scanned_fidelity):
-            fidelity="constrained_inputs"
-        elif all(item.get("scan_complete") and not item.get("fork_reproduction_blockers")
-                 for item in scanned_fidelity):
+        scanned_fidelity=[rows.get(name,{}).get("fidelity") or {} for name in ("control","attack")]
+        if any(item.get("synthetic_state") for item in scanned_fidelity): fidelity="synthetic_state"
+        elif any(any(signal.get("kind")=="caller_impersonation" for signal in item.get("signals",[]))
+                 for item in scanned_fidelity): fidelity="simulated_caller"
+        elif any(any(signal.get("kind")=="external_call_mock" for signal in item.get("signals",[]))
+                 for item in scanned_fidelity): fidelity="simulated_dependencies"
+        elif any(any(signal.get("kind")=="test_assumption" for signal in item.get("signals",[]))
+                 for item in scanned_fidelity): fidelity="constrained_inputs"
+        elif all(item.get("scan_complete") and not item.get("fork_reproduction_blockers") for item in scanned_fidelity):
             fidelity="real_funded"
-        else:
-            fidelity="unknown"
-
+        else: fidelity="unknown"
 
     rejection_codes=[]
     if not same_entry: rejection_codes.append("mismatch")
-    if (not same_prestate or not same_trace_storage_values or not same_chain or
-        not same_block or not same_fork_anchor or
+    if (not same_prestate or not same_trace_storage_values or not same_chain or not same_block or not same_fork_anchor or
         (backend=="anvil-calltracer" and not same_envelope) or
-        (backend=="forge-state-diff" and not fork_pin_verified)):
-        rejection_codes.append("mismatch")
+        (backend=="forge-state-diff" and not fork_pin_verified)): rejection_codes.append("mismatch")
     if not trace_delta_verified: rejection_codes.append("control_path_mismatch")
-    if spec.get("require_negative_control") and not negative_control_verified:
-        rejection_codes.append("negative_control_failed")
-    if non_economic and not semantic_invariant_verified:
-        rejection_codes.append("semantic_invariant_failed")
-    if not non_economic and isinstance(attack_metric,int) and attack_metric<=0:
-        rejection_codes.append("net_negative")
-    if not non_economic and isinstance(delta,int) and delta<=0:
-        rejection_codes.append("control_not_outperformed")
-    rejected=(
-        execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
-    )
-    outcome="profitable" if passed and not non_economic else (
-        "observed" if passed or execution_attempted else "not_run"
-    )
-    if rejected:
-        outcome="rejected"
-    proof=proof_evidence.classify_proof(
-        authenticity,fidelity,outcome,
+    if spec.get("require_negative_control") and not negative_control_verified: rejection_codes.append("negative_control_failed")
+    if non_economic and not semantic_invariant_verified: rejection_codes.append("semantic_invariant_failed")
+    if not non_economic and isinstance(attack_metric,int) and attack_metric<=0: rejection_codes.append("net_negative")
+    if not non_economic and isinstance(delta,int) and delta<=0: rejection_codes.append("control_not_outperformed")
+    rejected=execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
+    outcome="profitable" if passed and not non_economic else ("observed" if passed or execution_attempted else "not_run")
+    if rejected: outcome="rejected"
+    proof=proof_evidence.classify_proof(authenticity,fidelity,outcome,
         authenticity_verified=authenticity=="forked_deployment" and all(
-            rows.get(name,{}).get("target_authenticity_verified",False)
-            for name in ("control","attack")
-        ),
-    )
+            rows.get(name,{}).get("target_authenticity_verified",False) for name in ("control","attack")))
     legacy_status="BREAK" if passed else ("REJECTED" if rejected else "OBSERVED")
     proof_status=proof["status"]
-    # Non-economic attacks and Forge-only state diffs must not be promoted as
-    # profitable deployment exploits even when their semantic assertions pass.
-    if non_economic and passed:
-        proof_status="SIMULATED_BREAK"
-    if not freeze_status.get("verified"):
-        proof_status="OBSERVED"
-    if not evidence_requirements_verified and not rejected:
-        proof_status="UNPROVEN"
+    if non_economic and passed: proof_status="SIMULATED_BREAK"
+    if not freeze_status.get("verified"): proof_status="OBSERVED"
+    if not evidence_requirements_verified and not rejected: proof_status="UNRESOLVED"
 
     memory_feedback=None
     if rejected:
         try:
-            try:
-                from . import experience_memory
+            try: from . import experience_memory
             except ImportError:
-                try:
-                    import experience_memory
-                except ImportError:
-                    from lowkey import experience_memory
+                try: import experience_memory
+                except ImportError: from lowkey import experience_memory
             memory_feedback=experience_memory.record_feedback(
-                kind="false-positive",
-                summary="Rejected control-gate hypothesis for "+str(spec.get("same_calls_id")),
-                evidence="Control evidence rejected this attempted exploit. Reasons: "+
-                         "; ".join(rejection_reasons)[:1000],
-                finding_id="",
-                context={
-                    "family":family,
-                    "backend":backend,
-                    "fidelity":fidelity,
-                    "target_shape":str(
-                        spec.get("target_shape") or
-                        rows.get("attack",{}).get("target_code_hash") or target or "unknown"
-                    ),
-                },
-                root=root,
-            )
-        except Exception as exc:
-            memory_feedback={"recorded":False,"reason":str(exc)[:300]}
+                kind="false-positive",summary="Rejected control-gate hypothesis for "+str(spec.get("same_calls_id")),
+                evidence="Control evidence rejected this attempted exploit. Reasons: "+"; ".join(rejection_reasons)[:1000],
+                finding_id="",context={"family":family,"backend":backend,"fidelity":fidelity,
+                    "target_shape":str(spec.get("target_shape") or rows.get("attack",{}).get("target_code_hash") or target or "unknown")},
+                root=root)
+        except Exception as exc: memory_feedback={"recorded":False,"reason":str(exc)[:300]}
 
     payload={
-        "created_at":now(),"status":proof_status,"proof_status":proof_status,
-        "legacy_status":legacy_status,"proof_axes":proof,
-        "target_authenticity":authenticity,"fidelity":fidelity,
-        "outcome":outcome,"family":family,"economic_policy":economics,
-        "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
-        "paired_forge_experiment":paired_forge,
-        "evidence_capabilities":evidence_capabilities,
-        "evidence_requirements":evidence_checks,
+        "created_at":now(),"status":proof_status,"proof_status":proof_status,"legacy_status":legacy_status,
+        "proof_axes":proof,"target_authenticity":authenticity,"fidelity":fidelity,"outcome":outcome,
+        "family":family,"economic_policy":economics,"trace_backend":backend,"trace_schema_version":1,
+        "evidence_backend":backend,"paired_forge_experiment":paired_forge,
+        "evidence_capabilities":evidence_capabilities,"evidence_requirements":evidence_checks,
         "evidence_requirements_verified":evidence_requirements_verified,
-        "verification_method":(
-            "Foundry Vm.startStateDiffRecording/stopAndReturnStateDiff" if backend=="forge-state-diff"
-            else "local-Anvil RPC transaction plus debug_traceTransaction callTracer"
-        ),
+        "verification_method":("Foundry Vm.startStateDiffRecording/stopAndReturnStateDiff" if backend=="forge-state-diff"
+                               else "local-Anvil RPC transaction plus debug_traceTransaction callTracer"),
         "freeze":freeze_status,"negative_control_present":negative_control_present,
-        "negative_control_verified":negative_control_verified,
-        "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
-        "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
-        "same_transaction_envelope_verified":same_envelope,
-        "same_prestate_verified":same_prestate,
-        "same_trace_storage_values_verified":same_trace_storage_values,
+        "negative_control_verified":negative_control_verified,"control_delta":delta,
+        "metric_name":spec.get("metric_name","attacker_gain"),"same_calls_id":spec["same_calls_id"],
+        "same_entry_call_verified":same_entry,"same_transaction_envelope_verified":same_envelope,
+        "same_prestate_verified":same_prestate,"same_trace_storage_values_verified":same_trace_storage_values,
         "trace_storage_shared_mismatches":trace_storage_mismatches,
-        "trace_storage_control_only":trace_storage_control_only,
-        "trace_storage_attack_only":trace_storage_attack_only,
-        "same_chain_verified":same_chain,
-        "same_block_verified":same_block,"same_fork_anchor_verified":same_fork_anchor,
-        "fork_pin_verified":fork_pin_verified,
+        "trace_storage_control_only":trace_storage_control_only,"trace_storage_attack_only":trace_storage_attack_only,
+        "same_chain_verified":same_chain,"same_block_verified":same_block,
+        "same_fork_anchor_verified":same_fork_anchor,"fork_pin_verified":fork_pin_verified,
         "trace_delta_verified":trace_delta_verified,"trace_checks":trace_checks,
         "attack_metric_positive_after_gas":attack_metric_positive if backend=="anvil-calltracer" else None,
-        "semantic_invariant_verified":semantic_invariant_verified,
-        "target_address":target,"prestate_slots_declared":spec.get("prestate_slots") or [],
+        "semantic_invariant_verified":semantic_invariant_verified,"target_address":target,
+        "prestate_slots_declared":spec.get("prestate_slots") or [],
         "storage_slots_derived_from_trace":sorted({
             (item.get("address") or item.get("account","")).lower()+":"+str(item.get("slot","")).lower()
-            for name in ("control","attack","negative_control")
-            for item in rows.get(name,{}).get("derived_storage_accesses",[])
-        }),
+            for name in ("control","attack","negative_control") for item in rows.get(name,{}).get("derived_storage_accesses",[])}),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
         "memory_feedback":memory_feedback,
-        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff is test-execution evidence and cannot prove EOA gas or net profitability.",
+        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff cannot prove EOA gas or net profitability.",
     }
-    out=safe_out(root,ns.output)
+    out=safe_out(root,ns.output or ".audit/godmode/control.json")
     write_json(out,payload)
     print(f"{proof_status}: {backend}; delta {delta}; entry {'matched' if same_entry else 'DIFFERENT'}; pre-state {'matched' if same_prestate else 'DIFFERENT'}; frozen {'verified' if freeze_status.get('verified') else 'NO'}; evidence {out.relative_to(root)}")
     return 0 if passed else 1
@@ -2401,7 +2250,7 @@ def reprove(args):
         env=os.environ.copy(); env.update({"ETH_RPC_URL":url,"FOUNDRY_ETH_RPC_URL":url,"LOWKEY_RPC_URL":url})
         command_result=run(argv,root,900,env=env)
         if command_result.returncode:
-            payload={"status":"UNPROVEN","command_run":True,"exit_code":command_result.returncode,
+            payload={"status":"UNRESOLVED","command_run":True,"exit_code":command_result.returncode,
                      "stdout":command_result.stdout[-3000:],"stderr":command_result.stderr[-1500:],
                      "fidelity":fidelity,"reason":"Reproduction command did not complete successfully."}
             write_json(safe_out(root,".audit/godmode/reprove.json"),payload); print(json.dumps(payload,indent=2)); return 1

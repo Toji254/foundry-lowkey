@@ -168,17 +168,21 @@ def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="o
         raise ValueError("outcome must be one of: " + ", ".join(sorted(OUTCOMES)))
     authentic_fork = authenticity == "forked_deployment" and bool(authenticity_verified)
     realistic = fidelity == "real_funded"
+    local_target = authenticity in {"fixture", "local_reimplementation"}
     if outcome == "rejected": status = "REJECTED"
-    elif outcome == "not_run": status = "UNPROVEN"
-    elif authenticity in {"fixture", "local_reimplementation"} or fidelity in {
-        "synthetic_state", "simulated_dependencies"
-    }: status = "SIMULATED_BREAK"
+    elif outcome == "not_run": status = "UNRESOLVED"
     elif authentic_fork and fidelity in {"simulated_caller", "constrained_inputs"}: status = "FORK_OBSERVED"
-    elif authentic_fork and realistic and outcome == "profitable": status = "PROFITABLE"
+    elif authentic_fork and realistic and outcome == "profitable": status = "FORK_PROFITABLE"
     elif authentic_fork and realistic: status = "FORK_REPRODUCED"
     elif authentic_fork: status = "FORK_OBSERVED"
+    elif local_target and realistic and outcome == "profitable": status = "LOCAL_PROFITABLE"
+    elif local_target and realistic: status = "LOCAL_REPRODUCED"
+    elif local_target or fidelity in {"synthetic_state", "simulated_dependencies"}: status = "SIMULATED_BREAK"
     else: status = "OBSERVED"
-    if human_confirmed and outcome in {"observed", "profitable"}: status = "HUMAN_CONFIRMED"
+    # HUMAN_CONFIRMED requires independently verified deployment authenticity,
+    # real-funded fidelity, and an explicit review disposition.
+    if human_confirmed and authentic_fork and realistic and outcome in {"observed", "profitable"}:
+        status = "HUMAN_CONFIRMED"
     return {
         "target_authenticity": authenticity, "target_authenticity_verified": bool(authenticity_verified),
         "fidelity": fidelity, "outcome": outcome, "human_confirmed": bool(human_confirmed), "status": status,
@@ -218,13 +222,16 @@ def _referenced_inputs(root, spec):
 def _generator_fingerprints(root, spec):
     paths = {Path(__file__).resolve()}
     for module_name in (
-        "godmode.py", "forge_state_diff.py", "trace_evidence.py",
+        "godmode.py", "forge_state_diff.py", "trace_evidence.py", "step_renderer.py",
         "break_engine.py", "generator.py", "test_generation.py",
         "test_generation_analysis.py", "generation_plugins.py",
     ):
         module_path = Path(__file__).with_name(module_name)
         if module_path.is_file():
             paths.add(module_path.resolve())
+    step_template = Path(__file__).resolve().parent.parent / "templates" / "StepHarness.sol"
+    if step_template.is_file():
+        paths.add(step_template.resolve())
     declared = spec.get("generator_files") or []
     if not isinstance(declared, list) or not all(isinstance(item, str) and item.strip() for item in declared):
         raise ValueError("generator_files must be an array of project-relative file paths.")
@@ -351,3 +358,67 @@ def validate_control_freeze(root, manifest_path, spec, *, required=False, freeze
     return {"present": True, "verified": True, "requires_refreeze": False,
             "path": freeze.relative_to(root).as_posix(),
             "freeze_sha256": digest, "manifest_sha256": current["manifest_sha256"], "inputs": current["inputs"]}
+
+def validate_frozen_control(root, freeze_path=".audit/godmode/control.freeze.json"):
+    """Validate frozen expectations without accepting a fresh manifest or executing commands."""
+    root = Path(root).resolve()
+    freeze = Path(freeze_path).expanduser()
+    freeze = (root / freeze).resolve() if not freeze.is_absolute() else freeze.resolve()
+
+    def refusal(status, reason, detail, target=None, family=None, backend=None):
+        return {
+            "status": status, "present": freeze.is_file(), "verified": False,
+            "reason_code": reason, "reason": detail,
+            "refusal": {
+                "target": target, "family": family, "reason": reason, "detail": detail,
+                "minimal_cmd": "lk control --validate --root <project>", "backend": backend,
+            },
+            "execution_attempted": False,
+        }
+
+    if not freeze.is_relative_to(root):
+        return refusal("REJECTED", "out_of_scope", "Frozen control path must stay inside the project.")
+    if not freeze.is_file():
+        return refusal("BLOCKED", "no_capability", "Frozen control file does not exist; freeze expectations first.")
+    try:
+        stored = json.loads(freeze.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return refusal("REJECTED", "digest_mismatch", "Frozen control file is unreadable or malformed: " + str(exc)[:400])
+    if not isinstance(stored, dict) or stored.get("schema_version") != 2:
+        return refusal("REJECTED", "digest_mismatch", "Frozen control file is not schema version 2.")
+    experiment = stored.get("experiment") or {}
+    target = experiment.get("target_address")
+    family = normalize_family(experiment.get("family"))
+    backend = experiment.get("trace_backend")
+    core_fields = ("schema_version", "manifest_path", "manifest_sha256", "inputs", "generator_hashes", "experiment")
+    if any(key not in stored for key in core_fields):
+        return refusal("REJECTED", "digest_mismatch", "Frozen control file is missing a required integrity field.", target, family, backend)
+    stored_core = {key: stored.get(key) for key in core_fields}
+    digest = _sha256_bytes(_canonical(stored_core).encode("utf-8"))
+    if stored.get("freeze_sha256") != digest:
+        return refusal("REJECTED", "digest_mismatch", "Frozen control integrity digest does not match its contents.", target, family, backend)
+    manifest_name = stored.get("manifest_path")
+    if not isinstance(manifest_name, str) or not manifest_name.strip():
+        return refusal("REJECTED", "out_of_scope", "Frozen manifest_path must be a non-empty project-relative path.", target, family, backend)
+    manifest_rel = Path(manifest_name)
+    if manifest_rel.is_absolute() or ".." in manifest_rel.parts:
+        return refusal("REJECTED", "out_of_scope", "Frozen manifest_path escapes the project.", target, family, backend)
+    manifest_path = (root / manifest_rel).resolve()
+    if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
+        return refusal("REJECTED", "digest_mismatch", "The frozen manifest path is missing or outside the project.", target, family, backend)
+    try:
+        spec = json.loads(manifest_path.read_text(encoding="utf-8"))
+        status = validate_control_freeze(root, manifest_path, spec, required=True, freeze_path=freeze)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        return refusal("REJECTED", "digest_mismatch",
+                       "Frozen manifest, harness, command inputs or generator fingerprints changed: " + str(exc)[:500],
+                       target, family, backend)
+    if not status.get("verified"):
+        return refusal("REJECTED", "digest_mismatch", status.get("reason") or "Frozen inputs did not validate.",
+                       target, family, backend)
+    return {
+        "status": "PROPOSED", "present": True, "verified": True,
+        "reason_code": None,
+        "reason": "Frozen expectations and all referenced inputs match. No attack or control command was executed.",
+        "freeze": status, "refusal": None, "execution_attempted": False,
+    }
