@@ -132,35 +132,23 @@ contract Vault {
                     )
                 which.assert_not_called()
 
-    def test_supported_signal_generates_runs_and_attaches_repeat_safe_evidence(self):
+    def test_legacy_investigate_api_is_plan_only_and_never_generates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp))
             signal = self._signal(root)
-            with patch("lowkey.test_generation.run_test_gen", side_effect=self._fake_generator(root)):
-                result = signal_investigation.investigate_signal(
+            with patch("lowkey.test_generation.run_test_gen", side_effect=AssertionError("legacy API must not generate")) as generator:
+                report = signal_investigation.investigate_signal(
                     signal["id"], project_root=root, audit_context=audit_context,
                 )
-            self.assertEqual(result["status"], "passed")
-            self.assertTrue(result["evidence_attached"])
-            self.assertTrue(Path(root, result["targeted_test"]).is_file())
-            self.assertEqual(result["target_test_name"], "test_nonOwnerCannotCall_setBalance")
-            stored = next(item for item in audit_context.signals(root) if item["id"] == signal["id"])
-            evidence = [item for item in stored.get("evidence", []) if item.get("kind") == "targeted-test-investigation"]
-            self.assertEqual(len(evidence), 1)
-            self.assertFalse(evidence[0]["security_finding_confirmed"])
-            report = json.loads((root / result["report_path"]).read_text(encoding="utf-8"))
-            self.assertEqual(report["status"], "passed")
+            generator.assert_not_called()
+            self.assertEqual(report["status"], "plan-only")
+            self.assertFalse(report["effects"]["writes"])
+            self.assertFalse(report["effects"]["tests_run"])
+            self.assertFalse(report["human_disposition_changed"])
+            self.assertFalse((root / ".audit" / "investigations").exists())
+            self.assertFalse(list((root / "test").glob("**/*.t.sol")) if (root / "test").exists() else [])
 
-            with patch("lowkey.test_generation.run_test_gen", side_effect=self._fake_generator(root)):
-                second = signal_investigation.investigate_signal(
-                    signal["id"], project_root=root, audit_context=audit_context,
-                )
-            stored = next(item for item in audit_context.signals(root) if item["id"] == signal["id"])
-            evidence = [item for item in stored.get("evidence", []) if item.get("kind") == "targeted-test-investigation"]
-            self.assertEqual(second["evidence_id"], result["evidence_id"])
-            self.assertEqual(len(evidence), 1)
-
-    def test_only_role_signal_selects_role_holder_test(self):
+    def test_role_finding_plan_does_not_generate_or_execute_a_role_test(self):
         source = """// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 contract RoleVault {
@@ -178,87 +166,63 @@ contract RoleVault {
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp), source)
             signal = self._signal(root, function="setLimit(uint256)")
-            def fake_role_generator(_config, args, *, project_root):
-                project = Path(project_root)
-                relative = Path(args[args.index("--output-dir") + 1])
-                generated_root = project / relative / "RoleVault"
-                generated_root.mkdir(parents=True, exist_ok=True)
-                test_name = "test_nonRoleHolderCannotCall_setLimit"
-                test_path = generated_root / "LowkeyGeneratedUnit_RoleVault.t.sol"
-                test_path.write_text(
-                    "contract LowkeyGeneratedUnit_RoleVault { "
-                    f"function {test_name}() public {{}} }}\n",
-                    encoding="utf-8",
-                )
-                report = {
-                    "generated": [test_path.relative_to(project).as_posix()],
-                    "skipped": [],
-                    "generation_assessment": {"unit": {"level": "executable-candidate"}},
-                    "validation": {
-                        "status": "passed", "detail": "role fixture validated",
-                        "baseline_exit_code": 0, "exit_code": 0,
-                        "test_executions": [{
-                            "path": "test/lowkey-generated/LowkeyValidation_deadbeef_LowkeyGeneratedUnit_RoleVault.t.sol",
-                            "exit_code": 0,
-                            "stdout_tail": f"[PASS] {test_name}() (gas: 1234)",
-                            "stderr_tail": "",
-                        }],
-                    },
-                }
-                (generated_root / "report.json").write_text(json.dumps(report), encoding="utf-8")
-                return 0
-            with patch("lowkey.test_generation.run_test_gen", side_effect=fake_role_generator):
-                result = signal_investigation.investigate_signal(
-                    signal["id"], project_root=root, audit_context=audit_context,
-                )
-            self.assertEqual(result["status"], "passed")
-            self.assertEqual(result["target_test_name"], "test_nonRoleHolderCannotCall_setLimit")
-            self.assertIn("onlyRole", result["property"])
-            self.assertTrue(result["evidence_attached"])
-
-    def test_unsupported_finding_writes_reason_without_generating_a_test(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._project(Path(tmp))
-            signal = self._signal(root, check="reentrancy-eth", title="Potential reentrancy")
-            with patch("lowkey.test_generation.run_test_gen") as generator:
-                result = signal_investigation.investigate_signal(
+            with patch("lowkey.test_generation.run_test_gen", side_effect=AssertionError("must not generate")) as generator:
+                report = signal_investigation.investigate_signal(
                     signal["id"], project_root=root, audit_context=audit_context,
                 )
             generator.assert_not_called()
-            self.assertEqual(result["status"], "unsupported")
-            self.assertFalse(result["generated_artifacts"])
-            self.assertTrue(result["evidence_attached"])
-            self.assertIn("will not infer", result["reason"])
+            self.assertEqual(report["status"], "plan-only")
+            self.assertEqual(report["signal"]["function"], "setLimit")
+            self.assertFalse(report["effects"]["tests_run"])
+            self.assertIn("lk ai test-plan", report["recommended_next_command"])
 
-    def test_constructor_arguments_are_required_before_generation(self):
-        source = self.SOURCE.replace("constructor() { owner = msg.sender; }",
-                                     "constructor(address initialOwner) { owner = initialOwner; }")
+    def test_unclassified_finding_plan_remains_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp))
+            signal = self._signal(root, check="gas", title="Gas cost review")
+            with patch("lowkey.test_generation.run_test_gen", side_effect=AssertionError("must not generate")) as generator:
+                report = signal_investigation.investigate_signal(
+                    signal["id"], project_root=root, audit_context=audit_context,
+                )
+            generator.assert_not_called()
+            self.assertEqual(report["status"], "plan-only")
+            self.assertFalse(report["effects"]["writes"])
+            self.assertFalse(report["effects"]["tests_run"])
+            self.assertIn("protocol-specific", report["property_hypothesis"])
+
+    def test_constructor_arguments_are_not_implicit_execution_authorization(self):
+        source = self.SOURCE.replace(
+            "constructor() { owner = msg.sender; }",
+            "constructor(address initialOwner) { owner = initialOwner; }",
+        )
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp), source)
             signal = self._signal(root)
-            with patch("lowkey.test_generation.run_test_gen") as generator:
-                result = signal_investigation.investigate_signal(
+            with patch("lowkey.test_generation.run_test_gen", side_effect=AssertionError("must not generate")) as generator:
+                report = signal_investigation.investigate_signal(
                     signal["id"], project_root=root, audit_context=audit_context,
+                    constructor_args=["address(0x1234)"],
                 )
             generator.assert_not_called()
-            self.assertEqual(result["status"], "needs-setup")
-            self.assertIn("constructor argument", result["reason"])
+            self.assertEqual(report["status"], "plan-only")
+            self.assertIn("constructor_args are not execution authorization", report["compatibility_note"])
+            self.assertFalse(report["effects"]["tests_run"])
 
-    def test_identified_target_test_failure_is_attached_as_review_lead(self):
+    def test_legacy_investigate_api_does_not_auto_attach_or_confirm_native_test_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp))
             signal = self._signal(root)
-            output = "[FAIL: next call did not revert] test_nonOwnerCannotCall_setBalance()"
-            with patch("lowkey.test_generation.run_test_gen",
-                       side_effect=self._fake_generator(root, validation_status="failed",
-                                                        exit_code=1, native_output=output)):
-                result = signal_investigation.investigate_signal(
+            with patch("lowkey.test_generation.run_test_gen", side_effect=AssertionError("must not run")):
+                report = signal_investigation.investigate_signal(
                     signal["id"], project_root=root, audit_context=audit_context,
                 )
-            self.assertEqual(result["status"], "test-failed-needs-review")
-            self.assertTrue(result["evidence_attached"])
-            self.assertFalse(result["native_evidence"].get("security_finding_confirmed", False))
-            self.assertIn("may reproduce", result["interpretation"])
+            self.assertEqual(report["status"], "plan-only")
+            self.assertFalse(report["human_disposition_changed"])
+            stored = next(item for item in audit_context.signals(root) if item["id"] == signal["id"])
+            self.assertFalse(any(
+                item.get("kind") in {"targeted-test-investigation", "inspected-native-test-execution"}
+                for item in stored.get("evidence", [])
+            ))
 
     def test_signal_from_outside_project_is_rejected_without_running_generator(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
@@ -274,7 +238,7 @@ contract RoleVault {
                     signal["id"], project_root=root, audit_context=audit_context,
                 )
             generator.assert_not_called()
-            self.assertEqual(result["status"], "unsupported")
+            self.assertEqual(result["status"], "blocked")
             self.assertIn("outside", result["reason"])
 
 
