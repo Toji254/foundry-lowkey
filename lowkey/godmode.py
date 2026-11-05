@@ -931,9 +931,14 @@ def _verify_sourcify_exact(chain_id, address):
     if not isinstance(sources, dict) or not sources:
         raise ValueError("Sourcify did not return verified source file contents.")
     source_file_hashes = {}
-    for path, source_text in sorted(sources.items()):
-        if not isinstance(path, str) or not isinstance(source_text, str):
-            raise ValueError("Sourcify source files must be path-to-string entries.")
+    for path, source_row in sorted(sources.items()):
+        if not isinstance(path, str):
+            raise ValueError("Sourcify source file paths must be strings.")
+        # Sourcify v2 returns SourceFile objects with a "content" field.
+        # Accept a bare string too for compatible cached/test fixtures.
+        source_text = source_row.get("content") if isinstance(source_row, dict) else source_row
+        if not isinstance(source_text, str):
+            raise ValueError("Sourcify source entries must contain string source content.")
         source_file_hashes[path] = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
     source_bundle_sha256 = hashlib.sha256(
         json.dumps(source_file_hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")

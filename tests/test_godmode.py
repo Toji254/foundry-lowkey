@@ -1257,8 +1257,9 @@ class GodmodeTests(unittest.TestCase):
                     "blockNumber": "20000000" if is_target else "19000000",
                 },
                 "sources": {
-                    "src/Proxy.sol" if is_target else "src/Logic.sol":
-                    "contract Proxy {}" if is_target else "contract Logic {}"
+                    "src/Proxy.sol" if is_target else "src/Logic.sol": {
+                        "content": "contract Proxy {}" if is_target else "contract Logic {}"
+                    }
                 },
                 "proxyResolution": (
                     {
