@@ -1515,6 +1515,28 @@ class GodmodeTests(unittest.TestCase):
                 self.assertEqual(raised.exception.reason_code, "backend_unsupported")
 
 
+    def test_steps_cli_writes_valid_refusal_json_without_creating_harness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = {
+                "family": "reentrancy",
+                "target_address": "0x" + "1" * 40,
+                "steps": [{"kind": "flash_borrow"}],
+            }
+            (root / "refusal.json").write_text(json.dumps(manifest), encoding="utf-8")
+            result = godmode.steps([
+                "refusal.json",
+                "--root", str(root),
+                "--output", "test/should-not-exist.t.sol",
+                "--refusal-output", "refusal-out.json",
+            ])
+            refusal = json.loads((root / "refusal-out.json").read_text(encoding="utf-8"))
+            self.assertEqual(result, 2)
+            self.assertEqual(refusal["reason"], "backend_unsupported")
+            self.assertEqual(refusal["family"], "reentrancy")
+            self.assertFalse((root / "test/should-not-exist.t.sol").exists())
+
+
 
 if __name__ == "__main__":
     unittest.main()
