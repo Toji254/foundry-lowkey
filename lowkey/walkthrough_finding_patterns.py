@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 import re
 from typing import Any
 
@@ -36,6 +37,10 @@ class PatternObservation:
     logic: str = ""
     next_step: str = ""
     provenance: list[str] = field(default_factory=list)
+    evidence_status: str = "needs-investigation"
+
+
+_SOURCE_CONTEXT_CACHE: dict[str, list[tuple[Path, str]]] = {}
 
 
 # The catalog is intentionally small and recurrence-driven.  Each entry is
@@ -66,7 +71,7 @@ PATTERN_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "AUTH-001",
         "title": "Sensitive state change without an obvious authorization boundary",
-        "keywords": ("admin", "owner", "upgrade", "pause", "unpause", "set", "configure", "remove", "rescue", "sweep", "mint"),
+        "keywords": ("admin", "owner", "upgrade", "pause", "unpause", "set", "configure", "remove", "rescue", "sweep", "mint", "initialize", "settle", "recapitalize", "recover", "execute"),
         "logic": "A privileged state transition should have an explicit authorization boundary. A missing boundary is a candidate until call reachability and intended publicness are proven.",
         "provenance": ["Code4rena Maia", "Immunefi Common Vulnerabilities", "CodeHawks access-control findings"],
     },
@@ -255,6 +260,7 @@ def _result(
     next_step: str,
     provenance: list[str],
     status: str = "CANDIDATE",
+    evidence_status: str = "needs-investigation",
 ) -> PatternObservation:
     return PatternObservation(
         pattern_id=pattern,
@@ -268,6 +274,217 @@ def _result(
         logic=logic,
         next_step=next_step,
         provenance=provenance,
+        evidence_status=evidence_status,
+    )
+
+
+def _context_source_files(root: Path) -> list[tuple[Path, str]]:
+    """Read a bounded set of source files for helper/modifier and mutator checks."""
+    project = Path(root).expanduser().resolve()
+    key = str(project)
+    if key in _SOURCE_CONTEXT_CACHE:
+        return _SOURCE_CONTEXT_CACHE[key]
+    ignored = {
+        ".git", ".audit", ".venv", "venv", "__pycache__", "node_modules",
+        "out", "cache", "broadcast", "artifacts", "build", "dist", "target",
+        "test", "tests", "script", "scripts", "docs", "doc",
+    }
+    found: list[tuple[Path, str]] = []
+    for current, dirs, names in os.walk(project, followlinks=False):
+        dirs[:] = sorted(
+            name for name in dirs
+            if name not in ignored and not (Path(current) / name).is_symlink()
+        )
+        for name in sorted(names):
+            if not name.endswith(".sol"):
+                continue
+            path = Path(current) / name
+            try:
+                if path.stat().st_size > 600_000:
+                    continue
+                found.append((path, path.read_text(encoding="utf-8", errors="replace")))
+            except OSError:
+                continue
+            if len(found) >= 900:
+                break
+        if len(found) >= 900:
+            break
+    _SOURCE_CONTEXT_CACHE[key] = found
+    return found
+
+
+def _named_block(source: str, name: str) -> str:
+    stripped = core._strip_source_comments(source, "solidity", mask_strings=True)
+    pattern = re.compile(
+        r"\b(?:function|modifier)\s+" + re.escape(name) + r"\b[^{;]*\{",
+        re.S,
+    )
+    match = pattern.search(stripped)
+    if not match:
+        return ""
+    opening = stripped.find("{", match.start(), match.end())
+    depth = 0
+    end = opening
+    for index in range(opening, len(stripped)):
+        if stripped[index] == "{":
+            depth += 1
+        elif stripped[index] == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    return source[match.start():end] if end > match.start() else ""
+
+
+def _has_auth_expression(value: str) -> bool:
+    return bool(re.search(
+        r"\b(?:msg\s*\.\s*sender|_msgSender\s*\(\s*\))\s*(?:==|!=)"
+        r"|\b(?:hasRole|_checkRole|owner|authority|isAuthorized|isGuardian|isController|isOperator)\s*\("
+        r"|\b(?:guardian|controller|operator|pool|engine|router|allowlist|whitelist|roles)\s*"
+        r"\[\s*(?:msg\s*\.\s*sender|_msgSender\s*\()",
+        value,
+        re.I,
+    ))
+
+
+def _has_authorization_boundary(root: Path, header: str, body: str) -> tuple[bool, str]:
+    if re.search(r"\bonly[A-Za-z0-9_]+\b", header):
+        return True, "A direct or inherited only* modifier is applied in the function header."
+    if _has_auth_expression(header + "\n" + body):
+        return True, "The function contains a caller/role/owner check."
+    helper_names = set(re.findall(
+        r"\b(_(?:require|only|check|authorize|assert|validate)[A-Za-z0-9_]*|routerSelf)\s*\(",
+        body,
+    ))
+    if not helper_names:
+        return False, ""
+    for _path, source in _context_source_files(root):
+        for helper in helper_names:
+            helper_body = _named_block(source, helper)
+            if helper_body and _has_auth_expression(helper_body):
+                return True, f"Reachable helper {helper} contains a caller/role/self-call guard."
+    return False, ""
+
+
+def _documented_permissionless(source: str, line: int) -> bool:
+    lines = source.splitlines()
+    start = max(0, int(line or 1) - 11)
+    prefix = "\n".join(lines[start:max(0, int(line or 1) - 1)])
+    return bool(re.search(
+        r"\bpermissionless\b|\banyone\s+may\b|\banyone\s+can\b|\bany\s+caller\b"
+        r"|\bpublicly\s+callable\b|\bkeeper(?:s)?\s+may\s+call\b",
+        prefix,
+        re.I,
+    ))
+
+
+def _state_consumed_before_payout(body: str) -> bool:
+    payout = re.search(
+        r"\.call\s*\{|\.transfer\s*\(|\.send\s*\(|\.safeTransfer(?:From)?\s*\(|"
+        r"\.safeTransferNative\s*\(|_safeTransfer(?:ETH|Native)?\s*\(",
+        body,
+        re.I,
+    )
+    payout_position = payout.start() if payout else len(body) + 1
+    consumption_patterns = (
+        r"\b(?:claimed|withdrawn|used|spent|redeemed|nonce|currentStatus|currentstatus|status)"
+        r"[A-Za-z0-9_]*\s*(?:\[[^\]]+\])?\s*(?:=|\+=|-=|\+\+|--)",
+        r"\b(?:remaining|entitled|credit|claimable|available)"
+        r"[A-Za-z0-9_]*\s*(?:\[[^\]]+\])?\s*(?:-=|--|=\s*0\b)",
+    )
+    for pattern in consumption_patterns:
+        for match in re.finditer(pattern, body, re.I):
+            if match.start() < payout_position:
+                return True
+    if re.search(
+        r"\b(?:require|if|assert)\s*\([^)]*(?:!claimed|claimed[^)]*(?:==\s*false|!=\s*true)|"
+        r"remaining[^)]*(?:>\s*0|!=\s*0)|currentStatus[^)]*(?:==|!=)|"
+        r"status[^)]*(?:==|!=)|alreadyClaimed)",
+        body,
+        re.I,
+    ):
+        return True
+    helper_names = re.findall(
+        r"\b(_(?:consume|markClaim|use|clear|decrement|settleEntitlement|claim)[A-Za-z0-9_]*)\s*\(",
+        body[:payout_position],
+    )
+    if helper_names:
+        for _path, source in _context_source_files(Path.cwd()):
+            for helper in helper_names:
+                helper_body = _named_block(source, helper)
+                if helper_body and _state_consumed_before_payout(helper_body):
+                    return True
+    return False
+
+
+def _zero_output_guard(root: Path, body: str) -> bool:
+    guard = re.compile(
+        r"\b(?:shares|minted|receivedShares|shareAmount|assetsOut|amountOut)\s*(?:==|<=)\s*0"
+        r"|(?:>\s*0|!=\s*0)[^;\n]{0,100}\b(?:shares|minted|receivedShares|shareAmount)\b"
+        r"|\b(?:require|if|assert)\s*\([^)]*\b(?:shares|minted|receivedShares|shareAmount)\b[^)]*(?:==\s*0|>\s*0|!=\s*0)",
+        re.I,
+    )
+    if guard.search(body):
+        return True
+    helper_names = re.findall(
+        r"\b(_(?:claim|request|finalize|settle|preview)[A-Za-z0-9_]*)\s*\(",
+        body,
+    )
+    for _path, source in _context_source_files(root):
+        for helper in helper_names:
+            helper_body = _named_block(source, helper)
+            if helper_body and guard.search(helper_body):
+                return True
+    return False
+
+
+def _array_attacker_growable(root: Path, source: str, collection: str) -> bool:
+    fixed = re.search(
+        r"\b[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\d+\s*\]\s*"
+        r"(?:(?:public|private|internal)\s+)?"
+        + re.escape(collection) + r"\b",
+        source,
+    )
+    if fixed:
+        return False
+    functions = _function_blocks(source, "solidity")
+    mutators: list[tuple[str, str, str]] = []
+    write_pattern = re.compile(
+        r"\b" + re.escape(collection) + r"\s*(?:\.\s*(?:push|pop)\s*\(|\[[^\]]+\]\s*=)",
+        re.I,
+    )
+    for name, _line, header, body in functions:
+        if not write_pattern.search(body):
+            continue
+        if name.lower() == "constructor":
+            continue
+        mutators.append((name, header, body))
+    if not mutators:
+        return False
+    for name, header, body in mutators:
+        visibility = bool(re.search(r"\b(?:external|public)\b", header))
+        if visibility:
+            guarded, _reason = _has_authorization_boundary(root, header, body)
+            if not guarded:
+                return True
+    # An internal array mutator is attacker-reachable only when an unguarded
+    # external/public function calls it.
+    internal_names = {name for name, header, _body in mutators if not re.search(r"\b(?:external|public)\b", header)}
+    if internal_names:
+        for name, header, body in functions:
+            if not re.search(r"\b(?:external|public)\b", header):
+                continue
+            if any(re.search(r"\b" + re.escape(helper) + r"\s*\(", body) for helper in internal_names):
+                guarded, _reason = _has_authorization_boundary(root, header, body)
+                if not guarded:
+                    return True
+    return False
+
+
+def _critical_loop_path(name: str, body: str) -> bool:
+    return bool(
+        re.search(r"withdraw|claim|redeem|settle|liquidat|harvest|execute|release|finaliz|close", name, re.I)
+        or re.search(r"\.call\s*\{|\.transfer\s*\(|\.send\s*\(", body, re.I)
     )
 
 
@@ -312,27 +529,30 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             has_state_write = bool(re.search(r"\b(claimed|claimedAmount|withdrawn|used|spent|redeemed|nonce|balance|balances|entitled|remaining)\w*\s*\[?[^;=]*\]?\s*(?:[-+]?=|\+\+|--)", body))
             has_native_payout = bool(re.search(r"\.call\s*\{\s*value\s*:|\.transfer\s*\(|\.send\s*\(", body))
             if has_user_key or has_state_write or has_native_payout:
-                evidence = [
-                    "This function looks like an economic claim/withdraw/redeem path.",
-                ]
-                if has_state_write:
-                    evidence.append("The body writes user/entitlement state; this is the state that must be consumed exactly once.")
-                elif has_native_payout:
-                    evidence.append("The function performs a native-value payout but does not show an entitlement-consumption write in this function.")
-                elif has_user_key:
-                    evidence.append("The function is keyed by caller/user state; replay safety depends on how that state is consumed.")
-                results.append(_result(
-                    "REPLAY-001",
-                    _pattern("REPLAY-001")["title"],
-                    model,
-                    name,
-                    source,
-                    line,
-                    evidence,
-                    _pattern("REPLAY-001")["logic"],
-                    "Run the same concrete call twice from the same actor with enough protocol reserve and compare the second call's value/state delta.",
-                    _pattern("REPLAY-001")["provenance"],
-                ))
+                if not _state_consumed_before_payout(body):
+                    evidence = [
+                        "This function looks like an economic claim/withdraw/redeem path.",
+                        "Entitlement consumption or a terminal-state guard was not found before the payout in the inspected function/helper context.",
+                    ]
+                    if has_state_write:
+                        evidence.append("The body writes user/entitlement state; verify that the exact entitlement is consumed before value leaves.")
+                    elif has_native_payout:
+                        evidence.append("The function performs a native-value payout; the caller's remaining entitlement must be traced.")
+                    elif has_user_key:
+                        evidence.append("The function is keyed by caller/user state; replay safety depends on how that state is consumed.")
+                    results.append(_result(
+                        "REPLAY-001",
+                        _pattern("REPLAY-001")["title"],
+                        model,
+                        name,
+                        source,
+                        line,
+                        evidence,
+                        _pattern("REPLAY-001")["logic"],
+                        "Trace the complete entitlement path and only then try the same concrete call twice from the same actor.",
+                        _pattern("REPLAY-001")["provenance"],
+                        evidence_status="needs-investigation",
+                    ))
 
         # Reentrancy / CEI candidate.
         calls = list(re.finditer(
@@ -385,12 +605,9 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
 
         # Sensitive state changes without a visible auth check.
         if _sensitive_name(name, _pattern("AUTH-001")["keywords"]):
-            auth_evidence = re.search(
-                r"\bonly[A-Za-z0-9_]*\b|\b(?:require|assert)\s*\([^)]*(?:msg\.sender|_msgSender|hasRole|owner\s*\(\)|authority)",
-                header + " " + body,
-                re.I,
-            )
-            if not auth_evidence:
+            guarded, guard_reason = _has_authorization_boundary(root, header, body)
+            permissionless = _documented_permissionless(source, line)
+            if not guarded and not permissionless:
                 results.append(_result(
                     "AUTH-001",
                     _pattern("AUTH-001")["title"],
@@ -398,10 +615,14 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     name,
                     source,
                     line,
-                    ["No obvious caller/role/owner check was found in the function body or its nearby modifiers."],
+                    [
+                        "No direct caller check, applied only* modifier or reachable authorization helper was found in the inspected source context.",
+                        "This remains a syntax/context candidate; intended permissionless policy and external reachability still need review.",
+                    ],
                     _pattern("AUTH-001")["logic"],
-                    "Verify whether the function is intentionally public. If not, reproduce the call from an unprivileged actor.",
+                    "Check the intended caller policy and every external entry point before attempting an unprivileged call.",
                     _pattern("AUTH-001")["provenance"],
+                    evidence_status="needs-investigation",
                 ))
 
         # Oracle freshness.
@@ -426,8 +647,14 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
 
         # Zero-share / rounding candidate.
         if _sensitive_name(name, _pattern("ROUND-001")["keywords"]) and re.search(r"\/|mulDiv|divWad|mulWad|convertToShares|shares", body, re.I):
-            has_zero_guard = bool(re.search(r"(shares|minted|received)[^\n;]{0,100}(?:>|!=)\s*0|(?:>\s*0|!=\s*0)[^\n;]{0,100}(shares|minted|received)", body, re.I))
+            has_zero_guard = _zero_output_guard(root, body)
             if not has_zero_guard:
+                async_flow = bool(re.search(r"request|finalize|claim|mint|redeem|refund|epoch|queue", name, re.I))
+                evidence = [
+                    "The path performs share/amount conversion or division without a zero-output guard in the inspected function/helper context."
+                ]
+                if async_flow:
+                    evidence.append("This appears to be an asynchronous vault lifecycle path; request, finalize and claim accounting must be traced separately.")
                 results.append(_result(
                     "ROUND-001",
                     _pattern("ROUND-001")["title"],
@@ -435,10 +662,11 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     name,
                     source,
                     line,
-                    ["The path performs share/amount conversion or division without an obvious zero-output guard."],
+                    evidence,
                     _pattern("ROUND-001")["logic"],
-                    "Try the smallest positive deposit or a boundary ratio and verify minted shares against the deposited assets.",
+                    "Trace the full request/finalize/claim entitlement and dust path before testing a smallest-positive deposit.",
                     _pattern("ROUND-001")["provenance"],
+                    evidence_status="needs-investigation",
                 ))
 
         # Signature binding.
@@ -469,19 +697,24 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         for loop in re.finditer(r"\bfor\s*\([^)]*\b(\w+)\.length\b[^)]*\)", body):
             collection = loop.group(1)
             if collection in state_arrays:
-                results.append(_result(
-                    "DOS-001",
-                    _pattern("DOS-001")["title"],
-                    model,
-                    name,
-                    source,
-                    line,
-                    [f"Loop iterates over storage array '{collection}' with no local bound visible in the loop header."],
-                    _pattern("DOS-001")["logic"],
-                    "Check whether an untrusted actor can increase the array and whether the loop sits on a critical withdrawal/settlement path.",
-                    _pattern("DOS-001")["provenance"],
-                ))
-                break
+                if (
+                    _critical_loop_path(name, body)
+                    and _array_attacker_growable(root, source, collection)
+                ):
+                    results.append(_result(
+                        "DOS-001",
+                        _pattern("DOS-001")["title"],
+                        model,
+                        name,
+                        source,
+                        line,
+                        [f"Critical path iterates over dynamic storage array '{collection}', and an unguarded external mutator can grow it."],
+                        _pattern("DOS-001")["logic"],
+                        "Verify the mutator's real caller policy and measure gas at the largest attacker-reachable array length.",
+                        _pattern("DOS-001")["provenance"],
+                        evidence_status="needs-investigation",
+                    ))
+                    break
 
         # ERC20 result + accounting.
         transfer_calls = re.findall(r"\b\w+\.(transfer|transferFrom)\s*\(", body)
@@ -649,7 +882,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
 
 
 def scan_project(root: Path, models: list[core.ContractModel]) -> list[PatternObservation]:
-    """Scan application models only; dependency artifacts stay out of the signal set."""
+    """Scan application models, then deduplicate repeated source-level observations."""
     results: list[PatternObservation] = []
     for model in models:
         if model.kind in {"interface", "library", "abstract"}:
@@ -658,7 +891,23 @@ def scan_project(root: Path, models: list[core.ContractModel]) -> list[PatternOb
         if any(token in name for token in ("mock", "test", "erc20", "token")):
             continue
         results.extend(scan_model(root, model))
-    return results[:60]
+    deduplicated: dict[tuple[str, str, str, str], PatternObservation] = {}
+    for item in results:
+        key = (
+            item.pattern_id,
+            str(item.source),
+            str(item.function),
+            str(item.evidence[0] if item.evidence else ""),
+        )
+        existing = deduplicated.get(key)
+        if existing is None:
+            deduplicated[key] = item
+        else:
+            existing.evidence = list(dict.fromkeys(existing.evidence + item.evidence))
+            existing.provenance = list(dict.fromkeys(existing.provenance + item.provenance))
+            if existing.evidence_status == "syntax-match":
+                existing.evidence_status = item.evidence_status
+    return list(deduplicated.values())[:60]
 
 
 def _function_inputs(model: core.ContractModel, fn: dict[str, Any]) -> list[dict[str, Any]]:
@@ -950,6 +1199,7 @@ def _render_observation(obs: PatternObservation) -> list[str]:
         f"  {icon} {obs.pattern_id}  {obs.title}",
         f"     WHERE    {obs.contract}.{obs.function}" if obs.function else f"     WHERE    {obs.contract}",
         f"     EVIDENCE {obs.evidence[0]}" if obs.evidence else "     EVIDENCE source pattern matched",
+        f"     STATUS   {('reproduced' if obs.status == 'CONFIRMED' else obs.evidence_status)}",
         f"     LOGIC    {obs.logic}",
         f"     NEXT     {obs.next_step}",
         f"     SEEN IN  {', '.join(obs.provenance[:3])}" if obs.provenance else "     SEEN IN  public adjudicated security reports",
