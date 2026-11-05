@@ -12,7 +12,7 @@ Statuses distinguish implementation, isolated component coverage, installed-comm
 |---|---|---|
 | ABI-aware setup values | ACCEPTED for P0 scope | Installed `lk target` + `lk break` executed `AddressArraySetupTarget.deposit(address[])` and returned `OBSERVED`. Primitive scalars and one-dimensional primitive arrays are supported; tuple, nested arrays, and unsupported dynamic element types are refused. |
 | Payable/nonpayable setup | ACCEPTED for P0 scope | The installed-`lk` payable `address[]` setup executed and produced `SETUP_SUCCESS true`. Nonpayable setup uses zero value; payable setup uses the generated seed value. |
-| ERC-20 decimal-aware funding | ACCEPTED for verified metadata; fallback follow-up pending CI | Historical installed-`lk` USDC case verifies six decimals and `TOKEN_FUNDING_AMOUNT 1000000`. This follow-up changes missing/invalid metadata to an explicit 18-decimal (`1e18`) fallback, emits `ASSET_DECIMALS_FALLBACK_18`, and prevents unverified token units from producing token-profit BREAKs. The new no-metadata installed-`lk` scenario must pass current-head CI before this row is fully accepted. |
+| ERC-20 decimal-aware funding | ACCEPTED for installed-CLI compatibility; full P0 phase gate pending | Run 7285's Foundry job passed the four installed-`lk` scenarios, including missing-decimals fallback with `ASSET_DECIMALS_FALLBACK_18`, `ASSET_DECIMALS 18`, and `TOKEN_FUNDING_AMOUNT 1000000000000000000`. The overall run failed in the Python unit job, so phase-wide P0 acceptance still awaits current-head CI. Unverified fallback units are excluded from token-profit BREAK promotion. |
 | Optional-return ERC-20 approval | ACCEPTED for P0 scope | Installed-`lk` USDT-style payer case returned `OBSERVED` with empty-return approval success. The fixture preloaded a nonzero attacker-to-vault allowance; generated harness telemetry confirmed reset-to-zero was attempted and the retry succeeded. False, revert, and malformed return data fail closed. |
 | ERC-777 receiver | ACCEPTED for P0 scope | Foundry fixture exercises standard `tokensReceived` and ERC-1820 registration handshake. Live registration still requires the canonical ERC-1820 registry on the selected chain. |
 | ERC-1155 receiver | ACCEPTED for P0 scope | Foundry fixture exercises single and batch callbacks plus ERC-165/ERC-1155 interface support. |
@@ -25,11 +25,11 @@ Statuses distinguish implementation, isolated component coverage, installed-comm
 
 The installed-command acceptance is committed in `scripts/p0-break-acceptance-e2e.py` and wired into the Foundry CI job. It deploys local Anvil fixtures and runs four cases through the installed `lk` executable: `address[]` setup, six-decimal USDC, USDT-style empty-return approval with allowance reset, and missing-decimals fallback. Each case must reach `OBSERVED` and assert its setup/funding/approval telemetry. The fourth case (missing-decimals fallback) passed the installed-CLI portion of run 7285; the entire P0 phase remains pending current-head CI because that run's Python unit suite failed elsewhere.
 
-The workflow now copies campaign JSON, experiment JSON, and the generated harness archive into `.audit/p0-break-acceptance/`, then uploads that directory as a CI artifact even if an acceptance assertion fails. Artifact-upload validation is pending the current workflow run.
+The workflow copies campaign JSON, experiment JSON, and generated harness archives into `.audit/p0-break-acceptance/`, then uploads that directory even when an acceptance assertion fails. Run 7285 completed the upload step; current-head artifact validation is pending.
 
 ## Scope boundary
 
-P0 is accepted for the stated ABI setup, decimal-aware funding, optional-return/reset approval, standard receiver-hook, and refusal-reporting scope. This does not mean every ERC-20 implementation, ABI shape, or receiver extension is supported.
+P0's three original compatibility cases and four installed-CLI acceptance scenarios have passed in the Foundry job; the P0 phase remains gated on the full current-head CI suite because run 7285's Python unit job failed. This does not mean every ERC-20 implementation, ABI shape, or receiver extension is supported.
 
 P1 remains gated until the current-head workflow passes. A Forge fixture's `SIMULATED_BREAK` is not represented as deployment proof; the separate Anvil `LOCAL_PROFITABLE` reproof is kept distinct from the `OBSERVED` proof status for an unauthenticated target. No `HUMAN_CONFIRMED` claim is made.
 
