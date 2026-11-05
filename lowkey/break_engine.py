@@ -2322,7 +2322,18 @@ def _result_from_output(
                 f"No repeat break was demonstrated. {reason}"
             )
 
-    elif structured and family == "reentrancy":
+    elif (
+        structured
+        and family == "reentrancy"
+        and any(
+            marker in text_output
+            for marker in (
+                "SETUP_FUNCTION_DISCOVERED",
+                "ASSET_GETTER_DISCOVERED",
+                "TOKEN_APPROVAL_ATTEMPTED",
+            )
+        )
+    ):
         setup_discovered = _read_telemetry_bool(text_output, "SETUP_FUNCTION_DISCOVERED")
         setup_success = _read_telemetry_bool(text_output, "TARGET_SETUP_SUCCESS")
         setup_len = _read_telemetry_uint(text_output, "TARGET_SETUP_RETURNDATA_LENGTH") or 0
