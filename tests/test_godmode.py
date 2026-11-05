@@ -27,6 +27,13 @@ class GodmodeTests(unittest.TestCase):
         self.assertEqual([row[0] for row in godmode.CAPABILITIES], list(range(1, 45)))
         self.assertEqual(len({row[1] for row in godmode.CAPABILITIES}), 44)
 
+    def test_storage_slot_key_canonicalizes_short_and_full_forms(self):
+        short = godmode.storage_slot_key("0x0")
+        full = godmode.storage_slot_key("0x" + "0" * 64)
+        self.assertEqual(short, full)
+        self.assertEqual(len(short), 66)
+        self.assertEqual(godmode.storage_slot_key("17"), "0x" + format(17, "064x"))
+
     def test_push4_skips_push_data(self):
         # PUSH2 consumes 0x6311 as immediate data, including the 0x63 byte.
         code = "0x61" + "6311" + "63" + "aabbccdd" + "00"
