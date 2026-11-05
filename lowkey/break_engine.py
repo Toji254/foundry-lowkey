@@ -671,65 +671,81 @@ def _anvil_accounts(host, config) -> list[str]:
         return []
 
 
+def _abi_array_type(ptype: str) -> tuple[str, int | None] | None:
+    """Return (element type, fixed length); None means the ABI type is not an array."""
+    match = re.fullmatch(r"(.+)\[(\d*)\]", str(ptype or "").strip().lower())
+    if not match:
+        return None
+    base, length_text = match.groups()
+    if "[" in base or "]" in base:
+        raise ValueError(f"nested ABI array '{ptype}' requires a protocol-specific generator")
+    fixed_length = int(length_text) if length_text else None
+    if fixed_length is not None and (fixed_length < 1 or fixed_length > 32):
+        raise ValueError(f"fixed ABI array '{ptype}' has unsupported length; supported range is 1..32")
+    return base, fixed_length
+
+
+def _integer_probe_value(ptype: str, mode: str, rng: random.Random) -> str:
+    match = re.fullmatch(r"u?int(\d*)", ptype)
+    if not match:
+        raise ValueError(f"unsupported ABI array element type '{ptype}'")
+    bits = int(match.group(1) or "256")
+    if bits < 8 or bits > 256 or bits % 8:
+        raise ValueError(f"invalid integer ABI width '{ptype}'")
+    signed = ptype.startswith("int")
+    if mode == "zero":
+        return "0"
+    if mode == "max":
+        return str((1 << (bits - (1 if signed else 0))) - 1)
+    if mode == "one":
+        return "1"
+    return str(rng.choice([-1, 0, 1, 2]) if signed else rng.choice([0, 1, 2, 10]))
+
+
 def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str, config=None) -> list[str]:
-    args = []
+    """Create conservative ABI inputs; unsupported types fail closed by name."""
+    args: list[str] = []
     accounts = _anvil_accounts(host, config or {})
     fallback = accounts[0] if accounts else "0x" + "11" * 20
+    attacker = accounts[1] if mode == "one" and len(accounts) > 1 else fallback
+    zero_address = "0x0000000000000000000000000000000000000000"
+
     for item in fn.get("inputs") or []:
         ptype = str(item.get("type") or "").lower()
-        if ptype == "address":
-            if mode == "zero":
-                args.append("0x0000000000000000000000000000000000000000")
-            elif mode == "one" and len(accounts) > 1:
-                args.append(accounts[1])
+        array_type = _abi_array_type(ptype)
+        if array_type is not None:
+            base, fixed_length = array_type
+            if base != "address" and not re.fullmatch(r"u?int\d*", base):
+                raise ValueError(f"ABI array '{ptype}' is unsupported; supported array elements are address and integers")
+            count = fixed_length if fixed_length is not None else (0 if mode == "zero" else 1)
+            if count > 32:
+                raise ValueError(f"ABI array '{ptype}' exceeds the generic probe limit of 32 elements")
+            if base == "address":
+                element = zero_address if mode == "zero" else attacker
+                values = [element] * count
             else:
-                args.append(fallback)
+                element = _integer_probe_value(base, mode, rng)
+                values = [element] * count
+            args.append("[" + ",".join(values) + "]")
+            continue
+
+        if ptype == "address":
+            args.append(zero_address if mode == "zero" else attacker)
         elif ptype == "bool":
             args.append("true" if mode == "one" else "false")
-        elif ptype.startswith("uint"):
-            bits = 256
-            m = re.match(r"uint(\d+)", ptype)
-            if m:
-                bits = int(m.group(1))
-            if mode == "zero":
-                args.append("0")
-            elif mode == "max":
-                args.append(str((1 << bits) - 1))
-            elif mode == "one":
-                args.append("1")
-            else:
-                choices = [0, 1, 2, 10]
-                args.append(str(rng.choice(choices)))
-        elif ptype.startswith("int"):
-            bits = 256
-            m = re.match(r"int(\d+)", ptype)
-            if m:
-                bits = int(m.group(1))
-            if mode == "zero":
-                args.append("0")
-            elif mode == "max":
-                args.append(str((1 << (bits - 1)) - 1))
-            elif mode == "one":
-                args.append("1")
-            else:
-                args.append(str(rng.choice([-1, 0, 1, 2])))
+        elif re.fullmatch(r"uint\d*", ptype) or re.fullmatch(r"int\d*", ptype):
+            args.append(_integer_probe_value(ptype, mode, rng))
         elif ptype == "bytes":
             args.append("0x" if mode != "one" else "0x01")
-        elif ptype.startswith("bytes"):
-            n = int(ptype[5:] or "1")
-            args.append("0x" + ("00" * n if mode != "one" else ("01" * n)))
+        elif re.fullmatch(r"bytes(?:[1-9]|[12]\d|3[0-2])", ptype):
+            size = int(ptype[5:])
+            args.append("0x" + (("01" if mode == "one" else "00") * size))
         elif ptype == "string":
             args.append("lowkey" if mode == "one" else "")
-        elif ptype.endswith("[]"):
-            # Empty dynamic arrays are valid ABI values and are intentionally useful
-            # for probing missing non-empty constraints.
-            args.append("[]")
         elif ptype.startswith("tuple"):
-            # Generic tuple/struct values are protocol-specific; do not fabricate
-            # an apparently valid tuple that could produce misleading evidence.
-            raise ValueError("tuple/struct argument requires a protocol-specific generator")
+            raise ValueError(f"tuple/struct ABI type '{ptype}' requires a protocol-specific generator")
         else:
-            args.append("0")
+            raise ValueError(f"unsupported ABI type '{ptype}'")
     return args
 
 
@@ -1451,49 +1467,131 @@ contract LowkeyBreakTime is Test {{
 
 
 def _basic_solidity_expr(ptype: str, value: str) -> str:
-    """Render a safe generic Solidity expression for generated attack calldata."""
+    """Render one supported scalar ABI value as a Solidity expression."""
     raw = str(value)
     lower = ptype.lower().strip()
-
+    if _abi_array_type(lower) is not None:
+        raise ValueError(f"array ABI type '{ptype}' must be rendered as a memory array")
     if lower == "address":
         return f"address({raw})"
     if lower == "bool":
-        return "true" if raw.lower() == "true" else "false"
+        if raw.lower() not in {"true", "false"}:
+            raise ValueError(f"invalid bool ABI value '{raw}'")
+        return raw.lower()
     if lower == "string":
-        # _make_value only emits simple ASCII values, so repr via JSON is sufficient
-        # and avoids accidentally producing invalid Solidity string literals.
         import json as _json
         return _json.dumps(raw)
-
-    # Handle dynamic arrays before primitive numeric/bytes checks because ABI
-    # types such as uint256[] and bytes[] also start with those primitive names.
-    if lower.endswith("[]"):
-        base = lower[:-2]
-        if base.startswith("tuple") or base.startswith("("):
-            raise ValueError(
-                f"dynamic array element type '{ptype}' requires a protocol-specific generator"
-            )
-        if raw.strip() != "[]":
-            raise ValueError(
-                f"generic dynamic array '{ptype}' accepts only an empty array in this attack mode"
-            )
-        return f"new {base}[](0)"
-
     if lower == "bytes":
-        return raw if raw.startswith("0x") else "0x"
-    if lower.startswith(("uint", "int", "bytes")):
+        if not re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", raw):
+            raise ValueError(f"invalid bytes ABI value '{raw}'")
         return raw
-
-    if re.fullmatch(r"(?:address|bool|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bytes(?:1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32))\[[0-9]+\]", lower):
-        raise ValueError(f"fixed-size array '{ptype}' requires a specialized attack generator")
-
-    if lower.startswith("tuple") or lower.startswith("("):
+    if lower.startswith(("uint", "int")):
+        if not re.fullmatch(r"-?\d+", raw):
+            raise ValueError(f"invalid integer ABI value '{raw}' for {ptype}")
+        return raw
+    if re.fullmatch(r"bytes(?:[1-9]|[12]\d|3[0-2])", lower):
+        size = int(lower[5:])
+        if not re.fullmatch(r"0x[0-9a-fA-F]{%d}" % (size * 2), raw):
+            raise ValueError(f"invalid fixed-bytes ABI value '{raw}' for {ptype}")
+        return raw
+    if lower.startswith("tuple"):
         raise ValueError(f"tuple/struct argument '{ptype}' requires a specialized attack generator")
-
     raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
 
 
-def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
+def _render_abi_arguments(
+    inputs: list[dict[str, Any]],
+    values: list[str],
+    *,
+    actor_expr: str | None,
+    prefix: str,
+) -> tuple[str, list[str]]:
+    """Render scalar and one-dimensional address/integer arrays without guessing layouts."""
+    if len(inputs) != len(values):
+        raise ValueError(f"ABI argument count mismatch: {len(inputs)} inputs, {len(values)} values")
+    declarations: list[str] = []
+    expressions: list[str] = []
+    for index, (item, raw_value) in enumerate(zip(inputs, values)):
+        ptype = str(item.get("type") or "").lower()
+        array_type = _abi_array_type(ptype)
+        if array_type is None:
+            if ptype == "address" and actor_expr:
+                expressions.append(actor_expr)
+            else:
+                expressions.append(_basic_solidity_expr(ptype, str(raw_value)))
+            continue
+
+        base, fixed_length = array_type
+        if base != "address" and not re.fullmatch(r"u?int\d*", base):
+            raise ValueError(f"ABI array '{ptype}' is unsupported; supported array elements are address and integers")
+        raw = str(raw_value).strip()
+        if not (raw.startswith("[") and raw.endswith("]")):
+            raise ValueError(f"array ABI value for '{ptype}' must use bracket notation")
+        inner = raw[1:-1].strip()
+        elements = [] if not inner else [part.strip() for part in inner.split(",")]
+        if fixed_length is not None and len(elements) != fixed_length:
+            raise ValueError(f"fixed ABI array '{ptype}' needs {fixed_length} elements, received {len(elements)}")
+        if len(elements) > 32:
+            raise ValueError(f"ABI array '{ptype}' exceeds the generic render limit of 32 elements")
+
+        variable = f"{prefix}_{index}"
+        if fixed_length is None:
+            declarations.append(f"{base}[] memory {variable} = new {base}[]({len(elements)});")
+        else:
+            declarations.append(f"{base}[{fixed_length}] memory {variable};")
+        for element_index, element in enumerate(elements):
+            if base == "address" and actor_expr:
+                expression = actor_expr
+            else:
+                expression = _basic_solidity_expr(base, element)
+            declarations.append(f"{variable}[{element_index}] = {expression};")
+        expressions.append(variable)
+    return ("\n        ".join(declarations), expressions)
+
+
+def _render_setup_arguments(
+    inputs: list[dict[str, Any]],
+    *,
+    actor_expr: str,
+    prefix: str = "lowkeySetupArg",
+) -> tuple[str, list[str]]:
+    """Create conservative setup arguments from ABI metadata only."""
+    values: list[str] = []
+    for item in inputs:
+        ptype = str(item.get("type") or "").lower()
+        array_type = _abi_array_type(ptype)
+        if array_type is None:
+            if ptype == "address":
+                values.append(actor_expr)
+            elif re.fullmatch(r"uint\d*", ptype):
+                values.append("1")
+            else:
+                raise ValueError(f"setup ABI type '{ptype}' is unsupported; only address and uint are generic")
+            continue
+
+        base, fixed_length = array_type
+        if base not in {"address"} and not re.fullmatch(r"uint\d*", base):
+            raise ValueError(f"setup ABI array '{ptype}' is unsupported; only address and uint arrays are generic")
+        count = fixed_length if fixed_length is not None else 1
+        if count > 32:
+            raise ValueError(f"setup ABI array '{ptype}' exceeds the generic setup limit of 32 elements")
+        values.append("[" + ",".join([actor_expr if base == "address" else "1"] * count) + "]")
+    # The renderer handles the actor expression specially for scalar and array addresses.
+    normalized_values = [
+        ("[" + ",".join(["1"] * (len(v[1:-1].split(",")) if v[1:-1] else 0)) + "]")
+        if _abi_array_type(str(item.get("type") or "").lower()) is not None
+        and _abi_array_type(str(item.get("type") or "").lower())[0] == "address"
+        else ("1" if str(item.get("type") or "").lower() == "address" else v)
+        for item, v in zip(inputs, values)
+    ]
+    declarations, expressions = _render_abi_arguments(
+        inputs, normalized_values, actor_expr=actor_expr, prefix=prefix
+    )
+    return declarations, expressions
+
+
+def _find_setup_abi(functions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Select a setup function only when every argument has a deterministic ABI renderer."""
     for item in functions:
         if not isinstance(item, dict):
             continue
@@ -1502,15 +1600,24 @@ def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
         if not SETUP_RE.search(name):
             continue
         mutability = str(item.get("stateMutability") or "").lower()
-        if len(inputs) == 0 and mutability == "payable":
-            return _format_signature(item)
-        if (
-            len(inputs) == 1
-            and str(inputs[0].get("type") or "").lower().startswith("uint")
-            and mutability in {"payable", "nonpayable"}
-        ):
-            return _format_signature(item)
+        if mutability not in {"payable", "nonpayable"}:
+            continue
+        if not inputs:
+            if mutability == "payable":
+                return item
+            continue
+        try:
+            _render_setup_arguments(inputs, actor_expr="address(ATTACKER)")
+        except ValueError:
+            continue
+        return item
     return None
+
+
+def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
+    """Backward-compatible signature view of the ABI-driven setup selector."""
+    item = _find_setup_abi(functions)
+    return _format_signature(item) if item else None
 
 
 def _find_entitlement_getter_signature(functions: list[dict[str, Any]]) -> str | None:
