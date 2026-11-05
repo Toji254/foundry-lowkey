@@ -38,6 +38,13 @@ class PatternObservation:
     next_step: str = ""
     provenance: list[str] = field(default_factory=list)
     evidence_status: str = "syntax-match"
+    context_notes: list[str] = field(default_factory=list)
+
+
+EVIDENCE_STATUS_LABELS = frozenset({
+    "syntax-match", "context-checked", "likely-false-positive",
+    "needs-investigation", "plausible-vulnerability", "reproduced",
+})
 
 
 _SOURCE_CONTEXT_CACHE: dict[str, list[tuple[Path, str]]] = {}
@@ -261,6 +268,7 @@ def _result(
     provenance: list[str],
     status: str = "CANDIDATE",
     evidence_status: str = "syntax-match",
+    context_notes: list[str] | None = None,
 ) -> PatternObservation:
     return PatternObservation(
         pattern_id=pattern,
@@ -275,6 +283,7 @@ def _result(
         next_step=next_step,
         provenance=provenance,
         evidence_status=evidence_status,
+        context_notes=list(context_notes or []),
     )
 
 
@@ -313,58 +322,334 @@ def _context_source_files(root: Path) -> list[tuple[Path, str]]:
     return found
 
 
-def _named_block(source: str, name: str) -> str:
+def _contract_declarations(source: str, source_path: Path) -> list[dict[str, Any]]:
+    """Parse contract bodies and declared base names from one Solidity source file."""
     stripped = core._strip_source_comments(source, "solidity", mask_strings=True)
+    declarations: list[dict[str, Any]] = []
     pattern = re.compile(
-        r"\b(?:function|modifier)\s+" + re.escape(name) + r"\b[^{;]*\{",
+        r"\b(?:abstract\s+)?contract\s+([A-Za-z_]\w*)\b([^{}]*)\{",
         re.S,
     )
-    match = pattern.search(stripped)
-    if not match:
-        return ""
-    opening = stripped.find("{", match.start(), match.end())
-    depth = 0
-    end = opening
-    for index in range(opening, len(stripped)):
-        if stripped[index] == "{":
-            depth += 1
-        elif stripped[index] == "}":
-            depth -= 1
-            if depth == 0:
-                end = index + 1
+    for match in pattern.finditer(stripped):
+        opening = stripped.find("{", match.start(), match.end())
+        body = core._balanced_block(stripped, opening)
+        if not body:
+            continue
+        header = match.group(2) or ""
+        base_match = re.search(r"\bis\s+(.+)$", header, re.S)
+        bases: list[str] = []
+        if base_match:
+            bases = re.findall(
+                r"([A-Za-z_]\w*)\s*(?:\([^()]*\))?\s*(?=,|$)",
+                base_match.group(1).strip(),
+            )
+        declarations.append({
+            "name": match.group(1),
+            "path": source_path.resolve(),
+            "body": body,
+            "bases": bases,
+        })
+    return declarations
+
+
+def _foundry_remappings(root: Path) -> list[tuple[str, str]]:
+    config = root / "foundry.toml"
+    if not config.is_file():
+        return []
+    try:
+        import tomllib
+        data = tomllib.loads(config.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError, TypeError):
+        return []
+    profile_name = os.environ.get("FOUNDRY_PROFILE", "default")
+    sections = [data, data.get("profile", {}).get("default", {})]
+    selected = data.get("profile", {}).get(profile_name, {})
+    if isinstance(selected, dict):
+        sections.append(selected)
+    raw_values: list[Any] = []
+    for section in sections:
+        if isinstance(section, dict) and "remappings" in section:
+            value = section.get("remappings")
+            raw_values.extend(value if isinstance(value, list) else [value])
+    pairs: list[tuple[str, str]] = []
+    for raw in raw_values:
+        if not isinstance(raw, str) or "=" not in raw:
+            continue
+        prefix, destination = raw.split("=", 1)
+        if prefix and destination:
+            pairs.append((prefix, destination))
+    return sorted(set(pairs), key=lambda item: len(item[0]), reverse=True)
+
+
+def _resolve_import_file(
+    root: Path,
+    importer: Path,
+    import_value: str,
+    remappings: list[tuple[str, str]],
+) -> Path | None:
+    raw = import_value.strip()
+    candidates: list[Path] = []
+    if raw.startswith("."):
+        candidates.append(importer.parent / raw)
+    else:
+        for prefix, destination in remappings:
+            if raw.startswith(prefix):
+                candidates.append(root / destination / raw[len(prefix):])
                 break
-    return source[match.start():end] if end > match.start() else ""
+        candidates.extend([root / raw, importer.parent / raw])
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root.resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved.is_file() and resolved.suffix.lower() == ".sol":
+            return resolved
+    return None
+
+
+def _imported_source_context(
+    root: Path,
+    source_path: Path | None,
+    source: str | None,
+) -> list[tuple[Path, str]]:
+    """Return only the current file and its actually resolved import closure."""
+    project = root.resolve()
+    if source_path is None:
+        return _context_source_files(project)
+    try:
+        initial = source_path.resolve()
+        initial.relative_to(project)
+    except (OSError, RuntimeError, ValueError):
+        return []
+    initial_text = source
+    if initial_text is None:
+        try:
+            initial_text = initial.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+    remappings = _foundry_remappings(project)
+    queue: list[tuple[Path, str]] = [(initial, initial_text)]
+    visited: set[Path] = set()
+    resolved: list[tuple[Path, str]] = []
+    import_pattern = re.compile(
+        r"\bimport\s+(?:[^;]*?\s+from\s+)?[\"']([^\"']+)[\"']\s*;",
+        re.S,
+    )
+    while queue and len(visited) < 160:
+        current, current_text = queue.pop(0)
+        try:
+            current = current.resolve()
+            current.relative_to(project)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if current in visited:
+            continue
+        visited.add(current)
+        resolved.append((current, current_text))
+        clean = core._strip_source_comments(current_text, "solidity", mask_strings=True)
+        for match in import_pattern.finditer(clean):
+            imported = _resolve_import_file(project, current, match.group(1), remappings)
+            if imported is None or imported in visited:
+                continue
+            try:
+                imported_text = imported.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            queue.append((imported, imported_text))
+    return resolved
+
+
+def _member_blocks(contract_body: str, name: str) -> list[tuple[str, str]]:
+    """Return exact function/modifier blocks for one member inside a contract body."""
+    stripped = core._strip_source_comments(contract_body, "solidity", mask_strings=True)
+    pattern = re.compile(
+        r"\b(function|modifier)\s+" + re.escape(name) + r"\b[^{;]*\{",
+        re.S,
+    )
+    blocks: list[tuple[str, str]] = []
+    for match in pattern.finditer(stripped):
+        opening = stripped.find("{", match.start(), match.end())
+        block = core._balanced_block(stripped, opening)
+        if block:
+            blocks.append((match.group(1), block))
+    return blocks
 
 
 def _has_auth_expression(value: str) -> bool:
+    caller = r"(?:msg\s*\.\s*sender|_msgSender\s*\(\s*\))"
+    comparison = (
+        r"\b" + caller + r"\s*(?:==|!=)\s*[^;\n{}]+"
+        r"|\b[A-Za-z_]\w*(?:\s*\([^;\n{}]*\))?\s*(?:==|!=)\s*" + caller
+    )
+    role_check = (
+        r"\b(?:hasRole|_checkRole|_checkOwner|isAuthorized|isGuardian|"
+        r"isController|isOperator|isPool|isEngine|isTrustedCaller)\s*\("
+    )
+    membership = (
+        r"\b(?:guardian|guardians|controller|controllers|operator|operators|"
+        r"pool|engine|router|allowlist|whitelist|roles|roleMembers)\b\s*"
+        r"(?:\[[^\]]+\]\s*)+\[\s*" + caller
+    )
     return bool(re.search(
-        r"\b(?:msg\s*\.\s*sender|_msgSender\s*\(\s*\))\s*(?:==|!=)"
-        r"|\b(?:hasRole|_checkRole|owner|authority|isAuthorized|isGuardian|isController|isOperator)\s*\("
-        r"|\b(?:guardian|controller|operator|pool|engine|router|allowlist|whitelist|roles)\s*"
-        r"\[\s*(?:msg\s*\.\s*sender|_msgSender\s*\()",
+        comparison + "|" + role_check + "|" + membership,
         value,
         re.I,
     ))
 
 
-def _has_authorization_boundary(root: Path, header: str, body: str) -> tuple[bool, str]:
-    if re.search(r"\bonly[A-Za-z0-9_]+\b", header):
-        return True, "A direct or inherited only* modifier is applied in the function header."
-    if _has_auth_expression(header + "\n" + body):
-        return True, "The function contains a caller/role/owner check."
+def _authorization_scopes(
+    root: Path,
+    source: str,
+    *,
+    source_path: Path | None,
+    contract_name: str | None,
+) -> list[dict[str, Any]]:
+    context = _imported_source_context(root, source_path, source)
+    declarations: list[dict[str, Any]] = []
+    for path, text in context:
+        declarations.extend(_contract_declarations(text, path))
+    if not declarations:
+        return []
+    name = str(contract_name or "").strip()
+    if not name:
+        in_current_file = [
+            item for item in declarations
+            if source_path is not None and item["path"] == source_path.resolve()
+        ]
+        if len(in_current_file) != 1:
+            return []
+        current = in_current_file[0]
+    else:
+        matches = [
+            item for item in declarations
+            if item["name"] == name
+            and (source_path is None or item["path"] == source_path.resolve())
+        ]
+        if len(matches) != 1:
+            return []
+        current = matches[0]
+
+    scopes: list[dict[str, Any]] = []
+    seen: set[tuple[Path, str]] = set()
+
+    def add_scope(item: dict[str, Any], depth: int = 0) -> None:
+        key = (item["path"], item["name"])
+        if key in seen or depth > 12:
+            return
+        seen.add(key)
+        scopes.append(item)
+        for base_name in item["bases"]:
+            bases = [candidate for candidate in declarations if candidate["name"] == base_name]
+            same_file = [candidate for candidate in bases if candidate["path"] == item["path"]]
+            selected = same_file if len(same_file) == 1 else bases
+            # Ambiguous symbols are deliberately not accepted as authorization evidence.
+            if len(selected) == 1:
+                add_scope(selected[0], depth + 1)
+
+    add_scope(current)
+    return scopes
+
+
+def _block_has_reachable_guard(
+    block: str,
+    scopes: list[dict[str, Any]],
+    *,
+    seen: set[str] | None = None,
+    depth: int = 0,
+) -> tuple[bool, str]:
+    if depth > 8:
+        return False, ""
+    seen = set(seen or ())
+    clean = core._strip_source_comments(block, "solidity", mask_strings=True)
+    if _has_auth_expression(clean):
+        return True, "The resolved source block contains a caller/role/self-call guard."
     helper_names = set(re.findall(
+        r"\b(_(?:require|only|check|authorize|assert|validate)[A-Za-z0-9_]*|"
+        r"routerSelf|only[A-Z][A-Za-z0-9_]*)\s*\(",
+        clean,
+    ))
+    for helper in sorted(helper_names):
+        if helper in seen:
+            continue
+        seen.add(helper)
+        matches: list[tuple[str, str]] = []
+        for scope in scopes:
+            matches.extend(_member_blocks(str(scope["body"]), helper))
+        # A same-name declaration in unrelated bases must not be guessed.
+        if len(matches) != 1:
+            continue
+        kind, helper_body = matches[0]
+        guarded, _reason = _block_has_reachable_guard(
+            helper_body, scopes, seen=seen, depth=depth + 1,
+        )
+        if guarded:
+            return True, f"Resolved {kind} {helper} contains or reaches a caller/role/self-call guard."
+    return False, ""
+
+
+def _has_authorization_boundary(
+    root: Path,
+    header: str,
+    body: str,
+    *,
+    source: str | None = None,
+    source_path: Path | None = None,
+    contract_name: str | None = None,
+) -> tuple[bool, str]:
+    """Accept only authorization checks resolved inside this contract's import/inheritance graph."""
+    if _has_auth_expression(header + "\n" + body):
+        return True, "The function contains a direct caller/role/self-call check."
+
+    if source is None:
+        if source_path is None:
+            return False, ""
+        try:
+            source = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False, ""
+    scopes = _authorization_scopes(
+        root, source, source_path=source_path, contract_name=contract_name,
+    )
+    if not scopes:
+        return False, ""
+
+    modifier_names = set(re.findall(
+        r"\b(only[A-Za-z_]\w*|whenNotPaused|routerSelf)\b", header,
+    ))
+    for modifier in sorted(modifier_names):
+        matches: list[tuple[dict[str, Any], str]] = []
+        for scope in scopes:
+            matches.extend(
+                (scope, member_body)
+                for kind, member_body in _member_blocks(str(scope["body"]), modifier)
+                if kind == "modifier"
+            )
+        if len(matches) == 1:
+            _scope, modifier_body = matches[0]
+            guarded, reason = _block_has_reachable_guard(modifier_body, scopes)
+            if guarded:
+                return True, f"Resolved modifier {modifier}: {reason}"
+
+    direct_helpers = set(re.findall(
         r"\b(_(?:require|only|check|authorize|assert|validate)[A-Za-z0-9_]*|routerSelf)\s*\(",
         body,
     ))
-    if not helper_names:
-        return False, ""
-    for _path, source in _context_source_files(root):
-        for helper in helper_names:
-            helper_body = _named_block(source, helper)
-            if helper_body and _has_auth_expression(helper_body):
-                return True, f"Reachable helper {helper} contains a caller/role/self-call guard."
-    return False, ""
-
+    for helper in sorted(direct_helpers):
+        matches: list[tuple[dict[str, Any], str]] = []
+        for scope in scopes:
+            matches.extend(
+                (scope, member_body)
+                for kind, member_body in _member_blocks(str(scope["body"]), helper)
+                if kind == "function"
+            )
+        if len(matches) != 1:
+            continue
+        _scope, helper_body = matches[0]
+        guarded, reason = _block_has_reachable_guard(helper_body, scopes)
+        if guarded:
+            return True, f"Resolved helper {helper}: {reason}"
+    return False, "No authorization boundary was found in the resolved contract/inheritance/import context."
 
 def _documented_permissionless(source: str, line: int) -> bool:
     lines = source.splitlines()
@@ -448,7 +733,10 @@ def _zero_output_guard(root: Path, body: str) -> bool:
     return False
 
 
-def _array_attacker_growable(root: Path, source: str, collection: str) -> bool:
+def _array_attacker_growable(
+    root: Path, source: str, collection: str, *,
+    source_path: Path | None = None, contract_name: str | None = None,
+) -> bool:
     fixed = re.search(
         r"\b[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\d+\s*\]\s*"
         r"(?:(?:public|private|internal)\s+)?"
@@ -474,7 +762,10 @@ def _array_attacker_growable(root: Path, source: str, collection: str) -> bool:
     for name, header, body in mutators:
         visibility = bool(re.search(r"\b(?:external|public)\b", header))
         if visibility:
-            guarded, _reason = _has_authorization_boundary(root, header, body)
+            guarded, _reason = _has_authorization_boundary(
+                root, header, body, source=source, source_path=source_path,
+                contract_name=contract_name,
+            )
             if not guarded:
                 return True
     # An internal array mutator is attacker-reachable only when an unguarded
@@ -615,7 +906,10 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
 
         # Sensitive state changes without a visible auth check.
         if _sensitive_name(name, _pattern("AUTH-001")["keywords"]):
-            guarded, guard_reason = _has_authorization_boundary(root, header, body)
+            guarded, guard_reason = _has_authorization_boundary(
+                root, header, body, source=source,
+                source_path=(root / str(model.source)), contract_name=model.name,
+            )
             permissionless = _documented_permissionless(source, line)
             if not guarded and not permissionless:
                 results.append(_result(
@@ -632,7 +926,11 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     _pattern("AUTH-001")["logic"],
                     "Check the intended caller policy and every external entry point before attempting an unprivileged call.",
                     _pattern("AUTH-001")["provenance"],
-                    evidence_status="needs-investigation",
+                    evidence_status="context-checked",
+                    context_notes=[
+                        "The selected function was checked against its exact contract, resolved modifiers, inherited bases, and imported helper declarations.",
+                        "No reachable caller/role/self-call guard was established; confirm intended caller policy and an executable path before treating this as a vulnerability.",
+                    ],
                 ))
 
         # Oracle freshness.
@@ -709,7 +1007,10 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             if collection in state_arrays:
                 if (
                     _critical_loop_path(name, body)
-                    and _array_attacker_growable(root, source, collection)
+                    and _array_attacker_growable(
+                root, source, collection, source_path=(root / str(model.source)),
+                contract_name=model.name,
+            )
                 ):
                     results.append(_result(
                         "DOS-001",
