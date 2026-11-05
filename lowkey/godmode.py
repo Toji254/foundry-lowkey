@@ -615,23 +615,22 @@ def _analyze_control_fidelity(root, entry, spec):
 
 
 
-def _semantic_execution_verified(exit_code, output):
-    """Require test-runner evidence, not merely a successful shell exit."""
-    if exit_code != 0:
+def _semantic_execution_verified(exit_code, output, expected_test=None):
+    """Require the named invariant test to pass, not just any command/test."""
+    if exit_code != 0 or not isinstance(expected_test, str) or not expected_test.strip():
         return False
     text_value = str(output or "")
-    if "LOWKEY_SEMANTIC_INVARIANT_PASS" in text_value:
-        return True
+    name = re.escape(expected_test.strip())
     failed = re.search(r"\b[1-9][0-9]*\s+failed\b", text_value, re.I)
     if failed:
         return False
-    if re.search(r"\[PASS\]", text_value):
-        return True
-    if re.search(r"\btest\s+result:\s*ok\b", text_value, re.I):
-        return True
-    if re.search(r"\b[1-9][0-9]*\s+passed\b", text_value, re.I):
-        return True
-    return False
+    passed_test = re.search(
+        r"\[PASS\]\s+" + name + r"\s*\(",
+        text_value,
+        re.I,
+    )
+    explicit_marker = "LOWKEY_SEMANTIC_INVARIANT_PASS:" + expected_test.strip()
+    return bool(passed_test or explicit_marker in text_value)
 
 
 
@@ -797,7 +796,11 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 semantic_output=(semantic_proc.stdout or "")+"\\n"+(semantic_proc.stderr or "")
                 semantic_check={
                     "argv":semantic_argv,"exit_code":semantic_proc.returncode,
-                    "verified":_semantic_execution_verified(semantic_proc.returncode,semantic_output),
+                    "verified":_semantic_execution_verified(
+                        semantic_proc.returncode, semantic_output,
+                        entry.get("semantic_check_test") or spec.get("semantic_check_test"),
+                    ),
+                    "expected_test":entry.get("semantic_check_test") or spec.get("semantic_check_test"),
                     "output_tail":semantic_output[-1600:],
                     "verification_rule":"requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
                 }
@@ -1085,7 +1088,11 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
             semantic_output = (semantic_proc.stdout or "") + "\\n" + (semantic_proc.stderr or "")
             semantic_check = {
                 "argv": semantic_argv, "exit_code": semantic_proc.returncode,
-                "verified": _semantic_execution_verified(semantic_proc.returncode, semantic_output),
+                "verified": _semantic_execution_verified(
+                    semantic_proc.returncode, semantic_output,
+                    entry.get("semantic_check_test") or spec.get("semantic_check_test"),
+                ),
+                "expected_test": entry.get("semantic_check_test") or spec.get("semantic_check_test"),
                 "output_tail": semantic_output[-1200:],
                 "verification_rule": "requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
             }
@@ -1827,6 +1834,7 @@ def reprove(args):
     p.add_argument("--support-file",action="append",default=[],
                    help="Additional project file imported by the harness/replay script; repeat for transitive helpers.")
     p.add_argument("--semantic-check-argv-json",help="Separate command whose passing assertion demonstrates the non-economic security invariant.")
+    p.add_argument("--semantic-test",help="Exact Foundry test name expected to emit [PASS] in the semantic check output.")
     p.add_argument("--family",default="unknown")
     p.add_argument("--non-economic",action="store_true")
     p.add_argument("--require-trace-storage",action="store_true")
@@ -1918,7 +1926,11 @@ def reprove(args):
         semantic_output=(semantic_proc.stdout or "")+"\\n"+(semantic_proc.stderr or "")
         semantic_check={
             "argv":semantic_argv,"exit_code":semantic_proc.returncode,
-            "verified":_semantic_execution_verified(semantic_proc.returncode,semantic_output),
+            "verified":_semantic_execution_verified(
+                semantic_proc.returncode, semantic_output,
+                ns.semantic_test,
+            ),
+            "expected_test":ns.semantic_test,
             "output_tail":semantic_output[-1600:],
             "verification_rule":"requires an explicit passing assertion marker or recognized test-runner PASS summary; exit code alone is insufficient",
         }
