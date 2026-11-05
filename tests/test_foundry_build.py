@@ -284,5 +284,33 @@ class FoundryBuildPlannerTests(unittest.TestCase):
             self.assertIn("foundry-ci.toml", plan["config_source"])
 
 
+    def test_target_scope_compiles_only_the_selected_lab_harness_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = ".audit/lab/LowkeyFixture.t.sol"
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "src"\ntest = "test"\nscript = "script"\n')
+            self.write(root, "src/Vault.sol", "contract Vault {}")
+            self.write(root, "test/UnrelatedLargeSuite.t.sol", "contract UnrelatedLargeSuite {}")
+            self.write(root, harness, "import \"../../src/Vault.sol\"; contract LowkeyFixtureTest {}")
+            with patch.object(foundry_build, "load_foundry_config", return_value=({
+                "src": "src", "test": "test", "script": "script",
+            }, "effective test config")), patch.object(foundry_build, "collect_resources", return_value={
+                "memory_total_bytes": 8 * 1024 ** 3,
+                "memory_available_bytes": 6 * 1024 ** 3,
+                "swap_total_bytes": 7 * 1024 ** 3,
+                "swap_used_bytes": 0,
+                "zram_used_bytes": 0,
+                "cpu_count": 8,
+                "memory_psi_some_avg10": 0.0,
+                "memory_psi_full_avg10": 0.0,
+            }):
+                plan = foundry_build.build_plan(root, scope="target", target=harness)
+
+            self.assertEqual(plan["scope_paths"], [harness])
+            self.assertEqual(plan["threads"], 1)
+            self.assertIn(harness, plan["forge_args"])
+            self.assertNotIn("test", plan["scope_paths"])
+
+
 if __name__ == "__main__":
     unittest.main()
