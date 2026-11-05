@@ -1369,11 +1369,8 @@ contract LowkeyBreakRepeat is Test {{
         if (!ok) return false;
         if (data.length == 0) return true;
         require(data.length == 32, "MALFORMED_APPROVE_RETURN");
-        uint256 returned;
-        assembly {{ returned := mload(add(data, 32)) }}
-        if (returned == 1) return true;
-        require(returned == 0, "MALFORMED_APPROVE_BOOL");
-        return false;
+        bool returned = abi.decode(data, (bool));
+        return returned;
     }}
 
     function _lowkeySafeApprove(address token, address spender, uint256 amount) internal {{
