@@ -540,7 +540,8 @@ def _capabilities(backend: str, stacks: list[str], languages: set[str]) -> dict[
 
 def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     requested = _safe_resolve(root)
-    if requested.is_file():
+    requested_file = requested.is_file()
+    if requested_file:
         requested = requested.parent
 
     root_package = _json_object(requested / "package.json")
@@ -561,7 +562,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         )
     )
     project_root = requested if explicit_workspace else canonical_project_root(requested)
-    scan_root = project_root
+    scan_root = requested if requested_file else project_root
     files = _source_files(scan_root)
     counts = _source_counts(files)
     stacks, language_names = _manifest_stack(project_root)
@@ -656,7 +657,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     if dependency_broken and coverage == "full":
         coverage = "partial"
 
-    scope_type = "single-file" if requested.is_file() else "workspace" if workspace else "repository"
+    scope_type = "single-file" if requested_file else "workspace" if workspace else "repository"
     if scope_type == "single-file" and coverage == "full":
         # A single file cannot establish repository-wide dependency/build/test coverage.
         coverage = "partial"
