@@ -158,8 +158,10 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
 
 def exercise(lk: str, root: Path, env: dict[str, str], contract: str, address: str, expected_markers: list[str]) -> None:
     run([lk, "target", contract, address], root, env)
-    output = run([lk, "break", "--family", "accounting", "--function", "withdraw", "--rounds", "1"], root, env, timeout=360)
     runs_dir = root / ".audit" / "break" / "runs"
+    if runs_dir.exists():
+        shutil.rmtree(runs_dir)
+    output = run([lk, "break", "--family", "accounting", "--function", "withdraw", "--rounds", "1"], root, env, timeout=360)
     reports = sorted(runs_dir.glob("*_campaign_*.json")) if runs_dir.is_dir() else []
     if not reports:
         raise AssertionError(f"lk break did not write campaign evidence under {runs_dir}\\n{output.stdout[-10000:]}")
