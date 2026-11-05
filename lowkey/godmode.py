@@ -1128,8 +1128,11 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         return result
 
     try:
+        target_deployment_block = int(identity_spec.get("deployment_block"))
+        if target_deployment_block > block_number:
+            raise ValueError("target_identity.deployment_block is after the pinned fork block.")
         target_deployment = _verify_first_code_block(
-            source, target, identity_spec.get("deployment_block"),
+            source, target, target_deployment_block,
             source_code_by_address.get(target),
         )
         target_source = _verify_sourcify_exact(chain_id, target)
@@ -1178,9 +1181,17 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
             ).lower()
             if implementation_code in {"0x", "0x0"}:
                 raise ValueError("EIP-1967 implementation address has no runtime code at the pinned fork block.")
+            implementation_deployment_block = int(proxy_spec.get("implementation_deployment_block"))
+            if implementation_deployment_block > block_number:
+                raise ValueError("Proxy implementation deployment block is after the pinned fork block.")
+            local_implementation_code = str(
+                rpc(fork_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+            ).lower()
+            if local_implementation_code != implementation_code:
+                raise ValueError("Proxy implementation bytecode differs between local fork and source archive.")
             implementation_deployment = _verify_first_code_block(
                 source, implementation,
-                proxy_spec.get("implementation_deployment_block"),
+                implementation_deployment_block,
                 implementation_code,
             )
             implementation_source = _verify_sourcify_exact(chain_id, implementation)

@@ -129,6 +129,15 @@ from the same isolated workspace. Each scenario provides its recorder artifact p
   "trace_backend": "forge-state-diff",
   "paired_forge_experiment": true,
   "target_authenticity": "forked_deployment",
+  "target_identity": {
+    "source_provider": "sourcify",
+    "deployment_block": 19000000,
+    "proxy": {
+      "type": "eip1967",
+      "implementation_address": "0x...",
+      "implementation_deployment_block": 18000000
+    }
+  },
   "family": "reentrancy",
   "expected_chain_id": 1,
   "expected_fork_block": 20000000,
@@ -178,11 +187,15 @@ schema-v1 artifacts must be recreated with lk control --freeze.
 The independent source RPC is used alongside the fork RPC to check chain ID,
 the fork parent hash, the pinned block header, code, balances and nonces for
 declared `source_addresses`, and trace-derived storage slots for those same
-accounts. Include the target and actual protocol dependencies (for example, a
-proxy implementation or oracle) in `source_addresses`; do not list test actors
-or helper contracts as deployed dependencies. A dependency that was not touched
-in the state-diff must not be claimed as source-verified. If the archive endpoint
-does not support the required state queries, Lowkey will leave authenticity
+accounts. For a `forked_deployment` claim, `target_identity.deployment_block`
+must identify the first block where runtime code exists (code is absent in the
+previous block and matches at the declared block). Lowkey separately queries
+Sourcify API v2 and requires exact runtime and creation matches for the target.
+For EIP-1967 proxies it reads the implementation slot at the pinned block, checks
+the declared implementation address if provided, and independently verifies
+the implementation's deployment block and exact Sourcify match. A non-zero
+EIP-1967 beacon slot is currently unsupported and blocks authenticity promotion.
+If archive or Sourcify identity checks are unavailable, Lowkey leaves authenticity
 unverified and will not promote the result to deployment proof.
 
 ## Deterministic Anvil re-prove
