@@ -143,6 +143,29 @@ contract Vault {
             self.assertEqual(result["exit_code"], 1)
             self.assertTrue(result["evidence_attached"])
             self.assertIn("did not revert", result["stdout"])
+    def test_forge_skip_result_is_not_reported_as_executed_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp))
+            signal = self._signal(root)
+            test_dir = root / "test"
+            test_dir.mkdir()
+            (test_dir / "Vault.t.sol").write_text(
+                "contract VaultTest { function test_guard() public {} }",
+                encoding="utf-8",
+            )
+            with patch("lowkey.signal_investigation.shutil.which", return_value="/usr/bin/forge"), \
+                 patch("lowkey.signal_investigation.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = "[SKIP] test_guard() (gas: 0)"
+                run.return_value.stderr = ""
+                result = signal_investigation.execute_inspected_test(
+                    signal["id"], "test/Vault.t.sol", "test_guard",
+                    project_root=root, audit_context=audit_context,
+                )
+            self.assertEqual(result["status"], "not_run")
+            self.assertEqual(result["exit_code"], 0)
+            self.assertTrue(result["evidence_attached"])
+
     def test_forge_zero_exit_without_exact_test_result_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp))
