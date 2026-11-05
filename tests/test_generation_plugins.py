@@ -27,6 +27,51 @@ class GenerationPluginTests(unittest.TestCase):
         self.assertFalse(adapter.supports({"language": "rust", "build_system": "cargo", "root": "/tmp"} )[0])
 
 
+    def test_explicit_foundry_config_supports_solidity_without_root_manifest(self):
+        import os
+
+        adapter = SolidityFoundryGenerationAdapter()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            config = root / ".audit" / "lowkey-ecosystem-foundry.toml"
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                '[profile.default]\\nsrc = "src"\\ntest = "test"\\n',
+                encoding="utf-8",
+            )
+            project = {
+                "root": str(root),
+                "language": "solidity",
+                "languages": ["solidity"],
+                "build_system": "generic",
+                "build_systems": ["generic"],
+            }
+            with patch.dict(os.environ, {"FOUNDRY_CONFIG": str(config)}):
+                supported, reason = adapter.supports(project)
+            self.assertTrue(supported, reason)
+            self.assertIn("active Foundry configuration", reason)
+            self.assertFalse((root / "foundry.toml").exists())
+
+    def test_explicit_foundry_config_must_exist(self):
+        import os
+
+        adapter = SolidityFoundryGenerationAdapter()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = {
+                "root": str(root),
+                "language": "solidity",
+                "languages": ["solidity"],
+                "build_system": "generic",
+                "build_systems": ["generic"],
+            }
+            with patch.dict(os.environ, {"FOUNDRY_CONFIG": str(root / ".audit" / "missing.toml")}):
+                supported, reason = adapter.supports(project)
+            self.assertFalse(supported)
+            self.assertIn("active Foundry config is missing", reason)
+
+
     def test_generation_help_documents_language_routing_and_namespaced_vyper_outputs(self):
         output = io.StringIO()
         with redirect_stdout(output):

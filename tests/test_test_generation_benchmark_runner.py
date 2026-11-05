@@ -93,6 +93,18 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             config.write_text('[profile.default]\nlibs = ["lib"]\n', encoding="utf-8")
             self.assertFalse(BENCHMARK._forge_std_available(root, config))
 
+    def test_foundry_node_modules_detection_reads_remapping_destinations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "foundry.toml"
+            config.write_text(
+                '[profile.default]\\n'
+                'libs = ["../../../../lib"]\\n'
+                'remappings = ["@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/"]\\n',
+                encoding="utf-8",
+            )
+            self.assertTrue(BENCHMARK._config_uses_node_modules(config))
+
     def test_foundry_node_modules_detection_reads_declared_library_roots(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

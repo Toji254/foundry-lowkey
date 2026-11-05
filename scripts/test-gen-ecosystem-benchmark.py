@@ -330,9 +330,18 @@ def _config_uses_node_modules(config_path: Path) -> bool:
         selected = profiles.get(active, {})
         default = profiles.get("default", {})
         libs = selected.get("libs", default.get("libs", config.get("libs", [])))
+        remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
+        allow_paths = selected.get("allow_paths", default.get("allow_paths", config.get("allow_paths", [])))
     except (OSError, ValueError, ImportError, AttributeError):
         return False
-    return isinstance(libs, list) and any("node_modules" in str(value) for value in libs)
+
+    values = [str(value) for value in (libs if isinstance(libs, list) else [])]
+    values.extend(str(value) for value in (allow_paths if isinstance(allow_paths, list) else []))
+    for remapping in remappings if isinstance(remappings, list) else []:
+        _prefix, separator, destination = str(remapping).partition("=")
+        if separator:
+            values.append(destination.strip())
+    return any("node_modules" in value.replace("\\\\", "/") for value in values)
 
 
 def _forge_std_available(project_root: Path, config_path: Path) -> bool:

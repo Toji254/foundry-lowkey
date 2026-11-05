@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -146,12 +147,27 @@ class SolidityFoundryGenerationAdapter:
             builds.add(str(project["build_system"]).lower())
         if "solidity" not in languages:
             return False, "no Solidity source detected"
-        if "foundry" not in builds:
+
+        root_value = project.get("root")
+        if not root_value:
+            return False, "project root is missing"
+        root = Path(str(root_value)).expanduser().resolve()
+
+        # Foundry accepts FOUNDRY_CONFIG as an explicit config selector. The
+        # ecosystem runner uses this for isolated configs when a Solidity
+        # repository has no native Foundry manifest; plugin routing must use
+        # the same authority as Forge and the source/test generator.
+        configured = os.environ.get("FOUNDRY_CONFIG")
+        config_path = Path(configured).expanduser() if configured else root / "foundry.toml"
+        if not config_path.is_absolute():
+            config_path = root / config_path
+        config_path = config_path.resolve()
+        if not config_path.is_file():
+            return False, "the active Foundry config is missing"
+        if "foundry" not in builds and not configured:
             return False, "Foundry project marker not detected"
-        root = project.get("root")
-        if not root or not (Path(str(root)).expanduser() / "foundry.toml").is_file():
-            return False, "foundry.toml is missing from the project root"
-        return True, "Solidity source and Foundry build configuration detected"
+
+        return True, "Solidity source and active Foundry configuration detected"
 
     def matches_request(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[bool, str]:
         contract = str(request.get("contract") or "").strip()
