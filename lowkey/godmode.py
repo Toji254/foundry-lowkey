@@ -1200,6 +1200,28 @@ def control(args):
         rows.get("control",{}).get("chain_id") is not None and
         str(rows["control"]["chain_id"]).lower()==str(rows.get("attack",{}).get("chain_id","")).lower()
     )
+
+    scenario_excluded_keys={
+        str(item.get("address","")).lower()+":"+str(item.get("slot","")).lower()
+        for item in (spec.get("scenario_parameters") or []) if isinstance(item,dict)
+    }
+    def _trace_slot_values(run_row):
+        return {
+            str(item.get("address","")).lower()+":"+str(item.get("slot","")).lower():
+            str(item.get("value","")).lower()
+            for item in ((run_row.get("storage_trace") or {}).get("slots") or [])
+        }
+    control_trace_slots=_trace_slot_values(rows.get("control",{}))
+    attack_trace_slots=_trace_slot_values(rows.get("attack",{}))
+    shared_trace_slot_keys=(set(control_trace_slots)&set(attack_trace_slots))-scenario_excluded_keys
+    trace_storage_mismatches=[
+        {"slot":key,"control_value":control_trace_slots[key],"attack_value":attack_trace_slots[key]}
+        for key in sorted(shared_trace_slot_keys)
+        if control_trace_slots[key]!=attack_trace_slots[key]
+    ]
+    trace_storage_control_only=sorted(set(control_trace_slots)-set(attack_trace_slots)-scenario_excluded_keys)
+    trace_storage_attack_only=sorted(set(attack_trace_slots)-set(control_trace_slots)-scenario_excluded_keys)
+    same_trace_storage_values=not trace_storage_mismatches
     same_block=bool(
         rows.get("control",{}).get("block_number") is not None and
         rows.get("control",{}).get("block_number")==rows.get("attack",{}).get("block_number")
@@ -1297,8 +1319,9 @@ def control(args):
         rows.get(name,{}).get("exit_code")==0 for name in execution_names
     )
     base_valid=(
-        same_entry and same_prestate and same_chain and same_block and same_fork_anchor and
-        trace_delta_verified and not scenario_errors and freeze_status.get("verified",False)
+        same_entry and same_prestate and same_trace_storage_values and same_chain and
+        same_block and same_fork_anchor and trace_delta_verified and
+        not scenario_errors and freeze_status.get("verified",False)
     )
     if backend=="anvil-calltracer":
         base_valid=base_valid and same_envelope
@@ -1323,7 +1346,9 @@ def control(args):
         if rows.get(name,{}).get("trace_error"):
             rejection_reasons.append(name+": "+rows[name]["trace_error"])
     if not same_entry: rejection_reasons.append("Control and attack do not share the same target entry call.")
-    if not same_prestate: rejection_reasons.append("Control and attack pre-state digests differ.")
+    if not same_prestate: rejection_reasons.append("Control and attack manifest-declared pre-state digests differ.")
+    if not same_trace_storage_values:
+        rejection_reasons.append("A storage slot read in both traces had different prestate values.")
     if not same_chain: rejection_reasons.append("Control and attack were executed on different chain IDs.")
     if not same_block: rejection_reasons.append("Control and attack used different block numbers.")
     if not same_fork_anchor: rejection_reasons.append("Control and attack used different fork parent hashes.")
@@ -1384,7 +1409,8 @@ def control(args):
 
     rejection_codes=[]
     if not same_entry: rejection_codes.append("mismatch")
-    if (not same_prestate or not same_chain or not same_block or not same_fork_anchor or
+    if (not same_prestate or not same_trace_storage_values or not same_chain or
+        not same_block or not same_fork_anchor or
         (backend=="anvil-calltracer" and not same_envelope) or
         (backend=="forge-state-diff" and not fork_pin_verified)):
         rejection_codes.append("mismatch")
@@ -1453,7 +1479,12 @@ def control(args):
         "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
         "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
-        "same_prestate_verified":same_prestate,"same_chain_verified":same_chain,
+        "same_prestate_verified":same_prestate,
+        "same_trace_storage_values_verified":same_trace_storage_values,
+        "trace_storage_shared_mismatches":trace_storage_mismatches,
+        "trace_storage_control_only":trace_storage_control_only,
+        "trace_storage_attack_only":trace_storage_attack_only,
+        "same_chain_verified":same_chain,
         "same_block_verified":same_block,"same_fork_anchor_verified":same_fork_anchor,
         "fork_pin_verified":fork_pin_verified,
         "trace_delta_verified":trace_delta_verified,"trace_checks":trace_checks,
