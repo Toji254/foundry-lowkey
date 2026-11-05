@@ -27,6 +27,13 @@ class ProofEvidenceTests(unittest.TestCase):
                                 authenticity_verified=True)
         self.assertEqual(result["status"], "FORK_OBSERVED")
 
+    def test_assumed_fuzz_inputs_are_not_real_funded_profit(self):
+        result = classify_proof(
+            "forked_deployment", "constrained_inputs", "profitable",
+            authenticity_verified=True,
+        )
+        self.assertEqual(result["status"], "FORK_OBSERVED")
+
     def test_human_confirmation_is_never_inferred(self):
         self.assertEqual(classify_proof("forked_deployment", "real_funded", "profitable",
                                         authenticity_verified=True)["status"], "PROFITABLE")
