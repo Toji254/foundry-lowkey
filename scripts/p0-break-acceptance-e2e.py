@@ -159,7 +159,15 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
     return address
 
 
-def exercise(lk: str, root: Path, env: dict[str, str], contract: str, address: str, expected_markers: list[str]) -> None:
+def exercise(
+    lk: str,
+    root: Path,
+    env: dict[str, str],
+    contract: str,
+    address: str,
+    expected_markers: list[str],
+    evidence_root: Path,
+) -> None:
     run([lk, "target", "reset"], root, env)
     run([lk, "target", contract, address], root, env)
     runs_dir = root / ".audit" / "break" / "runs"
@@ -184,7 +192,14 @@ def exercise(lk: str, root: Path, env: dict[str, str], contract: str, address: s
                 f"{contract} evidence missing {marker!r}.\n"
                 f"Raw tail:\n{tail}\nCLI output:\n{output.stdout[-10000:]}"
             )
-    print(f"PASS: {contract} reached OBSERVED through installed lk break; evidence: {report_path}")
+    scenario_evidence = evidence_root / contract
+    scenario_evidence.mkdir(parents=True, exist_ok=True)
+    for evidence_file in runs_dir.glob("*.json"):
+        shutil.copy2(evidence_file, scenario_evidence / evidence_file.name)
+    harness_archive = (result.get("detail") or {}).get("harness_archive")
+    if harness_archive and Path(harness_archive).is_file():
+        shutil.copy2(harness_archive, scenario_evidence / Path(harness_archive).name)
+    print(f"PASS: {contract} reached OBSERVED through installed lk break; evidence: {scenario_evidence}")
 
 
 def main() -> int:
@@ -199,6 +214,10 @@ def main() -> int:
 
     env = os.environ.copy()
     env["LOWKEY_RPC_URL"] = RPC
+    evidence_root = Path.cwd() / ".audit" / "p0-break-acceptance"
+    if evidence_root.exists():
+        shutil.rmtree(evidence_root)
+    evidence_root.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="lowkey-p0-break-e2e-") as temp:
             root = Path(temp).resolve()
@@ -231,7 +250,7 @@ def main() -> int:
 
             exercise(lk, root, env, "AddressArraySetupTarget", array_target, [
                 "SETUP_SUCCESS true",
-            ])
+            ], evidence_root)
             exercise(lk, root, env, "USDCVault", usdc_vault, [
                 "SETUP_SUCCESS true",
                 "ASSET_GETTER_DISCOVERED true",
@@ -240,7 +259,7 @@ def main() -> int:
                 "TOKEN_FUNDING_AMOUNT 1000000",
                 "TOKEN_APPROVAL_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
-            ])
+            ], evidence_root)
             exercise(lk, root, env, "USDTVault", usdt_vault, [
                 "SETUP_SUCCESS true",
                 "ASSET_GETTER_DISCOVERED true",
@@ -250,7 +269,7 @@ def main() -> int:
                 "TOKEN_APPROVAL_ATTEMPTED true",
                 "TOKEN_APPROVAL_RESET_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
-            ])
+            ], evidence_root)
         print("PASS: all three P0 end-to-end installed-lk acceptance cases reached OBSERVED.")
     finally:
         # Do not leave the CI runner's global target pointed at a temporary deployment.

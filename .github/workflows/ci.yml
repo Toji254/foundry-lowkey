@@ -1337,6 +1337,15 @@ jobs:
       - name: P0 installed-lk setup and token compatibility acceptance
         run: python3 scripts/p0-break-acceptance-e2e.py
 
+      - name: Upload P0 acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-break-acceptance-${{ github.run_number }}
+          path: .audit/p0-break-acceptance/
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-generation-ecosystem-smoke:
     runs-on: ubuntu-latest
     steps:
