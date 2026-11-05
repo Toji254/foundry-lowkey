@@ -1458,5 +1458,63 @@ class GodmodeTests(unittest.TestCase):
         self.assertIn("exact", rejected["reason"].lower())
 
 
+    def test_step_renderer_template_loads_and_every_declared_family_renders(self):
+        template = ROOT / "lowkey" / "templates" / "step_harness.sol.tmpl"
+        self.assertTrue(template.is_file())
+        for family in sorted(godmode.STEP_FAMILIES):
+            with self.subTest(family=family):
+                source = godmode.render_step_harness({
+                    "family": family,
+                    "target_address": "0x" + "1" * 40,
+                    "steps": [{
+                        "kind": "call",
+                        "selector": "0x12345678",
+                        "args": [{"type": "uint256", "value": 1}],
+                        "optional": True,
+                    }, {"kind": "assert"}],
+                })
+                self.assertIn(f"contract LowkeySteps_{family}", source)
+                self.assertNotIn("__LOWKEY_STEP_CODE__", source)
+
+    def test_step_renderer_materializes_static_arrays_and_freezes_call_expectations(self):
+        source = godmode.render_step_harness({
+            "family": "reentrancy",
+            "target_address": "0x" + "1" * 40,
+            "steps": [
+                {
+                    "kind": "expect",
+                    "target": "0x" + "1" * 40,
+                    "selector": "0x12345678",
+                    "expect": {"count": 2, "must_revert": True},
+                },
+                {
+                    "kind": "call",
+                    "target": "0x" + "1" * 40,
+                    "selector": "0x12345678",
+                    "args": [
+                        {"type": "address[]", "value": ["0x" + "2" * 40]},
+                        {"type": "uint8[2]", "value": [1, 2]},
+                    ],
+                },
+            ],
+        })
+        self.assertIn("address[] memory step1Arg0 = new address[](1);", source)
+        self.assertIn("uint8[2] memory step1Arg1;", source)
+        self.assertIn("vm.expectCall(address(0x" + "1" * 40 + "), step0Data, uint64(2));", source)
+        self.assertIn("STEP_1_EXPECTED_REVERT", source)
+
+    def test_step_renderer_refuses_protocol_specific_callbacks_with_defined_reason(self):
+        for kind in ("flash_borrow", "reenter"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(godmode.StepPlanError) as raised:
+                    godmode.render_step_harness({
+                        "family": "reentrancy",
+                        "target_address": "0x" + "1" * 40,
+                        "steps": [{"kind": kind}],
+                    })
+                self.assertEqual(raised.exception.reason_code, "backend_unsupported")
+
+
+
 if __name__ == "__main__":
     unittest.main()
