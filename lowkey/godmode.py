@@ -670,20 +670,21 @@ def _trace_control_run(root, url, name, entry, spec, env):
                                             "slot":scenario_slot,"observed_value":observed,
                                             "expected_value":expected_raw,"description":scenario.get("description"),
                                             "verified_before_transaction":True})
+            expected_receipt_status=str(entry.get("expected_receipt_status") or "0x1").lower()
+            if expected_receipt_status not in {"0x0","0x1","0","1"}:
+                raise ValueError(f"{name} expected_receipt_status must be 0x0 or 0x1.")
+            expected_receipt_status="0x1" if expected_receipt_status in {"0x1","1"} else "0x0"
             proc=run([str(x) for x in entry["argv"]],work,int(spec.get("timeout_seconds",300)),env=env)
             combined=(proc.stdout or "")+"\n"+(proc.stderr or "")
             hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",combined)
-            if proc.returncode!=0: raise RuntimeError(f"{name} command failed (exit {proc.returncode}): {combined[-1200:]}")
             if len(hashes)!=1: raise ValueError(f"{name} command must emit exactly one LOWKEY_TRACE_TX_HASH marker for the transaction under test.")
+            if proc.returncode!=0 and expected_receipt_status!="0x0":
+                raise RuntimeError(f"{name} command failed (exit {proc.returncode}): {combined[-1200:]}")
             tx_hash=hashes[0].lower()
             tx=rpc(url,"eth_getTransactionByHash",[tx_hash])
             receipt=rpc(url,"eth_getTransactionReceipt",[tx_hash])
             if not isinstance(tx,dict) or not isinstance(receipt,dict): raise ValueError(f"{name} transaction was not mined on the supplied Anvil node.")
             receipt_status=str(receipt.get("status") or "").lower()
-            expected_receipt_status=str(entry.get("expected_receipt_status") or "0x1").lower()
-            if expected_receipt_status not in {"0x0","0x1","0","1"}:
-                raise ValueError(f"{name} expected_receipt_status must be 0x0 or 0x1.")
-            expected_receipt_status="0x1" if expected_receipt_status in {"0x1","1"} else "0x0"
             if receipt_status not in {expected_receipt_status, "1" if expected_receipt_status=="0x1" else "0"}:
                 raise ValueError(
                     f"{name} receipt status {receipt_status} differs from expected {expected_receipt_status}."
@@ -780,6 +781,7 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 }
             return {
                 "exit_code":proc.returncode,
+                "execution_verified":True,
                 "metric":metric,
                 "metric_kind":"native_balance_delta_after_gas",
                 "metric_addresses":metric_addresses,
@@ -1075,7 +1077,8 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
         elif any(signal.get("kind") == "external_call_mock" for signal in fidelity.get("signals", [])):
             fidelity_label = "simulated_dependencies"
         return {
-            "backend": "forge-state-diff", "exit_code": proc.returncode, "metric": metric,
+            "backend": "forge-state-diff", "exit_code": proc.returncode,
+            "execution_verified": proc.returncode == 0, "metric": metric,
             "metric_kind": "forge_account_balance_delta_without_eoa_gas",
             "metric_addresses": metric_addresses, "gas_verified": False,
             "transaction_envelope_verified": False, "tx_hash": None,
@@ -1184,8 +1187,8 @@ def control(args):
                 rows[name]=_trace_control_run(root,url,name,entry,spec,env)
         except Exception as exc:
             rows[name]={
-                "exit_code":None,"metric":None,"trace_error":str(exc),
-                "argv":entry.get("argv"),"backend":backend,
+                "exit_code":None,"execution_verified":False,"metric":None,
+                "trace_error":str(exc),"argv":entry.get("argv"),"backend":backend,
             }
 
     control_metric=rows.get("control",{}).get("metric")
@@ -1327,7 +1330,7 @@ def control(args):
     if negative is not None:
         execution_names.append("negative_control")
     execution_attempted=all(
-        rows.get(name,{}).get("exit_code")==0 for name in execution_names
+        rows.get(name,{}).get("execution_verified") is True for name in execution_names
     )
     base_valid=(
         same_entry and same_prestate and same_trace_storage_values and same_chain and
