@@ -361,6 +361,78 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         )
         self.assertEqual(self.matches(root, model, "ROUND-001"), [])
 
+
+    def test_unimported_sibling_claim_helper_does_not_hide_replay_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                function claim() external {
+                    _consumeClaim();
+                    (bool ok,) = payable(msg.sender).call{value: 1}("");
+                    require(ok);
+                }
+            }
+            """,
+            ["claim"],
+        )
+        (root / "src" / "Unrelated.sol").write_text(
+            "contract Other { mapping(address => bool) claimed; "
+            "function _consumeClaim() internal { claimed[msg.sender] = true; } }",
+            encoding="utf-8",
+        )
+        matches = self.matches(root, model, "REPLAY-001")
+        self.assertEqual(len(matches), 1)
+
+    def test_inherited_claim_helper_consumption_suppresses_replay_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            abstract contract ClaimBase {
+                mapping(address => bool) claimed;
+                function _consumeClaim() internal {
+                    require(!claimed[msg.sender]);
+                    claimed[msg.sender] = true;
+                }
+            }
+            contract Vault is ClaimBase {
+                function claim() external {
+                    _consumeClaim();
+                    (bool ok,) = payable(msg.sender).call{value: 1}("");
+                    require(ok);
+                }
+            }
+            """,
+            ["claim"],
+        )
+        self.assertEqual(self.matches(root, model, "REPLAY-001"), [])
+
+    def test_unimported_sibling_zero_share_helper_does_not_hide_rounding_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                function claimDeposit(uint256 assets) external {
+                    uint256 shares = assets / 1000;
+                    _claimDeposit(assets, shares);
+                }
+                function _claimDeposit(uint256 assets, uint256 shares) internal {
+                    remaining[msg.sender] -= assets;
+                }
+                mapping(address => uint256) remaining;
+            }
+            """,
+            ["claimDeposit"],
+        )
+        (root / "src" / "Unrelated.sol").write_text(
+            "contract Other { error ZeroShares(); "
+            "function _claimDeposit(uint256 assets, uint256 shares) internal { "
+            "if (shares == 0) revert ZeroShares(); } }",
+            encoding="utf-8",
+        )
+        matches = self.matches(root, model, "ROUND-001")
+        self.assertEqual(len(matches), 1)
+
     def test_scan_project_deduplicates_repeated_alerts_but_keeps_distinct_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
