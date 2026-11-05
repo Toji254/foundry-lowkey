@@ -302,7 +302,9 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("tokenFundingAmount = 10 ** assetDecimals", body)
         self.assertIn("ASSET_DECIMALS_VERIFIED", body)
         self.assertIn("_lowkeySafeApprove(assetToken, TARGET", body)
-        self.assertIn("APPROVE_RESET_FAILED", body)
+        self.assertIn("return _lowkeyApproveCall(token, spender, amount);", body)
+        self.assertIn("TOKEN_APPROVAL_SUCCESS", body)
+        self.assertIn("ASSET_GETTER_DISCOVERED", body)
         self.assertIn("vm.prank(ATTACKER);", body)
         self.assertNotIn("function approve(address spender, uint256 amount) external returns (bool)", body)
         self.assertIn('abi.encodeWithSignature("deposit(uint256)", tokenFundingAmount)', body)
@@ -994,6 +996,51 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("IERC20Lowkey(assetToken).balanceOf(ATTACKER)", body)
         self.assertIn('console2.log("TOTAL_ATTACKER_TOKEN_GAIN"', body)
         self.assertIn("assetReadOk && totalTokenGain > entitlementBefore", body)
+
+    def test_repeat_parser_reason_codes_asset_and_optional_return_approval_failures(self):
+        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
+
+        asset_failed = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="accounting",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY accounting\\n"
+                "SETUP_SUCCESS true\\n"
+                "FIRST_SUCCESS true\\n"
+                "SECOND_SUCCESS false\\n"
+                "ASSET_GETTER_DISCOVERED true\\n"
+                "ASSET_TRACKING_AVAILABLE false\\n"
+                "LOWKEY_BREAK false\\n"
+            ),
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(asset_failed.status, "BLOCKED")
+        self.assertEqual(asset_failed.detail["reason_code"], "asset_getter_unavailable")
+
+        approval_failed = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="accounting",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY accounting\\n"
+                "SETUP_SUCCESS true\\n"
+                "FIRST_SUCCESS true\\n"
+                "SECOND_SUCCESS false\\n"
+                "ASSET_GETTER_DISCOVERED true\\n"
+                "ASSET_TRACKING_AVAILABLE true\\n"
+                "TOKEN_APPROVAL_ATTEMPTED true\\n"
+                "TOKEN_APPROVAL_SUCCESS false\\n"
+                "LOWKEY_BREAK false\\n"
+            ),
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(approval_failed.status, "BLOCKED")
+        self.assertEqual(approval_failed.detail["reason_code"], "token_approval_failed")
 
     def test_result_parser_marks_invalid_setup_as_lab_issue(self):
         target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)

@@ -1294,6 +1294,8 @@ def _render_repeat_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
+        bool tokenApprovalAttempted = false;
+        bool tokenApprovalSuccess = false;
         uint256 attackerTokenBefore = 0;
         uint256 attackerTokenMid = 0;
         uint256 attackerTokenAfter = 0;
@@ -1309,6 +1311,8 @@ def _render_repeat_test(
         bool assetDecimalsVerified = false;
         uint256 assetDecimals = 0;
         uint256 tokenFundingAmount = 1;
+        bool tokenApprovalAttempted = false;
+        bool tokenApprovalSuccess = false;
         {{
             (bool ok, bytes memory data) = TARGET.staticcall(
                 abi.encodeWithSignature("{asset_signature}")
@@ -1338,7 +1342,8 @@ def _render_repeat_test(
                 }}
             }}
             deal(assetToken, ATTACKER, tokenFundingAmount);
-            _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
+            tokenApprovalAttempted = true;
+            tokenApprovalSuccess = _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
         }}
 """
         asset_baseline = """
@@ -1400,10 +1405,10 @@ contract LowkeyBreakRepeat is Test {{
         return returned;
     }}
 
-    function _lowkeySafeApprove(address token, address spender, uint256 amount) internal {{
-        if (_lowkeyApproveCall(token, spender, amount)) return;
-        require(_lowkeyApproveCall(token, spender, 0), "APPROVE_RESET_FAILED");
-        require(_lowkeyApproveCall(token, spender, amount), "APPROVE_RETRY_FAILED");
+    function _lowkeySafeApprove(address token, address spender, uint256 amount) internal returns (bool) {{
+        if (_lowkeyApproveCall(token, spender, amount)) return true;
+        if (!_lowkeyApproveCall(token, spender, 0)) return false;
+        return _lowkeyApproveCall(token, spender, amount);
     }}
 
     function test_break_repeat() public {{
@@ -1458,7 +1463,10 @@ contract LowkeyBreakRepeat is Test {{
         console2.logBytes(secondReturndata);
         console2.log("TOTAL_ATTACKER_GAIN", totalGain);
         console2.log("TOTAL_TARGET_OUTFLOW", totalTargetOutflow);
+        console2.log("ASSET_GETTER_DISCOVERED", {str(bool(asset_signature)).lower()});
         console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
+        console2.log("TOKEN_APPROVAL_ATTEMPTED", tokenApprovalAttempted);
+        console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
@@ -2297,22 +2305,8 @@ def _result_from_output(
                 f"First {function_name} attempt succeeded; the repeat attempt was rejected. "
                 f"No repeat break was demonstrated. {reason}"
             )
-    elif structured and family == "reentrancy":
-        setup_discovered = _read_telemetry_bool(text_output, "SETUP_FUNCTION_DISCOVERED")
-        setup_success = _read_telemetry_bool(text_output, "TARGET_SETUP_SUCCESS")
-        setup_len = _read_telemetry_uint(text_output, "TARGET_SETUP_RETURNDATA_LENGTH") or 0
-        if setup_discovered is True and setup_success is False:
-            status = "LAB_ISSUE"
-            reason_code = "setup_call_reverted"
-            setup_revert = _decode_revert_data(
-                host, config, target,
-                _extract_console_bytes(text_output, "TARGET_SETUP_RETURNDATA_LENGTH"),
-            )
-            summary = (
-                "Target rejected the generated setup call before reentrancy could be evaluated. "
-                + (setup_revert or ("No revert data was returned." if not setup_len else f"Revert data length: {setup_len} bytes."))
-            )
-        else:
+
+        if status != "LAB_ISSUE":
             asset_getter_discovered = _read_telemetry_bool(text_output, "ASSET_GETTER_DISCOVERED")
             asset_tracking_available = _read_telemetry_bool(text_output, "ASSET_TRACKING_AVAILABLE")
             approval_attempted = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_ATTEMPTED")
@@ -2325,6 +2319,33 @@ def _result_from_output(
                 status = "BLOCKED"
                 reason_code = "token_approval_failed"
                 summary = "The token approval attempt failed, including the optional-return/reset-and-retry path; token-backed setup was not evaluated."
+    elif structured and family == "reentrancy":
+        setup_discovered = _read_telemetry_bool(text_output, "SETUP_FUNCTION_DISCOVERED")
+        setup_success = _read_telemetry_bool(text_output, "TARGET_SETUP_SUCCESS")
+        setup_len = _read_telemetry_uint(text_output, "TARGET_SETUP_RETURNDATA_LENGTH") or 0
+        asset_getter_discovered = _read_telemetry_bool(text_output, "ASSET_GETTER_DISCOVERED")
+        asset_tracking_available = _read_telemetry_bool(text_output, "ASSET_TRACKING_AVAILABLE")
+        approval_attempted = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_ATTEMPTED")
+        approval_success = _read_telemetry_bool(text_output, "TOKEN_APPROVAL_SUCCESS")
+        if asset_getter_discovered is True and asset_tracking_available is False:
+            status = "BLOCKED"
+            reason_code = "asset_getter_unavailable"
+            summary = "The discovered asset getter did not return a usable deployed token contract; token-backed setup was not evaluated."
+        elif approval_attempted is True and approval_success is False:
+            status = "BLOCKED"
+            reason_code = "token_approval_failed"
+            summary = "The token approval attempt failed, including the optional-return/reset-and-retry path; token-backed setup was not evaluated."
+        elif setup_discovered is True and setup_success is False:
+            status = "LAB_ISSUE"
+            reason_code = "setup_call_reverted"
+            setup_revert = _decode_revert_data(
+                host, config, target,
+                _extract_console_bytes(text_output, "TARGET_SETUP_RETURNDATA_LENGTH"),
+            )
+            summary = (
+                "Target rejected the generated setup call before reentrancy could be evaluated. "
+                + (setup_revert or ("No revert data was returned." if not setup_len else f"Revert data length: {setup_len} bytes."))
+            )
     elif structured and target_rejected and not reentry_reached:
         summary = (
             "Target rejected the attack before the callback boundary. "
