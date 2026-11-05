@@ -378,7 +378,11 @@ def _documented_permissionless(source: str, line: int) -> bool:
     ))
 
 
-def _state_consumed_before_payout(body: str) -> bool:
+def _state_consumed_before_payout(
+    body: str,
+    root: Path | None = None,
+    seen: set[str] | None = None,
+) -> bool:
     payout = re.search(
         r"\.call\s*\{|\.transfer\s*\(|\.send\s*\(|\.safeTransfer(?:From)?\s*\(|"
         r"\.safeTransferNative\s*\(|_safeTransfer(?:ETH|Native)?\s*\(",
@@ -387,10 +391,12 @@ def _state_consumed_before_payout(body: str) -> bool:
     )
     payout_position = payout.start() if payout else len(body) + 1
     consumption_patterns = (
-        r"\b(?:claimed|withdrawn|used|spent|redeemed|nonce|currentStatus|currentstatus|status)"
+        r"\b(?:claimed|withdrawn|used|spent|redeemed|nonce)"
         r"[A-Za-z0-9_]*\s*(?:\[[^\]]+\])?\s*(?:=|\+=|-=|\+\+|--)",
         r"\b(?:remaining|entitled|credit|claimable|available)"
         r"[A-Za-z0-9_]*\s*(?:\[[^\]]+\])?\s*(?:-=|--|=\s*0\b)",
+        r"\b(?:currentStatus|currentstatus|status)\w*\s*=\s*"
+        r"(?:Status\s*\.\s*)?(?:released|claimed|settled|closed|finalized|completed)\b",
     )
     for pattern in consumption_patterns:
         for match in re.finditer(pattern, body, re.I):
@@ -404,18 +410,22 @@ def _state_consumed_before_payout(body: str) -> bool:
         re.I,
     ):
         return True
+    visited = seen or set()
     helper_names = re.findall(
         r"\b(_(?:consume|markClaim|use|clear|decrement|settleEntitlement|claim)[A-Za-z0-9_]*)\s*\(",
         body[:payout_position],
     )
     if helper_names:
-        for _path, source in _context_source_files(Path.cwd()):
+        for _path, source in _context_source_files(root or Path.cwd()):
             for helper in helper_names:
+                if helper in visited:
+                    continue
                 helper_body = _named_block(source, helper)
-                if helper_body and _state_consumed_before_payout(helper_body):
+                if helper_body and _state_consumed_before_payout(
+                    helper_body, root or Path.cwd(), visited | {helper}
+                ):
                     return True
     return False
-
 
 def _zero_output_guard(root: Path, body: str) -> bool:
     guard = re.compile(
@@ -529,7 +539,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             has_state_write = bool(re.search(r"\b(claimed|claimedAmount|withdrawn|used|spent|redeemed|nonce|balance|balances|entitled|remaining)\w*\s*\[?[^;=]*\]?\s*(?:[-+]?=|\+\+|--)", body))
             has_native_payout = bool(re.search(r"\.call\s*\{\s*value\s*:|\.transfer\s*\(|\.send\s*\(", body))
             if has_user_key or has_state_write or has_native_payout:
-                if not _state_consumed_before_payout(body):
+                if not _state_consumed_before_payout(body, root):
                     evidence = [
                         "This function looks like an economic claim/withdraw/redeem path.",
                         "Entitlement consumption or a terminal-state guard was not found before the payout in the inspected function/helper context.",
