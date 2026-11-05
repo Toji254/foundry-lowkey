@@ -63,66 +63,75 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         vm.startStateDiffRecording();
     }
 
+    function _serializeStorageAccess(Vm.StorageAccess memory access)
+        private
+        pure
+        returns (string memory json)
+    {
+        json = "{";
+        json = string.concat(json, '"account":', _quoted(_hex(abi.encodePacked(access.account))));
+        json = string.concat(json, ',"slot":', _quoted(_hex(abi.encodePacked(access.slot))));
+        json = string.concat(json, ',"is_write":', _boolean(access.isWrite));
+        json = string.concat(json, ',"previous_value":', _quoted(_hex(abi.encodePacked(access.previousValue))));
+        json = string.concat(json, ',"new_value":', _quoted(_hex(abi.encodePacked(access.newValue))));
+        json = string.concat(json, ',"reverted":', _boolean(access.reverted), "}");
+    }
+
+    function _serializeStorageAccesses(Vm.StorageAccess[] memory accesses)
+        private
+        pure
+        returns (string memory json)
+    {
+        json = "[";
+        for (uint256 i; i < accesses.length; ++i) {
+            if (i != 0) json = string.concat(json, ",");
+            json = string.concat(json, _serializeStorageAccess(accesses[i]));
+        }
+        json = string.concat(json, "]");
+    }
+
+    function _serializeAccountAccess(Vm.AccountAccess memory access)
+        private
+        pure
+        returns (string memory json)
+    {
+        json = "{";
+        json = string.concat(json, '"kind":', _uintString(uint256(access.kind)));
+        json = string.concat(json, ',"account":', _quoted(_hex(abi.encodePacked(access.account))));
+        json = string.concat(json, ',"accessor":', _quoted(_hex(abi.encodePacked(access.accessor))));
+        json = string.concat(json, ',"initialized":', _boolean(access.initialized));
+        json = string.concat(json, ',"old_balance":', _uintString(access.oldBalance));
+        json = string.concat(json, ',"new_balance":', _uintString(access.newBalance));
+        json = string.concat(json, ',"deployed_code":', _quoted(_hex(access.deployedCode)));
+        json = string.concat(json, ',"value":', _uintString(access.value));
+        json = string.concat(json, ',"data":', _quoted(_hex(access.data)));
+        json = string.concat(json, ',"depth":', _uintString(access.depth));
+        json = string.concat(json, ',"old_nonce":', _uintString(access.oldNonce));
+        json = string.concat(json, ',"new_nonce":', _uintString(access.newNonce));
+        json = string.concat(json, ',"code_hash":', _quoted(_hex(abi.encodePacked(access.account.codehash))));
+        json = string.concat(json, ',"chain_id":', _uintString(access.chainInfo.chainId));
+        json = string.concat(json, ',"reverted":', _boolean(access.reverted));
+        json = string.concat(json, ',"storage_accesses":', _serializeStorageAccesses(access.storageAccesses));
+        json = string.concat(json, "}");
+    }
+
     function _lowkeyWriteTrace(string memory outputPath) internal {
         address target = _lowkeyTarget;
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
         string memory accessesJson = "[";
-
         for (uint256 i; i < accesses.length; ++i) {
-            Vm.AccountAccess memory access = accesses[i];
-            string memory storageJson = "[";
-
-            for (uint256 j; j < access.storageAccesses.length; ++j) {
-                Vm.StorageAccess memory storageAccess = access.storageAccesses[j];
-                string memory storageObject = string.concat(
-                    '{"account":', _quoted(_hex(abi.encodePacked(storageAccess.account))),
-                    ',"slot":', _quoted(_hex(abi.encodePacked(storageAccess.slot))),
-                    ',"is_write":', _boolean(storageAccess.isWrite),
-                    ',"previous_value":', _quoted(_hex(abi.encodePacked(storageAccess.previousValue))),
-                    ',"new_value":', _quoted(_hex(abi.encodePacked(storageAccess.newValue))),
-                    ',"reverted":', _boolean(storageAccess.reverted),
-                    '}'
-                );
-                if (j != 0) storageJson = string.concat(storageJson, ",");
-                storageJson = string.concat(storageJson, storageObject);
-            }
-            storageJson = string.concat(storageJson, "]");
-
-            string memory accessObject = string.concat(
-                '{"kind":', _uintString(uint256(access.kind)),
-                ',"account":', _quoted(_hex(abi.encodePacked(access.account))),
-                ',"accessor":', _quoted(_hex(abi.encodePacked(access.accessor))),
-                ',"initialized":', _boolean(access.initialized),
-                ',"old_balance":', _uintString(access.oldBalance),
-                ',"new_balance":', _uintString(access.newBalance),
-                ',"deployed_code":', _quoted(_hex(access.deployedCode)),
-                ',"value":', _uintString(access.value),
-                ',"data":', _quoted(_hex(access.data)),
-                ',"depth":', _uintString(access.depth),
-                ',"old_nonce":', _uintString(access.oldNonce),
-                ',"new_nonce":', _uintString(access.newNonce),
-                ',"code_hash":', _quoted(_hex(abi.encodePacked(access.account.codehash))),
-                ',"chain_id":', _uintString(access.chainInfo.chainId),
-                ',"reverted":', _boolean(access.reverted),
-                ',"storage_accesses":', storageJson,
-                '}'
-            );
             if (i != 0) accessesJson = string.concat(accessesJson, ",");
-            accessesJson = string.concat(accessesJson, accessObject);
+            accessesJson = string.concat(accessesJson, _serializeAccountAccess(accesses[i]));
         }
         accessesJson = string.concat(accessesJson, "]");
 
-        string memory finalJson = string.concat(
-            '{"backend":"forge-state-diff"',
-            ',"schema_version":1',
-            ',"chain_id":', _uintString(_lowkeyChainId),
-            ',"block_number":', _uintString(_lowkeyBlockNumber),
-            ',"target_address":', _quoted(_hex(abi.encodePacked(target))),
-            ',"target_code_hash":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))),
-            ',"fork_parent_hash":', _quoted(_hex(abi.encodePacked(_lowkeyParentHash))),
-            ',"accesses":', accessesJson,
-            '}'
-        );
+        string memory finalJson = '{"backend":"forge-state-diff","schema_version":1';
+        finalJson = string.concat(finalJson, ',"chain_id":', _uintString(_lowkeyChainId));
+        finalJson = string.concat(finalJson, ',"block_number":', _uintString(_lowkeyBlockNumber));
+        finalJson = string.concat(finalJson, ',"target_address":', _quoted(_hex(abi.encodePacked(target))));
+        finalJson = string.concat(finalJson, ',"target_code_hash":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))));
+        finalJson = string.concat(finalJson, ',"fork_parent_hash":', _quoted(_hex(abi.encodePacked(_lowkeyParentHash))));
+        finalJson = string.concat(finalJson, ',"accesses":', accessesJson, "}");
 
         vm.createDir(".audit/godmode", true);
         vm.writeJson(finalJson, outputPath);
