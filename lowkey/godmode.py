@@ -1030,6 +1030,7 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         result["reason"] = "Declared protocol source address(es) were not touched in the state diff: " + ", ".join(missing)
         return result
 
+    source_code_by_address = {}
     for address in protocol_addresses:
         try:
             local_code = str(rpc(fork_url, "eth_getCode", [address, hex(block_number)]) or "0x").lower()
@@ -1044,6 +1045,7 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         if local_code != source_code:
             result["reason"] = "Protocol bytecode differs between fork and archive at " + address + "."
             return result
+        source_code_by_address[address] = source_code
         if local_balance != source_balance or local_nonce != source_nonce:
             result["reason"] = "Protocol account balance or nonce differs at the pinned fork block: " + address
             return result
@@ -1098,7 +1100,7 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
             })
 
     result["unverified_trace_addresses"] = sorted(set(trace_addresses) - set(protocol_addresses))
-    result["verified"] = True
+    result["archive_state_verified"] = True
     result["source_chain_id"] = source_chain
     result["fork_chain_id"] = local_chain
     result["fork_block"] = block_number
@@ -1107,8 +1109,101 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
     result["protocol_addresses_checked"] = protocol_addresses
     result["trace_addresses_observed"] = trace_addresses
     result["scope_note"] = (
-        "Source verification covers only declared source_addresses and storage slots observed for those accounts. "
-        "Other trace-touched accounts (including local test actors) are listed but not treated as deployed dependencies."
+        "Archive verification covers the pinned header, declared source addresses and observed storage slots. "
+        "This is separate from source identity verification; other trace-touched accounts are not treated as deployed dependencies."
+    )
+
+    if str(spec.get("target_authenticity") or "unknown").lower() != "forked_deployment":
+        result["verified"] = False
+        result["identity_verified"] = False
+        result["reason"] = "Archive state is consistent, but the manifest does not request forked-deployment identity."
+        return result
+
+    identity_spec = spec.get("target_identity")
+    if not isinstance(identity_spec, dict):
+        result["reason"] = "forked_deployment requires target_identity with a deployment block and independent source verification."
+        return result
+    if identity_spec.get("source_provider", "sourcify") != "sourcify":
+        result["reason"] = "Only source_provider='sourcify' is currently supported for independent contract identity."
+        return result
+
+    try:
+        target_deployment = _verify_first_code_block(
+            source, target, identity_spec.get("deployment_block"),
+            source_code_by_address.get(target),
+        )
+        target_source = _verify_sourcify_exact(chain_id, target)
+    except Exception as exc:
+        result["reason"] = "Target source identity verification failed: " + str(exc)[:500]
+        return result
+
+    identity = {
+        "provider": "sourcify-v2",
+        "target": {
+            "address": target,
+            **target_deployment,
+            **target_source,
+        },
+        "proxy": None,
+    }
+
+    try:
+        implementation_slot = EIP1967["implementation"]
+        beacon_slot = EIP1967["beacon"]
+        implementation_word = str(rpc(
+            source, "eth_getStorageAt", [target, implementation_slot, hex(block_number)]
+        ) or "0x" + "0" * 64).lower()
+        beacon_word = str(rpc(
+            source, "eth_getStorageAt", [target, beacon_slot, hex(block_number)]
+        ) or "0x" + "0" * 64).lower()
+        implementation_int = int(implementation_word, 16)
+        beacon_int = int(beacon_word, 16)
+        if beacon_int:
+            result["reason"] = (
+                "Target has a non-zero EIP-1967 beacon slot. Beacon-proxy implementation resolution "
+                "is not supported yet; refusing to infer implementation identity."
+            )
+            result["identity"] = identity
+            return result
+        if implementation_int:
+            implementation = "0x" + implementation_word[-40:]
+            proxy_spec = identity_spec.get("proxy") or {}
+            if proxy_spec and proxy_spec.get("type") != "eip1967":
+                raise ValueError("Resolved EIP-1967 implementation slot conflicts with target_identity.proxy.type.")
+            declared_implementation = proxy_spec.get("implementation_address")
+            if declared_implementation and addr(declared_implementation) != implementation:
+                raise ValueError("EIP-1967 implementation slot does not match target_identity.proxy.implementation_address.")
+            implementation_code = str(
+                rpc(source, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+            ).lower()
+            if implementation_code in {"0x", "0x0"}:
+                raise ValueError("EIP-1967 implementation address has no runtime code at the pinned fork block.")
+            implementation_deployment = _verify_first_code_block(
+                source, implementation,
+                proxy_spec.get("implementation_deployment_block"),
+                implementation_code,
+            )
+            implementation_source = _verify_sourcify_exact(chain_id, implementation)
+            identity["proxy"] = {
+                "type": "eip1967",
+                "implementation_address": implementation,
+                **implementation_deployment,
+                **implementation_source,
+                "implementation_slot": implementation_slot,
+            }
+        elif identity_spec.get("proxy"):
+            raise ValueError("Manifest declares a proxy but the EIP-1967 implementation slot is zero at the pinned block.")
+    except Exception as exc:
+        result["reason"] = "Proxy/implementation identity verification failed: " + str(exc)[:500]
+        result["identity"] = identity
+        return result
+
+    result["identity"] = identity
+    result["identity_verified"] = True
+    result["verified"] = True
+    result["identity_method"] = (
+        "Sourcify v2 exact runtime+creation match, archive first-code-present deployment block, "
+        "and EIP-1967 implementation resolution where applicable"
     )
     return result
 
@@ -1653,10 +1748,13 @@ def control(args):
     else:
         # Forge has no signed transaction envelope or EOA receipt gas. Require a
         # block-pinned, independently verified target before calling it fork evidence.
-        base_valid=base_valid and fork_pin_verified and all(
-            rows.get(name,{}).get("target_authenticity_verified",False)
-            for name in ("control","attack")
-        )
+        identity_required = str(spec.get("target_authenticity") or "unknown").lower() == "forked_deployment"
+        base_valid = base_valid and fork_pin_verified
+        if identity_required:
+            base_valid = base_valid and all(
+                rows.get(name,{}).get("target_authenticity_verified",False)
+                for name in ("control","attack")
+            )
 
     if non_economic:
         passed=base_valid and economics["accepted"] and semantic_invariant_verified
