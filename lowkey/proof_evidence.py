@@ -262,6 +262,7 @@ def _freeze_core(root, manifest_path, spec):
             "source_addresses": spec.get("source_addresses") or [],
             "expected_chain_id": spec.get("expected_chain_id"),
             "expected_fork_block": spec.get("expected_fork_block"),
+            "target_identity": spec.get("target_identity") or {},
             "require_trace_storage": bool(spec.get("require_trace_storage", False)),
             "evidence_requirements": spec.get("evidence_requirements") or {},
             "metric_addresses": spec.get("metric_addresses") or [],

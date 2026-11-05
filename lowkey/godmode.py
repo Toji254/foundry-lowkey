@@ -883,6 +883,74 @@ def _trace_control_run(root, url, name, entry, spec, env):
 
 
 
+
+def _sourcify_contract_identity(chain_id, address):
+    """Fetch independent exact-match source metadata from the current Sourcify v2 API."""
+    chain_id = int(chain_id)
+    address = addr(address)
+    endpoint = (
+        "https://sourcify.dev/server/v2/contract/"
+        + str(chain_id) + "/" + address + "?fields=all"
+    )
+    request = Request(
+        endpoint,
+        headers={"Accept": "application/json", "User-Agent": "Lowkey-Security-Research/1.0"},
+    )
+    with urlopen(request, timeout=12) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Sourcify returned a non-object contract response.")
+    return payload
+
+
+def _verify_sourcify_exact(chain_id, address):
+    payload = _sourcify_contract_identity(chain_id, address)
+    if str(payload.get("chainId")) != str(int(chain_id)):
+        raise ValueError("Sourcify response chainId does not match the selected chain.")
+    if str(payload.get("address") or "").lower() != addr(address):
+        raise ValueError("Sourcify response address does not match the requested contract.")
+    fields = {
+        "match": payload.get("match"),
+        "runtimeMatch": payload.get("runtimeMatch"),
+        "creationMatch": payload.get("creationMatch"),
+    }
+    missing = [name for name, value in fields.items() if value != "exact_match"]
+    if missing:
+        raise ValueError("Sourcify did not return exact runtime and creation matches: " + ", ".join(missing))
+    return {
+        "provider": "sourcify-v2",
+        "match": fields["match"],
+        "runtime_match": fields["runtimeMatch"],
+        "creation_match": fields["creationMatch"],
+        "verified_at": payload.get("verifiedAt"),
+        "match_id": payload.get("matchId"),
+    }
+
+
+def _verify_first_code_block(source_url, address, deployment_block, expected_code):
+    try:
+        deployment_block = int(deployment_block)
+    except (TypeError, ValueError):
+        raise ValueError("deployment_block must be a positive integer.")
+    if deployment_block < 1:
+        raise ValueError("deployment_block must be a positive integer.")
+    before = str(rpc(source_url, "eth_getCode", [address, hex(deployment_block - 1)]) or "0x").lower()
+    at = str(rpc(source_url, "eth_getCode", [address, hex(deployment_block)]) or "0x").lower()
+    expected_code = str(expected_code or "0x").lower()
+    if before not in {"0x", "0x0"}:
+        raise ValueError("Contract code already existed before the declared deployment_block.")
+    if at in {"0x", "0x0"}:
+        raise ValueError("No contract code exists at the declared deployment_block.")
+    if at != expected_code:
+        raise ValueError("Runtime bytecode at deployment_block does not match the pinned target bytecode.")
+    return {
+        "deployment_block": deployment_block,
+        "code_absent_before": True,
+        "code_present_at": True,
+        "runtime_code_matches_pinned_block": True,
+    }
+
+
 def _forge_source_verification(source_url, fork_url, normalized, spec):
     result = {
         "verified": False,
