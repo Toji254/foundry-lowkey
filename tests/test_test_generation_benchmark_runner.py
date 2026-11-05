@@ -73,6 +73,26 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
                 ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
             )
 
+    def test_forge_std_detection_accepts_custom_project_remapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            custom = root / "test" / "utils" / "forge-std" / "src"
+            custom.mkdir(parents=True)
+            (custom / "Test.sol").write_text("contract Test {}", encoding="utf-8")
+            config = root / "foundry.toml"
+            config.write_text(
+                '[profile.default]\nremappings = ["forge-std=test/utils/forge-std/"]\n',
+                encoding="utf-8",
+            )
+            self.assertTrue(BENCHMARK._forge_std_available(root, config))
+
+    def test_forge_std_detection_does_not_accept_missing_harness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "foundry.toml"
+            config.write_text('[profile.default]\nlibs = ["lib"]\n', encoding="utf-8")
+            self.assertFalse(BENCHMARK._forge_std_available(root, config))
+
     def test_foundry_node_modules_detection_reads_declared_library_roots(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -335,6 +335,56 @@ def _config_uses_node_modules(config_path: Path) -> bool:
     return isinstance(libs, list) and any("node_modules" in str(value) for value in libs)
 
 
+def _forge_std_available(project_root: Path, config_path: Path) -> bool:
+    """Check explicit remappings and Foundry library roots for forge-std/Test.sol."""
+    try:
+        import tomllib
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        profiles = config.get("profile", {})
+        active = os.environ.get("FOUNDRY_PROFILE", "default")
+        selected = profiles.get(active, {})
+        default = profiles.get("default", {})
+        libs = selected.get("libs", default.get("libs", config.get("libs", ["lib"])))
+        remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
+    except (OSError, ValueError, ImportError, AttributeError):
+        libs, remappings = ["lib"], []
+    candidates: list[Path] = []
+    for remapping in remappings if isinstance(remappings, list) else []:
+        value = str(remapping).split("=", 1)
+        if len(value) == 2 and value[0].rstrip("/") in {"forge-std", "forge-std/"}:
+            target = Path(value[1])
+            candidates.append(target if target.is_absolute() else project_root / target)
+    for library in libs if isinstance(libs, list) else ["lib"]:
+        base = Path(str(library)).expanduser()
+        candidates.append(base if base.is_absolute() else project_root / base)
+    candidates.extend([project_root / "lib", project_root / "test" / "utils" / "forge-std"])
+    return any((candidate / "forge-std" / "src" / "Test.sol").is_file()
+               or (candidate / "src" / "Test.sol").is_file()
+               for candidate in candidates)
+
+
+def _ensure_forge_std(
+    project_root: Path,
+    config_path: Path,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Install the standard Forge test harness only when the project does not provide it."""
+    if _forge_std_available(project_root, config_path):
+        return {"status": "already-available"}
+    result = run(
+        ["forge", "install", "foundry-rs/forge-std", "--no-commit"],
+        cwd=project_root,
+        timeout=900,
+        env=env,
+    )
+    available = _forge_std_available(project_root, config_path)
+    return {
+        "status": "installed" if result.get("exit_code") == 0 and available else "unavailable",
+        "install_command": result,
+        "available_after_install": available,
+    }
+
+
 def _report_accounts_for_every_type(report: dict[str, Any] | None) -> bool:
     """A complete report may explain evidence gaps, but cannot omit categories."""
     if not isinstance(report, dict):
@@ -556,6 +606,10 @@ def main() -> int:
             for package_root, target_group in grouped.items():
                 config_path, synthetic_config = configs[package_root]
                 forge_env = {"FOUNDRY_CONFIG": str(config_path.resolve())}
+                item.setdefault("forge_std_setup", []).append({
+                    "root": str(package_root),
+                    **_ensure_forge_std(package_root, config_path, forge_env),
+                })
                 baseline_key = str(package_root)
                 if _config_uses_node_modules(config_path):
                     dependency_root = clone_dir.resolve()
