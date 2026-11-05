@@ -58,7 +58,11 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         new_balance=_uint(raw.get("new_balance",0),f"accesses[{index}].new_balance")
         old_nonce=_uint(raw.get("old_nonce",0),f"accesses[{index}].old_nonce")
         new_nonce=_uint(raw.get("new_nonce",0),f"accesses[{index}].new_nonce")
-        accounts.setdefault(account,{"address":account,"balance_wei":old_balance,"nonce":old_nonce,"storage":{}})
+        account_state=accounts.setdefault(account,{"address":account,"balance_wei":old_balance,
+            "nonce":old_nonce,"balance_after_wei":old_balance,"nonce_after":old_nonce,"storage":{}})
+        if not reverted:
+            account_state["balance_after_wei"]=new_balance
+            account_state["nonce_after"]=new_nonce
         slot_rows=raw.get("storage_accesses") or []
         if not isinstance(slot_rows,list): raise ValueError("storage_accesses must be an array.")
         for row in slot_rows:
@@ -71,16 +75,23 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             storage_reverted=bool(row.get("reverted",reverted))
             storage_accesses.append({"access_index":index,"account":storage_account,"slot":slot,
                 "previous_value":previous,"new_value":new_value,"is_write":is_write,"reverted":storage_reverted})
-            accounts.setdefault(storage_account,{"address":storage_account,"balance_wei":None,"nonce":None,"storage":{}})
+            accounts.setdefault(storage_account,{"address":storage_account,"balance_wei":None,"nonce":None,
+                "balance_after_wei":None,"nonce_after":None,"storage":{}})
             accounts[storage_account]["storage"].setdefault(slot,previous)
         if kind in CALL_KINDS:
             calls.append({"index":index,"depth":depth,"type":kind.upper(),"from":accessor,"to":account,
                           "input":data,"value":hex(value),"error":"reverted" if reverted else "","reverted":reverted})
     prestate=[]
+    balance_deltas=[]
     for row in accounts.values():
-        row["storage"]=[{"slot":k,"value":v} for k,v in sorted(row["storage"].items())]
-        prestate.append(row)
+        if row.get("balance_wei") is not None and row.get("balance_after_wei") is not None:
+            balance_deltas.append({"address":row["address"],"before_wei":row["balance_wei"],
+                "after_wei":row["balance_after_wei"],"delta_wei":row["balance_after_wei"]-row["balance_wei"]})
+        snapshot={key:row.get(key) for key in ("address","balance_wei","nonce")}
+        snapshot["storage"]=[{"slot":k,"value":v} for k,v in sorted(row["storage"].items())]
+        prestate.append(snapshot)
     prestate.sort(key=lambda row:row["address"])
+    balance_deltas.sort(key=lambda row:row["address"])
     if not any(row["to"]==target for row in calls): raise ValueError("Forge state-diff trace never called the manifest target.")
     entry=next(row for row in calls if row["to"]==target)
     entry_payload={"chain_id":str(chain_id),"from":entry["from"],"to":entry["to"],
@@ -89,7 +100,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     prestate_digest=hashlib.sha256(json.dumps(prestate,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     return {"backend":"forge-state-diff","chain_id":chain_id,"block_number":block_number,
         "target_address":target,"target_code_hash":code_hash,"calls":calls,"storage_accesses":storage_accesses,
-        "prestate":prestate,"prestate_sha256":prestate_digest,"entry_call":entry_payload,
+        "prestate":prestate,"prestate_sha256":prestate_digest,"balance_deltas":balance_deltas,"entry_call":entry_payload,
         "entry_call_sha256":entry_digest,
         "trace_semantics":"Ordered Forge account-access contexts with storage accesses; no RPC transaction receipt or EOA envelope.",
         "limitations":["Forge state-diff evidence is test-execution evidence, not a mined EOA transaction.",
