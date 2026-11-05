@@ -1568,8 +1568,18 @@ def _load_step_expectations(root, spec, target, family, backend):
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return denied("unsupported_abi", "Step expectations sidecar is not valid JSON: " + str(exc)[:300])
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        return denied("unsupported_abi", "Step expectations sidecar must use schema_version 1.")
+    sidecar_fields = {
+        "schema_version", "family", "target_address", "harness_path",
+        "harness_sha256", "trace_expectations", "policy",
+    }
+    if (
+        not isinstance(payload, dict)
+        or isinstance(payload.get("schema_version"), bool)
+        or not isinstance(payload.get("schema_version"), int)
+        or payload.get("schema_version") != 1
+        or set(payload) != sidecar_fields
+    ):
+        return denied("unsupported_abi", "Step expectations sidecar must use the exact schema_version 1 fields.")
     sidecar_family = payload.get("family")
     if sidecar_family is not None and (
         not isinstance(sidecar_family, str) or not family or sidecar_family != family

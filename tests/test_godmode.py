@@ -267,6 +267,48 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["step_trace_checks"][0]["observed_count"], 2)
             self.assertTrue(saved["step_trace_checks"][0]["revert_matched"])
 
+    def test_control_refuses_mutated_generated_harness_before_execution(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            harness = root / "test/lowkey/GeneratedSteps.sol"
+            harness.parent.mkdir(parents=True)
+            harness_bytes = b"contract GeneratedSteps {}"
+            harness.write_bytes(harness_bytes)
+            import hashlib
+            sidecar = {
+                "schema_version": 1,
+                "family": "reentrancy",
+                "target_address": target,
+                "harness_path": "test/lowkey/GeneratedSteps.sol",
+                "harness_sha256": hashlib.sha256(harness_bytes).hexdigest(),
+                "trace_expectations": [{
+                    "step": 2, "target": target, "selector": "0xdeadbeef",
+                    "count": 2, "must_revert": False,
+                }],
+                "policy": "Declarative trace-only metadata.",
+            }
+            (root / "steps.expectations.json").write_text(json.dumps(sidecar), encoding="utf-8")
+            manifest["step_expectations_file"] = "steps.expectations.json"
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
+            harness.write_bytes(harness_bytes + b"// changed")
+
+            with patch.object(godmode, "rpc") as rpc_mock, \\
+                 patch.object(godmode, "run") as run_mock, \\
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root), "--rpc-url", "http://127.0.0.1:8545"
+                ])
+            refusal = json.loads((root / ".audit/godmode/refusal.json").read_text())
+            self.assertEqual(result, 2)
+            self.assertEqual(refusal["reason"], "digest_mismatch")
+            rpc_mock.assert_not_called()
+            run_mock.assert_not_called()
+
     def test_control_rejects_step_expectation_count_mismatch(self):
         from unittest.mock import patch
         import subprocess
