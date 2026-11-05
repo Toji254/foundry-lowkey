@@ -493,7 +493,7 @@ def _array_attacker_growable(root: Path, source: str, collection: str) -> bool:
 
 def _critical_loop_path(name: str, body: str) -> bool:
     return bool(
-        re.search(r"withdraw|claim|redeem|settle|liquidat|harvest|execute|release|finaliz|close", name, re.I)
+        re.search(r"withdraw|claim|redeem|settle|liquidat|harvest|execute|release|finaliz|close|process|batch", name, re.I)
         or re.search(r"\.call\s*\{|\.transfer\s*\(|\.send\s*\(", body, re.I)
     )
 
