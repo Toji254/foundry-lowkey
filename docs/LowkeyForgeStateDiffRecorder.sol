@@ -26,6 +26,11 @@ interface ILowkeyJson {
 abstract contract LowkeyForgeStateDiffRecorder is Test {
     ILowkeyJson internal constant lowkeyJson =
         ILowkeyJson(address(uint160(uint256(keccak256("hevm cheat code")))));
+    address private _lowkeyTarget;
+    bytes32 private _lowkeyTargetCodeHash;
+    uint256 private _lowkeyChainId;
+    uint256 private _lowkeyBlockNumber;
+    bytes32 private _lowkeyParentHash;
 
     function _uintString(uint256 value) private pure returns (string memory) {
         if (value == 0) return "0";
@@ -44,11 +49,17 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         return string(buffer);
     }
 
-    function _lowkeyStartTrace() internal {
+    function _lowkeyStartTrace(address target) internal {
+        _lowkeyTarget = target;
+        _lowkeyTargetCodeHash = target.codehash;
+        _lowkeyChainId = vm.getChainId();
+        _lowkeyBlockNumber = vm.getBlockNumber();
+        _lowkeyParentHash = block.number == 0 ? bytes32(0) : blockhash(block.number - 1);
         vm.startStateDiffRecording();
     }
 
-    function _lowkeyWriteTrace(address target, string memory outputPath) internal {
+    function _lowkeyWriteTrace(string memory outputPath) internal {
+        address target = _lowkeyTarget;
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
         string memory accessesJson = "[";
 
@@ -107,13 +118,11 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         string memory rootKey = "lowkey.root";
         lowkeyJson.serializeString(rootKey, "backend", "forge-state-diff");
         lowkeyJson.serializeUint(rootKey, "schema_version", 1);
-        lowkeyJson.serializeUint(rootKey, "chain_id", vm.getChainId());
-        lowkeyJson.serializeUint(rootKey, "block_number", vm.getBlockNumber());
+        lowkeyJson.serializeUint(rootKey, "chain_id", _lowkeyChainId);
+        lowkeyJson.serializeUint(rootKey, "block_number", _lowkeyBlockNumber);
         lowkeyJson.serializeAddress(rootKey, "target_address", target);
-        lowkeyJson.serializeBytes32(rootKey, "target_code_hash", keccak256(target.code));
-        lowkeyJson.serializeBytes32(
-            rootKey, "fork_parent_hash", block.number == 0 ? bytes32(0) : blockhash(block.number - 1)
-        );
+        lowkeyJson.serializeBytes32(rootKey, "target_code_hash", _lowkeyTargetCodeHash);
+        lowkeyJson.serializeBytes32(rootKey, "fork_parent_hash", _lowkeyParentHash);
         string memory finalJson = lowkeyJson.serializeString(rootKey, "accesses", accessesJson);
 
         vm.createDir(".audit/godmode", true);
