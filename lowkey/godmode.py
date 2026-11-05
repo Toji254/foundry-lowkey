@@ -584,6 +584,20 @@ def _trace_control_run(root, url, name, entry, spec, env):
             gas_used=int(str(receipt.get("gasUsed") or "0x0"),16)
             gas_price=int(str(receipt.get("effectiveGasPrice") or tx.get("gasPrice") or "0x0"),16)
             gas_cost=gas_used*gas_price
+            semantic_check=None
+            semantic_argv=entry.get("semantic_check_argv")
+            if semantic_argv:
+                semantic_audit=inspect_reproduction_command(root,semantic_argv)
+                if semantic_audit["blocked"]:
+                    raise ValueError(f"{name} semantic_check_argv contains local RPC state-fabrication calls.")
+                semantic_proc=run([str(x) for x in semantic_argv],work,
+                                  int(spec.get("semantic_timeout_seconds",600)),env=env)
+                semantic_output=(semantic_proc.stdout or "")+"\\n"+(semantic_proc.stderr or "")
+                semantic_check={
+                    "argv":semantic_argv,"exit_code":semantic_proc.returncode,
+                    "verified":semantic_proc.returncode==0,
+                    "output_tail":semantic_output[-1600:],
+                }
             return {
                 "exit_code":proc.returncode,
                 "metric":metric,
@@ -602,6 +616,7 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "prestate_sha256":prestate_digest,
                 "prestate":prestate,
                 "scenario_parameters":scenario_parameters,
+                "semantic_check":semantic_check,
                 "call_trace":calls,
                 "argv":entry["argv"],
                 "output_tail":combined[-2500:],
