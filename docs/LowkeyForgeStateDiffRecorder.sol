@@ -92,7 +92,7 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
 
     function _serializeAccountAccess(Vm.AccountAccess memory access)
         private
-        pure
+        view
         returns (string memory json)
     {
         json = "{";
