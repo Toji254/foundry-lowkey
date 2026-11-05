@@ -234,10 +234,10 @@ def execute_inspected_test(
         stderr = str(completed.stderr or "")[-8000:]
         # Forge can exit zero when a filter matches no tests.  A process exit
         # code alone is therefore insufficient evidence that this exact test ran.
-        combined_output = stdout + "\n" + stderr
+        combined_output = re.sub(r"\x1b\[[0-9;]*m", "", stdout + "\n" + stderr)
         executed = re.search(
-            r"(?m)^\\s*\\[(PASS|FAIL|SKIP)\\]\\s+"
-            + re.escape(name) + r"\\s*\\(",
+            r"(?m)^\s*\[(PASS|FAIL|SKIP)\]\s+"
+            + re.escape(name) + r"\s*\(",
             combined_output,
             re.I,
         )

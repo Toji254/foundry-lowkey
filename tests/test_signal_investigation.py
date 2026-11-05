@@ -128,7 +128,7 @@ contract Vault {
                 "contract VaultTest { function test_guard() public {} }",
                 encoding="utf-8",
             )
-            with patch("lowkey.signal_investigation.shutil.which", return_value="/usr/bin/forge"), \\
+            with patch("lowkey.signal_investigation.shutil.which", return_value="/usr/bin/forge"), \
                  patch("lowkey.signal_investigation.subprocess.run") as run:
                 run.return_value.returncode = 0
                 run.return_value.stdout = "Warning: no tests match the provided pattern"
