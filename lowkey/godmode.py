@@ -3002,10 +3002,332 @@ def bundle_simulate(args):
     if result.get("error"): raise RuntimeError(str(result["error"]))
     return output({"simulation":result.get("result"),"broadcast":False,"note":"Simulation only; Lowkey does not call eth_sendBundle."})
 
+
+
+# P1 deterministic Step[] renderer. ABIValue is intentionally typed as
+# {"type": "...", "value": ...}; the original proposal named ABIValue but did
+# not define its wire shape. Unsupported callbacks refuse instead of compiling
+# a harness that cannot execute the promised behavior.
+STEP_FAMILIES = {
+    "reentrancy", "replay", "access", "accounting", "boundary", "time",
+    "upgrade", "callback", "oracle", "economic", "erc20", "proxy",
+    "storage", "signature", "dos",
+}
+STEP_KINDS = {
+    "call", "flash_borrow", "skew", "warp", "roll", "snapshot",
+    "revert", "assert", "unwind", "reenter", "read", "expect",
+}
+STEP_FIELDS = {"kind", "target", "selector", "args", "value", "optional", "expect"}
+
+
+class StepPlanError(ValueError):
+    def __init__(self, detail, reason_code="unsupported_abi", *, target=None, family=None):
+        super().__init__(str(detail))
+        self.reason_code = reason_code
+        self.target = target
+        self.family = family
+
+
+def _step_uint(value, label, *, minimum=0, maximum=(1 << 256) - 1):
+    if isinstance(value, bool):
+        raise StepPlanError(f"{label} must be an integer, not a boolean.")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"(?:0x[0-9a-fA-F]+|[0-9]+)", value.strip()):
+        number = int(value, 16 if value.strip().lower().startswith("0x") else 10)
+    else:
+        raise StepPlanError(f"{label} must be a decimal or 0x-prefixed integer.")
+    if number < minimum or number > maximum:
+        raise StepPlanError(f"{label} is outside its supported integer range.")
+    return number
+
+
+def _step_address(value, label):
+    if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
+        raise StepPlanError(f"{label} must be a 20-byte 0x-prefixed address.")
+    return "address(" + value.lower() + ")"
+
+
+def _step_selector(value, label):
+    if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{8}", value):
+        raise StepPlanError(f"{label} must be exactly four bytes (bytes4).")
+    return "bytes4(" + value.lower() + ")"
+
+
+def _step_scalar_expression(abi_type, value, label):
+    abi_type = str(abi_type or "").strip()
+    if abi_type == "address":
+        return _step_address(value, label)
+    if abi_type == "bool":
+        if not isinstance(value, bool):
+            raise StepPlanError(f"{label} of type bool must be JSON true or false.")
+        return "true" if value else "false"
+    match = re.fullmatch(r"(u?int)(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?", abi_type)
+    if match:
+        signed, width_text = match.groups()
+        width = int(width_text or "256")
+        if signed == "uint":
+            number = _step_uint(value, label, maximum=(1 << width) - 1)
+        else:
+            if isinstance(value, bool):
+                raise StepPlanError(f"{label} must be a signed integer.")
+            if isinstance(value, int):
+                number = value
+            elif isinstance(value, str) and re.fullmatch(r"-?(?:0x[0-9a-fA-F]+|[0-9]+)", value.strip()):
+                raw = value.strip()
+                number = -int(raw[3:], 16) if raw.lower().startswith("-0x") else (
+                    int(raw, 16) if raw.lower().startswith("0x") else int(raw, 10)
+                )
+            else:
+                raise StepPlanError(f"{label} must be a signed integer.")
+            if number < -(1 << (width - 1)) or number > (1 << (width - 1)) - 1:
+                raise StepPlanError(f"{label} does not fit {abi_type}.")
+        return f"{abi_type}({number})"
+    fixed_bytes = re.fullmatch(r"bytes([1-9]|[12][0-9]|3[0-2])", abi_type)
+    if fixed_bytes:
+        width = int(fixed_bytes.group(1))
+        if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{%d}" % (width * 2), value):
+            raise StepPlanError(f"{label} must be exactly {width} bytes.")
+        return f"{abi_type}({value.lower()})"
+    if abi_type == "bytes":
+        if not isinstance(value, str) or not re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", value):
+            raise StepPlanError(f"{label} bytes value must be even-length 0x-prefixed hex.")
+        return 'hex"' + value[2:].lower() + '"'
+    if abi_type == "string":
+        if not isinstance(value, str) or any(ord(char) < 32 for char in value):
+            raise StepPlanError(f"{label} string must contain printable characters only.")
+        return json.dumps(value, ensure_ascii=True)
+    raise StepPlanError(
+        f"Unsupported ABI value type '{abi_type}'. Supported scalar types are address, bool, int/uint, bytes1..bytes32, bytes and string."
+    )
+
+
+def _step_abi_argument(abi_value, prefix):
+    if not isinstance(abi_value, dict) or set(abi_value) != {"type", "value"}:
+        raise StepPlanError("Each ABIValue must be an object with exactly 'type' and 'value'.")
+    abi_type = str(abi_value.get("type") or "").strip()
+    value = abi_value.get("value")
+    array_match = re.fullmatch(r"(.+)\\[([0-9]*)\\]", abi_type)
+    if not array_match:
+        return [], _step_scalar_expression(abi_type, value, prefix)
+    base_type, fixed_count = array_match.groups()
+    if "[" in base_type or "]" in base_type or base_type.startswith("tuple"):
+        raise StepPlanError(f"Nested or tuple ABI array '{abi_type}' requires a specialized generator.")
+    if base_type in {"bytes", "string"}:
+        raise StepPlanError(f"Dynamic bytes/string arrays '{abi_type}' require a specialized generator.")
+    if not isinstance(value, list):
+        raise StepPlanError(f"{prefix} array value must be a JSON list.")
+    count = len(value)
+    if fixed_count and count != int(fixed_count):
+        raise StepPlanError(f"{abi_type} requires exactly {fixed_count} values; received {count}.")
+    if count > 64:
+        raise StepPlanError("Generic ABI arrays are capped at 64 elements.")
+    if fixed_count:
+        declaration = f"{base_type}[{fixed_count}] memory {prefix};"
+    else:
+        declaration = f"{base_type}[] memory {prefix} = new {base_type}[]({count});"
+    lines = [declaration]
+    for index, item in enumerate(value):
+        lines.append(f"{prefix}[{index}] = {_step_scalar_expression(base_type, item, prefix + '[' + str(index) + ']')};")
+    return lines, prefix
+
+
+def _step_expectation(value, label):
+    if value is None:
+        return {"count": None, "must_revert": False}
+    if not isinstance(value, dict) or set(value) - {"count", "must_revert"}:
+        raise StepPlanError(f"{label}.expect must contain only count and must_revert.")
+    count = value.get("count")
+    if count is not None:
+        count = _step_uint(count, label + ".expect.count", minimum=1, maximum=(1 << 64) - 1)
+    must_revert = value.get("must_revert", False)
+    if not isinstance(must_revert, bool):
+        raise StepPlanError(f"{label}.expect.must_revert must be boolean.")
+    return {"count": count, "must_revert": must_revert}
+
+
+def render_step_harness(spec):
+    """Validate a Step[] plan and render a compile-ready Foundry harness."""
+    if not isinstance(spec, dict) or set(spec) - {"family", "target_address", "steps"}:
+        raise StepPlanError("Step plan must contain only family, target_address and steps.")
+    family = str(spec.get("family") or "").strip().lower()
+    if family not in STEP_FAMILIES:
+        raise StepPlanError("family must be one of: " + ", ".join(sorted(STEP_FAMILIES)), "out_of_scope", family=family or None)
+    default_target = spec.get("target_address")
+    if default_target is not None:
+        default_target = _step_address(default_target, "target_address")
+    steps_value = spec.get("steps")
+    if not isinstance(steps_value, list) or not steps_value or len(steps_value) > 128:
+        raise StepPlanError("steps must be a non-empty array with at most 128 entries.", family=family)
+    template_path = Path(__file__).resolve().parent / "templates" / "step_harness.sol.tmpl"
+    if not template_path.is_file():
+        raise StepPlanError("Installed step_harness.sol.tmpl is missing; reinstall Lowkey from the matching branch.", "no_capability", family=family)
+    template = template_path.read_text(encoding="utf-8")
+    rendered_steps = []
+    pending_revert = False
+    saw_call = False
+    for index, step in enumerate(steps_value):
+        label = f"steps[{index}]"
+        if not isinstance(step, dict) or set(step) - STEP_FIELDS:
+            raise StepPlanError(f"{label} must use only the exact Step fields: " + ", ".join(sorted(STEP_FIELDS)), family=family)
+        kind = str(step.get("kind") or "").strip().lower()
+        if kind not in STEP_KINDS:
+            raise StepPlanError(f"{label}.kind is not a recognized Step kind.", "out_of_scope", family=family)
+        if kind in {"flash_borrow", "reenter"}:
+            raise StepPlanError(
+                f"{label} uses '{kind}', which requires a protocol-specific callback actor. No generic callback was fabricated.",
+                "backend_unsupported", target=step.get("target") or spec.get("target_address"), family=family
+            )
+        optional = step.get("optional", False)
+        if not isinstance(optional, bool):
+            raise StepPlanError(f"{label}.optional must be boolean.", family=family)
+        expect = _step_expectation(step.get("expect"), label)
+        raw_args = step.get("args")
+        if raw_args is None:
+            raw_args = []
+        if not isinstance(raw_args, list):
+            raise StepPlanError(f"{label}.args must be a list of typed ABIValue objects or null.", family=family)
+        target_raw = step.get("target")
+        target_expr = default_target if target_raw is None else _step_address(target_raw, label + ".target")
+        selector_raw = step.get("selector")
+        needs_call = kind in {"call", "read", "unwind", "skew", "expect"}
+        if needs_call and (target_expr is None or selector_raw is None):
+            raise StepPlanError(f"{label} kind '{kind}' requires target and selector.", family=family)
+        if needs_call:
+            selector_expr = _step_selector(selector_raw, label + ".selector")
+            declarations = []
+            arg_exprs = []
+            for arg_index, arg in enumerate(raw_args):
+                lines, expression = _step_abi_argument(arg, f"step{index}Arg{arg_index}")
+                declarations.extend(lines)
+                arg_exprs.append(expression)
+            data_name = f"step{index}Data"
+            calldata_expr = (
+                f"abi.encodeWithSelector({selector_expr}, {', '.join(arg_exprs)})"
+                if arg_exprs else f"abi.encodeWithSelector({selector_expr})"
+            )
+            body = []
+            if declarations:
+                body.extend(declarations)
+            body.append(f"bytes memory {data_name} = {calldata_expr};")
+            if expect["count"] is not None:
+                body.append(f"vm.expectCall({target_expr}, {data_name}, uint64({expect['count']}));")
+            if kind == "expect":
+                if expect["count"] is None:
+                    raise StepPlanError(f"{label} kind 'expect' requires expect.count.", family=family)
+                if expect["must_revert"]:
+                    if pending_revert:
+                        raise StepPlanError(f"{label} cannot arm a second pending revert expectation.", family=family)
+                    pending_revert = True
+                body.append(f"emit LowkeyStep({index}, {json.dumps(kind)}, {target_expr}, true, bytes32(0));")
+            else:
+                if pending_revert and kind not in {"call", "unwind", "skew"}:
+                    raise StepPlanError(f"{label} must consume the pending expect.must_revert with a call/unwind/skew step.", family=family)
+                raw_value = step.get("value")
+                value_wei = 0 if raw_value is None else _step_uint(raw_value, label + ".value")
+                if kind == "read" and value_wei != 0:
+                    raise StepPlanError(f"{label} read steps cannot send native value.", family=family)
+                call_method = "staticcall" if kind == "read" else "call"
+                if call_method == "staticcall":
+                    body.append(f"(bool step{index}Success, bytes memory step{index}ReturnData) = {target_expr}.staticcall({data_name});")
+                else:
+                    body.append(f"(bool step{index}Success, bytes memory step{index}ReturnData) = {target_expr}.call{{value: {value_wei}}}({data_name});")
+                body.append(f"lastSuccess = step{index}Success;")
+                body.append(f"lastReturndata = step{index}ReturnData;")
+                body.append(f"emit LowkeyStep({index}, {json.dumps(kind)}, {target_expr}, step{index}Success, keccak256(step{index}ReturnData));")
+                if expect["must_revert"] or pending_revert:
+                    body.append(f'require(!step{index}Success, "STEP_{index}_EXPECTED_REVERT");')
+                    pending_revert = False
+                elif not optional:
+                    body.append(f'require(step{index}Success, "STEP_{index}_FAILED");')
+                saw_call = True
+            rendered_steps.append("        {\\n            " + "\\n            ".join(body) + "\\n        }")
+            continue
+        if kind == "assert":
+            if not saw_call:
+                raise StepPlanError(f"{label} assert requires a prior call/read step.", family=family)
+            if not expect["must_revert"] and expect["count"] is None:
+                rendered_steps.append(f'        require(lastSuccess, "STEP_{index}_ASSERT_SUCCESS");')
+            elif expect["must_revert"]:
+                rendered_steps.append(f'        require(!lastSuccess, "STEP_{index}_ASSERT_REVERT");')
+            else:
+                raise StepPlanError(f"{label} assert does not accept expect.count.", family=family)
+            continue
+        if kind in {"warp", "roll"}:
+            if step.get("target") is not None or selector_raw is not None or raw_args:
+                raise StepPlanError(f"{label} {kind} steps accept only value.", family=family)
+            if step.get("value") is None:
+                raise StepPlanError(f"{label} {kind} step requires value.", family=family)
+            number = _step_uint(step.get("value"), label + ".value")
+            cheat = "warp" if kind == "warp" else "roll"
+            rendered_steps.append(f"        vm.{cheat}({number});")
+            continue
+        if kind == "snapshot":
+            if target_raw is not None or selector_raw is not None or raw_args or step.get("value") is not None:
+                raise StepPlanError(f"{label} snapshot accepts no target, selector, args or value.", family=family)
+            rendered_steps.append("        snapshotId = vm.snapshot();\\n        snapshotAvailable = true;")
+            continue
+        if kind == "revert":
+            if target_raw is not None or selector_raw is not None or raw_args or step.get("value") is not None:
+                raise StepPlanError(f"{label} revert accepts no target, selector, args or value.", family=family)
+            rendered_steps.append('        require(snapshotAvailable, "STEP_REVERT_WITHOUT_SNAPSHOT");\\n        require(vm.revertTo(snapshotId), "STEP_SNAPSHOT_REVERT_FAILED");\\n        snapshotAvailable = false;')
+            continue
+        raise StepPlanError(f"{label} kind '{kind}' is not yet rendered.", "backend_unsupported", family=family)
+    if pending_revert:
+        raise StepPlanError("Step plan ends with an unconsumed expect.must_revert.", family=family)
+    if not saw_call:
+        raise StepPlanError("Step plan must execute at least one call or read.", family=family)
+    contract_name = "LowkeySteps_" + family
+    source = template.replace("__LOWKEY_CONTRACT_NAME__", contract_name)
+    source = source.replace("__LOWKEY_STEP_CODE__", "\\n".join(rendered_steps))
+    return source
+
+
+def steps(args):
+    parser = argparse.ArgumentParser(prog="lk steps", description="Validate and render an execution-checked Step[] Foundry harness.")
+    parser.add_argument("manifest")
+    parser.add_argument("--root", default=".")
+    parser.add_argument("--output", default=".audit/godmode/steps/step-harness.t.sol")
+    parser.add_argument("--refusal-output", default=".audit/godmode/steps-refusal.json")
+    ns = parser.parse_args(args)
+    root = root_path(ns.root)
+    manifest_path = (root / ns.manifest).resolve()
+    if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
+        raise ValueError("Step manifest must be an existing file inside --root.")
+    spec = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        source = render_step_harness(spec)
+    except StepPlanError as exc:
+        refusal = {
+            "target": exc.target or spec.get("target_address"),
+            "family": exc.family or spec.get("family"),
+            "reason": exc.reason_code,
+            "detail": str(exc),
+            "minimal_cmd": f"lk steps {ns.manifest} --root {ns.root}",
+            "backend": "forge_state_diff",
+        }
+        refusal_path = safe_out(root, ns.refusal_output)
+        refusal_path.write_text(json.dumps(refusal, indent=2) + "\\n", encoding="utf-8")
+        print("REFUSAL " + json.dumps(refusal, sort_keys=True))
+        return 2
+    output_path = safe_out(root, ns.output)
+    output_path.write_text(source, encoding="utf-8")
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    print(json.dumps({
+        "status": "PROPOSED",
+        "family": spec.get("family"),
+        "steps_rendered": len(spec["steps"]),
+        "harness": output_path.relative_to(root).as_posix(),
+        "harness_sha256": digest,
+    }, sort_keys=True))
+    return 0
+
+
+
 def main(argv=None):
     a=list(sys.argv[1:] if argv is None else argv)
     if not a or a[0] in {"-h","--help","help"}:
-        print("Usage: lk capabilities | godmode | control | mutation-score | target-coverage | provenance | fallback-map | oracle-map | reentrancy-graph | custody | sig-matrix | init-frontrun | cfg | cross-vm | proxy-resolve | storage-infer | selectors-full | calldata-mine | unravel | state-diff | attack-forge | invariant-forge | archetype | token-weird | time | compose | skew | flashmax | path | reprove | economic | gas-ladder | fidelity | watch | verify-hack | bundle | sandwich | jit | fork-cache | upgrade-diff | agent-split | learn | questions | report")
+        print("Usage: lk capabilities | godmode | control | steps | mutation-score | target-coverage | provenance | fallback-map | oracle-map | reentrancy-graph | custody | sig-matrix | init-frontrun | cfg | cross-vm | proxy-resolve | storage-infer | selectors-full | calldata-mine | unravel | state-diff | attack-forge | invariant-forge | archetype | token-weird | time | compose | skew | flashmax | path | reprove | economic | gas-ladder | fidelity | watch | verify-hack | bundle | sandwich | jit | fork-cache | upgrade-diff | agent-split | learn | questions | report")
         return 0
     cmd,rest=a[0],a[1:]
     if cmd=="capabilities":
@@ -3014,6 +3336,7 @@ def main(argv=None):
         return 0
     if cmd=="godmode": return godmode(rest)
     if cmd=="control": return control(rest)
+    if cmd=="steps": return steps(rest)
     if cmd=="mutation-score": return mutation(rest)
     if cmd=="target-coverage": return coverage(rest)
     if cmd=="provenance": return provenance(rest)
