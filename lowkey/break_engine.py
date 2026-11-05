@@ -2360,6 +2360,12 @@ def _result_from_output(
                 "Target rejected the generated setup call before reentrancy could be evaluated. "
                 + (setup_revert or ("No revert data was returned." if not setup_len else f"Revert data length: {setup_len} bytes."))
             )
+        elif target_rejected and not reentry_reached:
+            summary = (
+                "Target rejected the attack before the callback boundary. "
+                + ("Revert data was returned; inspect the ABI/reason." if target_revert_data
+                   else "No revert data was returned; inspect withdraw's guards/preconditions.")
+            )
     elif structured and target_rejected and not reentry_reached:
         summary = (
             "Target rejected the attack before the callback boundary. "

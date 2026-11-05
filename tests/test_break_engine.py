@@ -753,6 +753,30 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("rejected the attack before the callback boundary", observed.summary)
         self.assertIn("No revert data was returned", observed.summary)
 
+        observed_with_setup_telemetry = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="reentrancy",
+            target=target,
+            function="withdraw(address,uint256)",
+            output=(
+                "LOWKEY_BREAK_FAMILY reentrancy\\n"
+                "SETUP_FUNCTION_DISCOVERED false\\n"
+                "TARGET_SETUP_SUCCESS false\\n"
+                "ASSET_GETTER_DISCOVERED false\\n"
+                "TOKEN_APPROVAL_ATTEMPTED false\\n"
+                "TARGET_REJECTED_ATTACK true\\n"
+                "TARGET_REVERT_DATA_PRESENT false\\n"
+                "REENTRY_REACHED false\\n"
+                "LOWKEY_BREAK false"
+            ),
+            evidence_path="/tmp/evidence.json",
+        )
+        self.assertEqual(observed_with_setup_telemetry.status, "OBSERVED")
+        self.assertIn(
+            "rejected the attack before the callback boundary",
+            observed_with_setup_telemetry.summary,
+        )
+
     def test_repeat_renderer_targets_attacker_and_seeds_entitlement(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         fn = {
