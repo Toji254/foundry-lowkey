@@ -70,6 +70,32 @@ class ProofEvidenceTests(unittest.TestCase):
                 self.assertTrue(accepted["accepted"])
                 self.assertEqual(accepted["promotion_cap"], "SIMULATED_BREAK")
 
+    def test_freeze_binds_declared_generator_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "generator.py").write_text("print('v1')", encoding="utf-8")
+            (root / "control.json").write_text("{}", encoding="utf-8")
+            spec = {"family": "reentrancy", "generator_files": ["generator.py"]}
+            frozen, _ = freeze_control_manifest(root, root / "control.json", spec)
+            self.assertEqual(frozen["schema_version"], 2)
+            self.assertTrue(frozen["generator_hashes"])
+            self.assertTrue(validate_control_freeze(
+                root, root / "control.json", spec, required=True
+            )["verified"])
+            (root / "generator.py").write_text("print('v2')", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "generator hashes"):
+                validate_control_freeze(root, root / "control.json", spec, required=True)
+
+    def test_freeze_rejects_legacy_schema_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "control.json").write_text("{}", encoding="utf-8")
+            freeze_path = root / ".audit/godmode/control.freeze.json"
+            freeze_path.parent.mkdir(parents=True)
+            freeze_path.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "older schema"):
+                validate_control_freeze(root, root / "control.json", {}, required=True)
+
     def test_freeze_binds_manifest_and_referenced_command_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

@@ -118,10 +118,11 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             accounts.setdefault(storage_account,{"address":storage_account,"balance_wei":None,"nonce":None,
                 "balance_after_wei":None,"nonce_after":None,"code_hash":None,"storage":{}})
             accounts[storage_account]["storage"].setdefault(slot,previous)
-        if kind in TRACE_KINDS:
+        if kind in CALL_KINDS:
             calls.append({"index":index,"depth":depth,"type":kind.upper(),"from":accessor,"to":account,
                           "input":data,"value":hex(value),"error":"reverted" if reverted else "",
                           "reverted":reverted,"storage_access_count":len(slot_rows)})
+        if kind in TRACE_KINDS:
             trace_events.append(build_trace_event(
                 index=index,kind=kind,accessor=accessor,account=account,depth=depth,
                 value=value,reverted=reverted,input_data=data,storage=event_storage,

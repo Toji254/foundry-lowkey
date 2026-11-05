@@ -200,6 +200,7 @@ def project_memory_dir(root: str | Path | None = None, *, create: bool = False) 
 
 def record_feedback(
     *, kind: str, summary: str, evidence: str = "", finding_id: str = "",
+    context: Mapping[str, Any] | None = None,
     root: str | Path | None = None,
 ) -> dict[str, Any]:
     if kind not in FEEDBACK_KINDS:
@@ -223,6 +224,20 @@ def record_feedback(
         "finding_id": _bounded(finding_id, "Finding ID", 160, required=False),
         "status": "recorded",
     }
+    if context is not None:
+        if not isinstance(context, Mapping):
+            raise MemoryError("Feedback context must be a mapping.")
+        required_context = ("family", "backend", "fidelity", "target_shape")
+        normalized_context = {}
+        for field_name in required_context:
+            value = _bounded(str(context.get(field_name) or ""), "Feedback context " + field_name, 300)
+            normalized_context[field_name] = (
+                value.strip().lower() if field_name != "target_shape" else value.strip()
+            )
+        record["context"] = normalized_context
+        record["context_key"] = hashlib.sha256(
+            json.dumps(normalized_context, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
     fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")

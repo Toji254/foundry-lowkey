@@ -1589,6 +1589,15 @@ def control(args):
                 evidence="Control evidence rejected this attempted exploit. Reasons: "+
                          "; ".join(rejection_reasons)[:1000],
                 finding_id="",
+                context={
+                    "family":family,
+                    "backend":backend,
+                    "fidelity":fidelity,
+                    "target_shape":str(
+                        spec.get("target_shape") or
+                        rows.get("attack",{}).get("target_code_hash") or target
+                    ),
+                },
                 root=root,
             )
         except Exception as exc:

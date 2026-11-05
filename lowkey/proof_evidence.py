@@ -87,6 +87,14 @@ def _referenced_inputs(root, spec):
     found = set()
     candidates = [x for x in (spec.get("freeze_inputs") or []) if isinstance(x, str)]
     candidates.extend(x for x in (spec.get("fidelity_sources") or []) if isinstance(x, str))
+    generator_files = spec.get("generator_files") or []
+    if not isinstance(generator_files, list) or not all(isinstance(x, str) and x.strip() for x in generator_files):
+        raise ValueError("generator_files must be an array of project-relative file paths.")
+    for token in generator_files:
+        candidate = (root / Path(token).expanduser()).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            raise ValueError("Declared generator file must be an existing project file: " + token)
+        candidates.append(token)
     for scenario_name in ("control", "attack", "negative_control"):
         scenario = spec.get(scenario_name) or {}
         for key in ("argv", "prepare_argv", "semantic_check_argv", "support_files"):
@@ -104,19 +112,44 @@ def _referenced_inputs(root, spec):
         if candidate.is_relative_to(root) and candidate.is_file(): found.add(candidate)
     return [{"path": p.relative_to(root).as_posix(), "sha256": _sha256_file(p)} for p in sorted(found)]
 
+def _generator_fingerprints(root, spec):
+    paths = {Path(__file__).resolve()}
+    orchestrator = Path(__file__).with_name("godmode.py")
+    if orchestrator.is_file():
+        paths.add(orchestrator.resolve())
+    declared = spec.get("generator_files") or []
+    if not isinstance(declared, list) or not all(isinstance(item, str) and item.strip() for item in declared):
+        raise ValueError("generator_files must be an array of project-relative file paths.")
+    for item in declared:
+        path = (root / Path(item).expanduser()).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError("Declared generator file must be an existing project file: " + item)
+        paths.add(path)
+    fingerprints = []
+    for path in sorted(paths):
+        try:
+            label = path.relative_to(root).as_posix()
+        except ValueError:
+            label = "lowkey-runtime/" + path.name
+        fingerprints.append({"path": label, "sha256": _sha256_file(path)})
+    return fingerprints
+
+
 def _freeze_core(root, manifest_path, spec):
     manifest_path = manifest_path.resolve()
     if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
         raise ValueError("Control manifest must be an existing file inside the project.")
     return {
-        "schema_version": 1, "manifest_path": manifest_path.relative_to(root).as_posix(),
+        "schema_version": 2, "manifest_path": manifest_path.relative_to(root).as_posix(),
         "manifest_sha256": _sha256_file(manifest_path), "inputs": _referenced_inputs(root, spec),
+        "generator_hashes": _generator_fingerprints(root, spec),
         "experiment": {
             "same_calls_id": spec.get("same_calls_id"), "family": normalize_family(spec.get("family")),
             "target_address": str(spec.get("target_address") or "").lower(),
             "target_authenticity": spec.get("target_authenticity", "unknown"),
             "trace_backend": spec.get("trace_backend", "anvil-calltracer"),
             "freeze_inputs": spec.get("freeze_inputs") or [],
+            "generator_files": spec.get("generator_files") or [],
             "source_addresses": spec.get("source_addresses") or [],
             "expected_chain_id": spec.get("expected_chain_id"),
             "expected_fork_block": spec.get("expected_fork_block"),
@@ -145,7 +178,7 @@ def freeze_control_manifest(root, manifest_path, spec, output_path=None):
     digest = _sha256_bytes(_canonical(core).encode("utf-8"))
     payload = {**core, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "freeze_sha256": digest,
-               "policy": "Expectations and all referenced local command inputs are frozen before execution."}
+               "policy": "Expectations, Lowkey gate sources, declared generator files and all referenced local command inputs are frozen before execution."}
     output = Path(output_path or ".audit/godmode/control.freeze.json")
     output = root / output if not output.is_absolute() else output
     if not output.resolve().is_relative_to(root): raise ValueError("Freeze output must stay inside the project.")
@@ -164,10 +197,12 @@ def validate_control_freeze(root, manifest_path, spec, *, required=False, freeze
         return {"present": False, "verified": False, "path": None,
                 "reason": "No frozen expectations; result must remain review-only."}
     stored = json.loads(freeze.read_text(encoding="utf-8"))
+    if stored.get("schema_version") != 2:
+        raise ValueError("Frozen expectations use an older schema; run lk control --freeze again with the current generator.")
     current = _freeze_core(root, Path(manifest_path), spec)
     digest = _sha256_bytes(_canonical(current).encode("utf-8"))
     if stored.get("freeze_sha256") != digest:
-        raise ValueError("Frozen expectations do not match the current manifest, command arguments, or referenced script hashes.")
+        raise ValueError("Frozen expectations do not match the current manifest, generator hashes, command arguments, or referenced script hashes.")
     if {key: stored.get(key) for key in current} != current:
         raise ValueError("Frozen expectation contents do not match the recomputed experiment.")
     return {"present": True, "verified": True, "path": freeze.relative_to(root).as_posix(),

@@ -21,6 +21,36 @@ class ExperienceMemoryTests(unittest.TestCase):
         (self.project / "src").mkdir()
         (self.project / "src" / "Vault.sol").write_text("contract Vault {}", encoding="utf-8")
 
+    def test_rejection_context_key_separates_backend_and_fidelity(self):
+        base = {
+            "family": "reentrancy", "backend": "anvil-calltracer",
+            "fidelity": "real_funded", "target_shape": "0x" + "a" * 64,
+        }
+        weak = memory.record_feedback(
+            kind="false-positive", summary="Rejected by weak trace backend",
+            context={**base, "backend": "forge-state-diff", "fidelity": "simulated_caller"},
+            root=self.project,
+        )
+        strong = memory.record_feedback(
+            kind="false-positive", summary="Rejected by strong trace backend",
+            context=base, root=self.project,
+        )
+        repeated = memory.record_feedback(
+            kind="false-positive", summary="Same exact experiment rejected again",
+            context=base, root=self.project,
+        )
+        self.assertNotEqual(weak["context_key"], strong["context_key"])
+        self.assertEqual(strong["context_key"], repeated["context_key"])
+        self.assertEqual(strong["context"]["backend"], "anvil-calltracer")
+        self.assertEqual(strong["context"]["fidelity"], "real_funded")
+
+    def test_feedback_rejects_incomplete_structured_context(self):
+        with self.assertRaises(memory.MemoryError):
+            memory.record_feedback(
+                kind="false-positive", summary="Missing dimensions",
+                context={"family": "reentrancy"}, root=self.project,
+            )
+
     def test_feedback_is_project_scoped_and_append_only(self):
         first = memory.record_feedback(
             kind="false-positive", summary="This source warning is unreachable",
