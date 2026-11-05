@@ -174,7 +174,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             root = Path(tmp)
             output_root = root / ".audit" / "benchmark"
 
-            def fake_run(command, cwd=None, timeout=1800):
+            def fake_run(command, cwd=None, timeout=1800, env=None):
                 output_dir = Path(command[command.index("--output-dir") + 1])
                 report_dir = output_dir / "UnfamiliarContract"
                 report_dir.mkdir(parents=True, exist_ok=True)
@@ -201,7 +201,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             root = Path(tmp)
             output_root = root / ".audit" / "benchmark"
 
-            def fake_run(command, cwd=None, timeout=1800):
+            def fake_run(command, cwd=None, timeout=1800, env=None):
                 output_dir = Path(command[command.index("--output-dir") + 1])
                 report_dir = output_dir / "UnfamiliarContract"
                 report_dir.mkdir(parents=True, exist_ok=True)
