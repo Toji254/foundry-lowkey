@@ -109,6 +109,76 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         )
         self.assertEqual(self.matches(root, model, "AUTH-001"), [])
 
+
+    def test_noop_only_modifier_does_not_suppress_auth_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                modifier onlyGuardian() { _; }
+                bool public paused;
+                function pause() external onlyGuardian { paused = true; }
+            }
+            """,
+            ["pause"],
+        )
+        matches = self.matches(root, model, "AUTH-001")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].evidence_status, "context-checked")
+
+    def test_same_named_guard_in_unimported_sibling_does_not_suppress_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                bool public paused;
+                function pause() external { _requireGuardian(); paused = true; }
+            }
+            """,
+            ["pause"],
+        )
+        sibling = root / "src" / "Unrelated.sol"
+        sibling.write_text(
+            "contract Unrelated { function _requireGuardian() internal view { require(msg.sender == address(this)); } }",
+            encoding="utf-8",
+        )
+        matches = self.matches(root, model, "AUTH-001")
+        self.assertEqual(len(matches), 1)
+
+    def test_imported_inherited_modifier_is_resolved(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            import "./AuthBase.sol";
+            contract Vault is AuthBase {
+                bool public paused;
+                function setPaused(bool value) external onlyGuardian { paused = value; }
+            }
+            """,
+            ["setPaused"],
+        )
+        (root / "src" / "AuthBase.sol").write_text(
+            "pragma solidity ^0.8.20; abstract contract AuthBase { "
+            "mapping(address => bool) guardian; "
+            "modifier onlyGuardian() { require(guardian[msg.sender]); _; } }",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.matches(root, model, "AUTH-001"), [])
+
+    def test_inherited_noop_modifier_does_not_suppress_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            abstract contract AuthBase { modifier onlyGuardian() { _; } }
+            contract Vault is AuthBase {
+                bool public paused;
+                function setPaused(bool value) external onlyGuardian { paused = value; }
+            }
+            """,
+            ["setPaused"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
     def test_documented_permissionless_settlement_is_not_flagged(self):
         root, model = self.model(
             """
