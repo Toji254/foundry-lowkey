@@ -263,7 +263,7 @@ jobs:
               "count": 2,
               "must_revert": False,
           }], artifact
-          assert "not proof" in artifact["policy"]
+          assert "proves execution" in artifact["policy"]
           assert Path("test/lowkey/P1StepAcceptance.sol").is_file()
           print("PASS: P1 ordered Step[] generated and Solidity harness compiled; expectations remain trace-only")
           PY
