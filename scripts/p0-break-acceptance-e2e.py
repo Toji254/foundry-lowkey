@@ -132,6 +132,50 @@ contract USDTVault {
         require(asset.transfer(msg.sender, amount), "TRANSFER_OUT");
     }
 }
+contract MockNoMetadataToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(balanceOf[from] >= amount, "BALANCE");
+        require(allowance[from][msg.sender] >= amount, "ALLOWANCE");
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        allowance[from][msg.sender] -= amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "BALANCE");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
+contract NoMetadataVault {
+    MockNoMetadataToken public immutable asset;
+    mapping(address => uint256) public balances;
+
+    constructor(address token) { asset = MockNoMetadataToken(token); }
+
+    function deposit(uint256 amount) external {
+        require(asset.transferFrom(msg.sender, address(this), amount), "TRANSFER_IN");
+        balances[msg.sender] += amount;
+    }
+
+    function withdraw() external {
+        uint256 amount = balances[msg.sender];
+        require(amount > 0, "NO_BALANCE");
+        balances[msg.sender] = 0;
+        require(asset.transfer(msg.sender, amount), "TRANSFER_OUT");
+    }
+}
 """
 
 
@@ -241,6 +285,8 @@ def main() -> int:
             usdc_vault = deploy(forge, root, env, "USDCVault", usdc)
             usdt = deploy(forge, root, env, "MockUSDT6NoReturnReset")
             usdt_vault = deploy(forge, root, env, "USDTVault", usdt)
+            no_metadata_token = deploy(forge, root, env, "MockNoMetadataToken")
+            no_metadata_vault = deploy(forge, root, env, "NoMetadataVault", no_metadata_token)
             attacker = "0xBEEF000000000000000000000000000000000042"
             run([
                 cast, "send", usdt, "primeAllowance(address,address,uint256)",
@@ -270,7 +316,17 @@ def main() -> int:
                 "TOKEN_APPROVAL_RESET_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
             ], evidence_root)
-        print("PASS: all three P0 end-to-end installed-lk acceptance cases reached OBSERVED.")
+            exercise(lk, root, env, "NoMetadataVault", no_metadata_vault, [
+                "SETUP_SUCCESS true",
+                "ASSET_GETTER_DISCOVERED true",
+                "ASSET_DECIMALS_VERIFIED false",
+                "ASSET_DECIMALS_FALLBACK_18 true",
+                "ASSET_DECIMALS 18",
+                "TOKEN_FUNDING_AMOUNT 1000000000000000000",
+                "TOKEN_APPROVAL_ATTEMPTED true",
+                "TOKEN_APPROVAL_SUCCESS true",
+            ], evidence_root)
+        print("PASS: all four P0 end-to-end installed-lk acceptance cases reached OBSERVED.")
     finally:
         # Do not leave the CI runner's global target pointed at a temporary deployment.
         subprocess.run([lk, "target", "reset"], env=env, text=True, capture_output=True, check=False)
