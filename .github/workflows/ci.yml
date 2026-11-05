@@ -1272,7 +1272,13 @@ jobs:
         working-directory: /tmp/lowkey-fixture
         run: |
           export LOWKEY_RPC_URL=http://127.0.0.1:8545
-          lk target 0x1000000000000000000000000000000000000001
+          # The compatibility campaign rebuilt this shared fixture project after
+          # its first runtime was installed at the Anvil address. Reinstall the
+          # runtime from the current artifact before exercising target validation.
+          TARGET=0x1000000000000000000000000000000000000001
+          FIXTURE_CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
+          cast rpc anvil_setCode "$TARGET" "$FIXTURE_CODE"
+          lk target Fixture "$TARGET"
           lk test-gen Fixture --types unit,invariant,fuzz --force --validate --strict
           python3 - <<'PY'
           import json

@@ -1871,7 +1871,15 @@ class LowkeyCastTests(unittest.TestCase):
                                     with patch.object(lk, "auto_abi_path", return_value=str(artifact_path)) as auto_abi:
                                         with patch.object(lk, "remember_abi_path", side_effect=remember):
                                             with patch.object(lk, "save_config"):
-                                                with patch.object(lk, "abi_selector", return_value=selector):
+                                                with patch.object(
+                                                    lk,
+                                                    "abi_selector",
+                                                    side_effect=lambda signature: (
+                                                        selector
+                                                        if signature == "createEscrow(address)"
+                                                        else "0x87654321"
+                                                    ),
+                                                ):
                                                     with patch.object(lk, "cast_output", return_value=(0, topic0, "")):
                                                         with patch.object(
                                                             lk,
