@@ -26,8 +26,30 @@ def _uint(value,label):
         except ValueError: pass
     raise ValueError(f"Forge state diff {label} must be a nonnegative integer.")
 
+def _unwrap_named_json_object(value, label):
+    """Unwrap the one-key object wrapper returned by Vm.serialize* objectKey."""
+    if not isinstance(value,dict):
+        raise ValueError(f"Forge state diff {label} must be a JSON object.")
+    if len(value)==1:
+        only=next(iter(value.values()))
+        if isinstance(only,dict):
+            return only
+    return value
+
+
 def normalize_forge_state_diff(payload, *, expected_target=None):
-    if not isinstance(payload,dict) or payload.get("backend")!="forge-state-diff":
+    if not isinstance(payload,dict):
+        raise ValueError("Expected a Lowkey forge-state-diff JSON artifact.")
+    # The recorder uses unique objectKey values to assemble nested JSON.
+    # Foundry's serialize* return value includes that key as a wrapper.
+    if payload.get("backend")!="forge-state-diff":
+        candidates=[
+            value for value in payload.values()
+            if isinstance(value,dict) and value.get("backend")=="forge-state-diff"
+        ]
+        if len(candidates)==1:
+            payload=candidates[0]
+    if payload.get("backend")!="forge-state-diff":
         raise ValueError("Expected a Lowkey forge-state-diff JSON artifact.")
     if payload.get("schema_version")!=1: raise ValueError("Unsupported Forge state-diff artifact schema_version.")
     chain_id=_uint(payload.get("chain_id"),"chain_id")
@@ -43,6 +65,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         raise ValueError("Forge state-diff artifact contains no account accesses.")
     calls=[]; storage_accesses=[]; accounts={}
     for index,raw in enumerate(raw_accesses):
+        raw=_unwrap_named_json_object(raw,f"accesses[{index}]")
         if not isinstance(raw,dict): raise ValueError(f"Forge account access #{index} must be an object.")
         kind_raw=raw.get("kind")
         kind=KIND_NAMES.get(kind_raw,str(kind_raw)) if isinstance(kind_raw,int) else str(kind_raw)
@@ -69,7 +92,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             account_state["nonce_after"]=new_nonce
         slot_rows=raw.get("storage_accesses") or []
         if not isinstance(slot_rows,list): raise ValueError("storage_accesses must be an array.")
-        for row in slot_rows:
+        for storage_index,row in enumerate(slot_rows):
+            row=_unwrap_named_json_object(row,f"accesses[{index}].storage_accesses[{storage_index}]")
             if not isinstance(row,dict): raise ValueError("Forge StorageAccess entries must be objects.")
             slot=_hexword(row.get("slot"),"storage slot")
             previous=_hexword(row.get("previous_value"),"storage previous_value")
