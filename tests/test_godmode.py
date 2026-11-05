@@ -695,6 +695,8 @@ class GodmodeTests(unittest.TestCase):
                 {},
             )
             self.assertTrue(fidelity["scan_complete"])
+            self.assertTrue(fidelity["static_scan_clear"])
+            self.assertFalse(fidelity["confirmation_eligible"])
             self.assertEqual(
                 set(fidelity["scanned_files"]),
                 {"test/Attack.t.sol", "test/helpers/Setup.sol"},
