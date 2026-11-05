@@ -418,14 +418,22 @@ def _trace_flatten(trace, limit=512):
             "type":str(node.get("type") or ""),
             "from":str(node.get("from") or "").lower(),
             "to":str(node.get("to") or "").lower(),
-            "input":str(node.get("input") or "").lower(),
-            "value":str(node.get("value") or "0x0").lower(),
-            "error":str(node.get("error") or ""),
+            "created_address":str(node.get("createdAddress") or "").lower() or None,
+            "input":str(node.get("input")).lower() if node.get("input") is not None else None,
+            "value":str(node.get("value")).lower() if node.get("value") is not None else None,
+            "error":str(node.get("error")) if node.get("error") is not None else None,
         })
         for child in node.get("calls") or []:
             walk(child,depth+1)
     walk(trace)
     return rows
+
+def _normalize_rpc_trace_events(calls):
+    try:
+        from .trace_evidence import normalize_rpc_trace_events
+    except ImportError:
+        from lowkey.trace_evidence import normalize_rpc_trace_events
+    return normalize_rpc_trace_events(calls, backend="anvil-calltracer")
 
 
 def _control_transaction_envelope(tx, chain_id):
@@ -836,6 +844,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                        ("unknown" if not fidelity.get("scan_complete") else "real_funded"))))
                 ),
                 "semantic_check":semantic_check,
+                "trace_schema_version":1,
+                "trace_events":_normalize_rpc_trace_events(calls),
                 "call_trace":calls,
                 "argv":entry["argv"],
                 "output_tail":combined[-2500:],
@@ -1197,6 +1207,8 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
                 for item in normalized["storage_accesses"]
             ],
             "balance_deltas": normalized.get("balance_deltas", []),
+            "trace_schema_version": normalized["trace_schema_version"],
+            "trace_events": normalized["trace_events"],
             "call_trace": normalized["calls"], "raw_account_accesses": normalized["raw_account_accesses"],
             "target_code_hash": normalized["target_code_hash"],
             "source_verification": source_verification,
@@ -1587,7 +1599,8 @@ def control(args):
         "legacy_status":legacy_status,"proof_axes":proof,
         "target_authenticity":authenticity,"fidelity":fidelity,
         "outcome":outcome,"family":family,"economic_policy":economics,
-        "trace_backend":backend,"verification_method":(
+        "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
+        "verification_method":(
             "Foundry Vm.startStateDiffRecording/stopAndReturnStateDiff" if backend=="forge-state-diff"
             else "local-Anvil RPC transaction plus debug_traceTransaction callTracer"
         ),

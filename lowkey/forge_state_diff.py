@@ -5,6 +5,12 @@ import hashlib, json, re
 KIND_NAMES = {0:"Call",1:"DelegateCall",2:"CallCode",3:"StaticCall",4:"Create",
               5:"SelfDestruct",6:"Resume",7:"Balance",8:"Extcodesize",9:"Extcodehash",10:"Extcodecopy"}
 CALL_KINDS = {"Call","DelegateCall","CallCode","StaticCall"}
+TRACE_KINDS = CALL_KINDS | {"Create","Create2"}
+
+try:
+    from .trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
+except ImportError:
+    from lowkey.trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
 
 def _address(value, label):
     if not isinstance(value,str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}",value):
@@ -58,12 +64,15 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     code_hash=str(payload.get("target_code_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}",code_hash):
         raise ValueError("Forge state diff must include target_code_hash (keccak256 of target runtime code).")
+    fork_parent_hash=str(payload.get("fork_parent_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}",fork_parent_hash):
+        raise ValueError("Forge state diff must include a 32-byte fork_parent_hash captured before the measured call.")
     if expected_target and target!=_address(expected_target,"expected_target"):
         raise ValueError("Forge state-diff target_address does not match the control manifest.")
     raw_accesses=payload.get("accesses")
     if not isinstance(raw_accesses,list) or not raw_accesses:
         raise ValueError("Forge state-diff artifact contains no account accesses.")
-    calls=[]; storage_accesses=[]; accounts={}
+    calls=[]; trace_events=[]; storage_accesses=[]; accounts={}
     for index,raw in enumerate(raw_accesses):
         raw=_unwrap_named_json_object(raw,f"accesses[{index}]")
         if not isinstance(raw,dict): raise ValueError(f"Forge account access #{index} must be an object.")
@@ -92,6 +101,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             account_state["nonce_after"]=new_nonce
         slot_rows=raw.get("storage_accesses") or []
         if not isinstance(slot_rows,list): raise ValueError("storage_accesses must be an array.")
+        event_storage=[]
         for storage_index,row in enumerate(slot_rows):
             row=_unwrap_named_json_object(row,f"accesses[{index}].storage_accesses[{storage_index}]")
             if not isinstance(row,dict): raise ValueError("Forge StorageAccess entries must be objects.")
@@ -101,15 +111,22 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             storage_account=_address(row.get("account") or account,"storage account")
             is_write=bool(row.get("is_write",False))
             storage_reverted=bool(row.get("reverted",reverted))
-            storage_accesses.append({"access_index":index,"account":storage_account,"slot":slot,
-                "previous_value":previous,"new_value":new_value,"is_write":is_write,"reverted":storage_reverted})
+            storage_item={"access_index":index,"account":storage_account,"slot":slot,
+                "previous_value":previous,"new_value":new_value,"is_write":is_write,"reverted":storage_reverted}
+            storage_accesses.append(storage_item)
+            event_storage.append({key:value for key,value in storage_item.items() if key!="access_index"})
             accounts.setdefault(storage_account,{"address":storage_account,"balance_wei":None,"nonce":None,
                 "balance_after_wei":None,"nonce_after":None,"code_hash":None,"storage":{}})
             accounts[storage_account]["storage"].setdefault(slot,previous)
-        if kind in CALL_KINDS:
+        if kind in TRACE_KINDS:
             calls.append({"index":index,"depth":depth,"type":kind.upper(),"from":accessor,"to":account,
                           "input":data,"value":hex(value),"error":"reverted" if reverted else "",
                           "reverted":reverted,"storage_access_count":len(slot_rows)})
+            trace_events.append(build_trace_event(
+                index=index,kind=kind,accessor=accessor,account=account,depth=depth,
+                value=value,reverted=reverted,input_data=data,storage=event_storage,
+                source_backend="forge-state-diff",error="reverted" if reverted else None,
+            ))
 
     prestate=[]
     balance_deltas=[]
@@ -128,12 +145,14 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "input":entry["input"],"value_wei":_uint(entry["value"],"entry value")}
     entry_digest=hashlib.sha256(json.dumps(entry_payload,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     prestate_digest=hashlib.sha256(json.dumps(prestate,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-    return {"backend":"forge-state-diff","chain_id":chain_id,"block_number":block_number,
-        "target_address":target,"target_code_hash":code_hash,"calls":calls,"storage_accesses":storage_accesses,
+    return {"backend":"forge-state-diff","trace_schema_version":TRACE_SCHEMA_VERSION,
+        "chain_id":chain_id,"block_number":block_number,
+        "target_address":target,"target_code_hash":code_hash,"fork_parent_hash":fork_parent_hash,
+        "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
         "prestate":prestate,"prestate_sha256":prestate_digest,"balance_deltas":balance_deltas,
         "raw_account_accesses":raw_accesses,"entry_call":entry_payload,
         "entry_call_sha256":entry_digest,
-        "trace_semantics":"Ordered Forge account-access contexts with storage accesses; no RPC transaction receipt or EOA envelope.",
+        "trace_semantics":"Ordered Forge account-access contexts with calldata and storage accesses; no RPC transaction receipt or EOA envelope.",
         "limitations":["Forge state-diff evidence is test-execution evidence, not a mined EOA transaction.",
             "Gas and effective gas price are not inferred from AccountAccess records.",
             "Caller impersonation, synthetic funding, mocks and dependency mutation must be reported by the harness fidelity scan."]}

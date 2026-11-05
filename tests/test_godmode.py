@@ -845,6 +845,18 @@ class GodmodeTests(unittest.TestCase):
         }
 
     def test_semantic_invariant_requires_a_recognized_passing_assertion(self):
+
+    def test_anvil_calltracer_rows_use_the_same_trace_event_schema(self):
+        events = godmode._normalize_rpc_trace_events([{
+            "type": "CALL", "from": "0x" + "2" * 40, "to": "0x" + "1" * 40,
+            "depth": 1, "value": "0x2", "input": "0x12345678abcd", "error": "",
+        }])
+        self.assertEqual(events[0]["kind"], "Call")
+        self.assertEqual(events[0]["value"], 2)
+        self.assertEqual(events[0]["selector"], "0x12345678")
+        self.assertIsNone(events[0]["storage"])
+        self.assertEqual(events[0]["source_backend"], "anvil-calltracer")
+
         self.assertTrue(godmode._semantic_execution_verified(0, "[PASS] test_no_blocking_when_entitlement_missing"))
         self.assertTrue(godmode._semantic_execution_verified(
             0, "Suite result: ok. 1 passed; 0 failed; 0 skipped"
@@ -891,6 +903,10 @@ class GodmodeTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["backend"], "forge-state-diff")
+            self.assertEqual(result["trace_schema_version"], 1)
+            self.assertEqual(result["trace_events"][0]["kind"], "Call")
+            self.assertEqual(result["trace_events"][0]["selector"], "0x12345678")
+            self.assertEqual(result["trace_events"][0]["source_backend"], "forge-state-diff")
             self.assertEqual(result["metric"], 100)
             self.assertEqual(result["metric_kind"], "forge_account_balance_delta_without_eoa_gas")
             self.assertFalse(result["gas_verified"])

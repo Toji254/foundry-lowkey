@@ -17,6 +17,7 @@ def artifact():
         "block_number": 20_000_000,
         "target_address": TARGET,
         "target_code_hash": CODE_HASH,
+        "fork_parent_hash": "0x" + "b" * 64,
         "accesses": [
             {
                 "kind": 0, "account": TARGET, "accessor": WRAPPER,
@@ -68,6 +69,11 @@ class ForgeStateDiffTests(unittest.TestCase):
         self.assertEqual(result["calls"][0]["to"], TARGET)
         self.assertEqual(result["calls"][0]["from"], WRAPPER)
         self.assertTrue(result["storage_accesses"][0]["is_write"])
+        self.assertEqual(result["trace_events"][0]["kind"], "Call")
+        self.assertEqual(result["trace_events"][0]["selector"], "0x12345678")
+        self.assertEqual(result["trace_events"][0]["source_backend"], "forge-state-diff")
+        self.assertTrue(result["trace_events"][0]["storage"][0]["is_write"])
+        self.assertEqual(result["fork_parent_hash"], "0x" + "b" * 64)
         self.assertEqual(result["prestate"][0]["storage"][0]["slot"], "0x" + "0" * 64)
 
     def test_rejects_wrong_target(self):
@@ -91,6 +97,12 @@ class ForgeStateDiffTests(unittest.TestCase):
         value = artifact()
         value.pop("target_code_hash")
         with self.assertRaisesRegex(ValueError, "target_code_hash"):
+            normalize_forge_state_diff(value, expected_target=TARGET)
+
+    def test_rejects_missing_fork_parent_hash(self):
+        value = artifact()
+        value.pop("fork_parent_hash")
+        with self.assertRaisesRegex(ValueError, "fork_parent_hash"):
             normalize_forge_state_diff(value, expected_target=TARGET)
 
 
