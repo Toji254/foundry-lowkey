@@ -1554,6 +1554,36 @@ class GodmodeTests(unittest.TestCase):
             })
         self.assertEqual(raised.exception.reason_code, "backend_unsupported")
 
+
+    def test_steps_cli_emits_machine_readable_refusal_for_invalid_manifest_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "broken.json").write_text("{not-json", encoding="utf-8")
+            result = godmode.steps([
+                "broken.json",
+                "--root", str(root),
+                "--refusal-output", "invalid-refusal.json",
+            ])
+            refusal = json.loads((root / "invalid-refusal.json").read_text(encoding="utf-8"))
+            self.assertEqual(result, 2)
+            self.assertEqual(refusal["reason"], "unsupported_abi")
+            self.assertIsNone(refusal["family"])
+            self.assertIn("could not be read as UTF-8 JSON", refusal["detail"])
+
+    def test_steps_cli_emits_machine_readable_refusal_for_missing_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            result = godmode.steps([
+                "missing.json",
+                "--root", str(root),
+                "--refusal-output", "missing-refusal.json",
+            ])
+            refusal = json.loads((root / "missing-refusal.json").read_text(encoding="utf-8"))
+            self.assertEqual(result, 2)
+            self.assertEqual(refusal["reason"], "out_of_scope")
+            self.assertIn("does not exist", refusal["detail"])
+
+
     def test_step_renderer_refuses_protocol_specific_callbacks_with_defined_reason(self):
         for kind in ("flash_borrow", "reenter"):
             with self.subTest(kind=kind):
