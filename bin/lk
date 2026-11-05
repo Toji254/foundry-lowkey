@@ -57,8 +57,69 @@ if [[ "${1:-}" == "forge" && "${2:-}" == "debug" ]]; then
     exec forge "$@"
 fi
 
+# Workspace overview and member selection. A plain project command is
+# intercepted only at a workspace root; package-local project commands retain
+# the original router and its selected-package behavior.
+if [[ "\${1:-}" == "project" && "$#" -eq 1 ]]; then
+    if python3 "$HOME/.lowkey/workspace_tools.py" project; then
+        exit 0
+    else
+        status=$?
+        if [[ "$status" -ne 3 ]]; then
+            exit "$status"
+        fi
+    fi
+fi
+
+if [[ "\${1:-}" == "workspace" && ( "\${2:-}" == "select" || "\${2:-}" == "list" || "\${2:-}" == "status" ) ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/workspace_tools.py" "$@"
+fi
+
+# The Foundry build front door performs package selection and a read-only
+# resource/config plan first. Non-Foundry projects fall back to the original
+# repository-native build router rather than being forced through Forge.
+if [[ "\${1:-}" == "build" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/foundry_build.py" "$@"
+fi
+
+# Source risk is available before deployment. Live risk still uses the native
+# router when a target exists or the user explicitly requests runtime mode.
+if [[ "\${1:-}" == "risk" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/source_risk.py" "$@"
+fi
+
+# Finding-scoped AI routes are opt-in and bounded. Ordinary AI commands keep
+# their existing handler.
+if [[ "\${1:-}" == "ai" && "\${2:-}" == "explain-finding" ]]; then
+    shift 2
+    exec python3 "$HOME/.lowkey/finding_explainer.py" explain-finding "$@"
+fi
+if [[ "\${1:-}" == "ai" && "\${2:-}" == "preview" ]]; then
+    for arg in "\${@:3}"; do
+        case "$arg" in
+            --finding|--finding=*)
+                shift 2
+                exec python3 "$HOME/.lowkey/finding_explainer.py" preview "$@"
+                ;;
+        esac
+    done
+fi
+if [[ "\${1:-}" == "ai" && "\${2:-}" == "test-plan" ]]; then
+    for arg in "\${@:3}"; do
+        case "$arg" in
+            --finding|--finding=*)
+                shift 2
+                exec python3 "$HOME/.lowkey/finding_explainer.py" test-plan "$@"
+                ;;
+        esac
+    done
+fi
+
 # Optional constrained reasoning; never used as a general chatbot.
-if [[ "${1:-}" == "ai" ]]; then
+if [[ "\${1:-}" == "ai" ]]; then
     shift
     exec python3 "$HOME/.lowkey/ai_harness.py" "$@"
 fi
@@ -107,11 +168,9 @@ case "${1:-}" in
         shift
         exec python3 "$HOME/.lowkey/forge_tools.py" coverage "$@"
         ;;
-    # NOTE: build and test are deliberately NOT routed straight to
-    # forge_tools here. The main router dispatches them through the
-    # repository-native planner, so a non-Foundry project is never forced
-    # through Forge. Routing them here would make the native adapter layer
-    # unreachable from the real CLI.
+    # Build is handled by the project-aware Foundry planner above, which
+    # falls back to the repository-native adapter for non-Foundry projects.
+    # Test remains on the original native project router.
     script|coverage|lint|geiger|fmt|lsp|create|verify-contract|verify-check|verify-bytecode|tree|install|remove|update|init|clean|cache|config|remappings|bind|bind-json|doc|compiler|eip712|soldeer|completions|flatten)
         # Friendly Lowkey help must be handled by the main router.
         for arg in "$@"; do
