@@ -86,6 +86,7 @@ def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="o
 def _referenced_inputs(root, spec):
     found = set()
     candidates = [x for x in (spec.get("freeze_inputs") or []) if isinstance(x, str)]
+    candidates.extend(x for x in (spec.get("fidelity_sources") or []) if isinstance(x, str))
     for scenario_name in ("control", "attack", "negative_control"):
         scenario = spec.get(scenario_name) or {}
         for key in ("argv", "prepare_argv", "semantic_check_argv", "support_files"):
@@ -122,6 +123,7 @@ def _freeze_core(root, manifest_path, spec):
             "require_trace_storage": bool(spec.get("require_trace_storage", False)),
             "metric_addresses": spec.get("metric_addresses") or [],
             "non_economic": bool(spec.get("non_economic", False)),
+            "semantic_check_test": spec.get("semantic_check_test"),
             "require_negative_control": bool(spec.get("require_negative_control", False)),
             "trace_expectations": spec.get("trace_expectations") or [],
             "semantic_expectations": spec.get("semantic_expectations") or [],
@@ -130,7 +132,8 @@ def _freeze_core(root, manifest_path, spec):
             "prestate_slots": spec.get("prestate_slots") or [],
             "commands": {
                 name: {key: (spec.get(name) or {}).get(key) for key in
-                       ("prepare_argv", "argv", "semantic_check_argv", "harness", "state_diff_file")}
+                       ("prepare_argv", "argv", "semantic_check_argv", "semantic_check_test",
+                        "harness", "state_diff_file", "support_files")}
                 for name in ("control", "attack", "negative_control") if spec.get(name)
             },
         },
