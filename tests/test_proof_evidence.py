@@ -79,6 +79,15 @@ class ProofEvidenceTests(unittest.TestCase):
             frozen, _ = freeze_control_manifest(root, root / "control.json", spec)
             self.assertEqual(frozen["schema_version"], 2)
             self.assertTrue(frozen["generator_hashes"])
+            default_paths = {item["path"] for item in frozen["generator_hashes"]}
+            self.assertTrue(
+                any(path.endswith("/generator.py") for path in default_paths),
+                default_paths,
+            )
+            self.assertTrue(
+                any(path.endswith("/break_engine.py") for path in default_paths),
+                default_paths,
+            )
             self.assertTrue(validate_control_freeze(
                 root, root / "control.json", spec, required=True
             )["verified"])

@@ -132,8 +132,9 @@ lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 \
 ```
 
 The freeze binds the manifest, trace expectations, commands, explicit harnesses,
-support files, the active Lowkey gate/policy source hashes, and any project-local
-generator files named in the manifest's generator_files array. Any change to those
+support files, the active Lowkey gate/policy and built-in attack/test
+generator source hashes, and any project-local generator files named in the
+manifest's generator_files array. Any change to those
 inputs invalidates the freeze and requires a new freeze before rerunning. Freeze
 schema-v1 artifacts must be recreated with lk control --freeze.
 

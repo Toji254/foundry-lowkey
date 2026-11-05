@@ -115,7 +115,11 @@ def _referenced_inputs(root, spec):
 
 def _generator_fingerprints(root, spec):
     paths = {Path(__file__).resolve()}
-    for module_name in ("godmode.py", "forge_state_diff.py", "trace_evidence.py"):
+    for module_name in (
+        "godmode.py", "forge_state_diff.py", "trace_evidence.py",
+        "break_engine.py", "generator.py", "test_generation.py",
+        "test_generation_analysis.py", "generation_plugins.py",
+    ):
         module_path = Path(__file__).with_name(module_name)
         if module_path.is_file():
             paths.add(module_path.resolve())
