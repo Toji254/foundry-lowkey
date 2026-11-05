@@ -233,11 +233,6 @@ class BreakEngineTests(unittest.TestCase):
             break_engine._basic_solidity_expr("address[]", "[]"),
             "new address[](0)",
         )
-    def test_generic_array_expression_is_supported_for_dynamic_arrays(self):
-        self.assertEqual(
-            break_engine._basic_solidity_expr("address[]", "[]"),
-            "new address[](0)",
-        )
         self.assertEqual(
             break_engine._basic_solidity_expr("uint256[]", "[]"),
             "new uint256[](0)",
@@ -975,6 +970,123 @@ SECOND_RETURNDATA_LENGTH 0
         )
         self.assertEqual(result.status, "BLOCKED")
 
+
+
+    def test_attack_result_refusals_always_have_machine_readable_codes(self):
+        cases = [
+            ("BLOCKED", "blocked_unclassified"),
+            ("LAB_ISSUE", "lab_issue_unclassified"),
+            ("TIMEOUT", "execution_timeout"),
+        ]
+        for status, expected_code in cases:
+            with self.subTest(status=status):
+                result = break_engine.AttackResult(
+                    family="reentrancy",
+                    contract="Vault",
+                    address="0x" + "1" * 40,
+                    function="withdraw()",
+                    status=status,
+                    summary="refusal",
+                )
+                self.assertEqual(result.detail["reason_code"], expected_code)
+
+    def test_result_parser_assigns_specific_reason_codes_to_refusals(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        no_telemetry = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="reentrancy",
+            target=target,
+            function="withdraw()",
+            output="CompilerError: stack too deep",
+            evidence_path=None,
+        )
+        self.assertEqual(no_telemetry.status, "BLOCKED")
+        self.assertEqual(no_telemetry.detail["reason_code"], "forge_no_lowkey_telemetry")
+
+        setup_rejected = break_engine._result_from_output(
+            type("Host", (), {"tool_path": lambda self, name: name})(),
+            family="accounting",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY accounting\\n"
+                "SETUP_SUCCESS false\\n"
+                "SETUP_RETURNDATA_LENGTH 0\\n"
+            ),
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(setup_rejected.status, "LAB_ISSUE")
+        self.assertEqual(setup_rejected.detail["reason_code"], "setup_call_reverted")
+
+        unexplained_rejection = break_engine._result_from_output(
+            type("Host", (), {"tool_path": lambda self, name: name})(),
+            family="accounting",
+            target=target,
+            function="withdraw()",
+            output=(
+                "LOWKEY_BREAK_FAMILY accounting\\n"
+                "SETUP_SUCCESS true\\n"
+                "FIRST_SUCCESS false\\n"
+                "FIRST_RETURNDATA_LENGTH 0\\n"
+                "SECOND_SUCCESS false\\n"
+                "SECOND_RETURNDATA_LENGTH 0\\n"
+                "TOTAL_TARGET_OUTFLOW 0\\n"
+                "LOWKEY_BREAK false\\n"
+            ),
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(unexplained_rejection.status, "BLOCKED")
+        self.assertEqual(
+            unexplained_rejection.detail["reason_code"],
+            "target_rejected_without_revert_evidence",
+        )
+
+    def test_abi_discovery_errors_are_reason_coded_not_silently_ignored(self):
+        import random
+        import tempfile
+        from unittest.mock import patch
+
+        class Context:
+            def __init__(self, root):
+                self.root = root
+
+            def foundry_project_root(self):
+                return self.root
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = Context(root)
+
+        target = break_engine.Target("TokenVault", "0x" + "1" * 40)
+        function = {
+            "name": "withdraw",
+            "inputs": [],
+            "stateMutability": "nonpayable",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for family in ("replay", "reentrancy"):
+                with self.subTest(family=family):
+                    with patch.object(
+                        break_engine, "_encode_call", return_value=("0x1234", None)
+                    ), patch.object(
+                        break_engine, "_discover_functions",
+                        side_effect=RuntimeError("ABI provider unavailable"),
+                    ):
+                        result = break_engine._run_family(
+                            Host(tmp),
+                            {},
+                            "http://127.0.0.1:8545",
+                            target,
+                            function,
+                            family,
+                            {},
+                            random.Random(1),
+                        )
+                    self.assertEqual(result.status, "BLOCKED")
+                    self.assertEqual(result.detail["reason_code"], "abi_discovery_failed")
+                    self.assertIn("ABI provider unavailable", result.detail["error"])
 
 if __name__ == "__main__":
     unittest.main()

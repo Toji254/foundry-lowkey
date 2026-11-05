@@ -189,6 +189,16 @@ class AttackResult:
     break_condition: bool = False
     detail: dict[str, Any] | None = None
 
+    def __post_init__(self) -> None:
+        self.detail = dict(self.detail or {})
+        fallback_codes = {
+            "BLOCKED": "blocked_unclassified",
+            "LAB_ISSUE": "lab_issue_unclassified",
+            "TIMEOUT": "execution_timeout",
+        }
+        if self.status in fallback_codes:
+            self.detail.setdefault("reason_code", fallback_codes[self.status])
+
 
 def _slug(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "target"))
@@ -1044,18 +1054,30 @@ def _run_simple_evm_family(
     signature = _format_signature(fn, host)
     actor_accounts = _anvil_accounts(host, config)
     if not actor_accounts:
-        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "No unlocked local Anvil accounts were detected.")
+        return AttackResult(
+            family, target.contract, target.address, signature, "BLOCKED",
+            "No unlocked local Anvil accounts were detected.",
+            detail={"reason_code": "no_unlocked_anvil_accounts"},
+        )
     actor = actor_accounts[1] if len(actor_accounts) > 1 else actor_accounts[0]
     mode = "one" if family in {"replay", "accounting", "access"} else "zero"
     values = _make_value(host, fn, rng, mode, config)
     calldata, error = _encode_call(host, config, target, fn, values)
     if not calldata:
-        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", f"Could not encode a generic call: {error}")
+        return AttackResult(
+            family, target.contract, target.address, signature, "BLOCKED",
+            f"Could not encode a generic call: {error}",
+            detail={"reason_code": "call_encoding_failed", "error": str(error or "")},
+        )
     value = _payable_value(fn, opts, "small")
 
     snapshot = _cast_snapshot(host, rpc)
     if not snapshot:
-        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "Local RPC does not expose evm_snapshot/anvil_snapshot.")
+        return AttackResult(
+            family, target.contract, target.address, signature, "BLOCKED",
+            "Local RPC does not expose evm_snapshot/anvil_snapshot.",
+            detail={"reason_code": "snapshot_unavailable"},
+        )
 
     try:
         before_target = _cast_balance(host, rpc, target.address)
@@ -1087,7 +1109,10 @@ def _run_simple_evm_family(
             max_data, max_error = _encode_call(host, config, target, fn, max_values)
             if not zero_data or not max_data:
                 reason = zero_error or max_error or "could not encode edge values"
-                return AttackResult(family, target.contract, target.address, signature, "BLOCKED", reason)
+                return AttackResult(
+                    family, target.contract, target.address, signature, "BLOCKED", reason,
+                    detail={"reason_code": "edge_call_encoding_failed"},
+                )
             _cast_revert(host, rpc, snapshot)
             zero = _cast_send(host, rpc, target, zero_data, value, actor)
             zero_success = zero.returncode == 0
@@ -2178,12 +2203,16 @@ def _result_from_output(
             summary="Generated Forge harness exceeded the safety timeout. No security conclusion is supported.",
             evidence_path=evidence_path,
             break_condition=False,
-            detail={"raw_tail": "\n".join(text_output.splitlines()[-80:])},
+            detail={
+                "reason_code": "forge_timeout",
+                "raw_tail": "\n".join(text_output.splitlines()[-80:]),
+            },
         )
     found = re.search(r"LOWKEY_BREAK\s+(true|false)", text_output, flags=re.I)
     is_break = bool(found and found.group(1).lower() == "true")
     structured = "LOWKEY_BREAK_FAMILY" in text_output
     status = "BREAK" if is_break else ("OBSERVED" if structured else "BLOCKED")
+    reason_code = "forge_no_lowkey_telemetry" if status == "BLOCKED" else None
     summary = {
         "BREAK": "Concrete break condition reached.",
         "OBSERVED": "Attack executed; no concrete break condition reached.",
@@ -2216,6 +2245,7 @@ def _result_from_output(
         function_name = _function_name(function or "target call")
         if setup_success is False:
             status = "LAB_ISSUE"
+            reason_code = "setup_call_reverted"
             reason = decoded_setup or (
                 "No revert data was returned."
                 if not setup_len
@@ -2235,6 +2265,8 @@ def _result_from_output(
             # A rejected call with concrete revert evidence was executed and observed.
             # Keep BLOCKED only when the probe produced no evidence that the target handled it.
             status = "OBSERVED" if (decoded_first or first_len or target_revert_data) else "BLOCKED"
+            if status == "BLOCKED":
+                reason_code = "target_rejected_without_revert_evidence"
             reason = decoded_first or (
                 "No revert data was returned."
                 if not first_len
@@ -2270,6 +2302,8 @@ def _result_from_output(
     detail = {
         "raw_tail": raw_tail,
     }
+    if reason_code:
+        detail["reason_code"] = reason_code
     if structured and family in {"replay", "accounting"}:
         detail.update({
             "setup_revert": _decode_revert_data(
@@ -2409,6 +2443,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             function=signature,
             status="BLOCKED",
             summary=f"Could not encode a generic call: {error}",
+            detail={"reason_code": "call_encoding_failed", "error": str(error or "")},
         )
 
     value = _payable_value(fn, opts, "small")
@@ -2426,12 +2461,16 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         except ValueError as error:
             return AttackResult(family, target.contract, target.address, signature, "BLOCKED", str(error),
                                 detail={"reason_code": "unsupported_abi"})
-        except Exception:
-            setup_signature = None
-            setup_params = []
-            setup_payable = False
-            entitlement_signature = None
-            asset_signature = None
+        except Exception as error:
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED",
+                f"Could not inspect target ABI for setup/entitlement/asset discovery: {error}",
+                detail={
+                    "reason_code": "abi_discovery_failed",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                },
+            )
         body = _render_repeat_test(
             target,
             fn,
@@ -2461,7 +2500,10 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         max_data, max_error = _encode_call(host, config, target, fn, max_values)
         if not zero_data or not max_data:
             reason = zero_error or max_error or "could not encode edge values"
-            return AttackResult(family, target.contract, target.address, signature, "BLOCKED", reason)
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED", reason,
+                detail={"reason_code": "edge_call_encoding_failed"},
+            )
         body = _render_boundary_test(target, signature, zero_data, max_data, value)
     elif family == "time":
         body = _render_time_test(target, signature, calldata, value)
@@ -2502,6 +2544,16 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 family, target.contract, target.address, signature, "BLOCKED", str(error),
                 detail={"reason_code": "unsupported_abi"},
             )
+        except Exception as error:
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED",
+                f"Could not inspect target ABI for setup/entitlement/asset discovery: {error}",
+                detail={
+                    "reason_code": "abi_discovery_failed",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                },
+            )
     elif family == "upgrade":
         body = _render_access_test(
             target,
@@ -2515,7 +2567,10 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         # protocol-specific invariant before Lowkey may call it a BREAK.
         body = _render_access_test(target, signature, calldata, value, break_on_success=False)
     else:
-        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "Unknown family.")
+        return AttackResult(
+            family, target.contract, target.address, signature, "BLOCKED", "Unknown family.",
+            detail={"reason_code": "unknown_attack_family"},
+        )
 
     harness = _write_harness(host, f"{target.contract}_{name}_{family}", body)
 
@@ -2534,7 +2589,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         return AttackResult(
             family, target.contract, target.address, signature, "BLOCKED",
             f"Forge execution failed to start: {exc}",
-            detail={"harness": harness},
+            detail={"reason_code": "forge_execution_error", "harness": harness},
         )
 
     archive_path = _archive_harness(host, harness)
@@ -2615,6 +2670,7 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             status="BLOCKED",
             summary=f"Attack generator failed safely: {exc}",
             detail={
+                "reason_code": "generator_error",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             },
