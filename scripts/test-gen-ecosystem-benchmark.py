@@ -205,6 +205,17 @@ def load_report(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def expected_unsupported_outcome(project: dict[str, Any]) -> dict[str, str] | None:
+    """Return an explicit negative-control outcome declared by the corpus manifest."""
+    value = project.get("expected_outcome")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return {
+        "status": "expected-unsupported",
+        "reason": value.strip(),
+    }
+
+
 def evaluate_target(project_root: Path, contract: str, output_root: Path) -> dict[str, Any]:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", contract)
     all_dir = output_root / (slug + "-all")
@@ -328,6 +339,18 @@ def main() -> int:
                 results.append(item)
                 continue
 
+            expected_outcome = expected_unsupported_outcome(project)
+            if expected_outcome is not None:
+                item["status"] = expected_outcome["status"]
+                item["expected_outcome"] = expected_outcome["reason"]
+                item["classification_evidence"] = {
+                    "manifest_declaration": "expected_outcome",
+                    "discovered_contract_candidates": item["candidate_sources"],
+                    "generation_executed": False,
+                }
+                results.append(item)
+                continue
+
             build = run(["forge", "build"], cwd=clone_dir, timeout=1800)
             item["baseline_build"] = build
             item["targets"] = [
@@ -353,6 +376,10 @@ def main() -> int:
             "evaluated_count": sum(item["status"] == "evaluated" for item in results),
             "baseline_build_failed_count": sum(item["status"] == "baseline-build-failed" for item in results),
             "generation_validation_failed_count": sum(item["status"] == "generation-validation-failed" for item in results),
+            "expected_unsupported_count": sum(item["status"] == "expected-unsupported" for item in results),
+            "unresolved_project_count": sum(
+                item["status"] not in {"evaluated", "expected-unsupported"} for item in results
+            ),
             "revision_pin_failed_count": sum(
                 "revision" in item.get("status", "") or "submodule" in item.get("status", "")
                 for item in results
@@ -370,7 +397,8 @@ def main() -> int:
         print(f"Projects: {len(results)}; baseline builds successful: {summary['evaluated_count']}")
         for item in results:
             print(f"  {item['id']}: {item['status']}")
-        return 0 if results and all(item["status"] == "evaluated" for item in results) else 1
+        accepted = {"evaluated", "expected-unsupported"}
+        return 0 if results and all(item["status"] in accepted for item in results) else 1
     finally:
         if owned_temp is not None and not args.keep_workspaces:
             owned_temp.cleanup()

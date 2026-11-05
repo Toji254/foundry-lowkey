@@ -48,6 +48,20 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             found = BENCHMARK.find_contracts(root)
             self.assertEqual(set(found), {"srcArtifact"})
 
+    def test_manifest_negative_control_is_recorded_as_expected_unsupported(self):
+        outcome = BENCHMARK.expected_unsupported_outcome({
+            "id": "non-protocol-fixture",
+            "expected_outcome": "Classify this test framework as unsupported.",
+        })
+        self.assertEqual(
+            outcome,
+            {
+                "status": "expected-unsupported",
+                "reason": "Classify this test framework as unsupported.",
+            },
+        )
+        self.assertIsNone(BENCHMARK.expected_unsupported_outcome({"id": "ordinary-project"}))
+
     def test_target_is_not_marked_passed_when_generator_command_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

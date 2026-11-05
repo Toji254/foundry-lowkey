@@ -194,7 +194,7 @@ contract ReentrantVaultTest is Test {
     function test_reentrancyCannotPayMoreThanCredited() public {
         ReentrantVault vault = new ReentrantVault();
         ReenteringAttacker attacker = new ReenteringAttacker(vault);
-        vm.deal(address(this), 1 ether);
+        vm.deal(address(this), 2 ether);
         vault.deposit{value: 1 ether}();
         attacker.depositAndWithdraw{value: 1 ether}();
         assertEq(address(attacker).balance, 1 ether, "credit paid more than once");
