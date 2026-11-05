@@ -102,6 +102,38 @@ class FoundryBuildPlannerTests(unittest.TestCase):
             self.assertFalse(plan["side_effects"]["deploy"])
             self.assertFalse(plan["side_effects"]["cache_delete"])
 
+    def test_large_scope_warns_when_one_compiler_worker_may_still_be_risky(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+            for index in range(181):
+                self.write(root, f"src/Contract{index}.sol", f"contract Contract{index} {{}}")
+
+            resources = {
+                "memory_total_bytes": 8 * 1024 ** 3,
+                "memory_available_bytes": 6 * 1024 ** 3,
+                "swap_total_bytes": 7 * 1024 ** 3,
+                "swap_used_bytes": 2 * 1024 ** 3,
+                "zram_used_bytes": 2 * 1024 ** 3,
+                "cpu_count": 8,
+                "memory_psi_some_avg10": 0.0,
+                "memory_psi_full_avg10": 0.0,
+            }
+            with patch.object(foundry_build.forge_tools, "forge_path", return_value=None), \\
+                 patch.object(foundry_build, "collect_resources", return_value=resources):
+                plan = foundry_build.build_plan(root, scope="production")
+
+            self.assertEqual(plan["source_file_count"], 181)
+            self.assertEqual(plan["threads"], 1)
+            self.assertTrue(any(
+                "may exceed available memory even with one compiler worker" in warning
+                for warning in plan["warnings"]
+            ))
+            self.assertTrue(any(
+                "no validated per-compiler memory estimate" in warning
+                for warning in plan["warnings"]
+            ))
+
     def test_target_contract_name_resolves_only_in_configured_source_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
