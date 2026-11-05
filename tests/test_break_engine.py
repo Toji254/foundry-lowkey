@@ -308,6 +308,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("ASSET_DECIMALS_VERIFIED", body)
         self.assertIn("_lowkeySafeApprove(assetToken, TARGET", body)
         self.assertIn("APPROVE_RESET_FAILED", body)
+        self.assertIn("vm.prank(ATTACKER);", body)
         self.assertNotIn("function approve(address spender, uint256 amount) external returns (bool)", body)
         self.assertIn('abi.encodeWithSignature("deposit(uint256)", tokenFundingAmount)', body)
         self.assertIn("TARGET.call{value: 0}(setupData)", body)

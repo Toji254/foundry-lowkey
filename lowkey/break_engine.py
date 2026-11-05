@@ -1364,6 +1364,7 @@ contract LowkeyBreakRepeat is Test {{
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
 
     function _lowkeyApproveCall(address token, address spender, uint256 amount) internal returns (bool) {{
+        vm.prank(ATTACKER);
         (bool ok, bytes memory data) = token.call(
             abi.encodeWithSignature("approve(address,uint256)", spender, amount)
         );
