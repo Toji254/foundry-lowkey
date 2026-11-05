@@ -1302,6 +1302,16 @@ def _render_repeat_test(
         }}
 """
 
+    break_verdict_block = (
+        """
+        bool breakByEntitlement = entitlementReadOk
+            && (totalGain > entitlementBefore || (assetReadOk && totalTokenGain > entitlementBefore));
+        console2.log("LOWKEY_BREAK", breakByEntitlement);
+"""
+        if entitlement_signature
+        else '        console2.log("LOWKEY_BREAK", false);\\n'
+    )
+
     return _render_common_header() + f"""
 interface IERC20Lowkey {{
     function balanceOf(address account) external view returns (uint256);
@@ -1391,9 +1401,7 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("ENTITLEMENT_AFTER_FIRST", entitlementAfterFirst);
         console2.log("ENTITLEMENT_AFTER_SECOND", entitlementAfterSecond);
 
-        bool breakByEntitlement = entitlementReadOk
-            && (totalGain > entitlementBefore || (assetReadOk && totalTokenGain > entitlementBefore));
-        console2.log("LOWKEY_BREAK", breakByEntitlement);
+{break_verdict_block}
         targetMid; attackerMid;
     }}
 }}"""
@@ -1489,8 +1497,19 @@ def _basic_solidity_expr(ptype: str, value: str) -> str:
     """Render one supported scalar ABI value as a Solidity expression."""
     raw = str(value)
     lower = ptype.lower().strip()
-    if _abi_array_type(lower) is not None:
-        raise ValueError(f"array ABI type '{ptype}' must be rendered as a memory array")
+    array_type = _abi_array_type(lower)
+    if array_type is not None:
+        base, fixed_length = array_type
+        if raw == "[]" and fixed_length is None:
+            supported_base = (
+                base == "address"
+                or base in {"bool", "bytes", "string"}
+                or re.fullmatch(r"u?int\\d*", base)
+                or re.fullmatch(r"bytes(?:[1-9]|[12]\\d|3[0-2])", base)
+            )
+            if supported_base:
+                return f"new {base}[](0)"
+        raise ValueError(f"array ABI type '{ptype}' needs an explicitly rendered memory array")
     if lower == "address":
         return f"address({raw})"
     if lower == "bool":
