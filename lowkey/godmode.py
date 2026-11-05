@@ -884,10 +884,16 @@ def _trace_control_run(root, url, name, entry, spec, env):
 
 
 
+_SOURCIFY_IDENTITY_CACHE = {}
+
+
 def _sourcify_contract_identity(chain_id, address):
     """Fetch independent exact-match source metadata from the current Sourcify v2 API."""
     chain_id = int(chain_id)
     address = addr(address)
+    cache_key = (chain_id, address)
+    if cache_key in _SOURCIFY_IDENTITY_CACHE:
+        return dict(_SOURCIFY_IDENTITY_CACHE[cache_key])
     endpoint = (
         "https://sourcify.dev/server/v2/contract/"
         + str(chain_id) + "/" + address + "?fields=all"
@@ -900,6 +906,7 @@ def _sourcify_contract_identity(chain_id, address):
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Sourcify returned a non-object contract response.")
+    _SOURCIFY_IDENTITY_CACHE[cache_key] = dict(payload)
     return payload
 
 
@@ -1159,6 +1166,10 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         beacon_word = str(rpc(
             source, "eth_getStorageAt", [target, beacon_slot, hex(block_number)]
         ) or "0x" + "0" * 64).lower()
+        if not re.fullmatch(r"0x[0-9a-f]{64}", implementation_word):
+            raise ValueError("EIP-1967 implementation storage value is not a full bytes32 word.")
+        if not re.fullmatch(r"0x[0-9a-f]{64}", beacon_word):
+            raise ValueError("EIP-1967 beacon storage value is not a full bytes32 word.")
         implementation_int = int(implementation_word, 16)
         beacon_int = int(beacon_word, 16)
         if beacon_int:
@@ -1170,6 +1181,8 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
             return result
         if implementation_int:
             implementation = "0x" + implementation_word[-40:]
+            if implementation not in trace_addresses:
+                raise ValueError("EIP-1967 implementation address was not observed in the recorded call tree.")
             proxy_spec = identity_spec.get("proxy") or {}
             if proxy_spec and proxy_spec.get("type") != "eip1967":
                 raise ValueError("Resolved EIP-1967 implementation slot conflicts with target_identity.proxy.type.")
@@ -1195,6 +1208,18 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
                 implementation_code,
             )
             implementation_source = _verify_sourcify_exact(chain_id, implementation)
+            implementation_prestate = prestate_by_address.get(implementation) or {}
+            trace_implementation_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
+            if not re.fullmatch(r"0x[0-9a-f]{64}", trace_implementation_code_hash):
+                raise ValueError("Trace did not preserve a usable implementation code hash.")
+            implementation_proof = rpc(
+                source, "eth_getProof", [implementation, [], hex(block_number)]
+            )
+            archive_implementation_code_hash = str(
+                (implementation_proof or {}).get("codeHash") or ""
+            ).lower()
+            if archive_implementation_code_hash != trace_implementation_code_hash:
+                raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
             identity["proxy"] = {
                 "type": "eip1967",
                 "implementation_address": implementation,

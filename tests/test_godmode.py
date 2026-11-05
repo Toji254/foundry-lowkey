@@ -1126,6 +1126,8 @@ class GodmodeTests(unittest.TestCase):
             if method == "eth_getTransactionCount":
                 return "0x1"
             if method == "eth_getProof":
+                if params[0] == implementation:
+                    return {"codeHash": "0x" + "e" * 64}
                 return {"codeHash": target_hash}
             if method == "eth_getStorageAt":
                 return storage_value
