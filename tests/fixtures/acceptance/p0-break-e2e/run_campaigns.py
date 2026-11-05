@@ -86,6 +86,20 @@ def telemetry_bool(raw: str, label: str) -> bool:
     return match.group(1).lower() == "true"
 
 
+def run_with_snapshot(action):
+    """Run P0 campaigns without leaking their transactions into shared CI Anvil state."""
+    snapshot = rpc("evm_snapshot", [])
+    if not snapshot:
+        raise RuntimeError("Anvil did not return an EVM snapshot id")
+    try:
+        return action()
+    finally:
+        if not rpc("evm_revert", [snapshot]):
+            raise RuntimeError(
+                f"failed to restore shared Anvil state for snapshot {snapshot}"
+            )
+
+
 def campaign(contract_name: str, address: str, function: str, family: str, label: str, checks):
     artifact = f"out/P0BreakCompatibility.sol/{contract_name}.json"
     run_lk(["lk", "target", address], f"{label}-target")
@@ -117,7 +131,7 @@ def campaign(contract_name: str, address: str, function: str, family: str, label
     print(f"  evidence: {evidence_path}")
 
 
-def main():
+def _run_campaigns():
     accounts = rpc("eth_accounts", [])
     if len(accounts) < 2:
         raise RuntimeError("Anvil must expose at least two unlocked accounts")
@@ -175,6 +189,18 @@ def main():
         "p0-usdt-no-return", lambda raw, harness: check_token(raw, harness, "USDT-style"),
     )
     print("PASS: all three deployed-target lk break campaigns produced OBSERVED, structured, traceable evidence")
+
+
+def main():
+    run_with_snapshot(_run_campaigns)
+
+
+if __name__ == "__main__":
+    main()
+
+
+def main():
+    run_with_snapshot(_run_campaigns)
 
 
 if __name__ == "__main__":
