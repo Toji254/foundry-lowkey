@@ -1799,7 +1799,7 @@ contract LowkeyBreakReentrant {{
 
     constructor(address _target) {{
         target = _target;
-        address registry = 0x1820a4B7618Bde71Dce8cdc73aAB6C95905faD24;
+        address registry = 0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24;
         if (registry.code.length != 0) {{
             try ILowkeyERC1820Registry(registry).setInterfaceImplementer(
                 address(this), keccak256("ERC777TokensRecipient"), address(this)
