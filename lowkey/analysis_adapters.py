@@ -47,31 +47,52 @@ def _dependency_prefixes(root: Path) -> set[str]:
                     normalized = value.rstrip("/")
                     prefixes.add(normalized)
                     submodule_paths.add(normalized)
+
+    remapping_values: list[str] = []
     remappings = root / "remappings.txt"
     if remappings.is_file():
-        for line in _safe_read(remappings).splitlines():
-            value = line.strip()
-            if not value or value.startswith("#") or "=" not in value:
-                continue
-            _prefix, destination = (part.strip() for part in value.split("=", 1))
-            destination = destination.replace("\\", "/").strip("./")
-            if not destination:
-                continue
-            normalized = destination.rstrip("/")
-            if not normalized:
-                continue
-            first = normalized.split("/", 1)[0]
-            # A remapping destination is only dependency evidence when it
-            # resolves into a real dependency location. Projects frequently map
-            # an import prefix onto their own source tree (for example
-            # "@protocol/=contracts/"); pruning that directory would hide
-            # first-party source and make the whole project look unsupported.
-            is_submodule = any(
-                normalized == submodule or normalized.startswith(submodule + "/")
-                for submodule in submodule_paths
-            )
-            if first in DEPENDENCY_CONTAINER_DIRS or first in IGNORED_DIRS or is_submodule:
-                prefixes.add(normalized)
+        remapping_values.extend(_safe_read(remappings).splitlines())
+
+    # Foundry remappings commonly live in the package-local foundry.toml.
+    # Read every declared profile so source inventory does not misclassify a
+    # remapped lib/ dependency as first-party merely because remappings.txt is
+    # absent. Source-tree destinations such as src/ and ../shared/src/ remain
+    # first-party and are deliberately not pruned.
+    foundry = root / "foundry.toml"
+    if foundry.is_file() and tomllib is not None:
+        try:
+            config = tomllib.loads(_safe_read(foundry))
+        except (tomllib.TOMLDecodeError, TypeError, ValueError):
+            config = {}
+        values = config.get("remappings", [])
+        if isinstance(values, list):
+            remapping_values.extend(str(item) for item in values)
+        profiles = config.get("profile", {})
+        if isinstance(profiles, dict):
+            for profile in profiles.values():
+                if isinstance(profile, dict) and isinstance(profile.get("remappings"), list):
+                    remapping_values.extend(str(item) for item in profile["remappings"])
+
+    for line in remapping_values:
+        value = str(line).strip()
+        if not value or value.startswith("#") or "=" not in value:
+            continue
+        _prefix, destination = (part.strip() for part in value.split("=", 1))
+        destination = destination.replace("\\", "/").strip("./")
+        if not destination:
+            continue
+        normalized = destination.rstrip("/")
+        if not normalized:
+            continue
+        first = normalized.split("/", 1)[0]
+        # A remapping destination is dependency evidence only when it resolves
+        # into a declared dependency location, not simply because it is remapped.
+        is_submodule = any(
+            normalized == submodule or normalized.startswith(submodule + "/")
+            for submodule in submodule_paths
+        )
+        if first in DEPENDENCY_CONTAINER_DIRS or first in IGNORED_DIRS or is_submodule:
+            prefixes.add(normalized)
     return prefixes
 def _is_dependency_path(path: Path, root: Path, prefixes: set[str] | None = None) -> bool:
     try:
@@ -519,17 +540,40 @@ def _capabilities(backend: str, stacks: list[str], languages: set[str]) -> dict[
 
 def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     requested = _safe_resolve(root)
-    project_root = canonical_project_root(requested)
-    scan_root = requested if requested.is_file() else project_root
+    if requested.is_file():
+        requested = requested.parent
+
+    root_package = _json_object(requested / "package.json")
+    root_cargo = _toml_object(requested / "Cargo.toml")
+    has_root_project_manifest = any((requested / marker).is_file() for marker in (
+        "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
+        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
+        "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
+        "brownie-config.yaml", "brownie-config.yml", "Cargo.toml", "go.mod",
+    ))
+    explicit_workspace = (
+        not has_root_project_manifest
+        and (
+            _package_workspace(root_package)
+            or (requested / "pnpm-workspace.yaml").is_file()
+            or (requested / "go.work").is_file()
+            or _cargo_workspace(requested, root_cargo)
+        )
+    )
+    project_root = requested if explicit_workspace else canonical_project_root(requested)
+    scan_root = project_root
     files = _source_files(scan_root)
     counts = _source_counts(files)
     stacks, language_names = _manifest_stack(project_root)
 
-    # A directory that only contains multiple independent project roots is a
-    # workspace aggregate, not a single auditable source scope. Surface the
-    # child stacks and keep the aggregate explicitly partial.
+    # Workspace roots are aggregate scopes even when an active member is saved.
+    # A concrete child package is still resolved independently by
+    # canonical_project_root when the command starts inside that package.
     nested_projects = _nested_project_roots(project_root)
-    nested_container = len(nested_projects) >= 2 and not stacks
+    nested_container = bool(
+        explicit_workspace
+        or (len(nested_projects) >= 2 and not has_root_project_manifest)
+    )
     if nested_container:
         child_stacks: list[str] = []
         for child in nested_projects:
@@ -638,6 +682,15 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "language_names": language_names,
         "source_files": [str(path.relative_to(project_root)) for path in files],
         "source_file_count": len(files),
+        "workspace_members": [
+            {
+                "root": child.relative_to(project_root).as_posix(),
+                "stacks": _manifest_stack(child)[0],
+                "languages": _source_counts(_source_files(child)),
+                "source_file_count": len(_source_files(child)),
+            }
+            for child in nested_projects
+        ] if nested_container else [],
         "adapters": adapters,
         "capabilities": _capabilities(backend, stacks, language_set),
         "security_analyzers": available_security_analyzers(project_root, stacks, language_set),
