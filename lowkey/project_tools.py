@@ -659,11 +659,15 @@ def _solidity_remappings(root: Path) -> list[tuple[str, str]]:
     return sorted(result, key=lambda item: len(item[0]), reverse=True)
 
 
-def _solidity_external_candidates(raw: str, root: Path) -> list[Path]:
+def _solidity_external_candidates(
+    raw: str,
+    root: Path,
+    remappings: Sequence[tuple[str, str]] | None = None,
+) -> list[Path]:
     clean = raw.strip().strip('"\'').replace("\\", "/")
     parts = [part for part in clean.split("/") if part]
     candidates: list[Path] = []
-    for prefix, destination in _solidity_remappings(root):
+    for prefix, destination in (list(remappings) if remappings is not None else _solidity_remappings(root)):
         if clean.startswith(prefix):
             suffix = clean[len(prefix):].lstrip("/")
             candidates.append(root / destination.rstrip("/") / suffix)
@@ -690,7 +694,6 @@ def _solidity_external_candidates(raw: str, root: Path) -> list[Path]:
 
         candidates.append(root / "lib" / parts[0] / Path(*parts[1:]))
     return candidates
-
 
 def _resolve_solidity_import(
     importer: Path,
