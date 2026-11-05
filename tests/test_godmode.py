@@ -1584,6 +1584,34 @@ class GodmodeTests(unittest.TestCase):
             self.assertIn("does not exist", refusal["detail"])
 
 
+
+    def test_steps_cli_converts_renderer_runtime_errors_to_no_capability_refusal(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = {
+                "family": "reentrancy",
+                "target_address": "0x" + "1" * 40,
+                "steps": [{
+                    "kind": "call",
+                    "selector": "0x12345678",
+                    "optional": True,
+                }],
+            }
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with patch.object(godmode, "render_step_harness", side_effect=OSError("template read denied")):
+                result = godmode.steps([
+                    "manifest.json",
+                    "--root", str(root),
+                    "--refusal-output", "renderer-refusal.json",
+                ])
+            refusal = json.loads((root / "renderer-refusal.json").read_text(encoding="utf-8"))
+            self.assertEqual(result, 2)
+            self.assertEqual(refusal["reason"], "no_capability")
+            self.assertIn("template read denied", refusal["detail"])
+
+
     def test_step_renderer_refuses_protocol_specific_callbacks_with_defined_reason(self):
         for kind in ("flash_borrow", "reenter"):
             with self.subTest(kind=kind):
