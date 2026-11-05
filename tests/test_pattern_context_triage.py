@@ -179,6 +179,38 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         )
         self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
 
+
+    def test_imported_first_party_workspace_base_is_resolved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "pnpm-workspace.yaml").write_text("packages:\\n  - packages/*\\n", encoding="utf-8")
+            package = workspace / "packages" / "perps"
+            (package / "src").mkdir(parents=True)
+            shared = workspace / "packages" / "shared" / "src"
+            shared.mkdir(parents=True)
+            (package / "foundry.toml").write_text(
+                '[profile.default]\\nremappings = ["@shared/=../shared/src/"]\\n',
+                encoding="utf-8",
+            )
+            (package / "src" / "Vault.sol").write_text(
+                'pragma solidity ^0.8.20; import "@shared/AuthBase.sol"; '
+                'contract Vault is AuthBase { bool public paused; '
+                'function setPaused(bool value) external onlyGuardian { paused = value; } }',
+                encoding="utf-8",
+            )
+            (shared / "AuthBase.sol").write_text(
+                'pragma solidity ^0.8.20; abstract contract AuthBase { '
+                'mapping(address => bool) internal guardian; '
+                'modifier onlyGuardian() { require(guardian[msg.sender]); _; } }',
+                encoding="utf-8",
+            )
+            model = SimpleNamespace(
+                name="Vault", source="src/Vault.sol",
+                abi=[{"type": "function", "name": "setPaused", "stateMutability": "nonpayable"}],
+                arrays=[], kind="contract",
+            )
+            self.assertEqual(self.matches(package, model, "AUTH-001"), [])
+
     def test_documented_permissionless_settlement_is_not_flagged(self):
         root, model = self.model(
             """
