@@ -603,6 +603,10 @@ def _trace_control_run(root, url, name, entry, spec, env):
             required={str(tx.get("from") or "").lower(),str(tx.get("to") or "").lower()}
             if not required.issubset(set(addresses)): raise ValueError(f"{name} prestate_addresses must include the transaction sender and root recipient.")
             if target and target not in addresses: raise ValueError(f"{name} prestate_addresses must include target_address.")
+            storage_trace=_trace_storage_prestate(url,tx_hash)
+            for discovered_address in storage_trace.get("addresses",[]):
+                if discovered_address not in addresses:
+                    addresses.append(discovered_address)
             slots=[]
             for raw in spec.get("prestate_slots") or []:
                 if not isinstance(raw,dict): raise ValueError("prestate_slots entries must be objects with address and slot.")
@@ -612,13 +616,25 @@ def _trace_control_run(root, url, name, entry, spec, env):
                     try: slot=hex(int(slot,0))
                     except (TypeError,ValueError): raise ValueError(f"Invalid prestate slot: {raw.get('slot')}")
                 slots.append({"address":address,"slot":slot})
-            if not slots: raise ValueError("Declare at least one prestate_slots entry for the target accounting/authorization state.")
+            for item in storage_trace.get("slots",[]):
+                slots.append({"address":item["address"],"slot":item["slot"]})
+            slots=list({(item["address"],item["slot"]):item for item in slots}.values())
+            if not slots:
+                raise ValueError("No target/dependency storage slots were declared or discovered by prestateTracer.")
+            if spec.get("require_trace_storage") and not storage_trace.get("supported"):
+                raise ValueError("Manifest requires trace-derived storage, but the RPC does not support prestateTracer: "+str(storage_trace.get("reason")))
             entry_digest,entry_call=_control_entry_digest(tx,chain_id)
             envelope_digest,envelope=_control_transaction_envelope(tx,chain_id)
             trace_entry_digest,trace_entry=_control_entry_digest(trace,chain_id)
             if trace_entry_digest!=entry_digest:
                 raise ValueError(f"{name} callTracer root does not match eth_getTransactionByHash.")
-            prestate_digest,prestate=_control_prestate_digest(url,receipt,addresses,slots)
+            scenario_exclusions=[
+                {"address":row["address"],"slot":row["slot"]}
+                for row in scenario_parameters
+            ]
+            prestate_digest,prestate=_control_prestate_digest(
+                url,receipt,addresses,slots,comparison_excluded_slots=scenario_exclusions
+            )
             metric_addresses=sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
             sender=str(tx.get("from") or "").lower()
             if not metric_addresses or sender not in metric_addresses:
@@ -663,6 +679,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "transaction_envelope":envelope,
                 "prestate_sha256":prestate_digest,
                 "prestate":prestate,
+                "storage_trace":storage_trace,
+                "derived_storage_slots":storage_trace.get("slots",[]),
                 "scenario_parameters":scenario_parameters,
                 "semantic_check":semantic_check,
                 "call_trace":calls,
