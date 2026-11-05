@@ -520,25 +520,36 @@ def _member_blocks(contract_body: str, name: str) -> list[tuple[str, str]]:
 
 
 def _has_auth_expression(value: str) -> bool:
+    """Recognize an enforced caller check, not a merely computed sender boolean."""
     caller = r"(?:msg\s*\.\s*sender|_msgSender\s*\(\s*\))"
     comparison = (
         r"\b" + caller + r"\s*(?:==|!=)\s*[^;\n{}]+"
         r"|\b[A-Za-z_]\w*(?:\s*\([^;\n{}]*\))?\s*(?:==|!=)\s*" + caller
     )
-    role_check = (
-        r"\b(?:hasRole|_checkRole|_checkOwner|isAuthorized|isGuardian|"
-        r"isController|isOperator|isPool|isEngine|isTrustedCaller)\s*\("
+    role_predicate = (
+        r"\b(?:hasRole|isAuthorized|isGuardian|isController|isOperator|"
+        r"isPool|isEngine|isTrustedCaller|_is[A-Z][A-Za-z0-9_]*)\s*\("
     )
     membership = (
-        r"\b(?:guardian|guardians|controller|controllers|operator|operators|"
-        r"pool|engine|router|allowlist|whitelist|roles|roleMembers)\b\s*"
+        r"\b(?:_?guardian|guardians|controller|controllers|operator|operators|"
+        r"pool|engine|router|allowlist|whitelist|roles|_roles|roleMembers|"
+        r"authorizedCallers|permissions)\b\s*"
         r"(?:\[[^\]]+\]\s*)*\[\s*" + caller
     )
-    return bool(re.search(
-        comparison + "|" + role_check + "|" + membership,
-        value,
-        re.I,
-    ))
+    hard_check = (
+        r"\b(?:_checkRole|_checkOwner|_require[A-Za-z_]\w*|"
+        r"_onlySelfCall|routerSelf)\s*\("
+    )
+    predicate = "(?:" + comparison + "|" + role_predicate + "|" + membership + ")"
+    enforced_predicate = (
+        r"\b(?:require|assert)\s*\([^;]*?" + predicate
+        + r"|\bif\s*\([^{};]*?" + predicate
+        + r"[^{};]*\)\s*(?:\{\s*)?(?:revert\b|_revert[A-Za-z0-9_]*\s*\()"
+    )
+    return bool(
+        re.search(hard_check, value, re.I)
+        or re.search(enforced_predicate, value, re.I | re.S)
+    )
 
 
 def _authorization_scopes(
