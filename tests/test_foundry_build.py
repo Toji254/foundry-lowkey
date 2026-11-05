@@ -102,6 +102,37 @@ class FoundryBuildPlannerTests(unittest.TestCase):
             self.assertFalse(plan["side_effects"]["deploy"])
             self.assertFalse(plan["side_effects"]["cache_delete"])
 
+    def test_build_plan_honors_cli_config_path_over_environment_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+            self.write(root, "foundry-env.toml", '[profile.default]\\nsrc = "env-src"\\n')
+            self.write(root, "foundry-cli.toml", '[profile.default]\\nsrc = "contracts"\\n')
+            self.write(root, "src/Default.sol", "contract Default {}")
+            self.write(root, "env-src/Environment.sol", "contract Environment {}")
+            self.write(root, "contracts/Cli.sol", "contract Cli {}")
+            resources = {
+                "memory_total_bytes": 16 * 1024 ** 3,
+                "memory_available_bytes": 12 * 1024 ** 3,
+                "swap_total_bytes": 0,
+                "swap_used_bytes": 0,
+                "zram_used_bytes": 0,
+                "cpu_count": 8,
+                "memory_psi_some_avg10": 0.0,
+                "memory_psi_full_avg10": 0.0,
+            }
+            with patch.dict(foundry_build.os.environ, {"FOUNDRY_CONFIG": "foundry-env.toml"}), \\
+                 patch.object(foundry_build.forge_tools, "forge_path", return_value=None), \\
+                 patch.object(foundry_build, "collect_resources", return_value=resources):
+                plan = foundry_build.build_plan(
+                    root,
+                    scope="production",
+                    forge_args=["--config-path", "foundry-cli.toml"],
+                )
+
+            self.assertEqual(plan["config_file"], str((root / "foundry-cli.toml").resolve()))
+            self.assertEqual(plan["scope_paths"], ["contracts"])
+
     def test_large_scope_warns_when_one_compiler_worker_may_still_be_risky(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

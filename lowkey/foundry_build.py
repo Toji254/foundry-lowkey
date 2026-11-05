@@ -155,9 +155,22 @@ def _explicit_threads(args: Sequence[str]) -> int | None:
     return None
 
 
-def _active_config_path(root: Path) -> Path:
-    """Resolve Foundry's selected config file, including FOUNDRY_CONFIG overrides."""
-    configured = os.environ.get("FOUNDRY_CONFIG", "").strip()
+def _active_config_path(
+    root: Path,
+    forge_args: Sequence[str] = (),
+) -> Path:
+    """Resolve Foundry's selected config file, including CLI and environment overrides."""
+    configured = ""
+    values = list(forge_args)
+    for index, value in enumerate(values):
+        if value == "--config-path":
+            if index + 1 >= len(values) or values[index + 1].startswith("--"):
+                raise ValueError("--config-path requires a config file path")
+            configured = values[index + 1]
+        elif value.startswith("--config-path="):
+            configured = value.split("=", 1)[1]
+    if not configured:
+        configured = os.environ.get("FOUNDRY_CONFIG", "").strip()
     if configured:
         candidate = Path(configured).expanduser()
         if not candidate.is_absolute():
@@ -188,12 +201,19 @@ def _toml_config(
     return {**data, **default, **selected}
 
 
-def load_foundry_config(root: Path, profile: str) -> tuple[dict[str, Any], str]:
+def load_foundry_config(
+    root: Path,
+    profile: str,
+    config_path: Path | None = None,
+) -> tuple[dict[str, Any], str]:
     """Prefer Forge's effective config and report the actual selected config path."""
-    config_path = _active_config_path(root)
+    config_path = config_path or _active_config_path(root)
     binary = forge_tools.forge_path()
     if binary:
-        command = [binary, "config", "--json", "--root", str(root), "--profile", profile]
+        command = [
+            binary, "config", "--json", "--root", str(root),
+            "--profile", profile, "--config-path", str(config_path),
+        ]
         try:
             result = subprocess.run(
                 command, cwd=root, capture_output=True, text=True, timeout=12,
@@ -508,8 +528,8 @@ def build_plan(
     low_memory: bool = False,
 ) -> dict[str, Any]:
     profile = _profile_from_args(forge_args)
-    config_path = _active_config_path(root)
-    config, config_source = load_foundry_config(root, profile)
+    config_path = _active_config_path(root, forge_args)
+    config, config_source = load_foundry_config(root, profile, config_path)
     src_dirs = _config_dirs(config, "src", "src")
     test_dirs = _config_dirs(config, "test", "test")
     script_dirs = _config_dirs(config, "script", "script")
