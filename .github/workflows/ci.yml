@@ -483,10 +483,21 @@ jobs:
               return next(item["value"] for item in pre["storage"] if item["slot"] == slot)
           assert int(storage_value(control, attacker, mode_slot), 16) == 0
           assert int(storage_value(attack, attacker, mode_slot), 16) == 2
-          target_prestate = lambda row: next(item for item in row["prestate"] if item["address"] == target)
-          assert target_prestate(control)["storage"] == target_prestate(attack)["storage"], "target prestate changed between paired runs"
+          # Compare every touched account's parent state after excluding only
+          # the explicitly declared attacker mode slot (address, slot 0).
+          def comparison_prestate(row):
+              out = []
+              for account in row["prestate"]:
+                  item = dict(account)
+                  item["storage"] = [
+                      slot for slot in account["storage"]
+                      if not (account["address"] == attacker and slot["slot"] == mode_slot)
+                  ]
+                  out.append(item)
+              return out
+          assert comparison_prestate(control) == comparison_prestate(attack), "paired prestate differs beyond declared attacker mode slot"
 
-          print("PASS: one deployment; control=1 withdraw; attack=2 withdrawals; exact calldata, events and derived storage captured")
+          print("PASS: one deployment; matched prestate except declared mode; control=1 withdraw; attack=2; exact calldata, events and derived storage captured")
           PY
           python3 - <<'PY'
           import json
