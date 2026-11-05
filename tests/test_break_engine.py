@@ -305,6 +305,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("return _lowkeyApproveCall(token, spender, amount);", body)
         self.assertIn("if (data.length != 32) return false;", body)
         self.assertIn("TOKEN_APPROVAL_SUCCESS", body)
+        self.assertIn("TOKEN_APPROVAL_RESET_ATTEMPTED", body)
         self.assertIn("ASSET_GETTER_DISCOVERED", body)
         self.assertIn("vm.prank(ATTACKER);", body)
         self.assertNotIn("function approve(address spender, uint256 amount) external returns (bool)", body)

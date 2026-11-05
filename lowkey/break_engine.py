@@ -1392,6 +1392,7 @@ interface IERC20Lowkey {{
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
+    bool tokenApprovalResetAttempted;
 
     function _lowkeyApproveCall(address token, address spender, uint256 amount) internal returns (bool) {{
         vm.prank(ATTACKER);
@@ -1407,6 +1408,7 @@ contract LowkeyBreakRepeat is Test {{
 
     function _lowkeySafeApprove(address token, address spender, uint256 amount) internal returns (bool) {{
         if (_lowkeyApproveCall(token, spender, amount)) return true;
+        tokenApprovalResetAttempted = true;
         if (!_lowkeyApproveCall(token, spender, 0)) return false;
         return _lowkeyApproveCall(token, spender, amount);
     }}
@@ -1466,6 +1468,7 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("ASSET_GETTER_DISCOVERED", {str(bool(asset_signature)).lower()});
         console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
         console2.log("TOKEN_APPROVAL_ATTEMPTED", tokenApprovalAttempted);
+        console2.log("TOKEN_APPROVAL_RESET_ATTEMPTED", tokenApprovalResetAttempted);
         console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);

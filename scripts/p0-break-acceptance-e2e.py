@@ -67,11 +67,14 @@ contract MockUSDT6NoReturnReset {
     uint8 public constant decimals = 6;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
-    mapping(address => bool) private resetPerformed;
+
+    function primeAllowance(address owner, address spender, uint256 amount) external {
+        allowance[owner][spender] = amount;
+    }
 
     function approve(address spender, uint256 amount) external {
-        if (amount != 0 && !resetPerformed[msg.sender]) revert("RESET_REQUIRED");
-        if (amount == 0) resetPerformed[msg.sender] = true;
+        uint256 current = allowance[msg.sender][spender];
+        require(amount == 0 || current == 0, "RESET_REQUIRED");
         allowance[msg.sender][spender] = amount;
     }
 
@@ -186,8 +189,9 @@ def exercise(lk: str, root: Path, env: dict[str, str], contract: str, address: s
 
 def main() -> int:
     forge = shutil.which("forge")
+    cast = shutil.which("cast") or str(Path.home() / ".foundry" / "bin" / "cast")
     lk = shutil.which("lk") or str(Path.home() / ".foundry" / "bin" / "lk")
-    if not forge or not (Path(lk).is_file() or shutil.which(lk)):
+    if not forge or not (Path(lk).is_file() or shutil.which(lk)) or not (Path(cast).is_file() or shutil.which(cast)):
         raise AssertionError("forge or installed lk is unavailable")
     forge_std = Path("/tmp/lowkey-fixture/lib/forge-std")
     if not forge_std.is_dir():
@@ -218,6 +222,12 @@ def main() -> int:
             usdc_vault = deploy(forge, root, env, "USDCVault", usdc)
             usdt = deploy(forge, root, env, "MockUSDT6NoReturnReset")
             usdt_vault = deploy(forge, root, env, "USDTVault", usdt)
+            attacker = "0xBEEF000000000000000000000000000000000042"
+            run([
+                cast, "send", usdt, "primeAllowance(address,address,uint256)",
+                attacker, usdt_vault, "1",
+                "--rpc-url", RPC, "--private-key", ANVIL_KEY0,
+            ], root, env)
 
             exercise(lk, root, env, "AddressArraySetupTarget", array_target, [
                 "SETUP_SUCCESS true",
@@ -238,6 +248,7 @@ def main() -> int:
                 "ASSET_DECIMALS 6",
                 "TOKEN_FUNDING_AMOUNT 1000000",
                 "TOKEN_APPROVAL_ATTEMPTED true",
+                "TOKEN_APPROVAL_RESET_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
             ])
         print("PASS: all three P0 end-to-end installed-lk acceptance cases reached OBSERVED.")
