@@ -1571,8 +1571,7 @@ def _load_step_expectations(root, spec, target, family, backend):
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         return denied("unsupported_abi", "Step expectations sidecar must use schema_version 1.")
     sidecar_family = payload.get("family")
-    if sidecar_family and proof_family := family:
-        if sidecar_family != proof_family:
+    if sidecar_family and family and sidecar_family != family:
             return denied("unsupported_abi", "Step expectations family does not match the control manifest family.")
     sidecar_target = payload.get("target_address")
     if not isinstance(sidecar_target, str) or sidecar_target.lower() != str(target).lower():
