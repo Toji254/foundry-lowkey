@@ -640,7 +640,15 @@ def _trace_control_run(root, url, name, entry, spec, env):
             tx=rpc(url,"eth_getTransactionByHash",[tx_hash])
             receipt=rpc(url,"eth_getTransactionReceipt",[tx_hash])
             if not isinstance(tx,dict) or not isinstance(receipt,dict): raise ValueError(f"{name} transaction was not mined on the supplied Anvil node.")
-            if str(receipt.get("status") or "").lower() not in {"0x1","1"}: raise ValueError(f"{name} transaction reverted; it cannot be used as a passing control trace.")
+            receipt_status=str(receipt.get("status") or "").lower()
+            expected_receipt_status=str(entry.get("expected_receipt_status") or "0x1").lower()
+            if expected_receipt_status not in {"0x0","0x1","0","1"}:
+                raise ValueError(f"{name} expected_receipt_status must be 0x0 or 0x1.")
+            expected_receipt_status="0x1" if expected_receipt_status in {"0x1","1"} else "0x0"
+            if receipt_status not in {expected_receipt_status, "1" if expected_receipt_status=="0x1" else "0"}:
+                raise ValueError(
+                    f"{name} receipt status {receipt_status} differs from expected {expected_receipt_status}."
+                )
             chain_id=rpc(url,"eth_chainId",[])
             block_number=int(str(receipt.get("blockNumber") or "0x0"),16)
             latest=int(str(rpc(url,"eth_blockNumber",[])),16)
@@ -735,6 +743,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "effective_gas_price_wei":gas_price,
                 "gas_cost_wei":gas_cost,
                 "tx_hash":tx_hash,
+                "receipt_status":receipt_status,
+                "expected_receipt_status":expected_receipt_status,
                 "chain_id":chain_id,
                 "block_number":block_number,
                 "entry_call_sha256":entry_digest,
@@ -747,9 +757,12 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "derived_storage_slots":storage_trace.get("slots",[]),
                 "scenario_parameters":scenario_parameters,
                 "fidelity":fidelity,
-                "fidelity_label":("synthetic_state" if fidelity.get("synthetic_state") else
+                "fidelity_label":(
+                    "synthetic_state" if fidelity.get("synthetic_state") else
                     ("simulated_caller" if any(x.get("kind")=="caller_impersonation" for x in fidelity.get("signals",[])) else
-                     ("simulated_dependencies" if any(x.get("kind")=="external_call_mock" for x in fidelity.get("signals",[])) else "unknown"))),
+                     ("simulated_dependencies" if any(x.get("kind")=="external_call_mock" for x in fidelity.get("signals",[])) else
+                      ("unknown" if not fidelity.get("scan_complete") else "real_funded")))
+                ),
                 "semantic_check":semantic_check,
                 "call_trace":calls,
                 "argv":entry["argv"],
@@ -1191,8 +1204,11 @@ def control(args):
     )
 
     scenario_errors=[name for name,_ in scenarios if rows.get(name,{}).get("trace_error")]
+    execution_names=["control","attack"]
+    if negative is not None:
+        execution_names.append("negative_control")
     execution_attempted=all(
-        rows.get(name,{}).get("exit_code")==0 for name in ("control","attack")
+        rows.get(name,{}).get("exit_code")==0 for name in execution_names
     )
     base_valid=(
         same_entry and same_prestate and same_chain and same_block and same_fork_anchor and
@@ -1258,10 +1274,16 @@ def control(args):
         elif "simulated_dependencies" in fidelity_labels: fidelity="simulated_dependencies"
     else:
         fidelity="real_funded" if all(
+            (rows.get(name,{}).get("fidelity") or {}).get("scan_complete",False) and
             not (rows.get(name,{}).get("fidelity") or {}).get("synthetic_state",False) and
             not (rows.get(name,{}).get("fidelity") or {}).get("fork_reproduction_blockers")
             for name in ("control","attack")
-        ) else "synthetic_state"
+        ) else (
+            "synthetic_state" if any(
+                (rows.get(name,{}).get("fidelity") or {}).get("synthetic_state",False)
+                for name in ("control","attack")
+            ) else "unknown"
+        )
 
     rejection_codes=[]
     if not same_entry: rejection_codes.append("mismatch")
