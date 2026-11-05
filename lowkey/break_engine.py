@@ -1315,7 +1315,8 @@ def _render_repeat_test(
             deal(assetToken, ATTACKER, tokenFundingAmount);
             _lowkeySafeApprove(assetToken, TARGET, type(uint256).max);
         }}
-""        asset_baseline = """
+"""
+        asset_baseline = """
         if (assetReadOk) {
             attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
             targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
