@@ -70,7 +70,14 @@ def plan_signal_investigation(
             source_path = source_path.resolve()
         except (OSError, RuntimeError):
             source_path = None
-    if source_path is None or not source_path.is_file() or not source_path.is_relative_to(root):
+    if source_path is not None and not source_path.is_relative_to(root):
+        return {
+            "signal_id": str(signal_id),
+            "status": "blocked",
+            "reason": "The native signal source path resolves outside the selected project; Lowkey will not guess or read it.",
+            "effects": {"writes": False, "provider_call": False, "forge": False, "tests_run": False},
+        }
+    if source_path is None or not source_path.is_file():
         return {
             "signal_id": str(signal_id),
             "status": "blocked",
@@ -114,11 +121,9 @@ def plan_signal_investigation(
         proposed_name = None
         property_text = "The detector signal needs protocol-specific caller, state and impact analysis before a test can be selected."
 
-    suggested = (
-        f"lk ai test-plan --finding {signal_id}"
-        if proposed_name is None
-        else f"lk test-gen <ContractName> --types unit --output-dir test/lowkey-generated"
-    )
+    # Keep this recommendation advisory and read-only.  The command does not
+    # generate tests or execute a provider-backed workflow.
+    suggested = "lk ai test-plan"
     return {
         "signal_id": str(signal_id),
         "status": "plan-only",
@@ -215,7 +220,7 @@ def execute_inspected_test(
     relative = selected.relative_to(root).as_posix()
     argv = [
         forge, "test",
-        "--match-path", re.escape(relative),
+        "--match-path", relative,
         "--match-test", "^" + re.escape(name) + "$",
     ]
     timeout = max(1, min(int(timeout_seconds), 900))
@@ -225,9 +230,23 @@ def execute_inspected_test(
             timeout=timeout, stdin=subprocess.DEVNULL, check=False,
         )
         exit_code = int(completed.returncode)
-        status = "passed" if exit_code == 0 else "failed"
         stdout = str(completed.stdout or "")[-8000:]
         stderr = str(completed.stderr or "")[-8000:]
+        # Forge can exit zero when a filter matches no tests.  A process exit
+        # code alone is therefore insufficient evidence that this exact test ran.
+        combined_output = stdout + "\n" + stderr
+        executed = re.search(
+            r"(?m)^\\s*\\[(PASS|FAIL|SKIP)\\]\\s+"
+            + re.escape(name) + r"\\s*\\(",
+            combined_output,
+            re.I,
+        )
+        if not executed or executed.group(1).upper() == "SKIP":
+            status = "not_run"
+        elif executed.group(1).upper() == "PASS" and exit_code == 0:
+            status = "passed"
+        else:
+            status = "failed"
     except subprocess.TimeoutExpired as exc:
         exit_code = None
         status = "timeout"

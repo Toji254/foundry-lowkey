@@ -721,43 +721,6 @@ def _authorization_scopes(
     return scopes
 
 
-def _block_has_reachable_guard(
-    block: str,
-    scopes: list[dict[str, Any]],
-    *,
-    seen: set[str] | None = None,
-    depth: int = 0,
-) -> tuple[bool, str]:
-    if depth > 8:
-        return False, ""
-    seen = set(seen or ())
-    clean = core._strip_source_comments(block, "solidity", mask_strings=True)
-    if _has_auth_expression(clean):
-        return True, "The resolved source block contains a caller/role/self-call guard."
-    helper_names = set(re.findall(
-        r"\b(_(?:require|only|check|authorize|assert|validate)[A-Za-z0-9_]*|"
-        r"routerSelf|only[A-Z][A-Za-z0-9_]*)\s*\(",
-        clean,
-    ))
-    for helper in sorted(helper_names):
-        if helper in seen:
-            continue
-        seen.add(helper)
-        matches: list[tuple[str, str]] = []
-        for scope in scopes:
-            matches.extend(_member_blocks(str(scope["body"]), helper))
-        # A same-name declaration in unrelated bases must not be guessed.
-        if len(matches) != 1:
-            continue
-        kind, helper_body = matches[0]
-        guarded, _reason = _block_has_reachable_guard(
-            helper_body, scopes, seen=seen, depth=depth + 1,
-        )
-        if guarded:
-            return True, f"Resolved {kind} {helper} contains or reaches a caller/role/self-call guard."
-    return False, ""
-
-
 def _has_authorization_boundary(
     root: Path,
     header: str,

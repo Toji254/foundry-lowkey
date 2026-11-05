@@ -500,9 +500,9 @@ def run_cli(args: list[str]) -> int:
             return 2
         try:
             try:
-                import signal_investigation
-            except ImportError:
                 from lowkey import signal_investigation
+            except ImportError:
+                import signal_investigation
             report = signal_investigation.plan_signal_investigation(
                 args[1], project_root=_project_root(), audit_context=audit_context,
             )
@@ -539,9 +539,9 @@ def run_cli(args: list[str]) -> int:
         )
         try:
             try:
-                import signal_investigation
-            except ImportError:
                 from lowkey import signal_investigation
+            except ImportError:
+                import signal_investigation
             result = signal_investigation.execute_inspected_test(
                 args[1], args[2], args[3],
                 project_root=_project_root(), audit_context=audit_context,

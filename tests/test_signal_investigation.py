@@ -118,6 +118,31 @@ contract Vault {
             self.assertFalse(result["security_finding_confirmed"])
             self.assertTrue(result["evidence_attached"])
 
+    def test_forge_zero_exit_without_exact_test_result_is_not_a_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp))
+            signal = self._signal(root)
+            test_dir = root / "test"
+            test_dir.mkdir()
+            (test_dir / "Vault.t.sol").write_text(
+                "contract VaultTest { function test_guard() public {} }",
+                encoding="utf-8",
+            )
+            with patch("lowkey.signal_investigation.shutil.which", return_value="/usr/bin/forge"), \\
+                 patch("lowkey.signal_investigation.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = "Warning: no tests match the provided pattern"
+                run.return_value.stderr = ""
+                result = signal_investigation.execute_inspected_test(
+                    signal["id"], "test/Vault.t.sol", "test_guard",
+                    project_root=root, audit_context=audit_context,
+                )
+            self.assertEqual(result["status"], "not_run")
+            self.assertEqual(result["exit_code"], 0)
+            self.assertTrue(result["evidence_attached"])
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index("--match-path") + 1], "test/Vault.t.sol")
+
     def test_inspected_test_rejects_outside_test_directory_before_forge(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp))

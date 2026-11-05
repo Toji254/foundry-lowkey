@@ -260,13 +260,13 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
     def test_imported_first_party_workspace_base_is_resolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            (workspace / "pnpm-workspace.yaml").write_text("packages:\\n  - packages/*\\n", encoding="utf-8")
+            (workspace / "pnpm-workspace.yaml").write_text("packages:\n  - packages/*\n", encoding="utf-8")
             package = workspace / "packages" / "perps"
             (package / "src").mkdir(parents=True)
             shared = workspace / "packages" / "shared" / "src"
             shared.mkdir(parents=True)
             (package / "foundry.toml").write_text(
-                '[profile.default]\\nremappings = ["@shared/=../shared/src/"]\\n',
+                '[profile.default]\nremappings = ["@shared/=../shared/src/"]\n',
                 encoding="utf-8",
             )
             (package / "src" / "Vault.sol").write_text(
