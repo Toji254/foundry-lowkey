@@ -593,12 +593,15 @@ jobs:
           import json
           from pathlib import Path
           result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/reprove.json").read_text())
-          assert result["status"] == "LOCAL_PROFITABLE", result
+          assert result["legacy_status"] == "LOCAL_PROFITABLE", result
+          assert result["status"] == "OBSERVED", result
+          assert result["target_authenticity"] == "unknown", result
+          assert result["fidelity_label"] == "real_funded", result
           assert result["gas_used"] > 0, result
           assert result["gas_cost_wei"] > 0, result
           assert result["net_profit_wei"] > 0, result
           assert result["human_confirmation_required"] is True, result
-          print("PASS: actual local Anvil transaction reaches LOCAL_PROFITABLE with measured gas and balance deltas; no automatic human confirmation")
+          print("PASS: local replay measures positive net ETH after gas; legacy LOCAL_PROFITABLE retained while proof status remains OBSERVED for unknown target authenticity")
           PY
           grep -q 'lk break --until-found' <(lk break --h)
           grep -q 'lk break --system' <(lk break --h)
