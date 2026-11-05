@@ -110,7 +110,7 @@ class ProofEvidenceTests(unittest.TestCase):
             (root / "test/Control.t.sol").write_text("contract Control {}", encoding="utf-8")
             (root / "test/Attack.t.sol").write_text("contract Attack {}", encoding="utf-8")
             freeze_control_manifest(root, root / "control.json", spec)
-            (root / control_artifact).parent.mkdir(parents=True)
+            (root / control_artifact).parent.mkdir(parents=True, exist_ok=True)
             (root / control_artifact).write_text('{"run":1}', encoding="utf-8")
             (root / attack_artifact).write_text('{"run":1}', encoding="utf-8")
             self.assertTrue(validate_control_freeze(
