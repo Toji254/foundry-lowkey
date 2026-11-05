@@ -70,6 +70,19 @@ Solodit-style finding indexes reinforce recurrence around replay, access control
 
 The walkthrough does not treat the number of reports for a pattern as evidence that a specific target is vulnerable. It uses recurrence to decide *which assumptions are worth probing*.
 
+## Evidence labels
+
+Pattern observations carry a separate evidence label; none is a human disposition:
+
+- `syntax-match`: a detector matched source syntax only.
+- `context-checked`: the selected function and its resolved modifier/helper/import/inheritance context were checked; a remaining candidate still needs a native test.
+- `likely-false-positive`: contrary source/test evidence makes the detector assumption unlikely, but a human reviewer still decides.
+- `needs-investigation`: reachability, intended caller policy or impact remains unknown.
+- `plausible-vulnerability`: a concrete attacker-reachable path and impact hypothesis have evidence, but reproduction is still pending.
+- `reproduced`: a specific native test reproduced the asserted behavior; this does not automatically set the human finding disposition.
+
+Authorization triage trusts a modifier name only after resolving its declaration in the selected contract or an imported/inherited base. Same-named helpers in unimported sibling files and no-op `only*` modifiers are not authorization evidence. When the declaration graph is ambiguous or unresolved, Lowkey does not suppress the candidate.
+
 ## Why the result is not an automatic audit verdict
 
 A static match can be intentional. For example:
