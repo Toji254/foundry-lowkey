@@ -163,6 +163,65 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         matches = self.matches(root, model, "AUTH-001")
         self.assertEqual(len(matches), 1)
 
+
+    def test_noop_require_helper_does_not_suppress_auth_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                bool public paused;
+                function _requireGuardian() internal view {}
+                function pause() external {
+                    _requireGuardian();
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_always_true_has_role_helper_does_not_suppress_auth_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                bytes32 constant OPERATOR = keccak256("OPERATOR");
+                bool public paused;
+                function hasRole(bytes32, address) internal pure returns (bool) {
+                    return true;
+                }
+                function pause() external {
+                    require(hasRole(OPERATOR, msg.sender));
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
+    def test_role_predicate_helper_is_resolved_and_caller_argument_is_traced(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                bytes32 constant OPERATOR = keccak256("OPERATOR");
+                mapping(bytes32 => mapping(address => bool)) roleMembers;
+                bool public paused;
+                function hasRole(bytes32 role, address account) internal view returns (bool) {
+                    return roleMembers[role][account];
+                }
+                function pause() external {
+                    require(hasRole(OPERATOR, msg.sender));
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(self.matches(root, model, "AUTH-001"), [])
+
     def test_imported_inherited_modifier_is_resolved(self):
         root, model = self.model(
             """
