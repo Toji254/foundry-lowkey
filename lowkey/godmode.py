@@ -1598,7 +1598,7 @@ def control(args):
                     "fidelity":fidelity,
                     "target_shape":str(
                         spec.get("target_shape") or
-                        rows.get("attack",{}).get("target_code_hash") or target
+                        rows.get("attack",{}).get("target_code_hash") or target or "unknown"
                     ),
                 },
                 root=root,
