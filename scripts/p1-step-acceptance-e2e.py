@@ -67,6 +67,13 @@ def main() -> int:
 
     template_digest = hashlib.sha256(template_path.read_bytes()).hexdigest()
     installed_manifest = json.loads(install_manifest_path.read_text(encoding="utf-8"))
+    expected_git_sha = os.environ.get("GITHUB_SHA")
+    installed_git_sha = installed_manifest.get("git_sha")
+    if expected_git_sha and installed_git_sha != expected_git_sha:
+        raise AssertionError(
+            f"Installed Lowkey SHA does not match this workflow: "
+            f"installed={installed_git_sha!r}, expected={expected_git_sha!r}"
+        )
     installed_files = installed_manifest.get("files") or {}
     installed_template_hash = next(
         (digest for path, digest in installed_files.items()
@@ -293,7 +300,9 @@ def main() -> int:
 
     report = {
         "status": "PASS",
-        "installed_git_sha": installed_manifest.get("git_sha"),
+        "source_sha": expected_git_sha,
+        "installed_git_sha": installed_git_sha,
+        "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
         "template_sha256": template_digest,
         "forge_std_vm_sol": str(vm_sol),
         "verified_vm_signatures": cheat_signatures,

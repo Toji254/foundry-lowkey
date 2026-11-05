@@ -211,7 +211,7 @@ def exercise(
     address: str,
     expected_markers: list[str],
     evidence_root: Path,
-) -> None:
+) -> dict[str, object]:
     run([lk, "target", "reset"], root, env)
     run([lk, "target", contract, address], root, env)
     runs_dir = root / ".audit" / "break" / "runs"
@@ -244,6 +244,13 @@ def exercise(
                 f"Raw tail:\\n{tail}\\nCLI output:\\n{output.stdout[-10000:]}"
             )
     print(f"PASS: {contract} reached OBSERVED through installed lk break; evidence: {scenario_evidence}")
+    return {
+        "contract": contract,
+        "status": result.get("status"),
+        "expected_markers": expected_markers,
+        "evidence_path": scenario_evidence.as_posix(),
+        "campaign_report": report_path.name,
+    }
 
 
 def main() -> int:
@@ -255,6 +262,18 @@ def main() -> int:
     forge_std = Path("/tmp/lowkey-fixture/lib/forge-std")
     if not forge_std.is_dir():
         raise AssertionError(f"CI forge-std dependency is unavailable: {forge_std}")
+
+    install_manifest_path = Path.home() / ".lowkey" / "install-manifest.json"
+    if not install_manifest_path.is_file():
+        raise AssertionError(f"Installed Lowkey manifest is missing: {install_manifest_path}")
+    install_manifest = json.loads(install_manifest_path.read_text(encoding="utf-8"))
+    installed_git_sha = install_manifest.get("git_sha")
+    expected_git_sha = os.environ.get("GITHUB_SHA")
+    if expected_git_sha and installed_git_sha != expected_git_sha:
+        raise AssertionError(
+            f"Installed Lowkey SHA does not match this workflow: "
+            f"installed={installed_git_sha!r}, expected={expected_git_sha!r}"
+        )
 
     env = os.environ.copy()
     env["LOWKEY_RPC_URL"] = RPC
@@ -294,10 +313,11 @@ def main() -> int:
                 "--rpc-url", RPC, "--private-key", ANVIL_KEY0,
             ], root, env)
 
-            exercise(lk, root, env, "AddressArraySetupTarget", array_target, [
+            cases = []
+            cases.append(exercise(lk, root, env, "AddressArraySetupTarget", array_target, [
                 "SETUP_SUCCESS true",
-            ], evidence_root)
-            exercise(lk, root, env, "USDCVault", usdc_vault, [
+            ], evidence_root))
+            cases.append(exercise(lk, root, env, "USDCVault", usdc_vault, [
                 "SETUP_SUCCESS true",
                 "ASSET_GETTER_DISCOVERED true",
                 "ASSET_DECIMALS_VERIFIED true",
@@ -305,8 +325,8 @@ def main() -> int:
                 "TOKEN_FUNDING_AMOUNT 1000000",
                 "TOKEN_APPROVAL_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
-            ], evidence_root)
-            exercise(lk, root, env, "USDTVault", usdt_vault, [
+            ], evidence_root))
+            cases.append(exercise(lk, root, env, "USDTVault", usdt_vault, [
                 "SETUP_SUCCESS true",
                 "ASSET_GETTER_DISCOVERED true",
                 "ASSET_DECIMALS_VERIFIED true",
@@ -315,8 +335,8 @@ def main() -> int:
                 "TOKEN_APPROVAL_ATTEMPTED true",
                 "TOKEN_APPROVAL_RESET_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
-            ], evidence_root)
-            exercise(lk, root, env, "NoMetadataVault", no_metadata_vault, [
+            ], evidence_root))
+            cases.append(exercise(lk, root, env, "NoMetadataVault", no_metadata_vault, [
                 "SETUP_SUCCESS true",
                 "ASSET_GETTER_DISCOVERED true",
                 "ASSET_DECIMALS_VERIFIED false",
@@ -325,7 +345,24 @@ def main() -> int:
                 "TOKEN_FUNDING_AMOUNT 1000000000000000000",
                 "TOKEN_APPROVAL_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
-            ], evidence_root)
+            ], evidence_root))
+        if len(cases) != 4 or any(case.get("status") != "OBSERVED" for case in cases):
+            raise AssertionError(f"P0 acceptance did not observe all four cases: {cases}")
+        report = {
+            "gate": "P0 installed-lk break acceptance",
+            "status": "PASS",
+            "source_sha": expected_git_sha,
+            "installed_git_sha": installed_git_sha,
+            "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+            "expected_case_count": 4,
+            "observed_case_count": len(cases),
+            "cases": cases,
+        }
+        (evidence_root / "report.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
         print("PASS: all four P0 end-to-end installed-lk acceptance cases reached OBSERVED.")
     finally:
         # Do not leave the CI runner's global target pointed at a temporary deployment.
