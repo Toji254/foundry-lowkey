@@ -93,8 +93,11 @@ class ProofEvidenceTests(unittest.TestCase):
                 root, root / "control.json", spec, required=True
             )["verified"])
             (root / "generator.py").write_text("print('v2')", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "generator hashes"):
-                validate_control_freeze(root, root / "control.json", spec, required=True)
+            status = validate_control_freeze(root, root / "control.json", spec, required=True)
+            self.assertFalse(status["verified"])
+            self.assertTrue(status["requires_refreeze"])
+            self.assertEqual(status["reason_code"], "generator_drift")
+            self.assertIn("generator.py", status["changed_generators"])
 
     def test_freeze_does_not_bind_generated_state_diff_output_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
