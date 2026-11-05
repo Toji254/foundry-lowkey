@@ -954,7 +954,7 @@ jobs:
                   ["cast", "sig", "setMode(uint8)"], text=True
               ).strip()
           }, indent=2) + "\n")
-          script = '''import json, os, sys, urllib.request
+          script = '''import json, os, sys, time, urllib.request
           from pathlib import Path
           config = json.loads((Path(__file__).parent / "trace-control.json").read_text())
           url = os.environ["LOWKEY_RPC_URL"]
@@ -966,39 +966,61 @@ jobs:
               if body.get("error"):
                   raise RuntimeError(f"{method}: {body['error']}")
               return body.get("result")
-          mode = sys.argv[1]
-          if mode == "prepare":
-              mode_value = int(sys.argv[2])
-              data = config["set_mode_selector"] + format(mode_value, "064x")
-              tx_hash = rpc("eth_sendTransaction", [{
-                  "from": config["setup_sender"], "to": config["attacker"],
-                  "data": data, "value": "0x0", "gas": "0x100000", "gasPrice": "0x3b9aca00"
-              }])
-              receipt = rpc("eth_getTransactionReceipt", [tx_hash])
-              if not receipt or str(receipt.get("status","")).lower() not in {"0x1","1"}:
-                  raise RuntimeError("attacker scenario setup transaction failed")
-              sys.exit(0)
-          if mode != "send":
-              raise ValueError("expected prepare or send mode")
-          tx_hash = rpc("eth_sendTransaction", [{
-              "from": config["sender"], "to": config["attacker"],
-              "data": config["execute_calldata"], "value": "0x0",
-              "gas": "0x989680", "gasPrice": "0x3b9aca00"
-          }])
-          receipt = rpc("eth_getTransactionReceipt", [tx_hash])
-          receipt_status = str((receipt or {}).get("status", "")).lower()
-          if not receipt or receipt_status not in {"0x1", "1"}:
+          def current_gas_price():
+              latest = rpc("eth_getBlockByNumber", ["latest", False]) or {}
+              base_fee = int(str(latest.get("baseFeePerGas") or "0x0"), 16)
+              suggested = int(str(rpc("eth_gasPrice", [])), 16)
+              return max(suggested, base_fee * 2, 1_000_000_000)
+          def wait_for_receipt(tx_hash, timeout=15):
+              deadline = time.monotonic() + timeout
+              while time.monotonic() < deadline:
+                  receipt = rpc("eth_getTransactionReceipt", [tx_hash])
+                  if receipt is not None:
+                      return receipt
+                  time.sleep(0.05)
+              return rpc("eth_getTransactionReceipt", [tx_hash])
+          def failure_detail(tx_hash, receipt, mode_value, gas_price):
+              transaction = rpc("eth_getTransactionByHash", [tx_hash])
               try:
                   trace = rpc("debug_traceTransaction", [tx_hash, {"tracer": "callTracer"}])
               except Exception as exc:
                   trace = {"trace_error": str(exc)}
-              # Emit the hash even for a reverted execution so Lowkey can inspect
-              # the mined receipt rather than misreporting a missing trace marker.
-              print("LOWKEY_TRACE_TX_HASH " + tx_hash)
-              print("LOWKEY_TX_FAILURE " + json.dumps({
+              return json.dumps({
+                  "mode": mode_value,
+                  "tx_hash": tx_hash,
+                  "gas_price": hex(gas_price),
                   "receipt": receipt,
+                  "transaction": transaction,
                   "trace": trace,
-              }, sort_keys=True))
+              }, sort_keys=True)
+          mode = sys.argv[1]
+          if mode == "prepare":
+              mode_value = int(sys.argv[2])
+              data = config["set_mode_selector"] + format(mode_value, "064x")
+              gas_price = current_gas_price()
+              tx_hash = rpc("eth_sendTransaction", [{
+                  "from": config["setup_sender"], "to": config["attacker"],
+                  "data": data, "value": "0x0", "gas": "0x100000",
+                  "gasPrice": hex(gas_price)
+              }])
+              receipt = wait_for_receipt(tx_hash)
+              if not receipt or str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
+                  raise RuntimeError("attacker scenario setup transaction failed: " +
+                                     failure_detail(tx_hash, receipt, mode_value, gas_price))
+              sys.exit(0)
+          if mode != "send":
+              raise ValueError("expected prepare or send mode")
+          gas_price = current_gas_price()
+          tx_hash = rpc("eth_sendTransaction", [{
+              "from": config["sender"], "to": config["attacker"],
+              "data": config["execute_calldata"], "value": "0x0",
+              "gas": "0x989680", "gasPrice": hex(gas_price)
+          }])
+          receipt = wait_for_receipt(tx_hash)
+          receipt_status = str((receipt or {}).get("status", "")).lower()
+          if not receipt or receipt_status not in {"0x1", "1"}:
+              print("LOWKEY_TRACE_TX_HASH " + tx_hash)
+              print("LOWKEY_TX_FAILURE " + failure_detail(tx_hash, receipt, None, gas_price))
               sys.exit(0)
           print("LOWKEY_TRACE_TX_HASH " + tx_hash)
           '''
@@ -1721,37 +1743,39 @@ jobs:
           PY
       - name: Verify unsupported public-project behavior fails closed
         run: |
-          set +e
           python3 scripts/test-gen-ecosystem-benchmark.py \
             --limit-projects 1 --targets-per-project 1 \
             --output .audit/test-gen-ecosystem-smoke.json
-          benchmark_exit=$?
-          set -e
-          # The pinned OpenZeppelin ERC20Mock is deliberately outside the generator's
-          # safely inferred direct-setter property. It must be refused, not scaffolded.
-          test "$benchmark_exit" -ne 0
+          # This pinned target is deliberately outside the generator's safely
+          # inferred behavior. The runner must record a complete evidence gap,
+          # not fake a pass or leave the project as an unexplained failure.
           python3 - <<'PY'
           import json
           report = json.load(open(".audit/test-gen-ecosystem-smoke.json", encoding="utf-8"))
           assert report["project_count"] == 1, report
           assert report["evaluated_count"] == 0, report
+          assert report["assessed_with_evidence_gaps_count"] == 1, report
+          assert report["unresolved_project_count"] == 0, report
           assert report["baseline_build_failed_count"] == 0, report
-          assert report["generation_validation_failed_count"] == 1, report
+          assert report["generation_validation_failed_count"] == 0, report
           assert report["revision_pin_failed_count"] == 0, report
           project = report["results"][0]
           assert project["id"] == "openzeppelin-contracts", project
-          assert project["status"] == "generation-validation-failed", project
+          assert project["status"] == "assessed-with-evidence-gaps", project
           assert project["revision"] == "11565e5f6277a320408025e649240056ba6a3919", project
-          assert project["baseline_build"]["exit_code"] == 0, project["baseline_build"]
+          assert len(project["baseline_builds"]) == 1, project
+          assert project["baseline_builds"][0]["result"]["exit_code"] == 0, project["baseline_builds"]
           target = project["targets"][0]
           assert target["generation_report_found"], target
+          assert target["generation_assessment_complete"], target
           assert not target["generation_succeeded"], target
           assert not target["validation_succeeded"], target
           assert target["validation_status"] == "not-applicable", target
-          assert all(item["level"] == "not-generated"
+          assert target["honest_result"] == "assessed-with-evidence-gaps", target
+          assert all(item["level"] == "not-generated" and item["note"]
                      for item in target["generation_assessment"].values()), target
           assert not target["formal_artifact_exists"], target
-          print("PASS: unsupported protocol generation is rejected without fake test artifacts")
+          print("PASS: unsupported protocol generation is recorded as a complete, explicit evidence gap")
           PY
       - name: Retain ecosystem benchmark report
         if: always()
