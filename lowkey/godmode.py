@@ -274,6 +274,19 @@ def rpc(url,method,params,timeout=20):
 def addr(v):
     if not re.fullmatch(r"0x[0-9a-fA-F]{40}",v or ""): raise ValueError("Expected a 20-byte 0x-prefixed address.")
     return v.lower()
+
+def storage_slot_key(value):
+    """Canonicalize integer/hex storage slot notation to a 32-byte hex word."""
+    raw=str(value or "").strip().lower()
+    if re.fullmatch(r"0x[0-9a-f]{64}",raw):
+        return raw
+    try:
+        number=int(raw,16) if raw.startswith("0x") else int(raw,0)
+    except (TypeError,ValueError):
+        raise ValueError("Storage slot must be an integer or 0x-prefixed bytes32 value.")
+    if number<0 or number>=2**256:
+        raise ValueError("Storage slot must fit bytes32.")
+    return "0x"+format(number,"064x")
 def local_rpc(url):
     return (urlparse(url).hostname or "").lower() in {"127.0.0.1","localhost","::1"}
 def push4(code):
@@ -644,10 +657,7 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 scenario_address=addr(scenario.get("address"))
                 if scenario_address not in addresses:
                     raise ValueError(f"Scenario parameter address {scenario_address} must also appear in prestate_addresses.")
-                scenario_slot=str(scenario.get("slot") or "").lower()
-                if re.fullmatch(r"0x[0-9a-f]{64}",scenario_slot) is None:
-                    try: scenario_slot=hex(int(scenario_slot,0))
-                    except ValueError: raise ValueError("Invalid scenario parameter storage slot.")
+                scenario_slot=storage_slot_key(scenario.get("slot"))
                 observed=rpc(url,"eth_getStorageAt",[scenario_address,scenario_slot,"latest"])
                 expected_raw=scenario.get(name+"_value")
                 if expected_raw is None: raise ValueError(f"scenario parameter is missing {name}_value.")
@@ -702,10 +712,10 @@ def _trace_control_run(root, url, name, entry, spec, env):
             for raw in spec.get("prestate_slots") or []:
                 if not isinstance(raw,dict): raise ValueError("prestate_slots entries must be objects with address and slot.")
                 address=addr(raw.get("address"))
-                slot=str(raw.get("slot") or "").lower()
-                if re.fullmatch(r"0x[0-9a-f]{64}",slot) is None:
-                    try: slot=hex(int(slot,0))
-                    except (TypeError,ValueError): raise ValueError(f"Invalid prestate slot: {raw.get('slot')}")
+                try:
+                    slot=storage_slot_key(raw.get("slot"))
+                except ValueError as exc:
+                    raise ValueError(f"Invalid prestate slot: {raw.get('slot')}") from exc
                 slots.append({"address":address,"slot":slot})
             declared_slots=list({(item["address"],item["slot"]):item for item in slots}.values())
             declared_addresses=list(addresses)
@@ -722,7 +732,7 @@ def _trace_control_run(root, url, name, entry, spec, env):
             if trace_entry_digest!=entry_digest:
                 raise ValueError(f"{name} callTracer root does not match eth_getTransactionByHash.")
             scenario_exclusions=[
-                {"address":row["address"],"slot":row["slot"]}
+                {"address":row["address"],"slot":storage_slot_key(row["slot"])}
                 for row in scenario_parameters
             ]
             prestate_digest,prestate=_control_prestate_digest(
@@ -1202,12 +1212,12 @@ def control(args):
     )
 
     scenario_excluded_keys={
-        str(item.get("address","")).lower()+":"+str(item.get("slot","")).lower()
+        addr(item.get("address"))+":"+storage_slot_key(item.get("slot"))
         for item in (spec.get("scenario_parameters") or []) if isinstance(item,dict)
     }
     def _trace_slot_values(run_row):
         return {
-            str(item.get("address","")).lower()+":"+str(item.get("slot","")).lower():
+            addr(item.get("address"))+":"+storage_slot_key(item.get("slot")):
             str(item.get("value","")).lower()
             for item in ((run_row.get("storage_trace") or {}).get("slots") or [])
         }
