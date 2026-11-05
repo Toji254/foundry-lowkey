@@ -530,7 +530,7 @@ def _has_auth_expression(value: str) -> bool:
     membership = (
         r"\b(?:guardian|guardians|controller|controllers|operator|operators|"
         r"pool|engine|router|allowlist|whitelist|roles|roleMembers)\b\s*"
-        r"(?:\[[^\]]+\]\s*)+\[\s*" + caller
+        r"(?:\[[^\]]+\]\s*)*\[\s*" + caller
     )
     return bool(re.search(
         comparison + "|" + role_check + "|" + membership,
