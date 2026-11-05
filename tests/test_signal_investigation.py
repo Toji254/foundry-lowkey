@@ -113,10 +113,16 @@ contract Vault {
                 )
             self.assertEqual(result["status"], "passed")
             command = run.call_args.args[0]
-            self.assertEqual(command[1:3], ["test", "--match-path"])
-            self.assertIn("--match-test", command)
-            self.assertEqual(command[-1], r"^test_guard(?:\(\))?$")
+            self.assertEqual(command[1], "test")
             self.assertIn("-vv", command)
+            self.assertEqual(
+                command[command.index("--match-path") + 1],
+                r"^test/Vault\.t\.sol$",
+            )
+            self.assertEqual(
+                command[command.index("--match-test") + 1],
+                r"^test_guard(?:\(\))?$",
+            )
             self.assertFalse(result["security_finding_confirmed"])
             self.assertTrue(result["evidence_attached"])
 

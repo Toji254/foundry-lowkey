@@ -945,6 +945,14 @@ def _has_authorization_boundary(
     if not scopes:
         return False, ""
 
+    # Walk helpers called directly by the selected function, not only helpers
+    # reached through underscore-prefixed guard wrappers. Boolean predicates
+    # still count only when their truth polarity is enforced by require/assert
+    # or by a reverting unauthorized branch.
+    reachable, reachable_reason = _block_has_reachable_guard(body, scopes)
+    if reachable:
+        return True, f"Resolved authorization helper: {reachable_reason}"
+
     modifier_names = set(re.findall(
         r"\b(only[A-Za-z_]\w*|whenNotPaused|routerSelf)\b", header,
     ))

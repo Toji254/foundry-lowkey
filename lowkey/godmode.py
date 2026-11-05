@@ -731,17 +731,26 @@ def _trace_control_run(root, url, name, entry, spec, env):
             proc=run([str(x) for x in entry["argv"]],work,int(spec.get("timeout_seconds",300)),env=env)
             combined=(proc.stdout or "")+"\n"+(proc.stderr or "")
             hashes=re.findall(r"LOWKEY_TRACE_TX_HASH\s+(0x[0-9a-fA-F]{64})",combined)
-            if len(hashes)!=1: raise ValueError(f"{name} command must emit exactly one LOWKEY_TRACE_TX_HASH marker for the transaction under test.")
+            if len(hashes)!=1:
+                raise ValueError(
+                    f"{name} command must emit exactly one LOWKEY_TRACE_TX_HASH marker "
+                    f"(exit {proc.returncode}); output tail: {combined[-1600:]}"
+                )
             if proc.returncode!=0 and expected_receipt_status!="0x0":
-                raise RuntimeError(f"{name} command failed (exit {proc.returncode}): {combined[-1200:]}")
+                raise RuntimeError(f"{name} command failed (exit {proc.returncode}): {combined[-1600:]}")
             tx_hash=hashes[0].lower()
             tx=rpc(url,"eth_getTransactionByHash",[tx_hash])
             receipt=rpc(url,"eth_getTransactionReceipt",[tx_hash])
-            if not isinstance(tx,dict) or not isinstance(receipt,dict): raise ValueError(f"{name} transaction was not mined on the supplied Anvil node.")
+            if not isinstance(tx,dict) or not isinstance(receipt,dict):
+                raise ValueError(
+                    f"{name} transaction was not mined on the supplied Anvil node; "
+                    f"command output tail: {combined[-1600:]}"
+                )
             receipt_status=str(receipt.get("status") or "").lower()
             if receipt_status not in {expected_receipt_status, "1" if expected_receipt_status=="0x1" else "0"}:
                 raise ValueError(
-                    f"{name} receipt status {receipt_status} differs from expected {expected_receipt_status}."
+                    f"{name} receipt status {receipt_status} differs from expected "
+                    f"{expected_receipt_status}; command output tail: {combined[-1600:]}"
                 )
             chain_id=rpc(url,"eth_chainId",[])
             block_number=int(str(receipt.get("blockNumber") or "0x0"),16)

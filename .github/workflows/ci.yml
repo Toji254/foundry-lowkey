@@ -738,8 +738,20 @@ jobs:
               "gas": "0x989680", "gasPrice": "0x3b9aca00"
           }])
           receipt = rpc("eth_getTransactionReceipt", [tx_hash])
-          if not receipt or str(receipt.get("status","")).lower() not in {"0x1","1"}:
-              raise RuntimeError("local reentrancy fixture transaction failed")
+          receipt_status = str((receipt or {}).get("status", "")).lower()
+          if not receipt or receipt_status not in {"0x1", "1"}:
+              try:
+                  trace = rpc("debug_traceTransaction", [tx_hash, {"tracer": "callTracer"}])
+              except Exception as exc:
+                  trace = {"trace_error": str(exc)}
+              # Emit the hash even for a reverted execution so Lowkey can inspect
+              # the mined receipt rather than misreporting a missing trace marker.
+              print("LOWKEY_TRACE_TX_HASH " + tx_hash)
+              print("LOWKEY_TX_FAILURE " + json.dumps({
+                  "receipt": receipt,
+                  "trace": trace,
+              }, sort_keys=True))
+              sys.exit(0)
           print("LOWKEY_TRACE_TX_HASH " + tx_hash)
           '''
           (root / "scripts/trace-control.py").write_text(script, encoding="utf-8")

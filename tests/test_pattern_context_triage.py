@@ -794,6 +794,25 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         )
         self.assertEqual(self.matches(root, model, "AUTH-001"), [])
 
+    def test_boolean_role_predicate_without_enforcement_is_not_authorization(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                mapping(address => bool) guardian;
+                bool public paused;
+                function isGuardian(address account) internal view returns (bool) {
+                    return guardian[account];
+                }
+                function pause() external {
+                    if (isGuardian(msg.sender)) paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
     def test_non_auth_condition_cannot_weaken_helper_revert_guard(self):
         root, model = self.model(
             """
