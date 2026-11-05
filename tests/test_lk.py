@@ -1777,19 +1777,19 @@ class LowkeyCastTests(unittest.TestCase):
             "topics": [topic0, "0x" + "2" * 64],
             "data": "0x",
         }
-        with patch.object(lk, "load_abi", return_value=[]) as load_abi, \\
-             patch.object(lk, "cast_output", return_value=(0, topic0, "")), \\
-             patch.object(
-                 lk,
-                 "decode_event_values",
-                 side_effect=lambda _item, _data, _topics: print("Recipient: Bob") or 0,
-             ):
-            decoded = lk.decode_event_log(
-                {"target": target},
-                log,
-                target=target,
-                abi=[event],
-            )
+        with patch.object(lk, "load_abi", return_value=[]) as load_abi:
+            with patch.object(lk, "cast_output", return_value=(0, topic0, "")):
+                with patch.object(
+                    lk,
+                    "decode_event_values",
+                    side_effect=lambda _item, _data, _topics: print("Recipient: Bob") or 0,
+                ):
+                    decoded = lk.decode_event_log(
+                        {"target": target},
+                        log,
+                        target=target,
+                        abi=[event],
+                    )
 
         self.assertEqual(decoded, ("EscrowCreated(address)", "Recipient: Bob"))
         load_abi.assert_not_called()
