@@ -3167,11 +3167,12 @@ def render_step_harness(spec):
     pending_expectation = None
     saw_call = False
 
-    def call_identity(target_expr, selector_value, args_value):
+    def call_identity(target_expr, selector_value, args_value, value_wei):
         return (
             target_expr,
             str(selector_value or "").lower(),
             json.dumps(args_value, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+            value_wei,
         )
 
     for index, step in enumerate(steps_value):
@@ -3202,7 +3203,7 @@ def render_step_harness(spec):
 
         if pending_expectation is not None and not needs_call:
             raise StepPlanError(
-                f"{label} must immediately consume the previous expect step with a matching call target, selector and args.",
+                f"{label} must immediately consume the previous expect step with a matching call target, selector, args and value.",
                 "backend_unsupported", family=family
             )
 
@@ -3231,12 +3232,11 @@ def render_step_harness(spec):
                     raise StepPlanError(f"{label} cannot arm a second pending call expectation.", family=family)
                 if expect["count"] is None:
                     raise StepPlanError(f"{label} kind 'expect' requires expect.count.", family=family)
-                if step.get("value") is not None:
-                    raise StepPlanError(f"{label} kind 'expect' cannot declare value; put value on the consuming call step.", family=family)
+                expected_value = 0 if step.get("value") is None else _step_uint(step.get("value"), label + ".value")
                 body.append(f"vm.expectCall({target_expr}, {data_name}, uint64({expect['count']}));")
                 body.append(f"emit LowkeyStep({index}, {json.dumps(kind)}, {target_expr}, true, bytes32(0));")
                 pending_expectation = {
-                    "identity": call_identity(target_expr, selector_raw, raw_args),
+                    "identity": call_identity(target_expr, selector_raw, raw_args, expected_value),
                     "must_revert": expect["must_revert"],
                     "source_step": index,
                 }
@@ -3250,10 +3250,10 @@ def render_step_harness(spec):
 
             pending_revert = False
             if pending_expectation is not None:
-                current_identity = call_identity(target_expr, selector_raw, raw_args)
+                current_identity = call_identity(target_expr, selector_raw, raw_args, value_wei)
                 if current_identity != pending_expectation["identity"]:
                     raise StepPlanError(
-                        f"{label} does not match the immediately preceding expect step's target, selector and typed args.",
+                        f"{label} does not match the immediately preceding expect step's target, selector, typed args and value.",
                         "backend_unsupported", target=step.get("target") or spec.get("target_address"), family=family
                     )
                 if expect["count"] is not None:
