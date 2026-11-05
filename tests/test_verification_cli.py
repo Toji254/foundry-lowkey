@@ -13,6 +13,33 @@ from lowkey import verification_cli
 
 
 class VerificationCliTests(unittest.TestCase):
+
+    def test_investigate_command_is_plan_only(self):
+        report = {
+            "signal_id": "SIG-1", "status": "plan-only",
+            "signal": {"detector": "slither", "rule": "access-control", "source_file": "src/Vault.sol", "function": "pause"},
+            "property_hypothesis": "Only an authorized caller should pause.",
+            "recommended_next_command": "lk test-gen Vault --types unit",
+            "execution_command": "lk verification run-test SIG-1 <TEST_PATH> <TEST_NAME>",
+            "effects": {"writes": False, "tests_run": False},
+        }
+        output = io.StringIO()
+        with patch("lowkey.signal_investigation.plan_signal_investigation", return_value=report) as plan:
+            with patch("lowkey.signal_investigation.investigate_signal", side_effect=AssertionError("unsafe route")):
+                with patch.object(verification_cli, "_project_root", return_value=Path.cwd()):
+                    with redirect_stdout(output):
+                        code = verification_cli.run_cli(["investigate", "SIG-1"])
+        self.assertEqual(code, 0)
+        plan.assert_called_once()
+        self.assertIn("read-only", output.getvalue())
+        self.assertIn("run-test SIG-1", output.getvalue())
+
+    def test_run_test_command_requires_signal_path_and_name(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = verification_cli.run_cli(["run-test", "SIG-1", "test/Vault.t.sol", "test_guard"])
+        self.assertEqual(code, 2)
+
     def test_engine_inventory_exposes_installation_and_compatibility(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
