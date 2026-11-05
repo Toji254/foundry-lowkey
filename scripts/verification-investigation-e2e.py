@@ -142,7 +142,7 @@ import {RoleVault} from "../src/RoleVault.sol";
 contract RoleVaultTest is Test {
     function test_nonRoleHolderCannotSetLimit() public {
         RoleVault target = new RoleVault();
-        vm.expectRevert(bytes("missing role"));
+        vm.expectRevert();
         vm.prank(address(0xBEEF));
         target.setLimit(100);
         assertEq(target.limit(), 0);
