@@ -269,6 +269,8 @@ Files copied:
   - $TARGET_LOWKEY_DIR/proof_evidence.py
   - $TARGET_LOWKEY_DIR/forge_state_diff.py
   - $TARGET_LOWKEY_DIR/trace_evidence.py
+  - $TARGET_LOWKEY_DIR/step_renderer.py
+  - $TARGET_LOWKEY_DIR/templates/StepHarness.sol
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
 
