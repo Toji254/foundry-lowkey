@@ -47,6 +47,13 @@ successful trace. The recorder emits ordinary JSON directly (it does not rely on
 Foundry's keyed JSON serializer), with a top-level `accesses` array and nested
 `storage_accesses` arrays.
 
+For a controlled fixture whose behavior must differ between control and attack,
+prefer one deployment and a zero-value mode-switch call outside the recording
+window over constructor flags or separate target deployments. The mode slot may
+be excluded from pre-state equality only when it is declared as a scenario
+parameter and the runner verifies each scenario's expected value independently.
+This is a fixture pattern, not a way to mutate a production fork target.
+
 ## Shared normalized trace schema
 
 Both evidence backends emit TraceEvent schema version 1 with index, kind, accessor,
@@ -139,6 +146,18 @@ or helper contracts as deployed dependencies. A dependency that was not touched
 in the state-diff must not be claimed as source-verified. If the archive endpoint
 does not support the required state queries, Lowkey will leave authenticity
 unverified and will not promote the result to deployment proof.
+
+## Deterministic Anvil re-prove
+
+For a local Anvil re-prove campaign, pin the Anvil version, chain ID, fork block,
+mnemonic, gas limit and base fee. Start Anvil with mining disabled, submit exactly
+one measured transaction for each scenario, and mine exactly one block per
+scenario. The transaction must be index zero in its block; Lowkey rejects a block
+containing multiple transactions. The trace is requested from the local Anvil
+node because the local node owns the mined transaction, even when its state is
+backed by a remote fork RPC. The runner executes each scenario once and does not
+retry a failing transaction. Use the same local Anvil process and revert its
+snapshot between the control and attack runs.
 
 ## Interpretation limits
 
