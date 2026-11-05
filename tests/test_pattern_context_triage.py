@@ -126,6 +126,24 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].evidence_status, "context-checked")
 
+
+    def test_sender_comparison_without_enforcement_does_not_suppress_auth_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address public owner;
+                bool public paused;
+                function pause() external {
+                    bool callerIsOwner = msg.sender == owner;
+                    paused = true;
+                }
+            }
+            """,
+            ["pause"],
+        )
+        self.assertEqual(len(self.matches(root, model, "AUTH-001")), 1)
+
     def test_same_named_guard_in_unimported_sibling_does_not_suppress_candidate(self):
         root, model = self.model(
             """
