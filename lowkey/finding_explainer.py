@@ -1345,7 +1345,7 @@ def main(argv: list[str] | None = None) -> int:
     preview.add_argument("--finding", required=True)
     preview.add_argument("--root", default=".")
     preview.add_argument("--show-context", action="store_true")
-    preview.add_argument("--evidence-url", action="append", default=[], help="explicit public HTTPS URL; listed only in preview, fetched only during explanation")
+    preview.add_argument("--evidence-url", action="append", default=[], help="explicit public HTTPS URL; preview fetches it locally but never calls the provider")
     preview.add_argument("--json", action="store_true")
 
     explain = sub.add_parser("explain-finding", help="ask the configured text provider to challenge one native signal")
