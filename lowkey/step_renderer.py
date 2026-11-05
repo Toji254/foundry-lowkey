@@ -174,6 +174,10 @@ def _normalize_step(raw: Any, index: int, default_target: str | None,
     value = _wei(raw.get("value"), target=default_target, family=family)
     if kind == "read" and value != 0:
         _fail(default_target, family, "unsupported_abi", f"Step #{index} read cannot transfer ETH.")
+    if kind == "reenter" and value != 0:
+        _fail(default_target, family, "unsupported_abi", "A reenter step configures a native-ETH receive callback and cannot transfer ETH itself.")
+    if kind == "reenter" and optional:
+        _fail(default_target, family, "no_capability", "Native receive callbacks are mandatory; optional reenter steps are unsupported.")
     return {"kind": kind, "target": step_target, "selector": selector.lower(),
             "args": typed_args, "value": value, "optional": optional, "expect": None}
 
@@ -201,6 +205,14 @@ def normalize_manifest(manifest: Any) -> dict[str, Any]:
     if not isinstance(contract_name, str) or not CONTRACT_RE.fullmatch(contract_name):
         _fail(default_target, family, "unsupported_abi", "contract_name must be a Solidity identifier.")
     normalized = [_normalize_step(item, i, default_target, family) for i, item in enumerate(steps, 1)]
+    reenter_positions = [i for i, item in enumerate(normalized) if item["kind"] == "reenter"]
+    if len(reenter_positions) > 1:
+        _fail(default_target, family, "no_capability", "P1 supports exactly one native-ETH reentry callback per generated harness.")
+    if reenter_positions:
+        position = reenter_positions[0]
+        if not any(item["kind"] in {"call", "unwind"} for item in normalized[position + 1:]):
+            _fail(default_target, family, "no_capability",
+                  "A reenter step must precede a call/unwind step that can trigger the native-ETH receive callback.")
     if not any(step["kind"] != "expect" for step in normalized):
         _fail(default_target, family, "no_capability", "At least one call or read step is required.")
     return {"schema_version": 1, "family": family, "target_address": default_target,
@@ -219,6 +231,18 @@ def _step_body(steps: list[dict[str, Any]]) -> str:
             f"abi.encodePacked(bytes4({step['selector']}), abi.encode({expressions}))"
             if expressions else f"abi.encodePacked(bytes4({step['selector']}))"
         )
+        if step["kind"] == "reenter":
+            callback_name = f"stepCallback{index}"
+            rendered.extend([
+                "        {",
+                f"            bytes memory {callback_name} = {calldata_expr};",
+                f"            _lowkeyReenterTarget = address({step['target']});",
+                f"            _lowkeyReenterCalldata = {callback_name};",
+                "            _lowkeyReenterEnabled = true;",
+                f"            results[{index}] = bytes(\"\");",
+                "        }",
+            ])
+            continue
         t, c, ret, ok = (f"stepTarget{index}", f"stepCalldata{index}",
                          f"stepResult{index}", f"stepOk{index}")
         rendered.extend(["        {", f"            address {t} = address({step['target']});",

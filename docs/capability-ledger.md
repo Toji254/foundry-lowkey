@@ -88,7 +88,7 @@ A missing evidence link means the capability remains partial or telemetry-only.
 
 - `lk steps` accepts a schema-checked ordered Step[] manifest and emits a non-clobbering Solidity harness plus a separate trace-expectations JSON.
 - P1 scalar ABI support is `address`, `bool`, `uintN`, `intN`, and `bytesN`. Dynamic bytes/string, arrays, tuples and structs refuse with `unsupported_abi`; no unsupported value is silently defaulted.
-- Executable kinds are `call`, `read`, `unwind`, and `reenter`. `expect` is exported as declarative target/selector/count/revert metadata for independent backend-trace validation. The Solidity harness never self-attests expected call counts.
+- Executable kinds are `call`, `read`, `unwind`, and `reenter`. P1 `reenter` configures a single one-shot native-ETH receive callback; token-specific receiver hooks are not implied. `expect` is exported as declarative target/selector/count/revert metadata for independent backend-trace validation. The Solidity harness never self-attests expected call counts.
 - Flash borrow, oracle skew, time/block controls, snapshots, explicit revert and generic assert steps remain refused until dedicated backends and acceptance fixtures exist.
 - `lk control --validate` validates only the frozen file and the paths it references. It accepts no new manifest or RPC URL and never executes experiment commands.
 - Local fixture outcomes are distinct from deployment outcomes: `LOCAL_REPRODUCED` and `LOCAL_PROFITABLE` do not promote to fork/deployment claims. Semantic checks remain capped at `SIMULATED_BREAK`.

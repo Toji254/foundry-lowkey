@@ -42,7 +42,46 @@ class StepRendererTests(unittest.TestCase):
                 "step": 3, "target": "0x1111111111111111111111111111111111111111",
                 "selector": "0x12345678", "count": 2, "must_revert": False,
             }])
-            self.assertIn("not proof", expected["policy"])
+            self.assertIn("proves execution", expected["policy"])
+
+    def test_reenter_is_a_one_shot_native_eth_callback_configuration(self):
+        manifest = self._manifest()
+        manifest["steps"] = [
+            {"kind":"reenter","selector":"0xaabbccdd","args":[]},
+            {"kind":"call","selector":"0x12345678","args":[]},
+        ]
+        normalized = normalize_manifest(manifest)
+        body = __import__("lowkey.step_renderer", fromlist=["_step_body"])._step_body(normalized["steps"])
+        self.assertIn("_lowkeyReenterTarget = address(", body)
+        self.assertIn("_lowkeyReenterCalldata = stepCallback0", body)
+        self.assertIn("_lowkeyReenterEnabled = true", body)
+
+    def test_reenter_refuses_optional_multiple_and_untriggered_callbacks(self):
+        manifest = self._manifest()
+        manifest["steps"] = [
+            {"kind":"reenter","selector":"0xaabbccdd","args":[],"optional":True},
+            {"kind":"call","selector":"0x12345678","args":[]},
+        ]
+        with self.assertRaises(RefusalError) as caught:
+            normalize_manifest(manifest)
+        self.assertEqual(caught.exception.refusal["reason"], "no_capability")
+
+        manifest["steps"] = [
+            {"kind":"reenter","selector":"0xaabbccdd","args":[]},
+            {"kind":"read","selector":"0x12345678","args":[]},
+        ]
+        with self.assertRaises(RefusalError) as caught:
+            normalize_manifest(manifest)
+        self.assertEqual(caught.exception.refusal["reason"], "no_capability")
+
+        manifest["steps"] = [
+            {"kind":"reenter","selector":"0xaabbccdd","args":[]},
+            {"kind":"reenter","selector":"0x11223344","args":[]},
+            {"kind":"call","selector":"0x12345678","args":[]},
+        ]
+        with self.assertRaises(RefusalError) as caught:
+            normalize_manifest(manifest)
+        self.assertEqual(caught.exception.refusal["reason"], "no_capability")
 
     def test_no_argument_selector_has_no_abi_zero_word_appended(self):
         manifest = self._manifest()

@@ -242,11 +242,12 @@ jobs:
             "target_address": "0x1111111111111111111111111111111111111111",
             "contract_name": "P1StepAcceptance",
             "steps": [
+              {"kind":"reenter","selector":"0xaabbccdd","args":[]},
               {"kind":"call","selector":"0x12345678","args":[{"type":"uint256","value":1}],"optional":true},
               {"kind":"read","selector":"0xabcdef01","args":[]},
               {"kind":"unwind","selector":"0xdeadbeef","args":[],"optional":true},
-              {"kind":"reenter","selector":"0xaabbccdd","args":[{"type":"address","value":"0x2222222222222222222222222222222222222222"}],"optional":true},
-              {"kind":"expect","target":"0x1111111111111111111111111111111111111111","selector":"0x12345678","expect":{"count":2,"must_revert":false}}
+              {"kind":"expect","target":"0x1111111111111111111111111111111111111111","selector":"0xaabbccdd","expect":{"count":1,"must_revert":false}},
+              {"kind":"expect","target":"0x1111111111111111111111111111111111111111","selector":"0x12345678","expect":{"count":1,"must_revert":false}}
             ]
           }
           EOF
@@ -256,17 +257,97 @@ jobs:
           import json
           from pathlib import Path
           artifact = json.loads(Path(".audit/steps/P1StepAcceptance.expectations.json").read_text())
-          assert artifact["trace_expectations"] == [{
-              "step": 5,
-              "target": "0x1111111111111111111111111111111111111111",
-              "selector": "0x12345678",
-              "count": 2,
-              "must_revert": False,
-          }], artifact
+          assert artifact["trace_expectations"] == [
+              {
+                  "step": 5,
+                  "target": "0x1111111111111111111111111111111111111111",
+                  "selector": "0xaabbccdd",
+                  "count": 1,
+                  "must_revert": False,
+              },
+              {
+                  "step": 6,
+                  "target": "0x1111111111111111111111111111111111111111",
+                  "selector": "0x12345678",
+                  "count": 1,
+                  "must_revert": False,
+              },
+          ], artifact
           assert "proves execution" in artifact["policy"]
           assert Path("test/lowkey/P1StepAcceptance.sol").is_file()
           print("PASS: P1 ordered Step[] generated and Solidity harness compiled; expectations remain trace-only")
           PY
+          cat > src/P1StepTarget.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract P1StepTarget {
+              event Callback(address indexed caller);
+              function trigger() external {
+                  (bool ok,) = msg.sender.call{value: 1 wei}("");
+                  require(ok, "STEP_RECEIVER_FAILED");
+              }
+              function callback() external {
+                  emit Callback(msg.sender);
+              }
+              receive() external payable {}
+          }
+          EOF
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          target = "0x1111111111111111111111111111111111111111"
+          callback = subprocess.check_output(["cast", "sig", "callback()"], text=True).strip()
+          trigger = subprocess.check_output(["cast", "sig", "trigger()"], text=True).strip()
+          manifest = {
+              "schema_version": 1,
+              "family": "reentrancy",
+              "target_address": target,
+              "contract_name": "P1StepReenter",
+              "steps": [
+                  {"kind":"reenter","target":target,"selector":callback,"args":[]},
+                  {"kind":"call","target":target,"selector":trigger,"args":[]},
+                  {"kind":"expect","target":target,"selector":callback,"expect":{"count":1,"must_revert":False}},
+                  {"kind":"expect","target":target,"selector":trigger,"expect":{"count":1,"must_revert":False}}
+              ]
+          }
+          Path(".lowkey-reenter.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          lk steps .lowkey-reenter.json --root /tmp/lowkey-fixture
+          cat > test/P1StepReenter.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          import "forge-std/Test.sol";
+          import "forge-std/Vm.sol";
+          import "../src/P1StepTarget.sol";
+          import "./lowkey/P1StepReenter.sol";
+
+          contract P1StepReenterTest is Test {
+              function test_generated_step_chain_executes_native_eth_reentry() external {
+                  address target = 0x1111111111111111111111111111111111111111;
+                  P1StepTarget implementation = new P1StepTarget();
+                  vm.etch(target, address(implementation).code);
+                  vm.deal(target, 1 ether);
+                  P1StepReenter runner = new P1StepReenter();
+                  vm.recordLogs();
+                  runner.run();
+                  Vm.Log[] memory logs = vm.getRecordedLogs();
+                  bytes32 topic = keccak256("Callback(address)");
+                  uint256 callbacks;
+                  for (uint256 i; i < logs.length; ++i) {
+                      if (logs[i].emitter == target && logs[i].topics.length == 2 &&
+                          logs[i].topics[0] == topic &&
+                          logs[i].topics[1] == bytes32(uint256(uint160(address(runner))))) {
+                          callbacks++;
+                      }
+                  }
+                  assertEq(callbacks, 1, "generated reentry callback did not execute exactly once");
+              }
+          }
+          EOF
+          grep -nE 'function (etch|deal|recordLogs|getRecordedLogs)\\(' lib/forge-std/src/Vm.sol
+          forge build --force
+          forge test --match-path test/P1StepReenter.t.sol -vv
       - name: Run installed integration checks
         working-directory: /tmp/lowkey-fixture
         run: |
