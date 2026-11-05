@@ -145,21 +145,33 @@ class FindingExplainerTests(unittest.TestCase):
                 finding_explainer._source_records(root, signal)
 
 
-    def test_preview_lists_remote_urls_without_fetching_them(self):
+    def test_preview_fetches_only_explicit_remote_refs_but_never_calls_provider(self):
         root, signal = self.fixture()
         sha = "a" * 40
+        api = json.dumps({
+            "sha": sha,
+            "commit": {"message": "Review snapshot"},
+            "files": [{"filename": "src/Vault.sol", "status": "modified"}],
+        }).encode()
+        source = b"contract Vault { function withdraw() external {} }"
         with patch.object(
             finding_explainer, "_http_get_public",
-            side_effect=AssertionError("preview must never fetch remote URLs"),
-        ):
-            preview = finding_explainer.explain_finding(
-                root, signal["id"], preview=True,
-                evidence_urls=[f"https://github.com/example/protocol/blob/{sha}/src/Vault.sol"],
-            )
+            side_effect=[(api, "application/json"), (source, "text/plain")],
+        ) as fetch:
+            with patch.object(
+                ai_harness, "request_structured",
+                side_effect=AssertionError("preview must not call provider"),
+            ):
+                preview = finding_explainer.explain_finding(
+                    root, signal["id"], preview=True,
+                    evidence_urls=[f"https://github.com/example/protocol/blob/{sha}/src/Vault.sol"],
+                )
         self.assertIn("Provider call: NO", preview)
-        self.assertIn("EXPLICIT REMOTE REFERENCES (NOT FETCHED)", preview)
+        self.assertIn("REMOTE SUPPLEMENTARY EVIDENCE", preview)
+        self.assertIn("contract Vault", preview)
         self.assertIn(sha, preview)
-        self.assertIn("Remote fetch: NO", preview)
+        self.assertIn("Remote fetch: YES", preview)
+        self.assertEqual(fetch.call_count, 2)
 
     def test_remote_url_policy_rejects_plain_http_private_hosts_credentials_and_unpinned_github(self):
         invalid_urls = [
