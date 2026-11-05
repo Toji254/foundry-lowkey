@@ -518,11 +518,16 @@ def _trace_storage_prestate(url, tx_hash):
         storage=account.get("storage") or {}
         if isinstance(storage,dict):
             for raw_slot,raw_value in storage.items():
-                slot=str(raw_slot).lower()
-                value=str(raw_value).lower()
-                if re.fullmatch(r"0x[0-9a-f]{64}",slot) and re.fullmatch(r"0x[0-9a-f]{64}",value):
-                    slots.append({"address":address,"slot":slot,"value":value})
+                slot_raw=str(raw_slot).lower().removeprefix("0x")
+                value_raw=str(raw_value).lower().removeprefix("0x")
+                if (re.fullmatch(r"[0-9a-f]{1,64}",slot_raw) and
+                    re.fullmatch(r"[0-9a-f]{1,64}",value_raw)):
+                    slots.append({"address":address,"slot":"0x"+slot_raw.rjust(64,"0"),
+                                  "value":"0x"+value_raw.rjust(64,"0")})
     slots.sort(key=lambda item:(item["address"],item["slot"]))
+    if not addresses:
+        return {"supported":False,"reason":"prestateTracer result did not contain account prestate entries.",
+                "addresses":[],"slots":[]}
     return {
         "supported":True,
         "mode":"prestateTracer",
@@ -635,6 +640,15 @@ def _trace_control_run(root, url, name, entry, spec, env):
             prestate_digest,prestate=_control_prestate_digest(
                 url,receipt,addresses,slots,comparison_excluded_slots=scenario_exclusions
             )
+            parent_storage={(item["address"],item["slot"]):str(item["value"]).lower()
+                            for item in prestate.get("storage",[])}
+            for observed_slot in storage_trace.get("slots",[]):
+                key=(observed_slot["address"],observed_slot["slot"])
+                if key in parent_storage and parent_storage[key]!=str(observed_slot["value"]).lower():
+                    raise ValueError(
+                        f"{name} prestateTracer value for {key[0]}:{key[1]} "
+                        "does not match eth_getStorageAt at the transaction parent block."
+                    )
             metric_addresses=sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
             sender=str(tx.get("from") or "").lower()
             if not metric_addresses or sender not in metric_addresses:
