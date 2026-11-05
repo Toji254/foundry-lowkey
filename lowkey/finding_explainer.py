@@ -270,7 +270,7 @@ def _fetch_remote_evidence(root: Path, context: dict[str, Any], urls: list[str])
                 if actual_sha != github["commit"]:
                     raise ValueError("GitHub did not resolve the requested exact commit SHA.")
                 record["resolved_commit"] = actual_sha
-                record["matches_local_commit"] = bool(local_commit and actual_sha == local_commit)
+                record["matches_local_commit"] = (actual_sha == local_commit) if local_commit else None
                 commit_meta = commit_doc.get("commit") if isinstance(commit_doc.get("commit"), dict) else {}
                 message = str(commit_meta.get("message") or "").splitlines()[0][:240]
                 if any(pattern.search(message) for pattern in _SECRET_PATTERNS):
@@ -381,6 +381,11 @@ def _fetch_remote_evidence(root: Path, context: dict[str, Any], urls: list[str])
                 for item in records
             ]
             base_size = len(json.dumps(context, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    if base_size > MAX_CONTEXT_BYTES:
+        raise ValueError(
+            "local finding context already exceeds the bounded provider context limit; "
+            "no remote evidence was passed to the provider"
+        )
     context["context_bytes"] = base_size
     return records
 
