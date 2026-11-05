@@ -1485,6 +1485,10 @@ class GodmodeTests(unittest.TestCase):
                     "kind": "expect",
                     "target": "0x" + "1" * 40,
                     "selector": "0x12345678",
+                    "args": [
+                        {"type": "address[]", "value": ["0x" + "2" * 40]},
+                        {"type": "uint8[2]", "value": [1, 2]},
+                    ],
                     "expect": {"count": 2, "must_revert": True},
                 },
                 {
@@ -1502,6 +1506,30 @@ class GodmodeTests(unittest.TestCase):
         self.assertIn("uint8[2] memory step1Arg1;", source)
         self.assertIn("vm.expectCall(address(0x" + "1" * 40 + "), step0Data, uint64(2));", source)
         self.assertIn("STEP_1_EXPECTED_REVERT", source)
+
+
+    def test_step_renderer_refuses_mismatched_expectation_target_or_calldata(self):
+        with self.assertRaises(godmode.StepPlanError) as raised:
+            godmode.render_step_harness({
+                "family": "reentrancy",
+                "target_address": "0x" + "1" * 40,
+                "steps": [
+                    {
+                        "kind": "expect",
+                        "selector": "0x12345678",
+                        "args": [{"type": "uint256", "value": 1}],
+                        "expect": {"count": 1, "must_revert": True},
+                    },
+                    {
+                        "kind": "call",
+                        "selector": "0x12345678",
+                        "args": [{"type": "uint256", "value": 2}],
+                        "optional": True,
+                    },
+                ],
+            })
+        self.assertEqual(raised.exception.reason_code, "backend_unsupported")
+
 
     def test_step_renderer_refuses_protocol_specific_callbacks_with_defined_reason(self):
         for kind in ("flash_borrow", "reenter"):
