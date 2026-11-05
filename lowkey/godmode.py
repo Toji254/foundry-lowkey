@@ -539,7 +539,57 @@ def _trace_storage_prestate(url, tx_hash):
 
 
 
+
+def _analyze_control_fidelity(root, entry, spec):
+    candidates=[]
+    harness=entry.get("harness") or spec.get("harness")
+    if isinstance(harness,str):
+        candidates.append(harness)
+    for key in ("support_files",):
+        values=entry.get(key) or []
+        if isinstance(values,str):
+            candidates.append(values)
+        elif isinstance(values,list):
+            candidates.extend(x for x in values if isinstance(x,str))
+    for value in spec.get("fidelity_sources") or []:
+        if isinstance(value,str):
+            candidates.append(value)
+    paths=[]
+    for value in candidates:
+        path=(root/value).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError("Fidelity source must be an existing project file: "+str(value))
+        if path not in paths:
+            paths.append(path)
+    results=[]
+    for path in paths:
+        source=path.read_text(encoding="utf-8",errors="replace")
+        results.append(analyze_harness_fidelity(source,path.relative_to(root).as_posix()))
+    signals=[]
+    blockers=[]
+    for result in results:
+        signals.extend(result.get("signals",[]))
+        blockers.extend(result.get("fork_reproduction_blockers",[]))
+    kinds={row.get("kind") for row in signals}
+    return {
+        "scan_complete":bool(paths),
+        "scanned_files":[path.relative_to(root).as_posix() for path in paths],
+        "synthetic_state":any(result.get("synthetic_state",False) for result in results),
+        "signals":signals,
+        "fork_reproduction_blockers":blockers,
+        "classification":"SIMULATED" if any(result.get("synthetic_state",False) for result in results)
+            else ("CLEAN_STATIC_SCAN" if paths else "UNKNOWN"),
+        "confirmation_eligible":bool(paths) and not blockers and not kinds.intersection({
+            "synthetic_eth","caller_impersonation","storage_override","external_call_mock","time_or_block_override"
+        }),
+        "net_profit_verified":False,
+        "coverage_limit":"Static scan covers only the explicit harness/support/fidelity source files; imported/transitive helpers must be listed in support_files or fidelity_sources.",
+    }
+
+
+
 def _trace_control_run(root, url, name, entry, spec, env):
+    fidelity=_analyze_control_fidelity(root,entry,spec)
     snapshot=rpc(url,"evm_snapshot",[])
     if snapshot is None: raise RuntimeError("Anvil did not return an evm_snapshot ID.")
     try:
@@ -696,6 +746,10 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "storage_trace":storage_trace,
                 "derived_storage_slots":storage_trace.get("slots",[]),
                 "scenario_parameters":scenario_parameters,
+                "fidelity":fidelity,
+                "fidelity_label":("synthetic_state" if fidelity.get("synthetic_state") else
+                    ("simulated_caller" if any(x.get("kind")=="caller_impersonation" for x in fidelity.get("signals",[])) else
+                     ("simulated_dependencies" if any(x.get("kind")=="external_call_mock" for x in fidelity.get("signals",[])) else "unknown"))),
                 "semantic_check":semantic_check,
                 "call_trace":calls,
                 "argv":entry["argv"],
