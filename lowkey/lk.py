@@ -9978,7 +9978,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print("Helper  : Foundry test-scoped filesystem permission; no project config edit or remote broadcast.")
 
     fixture_build_code = _run_resource_aware_foundry_build(
-        root, ["--target", relative_test]
+        root, ["--target", relative_test], lab_phase=True
     )
     if fixture_build_code != 0:
         try:
@@ -11172,15 +11172,20 @@ def _foundry_build_planner():
     return module
 
 
-def _run_resource_aware_foundry_build(root, args):
-    """Build only the requested scope through Lowkey's shared memory-aware planner."""
+LAB_MIN_AVAILABLE_MEMORY_BYTES = 2 * 1024 ** 3
+
+
+def _run_resource_aware_foundry_build(root, args, *, lab_phase=False):
+    """Build through the shared planner; lab work refuses unsafe low-memory starts."""
     try:
         planner = _foundry_build_planner()
-        return planner.run_build(
-            list(args or []),
-            root=Path(root).expanduser().resolve(),
-            fallback_to_native=False,
-        )
+        options = {
+            "root": Path(root).expanduser().resolve(),
+            "fallback_to_native": False,
+        }
+        if lab_phase:
+            options["minimum_available_memory_bytes"] = LAB_MIN_AVAILABLE_MEMORY_BYTES
+        return planner.run_build(list(args or []), **options)
     except RuntimeError as exc:
         return fail(f"Error: {exc}", 2)
 
@@ -11235,6 +11240,7 @@ def _run_project_build(config, root):
         return _run_resource_aware_foundry_build(
             root_path,
             ["--scope", "production"],
+            lab_phase=True,
         )
 
     command_info = project_build_command(project) if project_build_command is not None else None
@@ -11891,7 +11897,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     try:
         script_build_code = _run_resource_aware_foundry_build(
-            root, ["--target", relative]
+            root, ["--target", relative], lab_phase=True
         )
         if script_build_code != 0:
             return fail(

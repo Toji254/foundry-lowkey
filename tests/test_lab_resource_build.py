@@ -40,7 +40,29 @@ class LabResourceBuildRoutingTests(unittest.TestCase):
                 result = lk._run_project_build({}, root)
 
             self.assertEqual(result, 0)
-            planned.assert_called_once_with(root, ["--scope", "production"])
+            planned.assert_called_once_with(root, ["--scope", "production"], lab_phase=True)
+
+    def test_lab_build_wrapper_requests_the_two_gib_memory_floor(self):
+        class Planner:
+            def __init__(self):
+                self.options = None
+
+            def run_build(self, args, **kwargs):
+                self.options = kwargs
+                return 0
+
+        planner = Planner()
+        with patch.object(lk, "_foundry_build_planner", return_value=planner):
+            result = lk._run_resource_aware_foundry_build(
+                pathlib.Path("/project"), ["--scope", "production"], lab_phase=True
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            planner.options["minimum_available_memory_bytes"],
+            2 * 1024 ** 3,
+        )
+
 
     def test_internal_build_dispatch_uses_planner_and_preserves_options(self):
         with tempfile.TemporaryDirectory() as tmp:
