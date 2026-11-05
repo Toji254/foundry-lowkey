@@ -1010,6 +1010,73 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
 
 
 
+
+def _forge_scenario_prestate(normalized, spec, scenario_name):
+    """Verify declared per-scenario state, then exclude only those slots from equivalence."""
+    prestate = json.loads(json.dumps(normalized.get("prestate") or []))
+    exclusions = set()
+    verified = []
+
+    def word(value, label):
+        try:
+            number = int(str(value), 16) if isinstance(value, str) and value.lower().startswith("0x") else int(value)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid " + label + " scenario storage value: " + str(value))
+        if number < 0 or number >= 1 << 256:
+            raise ValueError(label + " scenario storage value does not fit bytes32.")
+        return "0x" + format(number, "064x")
+
+    for item in spec.get("scenario_parameters") or []:
+        if not isinstance(item, dict):
+            raise ValueError("scenario_parameters entries must be objects.")
+        address = addr(item.get("address"))
+        slot = storage_slot_key(item.get("slot"))
+        expected_raw = item.get(scenario_name + "_value")
+        if expected_raw is None:
+            raise ValueError(
+                "Forge scenario parameter " + str(item.get("name") or slot) +
+                " requires " + scenario_name + "_value."
+            )
+        expected = word(expected_raw, scenario_name)
+        account = next((row for row in prestate if row.get("address") == address), None)
+        storage = next(
+            (row for row in (account or {}).get("storage", []) if row.get("slot") == slot),
+            None,
+        )
+        if storage is None:
+            raise ValueError(
+                "Forge state diff did not observe scenario slot " + address + ":" + slot +
+                "; it cannot verify and safely exclude this parameter."
+            )
+        observed = word(storage.get("value"), "observed")
+        if observed != expected:
+            raise ValueError(
+                "Forge scenario parameter " + str(item.get("name") or slot) +
+                " observed " + observed + ", expected " + expected + " for " + scenario_name + "."
+            )
+        exclusions.add((address, slot))
+        verified.append({
+            "name": item.get("name"), "address": address, "slot": slot,
+            "observed_value": observed, "expected_value": expected,
+            "verified_in_trace_prestate": True,
+            "description": item.get("description"),
+        })
+
+    comparison = json.loads(json.dumps(prestate))
+    for account in comparison:
+        account["storage"] = [
+            row for row in account.get("storage", [])
+            if (account.get("address"), row.get("slot")) not in exclusions
+        ]
+    digest = hashlib.sha256(
+        json.dumps(comparison, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return digest, prestate, verified, sorted(
+        address + ":" + slot for address, slot in exclusions
+    )
+
+
+
 def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
     try:
         try:
@@ -1077,6 +1144,9 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
         raw = json.loads(artifact_path.read_text(encoding="utf-8"))
         target = addr(spec.get("target_address"))
         normalized = normalize_forge_state_diff(raw, expected_target=target)
+        prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots = (
+            _forge_scenario_prestate(normalized, spec, name)
+        )
         semantic_check = None
         semantic_argv = entry.get("semantic_check_argv")
         if semantic_argv:
@@ -1117,7 +1187,9 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None):
             "fork_parent_hash": normalized.get("fork_parent_hash"),
             "entry_call_sha256": normalized["entry_call_sha256"],
             "entry_call": normalized["entry_call"],
-            "prestate_sha256": normalized["prestate_sha256"], "prestate": normalized["prestate"],
+            "prestate_sha256": prestate_digest, "prestate": full_prestate,
+            "scenario_parameters": scenario_parameters,
+            "comparison_excluded_scenario_slots": excluded_scenario_slots,
             "derived_storage_accesses": normalized["storage_accesses"],
             "derived_storage_slots": [
                 {"address": item["account"], "slot": item["slot"],
