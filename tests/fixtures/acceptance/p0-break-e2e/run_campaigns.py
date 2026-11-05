@@ -197,11 +197,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-def main():
-    run_with_snapshot(_run_campaigns)
-
-
-if __name__ == "__main__":
-    main()
