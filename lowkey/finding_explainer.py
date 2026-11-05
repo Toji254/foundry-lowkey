@@ -326,7 +326,7 @@ def _fetch_remote_evidence(root: Path, context: dict[str, Any], urls: list[str])
                 content_bytes, content_type = _http_get_public(parsed.geturl())
                 record["content_excerpt"] = _remote_text(content_bytes, content_type)[:MAX_REMOTE_EXCERPT_CHARS]
             record["status"] = "fetched"
-        except (ValueError, OSError, json.JSONDecodeError) as exc:
+        except (ValueError, OSError, http.client.HTTPException, json.JSONDecodeError) as exc:
             record["status"] = "unavailable"
             record["error"] = str(exc)[:500]
 
@@ -839,6 +839,13 @@ def _normal(value: Any, limit: int = 1600) -> str:
     return re.sub(r"\s+", " ", value).strip()[:limit]
 
 
+def _is_remote_reference(path: str, context: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(item, dict) and str(item.get("url") or "") == str(path or "")
+        for item in context.get("remote_evidence", [])
+    )
+
+
 def _quote_matches(quote: str, context: Mapping[str, Any]) -> bool:
     normalized = re.sub(r"\s+", " ", quote).strip()
     if not normalized:
@@ -874,7 +881,10 @@ def validate_explanation(raw: Mapping[str, Any], context: Mapping[str, Any]) -> 
             "symbol": _normal(item.get("symbol"), 120),
             "role": _normal(item.get("role"), 80),
             "quote": quote,
-            "quote_status": "matched" if _quote_matches(quote, context) else "unmatched",
+            "quote_status": (
+                "remote-unverified" if _is_remote_reference(item.get("path"), context)
+                else "matched" if _quote_matches(quote, context) else "unmatched"
+            ),
         })
 
     contrary: list[dict[str, str]] = []
@@ -886,7 +896,10 @@ def validate_explanation(raw: Mapping[str, Any], context: Mapping[str, Any]) -> 
             "path": _normal(item.get("path"), 300),
             "symbol": _normal(item.get("symbol"), 120),
             "quote": quote,
-            "quote_status": "matched" if _quote_matches(quote, context) else "unmatched",
+            "quote_status": (
+                "remote-unverified" if _is_remote_reference(item.get("path"), context)
+                else "matched" if _quote_matches(quote, context) else "unmatched"
+            ),
             "why_it_matters": _normal(item.get("why_it_matters"), 1000),
         })
 
@@ -1023,7 +1036,7 @@ def _explain_task() -> str:
         "finalize, claim, mint, redeem, refund, queue/epoch and pool callbacks distinct; inspect zero-share guards, "
         "remaining-entitlement and dust handling before alleging loss. Do not infer a bug from a detector match or missing "
         "onlyOwner alone. Explain the actual caller policy. "
-        "For each side, cite exact source/test paths, symbols and short verbatim quotes. A quote only proves that text exists; "
+        "For each side, cite exact local source/test paths, symbols and short verbatim quotes. For remote supplementary material, cite its exact URL and label it remote-unverified; never present a remote quote as a matched local source quote. A quote only proves that text exists; "
         "it does not prove reachability or exploitability. Separate source evidence from assumptions. State the attacker-controlled "
         "entry point, preconditions, action sequence and economic/state impact needed for a real exploit. List code paths and "
         "tests you could not inspect. An empty test coverage list is valid. A proposed test is only a plan: do not write or run it. "
