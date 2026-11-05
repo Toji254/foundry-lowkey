@@ -337,6 +337,45 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].evidence_status, "needs-investigation")
 
+
+    def test_claim_guard_without_pre_payout_consumption_does_not_hide_replay_candidate(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                mapping(address => bool) claimed;
+                function claim() external {
+                    require(!claimed[msg.sender]);
+                    (bool ok,) = payable(msg.sender).call{value: 1}("");
+                    require(ok);
+                }
+            }
+            """,
+            ["claim"],
+        )
+        self.assertEqual(len(self.matches(root, model, "REPLAY-001")), 1)
+
+    def test_unrelated_contract_mutator_in_same_file_does_not_grow_selected_array(self):
+        root, model = self.model(
+            """
+            pragma solidity ^0.8.20;
+            contract Vault {
+                address[] public members;
+                function withdrawAll() external {
+                    for (uint256 i; i < members.length; ++i) {
+                        payable(msg.sender).transfer(1);
+                    }
+                }
+            }
+            contract Other {
+                address[] public members;
+                function addMember(address who) external { members.push(who); }
+            }
+            """,
+            ["withdrawAll"],
+        )
+        self.assertEqual(self.matches(root, model, "DOS-001"), [])
+
     def test_async_partial_claim_zero_share_helper_guard_suppresses_rounding_candidate(self):
         root, model = self.model(
             """
