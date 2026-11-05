@@ -465,7 +465,15 @@ jobs:
           control_calls, attack_calls = target_calls(control), target_calls(attack)
           assert len(control_calls) == 1, control_calls
           assert len(attack_calls) == 2, attack_calls
-          assert control_calls[0]["input"] == attack_calls[0]["input"] == attack_calls[1]["input"]
+          attacker = control_calls[0]["from"]
+          assert attacker == attack_calls[0]["from"] == attack_calls[1]["from"], "attacker address changed"
+          expected_withdraw_calldata = subprocess.check_output(
+              ["cast", "calldata", "withdraw()"], text=True
+          ).strip().lower()
+          assert expected_withdraw_calldata != "0x", "cast did not produce a real withdraw() selector"
+          assert control_calls[0]["input"] == expected_withdraw_calldata, control_calls[0]
+          assert attack_calls[0]["input"] == expected_withdraw_calldata, attack_calls[0]
+          assert attack_calls[1]["input"] == expected_withdraw_calldata, attack_calls[1]
 
           withdraw_topic = subprocess.check_output(
               ["cast", "keccak", "Withdrawn(address,uint256)"], text=True
@@ -473,12 +481,19 @@ jobs:
           deposit_topic = subprocess.check_output(
               ["cast", "keccak", "Deposited(address,uint256)"], text=True
           ).strip().lower()
-          assert sum(e["signature"] == withdraw_topic for e in control["domain_events"]) == 1
-          assert sum(e["signature"] == withdraw_topic for e in attack["domain_events"]) == 2
-          assert sum(e["signature"] == deposit_topic for e in control["setup_events"]) == 1
-          assert sum(e["signature"] == deposit_topic for e in attack["setup_events"]) == 1
+          control_withdrawals = [e for e in control["domain_events"] if e["signature"] == withdraw_topic]
+          attack_withdrawals = [e for e in attack["domain_events"] if e["signature"] == withdraw_topic]
+          control_deposits = [e for e in control["setup_events"] if e["signature"] == deposit_topic]
+          attack_deposits = [e for e in attack["setup_events"] if e["signature"] == deposit_topic]
+          assert len(control_withdrawals) == 1, control_withdrawals
+          assert len(attack_withdrawals) == 2, attack_withdrawals
+          assert len(control_deposits) == len(attack_deposits) == 1
+          for event in control_withdrawals + attack_withdrawals + control_deposits + attack_deposits:
+              assert event["emitter"] == target, event
+              assert len(event["topics"]) == 2, event
+              assert event["topics"][1][-40:].lower() == attacker[2:].lower(), event
+              assert int(event["data"], 16) == 10**18, event
 
-          attacker = control_calls[0]["from"]
           assert attacker == attack_calls[0]["from"] == attack_calls[1]["from"], "attacker address changed"
           mode_slot = "0x" + "0" * 64
           def storage_value(row, account, slot):
