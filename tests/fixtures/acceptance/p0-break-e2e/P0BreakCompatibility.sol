@@ -16,7 +16,7 @@ contract P0ArrayBreakTarget {
         }
     }
 
-    function withdraw(address[] calldata recipients) external {
+    function withdraw(address[] calldata recipients) external payable {
         for (uint256 i; i < recipients.length; ++i) {
             address recipient = recipients[i];
             uint256 amount = credit[recipient];
