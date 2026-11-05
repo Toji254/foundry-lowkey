@@ -1131,7 +1131,7 @@ lk project
 
 Member selection accepts a stable 1-based list index, package name, relative path or absolute path. The saved selection lives in the workspace-local .audit/workspace.json. A real child package directory always overrides a stale workspace-level selection. If multiple Foundry members exist and none is selected, Lowkey stops rather than guessing or mixing them.
 
-Foundry builds use the nearest package-local foundry.toml, not an unrelated repository-root config:
+Foundry builds use the selected package's active config. An explicit FOUNDRY_CONFIG override is respected and shown in the plan. At a workspace root, Lowkey selects the saved Foundry member, selects the only Foundry member when there is exactly one, or stops for an explicit selection when several exist—even if the workspace root also has a foundry.toml. Inside a child package, its own foundry.toml wins; a child with no Foundry config is not silently built with the workspace's config.
 
 ~~~bash
 lk build --plan
@@ -1149,6 +1149,7 @@ Scopes:
 - tests passes the configured test directory and its imports.
 - scripts passes the configured script directory and its imports.
 - target accepts a source path or a unique contract name and relies on Forge for the import closure.
+- The source-file inventory excludes remapped/imported dependencies outside the configured source directories; Forge compiles the actual transitive closure. The plan warns when a large selected scope may be risky even with one worker, without inventing a per-contract memory estimate.
 
 Before compiling, Lowkey reads the active Foundry config, available RAM, swap/zram, CPU availability and memory pressure where the host exposes them. It chooses a conservative worker count; an explicit Forge --threads override is preserved and may produce a warning. The planner does not estimate exact compiler memory use. It does not silently alter solc, optimizer, optimizer runs or via_ir; delete cache/artifacts; change host swap; kill unrelated processes; or retry a resource failure. Existing Foundry cache/artifacts are reused. OOM/resource termination is reported separately from Solidity diagnostics. A successful build is not a test pass or an audit-completeness claim.
 

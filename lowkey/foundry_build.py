@@ -64,21 +64,60 @@ def _resolve_project_root(
             return None, f"could not persist workspace member selection: {selected}"
         return selected, None
 
-    # A real child package always wins over a stale workspace-level selection.
+    members = project_detection.discover_nested_projects(workspace) if workspace_mode else []
+    member_roots = [Path(item["root"]).resolve() for item in members]
+    foundry_members = [
+        path for path in member_roots if (path / "foundry.toml").is_file()
+    ]
+
+    # At the workspace root, select a concrete Foundry member before considering
+    # an umbrella foundry.toml. A workspace config must not silently combine
+    # sibling packages or mask the package-local compiler settings.
+    if workspace_mode and requested == workspace:
+        active = project_detection.workspace_selection(workspace)
+        if active is not None and active in member_roots:
+            if active in foundry_members:
+                return active, None
+            # The explicitly selected member uses another build system. Let the
+            # native project router handle it rather than inheriting root Forge.
+            return None, None
+        if len(foundry_members) == 1:
+            return foundry_members[0], None
+        if len(foundry_members) > 1:
+            options = ", ".join(
+                f"{index}. {path.relative_to(workspace).as_posix()}"
+                for index, path in enumerate(foundry_members, 1)
+            )
+            return None, (
+                "multiple Foundry members are available; Lowkey will not mix sibling packages. "
+                f"Select one with 'lk workspace select <index|name|path>' or pass --root. Members: {options}"
+            )
+        if (workspace / "foundry.toml").is_file():
+            return workspace, None
+        return None, None
+
+    # A real child package always wins over a stale workspace selection. If
+    # that child has no Foundry config, do not fall back to the workspace's
+    # umbrella config or to a different selected sibling.
+    if workspace_mode:
+        containing = [
+            path for path in member_roots
+            if requested == path or path in requested.parents
+        ]
+        if containing:
+            nearest = _nearest_foundry(requested)
+            if nearest is not None and nearest != workspace:
+                return nearest, None
+            return None, None
+
     nearest = _nearest_foundry(requested)
     if nearest is not None:
         return nearest, None
 
     if workspace_mode:
-        members = project_detection.discover_nested_projects(workspace)
-        foundry_members = [
-            Path(item["root"]).resolve()
-            for item in members
-            if (Path(item["root"]) / "foundry.toml").is_file()
-        ]
         active = project_detection.workspace_selection(workspace)
         if active is not None and active in foundry_members:
-            return active.resolve(), None
+            return active, None
         if len(foundry_members) == 1:
             return foundry_members[0], None
         if len(foundry_members) > 1:
@@ -91,7 +130,6 @@ def _resolve_project_root(
                 f"Select one with 'lk workspace select <index|name|path>' or pass --root. Members: {options}"
             )
     return None, None
-
 
 def _profile_from_args(args: Sequence[str]) -> str:
     for index, value in enumerate(args):
@@ -117,11 +155,27 @@ def _explicit_threads(args: Sequence[str]) -> int | None:
     return None
 
 
-def _toml_config(root: Path, profile: str) -> dict[str, Any]:
+def _active_config_path(root: Path) -> Path:
+    """Resolve Foundry's selected config file, including FOUNDRY_CONFIG overrides."""
+    configured = os.environ.get("FOUNDRY_CONFIG", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        return candidate.resolve()
+    return (root / "foundry.toml").resolve()
+
+
+def _toml_config(
+    root: Path,
+    profile: str,
+    config_path: Path | None = None,
+) -> dict[str, Any]:
     if tomllib is None:
         return {}
+    path = config_path or _active_config_path(root)
     try:
-        data = tomllib.loads((root / "foundry.toml").read_text(encoding="utf-8", errors="replace"))
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, tomllib.TOMLDecodeError, ValueError):
         return {}
     profiles = data.get("profile", {})
@@ -135,7 +189,8 @@ def _toml_config(root: Path, profile: str) -> dict[str, Any]:
 
 
 def load_foundry_config(root: Path, profile: str) -> tuple[dict[str, Any], str]:
-    """Prefer Forge's effective config; label TOML fallback as manifest-derived."""
+    """Prefer Forge's effective config and report the actual selected config path."""
+    config_path = _active_config_path(root)
     binary = forge_tools.forge_path()
     if binary:
         command = [binary, "config", "--json", "--root", str(root), "--profile", profile]
@@ -147,13 +202,15 @@ def load_foundry_config(root: Path, profile: str) -> tuple[dict[str, Any], str]:
             if result.returncode == 0:
                 value = json.loads(result.stdout or "{}")
                 if isinstance(value, dict) and value:
-                    return value, "forge config --json (effective configuration)"
+                    return value, (
+                        f"forge config --json (effective configuration; active file {config_path})"
+                    )
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
             pass
-    return _toml_config(root, profile), (
-        f"foundry.toml [profile.{profile}] (manifest fallback; CLI/environment overrides may not be reflected)"
+    return _toml_config(root, profile, config_path), (
+        f"{config_path} [profile.{profile}] "
+        "(manifest fallback; CLI/environment overrides may not be reflected)"
     )
-
 
 def _config_dirs(config: dict[str, Any], key: str, default: str) -> list[str]:
     value = config.get(key, default)
@@ -451,6 +508,7 @@ def build_plan(
     low_memory: bool = False,
 ) -> dict[str, Any]:
     profile = _profile_from_args(forge_args)
+    config_path = _active_config_path(root)
     config, config_source = load_foundry_config(root, profile)
     src_dirs = _config_dirs(config, "src", "src")
     test_dirs = _config_dirs(config, "test", "test")
@@ -484,10 +542,28 @@ def build_plan(
     source_count = sum(_count_sources(root, item) for item in src_dirs)
     test_count = sum(_count_sources(root, item) for item in test_dirs)
     script_count = sum(_count_sources(root, item) for item in script_dirs)
-    if scope == "full" and (source_count + test_count + script_count) > 180:
+    selected_scope_count = (
+        sum(_count_sources(root, item) for item in checked_paths)
+        if checked_paths else source_count + test_count + script_count
+    )
+    if selected_scope_count > 180:
         warnings.append(
-            f"Full scope sees {source_count} production, {test_count} test and {script_count} script source file(s). "
-            "On a constrained host, consider --scope production or a focused --target."
+            f"Selected scope inventories {selected_scope_count} source file(s) "
+            f"({source_count} production, {test_count} test, {script_count} script in the package). "
+            "Forge still resolves the transitive import closure, including remapped dependencies."
+        )
+        available = resources.get("memory_available_bytes")
+        total = resources.get("memory_total_bytes")
+        if available is None or available < 6 * GIB or (total is not None and total <= 8 * GIB):
+            warnings.append(
+                "This large scope may exceed available memory even with one compiler worker. "
+                "Lowkey has no validated per-compiler memory estimate; narrow to --scope production "
+                "or a focused --target if memory is tight."
+            )
+    if scope == "target":
+        warnings.append(
+            "Target file count excludes its transitive imports. Forge resolves that closure; "
+            "Lowkey does not claim to estimate its total compiler memory."
         )
 
     forge_args_final = ["build", "--root", str(root)]
@@ -501,7 +577,7 @@ def build_plan(
     output_path = config.get("out") or "out"
     return {
         "project_root": str(root),
-        "config_file": str(root / "foundry.toml"),
+        "config_file": str(config_path),
         "config_source": config_source,
         "profile": profile,
         "compiler": str(compiler) if compiler is not None else "Foundry default / unresolved",

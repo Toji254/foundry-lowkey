@@ -152,6 +152,74 @@ class FoundryBuildPlannerTests(unittest.TestCase):
             self.assertIn("multiple Foundry members", error)
             self.assertIn("lk workspace select", error)
 
+    def test_workspace_root_config_does_not_hide_nested_foundry_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
+            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "root-src"\\n')
+            self.write(root, "packages/perps/foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+            self.write(root, "packages/spot/foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+
+            selected, error = foundry_build._resolve_project_root(root)
+
+            self.assertIsNone(selected)
+            self.assertIn("multiple Foundry members", error)
+            self.assertTrue(project_detection.set_workspace_selection(root, root / "packages/spot"))
+
+            selected, error = foundry_build._resolve_project_root(root)
+
+            self.assertIsNone(error)
+            self.assertEqual(selected, root / "packages/spot")
+
+    def test_workspace_root_with_one_nested_foundry_member_selects_the_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
+            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "root-src"\\n')
+            self.write(root, "packages/perps/foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+
+            selected, error = foundry_build._resolve_project_root(root)
+
+            self.assertIsNone(error)
+            self.assertEqual(selected, root / "packages/perps")
+
+    def test_child_non_foundry_member_does_not_inherit_workspace_foundry_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"private": true, "workspaces": ["packages/*"]}')
+            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+            self.write(root, "packages/frontend/package.json", '{"name":"frontend","scripts":{"build":"vite build"}}')
+
+            selected, error = foundry_build._resolve_project_root(root / "packages/frontend")
+
+            self.assertIsNone(error)
+            self.assertIsNone(selected)
+
+    def test_build_plan_honors_explicit_foundry_config_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\ntest = "test"\\n')
+            self.write(root, "foundry-ci.toml", '[profile.default]\\nsrc = "contracts"\\ntest = "spec"\\n')
+            self.write(root, "src/Vault.sol", "contract Vault {}")
+            self.write(root, "contracts/Vault.sol", "contract Vault {}")
+            with patch.dict(foundry_build.os.environ, {"FOUNDRY_CONFIG": "foundry-ci.toml"}), \\
+                 patch.object(foundry_build.forge_tools, "forge_path", return_value=None), \\
+                 patch.object(foundry_build, "collect_resources", return_value={
+                     "memory_total_bytes": 8 * 1024 ** 3,
+                     "memory_available_bytes": 6 * 1024 ** 3,
+                     "swap_total_bytes": 0,
+                     "swap_used_bytes": 0,
+                     "zram_used_bytes": 0,
+                     "cpu_count": 8,
+                     "memory_psi_some_avg10": 0.0,
+                     "memory_psi_full_avg10": 0.0,
+                 }):
+                plan = foundry_build.build_plan(root, scope="production")
+
+            self.assertEqual(plan["config_file"], str((root / "foundry-ci.toml").resolve()))
+            self.assertEqual(plan["scope_paths"], ["contracts"])
+            self.assertIn("foundry-ci.toml", plan["config_source"])
+
 
 if __name__ == "__main__":
     unittest.main()
