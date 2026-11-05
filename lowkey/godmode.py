@@ -3346,7 +3346,7 @@ def steps(args):
         ns = parser.parse_args(args)
         try:
             root = root_path(ns.root)
-        except ValueError as error:
+        except (OSError, ValueError) as error:
             raise StepPlanError(str(error), "out_of_scope") from error
 
         manifest_path = (root / ns.manifest).resolve()
@@ -3362,7 +3362,15 @@ def steps(args):
             raise StepPlanError("Step manifest root must be a JSON object.", "unsupported_abi")
         spec = spec_value
 
-        source = render_step_harness(spec)
+        try:
+            source = render_step_harness(spec)
+        except StepPlanError:
+            raise
+        except Exception as error:
+            raise StepPlanError(
+                f"Step renderer failed closed: {type(error).__name__}: {error}",
+                "no_capability",
+            ) from error
         try:
             output_path = safe_out(root, ns.output)
             output_path.write_text(source, encoding="utf-8")
