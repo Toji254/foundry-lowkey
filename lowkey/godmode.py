@@ -453,7 +453,8 @@ def _control_entry_digest(tx, chain_id):
     return hashlib.sha256(json.dumps(entry,sort_keys=True,separators=(",",":")).encode()).hexdigest(),entry
 
 
-def _control_prestate_digest(url, receipt, addresses, slots, comparison_excluded_slots=None):
+def _control_prestate_digest(url, receipt, addresses, slots, comparison_excluded_slots=None,
+                            equivalence_addresses=None, equivalence_slots=None):
     block_number=int(str(receipt.get("blockNumber") or "0x0"),16)
     tx_index=int(str(receipt.get("transactionIndex") or "0x0"),16)
     if block_number<1 or tx_index!=0:
@@ -482,11 +483,22 @@ def _control_prestate_digest(url, receipt, addresses, slots, comparison_excluded
     excluded={str(x.get("address","")).lower()+":"+str(x.get("slot","")).lower()
               for x in (comparison_excluded_slots or []) if isinstance(x,dict)}
     comparable={key:value for key,value in prestate.items() if key!="parent_block_hash"}
-    if excluded:
-        comparable["storage"]=[
-            row for row in comparable["storage"]
-            if str(row.get("address","")).lower()+":"+str(row.get("slot","")).lower() not in excluded
-        ]
+    declared_addresses=set(str(x).lower() for x in (equivalence_addresses or addresses))
+    declared_slot_keys={
+        str(item.get("address","")).lower()+":"+str(item.get("slot","")).lower()
+        for item in (equivalence_slots if equivalence_slots is not None else slots)
+    }
+    comparable["addresses"]=[
+        row for row in comparable["addresses"]
+        if str(row.get("address","")).lower() in declared_addresses
+    ]
+    comparable["storage"]=[
+        row for row in comparable["storage"]
+        if str(row.get("address","")).lower()+":"+str(row.get("slot","")).lower()
+           in declared_slot_keys
+        and str(row.get("address","")).lower()+":"+str(row.get("slot","")).lower()
+           not in excluded
+    ]
     digest=hashlib.sha256(json.dumps(comparable,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     prestate["equivalence_fields"] = sorted(comparable.keys())
     prestate["comparison_excluded_slots"] = sorted(excluded)
@@ -695,6 +707,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                     try: slot=hex(int(slot,0))
                     except (TypeError,ValueError): raise ValueError(f"Invalid prestate slot: {raw.get('slot')}")
                 slots.append({"address":address,"slot":slot})
+            declared_slots=list({(item["address"],item["slot"]):item for item in slots}.values())
+            declared_addresses=list(addresses)
             for item in storage_trace.get("slots",[]):
                 slots.append({"address":item["address"],"slot":item["slot"]})
             slots=list({(item["address"],item["slot"]):item for item in slots}.values())
@@ -712,7 +726,10 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 for row in scenario_parameters
             ]
             prestate_digest,prestate=_control_prestate_digest(
-                url,receipt,addresses,slots,comparison_excluded_slots=scenario_exclusions
+                url,receipt,addresses,slots,
+                comparison_excluded_slots=scenario_exclusions,
+                equivalence_addresses=declared_addresses,
+                equivalence_slots=declared_slots,
             )
             parent_storage={(item["address"],item["slot"]):str(item["value"]).lower()
                             for item in prestate.get("storage",[])}
