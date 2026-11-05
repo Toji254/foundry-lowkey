@@ -21,6 +21,11 @@ class TestGenerationTests(unittest.TestCase):
             ["unit", "fuzz", "invariant", "integration", "exploit", "fork", "poc", "regression", "formal"],
         )
 
+    def test_legacy_target_uses_modern_forge_test_harness_pragma(self):
+        self.assertEqual(generation._solidity_test_pragma("=0.5.16"), "^0.8.20")
+        self.assertEqual(generation._solidity_test_pragma("^0.8.10"), "^0.8.20")
+        self.assertEqual(generation._solidity_test_pragma("^0.8.26"), "^0.8.26")
+
     def test_parse_types_deduplicates_and_rejects_unknown_values(self):
         self.assertEqual(generation.parse_types("unit,fuzz,unit"), ["unit", "fuzz"])
         self.assertEqual(generation.parse_types("exploit"), ["exploit"])

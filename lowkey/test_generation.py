@@ -296,6 +296,20 @@ def _solidity_pragma(source: str) -> str:
     return pragma if re.fullmatch(r"[0-9A-Za-z.^<>=+*~|()\s-]+", pragma) else "^0.8.20"
 
 
+def _solidity_test_pragma(source_pragma: str) -> str:
+    """Use modern solc for Forge test harnesses, independently of legacy targets.
+
+    Foundry can compile imported source units with separate solc versions. A
+    0.5.x target must not force its generated test harness onto 0.5.x when the
+    harness imports modern forge-std.
+    """
+    version = re.search(r"(\d+)\.(\d+)\.(\d+)", source_pragma)
+    if not version:
+        return "^0.8.20"
+    major, minor, patch = (int(value) for value in version.groups())
+    return "^0.8.20" if (major, minor, patch) < (0, 8, 20) else source_pragma
+
+
 def _rel_import(root: Path, source_path: Path) -> str:
     # Drafts are meant to be moved into lowkey-generated under the configured test directory.
     destination = _foundry_test_dir(root) / "lowkey-generated"
@@ -784,8 +798,8 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
                 "Pass --constructor-args as a JSON array of Solidity expressions; Lowkey will "
                 "not assume zero/empty placeholders are valid protocol setup."
             )
-        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None, analysis, source_pragma)
-    return _fork_template(kind, name, target, import_path, fuzz_property, analysis, source_pragma)
+        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None, analysis, test_pragma)
+    return _fork_template(kind, name, target, import_path, fuzz_property, analysis, test_pragma)
 
 
 def _recorded_call_poc(
@@ -1112,6 +1126,7 @@ Foundry's test directory by default. Review them and run --validate before relyi
     analysis["_source_text"] = source
     import_path = _rel_import(root, source_path)
     source_pragma = _solidity_pragma(source)
+    test_pragma = _solidity_test_pragma(source_pragma)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
     output_dir = output_dir / _solidity_name(name)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1127,13 +1142,13 @@ Foundry's test directory by default. Review them and run --validate before relyi
         filename = output_dir / f"LowkeyGenerated{kind.title()}_{_solidity_name(name)}{suffix}"
         try:
             if kind == "poc":
-                replay = _recorded_call_poc(root, name, target, source_pragma)
+                replay = _recorded_call_poc(root, name, target, test_pragma)
                 if replay is not None:
                     content, poc_replay = replay
                 else:
-                    content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
+                    content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, test_pragma)
             else:
-                content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
+                content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, test_pragma)
         except ValueError as exc:
             skipped.append({"type": kind, "reason": str(exc)})
             continue
@@ -1193,6 +1208,7 @@ Foundry's test directory by default. Review them and run --validate before relyi
         "constructor_arguments": constructor_values,
         "constructor_arguments_explicit": explicit_constructor_args is not None,
         "solidity_pragma": source_pragma,
+        "test_harness_pragma": test_pragma,
         "fuzz_property": fuzz_property,
         "analysis": {key: value for key, value in analysis.items() if not key.startswith("_")},
         "requested_types": selected,
