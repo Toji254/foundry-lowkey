@@ -155,16 +155,16 @@ from the same isolated workspace. Each scenario provides its recorder artifact p
     }
   ],
   "control": {
-    "harness": "test/VaultControl.t.sol",
+    "harness": "test/VaultPaired.t.sol",
     "support_files": ["test/helpers/ActorSetup.sol"],
     "state_diff_file": ".audit/godmode/control-state-diff.json",
-    "argv": ["forge", "test", "--match-path", "test/VaultControl.t.sol", "--match-test", "test_control", "-vv"]
+    "argv": ["forge", "test", "--match-path", "test/VaultPaired.t.sol", "--match-test", "test_paired_one_deployment_reentrancy", "-vv"]
   },
   "attack": {
-    "harness": "test/VaultAttack.t.sol",
+    "harness": "test/VaultPaired.t.sol",
     "support_files": ["test/helpers/ActorSetup.sol"],
     "state_diff_file": ".audit/godmode/attack-state-diff.json",
-    "argv": ["forge", "test", "--match-path", "test/VaultAttack.t.sol", "--match-test", "test_attack", "-vv"]
+    "argv": ["forge", "test", "--match-path", "test/VaultPaired.t.sol", "--match-test", "test_paired_one_deployment_reentrancy", "-vv"]
   }
 }
 ```
