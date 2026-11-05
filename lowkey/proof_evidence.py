@@ -7,10 +7,12 @@ from pathlib import Path
 AUTHENTICITIES = {"unknown", "fixture", "local_reimplementation", "forked_deployment"}
 FIDELITIES = {"unknown", "synthetic_state", "simulated_caller", "simulated_dependencies", "constrained_inputs", "real_funded"}
 OUTCOMES = {"not_run", "observed", "profitable", "rejected"}
+# Only families whose primary impact is availability/griefing default to the
+# semantic-invariant path. Replay, signature and access-control bugs can directly
+# drain assets, so they remain economic unless the auditor explicitly opts out.
 NON_ECONOMIC_FAMILIES = {
-    "dos", "denial_of_service", "griefing", "liveness", "signature_replay",
-    "replay", "authorization_bypass", "access_control", "governance_takeover",
-    "governance_liveness", "integrity", "oracle_griefing",
+    "dos", "denial_of_service", "griefing", "liveness", "governance_liveness",
+    "oracle_griefing", "gas_griefing", "resource_exhaustion", "permanent_lock",
 }
 
 def _canonical(value):
