@@ -911,8 +911,12 @@ jobs:
           PY
           lk control .audit-control-reject.json --root /tmp/lowkey-fixture --freeze-file .audit/godmode/control-reject.freeze.json --freeze
           lk control --validate --root /tmp/lowkey-fixture --freeze-file .audit/godmode/control-reject.freeze.json --output .audit/godmode/control-reject-validation.json
+          set +e
           lk control .audit-control-reject.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze-file .audit/godmode/control-reject.freeze.json --require-frozen --output .audit/godmode/control-rejected.json
-                    python3 - <<'PY'
+          CONTROL_REJECT_EXIT=$?
+          set -e
+          test "$CONTROL_REJECT_EXIT" -eq 1
+          python3 - <<'PY'
           import json
           from pathlib import Path
           rejected = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control-rejected.json").read_text())
