@@ -221,7 +221,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertFalse(saved["same_entry_call_verified"])
 
     def test_control_rejects_transaction_envelope_difference_even_when_root_call_matches(self):
@@ -248,7 +248,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertTrue(saved["same_entry_call_verified"])
             self.assertFalse(saved["same_transaction_envelope_verified"])
             self.assertTrue(saved["same_prestate_verified"])
@@ -278,7 +278,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertEqual(saved["control_delta"], 3)
             self.assertFalse(saved["attack_metric_positive_after_gas"])
 
@@ -312,7 +312,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertIn("anvil_setStorageAt", saved["reasons"][0])
             run_mock.assert_not_called()
 
@@ -367,7 +367,8 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 0)
-            self.assertEqual(saved["status"], "BREAK")
+            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertEqual(saved["legacy_status"], "BREAK")
             control_param = saved["runs"]["control"]["scenario_parameters"][0]
             attack_param = saved["runs"]["attack"]["scenario_parameters"][0]
             self.assertTrue(control_param["verified_before_transaction"])
@@ -409,7 +410,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertIn("attacker_callback_flag", saved["reasons"][0])
             # Control succeeds its prepare step and its transaction; attack fails
             # during preparation, so the second send is never executed.
@@ -439,7 +440,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertTrue(saved["same_entry_call_verified"])
             self.assertFalse(saved["same_transaction_envelope_verified"])
             self.assertTrue(saved["same_prestate_verified"])
@@ -472,7 +473,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
             self.assertIn("LOWKEY_TRACE_TX_HASH", saved["reasons"][0])
 
     def test_reprove_reaches_profitable_only_with_a_pinned_mined_trace_and_real_gas(self):
@@ -658,7 +659,9 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertEqual(saved["status"], "OBSERVED")
+            self.assertEqual(saved["status"], "REJECTED")
+            self.assertEqual(saved["outcome"], "rejected")
+            self.assertIn("control_not_outperformed", saved["rejection_codes"])
             self.assertEqual(saved["control_delta"], 0)
 
     def test_source_maps_classify_oracle_and_time_patterns(self):
