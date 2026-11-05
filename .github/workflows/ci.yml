@@ -6,7 +6,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Let the current release-gate run finish; newer pushes queue behind it.
+  cancel-in-progress: false
 
 permissions:
   contents: read
