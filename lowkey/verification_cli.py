@@ -41,7 +41,8 @@ Usage:
       [--output .audit/verification/campaign.json]
   lk verification correlate <campaign-report.json> [--signal SIGNAL_ID ...]
       [--output .audit/verification/correlation-report.json]
-  lk verification investigate <SIGNAL_ID> [--constructor-args JSON_ARRAY]
+  lk verification investigate <SIGNAL_ID>   # read-only plan; never writes or runs
+  lk verification run-test <SIGNAL_ID> <TEST_PATH> <TEST_NAME>
 
 Campaign manifest:
   {
@@ -494,6 +495,69 @@ def run_cli(args: list[str]) -> int:
                 print(f"    note: {engine['notes']}")
         return 0
     if command == "investigate":
+        if len(args) != 2:
+            print("Error: usage: lk verification investigate <SIGNAL_ID>", file=sys.stderr)
+            return 2
+        try:
+            try:
+                import signal_investigation
+            except ImportError:
+                from lowkey import signal_investigation
+            report = signal_investigation.plan_signal_investigation(
+                args[1], project_root=_project_root(), audit_context=audit_context,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Error: source-only investigation plan failed: {exc}", file=sys.stderr)
+            return 2
+        print("LOWKEY SOURCE-ONLY INVESTIGATION PLAN")
+        print("====================================")
+        print(f"  Signal      : {report.get('signal_id')}")
+        print(f"  Status      : {report.get('status')}")
+        signal = report.get("signal") or {}
+        for label, key in (("Detector", "detector"), ("Rule", "rule"), ("Source", "source_file"), ("Function", "function")):
+            if signal.get(key):
+                print(f"  {label:<11}: {signal[key]}")
+        if report.get("property_hypothesis"):
+            print(f"  Hypothesis  : {report['property_hypothesis']}")
+        if report.get("suggested_test_name"):
+            print(f"  Test idea   : {report['suggested_test_name']}")
+        if report.get("reason"):
+            print(f"  Detail      : {report['reason']}")
+        if report.get("recommended_next_command"):
+            print(f"  Next        : {report['recommended_next_command']}")
+        print("  Effects     : read-only; no file writes, provider call, Forge build, or test execution.")
+        print("  Execution   : inspect one complete test, then use: "
+              + str(report.get("execution_command") or "lk verification run-test <ID> <PATH> <NAME>"))
+        return 0 if report.get("status") == "plan-only" else 1
+    if command == "run-test":
+        if len(args) != 4:
+            print("Error: usage: lk verification run-test <SIGNAL_ID> <TEST_PATH> <TEST_NAME>", file=sys.stderr)
+            return 2
+        try:
+            try:
+                import signal_investigation
+            except ImportError:
+                from lowkey import signal_investigation
+            result = signal_investigation.execute_inspected_test(
+                args[1], args[2], args[3],
+                project_root=_project_root(), audit_context=audit_context,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Error: inspected test was not run: {exc}", file=sys.stderr)
+            return 2
+        print("LOWKEY INSPECTED TEST EXECUTION")
+        print("===============================")
+        print(f"  Signal    : {result['signal_id']}")
+        print(f"  Test      : {result['test_file']}::{result['test_name']}")
+        print(f"  Status    : {result['status']}")
+        print(f"  Evidence  : {'attached' if result['evidence_attached'] else 'not attached'}")
+        print(f"  Exit code : {result.get('exit_code')}")
+        print("  Disposition: unchanged; a test result is evidence, not an automatic verdict.")
+        if result.get("stdout"):
+            print(result["stdout"])
+        if result.get("stderr"):
+            print(result["stderr"], file=sys.stderr)
+        return 0 if result["status"] == "passed" else 1
         if len(args) < 2:
             print("Error: provide an existing audit SIGNAL_ID", file=sys.stderr)
             return 2
