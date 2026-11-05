@@ -1890,6 +1890,7 @@ contract LowkeyBreakReentrancy is Test {{
 
 {entitlement_before_attack_block}
 
+        vm.deal(address(this), 1 wei);
         (bool outer, ) = address(hostile).call{{value: 1 wei}}(
             abi.encodeWithSignature("attack()")
         );
