@@ -242,7 +242,7 @@ class ContextAwarePatternTriageTests(unittest.TestCase):
         )
         matches = self.matches(root, model, "AUTH-001")
         self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0].evidence_status, "needs-investigation")
+        self.assertEqual(matches[0].evidence_status, "context-checked")
 
     def test_fixed_constructor_configured_array_is_not_unbounded_dos_candidate(self):
         root, model = self.model(
