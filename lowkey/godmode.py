@@ -604,9 +604,10 @@ def _analyze_control_fidelity(root, entry, spec):
         "fork_reproduction_blockers":blockers,
         "classification":"SIMULATED" if any(result.get("synthetic_state",False) for result in results)
             else ("CLEAN_STATIC_SCAN" if paths else "UNKNOWN"),
-        "confirmation_eligible":bool(paths) and not blockers and not kinds.intersection({
+        "static_scan_clear":bool(paths) and not blockers and not kinds.intersection({
             "synthetic_eth","caller_impersonation","storage_override","external_call_mock","time_or_block_override"
         }),
+        "confirmation_eligible":False,
         "net_profit_verified":False,
         "coverage_limit":"Static scan covers only the explicit harness/support/fidelity source files; imported/transitive helpers must be listed in support_files or fidelity_sources.",
     }
