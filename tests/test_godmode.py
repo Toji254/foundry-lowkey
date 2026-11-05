@@ -292,7 +292,6 @@ class GodmodeTests(unittest.TestCase):
                     "step": 2, "target": target, "selector": "0xdeadbeef",
                     "count": 2, "must_revert": False,
                 }],
-                "policy": "Declarative trace-only metadata.",
             }
             (root / "steps.expectations.json").write_text(json.dumps(sidecar), encoding="utf-8")
             manifest["step_expectations_file"] = "steps.expectations.json"
