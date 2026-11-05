@@ -1887,6 +1887,7 @@ def control(args):
             (item.get("address") or item.get("account","")).lower()+":"+str(item.get("slot","")).lower()
             for name in ("control","attack","negative_control") for item in rows.get(name,{}).get("derived_storage_accesses",[])}),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
+        "execution_attempted":execution_attempted,
         "memory_feedback":memory_feedback,
         "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff cannot prove EOA gas or net profitability.",
     }

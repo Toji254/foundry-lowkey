@@ -188,8 +188,8 @@ def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="o
         "fidelity": fidelity, "outcome": outcome, "human_confirmed": bool(human_confirmed), "status": status,
         "status_axes": {"target_authenticity": authenticity, "fidelity": fidelity, "outcome": outcome},
         "status_policy": ("A fixture or local reimplementation cannot become deployment proof. "
-            "FORK_REPRODUCED/PROFITABLE require an independently verified forked deployment; "
-            "PROFITABLE additionally requires real-funded execution. HUMAN_CONFIRMED is explicit."),
+            "FORK_REPRODUCED/FORK_PROFITABLE require an independently verified forked deployment; "
+            "FORK_PROFITABLE additionally requires real-funded execution. HUMAN_CONFIRMED is explicit."),
     }
 
 def _referenced_inputs(root, spec):

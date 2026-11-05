@@ -881,7 +881,7 @@ jobs:
           freeze = Path("/tmp/lowkey-fixture/.audit/godmode/control.freeze.json")
           payload = json.loads(freeze.read_text())
           payload["freeze_sha256"] = "0" * 64
-          freeze.write_text(json.dumps(payload, indent=2) + "\\n")
+          freeze.write_text(json.dumps(payload, indent=2) + "\n")
           PY
           set +e
           lk control --validate --root /tmp/lowkey-fixture --freeze-file .audit/godmode/control.freeze.json
@@ -907,7 +907,7 @@ jobs:
           manifest["scenario_parameters"][0]["attack_value"] = manifest["scenario_parameters"][0]["control_value"]
           manifest["trace_expectations"][0]["attack_min_calls"] = 1
           manifest["trace_expectations"][0]["attack_max_calls"] = 1
-          Path("/tmp/lowkey-fixture/.audit-control-reject.json").write_text(json.dumps(manifest, indent=2) + "\\n")
+          Path("/tmp/lowkey-fixture/.audit-control-reject.json").write_text(json.dumps(manifest, indent=2) + "\n")
           PY
           lk control .audit-control-reject.json --root /tmp/lowkey-fixture --freeze-file .audit/godmode/control-reject.freeze.json --freeze
           lk control --validate --root /tmp/lowkey-fixture --freeze-file .audit/godmode/control-reject.freeze.json --output .audit/godmode/control-reject-validation.json
@@ -918,7 +918,7 @@ jobs:
           rejected = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control-rejected.json").read_text())
           assert rejected["status"] == "REJECTED", rejected
           assert "control_passed" in rejected["rejection_codes"], rejected
-          assert rejected["execution_attempted"] if "execution_attempted" in rejected else True
+          assert rejected["execution_attempted"] is True, rejected
           print("PASS: paired control that matches the attack is recorded REJECTED/control_passed")
           PY
 
