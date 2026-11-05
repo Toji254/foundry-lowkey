@@ -3326,43 +3326,83 @@ def render_step_harness(spec):
 
 
 def steps(args):
-    parser = argparse.ArgumentParser(prog="lk steps", description="Validate and render an execution-checked Step[] Foundry harness.")
+    class StepArgumentParser(argparse.ArgumentParser):
+        def error(self, message):
+            raise StepPlanError(str(message), "unsupported_abi")
+
+    parser = StepArgumentParser(
+        prog="lk steps",
+        description="Validate and render an execution-checked Step[] Foundry harness.",
+    )
     parser.add_argument("manifest")
     parser.add_argument("--root", default=".")
     parser.add_argument("--output", default=".audit/godmode/steps/step-harness.t.sol")
     parser.add_argument("--refusal-output", default=".audit/godmode/steps-refusal.json")
-    ns = parser.parse_args(args)
-    root = root_path(ns.root)
-    manifest_path = (root / ns.manifest).resolve()
-    if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
-        raise ValueError("Step manifest must be an existing file inside --root.")
-    spec = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    ns = None
+    root = None
+    spec = {}
     try:
+        ns = parser.parse_args(args)
+        try:
+            root = root_path(ns.root)
+        except ValueError as error:
+            raise StepPlanError(str(error), "out_of_scope") from error
+
+        manifest_path = (root / ns.manifest).resolve()
+        if not manifest_path.is_relative_to(root):
+            raise StepPlanError("Step manifest must stay inside --root.", "out_of_scope")
+        if not manifest_path.is_file():
+            raise StepPlanError("Step manifest does not exist or is not a regular file.", "out_of_scope")
+        try:
+            spec_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise StepPlanError(f"Step manifest could not be read as UTF-8 JSON: {error}", "unsupported_abi") from error
+        if not isinstance(spec_value, dict):
+            raise StepPlanError("Step manifest root must be a JSON object.", "unsupported_abi")
+        spec = spec_value
+
         source = render_step_harness(spec)
+        try:
+            output_path = safe_out(root, ns.output)
+            output_path.write_text(source, encoding="utf-8")
+        except (OSError, ValueError) as error:
+            raise StepPlanError(f"Generated harness could not be written safely: {error}", "no_capability") from error
+
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        print(json.dumps({
+            "status": "PROPOSED",
+            "family": spec.get("family"),
+            "steps_rendered": len(spec["steps"]),
+            "harness": output_path.relative_to(root).as_posix(),
+            "harness_sha256": digest,
+        }, sort_keys=True))
+        return 0
     except StepPlanError as exc:
+        target = exc.target or (spec.get("target_address") if isinstance(spec, dict) else None)
+        family = exc.family or (spec.get("family") if isinstance(spec, dict) else None)
+        manifest_arg = ns.manifest if ns is not None else (
+            str(args[0]) if args and not str(args[0]).startswith("-") else "<manifest>"
+        )
+        root_arg = ns.root if ns is not None else "."
         refusal = {
-            "target": exc.target or spec.get("target_address"),
-            "family": exc.family or spec.get("family"),
+            "target": target,
+            "family": family,
             "reason": exc.reason_code,
             "detail": str(exc),
-            "minimal_cmd": f"lk steps {ns.manifest} --root {ns.root}",
+            "minimal_cmd": f"lk steps {manifest_arg} --root {root_arg}",
             "backend": "forge_state_diff",
         }
-        refusal_path = safe_out(root, ns.refusal_output)
-        refusal_path.write_text(json.dumps(refusal, indent=2) + "\n", encoding="utf-8")
+        if root is not None and ns is not None:
+            try:
+                refusal_path = safe_out(root, ns.refusal_output)
+                refusal_path.write_text(json.dumps(refusal, indent=2) + "\n", encoding="utf-8")
+            except (OSError, ValueError):
+                # The same unsafe or unavailable filesystem path must not hide
+                # the refusal; stdout remains the machine-readable fallback.
+                pass
         print("REFUSAL " + json.dumps(refusal, sort_keys=True))
         return 2
-    output_path = safe_out(root, ns.output)
-    output_path.write_text(source, encoding="utf-8")
-    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    print(json.dumps({
-        "status": "PROPOSED",
-        "family": spec.get("family"),
-        "steps_rendered": len(spec["steps"]),
-        "harness": output_path.relative_to(root).as_posix(),
-        "harness_sha256": digest,
-    }, sort_keys=True))
-    return 0
 
 
 
