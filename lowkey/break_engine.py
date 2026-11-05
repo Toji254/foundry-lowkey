@@ -2554,7 +2554,7 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             "error": message,
         }
         if isinstance(exc, ValueError) and re.search(
-            r"\\bABI\\b|tuple/struct|complex ABI|fixed-size array|array .*unsupported",
+            r"\bABI\b|tuple/struct|complex ABI|fixed-size array|array .*unsupported",
             message,
             flags=re.I,
         ):
