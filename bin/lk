@@ -18,6 +18,13 @@ if [[ "${1:-}" == "cheat" && "${2:-}" == "fingerprint" ]]; then
     exec python3 "$HOME/.lowkey/godmode.py" cheat-fingerprint "$@"
 fi
 
+# Ordered Step[] rendering has its own strict JSON schema and template loader.
+# It remains separate from the Godmode orchestration router.
+if [[ "${1:-}" == "steps" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/step_renderer.py" "$@"
+fi
+
 # Integrated offensive-security workflows. Native commands not listed here
 # continue through the original Lowkey router unchanged.
 case "${1:-}" in
