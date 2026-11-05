@@ -532,45 +532,68 @@ def _control_prestate_digest(url, receipt, addresses, slots, comparison_excluded
 
 
 def _trace_storage_prestate(url, tx_hash):
-    """Best-effort Geth/Anvil prestateTracer read set for one mined transaction."""
+    """Best-effort Geth/Anvil prestateTracer diff for one mined transaction."""
     try:
         payload=rpc(url,"debug_traceTransaction",[
-            tx_hash,{"tracer":"prestateTracer","tracerConfig":{"diffMode":False}}
+            tx_hash,{"tracer":"prestateTracer","tracerConfig":{"diffMode":True}}
         ],60)
     except Exception as exc:
-        return {"supported":False,"reason":str(exc)[:500],"addresses":[],"slots":[]}
+        return {"supported":False,"reason":str(exc)[:500],"addresses":[],"slots":[],"slot_count":0}
     if not isinstance(payload,dict):
-        return {"supported":False,"reason":"prestateTracer returned a non-object result.","addresses":[],"slots":[]}
-    state=payload.get("pre") if isinstance(payload.get("pre"),dict) else payload
-    addresses=[]; slots=[]
-    for raw_address,account in state.items():
+        return {"supported":False,"reason":"prestateTracer diff returned a non-object result.","addresses":[],"slots":[],"slot_count":0}
+    pre=payload.get("pre")
+    post=payload.get("post")
+    if not isinstance(pre,dict) or not isinstance(post,dict):
+        return {
+            "supported":False,
+            "reason":"prestateTracer diff must return both pre and post account maps.",
+            "addresses":[],"slots":[],"slot_count":0,
+        }
+    addresses=set()
+    slots=[]
+    for raw_address in set(pre) | set(post):
         try:
             address=addr(raw_address)
         except ValueError:
             continue
-        if not isinstance(account,dict):
+        before=pre.get(raw_address) if isinstance(pre.get(raw_address),dict) else {}
+        after=post.get(raw_address) if isinstance(post.get(raw_address),dict) else {}
+        addresses.add(address)
+        before_storage=before.get("storage") or {}
+        after_storage=after.get("storage") or {}
+        if not isinstance(before_storage,dict) or not isinstance(after_storage,dict):
             continue
-        addresses.append(address)
-        storage=account.get("storage") or {}
-        if isinstance(storage,dict):
-            for raw_slot,raw_value in storage.items():
-                slot_raw=str(raw_slot).lower().removeprefix("0x")
-                value_raw=str(raw_value).lower().removeprefix("0x")
-                if (re.fullmatch(r"[0-9a-f]{1,64}",slot_raw) and
-                    re.fullmatch(r"[0-9a-f]{1,64}",value_raw)):
-                    slots.append({"address":address,"slot":"0x"+slot_raw.rjust(64,"0"),
-                                  "value":"0x"+value_raw.rjust(64,"0")})
+        # Diff mode reports changed slots only. Preserve the parent value and
+        # post value separately; never infer a missing parent value as zero.
+        for raw_slot in set(before_storage) | set(after_storage):
+            raw_before=before_storage.get(raw_slot)
+            raw_after=after_storage.get(raw_slot)
+            if raw_before is None:
+                continue
+            slot_raw=str(raw_slot).lower().removeprefix("0x")
+            value_raw=str(raw_before).lower().removeprefix("0x")
+            post_raw=str(raw_after if raw_after is not None else raw_before).lower().removeprefix("0x")
+            if (re.fullmatch(r"[0-9a-f]{1,64}",slot_raw) and
+                re.fullmatch(r"[0-9a-f]{1,64}",value_raw) and
+                re.fullmatch(r"[0-9a-f]{1,64}",post_raw)):
+                slots.append({
+                    "address":address,
+                    "slot":"0x"+slot_raw.rjust(64,"0"),
+                    "value":"0x"+value_raw.rjust(64,"0"),
+                    "post_value":"0x"+post_raw.rjust(64,"0"),
+                })
     slots.sort(key=lambda item:(item["address"],item["slot"]))
     if not addresses:
-        return {"supported":False,"reason":"prestateTracer result did not contain account prestate entries.",
-                "addresses":[],"slots":[]}
+        return {"supported":False,"reason":"prestateTracer diff did not contain account state changes.",
+                "addresses":[],"slots":[],"slot_count":0}
     return {
         "supported":True,
-        "mode":"prestateTracer",
-        "addresses":sorted(set(addresses)),
+        "mode":"prestateTracer-diff",
+        "addresses":sorted(addresses),
         "slots":slots,
         "slot_count":len(slots),
-        "note":"prestateTracer read-set evidence is tracer-specific and may not cover all transitive dependency state.",
+        "storage_scope":"transaction-level changed slots only; read-only slots may be absent and slots are not associated with individual call frames",
+        "note":"Partial transaction-level pre/post storage evidence. It is not a complete read set or per-frame storage trace.",
     }
 
 
@@ -1460,12 +1483,18 @@ def control(args):
     evidence_checks={}
     for scenario_name in ("control", "attack"):
         scenario_row=rows.get(scenario_name,{})
+        storage_trace_row=scenario_row.get("storage_trace") or {}
+        storage_observations=(
+            len(scenario_row.get("derived_storage_accesses") or []) if backend=="forge-state-diff"
+            else len(storage_trace_row.get("slots") or [])
+        )
         storage_supported=(
             True if backend=="forge-state-diff" else
-            bool((scenario_row.get("storage_trace") or {}).get("supported"))
+            bool(storage_trace_row.get("supported"))
         )
         capabilities=proof_evidence.trace_evidence_capabilities(
-            backend, storage_trace_supported=storage_supported
+            backend, storage_trace_supported=storage_supported,
+            storage_observations=storage_observations,
         )
         evidence_capabilities[scenario_name]=capabilities
         evidence_checks[scenario_name]=proof_evidence.evaluate_evidence_requirements(

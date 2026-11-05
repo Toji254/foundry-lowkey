@@ -37,11 +37,13 @@ STORAGE_CAPABILITY_RANK = {
 DEFAULT_EVIDENCE_REQUIREMENTS = {
     "reentrancy": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
     "cross_function_reentrancy": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
-    "read_only_reentrancy": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+    "read_only_reentrancy": {"call_tree": "exact", "calldata": "exact", "storage": "per_access"},
 }
 
 
-def trace_evidence_capabilities(backend, *, storage_trace_supported=False):
+def trace_evidence_capabilities(
+    backend, *, storage_trace_supported=False, storage_observations=0
+):
     """Describe evidence dimensions without changing the experiment fidelity tier."""
     backend = str(backend or "unknown").strip().lower()
     if backend == "forge-state-diff":
@@ -50,6 +52,7 @@ def trace_evidence_capabilities(backend, *, storage_trace_supported=False):
             "call_tree": "exact",
             "calldata": "exact",
             "storage": "derived_per_access",
+            "storage_observations": int(storage_observations),
             "storage_source": "Vm.AccountAccess.storageAccesses",
             "storage_scope": "ordered per-account-access storage observations",
         }
@@ -59,9 +62,10 @@ def trace_evidence_capabilities(backend, *, storage_trace_supported=False):
             "call_tree": "exact",
             "calldata": "exact",
             "storage": "partial" if storage_trace_supported else "declared_only",
-            "storage_source": "prestateTracer" if storage_trace_supported else "manifest declarations only",
+            "storage_observations": int(storage_observations),
+            "storage_source": "prestateTracer-diff" if storage_trace_supported else "manifest declarations only",
             "storage_scope": (
-                "transaction-level accessed-slot evidence; not associated with individual call frames"
+                "transaction-level changed slots only; read-only slots may be absent and slots are not associated with individual call frames"
                 if storage_trace_supported else
                 "no trace-derived storage evidence; only explicitly declared slots are available"
             ),
@@ -112,6 +116,12 @@ def evaluate_evidence_requirements(
                 "dimension": dimension, "required": required,
                 "actual": actual,
                 "reason": "declared slots cannot satisfy a trace-derived storage requirement",
+            })
+        elif required_rank > 0 and int(capabilities.get("storage_observations", 0)) <= 0:
+            missing.append({
+                "dimension": dimension, "required": required,
+                "actual": actual,
+                "reason": "backend supports this storage evidence mode but the measured run contains no derived storage observations",
             })
     return {
         "accepted": not missing,

@@ -152,9 +152,10 @@ class GodmodeTests(unittest.TestCase):
             if method == "debug_traceTransaction" and params[1].get("tracer") == "prestateTracer":
                 zero_slot = "0x" + "0" * 64
                 one_word = "0x" + "0" * 63 + "1"
+                zero_word = "0x" + "0" * 64
                 return {
-                    target: {"storage": {zero_slot: one_word}},
-                    wrapper: {"storage": {zero_slot: state["scenario_slot"]}},
+                    "pre": {target: {"storage": {zero_slot: one_word}}},
+                    "post": {target: {"storage": {zero_slot: zero_word}}},
                 }
             if method == "debug_traceTransaction":
                 calls = [{

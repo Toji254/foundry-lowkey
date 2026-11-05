@@ -76,6 +76,22 @@ Both evidence backends emit TraceEvent schema version 1 with index, kind, access
 account, depth, value, reverted, selector, input, storage, error and source_backend.
 A missing field remains null; it is not inferred as zero or an empty list.
 
+Evidence strength is tracked per dimension, not collapsed into one global fidelity
+tier:
+
+| Backend | Call tree | Calldata | Storage |
+| --- | --- | --- | --- |
+| Anvil callTracer only | Exact | Exact | Declared-only |
+| Anvil callTracer + prestateTracer diff | Exact | Exact | Partial transaction-level changed slots |
+| Forge state diff | Exact | Exact | Derived per account access |
+
+Anvil prestateTracer diff is intentionally partial: it can expose parent/post values
+for changed slots but may omit read-only slots, and it does not attribute slots to
+individual call frames. A family that requires per-access storage (for example,
+read-only reentrancy) must use an evidence source that provides it. Declared slots
+do not satisfy a derived-storage requirement. A backend's support flag without any
+observed slots in the measured run also does not satisfy that requirement.
+
 Forge obtains calldata from AccountAccess.data and includes the storage accesses
 captured in the same state-diff window. Anvil callTracer supplies call frames and
 calldata but no storage read/write set, so its TraceEvent.storage is null. The
