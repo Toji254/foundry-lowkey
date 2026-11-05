@@ -479,6 +479,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("TARGET_SETUP_RETURNDATA_LENGTH", body)
         self.assertIn("TARGET_CODE_LENGTH", body)
         self.assertIn("TARGET_BALANCE_AFTER_SETUP", body)
+        self.assertIn("vm.deal(address(this), 1 wei);", body)
 
     def test_entitlement_getter_discovery_prefers_balances(self):
         functions = [
