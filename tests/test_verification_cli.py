@@ -37,7 +37,7 @@ class VerificationCliTests(unittest.TestCase):
     def test_run_test_command_requires_signal_path_and_name(self):
         output = io.StringIO()
         with redirect_stdout(output):
-            code = verification_cli.run_cli(["run-test", "SIG-1", "test/Vault.t.sol", "test_guard"])
+            code = verification_cli.run_cli(["run-test", "SIG-1", "test/Vault.t.sol"])
         self.assertEqual(code, 2)
 
     def test_engine_inventory_exposes_installation_and_compatibility(self):
