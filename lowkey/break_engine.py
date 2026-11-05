@@ -1292,8 +1292,8 @@ def _render_repeat_test(
         address assetToken = address(0);
         bool assetReadOk = false;
         bool assetDecimalsVerified = false;
-        uint256 assetDecimals = 18;
-        uint256 tokenFundingAmount = 1e18;
+        uint256 assetDecimals = 0;
+        uint256 tokenFundingAmount = 1;
         bool tokenApprovalAttempted = false;
         bool tokenApprovalSuccess = false;
         uint256 attackerTokenBefore = 0;
@@ -1715,8 +1715,8 @@ def _render_reentrancy_test(
         address assetToken = address(0);
         bool assetReadOk = false;
         bool assetDecimalsVerified = false;
-        uint256 assetDecimals = 18;
-        uint256 tokenFundingAmount = 1e18;
+        uint256 assetDecimals = 0;
+        uint256 tokenFundingAmount = 1;
         bool tokenApprovalAttempted = false;
         bool tokenApprovalSuccess = false;
 """
