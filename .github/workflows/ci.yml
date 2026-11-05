@@ -125,6 +125,147 @@ jobs:
       - name: Shell syntax
         run: bash -n bin/lk install.sh scripts/install-verification-engines.sh scripts/install-lh-jev-shortcuts.sh
 
+  p0-break-acceptance:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+
+      - name: Install Lowkey
+        run: ./install.sh
+
+      - name: Prepare isolated P0 forge-std fixture
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/lowkey-fixture
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/src" "$ROOT/test" "$ROOT/lib"
+          cat > "$ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          libs = ["lib"]
+          solc_version = "0.8.20"
+          EOF
+          cd "$ROOT"
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+
+      - name: Start Anvil for P0 break acceptance
+        run: |
+          set -euo pipefail
+          anvil --silent \
+            --port 8545 \
+            --chain-id 31337 \
+            --mnemonic "test test test test test test test test test test test junk" \
+            --accounts 10 \
+            --balance 10000 \
+            --gas-price 1000000000 \
+            --block-base-fee-per-gas 1000000000 \
+            --gas-limit 30000000 \
+            --timestamp 1700000000 \
+            --hardfork cancun \
+            > /tmp/lowkey-p0-anvil.log 2>&1 &
+          for i in $(seq 1 30); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat /tmp/lowkey-p0-anvil.log
+          exit 1
+
+      - name: P0 installed-lk setup and token compatibility acceptance
+        run: python3 scripts/p0-break-acceptance-e2e.py
+
+      - name: Upload P0 acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-break-acceptance-${{ github.run_number }}
+          path: .audit/p0-break-acceptance/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  p1-step-acceptance:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+
+      - name: Install Lowkey
+        run: ./install.sh
+
+      - name: Prepare isolated P1 forge-std fixture
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/lowkey-fixture
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/src" "$ROOT/test" "$ROOT/lib"
+          cat > "$ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          libs = ["lib"]
+          solc_version = "0.8.20"
+          EOF
+          cd "$ROOT"
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+          echo "LOWKEY_FORGE_STD=$ROOT/lib/forge-std" >> "$GITHUB_ENV"
+
+      - name: P1 installed-lk Step renderer compile acceptance
+        run: python3 scripts/p1-step-acceptance-e2e.py
+
+      - name: Upload P1 Step acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-step-acceptance-${{ github.run_number }}
+          path: .audit/p1-step-acceptance/
+          if-no-files-found: ignore
+          retention-days: 14
+
   foundry-integration:
     needs: foundry-toolchain
     runs-on: ubuntu-latest
@@ -157,7 +298,6 @@ jobs:
           cd tests/fixtures/acceptance/p0-compatibility
           forge test -vv
       - name: Install Lowkey
-        id: install_lowkey
         run: ./install.sh
       - name: Exercise project-aware Chisel contract preload
         run: |
@@ -271,7 +411,6 @@ jobs:
           PY
 
       - name: Build integration fixture
-        id: build_integration_fixture
         run: |
           rm -rf /tmp/lowkey-fixture
           mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
@@ -330,7 +469,6 @@ jobs:
           EOF
 
       - name: Start Anvil
-        id: start_anvil
         run: |
           anvil --silent \
             --port 8545 \
@@ -352,33 +490,6 @@ jobs:
           done
           cat /tmp/lowkey-anvil.log
           exit 1
-      - name: P0 installed-lk setup and token compatibility acceptance
-        id: p0_acceptance
-        run: python3 scripts/p0-break-acceptance-e2e.py
-
-      - name: Upload P0 acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: p0-break-acceptance-${{ github.run_number }}
-          path: .audit/p0-break-acceptance/
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: P1 installed-lk Step renderer compile acceptance
-        id: p1_acceptance
-        if: ${{ always() && steps.install_lowkey.outcome == 'success' && steps.build_integration_fixture.outcome == 'success' }}
-        run: python3 scripts/p1-step-acceptance-e2e.py
-
-      - name: Upload P1 Step acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: p1-step-acceptance-${{ github.run_number }}
-          path: .audit/p1-step-acceptance/
-          if-no-files-found: ignore
-          retention-days: 14
-
       - name: Run installed integration checks
         working-directory: /tmp/lowkey-fixture
         run: |
