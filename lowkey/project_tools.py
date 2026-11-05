@@ -548,6 +548,10 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         },
         "analysis": analysis,
         "security_analyzers": list(analysis.get("security_analyzers") or []),
+        "scope_type": analysis.get("scope_type", "repository"),
+        "source_file_count": int(analysis.get("source_file_count", len(relative_sources))),
+        "workspace": bool(analysis.get("workspace", False)),
+        "workspace_members": list(analysis.get("workspace_members") or []),
         "source_roots": candidate_roots,
     }
 
