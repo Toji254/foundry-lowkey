@@ -78,7 +78,7 @@ class FindingExplainerTests(unittest.TestCase):
         self.assertIn("src/Vault.sol", preview)
         self.assertIn("test/Vault.t.sol", preview)
         self.assertIn("require(msg.sender == owner)", preview)
-        self.assertIn("No tests", preview) is False
+        self.assertNotIn("No related test function", preview)
         self.assertFalse((root / ".audit" / "ai-review").exists())
 
     def test_context_contains_whole_function_related_tests_and_local_commit_metadata(self):
