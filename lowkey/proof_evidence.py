@@ -28,6 +28,99 @@ def _sha256_file(path):
 def normalize_family(value):
     return str(value or "unknown").strip().lower().replace("-", "_").replace(" ", "_")
 
+STORAGE_CAPABILITY_RANK = {
+    "declared_only": 0,
+    "partial": 1,
+    "derived_per_access": 2,
+}
+
+DEFAULT_EVIDENCE_REQUIREMENTS = {
+    "reentrancy": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+    "cross_function_reentrancy": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+    "read_only_reentrancy": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+}
+
+
+def trace_evidence_capabilities(backend, *, storage_trace_supported=False):
+    """Describe evidence dimensions without changing the experiment fidelity tier."""
+    backend = str(backend or "unknown").strip().lower()
+    if backend == "forge-state-diff":
+        return {
+            "backend": backend,
+            "call_tree": "exact",
+            "calldata": "exact",
+            "storage": "derived_per_access",
+            "storage_source": "Vm.AccountAccess.storageAccesses",
+            "storage_scope": "ordered per-account-access storage observations",
+        }
+    if backend == "anvil-calltracer":
+        return {
+            "backend": backend,
+            "call_tree": "exact",
+            "calldata": "exact",
+            "storage": "partial" if storage_trace_supported else "declared_only",
+            "storage_source": "prestateTracer" if storage_trace_supported else "manifest declarations only",
+            "storage_scope": (
+                "transaction-level accessed-slot evidence; not associated with individual call frames"
+                if storage_trace_supported else
+                "no trace-derived storage evidence; only explicitly declared slots are available"
+            ),
+        }
+    return {
+        "backend": backend,
+        "call_tree": "unavailable",
+        "calldata": "unavailable",
+        "storage": "declared_only",
+        "storage_source": "manifest declarations only",
+        "storage_scope": "unknown backend",
+    }
+
+
+def evaluate_evidence_requirements(
+    family, capabilities, configured=None, *, require_trace_storage=False
+):
+    """Evaluate per-dimension requirements without inventing stronger evidence."""
+    family = normalize_family(family)
+    requirements = dict(DEFAULT_EVIDENCE_REQUIREMENTS.get(family, {}))
+    if configured is not None:
+        if not isinstance(configured, dict):
+            raise ValueError("evidence_requirements must be a JSON object.")
+        unknown = set(configured) - {"call_tree", "calldata", "storage"}
+        if unknown:
+            raise ValueError("Unknown evidence requirement dimension(s): " + ", ".join(sorted(unknown)))
+        requirements.update(configured)
+    if require_trace_storage and "storage" not in requirements:
+        requirements["storage"] = "derived"
+
+    missing = []
+    for dimension, required in requirements.items():
+        actual = capabilities.get(dimension, "unavailable")
+        if dimension in {"call_tree", "calldata"}:
+            accepted = required == "exact" and actual == "exact"
+            if not accepted:
+                missing.append({
+                    "dimension": dimension, "required": required,
+                    "actual": actual, "reason": "required exact execution evidence is unavailable",
+                })
+            continue
+        if required not in {"declared_only", "derived", "per_access"}:
+            raise ValueError("evidence_requirements.storage must be declared_only, derived or per_access.")
+        actual_rank = STORAGE_CAPABILITY_RANK.get(actual, -1)
+        required_rank = {"declared_only": 0, "derived": 1, "per_access": 2}[required]
+        if actual_rank < required_rank:
+            missing.append({
+                "dimension": dimension, "required": required,
+                "actual": actual,
+                "reason": "declared slots cannot satisfy a trace-derived storage requirement",
+            })
+    return {
+        "accepted": not missing,
+        "family": family,
+        "requirements": requirements,
+        "capabilities": dict(capabilities),
+        "missing": missing,
+    }
+
 def evaluate_economic_policy(family, net_profit_wei=None, *, non_economic=False, semantic_invariant_verified=False):
     family = normalize_family(family)
     requested_non_economic = bool(non_economic or family in NON_ECONOMIC_FAMILIES)
@@ -90,11 +183,8 @@ def _referenced_inputs(root, spec):
     generator_files = spec.get("generator_files") or []
     if not isinstance(generator_files, list) or not all(isinstance(x, str) and x.strip() for x in generator_files):
         raise ValueError("generator_files must be an array of project-relative file paths.")
-    for token in generator_files:
-        candidate = (root / Path(token).expanduser()).resolve()
-        if not candidate.is_relative_to(root) or not candidate.is_file():
-            raise ValueError("Declared generator file must be an existing project file: " + token)
-        candidates.append(token)
+    # Generator bytes are fingerprinted separately so generator-only drift can
+    # be distinguished from changes to the manifest, harness or command inputs.
     for scenario_name in ("control", "attack", "negative_control"):
         scenario = spec.get(scenario_name) or {}
         for key in ("argv", "prepare_argv", "semantic_check_argv", "support_files"):
@@ -160,6 +250,7 @@ def _freeze_core(root, manifest_path, spec):
             "expected_chain_id": spec.get("expected_chain_id"),
             "expected_fork_block": spec.get("expected_fork_block"),
             "require_trace_storage": bool(spec.get("require_trace_storage", False)),
+            "evidence_requirements": spec.get("evidence_requirements") or {},
             "metric_addresses": spec.get("metric_addresses") or [],
             "non_economic": bool(spec.get("non_economic", False)),
             "semantic_check_test": spec.get("semantic_check_test"),
@@ -205,11 +296,44 @@ def validate_control_freeze(root, manifest_path, spec, *, required=False, freeze
     stored = json.loads(freeze.read_text(encoding="utf-8"))
     if stored.get("schema_version") != 2:
         raise ValueError("Frozen expectations use an older schema; run lk control --freeze again with the current generator.")
+    core_fields = (
+        "schema_version", "manifest_path", "manifest_sha256", "inputs",
+        "generator_hashes", "experiment",
+    )
+    stored_core = {key: stored.get(key) for key in core_fields}
+    stored_digest = _sha256_bytes(_canonical(stored_core).encode("utf-8"))
+    if stored.get("freeze_sha256") != stored_digest:
+        raise ValueError("Frozen expectations integrity digest is invalid; regenerate the freeze before validation.")
     current = _freeze_core(root, Path(manifest_path), spec)
+    stable_fields = (
+        "schema_version", "manifest_path", "manifest_sha256", "inputs", "experiment",
+    )
+    changed = [key for key in stable_fields if stored_core.get(key) != current.get(key)]
+    if changed:
+        raise ValueError(
+            "Frozen expectations do not match the current manifest, harness, command inputs or experiment fields: "
+            + ", ".join(changed)
+        )
+    if stored_core.get("generator_hashes") != current.get("generator_hashes"):
+        stored_hashes = {item["path"]: item["sha256"] for item in stored_core["generator_hashes"]}
+        current_hashes = {item["path"]: item["sha256"] for item in current["generator_hashes"]}
+        changed_generators = sorted(
+            path for path in set(stored_hashes) | set(current_hashes)
+            if stored_hashes.get(path) != current_hashes.get(path)
+        )
+        return {
+            "present": True, "verified": False, "requires_refreeze": True,
+            "reason_code": "generator_drift",
+            "reason": "Lowkey generator source changed after this experiment was frozen. The frozen harness and manifest still match, but re-freeze is required before execution or promotion.",
+            "changed_generators": changed_generators,
+            "stored_generator_hashes": stored_core["generator_hashes"],
+            "current_generator_hashes": current["generator_hashes"],
+            "path": freeze.relative_to(root).as_posix(),
+            "freeze_sha256": stored_digest,
+            "manifest_sha256": current["manifest_sha256"],
+            "inputs": current["inputs"],
+        }
     digest = _sha256_bytes(_canonical(current).encode("utf-8"))
-    if stored.get("freeze_sha256") != digest:
-        raise ValueError("Frozen expectations do not match the current manifest, generator hashes, command arguments, or referenced script hashes.")
-    if {key: stored.get(key) for key in current} != current:
-        raise ValueError("Frozen expectation contents do not match the recomputed experiment.")
-    return {"present": True, "verified": True, "path": freeze.relative_to(root).as_posix(),
+    return {"present": True, "verified": True, "requires_refreeze": False,
+            "path": freeze.relative_to(root).as_posix(),
             "freeze_sha256": digest, "manifest_sha256": current["manifest_sha256"], "inputs": current["inputs"]}

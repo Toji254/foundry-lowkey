@@ -133,6 +133,71 @@ class ProofEvidenceTests(unittest.TestCase):
                 )
 
     def test_freeze_rejects_legacy_schema_one(self):
+    def test_trace_capabilities_preserve_anvil_dimensions_and_forge_storage_strength(self):
+        anvil_without_tracer = trace_evidence_capabilities(
+            "anvil-calltracer", storage_trace_supported=False
+        )
+        anvil_with_tracer = trace_evidence_capabilities(
+            "anvil-calltracer", storage_trace_supported=True
+        )
+        forge = trace_evidence_capabilities("forge-state-diff")
+
+        self.assertEqual(anvil_without_tracer["call_tree"], "exact")
+        self.assertEqual(anvil_without_tracer["calldata"], "exact")
+        self.assertEqual(anvil_without_tracer["storage"], "declared_only")
+        self.assertEqual(anvil_with_tracer["storage"], "partial")
+        self.assertEqual(forge["storage"], "derived_per_access")
+        self.assertTrue(evaluate_evidence_requirements(
+            "reentrancy", anvil_with_tracer
+        )["accepted"])
+        self.assertFalse(evaluate_evidence_requirements(
+            "reentrancy", anvil_without_tracer
+        )["accepted"])
+        self.assertFalse(evaluate_evidence_requirements(
+            "storage_corruption", anvil_with_tracer,
+            {"storage": "per_access"}
+        )["accepted"])
+        self.assertTrue(evaluate_evidence_requirements(
+            "storage_corruption", forge, {"storage": "per_access"}
+        )["accepted"])
+
+    def test_generator_drift_warns_and_requires_refreeze_without_rejecting_experiment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "control.json").write_text("{}", encoding="utf-8")
+            (root / "generator.py").write_text("print('generator v1')", encoding="utf-8")
+            (root / "test").mkdir()
+            harness = root / "test/Attack.t.sol"
+            harness.write_text("contract Attack {}", encoding="utf-8")
+            spec = {
+                "family": "reentrancy",
+                "generator_files": ["generator.py"],
+                "control": {"harness": "test/Attack.t.sol", "argv": ["forge", "test"]},
+                "attack": {"harness": "test/Attack.t.sol", "argv": ["forge", "test"]},
+            }
+            frozen, _ = freeze_control_manifest(root, root / "control.json", spec)
+            original_inputs = frozen["inputs"]
+            original_harness = next(
+                item["sha256"] for item in original_inputs
+                if item["path"] == "test/Attack.t.sol"
+            )
+            (root / "generator.py").write_text("print('generator v2')", encoding="utf-8")
+            status = validate_control_freeze(
+                root, root / "control.json", spec, required=True
+            )
+            self.assertFalse(status["verified"])
+            self.assertTrue(status["requires_refreeze"])
+            self.assertEqual(status["reason_code"], "generator_drift")
+            self.assertIn("generator.py", status["changed_generators"])
+            self.assertEqual(status["manifest_sha256"], frozen["manifest_sha256"])
+            self.assertEqual(status["inputs"], original_inputs)
+            self.assertEqual(
+                next(item["sha256"] for item in status["inputs"]
+                     if item["path"] == "test/Attack.t.sol"),
+                original_harness,
+            )
+            self.assertNotIn("rejected", status["reason"].lower())
+
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "control.json").write_text("{}", encoding="utf-8")
