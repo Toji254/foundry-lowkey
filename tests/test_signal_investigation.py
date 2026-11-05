@@ -71,6 +71,62 @@ contract Vault {
             return 0 if validation_status == "passed" else 1
         return fake_run
 
+
+    def test_source_only_plan_is_read_only_and_never_calls_generator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp))
+            signal = self._signal(root)
+            with patch("lowkey.test_generation.run_test_gen", side_effect=AssertionError("must not generate")):
+                report = signal_investigation.plan_signal_investigation(
+                    signal["id"], project_root=root, audit_context=audit_context,
+                )
+            self.assertEqual(report["status"], "plan-only")
+            self.assertFalse(report["effects"]["writes"])
+            self.assertFalse(report["effects"]["tests_run"])
+            self.assertFalse((root / ".audit" / "investigations").exists())
+
+    def test_inspected_test_executes_only_the_requested_path_and_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp))
+            signal = self._signal(root)
+            test_dir = root / "test"
+            test_dir.mkdir()
+            test_file = test_dir / "Vault.t.sol"
+            test_file.write_text(
+                "contract VaultTest { function test_guard() public {} function test_other() public {} }",
+                encoding="utf-8",
+            )
+            with patch("lowkey.signal_investigation.shutil.which", return_value="/usr/bin/forge"), \
+                 patch("lowkey.signal_investigation.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = "[PASS] test_guard()"
+                run.return_value.stderr = ""
+                result = signal_investigation.execute_inspected_test(
+                    signal["id"], "test/Vault.t.sol", "test_guard",
+                    project_root=root, audit_context=audit_context,
+                )
+            self.assertEqual(result["status"], "passed")
+            command = run.call_args.args[0]
+            self.assertEqual(command[1:3], ["test", "--match-path"])
+            self.assertIn("--match-test", command)
+            self.assertEqual(command[-1], "^test_guard$")
+            self.assertFalse(result["security_finding_confirmed"])
+            self.assertTrue(result["evidence_attached"])
+
+    def test_inspected_test_rejects_outside_test_directory_before_forge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp))
+            signal = self._signal(root)
+            outside = root / "src" / "Oops.t.sol"
+            outside.write_text("contract T { function test_bad() public {} }", encoding="utf-8")
+            with patch("lowkey.signal_investigation.shutil.which") as which:
+                with self.assertRaisesRegex(ValueError, "outside the active Foundry test directory"):
+                    signal_investigation.execute_inspected_test(
+                        signal["id"], "src/Oops.t.sol", "test_bad",
+                        project_root=root, audit_context=audit_context,
+                    )
+                which.assert_not_called()
+
     def test_supported_signal_generates_runs_and_attaches_repeat_safe_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp))
