@@ -53,6 +53,10 @@ for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audi
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
+# Keep non-Python runtime assets beside the installed Godmode module.
+mkdir -p "$STAGE_DIR/templates"
+cp "$REPO_DIR/lowkey/templates/step_harness.sol.tmpl" "$STAGE_DIR/templates/step_harness.sol.tmpl"
+
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
 
 python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py" "$STAGE_DIR/fixture_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py" "$STAGE_DIR/attack_library.py" "$STAGE_DIR/attack_catalog.py" "$STAGE_DIR/godmode.py" "$STAGE_DIR/proof_evidence.py" "$STAGE_DIR/forge_state_diff.py" "$STAGE_DIR/trace_evidence.py" "$STAGE_DIR/foundry_build.py" "$STAGE_DIR/workspace_tools.py" "$STAGE_DIR/source_risk.py" "$STAGE_DIR/finding_explainer.py"
@@ -114,6 +118,8 @@ cp "$STAGE_DIR/foundry_build.py" "$TARGET_LOWKEY_DIR/foundry_build.py"
 cp "$STAGE_DIR/workspace_tools.py" "$TARGET_LOWKEY_DIR/workspace_tools.py"
 cp "$STAGE_DIR/source_risk.py" "$TARGET_LOWKEY_DIR/source_risk.py"
 cp "$STAGE_DIR/finding_explainer.py" "$TARGET_LOWKEY_DIR/finding_explainer.py"
+mkdir -p "$TARGET_LOWKEY_DIR/templates"
+cp "$STAGE_DIR/templates/step_harness.sol.tmpl" "$TARGET_LOWKEY_DIR/templates/step_harness.sol.tmpl"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -199,6 +205,7 @@ installed = {
     str(lowkey_dir / "attack_library.py"): sha256(lowkey_dir / "attack_library.py"),
     str(lowkey_dir / "attack_catalog.py"): sha256(lowkey_dir / "attack_catalog.py"),
     str(lowkey_dir / "godmode.py"): sha256(lowkey_dir / "godmode.py"),
+    str(lowkey_dir / "templates" / "step_harness.sol.tmpl"): sha256(lowkey_dir / "templates" / "step_harness.sol.tmpl"),
     str(lowkey_dir / "proof_evidence.py"): sha256(lowkey_dir / "proof_evidence.py"),
     str(lowkey_dir / "forge_state_diff.py"): sha256(lowkey_dir / "forge_state_diff.py"),
     str(lowkey_dir / "trace_evidence.py"): sha256(lowkey_dir / "trace_evidence.py"),
@@ -267,6 +274,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/attack_library.py
   - $TARGET_LOWKEY_DIR/attack_catalog.py
   - $TARGET_LOWKEY_DIR/godmode.py
+  - $TARGET_LOWKEY_DIR/templates/step_harness.sol.tmpl
   - $TARGET_LOWKEY_DIR/proof_evidence.py
   - $TARGET_LOWKEY_DIR/forge_state_diff.py
   - $TARGET_LOWKEY_DIR/trace_evidence.py
