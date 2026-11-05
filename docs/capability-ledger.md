@@ -68,6 +68,7 @@ P0 adds or improves:
 - Decimal-aware token funding with an observable 18-decimal fallback.
 - Low-level optional-return approval calls with allowance reset support.
 - ERC-777, ERC-721 and ERC-1155 receiver hooks and corrected ERC-777 source detection.
+- Unsupported ABI generation and ABI encoding failures emit machine-readable `Refusal` records with reason `unsupported_abi`.
 - Standards references and compatibility acceptance fixtures.
 
 These are compatibility improvements, not new exploit families. P0 does **not** promote any attack family or claim token-share profitability proof.
