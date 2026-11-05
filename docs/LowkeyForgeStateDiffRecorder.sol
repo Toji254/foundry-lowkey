@@ -2,31 +2,12 @@
 pragma solidity ^0.8.20;
 
 // Lowkey Forge state-diff recorder.
-// Import this helper from a Foundry test which inherits forge-std/Test.sol.
-// Start recording immediately before the exact call under investigation and
-// write the artifact immediately after that call.
+// Inherit this helper from a Foundry test. Start recording directly before the
+// target call and write the artifact immediately after that call.
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 
-interface ILowkeyJson {
-    function serializeString(string calldata objectKey, string calldata valueKey, string calldata value)
-        external returns (string memory json);
-    function serializeUint(string calldata objectKey, string calldata valueKey, uint256 value)
-        external returns (string memory json);
-    function serializeAddress(string calldata objectKey, string calldata valueKey, address value)
-        external returns (string memory json);
-    function serializeBool(string calldata objectKey, string calldata valueKey, bool value)
-        external returns (string memory json);
-    function serializeBytes(string calldata objectKey, string calldata valueKey, bytes calldata value)
-        external returns (string memory json);
-    function serializeBytes32(string calldata objectKey, string calldata valueKey, bytes32 value)
-        external returns (string memory json);
-    function writeJson(string calldata json, string calldata path) external;
-}
-
 abstract contract LowkeyForgeStateDiffRecorder is Test {
-    ILowkeyJson internal constant lowkeyJson =
-        ILowkeyJson(address(uint160(uint256(keccak256("hevm cheat code")))));
     address private _lowkeyTarget;
     bytes32 private _lowkeyTargetCodeHash;
     uint256 private _lowkeyChainId;
@@ -50,6 +31,29 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         return string(buffer);
     }
 
+    function _hex(bytes memory value) private pure returns (string memory) {
+        bytes16 alphabet = "0123456789abcdef";
+        bytes memory output = new bytes(2 + value.length * 2);
+        output[0] = "0";
+        output[1] = "x";
+        for (uint256 i; i < value.length; ++i) {
+            uint8 item = uint8(value[i]);
+            output[2 + i * 2] = alphabet[item >> 4];
+            output[3 + i * 2] = alphabet[item & 0x0f];
+        }
+        return string(output);
+    }
+
+    function _quoted(string memory value) private pure returns (string memory) {
+        // Every caller passes a Lowkey-generated 0x-prefixed hex string.
+        // It contains no quote or control characters and needs no escaping.
+        return string.concat('"', value, '"');
+    }
+
+    function _boolean(bool value) private pure returns (string memory) {
+        return value ? "true" : "false";
+    }
+
     function _lowkeyStartTrace(address target) internal {
         _lowkeyTarget = target;
         _lowkeyTargetCodeHash = target.codehash;
@@ -70,63 +74,57 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
 
             for (uint256 j; j < access.storageAccesses.length; ++j) {
                 Vm.StorageAccess memory storageAccess = access.storageAccesses[j];
-                string memory storageKey = string(
-                    abi.encodePacked("lowkey.storage.", _uintString(i), ".", _uintString(j))
+                string memory storageObject = string.concat(
+                    '{"account":', _quoted(_hex(abi.encodePacked(storageAccess.account))),
+                    ',"slot":', _quoted(_hex(abi.encodePacked(storageAccess.slot))),
+                    ',"is_write":', _boolean(storageAccess.isWrite),
+                    ',"previous_value":', _quoted(_hex(abi.encodePacked(storageAccess.previousValue))),
+                    ',"new_value":', _quoted(_hex(abi.encodePacked(storageAccess.newValue))),
+                    ',"reverted":', _boolean(storageAccess.reverted),
+                    '}'
                 );
-
-                lowkeyJson.serializeAddress(storageKey, "account", storageAccess.account);
-                lowkeyJson.serializeBytes32(storageKey, "slot", storageAccess.slot);
-                lowkeyJson.serializeBool(storageKey, "is_write", storageAccess.isWrite);
-                lowkeyJson.serializeBytes32(storageKey, "previous_value", storageAccess.previousValue);
-                lowkeyJson.serializeBytes32(storageKey, "new_value", storageAccess.newValue);
-                string memory storageObject =
-                    lowkeyJson.serializeBool(storageKey, "reverted", storageAccess.reverted);
-
                 if (j != 0) storageJson = string.concat(storageJson, ",");
                 storageJson = string.concat(storageJson, storageObject);
             }
             storageJson = string.concat(storageJson, "]");
 
-            string memory accessKey = string(
-                abi.encodePacked("lowkey.access.", _uintString(i))
+            string memory accessObject = string.concat(
+                '{"kind":', _uintString(uint256(access.kind)),
+                ',"account":', _quoted(_hex(abi.encodePacked(access.account))),
+                ',"accessor":', _quoted(_hex(abi.encodePacked(access.accessor))),
+                ',"initialized":', _boolean(access.initialized),
+                ',"old_balance":', _uintString(access.oldBalance),
+                ',"new_balance":', _uintString(access.newBalance),
+                ',"deployed_code":', _quoted(_hex(access.deployedCode)),
+                ',"value":', _uintString(access.value),
+                ',"data":', _quoted(_hex(access.data)),
+                ',"depth":', _uintString(access.depth),
+                ',"old_nonce":', _uintString(access.oldNonce),
+                ',"new_nonce":', _uintString(access.newNonce),
+                ',"code_hash":', _quoted(_hex(abi.encodePacked(access.account.codehash))),
+                ',"chain_id":', _uintString(access.chainInfo.chainId),
+                ',"reverted":', _boolean(access.reverted),
+                ',"storage_accesses":', storageJson,
+                '}'
             );
-            lowkeyJson.serializeUint(accessKey, "kind", uint256(access.kind));
-            lowkeyJson.serializeAddress(accessKey, "account", access.account);
-            lowkeyJson.serializeAddress(accessKey, "accessor", access.accessor);
-            lowkeyJson.serializeBool(accessKey, "initialized", access.initialized);
-            lowkeyJson.serializeUint(accessKey, "old_balance", access.oldBalance);
-            lowkeyJson.serializeUint(accessKey, "new_balance", access.newBalance);
-            lowkeyJson.serializeBytes(accessKey, "deployed_code", access.deployedCode);
-            lowkeyJson.serializeUint(accessKey, "value", access.value);
-            lowkeyJson.serializeBytes(accessKey, "data", access.data);
-            lowkeyJson.serializeUint(accessKey, "depth", access.depth);
-            lowkeyJson.serializeUint(accessKey, "old_nonce", access.oldNonce);
-            lowkeyJson.serializeUint(accessKey, "new_nonce", access.newNonce);
-            lowkeyJson.serializeBytes32(accessKey, "code_hash", access.account.codehash);
-            lowkeyJson.serializeUint(accessKey, "chain_id", access.chainInfo.chainId);
-
-            string memory accessObject =
-                lowkeyJson.serializeBool(accessKey, "reverted", access.reverted);
-            // serializeString detects valid JSON and embeds the array as JSON,
-            // not as a quoted string.
-            accessObject = lowkeyJson.serializeString(accessKey, "storage_accesses", storageJson);
-
             if (i != 0) accessesJson = string.concat(accessesJson, ",");
             accessesJson = string.concat(accessesJson, accessObject);
         }
         accessesJson = string.concat(accessesJson, "]");
 
-        string memory rootKey = "lowkey.root";
-        lowkeyJson.serializeString(rootKey, "backend", "forge-state-diff");
-        lowkeyJson.serializeUint(rootKey, "schema_version", 1);
-        lowkeyJson.serializeUint(rootKey, "chain_id", _lowkeyChainId);
-        lowkeyJson.serializeUint(rootKey, "block_number", _lowkeyBlockNumber);
-        lowkeyJson.serializeAddress(rootKey, "target_address", target);
-        lowkeyJson.serializeBytes32(rootKey, "target_code_hash", _lowkeyTargetCodeHash);
-        lowkeyJson.serializeBytes32(rootKey, "fork_parent_hash", _lowkeyParentHash);
-        string memory finalJson = lowkeyJson.serializeString(rootKey, "accesses", accessesJson);
+        string memory finalJson = string.concat(
+            '{"backend":"forge-state-diff"',
+            ',"schema_version":1',
+            ',"chain_id":', _uintString(_lowkeyChainId),
+            ',"block_number":', _uintString(_lowkeyBlockNumber),
+            ',"target_address":', _quoted(_hex(abi.encodePacked(target))),
+            ',"target_code_hash":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))),
+            ',"fork_parent_hash":', _quoted(_hex(abi.encodePacked(_lowkeyParentHash))),
+            ',"accesses":', accessesJson,
+            '}'
+        );
 
         vm.createDir(".audit/godmode", true);
-        lowkeyJson.writeJson(finalJson, outputPath);
+        vm.writeJson(finalJson, outputPath);
     }
 }
