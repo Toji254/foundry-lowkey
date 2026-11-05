@@ -281,7 +281,7 @@ def storage_slot_key(value):
     if re.fullmatch(r"0x[0-9a-f]{64}",raw):
         return raw
     try:
-        number=int(raw,16) if raw.startswith("0x") else int(raw,0)
+        number=int(raw,16) if raw.startswith("0x") else int(raw,10)
     except (TypeError,ValueError):
         raise ValueError("Storage slot must be an integer or 0x-prefixed bytes32 value.")
     if number<0 or number>=2**256:
