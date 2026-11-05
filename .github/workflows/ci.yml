@@ -434,9 +434,12 @@ jobs:
               }
           }
           EOF
-          forge test --match-path test/LowkeyStateDiffRecorder.t.sol --match-test test_lowkey_paired_one_deployment_reentrancy -vv
+          PAIRED_FORK_BLOCK="$(cast block-number --rpc-url http://127.0.0.1:8545)"
+          export LOWKEY_PAIRED_FORK_BLOCK="$PAIRED_FORK_BLOCK"
+          forge test --fork-url http://127.0.0.1:8545 --fork-block-number "$PAIRED_FORK_BLOCK" --match-path test/LowkeyStateDiffRecorder.t.sol --match-test test_lowkey_paired_one_deployment_reentrancy -vv
           python3 - "$HOME/.lowkey" <<'PY'
           import json
+          import os
           import pathlib
           import subprocess
           import sys
@@ -514,7 +517,9 @@ jobs:
 
           attacker = control_calls[0]["from"]
           argv = [
-              "forge", "test", "--match-path", "test/LowkeyStateDiffRecorder.t.sol",
+              "forge", "test", "--fork-url", "http://127.0.0.1:8545",
+              "--fork-block-number", os.environ["LOWKEY_PAIRED_FORK_BLOCK"],
+              "--match-path", "test/LowkeyStateDiffRecorder.t.sol",
               "--match-test", "test_lowkey_paired_one_deployment_reentrancy", "-vv"
           ]
           paired_manifest = {
