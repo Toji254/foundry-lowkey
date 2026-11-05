@@ -216,50 +216,152 @@ def expected_unsupported_outcome(project: dict[str, Any]) -> dict[str, str] | No
     }
 
 
-def evaluate_target(project_root: Path, contract: str, output_root: Path) -> dict[str, Any]:
+def _nearest_foundry_root(project_root: Path, source_path: str | Path) -> Path | None:
+    """Find the closest Foundry package containing the selected source."""
+    root = project_root.resolve()
+    source = Path(source_path)
+    source = source if source.is_absolute() else root / source
+    current = source.resolve().parent
+    while current == root or current.is_relative_to(root):
+        if (current / "foundry.toml").is_file():
+            return current
+        if current == root:
+            break
+        current = current.parent
+    return None
+
+
+def _infer_source_directory(project_root: Path, source_paths: list[str]) -> str:
+    """Infer a source directory from selected files, not a repository name."""
+    root = project_root.resolve()
+    directories = [(root / source).resolve().parent for source in source_paths]
+    if not directories:
+        return "src" if (root / "src").is_dir() else "contracts"
+    common = Path(os.path.commonpath([str(path) for path in directories]))
+    if common == root:
+        first_parts = {Path(source).parts[0] for source in source_paths if Path(source).parts}
+        if len(first_parts) == 1:
+            return next(iter(first_parts))
+        return "src" if (root / "src").is_dir() else "contracts"
+    return common.relative_to(root).as_posix()
+
+
+def _synthetic_foundry_config(project_root: Path, source_paths: list[str]) -> tuple[Path, bool]:
+    """Create a disposable Foundry profile for a project without one."""
+    root = project_root.resolve()
+    config_path = root / "foundry.toml"
+    if config_path.is_file():
+        return config_path, False
+    source_dir = _infer_source_directory(root, source_paths)
+    config_text = (
+        "[profile.default]\n"
+        f'src = "{source_dir}"\n'
+        'test = "test"\n'
+        'out = ".lowkey-ecosystem-out"\n'
+        'cache_path = ".lowkey-ecosystem-cache"\n'
+        'libs = ["lib", "node_modules"]\n'
+        "auto_detect_solc = true\n"
+        "optimizer = true\n"
+        "optimizer_runs = 200\n"
+        'allow_paths = ["node_modules"]\n'
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+    return config_path, True
+
+
+def _is_abstract_contract(project_root: Path, relative_source: str, contract: str) -> bool:
+    path = project_root / relative_source
+    try:
+        source = mask_solidity(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return True
+    return bool(re.search(
+        r"\babstract\s+contract\s+" + re.escape(contract) + r"\b",
+        source,
+    ))
+
+
+def _report_accounts_for_every_type(report: dict[str, Any] | None) -> bool:
+    """A complete report may explain evidence gaps, but cannot omit categories."""
+    if not isinstance(report, dict):
+        return False
+    requested = report.get("requested_types")
+    assessments = report.get("generation_assessment")
+    if not isinstance(requested, list) or not requested or not isinstance(assessments, dict):
+        return False
+    for kind in requested:
+        item = assessments.get(kind)
+        if not isinstance(item, dict):
+            return False
+        if not isinstance(item.get("level"), str) or not item["level"].strip():
+            return False
+        if not isinstance(item.get("note"), str) or not item["note"].strip():
+            return False
+    return isinstance(report.get("generated", []), list)
+
+
+def evaluate_target(
+    project_root: Path,
+    contract: str,
+    output_root: Path,
+    *,
+    constructor_args: list[str] | None = None,
+) -> dict[str, Any]:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", contract)
     all_dir = output_root / (slug + "-all")
     solidity_dir = output_root / (slug + "-solidity")
     common = ["lk", "test-gen", contract, "--force"]
+    if constructor_args is not None:
+        common.extend(["--constructor-args", json.dumps(constructor_args)])
     generation = run(
         common + ["--types", "all", "--output-dir", str(all_dir)],
         cwd=project_root,
     )
-    # The generator nests each contract's report and artifacts below the
-    # supplied output directory. Resolve that documented layout explicitly.
     generation_report = load_report(all_dir / slug / "report.json")
-
     validation = run(
         common + ["--types", SOLIDITY_TYPES, "--output-dir", str(solidity_dir), "--validate"],
         cwd=project_root,
     )
     validation_report = load_report(solidity_dir / slug / "report.json")
     assessments = (generation_report or {}).get("generation_assessment", {})
-    validation_status = (validation_report or {}).get("validation", {}).get("status", "report-missing")
-    generation_succeeded = generation.get("exit_code") == 0 and generation_report is not None
+    validation_data = (validation_report or {}).get("validation", {})
+    validation_status = validation_data.get("status", "report-missing")
+    generation_assessed = _report_accounts_for_every_type(generation_report)
+    generation_succeeded = (
+        generation.get("exit_code") == 0
+        and generation_assessed
+        and not (generation_report or {}).get("skipped")
+    )
+    executions = validation_data.get("test_executions", [])
     validation_succeeded = (
         validation.get("exit_code") == 0
         and validation_report is not None
         and validation_status == "passed"
+        and isinstance(executions, list)
+        and bool(executions)
+        and all(isinstance(item, dict) and item.get("exit_code") == 0 for item in executions)
     )
+    if generation_succeeded and validation_succeeded:
+        honest_result = "generation-and-validation-passed"
+    elif not generation_assessed or generation_report is None or validation_report is None:
+        honest_result = "tool-or-report-failure"
+    else:
+        honest_result = "assessed-with-evidence-gaps"
     return {
         "contract": contract,
+        "constructor_args_supplied": constructor_args is not None,
         "generation_command": generation,
         "generation_report_found": generation_report is not None,
+        "generation_assessment_complete": generation_assessed,
         "generation_succeeded": generation_succeeded,
         "generation_assessment": assessments,
         "validation_command": validation,
         "validation_status": validation_status,
         "validation_report_found": validation_report is not None,
+        "validation_test_executions": executions,
         "validation_succeeded": validation_succeeded,
         "formal_artifact_exists": any((all_dir / slug).glob("*Formal*")),
-        "honest_result": (
-            "generation-and-validation-passed"
-            if generation_succeeded and validation_succeeded
-            else "tool-or-report-failure"
-            if generation_report is None or validation_report is None
-            else "generation-or-validation-failed"
-        ),
+        "honest_result": honest_result,
     }
 
 
