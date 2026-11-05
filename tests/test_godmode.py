@@ -148,7 +148,9 @@ class GodmodeTests(unittest.TestCase):
             if method == "eth_getCode":
                 return "0x6000" if params[0] == wrapper else "0x"
             if method == "eth_getStorageAt":
-                if params[0] == wrapper and params[1] == "0x0" and params[2] == "latest":
+                if (params[0] == wrapper and
+                    params[1] in {"0x0", "0x" + "0" * 64} and
+                    params[2] == "latest"):
                     return state["scenario_slot"]
                 return "0x" + "0" * 63 + "1"
             if method == "debug_traceTransaction" and params[1].get("tracer") == "prestateTracer":
@@ -385,7 +387,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
+            self.assertEqual(saved["status"], "UNPROVEN")
             self.assertIn("anvil_setStorageAt", saved["reasons"][0])
             run_mock.assert_not_called()
 
@@ -484,7 +486,7 @@ class GodmodeTests(unittest.TestCase):
                 ])
             saved = json.loads((root / ".audit/godmode/control.json").read_text())
             self.assertEqual(result, 1)
-            self.assertIn(saved["status"], {"OBSERVED", "REJECTED"})
+            self.assertEqual(saved["status"], "UNPROVEN")
             self.assertIn("attacker_callback_flag", saved["reasons"][0])
             # Control succeeds its prepare step and its transaction; attack fails
             # during preparation, so the second send is never executed.
@@ -1135,7 +1137,7 @@ class GodmodeTests(unittest.TestCase):
             self._forge_artifact(), expected_target=target
         )
         parent_hash = "0x" + "b" * 64
-        target_hash = "0x" + "a" * 64
+        target_hash = normalized["target_code_hash"]
         block_hash = "0x" + "c" * 64
         state_root = "0x" + "d" * 64
         block = {
@@ -1206,7 +1208,7 @@ class GodmodeTests(unittest.TestCase):
         normalized = normalize_forge_state_diff(raw, expected_target=target)
 
         parent_hash = "0x" + "b" * 64
-        target_hash = "0x" + "a" * 64
+        target_hash = normalized["target_code_hash"]
         block = {
             "hash": "0x" + "c" * 64, "parentHash": parent_hash,
             "stateRoot": "0x" + "d" * 64, "timestamp": "0x1234",
@@ -1314,7 +1316,7 @@ class GodmodeTests(unittest.TestCase):
             self._forge_artifact(), expected_target=target
         )
         parent_hash = "0x" + "b" * 64
-        target_hash = "0x" + "a" * 64
+        target_hash = normalized["target_code_hash"]
         block = {
             "hash": "0x" + "c" * 64, "parentHash": parent_hash,
             "stateRoot": "0x" + "d" * 64, "timestamp": "0x1234",
