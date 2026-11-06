@@ -42,6 +42,29 @@ class TestGenerationTests(unittest.TestCase):
         self.assertIn("pragma solidity ^0.8.20;", rendered)
         self.assertIn("new Counter()", rendered)
 
+    def test_unit_deployment_assertion_is_not_marked_view(self):
+        rendered = generation._render(
+            "unit",
+            "Counter",
+            "../src/Counter.sol",
+            None,
+            True,
+            [],
+            False,
+            None,
+            {},
+            "^0.8.20",
+        )
+        self.assertIn(
+            "function test_deployment_has_runtime_code() public {",
+            rendered,
+        )
+        self.assertNotIn(
+            "function test_deployment_has_runtime_code() public view",
+            rendered,
+        )
+        self.assertIn("assertGt(codeSize, 0);", rendered)
+
     def test_parse_types_deduplicates_and_rejects_unknown_values(self):
         self.assertEqual(generation.parse_types("unit,fuzz,unit"), ["unit", "fuzz"])
         self.assertEqual(generation.parse_types("exploit"), ["exploit"])

@@ -526,7 +526,7 @@ import {{ {name} }} from "{import_path}";
         target = {deploy_expression};
     }}
 
-    function test_deployment_has_runtime_code() public view {{
+    function test_deployment_has_runtime_code() public {{
         address deployed = address(target);
         uint256 codeSize;
         assembly {{ codeSize := extcodesize(deployed) }}
