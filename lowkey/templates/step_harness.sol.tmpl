@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import {Test} from "forge-std/Test.sol";
+
+contract __LOWKEY_CONTRACT_NAME__ is Test {
+    event LowkeyStep(
+        uint256 indexed stepIndex,
+        string kind,
+        address indexed target,
+        bool success,
+        bytes32 returndataHash
+    );
+
+    bool private lastSuccess;
+    bytes private lastReturndata;
+    uint256 private snapshotId;
+    bool private snapshotAvailable;
+
+    function test_lowkey_steps() external {
+__LOWKEY_STEP_CODE__
+    }
+}

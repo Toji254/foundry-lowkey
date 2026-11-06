@@ -1,0 +1,2293 @@
+name: Validate LowkeyCast
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Let the current release-gate run finish; newer pushes queue behind it.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  foundry-toolchain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      archive_sha256: ${{ steps.package_foundry.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore pinned Foundry cache
+        id: foundry-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.foundry/bin
+            ~/.foundry/versions
+          key: lowkey-foundry-${{ runner.os }}-${{ runner.arch }}-v1.9.0-r1
+
+      - name: Add Foundry to PATH
+        run: echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+
+      - name: Verify restored Foundry cache
+        id: cache-check
+        if: steps.foundry-cache.outputs.cache-hit == 'true'
+        continue-on-error: true
+        run: python3 scripts/verify_foundry_toolchain.py 1.9.0
+
+      - name: Discard invalid cached Foundry binaries
+        if: steps.foundry-cache.outputs.cache-hit == 'true' && steps.cache-check.outcome != 'success'
+        run: rm -rf "$HOME/.foundry"
+
+      - name: Install pinned Foundry (attempt 1)
+        id: foundry-install-1
+        if: steps.cache-check.outcome != 'success'
+        continue-on-error: true
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+          cache: false
+
+      - name: Back off before Foundry retry 2
+        if: steps.cache-check.outcome != 'success' && steps.foundry-install-1.outcome != 'success'
+        run: sleep 10
+
+      - name: Install pinned Foundry (attempt 2)
+        id: foundry-install-2
+        if: steps.cache-check.outcome != 'success' && steps.foundry-install-1.outcome != 'success'
+        continue-on-error: true
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+          cache: false
+
+      - name: Back off before Foundry retry 3
+        if: steps.cache-check.outcome != 'success' && steps.foundry-install-1.outcome != 'success' && steps.foundry-install-2.outcome != 'success'
+        run: sleep 20
+
+      - name: Install pinned Foundry (attempt 3)
+        id: foundry-install-3
+        if: steps.cache-check.outcome != 'success' && steps.foundry-install-1.outcome != 'success' && steps.foundry-install-2.outcome != 'success'
+        continue-on-error: true
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+          cache: false
+
+      - name: Verify pinned Foundry toolchain
+        run: python3 scripts/verify_foundry_toolchain.py 1.9.0
+
+      - name: Save verified Foundry cache
+        if: steps.foundry-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.foundry/bin
+            ~/.foundry/versions
+          key: lowkey-foundry-${{ runner.os }}-${{ runner.arch }}-v1.9.0-r1
+
+      - name: Package verified Foundry toolchain
+        id: package_foundry
+        run: |
+          set -euo pipefail
+          test -d "$HOME/.foundry/bin"
+          tar --exclude='.foundry/cache' --exclude='.foundry/keystore' -czf "$GITHUB_WORKSPACE/foundry-toolchain.tar.gz" -C "$HOME" .foundry
+          digest="$(sha256sum "$GITHUB_WORKSPACE/foundry-toolchain.tar.gz" | cut -d' ' -f1)"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Publish shared Foundry toolchain
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: foundry-toolchain.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Compile
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/benchmark.py lowkey/system_model.py lowkey/project_tools.py lowkey/analysis_adapters.py lowkey/verification_adapters.py lowkey/test_generation.py lowkey/test_generation_analysis.py lowkey/generation_plugins.py lowkey/behavioral_validation.py lowkey/verification_benchmark.py lowkey/verification_cli.py lowkey/signal_investigation.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/solidity_connect_data.py lowkey/break_engine.py lowkey/ai_harness.py lowkey/ai_workflow.py lowkey/provider_adapters.py lowkey/agent_runtime.py lowkey/evidence_ledger.py lowkey/security_review.py lowkey/error_context.py lowkey/error_advisor.py lowkey/test_planner.py lowkey/experience_memory.py lowkey/jev_engine.py lowkey/godmode.py lowkey/proof_evidence.py lowkey/forge_state_diff.py lowkey/trace_evidence.py lowkey/foundry_build.py lowkey/workspace_tools.py lowkey/source_risk.py lowkey/finding_explainer.py scripts/verify_foundry_toolchain.py scripts/p0-break-acceptance-e2e.py scripts/p1-step-acceptance-e2e.py
+      - name: Solidity cheatsheet tests
+        run: python -m unittest tests/test_solidity_cheatsheet.py -v
+      - name: Security regression benchmark
+        run: python -m unittest tests/test_benchmark.py -v
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: bash -n bin/lk install.sh scripts/install-verification-engines.sh scripts/install-lh-jev-shortcuts.sh
+
+  p0-break-acceptance:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+
+      - name: Install Lowkey
+        run: ./install.sh
+
+      - name: Prepare isolated P0 forge-std fixture
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/lowkey-fixture
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/src" "$ROOT/test" "$ROOT/lib"
+          cat > "$ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          libs = ["lib"]
+          solc_version = "0.8.20"
+          EOF
+          cd "$ROOT"
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+
+      - name: Start Anvil for P0 break acceptance
+        run: |
+          set -euo pipefail
+          anvil --silent \
+            --port 8545 \
+            --chain-id 31337 \
+            --mnemonic "test test test test test test test test test test test junk" \
+            --accounts 10 \
+            --balance 10000 \
+            --gas-price 1000000000 \
+            --block-base-fee-per-gas 1000000000 \
+            --gas-limit 30000000 \
+            --timestamp 1700000000 \
+            --hardfork cancun \
+            > /tmp/lowkey-p0-anvil.log 2>&1 &
+          for i in $(seq 1 30); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat /tmp/lowkey-p0-anvil.log
+          exit 1
+
+      - name: P0 installed-lk setup and token compatibility acceptance
+        run: python3 scripts/p0-break-acceptance-e2e.py
+
+      - name: Upload P0 acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-break-acceptance-${{ github.run_number }}
+          path: .audit/p0-break-acceptance/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  p1-step-acceptance:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+
+      - name: Install Lowkey
+        run: ./install.sh
+
+      - name: Prepare isolated P1 forge-std fixture
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/lowkey-fixture
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/src" "$ROOT/test" "$ROOT/lib"
+          cat > "$ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          libs = ["lib"]
+          solc_version = "0.8.20"
+          EOF
+          cd "$ROOT"
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+          echo "LOWKEY_FORGE_STD=$ROOT/lib/forge-std" >> "$GITHUB_ENV"
+
+      - name: P1 installed-lk Step renderer compile acceptance
+        run: python3 scripts/p1-step-acceptance-e2e.py
+
+      - name: Upload P1 Step acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-step-acceptance-${{ github.run_number }}
+          path: .audit/p1-step-acceptance/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  foundry-integration:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+      - name: Verify dependencies
+        run: |
+          forge --version
+          cast --version
+          anvil --version
+      - name: P0 setup and receiver compatibility acceptance
+        run: |
+          set -euo pipefail
+          cd tests/fixtures/acceptance/p0-compatibility
+          forge test -vv
+      - name: Install Lowkey
+        run: ./install.sh
+      - name: Exercise project-aware Chisel contract preload
+        run: |
+          set -euo pipefail
+          CHISEL_ROOT=/tmp/lowkey-chisel-preload
+          rm -rf "$CHISEL_ROOT"
+          mkdir -p "$CHISEL_ROOT/src"
+          cat > "$CHISEL_ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cat > "$CHISEL_ROOT/src/Counter.sol" <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract Counter {
+              uint256 public value;
+              function increment() external returns (uint256) {
+                  return ++value;
+              }
+          }
+          EOF
+          set +e
+          CHISEL_OUTPUT="$(lk chisel --root "$CHISEL_ROOT" --contract Counter eval 'lowkeySend_increment(address(0x1111)) == 1' 2>&1)"
+          CHISEL_STATUS=$?
+          set -e
+          printf '%s\n' "$CHISEL_OUTPUT"
+          if [ "$CHISEL_STATUS" -ne 0 ]; then
+            exit "$CHISEL_STATUS"
+          fi
+          grep -q "true" <<<"$CHISEL_OUTPUT"
+      - name: Exercise installed native AI and memory commands
+        run: bash scripts/test-native-ai-harness.sh
+      - name: Compile standalone Solidity cheat labs
+        run: python -m unittest tests/test_solidity_cheat_labs.py -v
+      - name: Compile Solidity connection labs
+        run: python -m unittest tests/test_solidity_connect.py -v
+      - name: Verify installed runtime module
+        run: |
+          test -f "$HOME/.lowkey/bootstrap.py"
+          test -f "$HOME/.lowkey/import_helper.py"
+          test -f "$HOME/.lowkey/break_playbook.py"
+          test -f "$HOME/.lowkey/break_engine.py"
+          test -f "$HOME/.lowkey/godmode.py"
+          test -f "$HOME/.lowkey/proof_evidence.py"
+          test -f "$HOME/.lowkey/forge_state_diff.py"
+          test -f "$HOME/.lowkey/trace_evidence.py"
+          test -f "$HOME/.lowkey/foundry_build.py"
+          test -f "$HOME/.lowkey/workspace_tools.py"
+          test -f "$HOME/.lowkey/source_risk.py"
+          test -f "$HOME/.lowkey/finding_explainer.py"
+          test -f "$HOME/.lowkey/benchmark.py"
+          test -f "$HOME/.lowkey/analysis_adapters.py"
+          test -f "$HOME/.lowkey/verification_adapters.py"
+          test -f "$HOME/.lowkey/test_generation.py"
+          test -f "$HOME/.lowkey/test_generation_analysis.py"
+          test -f "$HOME/.lowkey/generation_plugins.py"
+          test -f "$HOME/.lowkey/behavioral_validation.py"
+          test -f "$HOME/.lowkey/verification_benchmark.py"
+          test -f "$HOME/.lowkey/verification_cli.py"
+          test -f "$HOME/.lowkey/solidity_cheatsheet.py"
+          test -f "$HOME/.lowkey/solidity_cheat_topics.py"
+          test -f "$HOME/.lowkey/solidity_cheat_data.py"
+          test -f "$HOME/.lowkey/solidity_connect_data.py"
+          grep -q '/bootstrap.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/import_helper.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/break_playbook.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/break_engine.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/godmode.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/proof_evidence.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/forge_state_diff.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/trace_evidence.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/foundry_build.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/workspace_tools.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/source_risk.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/finding_explainer.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/ai_harness.py":' "$HOME/.lowkey/install-manifest.json"
+          test -f "$HOME/.lowkey/ai_workflow.py"
+          grep -q '/ai_workflow.py":' "$HOME/.lowkey/install-manifest.json"
+          test -f "$HOME/.lowkey/provider_adapters.py"
+          test -f "$HOME/.lowkey/agent_runtime.py"
+          test -f "$HOME/.lowkey/evidence_ledger.py"
+          test -f "$HOME/.lowkey/security_review.py"
+          grep -q '/provider_adapters.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/agent_runtime.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/evidence_ledger.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/security_review.py":' "$HOME/.lowkey/install-manifest.json"
+          test -f "$HOME/.lowkey/test_planner.py"
+          grep -q '/test_planner.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/experience_memory.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/analysis_adapters.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/verification_adapters.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/test_generation.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/test_generation_analysis.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/generation_plugins.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/behavioral_validation.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/verification_benchmark.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/verification_cli.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_cheatsheet.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_cheat_topics.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_cheat_data.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_connect_data.py":' "$HOME/.lowkey/install-manifest.json"
+          python3 - "$HOME/.lowkey" <<'PY'
+          import pathlib
+          import sys
+          root = pathlib.Path(sys.argv[1])
+          sys.path.insert(0, str(root))
+          import bootstrap
+          assert pathlib.Path(bootstrap.__file__).resolve() == root / "bootstrap.py"
+          PY
+
+      - name: Build integration fixture
+        run: |
+          rm -rf /tmp/lowkey-fixture
+          mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
+          cat > /tmp/lowkey-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          libs = ["lib"]
+          fs_permissions = [{ access = "read-write", path = "./.audit/godmode" }]
+          EOF
+          cd /tmp/lowkey-fixture
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+          cat > src/Fixture.sol <<'EOF'
+          pragma solidity ^0.8.20;
+          contract Fixture {
+              event Ping(uint256 value);
+              uint256 public count;
+              function ping(uint256 value) external {
+                  count += value;
+                  emit Ping(value);
+              }
+              function setCount(uint256 value) external {
+                  count = value;
+              }
+              function deposit(uint256 amount) external payable {
+                  require(amount == msg.value, "attach eth");
+                  count += amount;
+              }
+          }
+          EOF
+          cat > test/Fixture.t.sol <<'EOF'
+          pragma solidity ^0.8.20;
+          import "forge-std/Test.sol";
+          import "../src/Fixture.sol";
+
+          contract FixtureTest is Test {
+              Fixture public target;
+
+              function setUp() public {
+                  target = new Fixture();
+                  targetContract(address(target));
+              }
+
+              function testSmoke() public {}
+              function testFuzz_roundTrip(uint256 value) public {
+                  target.ping(value);
+              }
+
+              function invariant_fixture_code() public view {
+                  assert(address(target).code.length > 0);
+              }
+          }
+          EOF
+
+      - name: Start Anvil
+        run: |
+          anvil --silent \
+            --port 8545 \
+            --chain-id 31337 \
+            --mnemonic "test test test test test test test test test test test junk" \
+            --accounts 10 \
+            --balance 10000 \
+            --gas-price 1000000000 \
+            --block-base-fee-per-gas 1000000000 \
+            --gas-limit 30000000 \
+            --timestamp 1700000000 \
+            --hardfork cancun \
+            > /tmp/lowkey-anvil.log 2>&1 &
+          for i in $(seq 1 20); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat /tmp/lowkey-anvil.log
+          exit 1
+      - name: Run installed integration checks
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          lk --h
+          lk --version
+          grep -q 'Runtime:' <(lk --version)
+          # Exercise the installed AI preview route without configuring a provider.
+          # The command must not contact a provider and must exclude tests/dependencies.
+          lk ai status
+          lk ai run --help | tee /tmp/lowkey-ai-run-help.txt
+          grep -q -- --plan-only /tmp/lowkey-ai-run-help.txt
+          grep -q -- --yes /tmp/lowkey-ai-run-help.txt
+          lk status --ai > /tmp/lowkey-status-ai.txt 2>&1
+          grep -q 'AI GUIDANCE UNAVAILABLE' /tmp/lowkey-status-ai.txt
+          grep -Eq 'LOWKEY|Target|RPC|target' /tmp/lowkey-status-ai.txt
+          lk ai keys list --json > /tmp/lowkey-ai-keys.txt
+          grep -q 'max_keys_per_provider_per_request' /tmp/lowkey-ai-keys.txt
+          lk ai errors status --json > /tmp/lowkey-ai-errors.txt
+          grep -q 'automatic_explanations_make_provider_requests' /tmp/lowkey-ai-errors.txt
+          lk ai runtime --json > /tmp/lowkey-ai-runtime.json
+          python3 -m json.tool /tmp/lowkey-ai-runtime.json >/dev/null
+          lk ai test-plan --help | tee /tmp/lowkey-ai-test-plan-help.txt
+          grep -q -- '--json' /tmp/lowkey-ai-test-plan-help.txt
+          lk ai preview --root /tmp/lowkey-fixture | tee /tmp/lowkey-ai-preview.txt
+          grep -q 'no provider request made' /tmp/lowkey-ai-preview.txt
+          grep -q 'src/Fixture.sol' /tmp/lowkey-ai-preview.txt
+          lk ai preview --root /tmp/lowkey-fixture --json-context > /tmp/lowkey-ai-context.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          preview = json.loads(Path("/tmp/lowkey-ai-context.json").read_text())
+          assert preview["preview_only"] is True, preview
+          assert preview["provider_request_made"] is False, preview
+          assert preview["context_bytes"] <= preview["context_limit_bytes"], preview
+          paths = [item["path"] for item in preview["context"]["source_files"]]
+          assert "src/Fixture.sol" in paths, paths
+          assert not any("Fixture.t.sol" in path for path in paths), paths
+          assert not any(path.startswith("lib/") for path in paths), paths
+          PY
+          grep -q 'lk lab' <(lk -h)
+          grep -q 'lk walkthrough' <(lk -h)
+          grep -q 'lk system' <(lk -h)
+          grep -q 'lk project' <(lk -h)
+          grep -q 'lk audit run' <(lk -h)
+          grep -q 'lk break' <(lk -h)
+          lk break --h
+          lk capabilities | tee /tmp/lowkey-capabilities.txt
+          grep -q '^44 report' /tmp/lowkey-capabilities.txt
+          lk fallback-map --root /tmp/lowkey-fixture > /tmp/lowkey-fallback-map.json
+          python3 -m json.tool /tmp/lowkey-fallback-map.json >/dev/null
+          lk cheat fingerprint --root /tmp/lowkey-fixture > /tmp/lowkey-cheat-fingerprints.json
+          python3 -m json.tool /tmp/lowkey-cheat-fingerprints.json >/dev/null
+          cat > /tmp/lowkey-fixture/fidelity.t.sol <<'EOF'
+          contract FidelityFixture {
+              function testSyntheticSetup() external {
+                  vm.deal(address(this), 1 ether);
+                  vm.prank(address(1));
+              }
+          }
+          EOF
+          lk fidelity --inspect fidelity.t.sol --root /tmp/lowkey-fixture > /tmp/lowkey-fidelity.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          fidelity = json.loads(Path("/tmp/lowkey-fidelity.json").read_text())
+          assert fidelity["synthetic_eth"] is True, fidelity
+          assert fidelity["caller_impersonation"] is True, fidelity
+          assert fidelity["confirmation_eligible"] is False, fidelity
+          print("PASS: harness fidelity scanner catches synthetic ETH and impersonation")
+          PY
+          cat > /tmp/lowkey-fixture/src/TraceControlFixture.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract TraceTarget {
+              mapping(address => uint256) public credit;
+              constructor() payable {}
+              receive() external payable {}
+              function setCredit(address who, uint256 amount) external { credit[who] = amount; }
+              function withdraw() external {
+                  uint256 amount = credit[msg.sender];
+                  require(amount > 0, "NO_CREDIT");
+                  (bool ok,) = msg.sender.call{value: amount}("");
+                  require(ok, "TRANSFER_FAILED");
+                  credit[msg.sender] = 0;
+              }
+          }
+          contract TraceAttacker {
+              address private immutable target;
+              uint256 private mode = 3;
+              bool private entered;
+              constructor(address target_) { target = target_; }
+              function setMode(uint8 value) external { mode = value; }
+              function execute() external {
+                  (bool ok, bytes memory reason) = target.call(abi.encodeWithSignature("withdraw()"));
+                  if (!ok) assembly { revert(add(reason, 32), mload(reason)) }
+              }
+              receive() external payable {
+                  if (mode == 2 && !entered) {
+                      entered = true;
+                      (bool ok, bytes memory reason) = target.call(abi.encodeWithSignature("withdraw()"));
+                      if (!ok) assembly { revert(add(reason, 32), mload(reason)) }
+                  }
+              }
+          }
+          EOF
+          forge build --force
+          mkdir -p src
+          cp "$GITHUB_WORKSPACE/docs/LowkeyForgeStateDiffRecorder.sol" src/LowkeyForgeStateDiffRecorder.sol
+          cat > test/LowkeyStateDiffRecorder.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          import {LowkeyForgeStateDiffRecorder} from "../src/LowkeyForgeStateDiffRecorder.sol";
+          import {Vm} from "forge-std/Vm.sol";
+
+          contract LowkeyStateDiffTarget {
+              mapping(address => uint256) public credit;
+              event Deposited(address indexed account, uint256 amount);
+              event Withdrawn(address indexed account, uint256 amount);
+
+              constructor() payable {}
+              function depositFor(address account) external payable {
+                  credit[account] += msg.value;
+                  emit Deposited(account, msg.value);
+              }
+              function withdraw() external {
+                  uint256 amount = credit[msg.sender];
+                  require(amount != 0, "NO_CREDIT");
+                  (bool ok,) = payable(msg.sender).call{value: amount}("");
+                  require(ok, "TRANSFER_FAILED");
+                  credit[msg.sender] = 0;
+                  emit Withdrawn(msg.sender, amount);
+              }
+          }
+
+          contract LowkeyStateDiffAttacker {
+              LowkeyStateDiffTarget private immutable target;
+              uint8 private mode;
+              bool private entered;
+
+              constructor(address target_) { target = LowkeyStateDiffTarget(target_); }
+              function setMode(uint8 value) external { mode = value; }
+              function execute() external { target.withdraw(); }
+              receive() external payable {
+                  if (mode == 2 && !entered) {
+                      entered = true;
+                      target.withdraw();
+                  }
+              }
+          }
+
+          contract LowkeyStateDiffRecorderTest is LowkeyForgeStateDiffRecorder {
+              function _countEvent(Vm.Log[] memory logs, address emitter, bytes32 signature)
+                  private pure returns (uint256 count)
+              {
+                  for (uint256 i; i < logs.length; ++i) {
+                      if (logs[i].emitter == emitter && logs[i].topics.length != 0 &&
+                          logs[i].topics[0] == signature) ++count;
+                  }
+              }
+
+              function test_lowkey_paired_one_deployment_reentrancy() external {
+                  vm.deal(address(this), 11 ether);
+                  LowkeyStateDiffTarget target = new LowkeyStateDiffTarget{value: 10 ether}();
+                  LowkeyStateDiffAttacker attacker = new LowkeyStateDiffAttacker(address(target));
+                  attacker.setMode(0);
+
+                  vm.recordLogs();
+                  target.depositFor{value: 1 ether}(address(attacker));
+                  Vm.Log[] memory setupEvents = vm.getRecordedLogs();
+                  require(
+                      _countEvent(setupEvents, address(target), keccak256("Deposited(address,uint256)")) == 1,
+                      "SETUP_DEPOSIT_EVENT_MISSING"
+                  );
+
+                  uint256 snapshotId = vm.snapshot();
+                  bytes memory withdrawCall = abi.encodeWithSignature("withdraw()");
+                  // Foundry permits one counted expectation per target/calldata pair.
+                  // Scenario-specific 1-vs-2 counts are checked from each recorded artifact below.
+                  vm.expectCall(address(target), withdrawCall, 3);
+                  vm.recordLogs();
+                  _lowkeyStartTrace(address(target));
+                  attacker.execute();
+                  Vm.Log[] memory controlEvents = vm.getRecordedLogs();
+                  require(
+                      _countEvent(controlEvents, address(target), keccak256("Withdrawn(address,uint256)")) == 1,
+                      "CONTROL_WITHDRAW_EVENT_COUNT"
+                  );
+                  _lowkeyWriteTrace(
+                      ".audit/godmode/control-state-diff.json", controlEvents, setupEvents
+                  );
+
+                  require(vm.revertTo(snapshotId), "CONTROL_STATE_REVERT_FAILED");
+                  // Same deployed target and attacker; switch mode outside the measured window.
+                  attacker.setMode(2);
+                  vm.recordLogs();
+                  _lowkeyStartTrace(address(target));
+                  attacker.execute();
+                  Vm.Log[] memory attackEvents = vm.getRecordedLogs();
+                  require(
+                      _countEvent(attackEvents, address(target), keccak256("Withdrawn(address,uint256)")) == 2,
+                      "ATTACK_WITHDRAW_EVENT_COUNT"
+                  );
+                  _lowkeyWriteTrace(
+                      ".audit/godmode/attack-state-diff.json", attackEvents, setupEvents
+                  );
+                  require(address(attacker).balance == 2 ether, "ATTACKER_DID_NOT_RECEIVE_TWO_WITHDRAWALS");
+              }
+          }
+          EOF
+          PAIRED_FORK_BLOCK="$(cast block-number --rpc-url http://127.0.0.1:8545)"
+          export LOWKEY_PAIRED_FORK_BLOCK="$PAIRED_FORK_BLOCK"
+          forge test --fork-url http://127.0.0.1:8545 --fork-block-number "$PAIRED_FORK_BLOCK" --match-path test/LowkeyStateDiffRecorder.t.sol --match-test test_lowkey_paired_one_deployment_reentrancy -vv
+          python3 - "$HOME/.lowkey" <<'PY'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          sys.path.insert(0, sys.argv[1])
+          from forge_state_diff import normalize_forge_state_diff
+
+          base = pathlib.Path(".audit/godmode")
+          control_raw = json.loads((base / "control-state-diff.json").read_text())
+          attack_raw = json.loads((base / "attack-state-diff.json").read_text())
+          control = normalize_forge_state_diff(control_raw, expected_target=control_raw["target_address"])
+          attack = normalize_forge_state_diff(attack_raw, expected_target=attack_raw["target_address"])
+
+          target = control["target_address"]
+          assert target == attack["target_address"], "paired scenarios deployed different target addresses"
+          assert control["target_code_hash"] == attack["target_code_hash"], "paired target code differs"
+          assert control["chain_id"] == attack["chain_id"]
+          assert control["block_number"] == attack["block_number"]
+          assert control["fork_parent_hash"] == attack["fork_parent_hash"]
+
+          def target_calls(row):
+              return [call for call in row["calls"] if call["to"] == target]
+          control_calls, attack_calls = target_calls(control), target_calls(attack)
+          assert len(control_calls) == 1, control_calls
+          assert len(attack_calls) == 2, attack_calls
+          attacker = control_calls[0]["from"]
+          assert attacker == attack_calls[0]["from"] == attack_calls[1]["from"], "attacker address changed"
+          expected_withdraw_calldata = subprocess.check_output(
+              ["cast", "calldata", "withdraw()"], text=True
+          ).strip().lower()
+          assert expected_withdraw_calldata != "0x", "cast did not produce a real withdraw() selector"
+          assert control_calls[0]["input"] == expected_withdraw_calldata, control_calls[0]
+          assert attack_calls[0]["input"] == expected_withdraw_calldata, attack_calls[0]
+          assert attack_calls[1]["input"] == expected_withdraw_calldata, attack_calls[1]
+
+          withdraw_topic = subprocess.check_output(
+              ["cast", "keccak", "Withdrawn(address,uint256)"], text=True
+          ).strip().lower()
+          deposit_topic = subprocess.check_output(
+              ["cast", "keccak", "Deposited(address,uint256)"], text=True
+          ).strip().lower()
+          control_withdrawals = [e for e in control["domain_events"] if e["signature"] == withdraw_topic]
+          attack_withdrawals = [e for e in attack["domain_events"] if e["signature"] == withdraw_topic]
+          control_deposits = [e for e in control["setup_events"] if e["signature"] == deposit_topic]
+          attack_deposits = [e for e in attack["setup_events"] if e["signature"] == deposit_topic]
+          assert len(control_withdrawals) == 1, control_withdrawals
+          assert len(attack_withdrawals) == 2, attack_withdrawals
+          assert len(control_deposits) == len(attack_deposits) == 1
+          for event in control_withdrawals + attack_withdrawals + control_deposits + attack_deposits:
+              assert event["emitter"] == target, event
+              assert len(event["topics"]) == 2, event
+              assert event["topics"][1][-40:].lower() == attacker[2:].lower(), event
+              assert int(event["data"], 16) == 10**18, event
+
+          mode_slot = "0x" + "0" * 64
+          def storage_value(row, account, slot):
+              pre = next(item for item in row["prestate"] if item["address"] == account)
+              return next(item["value"] for item in pre["storage"] if item["slot"] == slot)
+          control_mode_word = int(storage_value(control, attacker, mode_slot), 16)
+          attack_mode_word = int(storage_value(attack, attacker, mode_slot), 16)
+          # uint8 mode occupies the low byte; bool entered is packed into byte 1.
+          # Only the low mode byte may differ. The re-entry guard must be false
+          # in both parent states, and every other packed bit must match.
+          assert (control_mode_word & 0xff) == 0
+          assert (attack_mode_word & 0xff) == 2
+          assert (control_mode_word & 0xff00) == 0
+          assert (attack_mode_word & 0xff00) == 0
+          assert (control_mode_word & ~0xff) == (attack_mode_word & ~0xff)
+          # Compare every touched account's parent state after excluding only
+          # the explicitly declared attacker mode slot (address, slot 0).
+          def comparison_prestate(row):
+              out = []
+              for account in row["prestate"]:
+                  item = dict(account)
+                  item["storage"] = [
+                      slot for slot in account["storage"]
+                      if not (account["address"] == attacker and slot["slot"] == mode_slot)
+                  ]
+                  out.append(item)
+              return out
+          assert comparison_prestate(control) == comparison_prestate(attack), "paired prestate differs beyond declared attacker mode slot"
+
+          print("PASS: one deployment; matched prestate except declared mode; control=1 withdraw; attack=2; exact calldata, events and derived storage captured")
+
+          # Exercise the actual installed lk control paired runner, not only
+          # the standalone artifact normalizer above. The runner must execute
+          # this same single-harness experiment once and consume both artifacts.
+          from pathlib import Path
+
+          attacker = control_calls[0]["from"]
+          argv = [
+              "forge", "test", "--fork-url", "http://127.0.0.1:8545",
+              "--fork-block-number", os.environ["LOWKEY_PAIRED_FORK_BLOCK"],
+              "--match-path", "test/LowkeyStateDiffRecorder.t.sol",
+              "--match-test", "test_lowkey_paired_one_deployment_reentrancy", "-vv"
+          ]
+          paired_manifest = {
+              "trace_backend": "forge-state-diff",
+              "paired_forge_experiment": True,
+              "target_authenticity": "fixture",
+              "family": "reentrancy",
+              "non_economic": True,
+              "same_calls_id": "ci-one-deployment-reentrancy-v1",
+              "target_address": target,
+              "expected_chain_id": int(control["chain_id"]),
+              "expected_fork_block": int(control["block_number"]),
+              "metric_addresses": [attacker],
+              "scenario_parameters": [{
+                  "name": "attacker_callback_mode",
+                  "address": attacker,
+                  "slot": "0x0",
+                  "control_value": "0x0",
+                  "attack_value": "0x2",
+                  "description": "The only declared difference is the attacker's callback mode; the packed re-entry guard remains false.",
+              }],
+              "trace_expectations": [{
+                  "address": target,
+                  "control_min_calls": 1,
+                  "control_max_calls": 1,
+                  "attack_min_calls": 2,
+                  "attack_max_calls": 2,
+                  "description": "The callback path adds exactly one nested withdrawal on the same deployment.",
+              }],
+              "control": {
+                  "harness": "test/LowkeyStateDiffRecorder.t.sol",
+                  "support_files": ["src/LowkeyForgeStateDiffRecorder.sol"],
+                  "state_diff_file": ".audit/godmode/control-state-diff.json",
+                  "argv": argv,
+              },
+              "attack": {
+                  "harness": "test/LowkeyStateDiffRecorder.t.sol",
+                  "support_files": ["src/LowkeyForgeStateDiffRecorder.sol"],
+                  "state_diff_file": ".audit/godmode/attack-state-diff.json",
+                  "argv": argv,
+                  "semantic_check_argv": argv,
+                  "semantic_check_test": "test_lowkey_paired_one_deployment_reentrancy",
+              },
+          }
+          manifest_path = Path("paired-control.json")
+          manifest_path.write_text(json.dumps(paired_manifest, indent=2) + "\n", encoding="utf-8")
+          freeze = subprocess.run(
+              ["lk", "control", str(manifest_path), "--root", ".", "--rpc-url",
+               "http://127.0.0.1:8545", "--freeze"],
+              text=True, capture_output=True,
+          )
+          assert freeze.returncode == 0, freeze.stdout + "\n" + freeze.stderr
+          paired_report_path = ".audit/godmode/paired-control-report.json"
+          execution = subprocess.run(
+              ["lk", "control", str(manifest_path), "--root", ".", "--rpc-url",
+               "http://127.0.0.1:8545", "--require-frozen", "--output", paired_report_path],
+              text=True, capture_output=True,
+          )
+          paired_report = json.loads(Path(paired_report_path).read_text(encoding="utf-8"))
+          if execution.returncode != 0:
+              diagnostics = {
+                  key: paired_report.get(key) for key in (
+                      "status", "reasons", "rejection_codes", "trace_checks",
+                      "same_entry_call_verified", "same_prestate_verified",
+                      "same_chain_verified", "same_block_verified",
+                      "same_fork_anchor_verified", "fork_pin_verified",
+                      "trace_delta_verified", "evidence_requirements",
+                      "evidence_requirements_verified", "semantic_invariant_verified",
+                  )
+              }
+              diagnostics["control_trace_error"] = paired_report.get("runs", {}).get("control", {}).get("trace_error")
+              diagnostics["attack_trace_error"] = paired_report.get("runs", {}).get("attack", {}).get("trace_error")
+              diagnostics["attack_semantic_check"] = paired_report.get("runs", {}).get("attack", {}).get("semantic_check")
+              print("PAIRED_CONTROL_DIAGNOSTICS=" + json.dumps(diagnostics, sort_keys=True))
+          assert execution.returncode == 0, execution.stdout + "\n" + execution.stderr
+          assert paired_report["status"] == "SIMULATED_BREAK", paired_report
+          assert paired_report["paired_forge_experiment"] is True, paired_report
+          assert paired_report["freeze"]["verified"] is True, paired_report["freeze"]
+          assert paired_report["same_entry_call_verified"] is True, paired_report
+          assert paired_report["same_prestate_verified"] is True, paired_report
+          assert paired_report["same_chain_verified"] is True, paired_report
+          assert paired_report["same_block_verified"] is True, paired_report
+          assert paired_report["same_fork_anchor_verified"] is True, paired_report
+          assert paired_report["trace_delta_verified"] is True, paired_report["trace_checks"]
+          assert paired_report["evidence_requirements_verified"] is True, paired_report["evidence_requirements"]
+          assert paired_report["semantic_invariant_verified"] is True, paired_report
+          assert paired_report["runs"]["control"]["paired_execution"] is True
+          assert paired_report["runs"]["attack"]["paired_execution"] is True
+          assert paired_report["runs"]["control"]["trace_events"]
+          assert paired_report["runs"]["attack"]["trace_events"]
+          assert paired_report["economic_policy"]["economic"] is False
+          assert paired_report["proof_status"] == "SIMULATED_BREAK"
+          print("PASS: installed lk control froze and consumed both paired Forge artifacts; verdict capped at SIMULATED_BREAK")
+          PY
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import urllib.request
+
+          rpc_url = "http://127.0.0.1:8545"
+          def rpc(method, params):
+              payload = json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+              request = urllib.request.Request(rpc_url, data=payload, headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  body = json.loads(response.read().decode())
+              if body.get("error"):
+                  raise RuntimeError(f"{method}: {body['error']}")
+              return body.get("result")
+
+          root = pathlib.Path("/tmp/lowkey-fixture")
+          accounts = rpc("eth_accounts", [])
+          sender = accounts[0]
+          setup_sender = accounts[1]
+          target_artifact = json.loads((root / "out/TraceControlFixture.sol/TraceTarget.json").read_text())
+          attacker_artifact = json.loads((root / "out/TraceControlFixture.sol/TraceAttacker.json").read_text())
+          target_bytecode = target_artifact["bytecode"]["object"].removeprefix("0x")
+          target_tx = rpc("eth_sendTransaction", [{
+              "from": sender, "data": "0x" + target_bytecode, "value": hex(10**19)
+          }])
+          target_receipt = rpc("eth_getTransactionReceipt", [target_tx])
+          assert target_receipt and target_receipt.get("contractAddress"), target_receipt
+          target = target_receipt["contractAddress"]
+          attacker_bytecode = attacker_artifact["bytecode"]["object"].removeprefix("0x")
+          constructor_args = target.lower().removeprefix("0x").rjust(64, "0")
+          attacker_tx = rpc("eth_sendTransaction", [{
+              "from": sender, "data": "0x" + attacker_bytecode + constructor_args, "value": "0x0"
+          }])
+          attacker_receipt = rpc("eth_getTransactionReceipt", [attacker_tx])
+          assert attacker_receipt and attacker_receipt.get("contractAddress"), attacker_receipt
+          attacker = attacker_receipt["contractAddress"]
+          credit_calldata = subprocess.check_output(
+              ["cast", "calldata", "setCredit(address,uint256)", attacker, str(10**18)],
+              text=True
+          ).strip()
+          credit_tx = rpc("eth_sendTransaction", [{
+              "from": sender, "to": target, "data": credit_calldata, "value": "0x0"
+          }])
+          assert rpc("eth_getTransactionReceipt", [credit_tx]), credit_tx
+          mapping_slot = subprocess.check_output(
+              ["cast", "index", "address", attacker, "0"], text=True
+          ).strip()
+          execute_calldata = subprocess.check_output(["cast", "sig", "execute()"], text=True).strip()
+          (root / "scripts").mkdir(exist_ok=True)
+          (root / "scripts/trace-control.json").write_text(json.dumps({
+              "sender": sender,
+              "setup_sender": setup_sender,
+              "target": target,
+              "attacker": attacker,
+              "mapping_slot": mapping_slot,
+              "execute_calldata": execute_calldata,
+              "set_mode_selector": subprocess.check_output(
+                  ["cast", "sig", "setMode(uint8)"], text=True
+              ).strip()
+          }, indent=2) + "\n")
+          script = '''import json, os, sys, time, urllib.request
+          from pathlib import Path
+          config = json.loads((Path(__file__).parent / "trace-control.json").read_text())
+          url = os.environ["LOWKEY_RPC_URL"]
+          def rpc(method, params):
+              data = json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+              req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  body = json.loads(response.read().decode())
+              if body.get("error"):
+                  raise RuntimeError(f"{method}: {body['error']}")
+              return body.get("result")
+          def current_gas_price():
+              latest = rpc("eth_getBlockByNumber", ["latest", False]) or {}
+              base_fee = int(str(latest.get("baseFeePerGas") or "0x0"), 16)
+              suggested = int(str(rpc("eth_gasPrice", [])), 16)
+              return max(suggested, base_fee * 2, 1_000_000_000)
+          def wait_for_receipt(tx_hash, timeout=15):
+              deadline = time.monotonic() + timeout
+              while time.monotonic() < deadline:
+                  receipt = rpc("eth_getTransactionReceipt", [tx_hash])
+                  if receipt is not None:
+                      return receipt
+                  time.sleep(0.05)
+              return rpc("eth_getTransactionReceipt", [tx_hash])
+          def failure_detail(tx_hash, receipt, mode_value, gas_price):
+              transaction = rpc("eth_getTransactionByHash", [tx_hash])
+              try:
+                  trace = rpc("debug_traceTransaction", [tx_hash, {"tracer": "callTracer"}])
+              except Exception as exc:
+                  trace = {"trace_error": str(exc)}
+              return json.dumps({
+                  "mode": mode_value,
+                  "tx_hash": tx_hash,
+                  "gas_price": hex(gas_price),
+                  "receipt": receipt,
+                  "transaction": transaction,
+                  "trace": trace,
+              }, sort_keys=True)
+          mode = sys.argv[1]
+          if mode == "prepare":
+              mode_value = int(sys.argv[2])
+              data = config["set_mode_selector"] + format(mode_value, "064x")
+              gas_price = current_gas_price()
+              tx_hash = rpc("eth_sendTransaction", [{
+                  "from": config["setup_sender"], "to": config["attacker"],
+                  "data": data, "value": "0x0", "gas": "0x100000",
+                  "gasPrice": hex(gas_price)
+              }])
+              receipt = wait_for_receipt(tx_hash)
+              if not receipt or str(receipt.get("status", "")).lower() not in {"0x1", "1"}:
+                  raise RuntimeError("attacker scenario setup transaction failed: " +
+                                     failure_detail(tx_hash, receipt, mode_value, gas_price))
+              sys.exit(0)
+          if mode != "send":
+              raise ValueError("expected prepare or send mode")
+          gas_price = current_gas_price()
+          tx_hash = rpc("eth_sendTransaction", [{
+              "from": config["sender"], "to": config["attacker"],
+              "data": config["execute_calldata"], "value": "0x0",
+              "gas": "0x989680", "gasPrice": hex(gas_price)
+          }])
+          receipt = wait_for_receipt(tx_hash)
+          receipt_status = str((receipt or {}).get("status", "")).lower()
+          if not receipt or receipt_status not in {"0x1", "1"}:
+              print("LOWKEY_TRACE_TX_HASH " + tx_hash)
+              print("LOWKEY_TX_FAILURE " + failure_detail(tx_hash, receipt, None, gas_price))
+              sys.exit(0)
+          print("LOWKEY_TRACE_TX_HASH " + tx_hash)
+          '''
+          (root / "scripts/trace-control.py").write_text(script, encoding="utf-8")
+          manifest = {
+              "target_address": target,
+              "same_calls_id": "ci-reentrancy-same-entry-call-v1",
+              "metric_name": "attacker_portfolio_native_eth_delta_wei",
+              "prestate_addresses": [target, sender, attacker],
+              "prestate_slots": [{"address": target, "slot": mapping_slot}],
+              "metric_addresses": [sender, attacker],
+              "trace_expectations": [{
+                  "address": target,
+                  "control_min_calls": 1,
+                  "control_max_calls": 1,
+                  "attack_min_calls": 2,
+                  "attack_max_calls": 2,
+                  "description": "The attacker callback creates exactly one additional target withdrawal."
+              }],
+              "scenario_parameters": [{
+                  "name": "attacker_callback_mode",
+                  "address": attacker,
+                  "slot": "0x0",
+                  "control_value": "0x1",
+                  "attack_value": "0x2",
+                  "description": "Attacker-only callback mode; both setup paths update a nonzero storage word to a different nonzero value so setup gas and parent block context remain equivalent."
+              }],
+              "control": {
+                  "prepare_argv": ["python3", "scripts/trace-control.py", "prepare", "1"],
+                  "argv": ["python3", "scripts/trace-control.py", "send"]
+              },
+              "attack": {
+                  "prepare_argv": ["python3", "scripts/trace-control.py", "prepare", "2"],
+                  "argv": ["python3", "scripts/trace-control.py", "send"]
+              }
+          }
+          (root / ".audit-control.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print("Prepared live trace-control fixture", target, attacker, mapping_slot)
+          PY
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          freeze = Path("/tmp/lowkey-fixture/.audit/godmode/control.freeze.json")
+          payload = json.loads(freeze.read_text())
+          payload["freeze_sha256"] = "0" * 64
+          freeze.write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+          set +e
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --require-frozen
+          TAMPER_EXIT=$?
+          set -e
+          test "$TAMPER_EXIT" -eq 2
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
+          assert result["status"] == "REJECTED", result
+          assert result["proof_status"] == "REJECTED", result
+          assert result["outcome"] == "rejected", result
+          assert result["rejection_codes"] == ["digest_mismatch"], result
+          assert result["freeze"]["reason_code"] == "digest_mismatch", result
+          assert result["execution_attempted"] is False, result
+          print("PASS: tampered frozen digest is rejected as digest_mismatch before any control/attack execution")
+          PY
+          # Re-freeze the original manifest before executing the real paired experiment.
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --freeze
+          set +e
+          lk control .audit-control.json --root /tmp/lowkey-fixture --rpc-url http://127.0.0.1:8545 --require-frozen
+          CONTROL_EXIT=$?
+          set -e
+          echo "LOWKEY_CONTROL_EXIT=$CONTROL_EXIT"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/control.json").read_text())
+          print("LOWKEY_CONTROL_PROOF_DIAGNOSTICS=" + json.dumps({
+              "status": result.get("status"),
+              "legacy_status": result.get("legacy_status"),
+              "outcome": result.get("outcome"),
+              "proof_axes": result.get("proof_axes"),
+              "rejection_codes": result.get("rejection_codes"),
+              "reasons": result.get("reasons"),
+              "economic_policy": result.get("economic_policy"),
+              "same_entry_call_verified": result.get("same_entry_call_verified"),
+              "same_transaction_envelope_verified": result.get("same_transaction_envelope_verified"),
+              "same_prestate_verified": result.get("same_prestate_verified"),
+              "same_trace_storage_values_verified": result.get("same_trace_storage_values_verified"),
+              "same_chain_verified": result.get("same_chain_verified"),
+              "same_block_verified": result.get("same_block_verified"),
+              "same_fork_anchor_verified": result.get("same_fork_anchor_verified"),
+              "trace_delta_verified": result.get("trace_delta_verified"),
+              "attack_metric_positive_after_gas": result.get("attack_metric_positive_after_gas"),
+              "freeze": result.get("freeze"),
+              "runs": {name: {
+                  "fidelity_label": row.get("fidelity_label"),
+                  "fidelity": row.get("fidelity"),
+                  "trace_error": row.get("trace_error"),
+                  "metric": row.get("metric"),
+                  "derived_storage_slots": row.get("derived_storage_slots"),
+                  "storage_trace": row.get("storage_trace"),
+              } for name,row in result.get("runs",{}).items()},
+          }, sort_keys=True))
+          assert result["legacy_status"] == "BREAK", result
+          assert result["status"] == "OBSERVED", result
+          assert result["freeze"]["verified"] is True, result
+          assert result["same_entry_call_verified"] is True, result
+          assert result["same_transaction_envelope_verified"] is True, result
+          assert result["same_prestate_verified"] is True, result
+          assert result["same_chain_verified"] is True, result
+          assert result["same_block_verified"] is True, result
+          assert result["same_fork_anchor_verified"] is True, result
+          assert result["same_trace_storage_values_verified"] is True, result
+          assert result["runs"]["control"]["metric"] > 0, result
+          assert result["runs"]["attack"]["metric"] > result["runs"]["control"]["metric"], result
+          assert result["runs"]["control"]["scenario_parameters"][0]["observed_value"].lower().endswith("01"), result
+          assert result["runs"]["attack"]["scenario_parameters"][0]["observed_value"].lower().endswith("02"), result
+          target = result["target_address"].lower()
+          control_calls = sum(1 for row in result["runs"]["control"]["call_trace"] if row.get("to") == target)
+          attack_calls = sum(1 for row in result["runs"]["attack"]["call_trace"] if row.get("to") == target)
+          assert control_calls == 1, result["runs"]["control"]["call_trace"]
+          assert attack_calls == 2, result["runs"]["attack"]["call_trace"]
+          assert result["trace_delta_verified"] is True, result
+          assert result["trace_checks"][0]["verified"] is True, result
+          for scenario in ("control", "attack"):
+              row = result["runs"][scenario]
+              storage = row["storage_trace"]
+              assert storage["supported"] is True, (scenario, storage)
+              assert storage["slot_count"] > 0, (scenario, storage)
+              assert row["derived_storage_slots"], (scenario, row)
+              assert any(
+                  item["address"].lower() == target
+                  for item in row["derived_storage_slots"]
+              ), (scenario, row["derived_storage_slots"])
+          print("PASS: paired Anvil control/attack has matched prestate, verified call delta, and trace-derived target storage state")
+          PY
+          cat > /tmp/lowkey-fixture/test/TraceReproduction.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract TraceReproduction {
+              function testSourceHasNoStateFabricatingCheatcodes() external pure returns (bool) {
+                  return true;
+              }
+          }
+          EOF
+          LOWKEY_RPC_URL=http://127.0.0.1:8545 python3 /tmp/lowkey-fixture/scripts/trace-control.py prepare 2
+          LOCAL_PARENT_BLOCK="$(cast block-number --rpc-url http://127.0.0.1:8545)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path("/tmp/lowkey-fixture/scripts/trace-control.json").read_text())
+          Path("/tmp/lowkey-reprove-args.json").write_text(json.dumps([
+              "python3", "scripts/trace-control.py", "send"
+          ]))
+          Path("/tmp/lowkey-reprove-target.txt").write_text(config["target"])
+          Path("/tmp/lowkey-reprove-sender.txt").write_text(config["sender"])
+          Path("/tmp/lowkey-reprove-attacker.txt").write_text(config["attacker"])
+          PY
+          TARGET="$(cat /tmp/lowkey-reprove-target.txt)"
+          SENDER="$(cat /tmp/lowkey-reprove-sender.txt)"
+          ATTACKER="$(cat /tmp/lowkey-reprove-attacker.txt)"
+          lk reprove test/TraceReproduction.t.sol \
+            --root /tmp/lowkey-fixture \
+            --rpc-url http://127.0.0.1:8545 \
+            --fork-block "$LOCAL_PARENT_BLOCK" \
+            --target-address "$TARGET" \
+            --profit-address "$SENDER" \
+            --profit-address "$ATTACKER" \
+            --argv-json "$(cat /tmp/lowkey-reprove-args.json)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("/tmp/lowkey-fixture/.audit/godmode/reprove.json").read_text())
+          assert result["legacy_status"] == "LOCAL_PROFITABLE", result
+          assert result["status"] == "OBSERVED", result
+          assert result["target_authenticity"] == "unknown", result
+          assert result["fidelity_label"] == "real_funded", result
+          assert result["gas_used"] > 0, result
+          assert result["gas_cost_wei"] > 0, result
+          assert result["net_profit_wei"] > 0, result
+          assert result["human_confirmation_required"] is True, result
+          assert result["storage_trace"]["supported"] is True, result
+          assert result["storage_trace"]["slot_count"] > 0, result
+          assert result["derived_storage_slots"], result
+          target = result["target_address"].lower()
+          assert any(item["address"].lower() == target for item in result["derived_storage_slots"]), result
+          print("PASS: LOCAL_PROFITABLE replay has positive net ETH after gas and populated trace-derived target storage evidence; proof status remains OBSERVED for unknown target authenticity")
+          PY
+          grep -q 'lk break --until-found' <(lk break --h)
+          grep -q 'lk break --system' <(lk break --h)
+          grep -q 'lk import' <(lk -h)
+          grep -q 'lk connect' <(lk -h)
+          lk import --h
+          lk import mappings
+          lk import contracts
+          lk connect --list
+          lk connect structs mappings arrays enums bytes addresses
+          lk connect import constructor
+          grep -q 'lk poc' <(lk -h)
+          lk self-test
+          lk benchmark
+          lk doctor
+          lk scan src
+          lk scan src/Fixture.sol | tee /tmp/lowkey-single-file-scan.txt
+          grep -q "requested single-file scope scanned" /tmp/lowkey-single-file-scan.txt
+          lk project
+          lk graph
+          lk system
+          test -f .audit/evidence/system_bootstrap.json
+          lk lab Fixture
+          lk status | tee /tmp/lowkey-live-status.txt
+          grep -q "Deployment: LIVE" /tmp/lowkey-live-status.txt
+          lk abi | tee /tmp/lowkey-abi.txt
+          test -f .audit/abi/Fixture.json
+          grep -q '"abi": \[' .audit/abi/Fixture.json
+          test "$(wc -l < .audit/abi/Fixture.json)" -gt 2
+          lk status
+          set +e
+          lk audit --non-interactive | tee /tmp/lowkey-audit-noninteractive.txt
+          AUDIT_NONINTERACTIVE_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_NONINTERACTIVE_EXIT" -ne 0
+          grep -Eq "Target[[:space:]]+: Fixture" /tmp/lowkey-audit-noninteractive.txt
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-noninteractive.txt
+          set +e
+          lk audit check --non-interactive | tee /tmp/lowkey-audit-check-noninteractive.txt
+          AUDIT_CHECK_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_CHECK_EXIT" -ne 0
+          grep -q "Slither" /tmp/lowkey-audit-check-noninteractive.txt
+          grep -q "REVIEW NEEDED" /tmp/lowkey-audit-check-noninteractive.txt
+          lk forge build
+          lk walkthrough --static --steps 4
+          test -f .audit/walkthrough/model.json
+          test -f .audit/walkthrough/latest.json
+          STALE_TARGET=0x2000000000000000000000000000000000000002
+          set +e
+          lk target "$STALE_TARGET"
+          test $? -eq 1
+          lk send "$STALE_TARGET" withdraw --eth 0.1 --as Alice
+          test $? -eq 2
+          set -e
+                    TARGET=0x1000000000000000000000000000000000000001
+          CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
+          cast rpc anvil_setCode "$TARGET" "$CODE"
+          lk actor 1 Alice
+          lk actor 2 Bob
+          set +e
+          lk actor 0 Alice
+          test $? -ne 0
+          lk actor 0 Bob
+          test $? -ne 0
+          set -e
+          lk actor
+          lk target "$TARGET"
+          lk walkthrough --non-interactive --steps 1
+          grep -q "LIVE EXECUTION" .audit/walkthrough/model.json || true
+          test -d .audit/walkthrough/transactions
+          test -n "$(find .audit/walkthrough/transactions -name '*.html' -print -quit)"
+          test -f script/LowkeyWalkthrough_Fixture.s.sol
+          lk status
+          lk context
+          lk signals
+          set +e
+          lk audit | tee /tmp/lowkey-audit-baseline.txt
+          AUDIT_BASELINE_EXIT=${PIPESTATUS[0]}
+          set -e
+          # CI intentionally does not install Slither in this job; Lowkey must surface
+          # the incomplete static-analysis coverage as REVIEW NEEDED, not as a clean pass.
+          test "$AUDIT_BASELINE_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-baseline.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
+          ! grep -q "Pipeline: build -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
+          # An audit cannot invent an exploit property. It must report the missing PoC inputs.
+          ! test -f script/LowkeyPoC_Fixture.s.sol
+          ! test -f .audit/poc/LowkeyPoc_Fixture.json
+          set +e
+          lk audit --checks | tee /tmp/lowkey-audit-checks.txt
+          AUDIT_CHECKS_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_CHECKS_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-checks.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-checks.txt
+          set +e
+          lk audit--checks | tee /tmp/lowkey-audit-compact-checks.txt
+          AUDIT_COMPACT_CHECKS_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_COMPACT_CHECKS_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-compact-checks.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
+          lk lint | tee /tmp/lowkey-lint.txt
+          lk geiger | tee /tmp/lowkey-geiger.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
+          set +e
+          lk audit check | tee /tmp/lowkey-audit-check-alias.txt
+          AUDIT_CHECK_ALIAS_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_CHECK_ALIAS_EXIT" -ne 0
+          grep -q "Overall: REVIEW NEEDED" /tmp/lowkey-audit-check-alias.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-check-alias.txt
+          set +e
+          lk audit run --poc | tee /tmp/lowkey-audit-run.txt
+          AUDIT_POC_EXIT=${PIPESTATUS[0]}
+          set -e
+          test "$AUDIT_POC_EXIT" -ne 0
+          grep -q "LOWKEY PROJECT DETECTION" /tmp/lowkey-audit-run.txt
+          test -f .audit/evidence/poc_generation.json
+          ! test -f .audit/poc/LowkeyPoc_Fixture.json
+          lk findings
+          lk functions
+          lk fn ping
+          lk c ping 7
+          lk encode ping 7
+          lk calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk decode-calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk 4byte 0x773acdef
+          lk 4byte-calldata "$(cast calldata 'ping(uint256)' 7)"
+          # 4byte-event uses an external signature database; keep CI deterministic.
+          lk 4byte-event 0x48257dc961b6f792c2b78a080dacfed693b660960a702de21cee364e20270e2f || true
+          lk access-list ping 7
+          lk interface
+          lk constructor-args "$TARGET" || true
+          lk creation-code "$TARGET" || true
+          lk abi-encode uint256 7
+          lk disasm
+          lk selectors --compare
+          lk seams
+          lk cheatcodes store
+          lk impersonate 0x1000000000000000000000000000000000000001 whale
+          cast rpc anvil_setBalance 0x1000000000000000000000000000000000000001 0x56bc75e2d63100000
+          lk as whale s ping 8
+          lk txpool
+          lk probe ping 7
+          lk break --function ping --rounds 1 | tee /tmp/lowkey-break-ping.txt
+          grep -q "LOWKEY // BREAK MODE" /tmp/lowkey-break-ping.txt
+          grep -q "BREAK CAMPAIGN COMPLETE" /tmp/lowkey-break-ping.txt
+          CHANGES=$(lk state-diff ping 7)
+          printf '%s\n' "$CHANGES"
+          grep -q "Storage:   1 change(s)" <<<"$CHANGES"
+          lk matrix init
+          lk matrix actor Alice 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+          lk matrix add smoke ping Alice "success"
+          lk matrix test smoke
+          lk logs --decode
+          lk deps
+          lk forge test
+          lk fuzz --match-test testFuzz_roundTrip
+          lk fuzz replay
+          lk fuzz failures
+          lk invariant
+          lk symbolic emit --match-test testSmoke
+          lk mutate --match-test testSmoke
+          lk brutalize --match-test testSmoke
+          lk fork http://127.0.0.1:8545 --port 8546
+          lk fork status
+          lk impersonate 0x1000000000000000000000000000000000000001 whale
+          lk fork stop
+          lk fork status
+          lk forge inspect-audit Fixture
+          lk generate deployment Fixture
+          test -f script/LowkeyDeploy_Fixture.s.sol
+          forge build
+          # Generated tests require the selected target to exist on the fork.
+          # Reuse the fixture runtime bytecode at the explicit generated-test address.
+          GENERATED_TARGET=0x1111111111111111111111111111111111111111
+          cast rpc anvil_setCode "$GENERATED_TARGET" "$CODE"
+          lk target "$GENERATED_TARGET"
+          lk generate test ping 42 --calldata 0xdeadbeef
+          test -f test/LowkeyTest_Fixture.t.sol
+          lk generate poc ping --calldata 0xdeadbeef --impact-assertion 'attackerAfter > attackerBefore'
+          test -f script/LowkeyPoC_Fixture.s.sol
+          grep -q 'security-impact assertion failed' script/LowkeyPoC_Fixture.s.sol
+          ! grep -q 'Put the actual security property here' script/LowkeyPoC_Fixture.s.sol
+          forge build
+          lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
+          set +e
+          lk scan /tmp/lowkey-fixture/missing.sol
+          test $? -ne 0
+          lk event 'Ping(uint256)' 0xdeadbeef
+          test $? -ne 0
+          set +e
+          lk forge debug --help > /tmp/lowkey-forge-debug-help.txt 2>&1
+          FORGE_DEBUG_HELP_EXIT=$?
+          set -e
+          # This pinned Foundry CLI does not implement 'forge debug'; the test
+          # verifies that Lowkey forwards to native Forge and preserves its error.
+          test "$FORGE_DEBUG_HELP_EXIT" -ne 0
+          grep -Eq "unrecognized subcommand 'debug'|Usage: forge" /tmp/lowkey-forge-debug-help.txt
+
+
+      - name: Exercise saved escrow identifiers and state transitions on Anvil
+        run: |
+          set -euo pipefail
+          ESCROW_ROOT=/tmp/lowkey-escrow-flow
+          rm -rf "$ESCROW_ROOT"
+          mkdir -p "$ESCROW_ROOT/src"
+          cat > "$ESCROW_ROOT/foundry.toml" <<'EOF'
+          [profile.default]
+          src = "src"
+          out = "out"
+          solc_version = "0.8.20"
+          extra_output = ["storageLayout"]
+          EOF
+          cat > "$ESCROW_ROOT/src/EscrowFlow.sol" <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+
+          contract EscrowFlow {
+              enum Status { Created, Accepted, Released }
+
+              struct Escrow {
+                  address creator;
+                  address recipient;
+                  uint256 amount;
+                  Status currentStatus;
+              }
+
+              // Keep the event signature aligned with the existing ETH Escrow flow.
+              event CreateEscrow(address recipient, uint256 amount);
+
+              mapping(bytes32 => Escrow) public escrows;
+              bytes32[] public allEscrowIds;
+              uint256 private nonce;
+
+              function createEscrow(address recipient) external payable returns (bytes32 escrowId) {
+                  require(recipient != address(0));
+                  require(msg.value > 0);
+                  escrowId = keccak256(abi.encode(msg.sender, block.timestamp, ++nonce));
+                  escrows[escrowId] = Escrow(msg.sender, recipient, msg.value, Status.Created);
+                  allEscrowIds.push(escrowId);
+                  emit CreateEscrow(recipient, msg.value);
+              }
+
+              function acceptEscrow(bytes32 escrowId) external {
+                  Escrow storage item = escrows[escrowId];
+                  require(item.recipient == msg.sender);
+                  require(item.currentStatus == Status.Created);
+                  item.currentStatus = Status.Accepted;
+              }
+
+              function release(bytes32 escrowId) external {
+                  Escrow storage item = escrows[escrowId];
+                  require(item.creator == msg.sender);
+                  require(item.currentStatus == Status.Accepted);
+                  item.currentStatus = Status.Released;
+                  (bool sent,) = payable(item.recipient).call{value: item.amount}("");
+                  require(sent);
+              }
+
+              function getEscrow(bytes32 escrowId)
+                  external
+                  view
+                  returns (address creator, address recipient, uint256 amount, Status currentStatus)
+              {
+                  Escrow storage item = escrows[escrowId];
+                  return (item.creator, item.recipient, item.amount, item.currentStatus);
+              }
+          }
+          EOF
+
+          cd "$ESCROW_ROOT"
+          export LOWKEY_RPC_URL=http://127.0.0.1:8545
+          forge build
+
+          # This is Anvil's documented deterministic test key for account zero.
+          ANVIL_KEY0=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+          # Foundry 1.9 defaults to a dry-run for forge create. This CI
+          # scenario must deploy to the local Anvil instance before exercising
+          # Lowkey's on-chain identifier and state-transition workflows.
+          forge create src/EscrowFlow.sol:EscrowFlow \
+            --rpc-url "$LOWKEY_RPC_URL" \
+            --private-key "$ANVIL_KEY0" \
+            --broadcast \
+            --json > /tmp/lowkey-escrow-deployment.json
+          TARGET=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          deployment = json.loads(Path("/tmp/lowkey-escrow-deployment.json").read_text())
+          address = deployment.get("deployedTo")
+          if not address:
+              raise SystemExit(
+                  "forge create --broadcast did not return deployedTo; "
+                  f"returned JSON keys: {sorted(deployment)}"
+              )
+          print(address)
+          PY
+          )
+          test -n "$TARGET"
+
+          lk actor 1 Alice
+          lk actor 2 Bob
+          lk actor 1
+          lk target "$TARGET"
+
+          # Create two independent records. The ID book must capture contract IDs,
+          # not confuse them with the transaction hashes.
+          lk send createEscrow Bob --eth 2 | tee /tmp/lowkey-escrow-create-1.txt
+          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-1.txt
+          grep -q "POST-TRANSACTION STATE" /tmp/lowkey-escrow-create-1.txt
+          grep -q "Created (enum value 0)" /tmp/lowkey-escrow-create-1.txt
+          lk ids | tee /tmp/lowkey-escrow-ids-1.txt
+          grep -q "Escrow ID" /tmp/lowkey-escrow-ids-1.txt
+          lk id alias @last firstEscrow
+
+          lk send createEscrow Bob --eth 1 | tee /tmp/lowkey-escrow-create-2.txt
+          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-2.txt
+          lk id alias @last secondEscrow
+          lk ids | tee /tmp/lowkey-escrow-ids.txt
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          book = json.loads(Path(".audit/evidence/identifier-book.json").read_text())
+          items = book["items"]
+          assert len(items) == 2, items
+          assert len({item["value"] for item in items}) == 2, items
+          assert len({item["tx_hash"] for item in items}) == 2, items
+          assert all(item["value"] != item["tx_hash"] for item in items), items
+          assert {item.get("alias") for item in items} == {"firstEscrow", "secondEscrow"}, items
+          assert all(item["type"] == "bytes32" for item in items), items
+          print("PASS: two unique contract IDs were saved separately from their transaction hashes")
+          PY
+
+          FIRST_TX=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          book = json.loads(Path(".audit/evidence/identifier-book.json").read_text())
+          print(next(item["tx_hash"] for item in book["items"] if item.get("alias") == "firstEscrow"))
+          PY
+          )
+          lk receipt "$FIRST_TX" | tee /tmp/lowkey-escrow-receipt.txt
+          grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-receipt.txt
+          lk trace "$FIRST_TX" | tee /tmp/lowkey-escrow-trace.txt
+          grep -q "Escrow ID:" /tmp/lowkey-escrow-trace.txt
+          lk ids | grep -q "firstEscrow"
+
+          # Reuse named IDs in ABI arguments; then inspect the mapping, array,
+          # and arbitrary raw storage words through Lowkey's own commands.
+          lk read getEscrow @firstEscrow | tee /tmp/lowkey-escrow-read.txt
+          grep -q "Created (enum value 0)" /tmp/lowkey-escrow-read.txt
+          lk read getEscrow @secondEscrow | grep -q "Created (enum value 0)"
+          lk mapping | tee /tmp/lowkey-escrow-mappings.txt
+          grep -q "escrows" /tmp/lowkey-escrow-mappings.txt
+          lk mapping bytes32 0 @firstEscrow | tee /tmp/lowkey-escrow-mapping-read.txt
+          lk array allEscrowIds 0..1 | tee /tmp/lowkey-escrow-array-read.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          book = json.loads(Path(".audit/evidence/identifier-book.json").read_text())
+          values = [item["value"] for item in book["items"]]
+          array_output = Path("/tmp/lowkey-escrow-array-read.txt").read_text()
+          assert all(value in array_output for value in values), (values, array_output)
+          print("PASS: Lowkey read both saved IDs back from the on-chain array")
+          PY
+          lk storage 0..2 | tee /tmp/lowkey-escrow-storage.txt
+          grep -q "Slot 0:" /tmp/lowkey-escrow-storage.txt
+          grep -q "Slot 2:" /tmp/lowkey-escrow-storage.txt
+          lk slots 0 >/tmp/lowkey-escrow-slots-alias.txt
+
+          # Bob is the recipient: he may accept, but he must not release.
+          lk as Bob acceptEscrow @firstEscrow | tee /tmp/lowkey-escrow-accept.txt
+          grep -q "Accepted (enum value 1)" /tmp/lowkey-escrow-accept.txt
+          set +e
+          lk as Bob release @firstEscrow > /tmp/lowkey-escrow-unauthorized-release.txt 2>&1
+          UNAUTHORIZED_EXIT=$?
+          set -e
+          test "$UNAUTHORIZED_EXIT" -ne 0
+          lk read getEscrow @firstEscrow | tee /tmp/lowkey-escrow-after-rejected-release.txt
+          grep -q "Accepted (enum value 1)" /tmp/lowkey-escrow-after-rejected-release.txt
+
+          # Alice created the escrow, so she is the only actor allowed to release it.
+          lk as Alice release @firstEscrow | tee /tmp/lowkey-escrow-release.txt
+          grep -q "Released (enum value 2)" /tmp/lowkey-escrow-release.txt
+          lk read getEscrow @firstEscrow | tee /tmp/lowkey-escrow-final-state.txt
+          grep -q "Released (enum value 2)" /tmp/lowkey-escrow-final-state.txt
+          echo "PASS: live escrow flow covered receipt, trace, ID aliases, typed reads, mapping, array, storage, actor permissions, and enum state transitions"
+      - name: Exercise generic protocol-aware local lab setup
+        run: python3 scripts/project-lab-protocol-e2e.py
+
+      - name: Generate and compile project-aware test artifacts
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          export LOWKEY_RPC_URL=http://127.0.0.1:8545
+          lk target 0x1000000000000000000000000000000000000001
+          lk test-gen Fixture --types unit,invariant,fuzz --force --validate --strict
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import shutil
+          report = json.loads(pathlib.Path(".audit/test-gen/Fixture/report.json").read_text())
+          required = {"unit", "invariant", "fuzz"}
+          assert set(report["requested_types"]) == required, report
+          assert len(report["generated"]) == 3, report
+          assert report["skipped"] == [], report
+          assert report["validation"]["status"] == "passed", report["validation"]
+          assert report["fuzz_property"]["setter"] == "setCount", report
+          assert report["validation"].get("test_executions"), report["validation"]
+          generated = pathlib.Path("test/lowkey-generated")
+          generated.mkdir(parents=True, exist_ok=True)
+          for item in report["generated"]:
+              source = pathlib.Path(item)
+              if source.suffix == ".sol":
+                  shutil.copy2(source, generated / source.name)
+          PY
+          # Categories without a concrete, supplied property must fail closed.
+          set +e
+          lk test-gen Fixture --types integration,exploit,regression,formal --force --output-dir .audit/test-gen-unsupported
+          UNSUPPORTED_EXIT=$?
+          set -e
+          test "$UNSUPPORTED_EXIT" -eq 1
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path(".audit/test-gen-unsupported/Fixture")
+          report = json.loads((root / "report.json").read_text())
+          assert report["generated"] == [], report
+          assert {item["type"] for item in report["skipped"]} == {
+              "integration", "exploit", "regression", "formal"
+          }, report
+          assert all(item["level"] == "not-generated"
+                     for item in report["generation_assessment"].values()), report
+          assert not list(root.glob("*.t.sol")), list(root.glob("*.t.sol"))
+          assert not list(root.glob("*.spec")), list(root.glob("*.spec"))
+          PY
+          forge build
+          forge test --match-path test/lowkey-generated/LowkeyGeneratedUnit_Fixture.t.sol
+          forge test --match-path test/lowkey-generated/LowkeyGeneratedFuzz_Fixture.t.sol --fuzz-runs 32
+          FOUNDRY_INVARIANT_RUNS=16 FOUNDRY_INVARIANT_DEPTH=10 forge test --match-path test/lowkey-generated/LowkeyGeneratedInvariant_Fixture.t.sol
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          Path(".audit").mkdir(exist_ok=True)
+          Path(".audit/mutants.json").write_text(json.dumps({
+              "command": ["forge", "test", "--match-path", "test/lowkey-generated/LowkeyGeneratedUnit_Fixture.t.sol"],
+              "mutants": [{
+                  "id": "set-count-off-by-one",
+                  "file": "src/Fixture.sol",
+                  "before": "count = value;",
+                  "after": "count = value + 1;"
+              }]
+          }, indent=2))
+          PY
+          lk mutation-check .audit/mutants.json --timeout 120
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path(".audit/verification/mutation-report.json").read_text())
+          assert report["status"] == "completed", report
+          assert report["baseline"]["status"] == "passed", report
+          assert report["summary"]["killed"] == 1, report
+          assert report["mutation_score"] == 1.0, report
+          PY
+
+  test-generation-ecosystem-smoke:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18.20.8"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Validate complete test generation on a controlled Foundry fixture
+        run: |
+          rm -rf /tmp/lowkey-generation-fixture
+          mkdir -p /tmp/lowkey-generation-fixture/src
+          cat > /tmp/lowkey-generation-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cd /tmp/lowkey-generation-fixture
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+          cat > src/Counter.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract Counter {
+              uint256 public value;
+              function setValue(uint256 next) external { value = next; }
+          }
+          EOF
+          lk test-gen Counter --types unit,fuzz,invariant --validate --strict
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("/tmp/lowkey-generation-fixture")
+          report = json.load(open(root / ".audit/test-gen/Counter/report.json", encoding="utf-8"))
+          assert len(report["generated"]) == 3, report
+          assert report["skipped"] == [], report
+          assert report["validation"]["status"] == "passed", report["validation"]
+          assert all(report["generation_assessment"][kind]["level"] == "executable-candidate"
+                     for kind in ("unit", "fuzz", "invariant")), report["generation_assessment"]
+          assert report["validation"].get("test_executions"), report["validation"]
+          print("PASS: supported unit/fuzz/invariant generation compiled and executed against the fixture")
+          PY
+      - name: Verify unsupported public-project behavior fails closed
+        run: |
+          python3 scripts/test-gen-ecosystem-benchmark.py \
+            --limit-projects 1 --targets-per-project 1 \
+            --output .audit/test-gen-ecosystem-smoke.json
+          # This pinned target is deliberately outside the generator's safely
+          # inferred behavior. The runner must record a complete evidence gap,
+          # not fake a pass or leave the project as an unexplained failure.
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/test-gen-ecosystem-smoke.json", encoding="utf-8"))
+          assert report["project_count"] == 1, report
+          assert report["evaluated_count"] == 0, report
+          assert report["assessed_with_evidence_gaps_count"] == 1, report
+          assert report["unresolved_project_count"] == 0, report
+          assert report["baseline_build_failed_count"] == 0, report
+          assert report["generation_validation_failed_count"] == 0, report
+          assert report["revision_pin_failed_count"] == 0, report
+          project = report["results"][0]
+          assert project["id"] == "openzeppelin-contracts", project
+          assert project["status"] == "assessed-with-evidence-gaps", project
+          assert project["revision"] == "11565e5f6277a320408025e649240056ba6a3919", project
+          assert len(project["baseline_builds"]) == 1, project
+          assert project["baseline_builds"][0]["result"]["exit_code"] == 0, project["baseline_builds"]
+          target = project["targets"][0]
+          assert target["generation_report_found"], target
+          assert target["generation_assessment_complete"], target
+          assert not target["generation_succeeded"], target
+          assert not target["validation_succeeded"], target
+          assert target["validation_status"] == "not-applicable", target
+          assert target["honest_result"] == "assessed-with-evidence-gaps", target
+          assert all(item["level"] == "not-generated" and item["note"]
+                     for item in target["generation_assessment"].values()), target
+          assert not target["formal_artifact_exists"], target
+          print("PASS: unsupported protocol generation is recorded as a complete, explicit evidence gap")
+          PY
+      - name: Retain ecosystem benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-generation-ecosystem-smoke
+          path: .audit/test-gen-ecosystem-smoke.json
+          if-no-files-found: warn
+
+  test-generation-ecosystem-full:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18.20.8"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Run the complete pinned real-project corpus
+        id: benchmark
+        continue-on-error: true
+        run: |
+          python3 scripts/test-gen-ecosystem-benchmark.py \
+            --manifest tests/fixtures/test-generation-ecosystem.json \
+            --targets-per-project 2 \
+            --work-dir /tmp/lowkey-full-ecosystem-work \
+            --output .audit/test-gen-ecosystem-full.json
+      - name: Summarize the full corpus without equating gaps with passes
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path(".audit/test-gen-ecosystem-full.json")
+          if not path.is_file():
+              raise SystemExit("Full benchmark did not produce a report")
+          report = json.loads(path.read_text(encoding="utf-8"))
+          print(f"Projects recorded: {report.get('project_count')}")
+          print(f"Projects fully generated and behaviorally validated: {report.get('evaluated_count')}")
+          print(f"Projects assessed with explicit evidence gaps: {report.get('assessed_with_evidence_gaps_count')}")
+          print(f"Baseline build failures: {report.get('baseline_build_failed_count')}")
+          print(f"Generation/validation failures or coverage gaps: {report.get('generation_validation_failed_count')}")
+          print(f"Revision pin failures: {report.get('revision_pin_failed_count')}")
+          for item in report.get("results", []):
+              print(f"{item.get('id')}: {item.get('status')} @ {item.get('revision', 'no-verified-revision')}")
+          print("NOTE: a completed benchmark is not a security certification; inspect each target's per-category evidence.")
+          PY
+      - name: Retain full real-project benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-generation-ecosystem-full
+          path: .audit/test-gen-ecosystem-full.json
+          if-no-files-found: error
+      - name: Enforce complete ecosystem benchmark result
+        if: always()
+        env:
+          BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$BENCHMARK_OUTCOME" != "success" ]]; then
+            echo "::error::Full ecosystem benchmark runner did not complete successfully (outcome=$BENCHMARK_OUTCOME). The report is retained above; blocked or failed projects are not passes."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path(".audit/test-gen-ecosystem-full.json").read_text(encoding="utf-8"))
+          results = report.get("results", [])
+          expected = report.get("project_count")
+          if not isinstance(expected, int) or expected < 1 or len(results) != expected:
+              raise SystemExit(f"Incomplete benchmark report: expected {expected} projects, got {len(results)}")
+          accepted = {"evaluated", "assessed-with-evidence-gaps", "expected-unsupported"}
+          rejected = [item for item in results if item.get("status") not in accepted]
+          if rejected:
+              summary = ", ".join(f"{item.get('id')}={item.get('status')}" for item in rejected)
+              raise SystemExit(f"Corpus has unresolved project outcomes: {summary}")
+          print(f"PASS: all {expected} projects have truthful accepted outcomes")
+          PY
+
+  vyper-integration:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Install Vyper and Titanoboa test runtime
+        run: python -m pip install "vyper>=0.4,<0.5" titanoboa pytest hypothesis
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+      - name: Install Lowkey
+        run: ./install.sh
+      - name: Build Vyper fixture
+        run: |
+          rm -rf /tmp/lowkey-vyper-fixture
+          mkdir -p /tmp/lowkey-vyper-fixture/contracts
+          cat > /tmp/lowkey-vyper-fixture/contracts/Counter.vy <<'EOF'
+          #pragma version ^0.4.3
+
+          count: public(uint256)
+
+          @external
+          def increment():
+              self.count += 1
+
+          @external
+          def set_count(next_value: uint256):
+              self.count = next_value
+          EOF
+      - name: Start Anvil
+        run: |
+          anvil --silent > /tmp/lowkey-vyper-anvil.log 2>&1 &
+          for i in $(seq 1 20); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat /tmp/lowkey-vyper-anvil.log
+          exit 1
+      - name: Exercise Vyper walkthrough
+        working-directory: /tmp/lowkey-vyper-fixture
+        run: |
+          vyper --version
+          lk --version
+          lk doctor
+          lk build
+          lk walkthrough --static --contract Counter --steps 2
+          test -f .audit/walkthrough/model.json
+          grep -q '"kind": "vyper"' .audit/walkthrough/model.json
+          lk walkthrough --auto --non-interactive --contract Counter --steps 1
+          test -f script/LowkeyWalkthrough_Counter.sh
+          grep -q 'cast send "$TARGET"' script/LowkeyWalkthrough_Counter.sh
+          TARGET=$(python3 - <<'PY'
+          import json
+          print(json.load(open(".audit/walkthrough/latest.json"))["steps"][0]["address"])
+          PY
+          )
+          test -n "$TARGET"
+          cast code "$TARGET" --rpc-url http://127.0.0.1:8545 | grep -Eq '^0x[0-9a-fA-F]+$'
+          cast call "$TARGET" 'count()(uint256)' --rpc-url http://127.0.0.1:8545
+          lk break --function increment --rounds 1 | tee /tmp/lowkey-vyper-break.txt
+          grep -q 'Backend : evm' /tmp/lowkey-vyper-break.txt
+          grep -q 'Language: vyper' /tmp/lowkey-vyper-break.txt
+          lk test-gen Counter --types unit,fuzz,invariant --validate --strict
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path(".audit/test-gen/vyper/Counter/report.json").read_text(encoding="utf-8"))
+          assert len(report["generated"]) == 3, report
+          assert report["skipped"] == [], report
+          assert report["validation"]["status"] == "passed", report["validation"]
+          assert len(report["validation"]["test_executions"]) == 3, report["validation"]
+          assert all(item["exit_code"] == 0 for item in report["validation"]["test_executions"]), report["validation"]
+          assert report["recognized_property"]["setter"] == "set_count", report["recognized_property"]
+          assert all(Path(item).is_file() for item in report["generated"]), report["generated"]
+          print("PASS: Lowkey generated and executed Vyper unit/fuzz/sequence-property tests with Titanoboa")
+          PY
+          lk status
+          lk context
+
+  verification-live-foundry:
+    runs-on: ubuntu-latest
+    needs:
+      - foundry-toolchain
+      - foundry-integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Create minimal real Foundry fixture
+        run: |
+          mkdir -p /tmp/lowkey-verification-fixture/src /tmp/lowkey-verification-fixture/test
+          cat > /tmp/lowkey-verification-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cat > /tmp/lowkey-verification-fixture/src/Counter.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract Counter {
+              uint256 public value;
+              function set(uint256 next) external { value = next; }
+          }
+          EOF
+          cat > /tmp/lowkey-verification-fixture/test/Counter.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          import "../src/Counter.sol";
+          contract CounterTest {
+              function testSetAndRead() public {
+                  Counter counter = new Counter();
+                  counter.set(42);
+                  require(counter.value() == 42, "counter value mismatch");
+              }
+          }
+          EOF
+      - name: Verify registry detection and execute a live Forge campaign through Lowkey
+        working-directory: /tmp/lowkey-verification-fixture
+        run: |
+          lk verification engines --json > /tmp/lowkey-verification-engines.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open("/tmp/lowkey-verification-engines.json", encoding="utf-8"))
+          project = report["project"]
+          assert project["language"] == "solidity", project
+          assert "solidity" in project["languages"], project
+          assert "foundry" in project["build_systems"], project
+          assert "foundry.toml" in project["markers"], project
+          forge = next(engine for engine in report["engines"] if engine["name"] == "forge")
+          assert forge["available"], forge
+          assert forge["support_matrix"]["unit"]["supported"], forge
+          print("PASS: project detection identifies Solidity + Foundry and Forge is executable")
+          PY
+          cat > campaign.json <<'EOF'
+          {
+            "test_kind": "unit",
+            "profile": "light",
+            "budget": {"timeout_seconds": 60},
+            "request": {
+              "argv_by_engine": {
+                "forge": ["test", "--match-test", "testSetAndRead", "-vv"]
+              }
+            }
+          }
+          EOF
+          lk verification run campaign.json --profile light --output .audit/verification/forge-unit-report.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/verification/forge-unit-report.json", encoding="utf-8"))
+          assert report["selected_count"] == 1, report
+          assert report["summary"]["passed"] == 1, report["summary"]
+          assert report["summary"]["failed"] == 0, report["summary"]
+          forge = next(row["result"] for row in report["results"] if row["result"]["engine"] == "forge")
+          assert forge["status"] == "passed", forge
+          assert "testSetAndRead" in forge["raw_stdout"], forge["raw_stdout"]
+          assert report["duration_seconds"] >= 0, report
+          print("PASS: Lowkey completed a real Forge campaign and retained native stdout/evidence")
+          PY
+
+      - name: Exercise real campaign-to-finding correlation through Forge
+        run: python3 scripts/verification-correlation-e2e.py
+
+      - name: Exercise a real finding through targeted generation and Forge
+        run: python3 scripts/verification-investigation-e2e.py
+
+  verification-live-external-engines:
+    needs: foundry-toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          check-latest: true
+      - name: Download verified Foundry toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: foundry-toolchain-v1.9.0
+          path: ${{ runner.temp }}/lowkey-foundry
+      - name: Restore and verify pinned Foundry
+        env:
+          FOUNDRY_ARCHIVE_SHA256: ${{ needs.foundry-toolchain.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Install pinned external engine versions
+        run: bash scripts/install-verification-engines.sh
+      - name: Build real Solidity fixture for fuzz and symbolic testing
+        run: |
+          mkdir -p /tmp/lowkey-external-fixture/src /tmp/lowkey-external-fixture/test
+          cat > /tmp/lowkey-external-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cat > /tmp/lowkey-external-fixture/src/InvariantHarness.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract InvariantHarness {
+              uint256 public value;
+              uint256 public mirror;
+              function set(uint256 next) external {
+                  value = next;
+                  mirror = next;
+              }
+              function echidna_values_match() public view returns (bool) {
+                  return value == mirror;
+              }
+          }
+          EOF
+          cat > /tmp/lowkey-external-fixture/test/InvariantHarness.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          import "../src/InvariantHarness.sol";
+          contract InvariantHarnessTest {
+              function testSetAndRead() public {
+                  InvariantHarness target = new InvariantHarness();
+                  target.set(42);
+                  require(target.value() == 42 && target.mirror() == 42, "set/read mismatch");
+              }
+              function testFuzzSetAndRead(uint256 next) public {
+                  InvariantHarness target = new InvariantHarness();
+                  target.set(next);
+                  require(target.value() == next && target.mirror() == next, "fuzz set/read mismatch");
+              }
+              // Halmos has separate check_* symbolic tests. Keep this smoke case
+              // free of deployment cheatcodes so it validates the symbolic runner,
+              // not a Foundry-only deployCode path.
+              function check_uint8_increment_is_strict(uint8 input) public pure {
+                  uint16 incremented = uint16(input) + 1;
+                  assert(incremented > uint16(input));
+              }
+          }
+          EOF
+          cat > /tmp/lowkey-external-fixture/echidna.yaml <<'EOF'
+          testMode: property
+          testLimit: 32
+          seqLen: 4
+          workers: 1
+          EOF
+          cd /tmp/lowkey-external-fixture
+          medusa init
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("medusa.json")
+          config = json.loads(path.read_text(encoding="utf-8"))
+          fuzzing = config.setdefault("fuzzing", {})
+          fuzzing["workers"] = 1
+          fuzzing["timeout"] = 15
+          fuzzing["testLimit"] = 100
+          fuzzing["targetContracts"] = ["InvariantHarness"]
+          fuzzing["deploymentOrder"] = ["InvariantHarness"]
+          testing = fuzzing.setdefault("testing", {})
+          properties = testing.setdefault("propertyTesting", {})
+          properties["enabled"] = True
+          properties["testPrefixes"] = ["echidna_"]
+          compilation = config.setdefault("compilation", {})
+          compilation["platform"] = "crytic-compile"
+          platform = compilation.setdefault("platformConfig", {})
+          platform["target"] = "."
+          platform["args"] = ["--foundry-compile-all"]
+          path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+          json.loads(path.read_text(encoding="utf-8"))
+          PY
+          forge build
+      - name: Run live Echidna and Medusa campaigns through Lowkey
+        working-directory: /tmp/lowkey-external-fixture
+        run: |
+          echidna --version
+          medusa --help >/dev/null
+          cat > fuzz-campaign.json <<'EOF'
+          {
+            "test_kind": "fuzz",
+            "profile": "balanced",
+            "budget": {"timeout_seconds": 120, "max_output_bytes": 1048576},
+            "request": {
+              "argv_by_engine": {
+                "forge": ["test", "--match-test", "testFuzzSetAndRead", "--fuzz-runs", "16"]
+              },
+              "engine_config_by_engine": {
+                "echidna": {
+                  "target": "src/InvariantHarness.sol",
+                  "contract": "InvariantHarness",
+                  "config": "echidna.yaml"
+                },
+                "medusa": {
+                  "config": "medusa.json",
+                  "target_contracts": ["InvariantHarness"],
+                  "engine_timeout_seconds": 15,
+                  "workers": 1
+                }
+              }
+            }
+          }
+          EOF
+          lk verification run fuzz-campaign.json --profile balanced --output .audit/verification/fuzz-campaign.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/verification/fuzz-campaign.json", encoding="utf-8"))
+          results = {item["result"]["engine"]: item["result"] for item in report["results"]}
+          assert {"forge", "echidna", "medusa"} <= set(results), report["considered_engines"]
+          for engine in ("forge", "echidna", "medusa"):
+              assert results[engine]["status"] == "passed", (engine, results[engine])
+              assert results[engine]["duration_seconds"] is not None, (engine, results[engine])
+          print("PASS: live Forge, Echidna, and Medusa campaigns completed with normalized results")
+          PY
+      - name: Run a live Halmos symbolic campaign through Lowkey
+        working-directory: /tmp/lowkey-external-fixture
+        run: |
+          cat > halmos-campaign.json <<'EOF'
+          {
+            "test_kind": "formal",
+            "profile": "deep",
+            "budget": {"timeout_seconds": 120, "max_output_bytes": 1048576},
+            "request": {
+              "engine_config_by_engine": {
+                "halmos": {"function": "check_uint8_increment_is_strict"}
+              }
+            }
+          }
+          EOF
+          set +e
+          lk verification run halmos-campaign.json --profile deep --output .audit/verification/halmos-campaign.json
+          LOWKEY_EXIT=$?
+          set -e
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/verification/halmos-campaign.json", encoding="utf-8"))
+          print("Campaign summary:", json.dumps(report.get("summary"), sort_keys=True))
+          assert report["selected_count"] == 1, report["considered_engines"]
+          result = report["results"][0]["result"]
+          print("Halmos result:", result.get("status"), "exit_code=", result.get("exit_code"), "summary=", result.get("summary"))
+          print("Halmos native stdout:\n" + (result.get("raw_stdout") or "")[-8000:])
+          print("Halmos native stderr:\n" + (result.get("raw_stderr") or "")[-8000:])
+          print("Halmos process evidence:", json.dumps(result.get("raw_evidence"), indent=2, sort_keys=True))
+          assert result["engine"] == "halmos", result
+          assert result["status"] == "passed", result
+          assert "check_uint8_increment_is_strict" in result["raw_stdout"] + result["raw_stderr"], result
+          assert "[PASS]" in result["raw_stdout"] + result["raw_stderr"], result
+          print("PASS: live Halmos symbolic result was normalized from native PASS evidence")
+          PY
+      - name: Confirm Certora CLI installation without submitting a paid remote proof
+        run: |
+          certoraRun --help >/tmp/lowkey-certora-help.txt
+          grep -qi 'conf' /tmp/lowkey-certora-help.txt
+          echo "PASS: Certora CLI starts. Remote proof execution/polling requires authorized credentials and is intentionally not invoked in CI."
+      - name: Exercise Slither static analysis on the fixture
+        working-directory: /tmp/lowkey-external-fixture
+        run: |
+          slither --version
+          slither . --fail-none
+          echo "PASS: Slither compiled and analyzed the live Foundry fixture"

@@ -1,0 +1,928 @@
+#!/usr/bin/env python3
+"""Run Lowkey's test generator against a representative public EVM corpus.
+
+This benchmark is deliberately separate from generator logic: repository and target
+names live in a manifest, and never select implementation behavior inside lk.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MANIFEST = ROOT / "tests" / "fixtures" / "test-generation-ecosystem.json"
+SOLIDITY_TYPES = "unit,fuzz,invariant,integration,exploit,fork,poc,regression"
+ALL_TYPES = SOLIDITY_TYPES + ",formal"
+DECLARATION = re.compile(
+    r"\b(?:abstract\s+)?contract\s+([A-Za-z_]\w*)\b"
+)
+
+
+def run(
+    command: list[str],
+    cwd: Path | None = None,
+    timeout: int = 1800,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    process_env = os.environ.copy()
+    if env:
+        process_env.update(env)
+    try:
+        completed = subprocess.run(
+            command, cwd=cwd, env=process_env, capture_output=True, text=True,
+            timeout=timeout, check=False,
+        )
+        return {
+            "command": command,
+            "exit_code": completed.returncode,
+            "stdout_tail": completed.stdout[-5000:],
+            "stderr_tail": completed.stderr[-5000:],
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "command": command,
+            "exit_code": None,
+            "error": f"timed out after {timeout} seconds",
+            "stdout_tail": str(exc.stdout or "")[-5000:],
+            "stderr_tail": str(exc.stderr or "")[-5000:],
+        }
+    except OSError as exc:
+        return {"command": command, "exit_code": None, "error": str(exc)}
+
+
+def resolve_revision(root: Path, requested: Any) -> dict[str, Any]:
+    """Ensure a benchmark checkout uses the immutable commit named in its manifest."""
+    if requested is not None and (
+        not isinstance(requested, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{40}", requested.strip())
+    ):
+        return {
+            "ok": False,
+            "status": "invalid-revision-pin",
+            "requested_revision": requested,
+            "error": "revision must be a full 40-character Git commit SHA",
+        }
+
+    current = run(["git", "rev-parse", "HEAD"], cwd=root, timeout=30)
+    if current.get("exit_code") != 0:
+        return {
+            "ok": False,
+            "status": "revision-read-failed",
+            "requested_revision": requested,
+            "current_revision_command": current,
+        }
+    actual = str(current.get("stdout_tail") or "").strip()
+    evidence: dict[str, Any] = {"initial_revision_command": current}
+    if requested is not None and actual.lower() != requested.lower():
+        fetched = run(
+            ["git", "fetch", "--depth", "1", "origin", requested],
+            cwd=root, timeout=1800,
+        )
+        evidence["fetch_requested_revision"] = fetched
+        if fetched.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "revision-fetch-failed",
+                "requested_revision": requested, "actual_revision": actual,
+                "evidence": evidence,
+            }
+        checkout = run(["git", "checkout", "--detach", requested], cwd=root, timeout=60)
+        evidence["checkout_requested_revision"] = checkout
+        if checkout.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "revision-checkout-failed",
+                "requested_revision": requested, "actual_revision": actual,
+                "evidence": evidence,
+            }
+        submodules = run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            cwd=root, timeout=1800,
+        )
+        evidence["submodules_after_checkout"] = submodules
+        if submodules.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "pinned-submodule-update-failed",
+                "requested_revision": requested, "actual_revision": actual,
+                "evidence": evidence,
+            }
+        verified = run(["git", "rev-parse", "HEAD"], cwd=root, timeout=30)
+        evidence["verified_revision_command"] = verified
+        if verified.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "revision-verification-failed",
+                "requested_revision": requested, "evidence": evidence,
+            }
+        actual = str(verified.get("stdout_tail") or "").strip()
+
+    if requested is not None and actual.lower() != requested.lower():
+        return {
+            "ok": False, "status": "revision-mismatch",
+            "requested_revision": requested, "actual_revision": actual,
+            "evidence": evidence,
+        }
+    return {
+        "ok": True,
+        "status": "pinned" if requested is not None else "unpinned",
+        "requested_revision": requested,
+        "actual_revision": actual,
+        "evidence": evidence,
+    }
+
+
+def mask_solidity(source: str) -> str:
+    """Mask comments and quoted literals so source cues are not mistaken for code."""
+    chars = list(source)
+    state = "code"
+    quote = ""
+    index = 0
+    while index < len(chars):
+        char = chars[index]
+        nxt = chars[index + 1] if index + 1 < len(chars) else ""
+        if state == "code":
+            if char == "/" and nxt == "/":
+                chars[index] = chars[index + 1] = " "
+                index += 2
+                state = "line"
+                continue
+            if char == "/" and nxt == "*":
+                chars[index] = chars[index + 1] = " "
+                index += 2
+                state = "block"
+                continue
+            if char in ("'", '"'):
+                quote = char
+                chars[index] = " "
+                state = "string"
+        elif state == "line":
+            if char == "\n":
+                state = "code"
+            else:
+                chars[index] = " "
+        elif state == "block":
+            if char == "*" and nxt == "/":
+                chars[index] = chars[index + 1] = " "
+                index += 2
+                state = "code"
+                continue
+            if char != "\n":
+                chars[index] = " "
+        elif state == "string":
+            if char == "\\":
+                chars[index] = " "
+                if index + 1 < len(chars):
+                    if chars[index + 1] != "\n":
+                        chars[index + 1] = " "
+                    index += 2
+                    continue
+            elif char == quote:
+                chars[index] = " "
+                state = "code"
+            elif char != "\n":
+                chars[index] = " "
+        index += 1
+    return "".join(chars)
+
+def find_contracts(root: Path) -> dict[str, str]:
+    """Discover contract declarations without assuming project-specific paths."""
+    declarations: dict[str, str] = {}
+    excluded = {".git", "out", "cache", "node_modules", ".audit", "broadcast"}
+    for path in root.rglob("*.sol"):
+        if any(part in excluded for part in path.parts):
+            continue
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in DECLARATION.finditer(mask_solidity(source)):
+            declarations.setdefault(match.group(1), path.relative_to(root).as_posix())
+    return declarations
+
+
+def load_report(path: Path) -> dict[str, Any] | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def expected_unsupported_outcome(project: dict[str, Any]) -> dict[str, str] | None:
+    """Return an explicit negative-control outcome declared by the corpus manifest."""
+    value = project.get("expected_outcome")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return {
+        "status": "expected-unsupported",
+        "reason": value.strip(),
+    }
+
+
+def _nearest_foundry_root(project_root: Path, source_path: str | Path) -> Path | None:
+    """Find the closest Foundry package containing the selected source."""
+    root = project_root.resolve()
+    source = Path(source_path)
+    source = source if source.is_absolute() else root / source
+    current = source.resolve().parent
+    while current == root or current.is_relative_to(root):
+        if (current / "foundry.toml").is_file():
+            return current
+        if current == root:
+            break
+        current = current.parent
+    return None
+
+
+def _infer_source_directory(project_root: Path, source_paths: list[str]) -> str:
+    """Infer a source root from conventional Solidity folders in selected paths."""
+    root = project_root.resolve()
+    candidates: list[Path] = []
+    for raw in source_paths:
+        parts = Path(raw).parts
+        conventional = [i for i, part in enumerate(parts) if part in {"src", "contracts"}]
+        if conventional:
+            candidates.append(Path(*parts[:conventional[-1] + 1]))
+        elif parts:
+            candidates.append(Path(*parts[:-1]))
+    if not candidates:
+        return "src" if (root / "src").is_dir() else "contracts"
+    common = Path(os.path.commonpath([str(root / item) for item in candidates]))
+    try:
+        relative = common.relative_to(root)
+    except ValueError:
+        return "src" if (root / "src").is_dir() else "contracts"
+    return relative.as_posix() or ("src" if (root / "src").is_dir() else "contracts")
+
+
+def _synthetic_foundry_config(project_root: Path, source_paths: list[str]) -> tuple[Path, bool]:
+    """Create an isolated Foundry config under .audit for non-Foundry Solidity projects."""
+    root = project_root.resolve()
+    existing = root / "foundry.toml"
+    if existing.is_file():
+        return existing, False
+    config_path = root / ".audit" / "lowkey-ecosystem-foundry.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    source_dir = _infer_source_directory(root, source_paths)
+    config_text = (
+        "[profile.default]\n"
+        f'src = "{source_dir}"\n'
+        'test = "test"\n'
+        'out = ".lowkey-ecosystem-out"\n'
+        'cache_path = ".lowkey-ecosystem-cache"\n'
+        'libs = ["lib", "node_modules"]\n'
+        "auto_detect_solc = true\n"
+        "optimizer = true\n"
+        "optimizer_runs = 200\n"
+        'allow_paths = ["node_modules"]\n'
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+    return config_path, True
+
+def _is_abstract_contract(project_root: Path, relative_source: str, contract: str) -> bool:
+    path = project_root / relative_source
+    try:
+        source = mask_solidity(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return True
+    return bool(re.search(
+        r"\babstract\s+contract\s+" + re.escape(contract) + r"\b",
+        source,
+    ))
+
+
+def _dependency_install_command(root: Path) -> list[str] | None:
+    """Resolve a lockfile-backed dependency install without guessing a build command."""
+    package_path = root / "package.json"
+    if not package_path.is_file():
+        return None
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    manager = str(package.get("packageManager") or "").lower()
+    if (root / "package-lock.json").is_file():
+        return ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+    if (root / "pnpm-lock.yaml").is_file():
+        return ["corepack", "pnpm", "install", "--frozen-lockfile", "--ignore-scripts"]
+    if (root / "yarn.lock").is_file():
+        bundled = sorted((root / ".yarn" / "releases").glob("yarn-*.cjs"))
+        if bundled and (manager.startswith("yarn@4") or (root / ".yarnrc.yml").is_file()):
+            return ["node", str(bundled[-1]), "install", "--immutable", "--mode=skip-build"]
+        if manager.startswith("yarn@4"):
+            return ["corepack", "yarn", "install", "--immutable", "--mode=skip-build"]
+        return ["corepack", "yarn@1.22.22", "install", "--frozen-lockfile", "--ignore-scripts"]
+    return None
+
+
+def _config_uses_node_modules(config_path: Path) -> bool:
+    """Check declared Foundry library paths for node_modules dependencies."""
+    try:
+        import tomllib
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        profiles = config.get("profile", {})
+        active = os.environ.get("FOUNDRY_PROFILE", "default")
+        selected = profiles.get(active, {})
+        default = profiles.get("default", {})
+        libs = selected.get("libs", default.get("libs", config.get("libs", [])))
+        remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
+        allow_paths = selected.get("allow_paths", default.get("allow_paths", config.get("allow_paths", [])))
+    except (OSError, ValueError, ImportError, AttributeError):
+        return False
+
+    values = [str(value) for value in (libs if isinstance(libs, list) else [])]
+    values.extend(str(value) for value in (allow_paths if isinstance(allow_paths, list) else []))
+    for remapping in remappings if isinstance(remappings, list) else []:
+        _prefix, separator, destination = str(remapping).partition("=")
+        if separator:
+            values.append(destination.strip())
+    return any("node_modules" in value.replace("\\\\", "/") for value in values)
+
+
+def _foundry_profile_config(config_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the active and default Foundry profile without mutating the config."""
+    try:
+        import tomllib
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        profiles = config.get("profile", {})
+        active = os.environ.get("FOUNDRY_PROFILE", "default")
+        selected = profiles.get(active, {})
+        default = profiles.get("default", {})
+        return selected, default
+    except (OSError, ValueError, ImportError, AttributeError):
+        return {}, {}
+
+
+def _forge_std_available(project_root: Path, config_path: Path) -> bool:
+    """Check that a configured forge-std remapping resolves Test.sol at its destination."""
+    selected, default = _foundry_profile_config(config_path)
+    try:
+        import tomllib
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        config = {}
+
+    remappings = selected.get(
+        "remappings", default.get("remappings", config.get("remappings", []))
+    )
+    candidates: list[Path] = []
+
+    for remapping in remappings if isinstance(remappings, list) else []:
+        prefix, separator, destination = str(remapping).partition("=")
+        if separator and prefix.rstrip("/") == "forge-std":
+            target = Path(destination.strip()).expanduser()
+            candidates.append(target if target.is_absolute() else project_root / target)
+
+    libs = selected.get("libs", default.get("libs", config.get("libs", ["lib"])))
+    for library in libs if isinstance(libs, list) else ["lib"]:
+        base = Path(str(library)).expanduser()
+        library_root = base if base.is_absolute() else project_root / base
+        candidates.append(library_root / "forge-std")
+        if library_root.name == "forge-std":
+            candidates.append(library_root)
+
+    # A nearby nested source tree is not enough: the effective import mapping
+    # must point at a directory containing Test.sol directly.
+    return any((candidate / "Test.sol").is_file() for candidate in candidates)
+
+
+def _parse_foundry_remappings(output: str) -> list[str]:
+    """Parse the one-remapping-per-line output from forge remappings."""
+    entries: list[str] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        prefix, destination = line.split("=", 1)
+        if prefix.strip() and destination.strip() and prefix.strip().endswith("/"):
+            entries.append(f"{prefix.strip()}={destination.strip()}")
+    return entries
+
+
+def _remapping_target(project_root: Path, remapping: str) -> tuple[str, Path] | None:
+    """Resolve a Foundry remapping destination relative to the package root."""
+    prefix, separator, destination = remapping.partition("=")
+    if not separator or not prefix.strip() or not destination.strip():
+        return None
+    path = Path(destination.strip()).expanduser()
+    target = path if path.is_absolute() else project_root / path
+    return prefix.strip(), target.resolve()
+
+
+def _configure_forge_std_remapping(
+    project_root: Path,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Make the effective forge-std import mapping point at its actual source tree."""
+    discovery = run(
+        ["forge", "remappings"],
+        cwd=project_root,
+        timeout=120,
+        env=env,
+    )
+    if discovery.get("exit_code") != 0:
+        return {
+            "ok": False,
+            "status": "remapping-discovery-failed",
+            "remapping_command": discovery,
+        }
+
+    remappings = _parse_foundry_remappings(str(discovery.get("stdout_tail") or ""))
+    matching_indexes = [
+        index for index, entry in enumerate(remappings)
+        if entry.partition("=")[0].rstrip("/") == "forge-std"
+    ]
+    if not matching_indexes:
+        return {
+            "ok": False,
+            "status": "forge-std-remapping-missing",
+            "remapping_command": discovery,
+            "discovered_remappings": remappings,
+        }
+
+    corrected = list(remappings)
+    corrections: list[dict[str, str]] = []
+    for index in matching_indexes:
+        resolved = _remapping_target(project_root, remappings[index])
+        if resolved is None:
+            return {
+                "ok": False,
+                "status": "invalid-forge-std-remapping",
+                "remapping_command": discovery,
+                "remapping": remappings[index],
+            }
+        prefix, target = resolved
+        if (target / "Test.sol").is_file():
+            continue
+
+        # Foundry may autodetect the package root even though forge-std keeps
+        # its Solidity sources in src/. Only correct a known, unambiguous layout.
+        source_candidates = [
+            target / child / "Test.sol"
+            for child in ("src", "contracts")
+            if (target / child / "Test.sol").is_file()
+        ]
+        if len(source_candidates) != 1:
+            return {
+                "ok": False,
+                "status": "forge-std-test-source-unresolved",
+                "remapping_command": discovery,
+                "remapping": remappings[index],
+                "expected_test_sol": str(target / "Test.sol"),
+                "nested_candidates": [str(path) for path in source_candidates],
+            }
+
+        source_root = source_candidates[0].parent.resolve()
+        corrected[index] = f"{prefix}={source_root.as_posix().rstrip('/')}/"
+        corrections.append({
+            "from": remappings[index],
+            "to": corrected[index],
+        })
+
+    if corrections:
+        # Preserve the complete Foundry remapping set; replacing the environment
+        # with only forge-std would silently break unrelated project imports.
+        env["FOUNDRY_REMAPPINGS"] = ",".join(corrected)
+
+    verification = run(
+        ["forge", "remappings"],
+        cwd=project_root,
+        timeout=120,
+        env=env,
+    )
+    if verification.get("exit_code") != 0:
+        return {
+            "ok": False,
+            "status": "remapping-verification-failed",
+            "remapping_command": discovery,
+            "verification_command": verification,
+            "corrections": corrections,
+        }
+
+    verified = _parse_foundry_remappings(
+        str(verification.get("stdout_tail") or "")
+    )
+    verified_targets = [
+        _remapping_target(project_root, entry)
+        for entry in verified
+        if entry.partition("=")[0].rstrip("/") == "forge-std"
+    ]
+    if not verified_targets or any(
+        target is None or not (target[1] / "Test.sol").is_file()
+        for target in verified_targets
+    ):
+        return {
+            "ok": False,
+            "status": "effective-forge-std-remapping-unresolved",
+            "remapping_command": discovery,
+            "verification_command": verification,
+            "verified_remappings": [
+                entry for entry in verified
+                if entry.partition("=")[0].rstrip("/") == "forge-std"
+            ],
+            "corrections": corrections,
+        }
+
+    return {
+        "ok": True,
+        "status": "remapping-corrected-to-source" if corrections else "already-available",
+        "remapping_command": discovery,
+        "verification_command": verification,
+        "effective_remapping": [
+            entry for entry in verified
+            if entry.partition("=")[0].rstrip("/") == "forge-std"
+        ],
+        "corrections": corrections,
+    }
+
+
+def _ensure_forge_std(
+    project_root: Path,
+    config_path: Path,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Ensure forge-std is importable through Foundry's effective remapping."""
+    env.setdefault("FOUNDRY_CONFIG", str(config_path.resolve()))
+    setup = _configure_forge_std_remapping(project_root, env)
+    if setup.get("ok"):
+        return setup
+
+    install = run(
+        ["forge", "install", "foundry-rs/forge-std", "--no-commit"],
+        cwd=project_root,
+        timeout=900,
+        env=env,
+    )
+    after_install = _configure_forge_std_remapping(project_root, env)
+    return {
+        **after_install,
+        "install_command": install,
+        "status": (
+            after_install.get("status")
+            if after_install.get("ok")
+            else "unavailable"
+        ),
+    }
+
+
+def _report_accounts_for_every_type(report: dict[str, Any] | None) -> bool:
+    """A complete report may explain evidence gaps, but cannot omit categories."""
+    if not isinstance(report, dict):
+        return False
+    requested = report.get("requested_types")
+    assessments = report.get("generation_assessment")
+    if not isinstance(requested, list) or not requested or not isinstance(assessments, dict):
+        return False
+    for kind in requested:
+        item = assessments.get(kind)
+        if not isinstance(item, dict):
+            return False
+        if not isinstance(item.get("level"), str) or not item["level"].strip():
+            return False
+        if not isinstance(item.get("note"), str) or not item["note"].strip():
+            return False
+    return isinstance(report.get("generated", []), list)
+
+
+def evaluate_target(
+    project_root: Path,
+    contract: str,
+    output_root: Path,
+    *,
+    constructor_args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    source_path: str | None = None,
+    abstract_contract: bool = False,
+) -> dict[str, Any]:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", contract)
+    all_dir = output_root / (slug + "-all")
+    solidity_dir = output_root / (slug + "-solidity")
+    common = ["lk", "test-gen", contract, "--force"]
+    if constructor_args is not None:
+        common.extend(["--constructor-args", json.dumps(constructor_args)])
+    generation = run(
+        common + ["--types", "all", "--output-dir", str(all_dir)],
+        cwd=project_root,
+        env=env,
+    )
+    generation_report = load_report(all_dir / slug / "report.json")
+    validation = run(
+        common + ["--types", SOLIDITY_TYPES, "--output-dir", str(solidity_dir), "--validate"],
+        cwd=project_root,
+        env=env,
+    )
+    validation_report = load_report(solidity_dir / slug / "report.json")
+    assessments = (generation_report or {}).get("generation_assessment", {})
+    validation_data = (validation_report or {}).get("validation", {})
+    validation_status = validation_data.get("status", "report-missing")
+    generation_assessed = _report_accounts_for_every_type(generation_report)
+    generation_succeeded = (
+        generation.get("exit_code") == 0
+        and generation_assessed
+        and not (generation_report or {}).get("skipped")
+    )
+    executions = validation_data.get("test_executions", [])
+    executable_kinds = {"unit", "fuzz", "invariant"}
+    executable_expected = any(
+        isinstance(assessments.get(kind), dict)
+        and assessments[kind].get("level") == "executable-candidate"
+        for kind in executable_kinds
+    )
+    validation_succeeded = (
+        validation.get("exit_code") == 0
+        and validation_report is not None
+        and validation_status == "passed"
+        and isinstance(executions, list)
+        and bool(executions)
+        and all(isinstance(item, dict) and item.get("exit_code") == 0 for item in executions)
+    )
+    no_executable_candidate = (
+        not executable_expected
+        and validation_report is not None
+        and validation_status in {"not-applicable", "compiled-only"}
+        and isinstance(executions, list)
+        and not executions
+    )
+    generated_entries = (generation_report or {}).get("generated", [])
+    complete_evidence_gap_only = (
+        generation_report is not None
+        and generation_assessed
+        and not executable_expected
+        and isinstance(generated_entries, list)
+        and not generated_entries
+        and bool((generation_report or {}).get("skipped"))
+        and no_executable_candidate
+    )
+    if generation_report is None or validation_report is None or not generation_assessed:
+        honest_result = "tool-or-report-failure"
+    elif (
+        generation.get("exit_code") != 0 and not complete_evidence_gap_only
+    ) or (
+        validation.get("exit_code") != 0 and not no_executable_candidate
+    ):
+        # Preserve actual process failures, but allow the CLI's deliberate
+        # nonzero result when it truthfully refuses to invent any test artifact.
+        honest_result = "generation-or-validation-failed"
+    elif executable_expected and not validation_succeeded:
+        honest_result = "execution-failed"
+    elif not executable_expected and not no_executable_candidate and not validation_succeeded:
+        honest_result = "validation-incomplete"
+    elif generation_succeeded and validation_succeeded:
+        honest_result = "generation-and-validation-passed"
+    else:
+        honest_result = "assessed-with-evidence-gaps"
+    return {
+        "contract": contract,
+        "source_path": source_path,
+        "abstract_contract": abstract_contract,
+        "constructor_args_supplied": constructor_args is not None,
+        "generation_command": generation,
+        "generation_report_found": generation_report is not None,
+        "generation_assessment_complete": generation_assessed,
+        "generation_succeeded": generation_succeeded,
+        "generation_assessment": assessments,
+        "generation_skipped": (generation_report or {}).get("skipped", []),
+        "validation_command": validation,
+        "validation_status": validation_status,
+        "validation_report_found": validation_report is not None,
+        "validation_test_executions": executions,
+        "validation_succeeded": validation_succeeded,
+        "formal_artifact_exists": any((all_dir / slug).glob("*Formal*")),
+        "honest_result": honest_result,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--output", type=Path, default=Path(".audit/test-gen-ecosystem-benchmark.json"))
+    parser.add_argument("--work-dir", type=Path, help="Keep cloned projects in this directory.")
+    parser.add_argument("--keep-workspaces", action="store_true")
+    parser.add_argument("--limit-projects", type=int, default=0, help="Limit project count for smoke runs.")
+    parser.add_argument("--targets-per-project", type=int, default=2)
+    args = parser.parse_args()
+
+    for executable in ("git", "lk", "forge"):
+        if shutil.which(executable) is None:
+            print(f"Required executable unavailable: {executable}", file=sys.stderr)
+            return 2
+    try:
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Cannot read benchmark manifest: {exc}", file=sys.stderr)
+        return 2
+
+    projects = manifest.get("projects", [])
+    if args.limit_projects > 0:
+        projects = projects[:args.limit_projects]
+
+    owned_temp = None
+    if args.work_dir:
+        workspace_root = args.work_dir.resolve()
+        workspace_root.mkdir(parents=True, exist_ok=True)
+    else:
+        owned_temp = tempfile.TemporaryDirectory(prefix="lowkey-test-gen-benchmark-")
+        workspace_root = Path(owned_temp.name)
+
+    output_path = args.output.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    try:
+        for project in projects:
+            project_id = project["id"]
+            clone_dir = workspace_root / project_id
+            item: dict[str, Any] = {
+                "id": project_id,
+                "repository": project["repository"],
+                "target_candidates": project.get("target_candidates", []),
+                "status": "pending",
+            }
+            clone = run(
+                ["git", "clone", "--depth", "1", "--recurse-submodules", project["repository"], str(clone_dir)],
+                timeout=1800,
+            )
+            item["clone"] = clone
+            if clone.get("exit_code") != 0:
+                item["status"] = "clone-failed"
+                results.append(item)
+                continue
+
+            revision_pin = resolve_revision(clone_dir, project.get("revision"))
+            item["revision_pin"] = revision_pin
+            if not revision_pin.get("ok"):
+                item["status"] = revision_pin.get("status", "revision-pin-failed")
+                results.append(item)
+                continue
+            revision = revision_pin.get("actual_revision")
+            item["revision"] = revision
+
+            declarations = find_contracts(clone_dir)
+            item["discovered_contract_count"] = len(declarations)
+            candidates = [
+                name for name in project.get("target_candidates", [])
+                if name in declarations
+            ][:max(1, args.targets_per_project)]
+            item["candidate_sources"] = {name: declarations[name] for name in candidates}
+            if not candidates:
+                item["status"] = "no-listed-contract-candidate-found"
+                results.append(item)
+                continue
+
+            expected_outcome = expected_unsupported_outcome(project)
+            if expected_outcome is not None:
+                item["status"] = expected_outcome["status"]
+                item["expected_outcome"] = expected_outcome["reason"]
+                item["classification_evidence"] = {
+                    "manifest_declaration": "expected_outcome",
+                    "discovered_contract_candidates": item["candidate_sources"],
+                    "generation_executed": False,
+                }
+                results.append(item)
+                continue
+
+            # Resolve the closest Foundry package for each target. Legacy Solidity
+            # repositories get a disposable config with source roots inferred from
+            # the selected source paths; existing project configs are never rewritten.
+            grouped: dict[Path, list[tuple[str, str]]] = {}
+            configs: dict[Path, tuple[Path, bool]] = {}
+            for name in candidates:
+                relative_source = item["candidate_sources"][name]
+                package_root = _nearest_foundry_root(clone_dir, relative_source)
+                if package_root is None:
+                    package_root = clone_dir.resolve()
+                    config = _synthetic_foundry_config(clone_dir, list(item["candidate_sources"].values()))
+                else:
+                    config = (package_root / "foundry.toml", False)
+                configs[package_root] = config
+                local_source = (clone_dir / relative_source).resolve().relative_to(package_root).as_posix()
+                grouped.setdefault(package_root, []).append((name, local_source))
+
+            item["targets"] = []
+            item["baseline_builds"] = []
+            item["dependency_setup"] = []
+            dependency_roots: set[Path] = set()
+            for package_root, target_group in grouped.items():
+                config_path, synthetic_config = configs[package_root]
+                forge_env = {"FOUNDRY_CONFIG": str(config_path.resolve())}
+                item.setdefault("forge_std_setup", []).append({
+                    "root": str(package_root),
+                    **_ensure_forge_std(package_root, config_path, forge_env),
+                })
+                baseline_key = str(package_root)
+                if _config_uses_node_modules(config_path):
+                    dependency_root = clone_dir.resolve()
+                    if dependency_root not in dependency_roots:
+                        dependency_roots.add(dependency_root)
+                        dependency_command = _dependency_install_command(dependency_root)
+                        if dependency_command is not None:
+                            dependency_result = run(dependency_command, cwd=dependency_root, timeout=3600)
+                            item["dependency_setup"].append({
+                                "root": str(dependency_root),
+                                "command": dependency_command,
+                                "result": dependency_result,
+                            })
+                        else:
+                            item["dependency_setup"].append({
+                                "root": str(dependency_root),
+                                "status": "no-lockfile-backed-install-declared",
+                            })
+                if baseline_key not in {entry["root"] for entry in item["baseline_builds"]}:
+                    build = run(["forge", "build"], cwd=package_root, timeout=1800, env=forge_env)
+                    item["baseline_builds"].append({
+                        "root": baseline_key,
+                        "config": str(config_path),
+                        "synthetic_config": synthetic_config,
+                        "result": build,
+                    })
+                else:
+                    build = next(entry["result"] for entry in item["baseline_builds"] if entry["root"] == baseline_key)
+                if build.get("exit_code") != 0:
+                    for name, source_local in target_group:
+                        item["targets"].append({
+                            "contract": name,
+                            "source_path": source_local,
+                            "abstract_contract": _is_abstract_contract(package_root, source_local, name),
+                            "honest_result": "baseline-build-failed",
+                            "baseline_build": build,
+                        })
+                    continue
+
+                for name, source_local in target_group:
+                    setup = (project.get("target_setup") or {}).get(name, {})
+                    constructor_args = setup.get("constructor_args") if isinstance(setup, dict) else None
+                    abstract_contract = _is_abstract_contract(package_root, source_local, name)
+                    target_result = evaluate_target(
+                        package_root,
+                        name,
+                        package_root / ".audit" / "ecosystem-benchmark",
+                        constructor_args=constructor_args,
+                        env=forge_env,
+                        source_path=source_local,
+                        abstract_contract=abstract_contract,
+                    )
+                    item["targets"].append(target_result)
+
+            baseline_failed = any(
+                entry["result"].get("exit_code") != 0 for entry in item["baseline_builds"]
+            )
+            target_outcomes = {target.get("honest_result") for target in item["targets"]}
+            fully_passed = bool(item["targets"]) and target_outcomes == {"generation-and-validation-passed"}
+            assessed = bool(item["targets"]) and target_outcomes.issubset({
+                "generation-and-validation-passed", "assessed-with-evidence-gaps"
+            })
+            if baseline_failed:
+                item["status"] = "baseline-build-failed"
+            elif fully_passed:
+                item["status"] = "evaluated"
+            elif assessed:
+                item["status"] = "assessed-with-evidence-gaps"
+            else:
+                item["status"] = "generation-validation-failed"
+            results.append(item)
+
+        summary = {
+            "schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "manifest": str(args.manifest),
+            "project_count": len(projects),
+            "evaluated_count": sum(item["status"] == "evaluated" for item in results),
+            "baseline_build_failed_count": sum(item["status"] == "baseline-build-failed" for item in results),
+            "generation_validation_failed_count": sum(item["status"] == "generation-validation-failed" for item in results),
+            "expected_unsupported_count": sum(item["status"] == "expected-unsupported" for item in results),
+            "assessed_with_evidence_gaps_count": sum(item["status"] == "assessed-with-evidence-gaps" for item in results),
+            "unresolved_project_count": sum(
+                item["status"] not in {"evaluated", "assessed-with-evidence-gaps", "expected-unsupported"}
+                for item in results
+            ),
+            "revision_pin_failed_count": sum(
+                "revision" in item.get("status", "") or "submodule" in item.get("status", "")
+                for item in results
+            ),
+            "results": results,
+            "limitations": [
+                "A completed benchmark run is not a security certification.",
+                "Generation, compilation, execution, mutation testing, fork validation, and formal proof are distinct outcomes.",
+                "This runner currently records generator validation and artifacts; it does not yet implement isolated mutation campaigns.",
+                "Projects requiring private credentials, unsupported build systems, or unavailable dependencies remain blocked and must not be counted as passes.",
+            ],
+        }
+        output_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        print(f"Benchmark report: {output_path}")
+        print(f"Projects fully generated and validated: {summary['evaluated_count']}")
+        print(f"Projects assessed with explicit evidence gaps: {summary['assessed_with_evidence_gaps_count']}")
+        for item in results:
+            print(f"  {item['id']}: {item['status']}")
+        accepted = {"evaluated", "assessed-with-evidence-gaps", "expected-unsupported"}
+        return 0 if results and all(item["status"] in accepted for item in results) else 1
+    finally:
+        if owned_temp is not None and not args.keep_workspaces:
+            owned_temp.cleanup()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

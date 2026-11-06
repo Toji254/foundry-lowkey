@@ -1,0 +1,1661 @@
+import importlib.util
+import io
+import json
+import os
+import pathlib
+import subprocess
+import tempfile
+import unittest
+from types import SimpleNamespace
+from contextlib import redirect_stdout, redirect_stderr
+from unittest.mock import patch
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE = ROOT / "lowkey" / "lk.py"
+
+spec = importlib.util.spec_from_file_location("lowkeycast_help", MODULE)
+lk = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lk)
+
+
+class CommandHelpTests(unittest.TestCase):
+    def capture_dispatch(self, command, *args):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = lk.dispatch_command(command, list(args), {})
+        return code, output.getvalue()
+
+    def test_every_root_and_nested_help_page_uses_the_send_style_layout(self):
+        import re
+
+        pages = []
+
+        def collect(path, entry):
+            pages.append((list(path), entry))
+            for child_name, child_entry in (entry.get("children") or {}).items():
+                collect([*path, child_name], child_entry)
+
+        for command, entry in lk.COMMAND_HELP.items():
+            collect([command], entry)
+
+        required_sections = (
+            "COMMAND VARIATIONS",
+            "OPTIONS / MODES",
+            "RELATED COMMANDS",
+            "HELP TIP",
+        )
+        for path, entry in pages:
+            with self.subTest(command=" ".join(path)):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    code = lk._render_command_help(path)
+                rendered = output.getvalue()
+                self.assertEqual(code, 0)
+                self.assertIn("What it does:", rendered)
+                self.assertIn("When to use:", rendered)
+                self.assertIn("Usage:", rendered)
+                self.assertIn("Example:", rendered)
+                for section in required_sections:
+                    self.assertIn(section, rendered)
+                # Every flag printed in the usage line must have an explanation
+                # in COMMAND VARIATIONS or OPTIONS / MODES. Global help flags
+                # are described in HELP TIP instead.
+                usage_flags = set(re.findall(r"(?<![A-Za-z0-9_-])(?:--[A-Za-z][A-Za-z0-9-]*|-[A-Za-z][A-Za-z0-9-]*)", entry.get("usage", "")))
+                documented_text = " ".join(
+                    str(value)
+                    for field in ("forms", "options")
+                    for row in (entry.get(field) or [])
+                    for value in row
+                )
+                undocumented = sorted(
+                    flag for flag in usage_flags
+                    if flag not in documented_text and flag not in {"--h", "--help", "-h"}
+                )
+                self.assertEqual(undocumented, [], f"undocumented usage flags for {' '.join(path)}")
+
+    def test_every_nested_help_entry_has_valid_structured_metadata(self):
+        def walk(entries, prefix=()):
+            for name, entry in entries.items():
+                path = (*prefix, name)
+                problems = lk._validate_help_variations({name: entry})
+                self.assertEqual(problems, [], f"invalid help metadata for {' '.join(path)}")
+                children = entry.get("children") or {}
+                self.assertIsInstance(children, dict, f"children must be a mapping for {' '.join(path)}")
+                walk(children, path)
+
+        walk(lk.COMMAND_HELP)
+
+    def test_functions_and_fn_document_every_supported_filter_spelling(self):
+        parser_args = [
+            "--verbose",
+            "--visibility=external",
+            "-m", "payable",
+            "--class=admin",
+            "--risk",
+            "withdraw",
+        ]
+        options, query = lk._parse_function_options(parser_args)
+        self.assertIsNotNone(options)
+        self.assertEqual(query, "withdraw")
+        self.assertEqual(
+            options,
+            {
+                "verbose": True,
+                "visibility": "external",
+                "mutability": "payable",
+                "class": "admin",
+                "risk": True,
+            },
+        )
+
+        supported_flags = (
+            "-v", "--verbose",
+            "-V", "--visibility",
+            "-m", "--mutability",
+            "-c", "--class",
+            "-r", "--risk",
+        )
+        for command in ("functions", "fn"):
+            with self.subTest(command=command):
+                entry = lk.COMMAND_HELP[command]
+                documented = " ".join(
+                    str(value)
+                    for field in ("forms", "options")
+                    for row in (entry.get(field) or [])
+                    for value in row
+                )
+                for flag in supported_flags:
+                    self.assertIn(flag, documented)
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                for flag in supported_flags:
+                    self.assertIn(flag, output)
+
+    def test_targets_help_documents_all_and_dispatch_rejects_unknown_arguments(self):
+        code, output = self.capture_dispatch("targets", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--all", output)
+        self.assertIn("support contracts", output)
+        self.assertIn("lk targets --all", output)
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_targets") as run_targets:
+            result = lk._dispatch_command_impl("targets", ["--all"], {})
+        self.assertEqual(result, run_targets.return_value)
+        run_targets.assert_called_once_with({}, include_support=True)
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_targets") as run_targets:
+            result = lk._dispatch_command_impl("targets", ["--unknown"], {})
+        self.assertEqual(result, 2)
+        run_targets.assert_not_called()
+
+    def test_slots_help_documents_historical_block_reads(self):
+        code, output = self.capture_dispatch("slots", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--block <block>", output)
+        self.assertIn("historical storage", output)
+        self.assertIn("lk slots 3 --block latest", output)
+
+    def test_forwarded_tool_help_examples_call_the_upstream_binary(self):
+        native_commands = (
+            "bind", "bind-json", "cache", "clean", "compiler", "completions",
+            "config", "doc", "eip712", "flatten", "init", "install", "lsp",
+            "remappings", "remove", "soldeer", "tree", "update",
+            "verify-bytecode", "verify-check", "verify-contract",
+        )
+        for command in native_commands:
+            with self.subTest(command=command):
+                entry = lk.COMMAND_HELP[command]
+                examples = [entry.get("example", "")]
+                examples.extend(row[2] for row in (entry.get("options") or []))
+                self.assertIn(f"forge {command} --help", " ".join(examples))
+                self.assertNotIn(f"lk {command} --help", " ".join(examples))
+
+        chisel = lk.COMMAND_HELP["chisel"]
+        chisel_examples = [chisel.get("example", "")]
+        chisel_examples.extend(row[2] for row in (chisel.get("options") or []))
+        self.assertIn("chisel --help", " ".join(chisel_examples))
+        self.assertNotIn("lk chisel --help", " ".join(chisel_examples))
+
+        raw = lk.COMMAND_HELP["raw"]
+        raw_examples = [raw.get("example", "")]
+        raw_examples.extend(row[2] for row in (raw.get("options") or []))
+        self.assertIn("cast storage --help", " ".join(raw_examples))
+        self.assertNotIn("lk raw storage --help", " ".join(raw_examples))
+
+        logs_examples = " ".join(
+            row[2]
+            for row in (lk.COMMAND_HELP["logs"].get("options") or [])
+        )
+        self.assertIn("cast logs --help", logs_examples)
+        self.assertNotIn("lk raw logs --help", logs_examples)
+
+    def test_sig_help_shows_copyable_quoted_signature_and_explains_bash(self):
+        code, output = self.capture_dispatch("sig", "--h")
+        self.assertEqual(code, 0)
+        for item in (
+            "lk sig '<functionName>(<parameterTypes>)'",
+            "lk sig 'setValue(uint256)'",
+            "Single quotes protect parentheses and array brackets from Bash.",
+            "Parameter TYPES",
+            "lk sig setValue",
+        ):
+            self.assertIn(item, output)
+
+    def test_selectors_help_explains_named_default_and_raw_mode(self):
+        code, output = self.capture_dispatch("selectors", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("readable function signatures", output)
+        self.assertIn("lk selectors --compare", output)
+        self.assertIn("lk selectors --raw", output)
+        self.assertIn("without resolving function names", output)
+
+    def test_walkthrough_help_lists_test_and_human_guidance(self):
+        code, output = self.capture_dispatch("walkthrough", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
+        self.assertIn("NEXT COMMANDS", output)
+        self.assertIn("lk walkthrough test", output)
+        self.assertIn("What it does:", output)
+        self.assertIn("When to use:", output)
+        self.assertIn("Example", output)
+
+    def test_walkthrough_seed_help_lists_seed_history_command(self):
+        code, output = self.capture_dispatch("walkthrough", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk walkthrough seed", output)
+        code, output = self.capture_dispatch("walkthrough", "seed", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk walkthrough seed", output)
+        self.assertIn("previous walkthrough test seeds", output)
+
+    def test_nested_walkthrough_test_help(self):
+        code, output = self.capture_dispatch("walkthrough", "test", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk walkthrough test", output)
+        self.assertIn("lk walkthrough test --cases 50", output)
+        self.assertIn("Run randomized adversarial interactions", output)
+        self.assertIn("OPTIONS / MODES", output)
+
+    def test_help_spelling_variants_work(self):
+        for flag in ("--h", "--help", "-h", "help"):
+            code, output = self.capture_dispatch("walkthrough", flag)
+            self.assertEqual(code, 0)
+            self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
+
+    def test_misspelled_help_suggests_the_correct_command(self):
+        code, output = self.capture_dispatch("walet", "-h")
+        self.assertEqual(code, 2)
+        self.assertIn("No dedicated Lowkey help page matches 'walet'.", output)
+        self.assertIn("lk wallet --h", output)
+        self.assertIn("lk --h", output)
+
+    def test_every_dispatch_root_command_has_help(self):
+        import inspect
+        import re
+
+        source = inspect.getsource(lk.dispatch_command)
+        expressions = re.findall(
+            r"(?:if|elif) cmd(?:\s+in|\s*==)\s*(?:\{([^}]+)\}|\"([^\"]+)\"|\'([^\']+)\')",
+            source,
+        )
+        commands = set()
+        for group_set, double_quoted, single_quoted in expressions:
+            if double_quoted or single_quoted:
+                commands.add(double_quoted or single_quoted)
+                continue
+            commands.update(re.findall(r"[\"']([^\"']+)[\"']", group_set))
+
+        commands.difference_update({"--version", "-V", "version"})
+        commands = {
+            command for command in commands
+            if command not in {"try", "map", "walk", "graph", "signals", "signal",
+                               "investigate", "investigation", "statediff", "state_diff",
+                               "hotspots", "target-list", "actor-list", "erc20",
+                               "resolve", "lookup", "decode-event", "decode-calldata",
+                               "returns", "error", "cheats", "cheatsheet", "cheatcode"}
+        }
+
+        missing = []
+        for command in sorted(commands):
+            canonical = lk._canonical_help_command(command)
+            if canonical not in lk.COMMAND_HELP:
+                missing.append(command)
+
+        self.assertEqual(missing, [])
+
+    def test_nested_target_help(self):
+        code, output = self.capture_dispatch("target", "list", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk target list", output)
+        self.assertIn("List remembered targets", output)
+
+    def test_accepted_nested_command_aliases_have_help(self):
+        cases = (
+            ("audit", "pipeline", "lk audit pipeline"),
+            ("q", "next", "lk q next"),
+            ("q", "not-applicable", "lk q not-applicable"),
+        )
+        for root, child, title in cases:
+            code, output = self.capture_dispatch(root, child, "--h")
+            self.assertEqual(code, 0)
+            self.assertIn(f"LOWKEY HELP  •  {title}", output)
+            self.assertNotIn("Unknown subcommand", output)
+            self.assertIn("Example:", output)
+
+    def test_every_help_variation_has_description_and_example(self):
+        problems = lk._validate_help_variations(lk.COMMAND_HELP)
+        self.assertEqual(problems, [])
+
+    def test_every_help_entry_has_required_documentation_fields(self):
+        def validate(entries, path="lk"):
+            problems = []
+            for name, entry in entries.items():
+                current = f"{path} {name}"
+                for field in ("summary", "usage", "example", "use"):
+                    if not str(entry.get(field) or "").strip():
+                        problems.append(f"{current}: missing {field}")
+                children = entry.get("children") or {}
+                if not isinstance(children, dict):
+                    problems.append(f"{current}: children is not a mapping")
+                    continue
+                problems.extend(validate(children, current))
+            return problems
+
+        problems = validate(lk.COMMAND_HELP)
+        self.assertEqual(problems, [])
+
+
+    def test_every_root_and_nested_help_entry_has_an_explicit_invocation_form(self):
+        def walk(entries, prefix=()):
+            missing = []
+            for name, entry in entries.items():
+                path = (*prefix, name)
+                forms = entry.get("forms") or []
+                if not forms:
+                    missing.append(" ".join(path))
+                for form in forms:
+                    self.assertEqual(len(form), 3, f"invalid form for {' '.join(path)}")
+                    self.assertTrue(str(form[0]).strip())
+                    self.assertTrue(str(form[1]).strip())
+                    self.assertTrue(str(form[2]).strip())
+                missing.extend(walk(entry.get("children") or {}, path))
+            return missing
+
+        self.assertEqual(walk(lk.COMMAND_HELP), [])
+
+    def test_inspect_help_is_lowkey_owned_and_documents_supported_sections(self):
+        code, output = self.capture_dispatch("inspect", "--h")
+        self.assertEqual(code, 0)
+        for item in (
+            "lk inspect [Contract] [section] [options]",
+            "lk inspect Vault",
+            "--abi",
+            "--functions",
+            "--events",
+            "--errors",
+            "--storage",
+            "--selectors",
+            "--bytecode",
+            "--metadata",
+            "--all",
+            "--json",
+            "--no-build",
+            "lk forge inspect",
+        ):
+            self.assertIn(item, output)
+        self.assertNotIn("Run forge inspect --help", output)
+        self.assertNotIn("Forge inspect options", output)
+
+    def test_inspect_launcher_is_not_a_generic_forge_passthrough(self):
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        self.assertIn("script|coverage|lint", script)
+        self.assertNotIn("script|inspect|coverage", script)
+
+    def test_inspect_reads_compiled_artifacts_without_invoking_forge_inspect(self):
+        artifact = {
+            "contractName": "Vault",
+            "sourceName": "src/Vault.sol",
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "withdraw",
+                    "inputs": [{"name": "amount", "type": "uint256"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                {
+                    "type": "event",
+                    "name": "Withdrawn",
+                    "inputs": [{"name": "amount", "type": "uint256", "indexed": False}],
+                },
+                {
+                    "type": "error",
+                    "name": "Unauthorized",
+                    "inputs": [],
+                },
+            ],
+            "bytecode": {"object": "60016000"},
+            "deployedBytecode": {"object": "60026000"},
+            "metadata": json.dumps({"compiler": {"version": "0.8.28"}, "settings": {}}),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "Vault.json"
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            output = io.StringIO()
+            with patch.object(lk, "detected_project_root", return_value=pathlib.Path(tmp)), \
+                 patch.object(lk, "artifact_json_files", return_value=[str(path)]), \
+                 patch.object(lk, "run_foundry") as forge:
+                with redirect_stdout(output):
+                    code = lk.run_inspect({}, ["Vault", "--functions", "--events", "--errors"])
+            self.assertEqual(code, 0)
+            self.assertIn("withdraw(uint256)", output.getvalue())
+            self.assertIn("Withdrawn(uint256)", output.getvalue())
+            self.assertIn("Unauthorized()", output.getvalue())
+            forge.assert_not_called()
+
+
+    def test_mode_rich_help_matches_the_actual_command_handlers(self):
+        cases = {
+            "probe": ("Default actor behavior", "--actor <name>", "lk changes"),
+            "fuzz": ("lk fuzz replay", "lk fuzz failures", "lk fuzz watch"),
+            "invariant": ("lk invariant new", "--match-test"),
+            "mutate": ("lk mutate", "Foundry mutation testing"),
+            "lab": ("--generic", "--artifact", "--forge", "--ai-review"),
+            "walkthrough": ("lk walkthrough test", "lk walkthrough seed", "--static"),
+            "verification-benchmark": ("lk vbench", "--min-mutation-score"),
+            "mutation-check": ("lk mcheck", "--timeout"),
+            "questions": ("lk questions --all", "lk q note"),
+            "benchmark": ("--json", "--verbose", "not a real-world audit-accuracy score"),
+        }
+        for command, expected_items in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                for item in expected_items:
+                    self.assertIn(item, output)
+
+    def test_matrix_help_does_not_advertise_unimplemented_state_action(self):
+        code, output = self.capture_dispatch("matrix", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk matrix init", output)
+        self.assertIn("lk matrix add", output)
+        self.assertIn("lk matrix test", output)
+        self.assertNotIn("lk matrix state", output)
+
+    def test_launcher_routed_commands_also_have_lowkey_help(self):
+        import re
+
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        match = re.search(
+            r"script\|coverage\|lint\|geiger\|fmt\|lsp\|create\|"
+            r"verify-contract\|verify-check\|verify-bytecode\|tree\|install\|"
+            r"remove\|update\|init\|clean\|cache\|config\|remappings\|bind\|"
+            r"bind-json\|doc\|compiler\|eip712\|soldeer\|completions\|flatten",
+            script,
+        )
+        self.assertIsNotNone(match)
+        self.assertNotIn("inspect", match.group(0).split("|"))
+        native_commands = set(match.group(0).split("|"))
+        native_commands.add("generate")
+
+        missing = [
+            command for command in sorted(native_commands)
+            if lk._canonical_help_command(command) not in lk.COMMAND_HELP
+        ]
+        self.assertEqual(missing, [])
+
+
+    def test_test_gen_help_documents_native_backend_selection(self):
+        code, output = self.capture_dispatch("test-gen", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--language <solidity|vyper>", output)
+        self.assertIn("Vyper + Titanoboa", output)
+        self.assertIn("lk test-gen Counter --language vyper", output)
+
+    def test_transaction_help_documents_beginner_critical_options(self):
+        cases = {
+            "send": (
+                "--value <amount>",
+                "--actor <name>",
+                "--as <name>",
+                "--preview",
+                "--dry-run",
+                "--confirm",
+                "--yes",
+                "Solidity receives that ETH as msg.value",
+            ),
+            "probe": (
+                "--value <amount>",
+                "--eth <amount>",
+                "--actor <name>",
+                "--as <name>",
+                "msg.value is 1 ETH",
+            ),
+            "changes": (
+                "--value <amount>",
+                "--eth <amount>",
+                "--actor <name>",
+                "--as <name>",
+                "msg.value",
+            ),
+            "trace": (
+                "--grep <text>",
+                "--quick",
+                "--decode-internal",
+                "--trace-printer <value>",
+            ),
+            "snapshot": (
+                "--block <block>",
+            ),
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                self.assertIn("Example:", output)
+                for item in expected:
+                    self.assertIn(item, output)
+
+    def test_send_help_documents_solidity_abi_argument_types(self):
+        code, output = self.capture_dispatch("send", "--h")
+        self.assertEqual(code, 0)
+        for item in (
+            "SOLIDITY ABI ARGUMENT TYPES",
+            "address / address payable / contract",
+            "bool",
+            "uint<M> / int<M> / uint / int",
+            "fixed<M>x<N> / ufixed<M>x<N> / fixed / ufixed",
+            "enum",
+            "string",
+            "bytes",
+            "bytes1 ... bytes32",
+            "T[] (dynamic array)",
+            "T[N] (fixed-size array)",
+            "T[][] (nested arrays)",
+            "tuple / struct",
+            "tuple[] (array of structs)",
+            "function (external only)",
+            "user-defined value type",
+            "mapping / storage-only references (not passed directly)",
+            """lk send createRecord "description of the record" '["defi","solidity"]' --eth 2 --preview""",
+            "Arrays and tuples are each ONE argument",
+        ):
+            with self.subTest(item=item):
+                self.assertIn(item, output)
+
+    def test_read_help_explains_common_argument_types(self):
+        code, output = self.capture_dispatch("read", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk read", output)
+        self.assertIn("bytes32", output)
+        self.assertIn("exactly 64 hex characters", output)
+        self.assertIn("lk read getValue", output)
+        self.assertIn("does not intentionally change contract data", output)
+
+    def test_core_help_examples_are_beginner_friendly(self):
+        cases = {
+            "read": ("lk read getValue", "getRecord"),
+            "send": ("lk send setValue 10", "lk send deposit"),
+            "probe": ("lk probe setValue 10", "lk probe deposit"),
+            "changes": ("lk changes 'setValue(uint256)' 10", "lk changes 'deposit("),
+            "wizard": ("lk wizard setValue 10", "lk wizard deposit"),
+            "target": ("lk target MyContract 0x1111111111111111111111111111111111111111", "lk target vault"),
+            "lab": ("lk lab MyContract", "lk lab Vault"),
+        }
+        for command, (good, old) in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                self.assertIn(good, output)
+                self.assertNotIn(old, output)
+
+    def test_help_examples_are_protocol_agnostic(self):
+        import re
+
+        outputs = []
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        outputs.append(output.getvalue())
+
+        for command in sorted(lk.COMMAND_HELP):
+            code, rendered = self.capture_dispatch(command, "--h")
+            self.assertEqual(code, 0, command)
+            outputs.append(rendered)
+
+        rendered_help = "\n".join(outputs).lower()
+        forbidden = (
+            "ethescrow",
+            "confidencepool",
+            "confidencepoolfactory",
+            "bountyarena",
+            "purchasenft",
+            "createescrow",
+            "createbounty",
+            "escrow",
+        )
+        leaked = [term for term in forbidden if re.search(r"(?<![a-z0-9_])" + re.escape(term) + r"(?![a-z0-9_])", rendered_help)]
+        self.assertEqual(leaked, [])
+
+    def test_changes_help_prefers_simple_function_name(self):
+        code, output = self.capture_dispatch("changes", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: lk changes <function> [values...] [options]", output)
+        self.assertNotIn("lk changes <name>", output)
+        self.assertNotIn("lk changes '<name(types...)>'", output)
+        self.assertIn("lk changes '<function(types...)>'", output)
+        self.assertIn("lk changes setValue 10", output)
+        self.assertIn("For example, use `contribute` instead of `contribute()`." , output)
+        self.assertIn("lk changes 'setValue(uint256)' 10", output)
+        self.assertIn("full quoted signature", output)
+
+    def test_function_placeholders_are_consistent_across_changes_workflows(self):
+        for command, args in (
+            ("state-diff", ("--h",)),
+            ("generate", ("test", "--h")),
+        ):
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, *args)
+                self.assertEqual(code, 0)
+                self.assertNotIn("<name(parameter TYPES...)>", output)
+                self.assertIn("<function(parameter TYPES...)>", output)
+
+    def test_changes_dispatch_preserves_all_arguments_and_options(self):
+        captured = {}
+
+        def fake_run_state_diff(config, args):
+            captured["args"] = list(args)
+            return 0
+
+        with patch.object(lk, "run_state_diff", side_effect=fake_run_state_diff):
+            code = lk.dispatch_command(
+                "changes",
+                ["contribute", "--eth", "1", "--actor", "Alice", "--repeat", "3"],
+                {},
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            captured["args"],
+            ["contribute", "--eth", "1", "--actor", "Alice", "--repeat", "3"],
+        )
+
+    def test_bare_function_name_resolves_without_signature(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "contribute",
+                "stateMutability": "payable",
+                "inputs": [],
+                "outputs": [],
+            }
+        ]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0xd0d0d0d0", "")):
+            signature, calldata = lk.encode_target_call({"target": target}, "contribute", [])
+
+        self.assertEqual(signature, "contribute()")
+        self.assertEqual(calldata, "d0d0d0d0")
+
+    def test_full_signature_form_still_resolves_exactly(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "setValue",
+                "stateMutability": "nonpayable",
+                "inputs": [{"name": "value", "type": "uint256"}],
+                "outputs": [],
+            }
+        ]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0xd0d0d0d0", "")):
+            signature, calldata = lk.encode_target_call(
+                {"target": target}, "setValue(uint256)", ["10"]
+            )
+
+        self.assertEqual(signature, "setValue(uint256)")
+        self.assertEqual(calldata, "d0d0d0d0")
+    def test_grouped_argument_values_are_supported(self):
+        self.assertEqual(
+            lk.split_grouped_argument_values(["(10,0x" + "1" * 40 + ",true)"], 3),
+            ["10", "0x" + "1" * 40, "true"],
+        )
+        self.assertEqual(
+            lk.split_grouped_argument_values(["10", "0x" + "1" * 40, "true"], 3),
+            ["10", "0x" + "1" * 40, "true"],
+        )
+
+    def test_grouped_tuple_argument_is_not_split(self):
+        tuple_value="(10,20)"
+        self.assertEqual(lk.split_grouped_argument_values([tuple_value], 1), [tuple_value])
+
+    def test_grouped_values_resolve_before_encoding(self):
+        target = "0x" + "1" * 40
+        address = "0x" + "2" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "setValues",
+                "stateMutability": "nonpayable",
+                "inputs": [
+                    {"name": "amount", "type": "uint256"},
+                    {"name": "who", "type": "address"},
+                    {"name": "enabled", "type": "bool"},
+                ],
+                "outputs": [],
+            }
+        ]
+        captured = {}
+
+        def fake_cast_output(command):
+            captured["command"] = list(command)
+            return 0, "0xd0d0d0d0", ""
+
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", side_effect=fake_cast_output):
+            signature, calldata = lk.encode_target_call(
+                {"target": target},
+                "setValues",
+                ["(10," + address + ",true)"],
+            )
+
+        self.assertEqual(signature, "setValues(uint256,address,bool)")
+        self.assertEqual(calldata, "d0d0d0d0")
+        self.assertEqual(captured["command"][-3:], ["10", address, "true"])
+    def test_comma_separated_values_work_without_parentheses(self):
+        target = "0x" + "1" * 40
+        address = "0x" + "2" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValues",
+            "stateMutability": "nonpayable",
+            "inputs": [
+                {"name": "amount", "type": "uint256"},
+                {"name": "who", "type": "address"},
+                {"name": "enabled", "type": "bool"},
+            ],
+            "outputs": [],
+        }]
+        captured = {}
+
+        def fake_cast_output(command):
+            captured["command"] = list(command)
+            return 0, "0xd0d0d0d0", ""
+
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", side_effect=fake_cast_output):
+            signature, calldata = lk.encode_target_call(
+                {"target": target}, "setValues", ["10," + address + ",true"]
+            )
+
+        self.assertEqual(signature, "setValues(uint256,address,bool)")
+        self.assertEqual(captured["command"][-3:], ["10", address, "true"])
+
+    def test_trailing_comma_is_accepted_for_grouped_values(self):
+        self.assertEqual(
+            lk.split_grouped_argument_values(["10,20,"], 2),
+            ["10", "20"],
+        )
+    def test_function_name_plus_type_list_selects_exact_overload(self):
+        target = "0x" + "1" * 40
+        address = "0x" + "2" * 40
+        abi = [
+            {"type": "function", "name": "setValues", "inputs": [
+                {"type": "uint256"}, {"type": "address"}, {"type": "bool"}], "outputs": []},
+            {"type": "function", "name": "setValues", "inputs": [
+                {"type": "address"}, {"type": "uint256"}], "outputs": []},
+        ]
+        captured = {}
+
+        def fake_cast_output(command):
+            captured["command"] = list(command)
+            return 0, "0xd0d0d0d0", ""
+
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", side_effect=fake_cast_output):
+            signature, _ = lk.encode_target_call(
+                {"target": target}, "setValues", ["uint256,address,bool", "10," + address + ",true"]
+            )
+
+        self.assertEqual(signature, "setValues(uint256,address,bool)")
+        self.assertEqual(captured["command"][-3:], ["10", address, "true"])
+
+    def test_parenthesized_type_list_also_selects_exact_overload(self):
+        target = "0x" + "1" * 40
+        abi = [{"type": "function", "name": "setValues", "inputs": [
+            {"type": "uint256"}, {"type": "address"}, {"type": "bool"}], "outputs": []}]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0xd0d0d0d0", "")):
+            signature, _ = lk.encode_target_call(
+                {"target": target}, "setValues", ["(uint256,address,bool)", "10", "0x" + "2" * 40, "true"]
+            )
+        self.assertEqual(signature, "setValues(uint256,address,bool)")
+
+    def test_tuple_argument_is_preserved_when_grouping_values(self):
+        target = "0x" + "1" * 40
+        address = "0x" + "2" * 40
+        abi = [{"type": "function", "name": "useTuple", "inputs": [
+            {"type": "tuple", "components": [{"type": "uint256"}, {"type": "uint256"}]},
+            {"type": "address"}], "outputs": []}]
+        values=["(10,20)", address]
+        self.assertEqual(lk.split_grouped_argument_values(
+            values, 2, abi[0]["inputs"]), values)
+
+    def test_receipt_help_uses_plain_words(self):
+        code, output = self.capture_dispatch("receipt", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Show the important result of a transaction", output)
+        self.assertIn("--raw", output)
+        self.assertNotIn("mined", output.lower())
+
+    def test_receipt_is_concise_by_default(self):
+        tx_hash = "0x" + "1" * 64
+        from_address = "0x" + "2" * 40
+        to_address = "0x" + "3" * 40
+        tx = {
+            "hash": tx_hash,
+            "from": from_address,
+            "to": to_address,
+            "value": "0xde0b6b3a7640000",
+            "input": "0x12345678",
+        }
+        receipt = {
+            "status": "0x1",
+            "blockNumber": "0x6",
+            "gasUsed": "0x128db",
+            "logs": [],
+        }
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "rpc_json", side_effect=[receipt, tx]), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=ROOT), \
+             patch.object(lk.audit_context, "set_latest"), \
+             patch.object(lk.audit_context, "record_tool"), \
+             patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash), \
+             redirect_stdout(output):
+            code = lk.run_receipt({"target": to_address, "wallets": {}, "labels": {}}, tx_hash=tx_hash)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("Result:    SUCCESS", rendered)
+        self.assertIn("ETH sent:  1 ETH", rendered)
+        self.assertIn("Block:     6", rendered)
+        self.assertIn("Transaction ID:", rendered)
+        self.assertNotIn("logsBloom", rendered)
+        self.assertNotIn("effectiveGasPrice", rendered)
+
+    def test_balance_help_and_command_are_native_lowkey(self):
+        code, output = self.capture_dispatch("balance", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Show how much native ETH an address holds.", output)
+        self.assertIn("lk balance", output)
+        self.assertIn("target or actor", output.lower())
+
+        target = "0x" + "4" * 40
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "rpc_json", return_value="0xde0b6b3a7640000"), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=ROOT), \
+             redirect_stdout(output):
+            code = lk.run_balance({"target": target, "wallets": {}, "labels": {}}, [])
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ETH BALANCE", rendered)
+        self.assertIn("Balance:  1 ETH", rendered)
+        self.assertIn(target, rendered)
+
+    def test_trace_surfaces_probable_identifier_and_repeats(self):
+        identifier = "0x" + "a" * 64
+        item = {
+            "type": "function",
+            "name": "createescrow",
+            "stateMutability": "payable",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "bytes32"}],
+        }
+        trace = f"    └─ ← [Return] {identifier}"
+        with patch.object(lk, "_trace_function_item", return_value=(item, [item])):
+            rendered, candidates = lk._trace_identifier_info({}, {}, trace)
+        self.assertIn(f"  Escrow ID: {identifier} [bytes32]", rendered)
+        self.assertEqual(candidates[0]["value"], identifier.lower())
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = lk._record_identifier_candidates(temp_dir, "0x" + "1" * 64, candidates)
+            second = lk._record_identifier_candidates(temp_dir, "0x" + "2" * 64, candidates)
+        self.assertEqual(first, [])
+        self.assertTrue(second)
+        self.assertIn("should be unique", second[0])
+
+    def test_trace_output_distinguishes_transaction_id_from_record_id(self):
+        tx_hash = "0x" + "1" * 64
+        target = "0x" + "2" * 40
+        identifier = "0x" + "a" * 64
+        config = {"target": target, "wallets": {}, "labels": {}}
+        trace_result = lk.CommandResult(
+            f"    └─ ← [Return] {identifier}",
+            0,
+        )
+        output = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            with patch.object(lk, "run_cast", return_value=trace_result):
+                with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                    with patch.object(lk, "rpc_json", return_value={"to": target, "input": "0x12345678"}):
+                        with patch.object(
+                            lk,
+                            "_trace_identifier_info",
+                            return_value=([f"  Escrow ID: {identifier} [bytes32]"], [
+                                {"value": identifier, "label": "Escrow ID", "type": "bytes32"}
+                            ]),
+                        ):
+                            with patch.object(lk, "_record_identifier_candidates", return_value=[]):
+                                with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                                    with patch.object(lk.audit_context, "set_latest"):
+                                        with patch.object(lk.audit_context, "record_tool"):
+                                            with patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash):
+                                                with redirect_stdout(output):
+                                                    code = lk.run_trace(config, [tx_hash])
+
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn(f"Transaction ID: {tx_hash}", rendered)
+        self.assertIn(f"Escrow ID: {identifier} [bytes32]", rendered)
+        self.assertIn("Contract return:", rendered)
+        self.assertNotIn("Tx ID:", rendered)
+        self.assertNotIn("Return value #1:", rendered)
+
+    def test_wizard_help_explains_how_to_attach_eth(self):
+        code, output = self.capture_dispatch("wizard", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("does not have an ETH-value flag", output)
+        self.assertIn("lk send", output)
+        self.assertIn("--value 1ether", output)
+
+    def test_identifier_and_storage_commands_have_complete_help(self):
+        cases = {
+            "ids": (
+                "LOWKEY HELP  •  lk ids",
+                "lk ids --all",
+                "lk trace 0x871f...",
+                "transaction hashes",
+            ),
+            "read": (
+                "lk read EscrowID @firstEscrow",
+                "saved reference such as @firstEscrow",
+            ),
+            "send": (
+                "lk send acceptEscrow @firstEscrow --as Bob",
+                "saved contract ID",
+            ),
+            "id": (
+                "LOWKEY HELP  •  lk id",
+                "lk id @last",
+                "lk id alias @last <name>",
+                "@firstEscrow",
+            ),
+            "mapping": (
+                "LOWKEY HELP  •  lk mapping",
+                "Solidity mappings do not keep an enumerable list of keys",
+                "lk ids",
+            ),
+            "array": (
+                "LOWKEY HELP  •  lk array",
+                "compiled storage layout",
+                "lk array owners 0..9",
+            ),
+            "storage": (
+                "LOWKEY HELP  •  lk storage",
+                "32-byte storage words",
+                "lk storage 0..15",
+                "--block <block>",
+            ),
+            "slots": (
+                "LOWKEY HELP  •  lk slots",
+                "Alias for lk storage",
+                "lk slots 0..15",
+            ),
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                for item in expected:
+                    self.assertIn(item, output)
+
+    def test_full_help_menu_lists_identifier_and_storage_workflows(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        for item in (
+            "CONTRACT IDENTIFIERS",
+            "lk ids [--all]",
+            "lk id <number|@alias>",
+            "lk id alias <number> <name>",
+            "lk read EscrowID @firstEscrow",
+            "STORAGE / STATE FORENSICS",
+            "lk mapping <type> <slot> <key>",
+            "lk array <name> [index|start..end]",
+            "lk storage <slot> [slot ...]",
+            "lk storage <start>..<end>",
+            "lk slots <slot> [slot ...]",
+            "mappings do not expose an enumerable list of keys",
+        ):
+            self.assertIn(item, rendered)
+
+    def test_main_help_defines_beginner_transaction_terms(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        for term in ("transaction", "receipt", "storage", "revert", "payable", "msg.value", "trace", "identifier", "Anvil"):
+            self.assertIn(term, rendered)
+
+    def test_wizard_help_explains_workflow_and_modes(self):
+        code, output = self.capture_dispatch("wizard", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Interact with one contract function without having to build the full command yourself.", output)
+        self.assertIn("lk wizard setValue 10", output)
+        self.assertIn("Force a read-only call. The contract is not changed.", output)
+        self.assertIn("Force a state-changing transaction.", output)
+        self.assertIn("Only build the call data. Nothing is sent.", output)
+        self.assertIn("Send the function as a transaction using the current actor.", output)
+        self.assertIn("A target must already be selected.", output)
+        self.assertIn("Transactions use the current actor.", output)
+        self.assertIn("lk actor 0 Alice", output)
+        self.assertIn("Wizard does not have an ETH-value flag.", output)
+        self.assertIn("lk send", output)
+
+    def test_leaf_help_has_parent_navigation(self):
+        code, output = self.capture_dispatch("generate", "test", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("NAVIGATION", output)
+        self.assertIn("lk generate --h", output)
+        self.assertNotIn("Drill down: lk walkthrough test --h", output)
+
+    def test_leaf_help_footer_points_to_actual_parent(self):
+        code, output = self.capture_dispatch("generate", "test", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Parent: lk generate --h", output)
+
+    def test_canonical_command_is_not_mislabeled_as_alias(self):
+        code, output = self.capture_dispatch("project", "--workspace", "--h")
+        self.assertEqual(code, 0)
+        self.assertNotIn("Alias:", output)
+
+    def test_alias_help_explains_alias(self):
+        code, output = self.capture_dispatch("walk", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Alias:", output)
+        self.assertIn("lk walkthrough", output)
+
+    def test_unknown_nested_help_does_not_silently_fall_back(self):
+        code, output = self.capture_dispatch("generate", "bogus", "--h")
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown subcommand: 'bogus'", output)
+        self.assertIn("Available next commands:", output)
+
+    def test_nested_project_workspace_help(self):
+        code, output = self.capture_dispatch("project", "--workspace", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk project --workspace", output)
+        self.assertIn("larger workspace map", output)
+
+    def test_generate_help_is_contextual(self):
+        code, output = self.capture_dispatch("generate", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk generate", output)
+        self.assertIn("lk generate test", output)
+
+    def test_native_test_help_is_not_forwarded_to_forge(self):
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        self.assertIn("Friendly Lowkey help must be handled by the main router.", script)
+        self.assertIn('exec python3 "$HOME/.lowkey/lk.py" "$@"', script)
+        self.assertIn('exec python3 "$HOME/.lowkey/forge_tools.py" "$@"', script)
+
+    def test_generate_help_is_forwarded_by_bin(self):
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        block_start = script.index("    generate)")
+        block_end = script.index("        ;;", block_start)
+        block = script[block_start:block_end]
+        self.assertIn('exec python3 "$HOME/.lowkey/lk.py" "$@"', block)
+
+    def test_alias_help_resolves_to_canonical_command(self):
+        code, output = self.capture_dispatch("walk", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
+
+    def test_help_does_not_activate_or_execute_command(self):
+        called = []
+
+        original = lk.activate_project_target
+        try:
+            lk.activate_project_target = lambda config: called.append(True)
+            code, output = self.capture_dispatch("walkthrough", "--h")
+        finally:
+            lk.activate_project_target = original
+
+        self.assertEqual(code, 0)
+        self.assertEqual(called, [])
+        self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
+
+
+    def test_main_contextual_help_skips_project_sync(self):
+        original_argv = lk.sys.argv
+        lk.sys.argv = ["lk", "slither", "--h"]
+        output = io.StringIO()
+        try:
+            with patch.object(lk, "_sync_audit_context", side_effect=AssertionError),                  patch.object(lk.audit_context, "foundry_project_root", side_effect=AssertionError),                  redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+                lk.main()
+        finally:
+            lk.sys.argv = original_argv
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("LOWKEY HELP  •  lk slither", output.getvalue())
+
+    def test_import_is_in_main_help(self):
+        script = (ROOT / "lowkey" / "lk.py").read_text(encoding="utf-8")
+        self.assertIn("lk import", script)
+        self.assertIn("importable packages", script)
+
+    def test_import_help_explains_search_modes_and_solidity_import_choices(self):
+        code, output = self.capture_dispatch("import", "-h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk import", output)
+        self.assertIn("lk import search <term>", output)
+        self.assertIn("project source, installed dependencies, and Lowkey's known reference catalog", output)
+        self.assertIn("Implementation vs interface", output)
+        self.assertIn("concrete implementation such as ERC20 contains reusable token behavior", output)
+        self.assertIn("interface such as IERC20 describes calls to make against an existing token", output)
+        self.assertIn("REFERENCE ONLY", output)
+        self.assertIn("not proof the file exists locally", output)
+        self.assertIn("Scoped search vs global search", output)
+        self.assertIn("filters the list currently on screen only", output)
+        self.assertIn("--install --dry-run ERC20", output)
+        self.assertIn("Named import vs whole-file import", output)
+        self.assertIn("lk import --copy-only IERC20", output)
+        self.assertIn("--copy-only / --copy", output)
+        self.assertIn("--verbose / -v", output)
+        self.assertIn("b to go back one menu level", output)
+
+    def test_question_help_is_contextual(self):
+        code, output = self.capture_dispatch("q", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk q", output)
+        self.assertIn("lk q why", output)
+        self.assertIn("lk q source", output)
+
+    def test_questions_help_is_contextual(self):
+        code, output = self.capture_dispatch("questions", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk questions", output)
+        self.assertIn("lk questions --all", output)
+        self.assertIn("lk q skip", output)
+        self.assertIn("lk q reset", output)
+
+
+
+    def test_command_variations_are_explicit_in_help(self):
+        cases = {
+            "actor": (
+                "lk actor reset",
+                "Clear the active actor without deleting the saved profile.",
+            ),
+            "rpc": ("lk rpc reset", "Return to automatic RPC detection."),
+            "abi": ("lk abi auto", "Auto-discover and load an ABI for the selected target."),
+            "mapping": (
+                "lk mapping <key_type> <slot> <key>",
+                "Specify the mapping key type explicitly.",
+            ),
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                self.assertIn("COMMAND VARIATIONS", output)
+                self.assertIn(expected[0], output)
+                self.assertIn(expected[1], output)
+                self.assertIn("Example:", output)
+
+    def test_multiform_help_entries_have_variations_or_children(self):
+        import re
+        source = pathlib.Path(MODULE).read_text(encoding="utf-8")
+        blocks = re.findall(
+            r'^    "([^"]+)": _help_entry\(([\s\S]*?)(?=^    "[^"]+": _help_entry|\n\}\n\n)',
+            source,
+            flags=re.MULTILINE,
+        )
+        exempt = {"q", "send", "import", "wizard", "ens"}
+        missing = []
+        for name, block in blocks:
+            usage_lines = [line for line in block.splitlines() if '"lk ' in line and '|' in line]
+            if usage_lines and name not in exempt:
+                if "children=" not in block and "forms=" not in block:
+                    missing.append(name)
+        self.assertEqual(missing, [])
+
+    def test_changes_recommendations_do_not_assume_a_transaction(self):
+        items = lk._recommended_next_commands("changes", [])
+        commands = [command for command, _ in items]
+        self.assertIn("lk findings", commands)
+        self.assertIn("lk mapping <slot> <key>", commands)
+        self.assertNotIn("lk trace", commands)
+        self.assertNotIn("lk receipt", commands)
+
+    def test_recommended_next_commands_are_contextual(self):
+        items = lk._recommended_next_commands("functions", [])
+        commands = [command for command, _ in items]
+        self.assertEqual(len(items), 4)
+        self.assertIn("lk fn <function>", commands)
+        self.assertIn("lk ask <function>", commands)
+        self.assertIn("lk read <function> [args]", commands)
+        self.assertIn("lk wizard <function> [values...]", commands)
+
+        send_items = lk._recommended_next_commands("send", [])
+        send_commands = [command for command, _ in send_items]
+        self.assertIn("lk receipt", send_commands)
+        self.assertIn("lk trace", send_commands)
+
+    def test_read_recommendations_follow_abi_relationships(self):
+        target = "0x" + "1" * 40
+        owner = "0x" + "2" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "balanceOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "account", "type": "address"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+            {
+                "type": "function",
+                "name": "ownerOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "tokenId", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "address"}],
+            },
+            {
+                "type": "function",
+                "name": "getApproved",
+                "stateMutability": "view",
+                "inputs": [{"name": "tokenId", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "address"}],
+            },
+            {
+                "type": "function",
+                "name": "tokenURI",
+                "stateMutability": "view",
+                "inputs": [{"name": "tokenId", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "string"}],
+            },
+            {
+                "type": "function",
+                "name": "approve",
+                "stateMutability": "nonpayable",
+                "inputs": [
+                    {"name": "to", "type": "address"},
+                    {"name": "tokenId", "type": "uint256"},
+                ],
+                "outputs": [],
+            },
+        ]
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=abi):
+            items = lk._recommended_next_commands("read", ["balanceOf", owner], config)
+
+        commands = [command for command, _ in items]
+        self.assertIn("lk read ownerOf <tokenId>", commands)
+        self.assertIn("lk read getApproved <tokenId>", commands)
+        self.assertIn("lk read tokenURI <tokenId>", commands)
+        self.assertNotIn("lk send <function> [args] --preview", commands)
+        self.assertNotIn("lk functions", commands)
+
+    def test_write_function_recommendations_include_state_verification_reads(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "buyNft",
+                "stateMutability": "nonpayable",
+                "inputs": [{"name": "amount", "type": "uint256"}],
+                "outputs": [],
+            },
+            {
+                "type": "function",
+                "name": "balanceOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "account", "type": "address"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+        ]
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=abi):
+            items = lk._recommended_next_commands("send", ["buyNft", "5"], config)
+
+        commands = [command for command, _ in items]
+        self.assertIn("lk receipt", commands)
+        self.assertIn("lk trace", commands)
+        self.assertIn("lk read balanceOf <account>", commands)
+        self.assertNotIn("lk send <function> [args] --preview", commands)
+
+    def test_recommended_next_commands_use_function_query(self):
+        items = lk._recommended_next_commands("fn", ["buyNft"])
+        commands = [command for command, _ in items]
+        self.assertIn("lk ask buyNft", commands)
+        self.assertIn("lk read buyNft [args]", commands)
+        self.assertIn("lk wizard buyNft [values...]", commands)
+
+    def test_recommended_next_commands_skip_machine_output(self):
+        self.assertEqual(lk._recommended_next_commands("benchmark", ["--json"]), [])
+        self.assertEqual(lk._recommended_next_commands("project", ["json"]), [])
+
+    def test_function_lookup_is_case_insensitive(self):
+        abi = [
+            {"type": "function", "name": "balanceOf", "inputs": [{"name": "account", "type": "address"}]}
+        ]
+        self.assertEqual(len(lk.matching_functions(abi, "balanceof")), 1)
+        self.assertEqual(len(lk.matching_functions(abi, "BALANCEOF")), 1)
+        self.assertEqual(len(lk.matching_functions(abi, "balanceOf(address)")), 1)
+
+    def test_recommendation_footer_does_not_repeat_current_command_with_arguments(self):
+        items = lk._recommended_next_commands("ask", ["balanceof"])
+        commands = [command for command, _ in items]
+        self.assertNotIn("lk ask balanceof", commands)
+        self.assertNotIn("lk ask <function>", commands)
+
+    def test_read_rejects_bare_target_address(self):
+        output = io.StringIO()
+        target = "0x" + "1" * 40
+        with redirect_stdout(output), redirect_stderr(output):
+            result = lk.dispatch_command("read", [target], {})
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertIn("Usage: lk read <function> [args]", rendered)
+        self.assertIn("A bare address is a contract target, not a function call.", rendered)
+
+    def test_ask_rejects_extra_arguments(self):
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            result = lk.dispatch_command("ask", ["balanceof", "0x" + "1" * 40], {})
+        self.assertEqual(result, 2)
+        self.assertIn("Usage: lk ask <function>", output.getvalue())
+
+    def test_ask_reports_no_exact_match_instead_of_dumping_fuzzy_results(self):
+        root = pathlib.Path(".")
+        abi = [
+            {"type": "function", "name": "balanceOf", "inputs": [{"name": "account", "type": "address"}]},
+            {"type": "function", "name": "ownerOf", "inputs": [{"name": "tokenId", "type": "uint256"}]},
+        ]
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(lk, "active_project_target", return_value="0x" + "2" * 40), \
+             patch.object(lk, "load_abi", return_value=abi):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.dispatch_command("ask", ["unknownFunction"], {})
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertIn("No exact function match", rendered)
+        self.assertIn("Did you mean:", rendered)
+        self.assertIn("balanceOf(address)", rendered)
+
+    def test_recommendations_require_a_curated_workflow(self):
+        audit_commands = [command for command, _ in lk._recommended_next_commands("audit", [])]
+        self.assertIn("lk findings", audit_commands)
+        self.assertIn("lk checklist", audit_commands)
+        self.assertNotIn("lk cheat", audit_commands)
+
+        self.assertEqual(lk._recommended_next_commands("cheat", ["mapping"]), [])
+        self.assertEqual(lk._recommended_next_commands("version", []), [])
+
+    def test_recommendations_do_not_fall_back_to_help_related_commands(self):
+        self.assertEqual(lk._recommended_next_commands("some-new-command", []), [])
+
+    def test_failed_commands_skip_native_menu_but_still_offer_optional_ai_note(self):
+        output = io.StringIO()
+        with patch.object(lk, "_print_ai_recommendations") as ai_footer, redirect_stdout(output):
+            lk._print_recommended_next_commands("functions", [], result=1)
+        self.assertEqual(output.getvalue(), "")
+        ai_footer.assert_called_once_with("functions", [], None, args=[], result=1)
+
+    def test_recommendation_footer_renders_for_successful_commands(self):
+        previous_status = lk._COMMAND_STATUS
+        lk._COMMAND_STATUS = 0
+        output = io.StringIO()
+        try:
+            with redirect_stdout(output):
+                lk._print_recommended_next_commands("fn", ["buyNft"], result=0)
+            rendered = output.getvalue()
+        finally:
+            lk._COMMAND_STATUS = previous_status
+        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertEqual(rendered.count("NEXT COMMANDS"), 1)
+        self.assertIn("lk ask buyNft", rendered)
+        self.assertIn("lk wizard buyNft [values...]", rendered)
+        self.assertIn("Understand the function's inputs", rendered)
+        self.assertIn("Read current contract state", rendered)
+        self.assertIn("Run with guided prompts", rendered)
+        self.assertIn("Review state effects", rendered)
+        self.assertNotIn("Use it before read/send/changes", rendered)
+
+    def test_main_appends_recommendations_after_successful_command(self):
+        original_argv = lk.sys.argv
+        lk.sys.argv = ["lk", "fn", "buyNft"]
+        output = io.StringIO()
+        try:
+            with patch.object(lk, "dispatch_command", return_value=0), \
+                 patch.object(lk, "_sync_audit_context"), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(".")), \
+                 patch.object(lk.audit_context, "emit"), \
+                 redirect_stdout(output), \
+                 self.assertRaises(SystemExit) as raised:
+                lk.main()
+            self.assertEqual(raised.exception.code, 0)
+        finally:
+            lk.sys.argv = original_argv
+
+        rendered = output.getvalue()
+        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertIn("lk ask buyNft", rendered)
+
+
+    def test_verification_root_and_nested_pages_document_usage_and_flags(self):
+        code, output = self.capture_dispatch("verification", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification", output)
+        self.assertIn("lk verification engines", output)
+        self.assertIn("lk verification run", output)
+        self.assertIn("lk verify", output)
+
+        code, output = self.capture_dispatch("verification", "engines", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification engines", output)
+        self.assertIn("--json", output)
+        self.assertIn("machine-readable JSON", output)
+        self.assertIn("lk verification engines --json", output)
+
+        # The shorter command must reach the exact same nested help page.
+        code, alias_output = self.capture_dispatch("verify", "engines", "-h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification engines", alias_output)
+        self.assertIn("--json", alias_output)
+
+        code, output = self.capture_dispatch("verification", "run", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification run", output)
+        self.assertIn("--profile <light|balanced|deep>", output)
+        self.assertIn("--output <path>", output)
+        self.assertIn("campaign.json --profile=deep", output)
+        self.assertIn(".audit/verification/campaign.json", output)
+
+    def test_mutation_and_generation_help_lists_supported_flags(self):
+        code, output = self.capture_dispatch("mutation-check", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk mcheck", output)
+        self.assertIn("--output <path>", output)
+        self.assertIn("--timeout <seconds>", output)
+        self.assertIn("Default: 300", output)
+        self.assertIn("--timeout=SECONDS", output)
+
+        code, output = self.capture_dispatch("verification-benchmark", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--workspace <dir>", "--output <path>", "--min-mutation-score <0..1>"):
+            self.assertIn(option, output)
+        self.assertIn("0.8 means 80%", output)
+        self.assertIn("lk vbench", output)
+
+        code, output = self.capture_dispatch("generate", "test", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--value <amount>", "--calldata <hex>", "--output, -o <file>", "--force"):
+            self.assertIn(option, output)
+        self.assertIn("Default: 0 ETH", output)
+        self.assertIn("lk gen", output)
+
+        code, output = self.capture_dispatch("generate", "poc", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--impact-assertion <condition>", "--value <amount>", "--calldata <hex>", "--output, -o <file>", "--force"):
+            self.assertIn(option, output)
+        self.assertIn("Required.", output)
+        self.assertIn("candidate", output.lower())
+
+        code, output = self.capture_dispatch("generate", "deployment", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--output, -o <file>", output)
+        self.assertIn("--force", output)
+        self.assertIn("dry-run", output.lower())
+
+    def test_long_command_shortcuts_are_visible_in_full_help(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        for command in ("lk gen", "lk verify", "lk vbench", "lk mcheck", "lk cov"):
+            self.assertIn(command, rendered)
+
+    def test_coverage_help_documents_lcov_and_short_alias(self):
+        code, output = self.capture_dispatch("coverage", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk coverage --report lcov --lcov-version 1.0", output)
+        self.assertIn("lcov.info", output)
+        self.assertIn("--report lcov", output)
+        self.assertIn("--lcov-version 1.0", output)
+        self.assertIn("lk cov --report lcov --lcov-version 1.0", output)
+
+        code, alias_output = self.capture_dispatch("cov", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP", alias_output)
+        self.assertIn("lcov.info", alias_output)
+
+    def test_short_aliases_dispatch_to_existing_verification_handlers(self):
+        calls = []
+
+        def capture(label):
+            def run_cli(args):
+                calls.append((label, list(args)))
+                return 0
+            return run_cli
+
+        with patch.object(lk, "activate_project_target"):
+            with patch.object(lk, "verification_cli", SimpleNamespace(run_cli=capture("verification"))):
+                code = lk.dispatch_command("verify", ["engines", "--json"], {})
+            self.assertEqual(code, 0)
+
+            with patch.object(lk, "verification_benchmark", SimpleNamespace(run_cli=capture("verification-benchmark"))):
+                code = lk.dispatch_command("vbench", ["benchmark.json", "--min-mutation-score", "0.8"], {})
+            self.assertEqual(code, 0)
+
+            with patch.object(lk, "behavioral_validation", SimpleNamespace(run_cli=capture("mutation-check"))):
+                code = lk.dispatch_command("mcheck", ["mutations.json"], {})
+            self.assertEqual(code, 0)
+
+        self.assertEqual(calls, [
+            ("verification", ["engines", "--json"]),
+            ("verification-benchmark", ["benchmark.json", "--min-mutation-score", "0.8"]),
+            ("mutation-check", ["mutations.json"]),
+        ])
+
+    def test_launcher_routes_cov_and_gen_to_the_same_native_handlers(self):
+        launcher = ROOT / "bin" / "lk"
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "forge_tools.py").write_text(
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "generator.py").write_text(
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            coverage = subprocess.run(
+                ["bash", str(launcher), "cov", "--report", "lcov", "--lcov-version", "1.0"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(coverage.returncode, 0, coverage.stderr)
+            self.assertEqual(json.loads(coverage.stdout), [
+                "coverage", "--report", "lcov", "--lcov-version", "1.0"
+            ])
+
+            generation = subprocess.run(
+                ["bash", str(launcher), "gen", "test", "setValue(uint256)", "10"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(generation.returncode, 0, generation.stderr)
+            self.assertEqual(json.loads(generation.stdout), [
+                "test", "setValue(uint256)", "10"
+            ])
+
+
+    def test_launcher_routes_cov_help_to_lowkey_help_router(self):
+        launcher = ROOT / "bin" / "lk"
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            # The main router records its argv; forge_tools must not receive help.
+            (lowkey_dir / "lk.py").write_text(
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "forge_tools.py").write_text(
+                "raise SystemExit('coverage help bypassed Lowkey router')\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            result = subprocess.run(
+                ["bash", str(launcher), "cov", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), ["cov", "--h"])
+
+
+    def test_deploy_help_is_distinct_from_deployment_history_and_singular_alias(self):
+        code, output = self.capture_dispatch("deploy", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk deploy", output)
+        self.assertIn("lk deploy TargetHolder", output)
+        self.assertIn("lk deploy --artifact TargetHolder", output)
+        self.assertIn("generic ABI path", output)
+        self.assertIn("Anvil lifecycle", output)
+
+        code, alias_output = self.capture_dispatch("deployment", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk deploy", alias_output)
+        self.assertIn("Alias: 'lk deployment' is another way to run 'lk deploy'.", alias_output)
+
+        code, history_output = self.capture_dispatch("deployments", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("deployment history", history_output.lower())
+        self.assertIn("does not deploy contracts", history_output.lower())
+        self.assertNotIn("constructor prompts", history_output.lower())
+
+    def test_deploy_routes_to_generic_lab_and_preserves_explicit_artifact_mode(self):
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
+            code = lk._dispatch_command_impl("deploy", ["TargetHolder"], {})
+        self.assertEqual(code, 0)
+        run_lab.assert_called_once_with(
+            {}, ["--generic", "TargetHolder"], deployment_only=True
+        )
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
+            code = lk._dispatch_command_impl("deploy", ["--artifact", "TargetHolder"], {})
+        self.assertEqual(code, 0)
+        run_lab.assert_called_once_with(
+            {}, ["--artifact", "TargetHolder"], deployment_only=True
+        )
+
+        with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
+            code = lk._dispatch_command_impl("deployment", ["TargetHolder"], {})
+        self.assertEqual(code, 0)
+        run_lab.assert_called_once_with(
+            {}, ["--generic", "TargetHolder"], deployment_only=True
+        )
+
+    def test_lab_help_explains_anvil_reuse_and_local_fallback(self):
+        code, output = self.capture_dispatch("lab", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("reuses a reachable Anvil node", output)
+        self.assertIn("starts a disposable project-local Anvil", output)
+        self.assertIn("does not reset the existing chain", output)
+
+    def test_full_help_surfaces_direct_deployment_and_history_distinction(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        self.assertIn("lk deploy [Contract]", rendered)
+        self.assertIn("lk deploy --artifact <Contract>", rendered)
+        self.assertIn("List deployment history only; does not deploy.", rendered)
+
+
+if __name__ == "__main__":
+    unittest.main()
