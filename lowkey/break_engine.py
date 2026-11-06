@@ -2818,7 +2818,11 @@ def _source_function_body(
 
         if artifact_source:
             candidates = [artifact_source]
-        elif target and target.contract and str(target.contract).lower() not in {"target", "unknown"}:
+        elif target and str(target.contract or "").lower() in {"", "target", "unknown"}:
+            # An ABI alias like "target" is not a source identity. Do not infer
+            # that the only same-named method in this workspace belongs to it.
+            return ""
+        elif target and target.contract:
             contract_match = re.compile(
                 r"\b(?:contract|interface|library)\s+" + re.escape(str(target.contract)) + r"\b"
             )
