@@ -637,7 +637,7 @@ MODES
   --pattern ID  Attack using the family mapped from a recurring finding pattern.
                 IDs come from Lowkey's cross-language public-finding playbook.
   --catalog      Print the public-finding logic catalog and exit.
-  --system      Attack every live target Lowkey knows for this project/system.
+  --system      Attack the active/saved targets and live deployments in this project.
   --until-found Continue rounds until a concrete break condition is reached
                 or you stop the process with Ctrl-C.
   --rounds N    Bound the number of rounds when not using --until-found.
@@ -2929,7 +2929,7 @@ def _family_selection(
     ):
         add("upgrade", "function name/source exposes initialization or upgrade lifecycle")
 
-    if PRIVILEGED_RE.search(name) or re.search(
+    if PRIVILEGED_RE.search(name) or re.match(r"(?i)^set[A-Z]", name) or re.search(
         r"\b(?:onlyOwner|onlyAdmin|onlyRole|hasRole|_checkRole|transferOwnership|renounceOwnership)\b",
         source,
     ):
