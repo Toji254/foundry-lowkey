@@ -1549,5 +1549,19 @@ SECOND_RETURNDATA_LENGTH 0
             )
         self.assertEqual(selected, {})
 
+
+    def test_time_probe_advances_block_number_for_blockhash_sensitive_functions(self):
+        target = break_engine.Target("CoinFlip", "0x" + "1" * 40)
+        body = break_engine._render_time_test(
+            target,
+            "flip(bool)",
+            "0x12345678",
+            "0",
+        )
+        self.assertIn("vm.roll(block.number + 1);", body)
+        self.assertIn("blockhash(block.number - 1)", body)
+        self.assertIn('console2.log("BLOCKHASH_CHANGED"', body)
+        self.assertIn('console2.log("LOWKEY_BREAK", false);', body)
+
 if __name__ == "__main__":
     unittest.main()
