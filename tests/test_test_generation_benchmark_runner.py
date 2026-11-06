@@ -93,7 +93,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             config.write_text('[profile.default]\nlibs = ["lib"]\n', encoding="utf-8")
             self.assertFalse(BENCHMARK._forge_std_available(root, config))
 
-    def test_forge_std_detection_does_not_treat_nested_source_as_root_mapping(self):
+    def test_forge_std_detection_accepts_library_src_layout_with_contracts_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             package = root / "lib" / "forge-std"
@@ -104,7 +104,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
                 '[profile.default]\nsrc = "contracts"\nlibs = ["lib"]\n',
                 encoding="utf-8",
             )
-            self.assertFalse(BENCHMARK._forge_std_available(root, config))
+            self.assertTrue(BENCHMARK._forge_std_available(root, config))
 
     def test_forge_std_remapping_resolves_sibling_src_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
