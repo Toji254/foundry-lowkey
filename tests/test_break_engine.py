@@ -1650,5 +1650,35 @@ SECOND_RETURNDATA_LENGTH 0
             )
         self.assertEqual(selected, {})
 
+
+    def test_generic_target_name_requires_artifact_source_identity(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "CoinFlip.sol").write_text(
+                """
+                contract CoinFlip {
+                    function flip(bool guess) external {
+                        uint256 value = uint256(blockhash(block.number - 1));
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "flip",
+                    "inputs": [{"name": "guess", "type": "bool"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"solidity": 1}},
+                target=break_engine.Target("target", "0x" + "1" * 40),
+            )
+        self.assertEqual(selected, {})
+
 if __name__ == "__main__":
     unittest.main()
