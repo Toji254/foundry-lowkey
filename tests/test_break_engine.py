@@ -1680,5 +1680,39 @@ SECOND_RETURNDATA_LENGTH 0
             )
         self.assertEqual(selected, {})
 
+
+    def test_vyper_source_selection_recognizes_raw_call_reentrancy(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "VyperVault.vy").write_text(
+                """
+                balances: public(HashMap[address, uint256])
+
+                @external
+                def withdraw(amount: uint256):
+                    assert self.balances[msg.sender] >= amount
+                    self.balances[msg.sender] -= amount
+                    raw_call(msg.sender, b"", value=amount)
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "withdraw",
+                    "inputs": [{"name": "amount", "type": "uint256"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"vyper": 1}},
+                target=break_engine.Target("VyperVault", "0x" + "1" * 40),
+            )
+        self.assertEqual(list(selected), ["reentrancy", "replay", "accounting", "boundary"])
+        self.assertTrue(any("external interaction" in reason for reason in selected["reentrancy"]))
+
 if __name__ == "__main__":
     unittest.main()
