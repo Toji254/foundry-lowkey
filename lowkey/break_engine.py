@@ -2214,6 +2214,7 @@ def _result_from_output(
     config: dict[str, Any] | None = None,
 ) -> AttackResult:
     text_output = str(output or "")
+    function_name = _function_name(function or "target call")
     if re.search(r"LOWKEY_FORGE_TIMEOUT\s+true", text_output, flags=re.I):
         return AttackResult(
             family=family,
