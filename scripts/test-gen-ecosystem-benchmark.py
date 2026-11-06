@@ -394,11 +394,6 @@ def _forge_std_available(project_root: Path, config_path: Path) -> bool:
     for candidate, explicit in candidates:
         if (candidate / "Test.sol").is_file():
             return True
-        if explicit and (
-            (candidate / source_dir / "Test.sol").is_file()
-            or (candidate / "src" / "Test.sol").is_file()
-        ):
-            return True
         if not explicit and (candidate / source_dir / "Test.sol").is_file():
             return True
     return False
