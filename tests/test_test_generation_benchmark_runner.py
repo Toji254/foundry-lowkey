@@ -81,7 +81,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             (custom / "Test.sol").write_text("contract Test {}", encoding="utf-8")
             config = root / "foundry.toml"
             config.write_text(
-                '[profile.default]\nremappings = ["forge-std=test/utils/forge-std/"]\n',
+                '[profile.default]\nremappings = ["forge-std=test/utils/forge-std/src/"]\n',
                 encoding="utf-8",
             )
             self.assertTrue(BENCHMARK._forge_std_available(root, config))
