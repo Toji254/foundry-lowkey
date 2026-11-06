@@ -2859,7 +2859,7 @@ def _source_function_body(
                     char = source[index]
                     following = source[index + 1] if index + 1 < len(source) else ""
                     if line_comment:
-                        if char == "\\n":
+                        if char == "\n":
                             line_comment = False
                     elif block_comment:
                         if char == "*" and following == "/":
@@ -2868,7 +2868,7 @@ def _source_function_body(
                     elif quote:
                         if escaped:
                             escaped = False
-                        elif char == "\\\\":
+                        elif char == "\\":
                             escaped = True
                         elif char == quote:
                             quote = None
