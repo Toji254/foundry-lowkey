@@ -533,20 +533,151 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("NOT DEPLOYED", error_output.getvalue())
         cast_output.assert_not_called()
 
-    def test_send_repeat_rejects_multi_call_without_changing_msg_sender(self):
-        with self.assertRaisesRegex(ValueError, r"cannot repeat an exact call"):
-            lk.normalize_send_options(["contribute", "--repeat", "2"])
+    def test_send_repeat_options_extract_count_and_preserve_call_arguments(self):
+        self.assertEqual(
+            lk.split_send_repeat_options(["contribute", "--repeat", "5"]),
+            (["contribute"], 5),
+        )
+        self.assertEqual(
+            lk.split_send_repeat_options(["contribute", "--times", "3"]),
+            (["contribute"], 3),
+        )
+        self.assertEqual(
+            lk.normalize_send_options(["contribute", "--repeat", "5"]),
+            ["contribute"],
+        )
 
-    def test_send_repeat_error_is_not_double_prefixed(self):
+    def test_send_repeat_options_reject_ambiguous_or_unsafe_counts(self):
+        for args in (
+            ["contribute", "--repeat", "0"],
+            ["contribute", "--repeat", "101"],
+            ["contribute", "--repeat", "1.5"],
+            ["contribute", "--repeat", "2", "--times", "3"],
+        ):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    lk.split_send_repeat_options(args)
+
+    def test_send_routes_repeat_to_same_actor_runner_without_mutating_config(self):
+        config = {"target": "0x" + "9" * 40, "actor": "Alice"}
+        with patch.object(lk, "run_repeated_send", return_value=0) as repeated:
+            result = lk.run_cast(
+                ["send", "AttackTarget", "--repeat", "4", "--as", "attacker"],
+                config,
+                capture=False,
+            )
+        self.assertEqual(result, 0)
+        repeated.assert_called_once_with(
+            config,
+            ["AttackTarget", "--actor", "attacker"],
+            4,
+            capture=False,
+        )
+        self.assertEqual(config["actor"], "Alice")
+
+    def test_repeated_send_reuses_same_actor_and_submits_sequential_calls(self):
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append((list(args), config.get("actor"), capture))
+            print("Status: SUCCESS")
+            return 0
+
+        config = {"actor": "Alice"}
+        output = io.StringIO()
+        with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+            with redirect_stdout(output):
+                result = lk.run_repeated_send(
+                    config,
+                    ["AttackTarget", "--actor", "attacker"],
+                    3,
+                )
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(args == ["send", "AttackTarget", "--actor", "attacker"] for args, _actor, _capture in calls))
+        self.assertTrue(all(actor == "Alice" for _args, actor, _capture in calls))
+        self.assertTrue(all(capture is False for _args, _actor, capture in calls))
+        rendered = output.getvalue()
+        self.assertIn("ATTEMPT 1/3", rendered)
+        self.assertIn("ATTEMPT 3/3", rendered)
+        self.assertIn("Completed:  3", rendered)
+
+    def test_repeated_send_stops_after_first_reverted_receipt(self):
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append(list(args))
+            print("Status: REVERTED")
+            return 0
+
+        output = io.StringIO()
+        with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+            with redirect_stdout(output):
+                result = lk.run_repeated_send(
+                    {"actor": "Alice"},
+                    ["AttackTarget"],
+                    5,
+                )
+        self.assertEqual(result, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Failed:     1", output.getvalue())
+        self.assertIn("batch is not atomic", output.getvalue())
+
+    def test_repeated_send_confirms_once_then_bypasses_per_send_confirmation(self):
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append(list(args))
+            print("Preview only" if "--preview" in args else "Status: SUCCESS")
+            return 0
+
+        with patch.object(lk, "run_cast", side_effect=fake_run_cast), \
+             patch("builtins.input", return_value="y") as prompt:
+            result = lk.run_repeated_send(
+                {"actor": "Alice"},
+                ["AttackTarget", "--actor", "Alice", "--confirm"],
+                2,
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(prompt.call_count, 1)
+        self.assertEqual(len(calls), 3)
+        self.assertIn("--preview", calls[0])
+        self.assertNotIn("--confirm", calls[1])
+        self.assertIn("--yes", calls[1])
+        self.assertNotIn("--confirm", calls[2])
+        self.assertIn("--yes", calls[2])
+
+    def test_repeated_send_preview_never_broadcasts(self):
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append(list(args))
+            print("Preview only")
+            return 0
+
+        output = io.StringIO()
+        with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+            with redirect_stdout(output):
+                result = lk.run_repeated_send(
+                    {"actor": "Alice"},
+                    ["AttackTarget", "--preview"],
+                    4,
+                )
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--preview", calls[0])
+        self.assertIn("Requested: 4 separate transactions", output.getvalue())
+
+    def test_send_repeat_limit_error_is_not_double_prefixed(self):
         with patch.object(lk, "cast_output") as cast_output:
             result = lk.run_cast(
-                ["send", "contribute", "--repeat", "5"],
+                ["send", "contribute", "--repeat", "101"],
                 {"target": "0x" + "3" * 40},
                 capture=True,
             )
         self.assertEqual(result.code, 2)
         self.assertTrue(str(result).startswith("Error: Check the command syntax"))
-        self.assertIn("--repeat/--times cannot repeat", str(result))
+        self.assertIn("cannot exceed 100", str(result))
         self.assertNotIn("Error: Error:", str(result))
         cast_output.assert_not_called()
 
@@ -567,8 +698,10 @@ class CliConsistencyTests(unittest.TestCase):
         refresh_poc.assert_not_called()
 
     def test_send_times_alias_matches_repeat(self):
-        with self.assertRaisesRegex(ValueError, r"cannot repeat an exact call"):
-            lk.normalize_send_options(["contribute", "--times", "2"])
+        self.assertEqual(
+            lk.split_send_repeat_options(["contribute", "--times", "2"]),
+            (["contribute"], 2),
+        )
 
     def test_send_help_documents_eth_and_repeat_boundary(self):
         output = io.StringIO()
@@ -578,6 +711,8 @@ class CliConsistencyTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("--eth <amount>", rendered)
         self.assertIn("--repeat <N>", rendered)
+        self.assertIn("same selected actor", rendered)
+        self.assertIn("separate sequential transactions", rendered)
         self.assertIn("--actors", rendered)
         self.assertIn("msg.sender", rendered)
 
