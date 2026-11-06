@@ -15,6 +15,7 @@ A pattern has:
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from pathlib import Path
 import re
 from typing import Any, Iterable
 
@@ -265,18 +266,32 @@ def patterns_for(
         )
     )
     ranked: list[tuple[int, FindingPattern]] = []
+    strong_anchors = {
+        "call", "send", "transfer", "safeTransfer", "safeTransferFrom",
+        "raw_call", "extcall", "callback", "hook", "tx.origin",
+        "latestRoundData", "getRoundData", "flashLoan", "flashloan",
+        "delegatecall", "ecrecover", "blockhash", "prevrandao",
+        "for", "while", "initialize", "upgradeTo",
+    }
     for item in FINDING_PATTERNS:
-        score = 0
-        matched_anchors = [
-            anchor for anchor in item.anchors
-            if anchor.lower() in text
-        ]
-        # Language compatibility means a pattern can be considered for this
-        # project; it is not evidence that the vulnerability pattern exists.
-        # Require at least one concrete source/function anchor before ranking.
-        if matched_anchors:
-            score = 2 * len(matched_anchors)
-            ranked.append((score, item))
+        matched_anchors = []
+        for anchor in item.anchors:
+            escaped = re.escape(anchor.lower())
+            # Identifier anchors are matched as tokens so e.g. "for" does not
+            # accidentally match the word "function".
+            if re.fullmatch(r"[a-z0-9_]+", anchor.lower()):
+                matched = re.search(r"(?<![a-z0-9_])" + escaped + r"(?![a-z0-9_])", text)
+            else:
+                matched = re.search(escaped, text)
+            if matched:
+                matched_anchors.append(anchor)
+        # A single high-signal primitive is enough; broad words such as "set",
+        # "amount", "price", or "for" need an additional independent anchor.
+        if matched_anchors and (
+            len(matched_anchors) >= 2
+            or any(anchor.lower() in {x.lower() for x in strong_anchors} for anchor in matched_anchors)
+        ):
+            ranked.append((2 * len(matched_anchors), item))
     return [item for _score, item in sorted(ranked, key=lambda pair: (-pair[0], pair[1].id))]
 
 
@@ -342,8 +357,48 @@ def describe_pattern(pattern: FindingPattern) -> dict[str, Any]:
     return data
 
 
+def _first_party_source_excerpt(project: dict[str, Any] | None) -> str:
+    root_value = (project or {}).get("root")
+    if not root_value:
+        return ""
+    root = Path(str(root_value)).expanduser()
+    if not root.is_dir():
+        return ""
+    excluded = {
+        ".git", ".audit", ".venv", "venv", "node_modules", "lib", "vendor",
+        "out", "cache", "build", "target", "test", "tests", "script", "scripts",
+        "fixtures", "mocks", "mock",
+    }
+    suffixes = {".sol", ".vy", ".cairo", ".move", ".rs", ".huff", ".yul"}
+    excerpts: list[str] = []
+    total = 0
+    try:
+        candidates = sorted(
+            path for path in root.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in suffixes
+            and not any(part.lower() in excluded for part in path.relative_to(root).parts[:-1])
+        )
+        for path in candidates[:120]:
+            try:
+                if path.stat().st_size > 1_000_000:
+                    continue
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if content:
+                excerpts.append(content[:3000])
+                total += min(len(content), 3000)
+            if total >= 12000:
+                break
+    except OSError:
+        return ""
+    return "\n".join(excerpts)[:12000]
+
+
 def catalog_summary(project: dict[str, Any] | None = None) -> dict[str, Any]:
-    patterns = patterns_for(project=project)
+    source_excerpt = _first_party_source_excerpt(project)
+    patterns = patterns_for(project=project, source_text=source_excerpt)
     return {
         "total_patterns": len(FINDING_PATTERNS),
         "relevant_patterns": [describe_pattern(item) for item in patterns[:24]],
