@@ -213,6 +213,50 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
         )
         self.assertIsNone(BENCHMARK.expected_unsupported_outcome({"id": "ordinary-project"}))
 
+    def test_complete_evidence_gap_report_is_not_a_tool_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / ".audit" / "benchmark"
+
+            def fake_run(command, cwd=None, timeout=1800, env=None):
+                output_dir = Path(command[command.index("--output-dir") + 1])
+                report_dir = output_dir / "UnfamiliarContract"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                if command[command.index("--types") + 1] == "all":
+                    (report_dir / "report.json").write_text(
+                        json.dumps({
+                            "requested_types": ["unit", "fuzz"],
+                            "generation_assessment": {
+                                "unit": {"level": "not-generated", "note": "No grounded property."},
+                                "fuzz": {"level": "not-generated", "note": "No safe fuzz harness."},
+                            },
+                            "generated": [],
+                            "skipped": [
+                                {"type": "unit", "reason": "No grounded property."},
+                                {"type": "fuzz", "reason": "No safe fuzz harness."},
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                else:
+                    (report_dir / "report.json").write_text(
+                        json.dumps({
+                            "validation": {
+                                "status": "not-applicable",
+                                "test_executions": [],
+                            }
+                        }),
+                        encoding="utf-8",
+                    )
+                return {"command": command, "exit_code": 1, "stdout_tail": "", "stderr_tail": ""}
+
+            with patch.object(BENCHMARK, "run", side_effect=fake_run):
+                result = BENCHMARK.evaluate_target(root, "UnfamiliarContract", output_root)
+
+            self.assertFalse(result["generation_succeeded"])
+            self.assertFalse(result["validation_succeeded"])
+            self.assertEqual(result["honest_result"], "assessed-with-evidence-gaps")
+
     def test_target_is_not_marked_passed_when_generator_command_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
