@@ -706,6 +706,16 @@ def evaluate_target(
         "validation_report_found": validation_report is not None,
         "validation_test_executions": executions,
         "validation_succeeded": validation_succeeded,
+        "validation_diagnostics": {
+            "detail": validation_data.get("detail"),
+            "status": validation_status,
+            "baseline_exit_code": validation_data.get("baseline_exit_code"),
+            "exit_code": validation_data.get("exit_code"),
+            "stdout_tail": validation_data.get("stdout_tail", ""),
+            "stderr_tail": validation_data.get("stderr_tail", ""),
+            "command": validation_data.get("command"),
+            "test_executions": executions,
+        },
         "formal_artifact_exists": any((all_dir / slug).glob("*Formal*")),
         "honest_result": honest_result,
     }

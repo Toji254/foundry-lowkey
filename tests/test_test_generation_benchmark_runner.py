@@ -294,6 +294,61 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             self.assertFalse(result["validation_succeeded"])
             self.assertEqual(result["honest_result"], "assessed-with-evidence-gaps")
 
+    def test_target_report_preserves_validation_compiler_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / ".audit" / "benchmark"
+            compiler_error = "Error (6275): Source file not found: forge-std/Test.sol"
+
+            def fake_run(command, cwd=None, timeout=1800, env=None):
+                output_dir = Path(command[command.index("--output-dir") + 1])
+                report_dir = output_dir / "EndpointV2"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                if command[command.index("--types") + 1] == "all":
+                    report = {
+                        "requested_types": ["unit"],
+                        "generation_assessment": {
+                            "unit": {
+                                "level": "requires-setup-review",
+                                "note": "Smoke test requires deployment setup review.",
+                            }
+                        },
+                        "generated": ["LowkeyGeneratedUnit_EndpointV2.t.sol"],
+                        "skipped": [],
+                    }
+                else:
+                    report = {
+                        "validation": {
+                            "requested": True,
+                            "status": "failed",
+                            "detail": "Generated drafts failed to compile.",
+                            "baseline_exit_code": 0,
+                            "exit_code": 1,
+                            "command": ["forge", "build"],
+                            "stdout_tail": "",
+                            "stderr_tail": compiler_error,
+                            "test_executions": [],
+                        }
+                    }
+                (report_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+                return {
+                    "command": command,
+                    "exit_code": 1 if command[command.index("--types") + 1] == "all" else 1,
+                    "stdout_tail": "",
+                    "stderr_tail": "",
+                }
+
+            with patch.object(BENCHMARK, "run", side_effect=fake_run):
+                result = BENCHMARK.evaluate_target(root, "EndpointV2", output_root)
+
+            self.assertEqual(result["honest_result"], "generation-or-validation-failed")
+            self.assertEqual(
+                result["validation_diagnostics"]["stderr_tail"],
+                compiler_error,
+            )
+            self.assertEqual(result["validation_diagnostics"]["baseline_exit_code"], 0)
+            self.assertEqual(result["validation_diagnostics"]["exit_code"], 1)
+
     def test_target_is_not_marked_passed_when_generator_command_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
