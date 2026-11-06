@@ -313,9 +313,9 @@ def _dependency_install_command(root: Path) -> list[str] | None:
     if (root / "yarn.lock").is_file():
         bundled = sorted((root / ".yarn" / "releases").glob("yarn-*.cjs"))
         if bundled and (manager.startswith("yarn@4") or (root / ".yarnrc.yml").is_file()):
-            return ["node", str(bundled[-1]), "install", "--immutable", "--mode=skip-builds"]
+            return ["node", str(bundled[-1]), "install", "--immutable", "--mode=skip-build"]
         if manager.startswith("yarn@4"):
-            return ["corepack", "yarn", "install", "--immutable", "--mode=skip-builds"]
+            return ["corepack", "yarn", "install", "--immutable", "--mode=skip-build"]
         return ["corepack", "yarn@1.22.22", "install", "--frozen-lockfile", "--ignore-scripts"]
     return None
 
@@ -474,6 +474,10 @@ def evaluate_target(
     )
     if generation_report is None or validation_report is None or not generation_assessed:
         honest_result = "tool-or-report-failure"
+    elif generation.get("exit_code") != 0 or validation.get("exit_code") != 0:
+        # An exit failure is not an evidence gap, even if a partial report or a
+        # later validation command happens to produce plausible output.
+        honest_result = "generation-or-validation-failed"
     elif executable_expected and not validation_succeeded:
         honest_result = "execution-failed"
     elif not executable_expected and not no_executable_candidate and not validation_succeeded:
