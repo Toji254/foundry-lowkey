@@ -1609,5 +1609,46 @@ SECOND_RETURNDATA_LENGTH 0
         self.assertEqual(list(selected), ["time"])
         self.assertNotIn("reentrancy", selected)
 
+
+    def test_unknown_target_does_not_borrow_first_same_named_function_body(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "Aardvark.sol").write_text(
+                """
+                contract Aardvark {
+                    function flip(bool guess) external {
+                        payable(msg.sender).call{value: 1}("");
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            (source_dir / "CoinFlip.sol").write_text(
+                """
+                contract CoinFlip {
+                    function flip(bool guess) external {
+                        uint256 value = uint256(blockhash(block.number - 1));
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "flip",
+                    "inputs": [{"name": "guess", "type": "bool"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"solidity": 1}},
+                target=break_engine.Target("target", "0x" + "1" * 40),
+            )
+        self.assertEqual(selected, {})
+
 if __name__ == "__main__":
     unittest.main()
