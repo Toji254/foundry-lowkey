@@ -60,7 +60,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             self.assertEqual(
                 BENCHMARK._dependency_install_command(root),
                 ["node", str(root / ".yarn" / "releases" / "yarn-4.0.2.cjs"),
-                 "install", "--immutable", "--mode=skip-builds"],
+                 "install", "--immutable", "--mode=skip-build"],
             )
 
     def test_npm_lockfile_uses_clean_reproducible_dependency_install(self):
