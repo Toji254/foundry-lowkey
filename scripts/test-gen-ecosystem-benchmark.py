@@ -344,8 +344,8 @@ def _config_uses_node_modules(config_path: Path) -> bool:
     return any("node_modules" in value.replace("\\\\", "/") for value in values)
 
 
-def _forge_std_available(project_root: Path, config_path: Path) -> bool:
-    """Check explicit remappings and Foundry library roots for forge-std/Test.sol."""
+def _foundry_profile_config(config_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the active and default Foundry profile without mutating the config."""
     try:
         import tomllib
         config = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -353,23 +353,98 @@ def _forge_std_available(project_root: Path, config_path: Path) -> bool:
         active = os.environ.get("FOUNDRY_PROFILE", "default")
         selected = profiles.get(active, {})
         default = profiles.get("default", {})
-        libs = selected.get("libs", default.get("libs", config.get("libs", ["lib"])))
-        remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
+        return selected, default
     except (OSError, ValueError, ImportError, AttributeError):
-        libs, remappings = ["lib"], []
-    candidates: list[Path] = []
+        return {}, {}
+
+
+def _forge_std_available(project_root: Path, config_path: Path) -> bool:
+    """Check the configured forge-std source directory, not any nearby layout."""
+    selected, default = _foundry_profile_config(config_path)
+    try:
+        import tomllib
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        config = {}
+
+    source_dir = str(selected.get("src", default.get("src", config.get("src", "src"))))
+    libs = selected.get("libs", default.get("libs", config.get("libs", ["lib"])))
+    remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
+    candidates: list[tuple[Path, bool]] = []
+
+    # An explicit remapping is authoritative. Some projects point at the package
+    # root, while others point directly at its source directory.
     for remapping in remappings if isinstance(remappings, list) else []:
-        value = str(remapping).split("=", 1)
-        if len(value) == 2 and value[0].rstrip("/") in {"forge-std", "forge-std/"}:
-            target = Path(value[1])
-            candidates.append(target if target.is_absolute() else project_root / target)
+        prefix, separator, destination = str(remapping).partition("=")
+        if separator and prefix.rstrip("/") == "forge-std":
+            target = Path(destination.strip()).expanduser()
+            target = target if target.is_absolute() else project_root / target
+            candidates.append((target, True))
+
+    # Automatic remappings use the project's configured source directory for
+    # dependencies too. src/Test.sol does not satisfy a forge-std/contracts/Test.sol mapping.
     for library in libs if isinstance(libs, list) else ["lib"]:
         base = Path(str(library)).expanduser()
-        candidates.append(base if base.is_absolute() else project_root / base)
-    candidates.extend([project_root / "lib", project_root / "test" / "utils" / "forge-std"])
-    return any((candidate / "forge-std" / "src" / "Test.sol").is_file()
-               or (candidate / "src" / "Test.sol").is_file()
-               for candidate in candidates)
+        library_root = base if base.is_absolute() else project_root / base
+        candidates.append((library_root / "forge-std", False))
+        if library_root.name == "forge-std":
+            candidates.append((library_root, False))
+
+    candidates.append((project_root / "test" / "utils" / "forge-std", True))
+    for candidate, explicit in candidates:
+        if (candidate / "Test.sol").is_file():
+            return True
+        if explicit and (
+            (candidate / source_dir / "Test.sol").is_file()
+            or (candidate / "src" / "Test.sol").is_file()
+        ):
+            return True
+        if not explicit and (candidate / source_dir / "Test.sol").is_file():
+            return True
+    return False
+
+
+def _prepare_forge_std_source_layout(project_root: Path, config_path: Path) -> str | None:
+    """Bridge Foundry auto-remapping to a forge-std package that stores sources in src/."""
+    selected, default = _foundry_profile_config(config_path)
+    try:
+        import tomllib
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        config = {}
+
+    source_dir = Path(str(selected.get("src", default.get("src", config.get("src", "src")))))
+    if source_dir.is_absolute() or ".." in source_dir.parts or not source_dir.parts:
+        return None
+    libs = selected.get("libs", default.get("libs", config.get("libs", ["lib"])))
+    remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
+    if any(
+        str(entry).partition("=")[0].rstrip("/") == "forge-std" and "=" in str(entry)
+        for entry in (remappings if isinstance(remappings, list) else [])
+    ):
+        return None
+
+    for library in libs if isinstance(libs, list) else ["lib"]:
+        base = Path(str(library)).expanduser()
+        library_root = base if base.is_absolute() else project_root / base
+        roots = [library_root / "forge-std"]
+        if library_root.name == "forge-std":
+            roots.append(library_root)
+        for forge_std_root in roots:
+            canonical = forge_std_root / "src"
+            expected = forge_std_root / source_dir
+            if not (canonical / "Test.sol").is_file() or expected == canonical:
+                continue
+            if expected.exists() or expected.is_symlink():
+                continue
+            try:
+                expected.parent.mkdir(parents=True, exist_ok=True)
+                expected.symlink_to(canonical, target_is_directory=True)
+            except OSError:
+                continue
+            if (expected / "Test.sol").is_file():
+                return str(expected)
+    return None
 
 
 def _ensure_forge_std(
@@ -377,19 +452,29 @@ def _ensure_forge_std(
     config_path: Path,
     env: dict[str, str],
 ) -> dict[str, Any]:
-    """Install the standard Forge test harness only when the project does not provide it."""
+    """Ensure forge-std matches the source layout used by the active Foundry profile."""
+    alias = _prepare_forge_std_source_layout(project_root, config_path)
     if _forge_std_available(project_root, config_path):
-        return {"status": "already-available"}
+        return {
+            "status": "compatibility-alias-added" if alias else "already-available",
+            "compatibility_alias": alias,
+        }
     result = run(
         ["forge", "install", "foundry-rs/forge-std", "--no-commit"],
         cwd=project_root,
         timeout=900,
         env=env,
     )
+    installed_alias = _prepare_forge_std_source_layout(project_root, config_path)
     available = _forge_std_available(project_root, config_path)
     return {
-        "status": "installed" if result.get("exit_code") == 0 and available else "unavailable",
+        "status": (
+            "installed-with-compatibility-alias" if result.get("exit_code") == 0 and available and installed_alias
+            else "installed" if result.get("exit_code") == 0 and available
+            else "unavailable"
+        ),
         "install_command": result,
+        "compatibility_alias": alias or installed_alias,
         "available_after_install": available,
     }
 
