@@ -359,7 +359,7 @@ def _foundry_profile_config(config_path: Path) -> tuple[dict[str, Any], dict[str
 
 
 def _forge_std_available(project_root: Path, config_path: Path) -> bool:
-    """Check the configured forge-std source directory, not any nearby layout."""
+    """Check that a configured forge-std remapping resolves Test.sol at its destination."""
     selected, default = _foundry_profile_config(config_path)
     try:
         import tomllib
@@ -367,79 +367,178 @@ def _forge_std_available(project_root: Path, config_path: Path) -> bool:
     except (OSError, ValueError, ImportError):
         config = {}
 
-    source_dir = str(selected.get("src", default.get("src", config.get("src", "src"))))
-    libs = selected.get("libs", default.get("libs", config.get("libs", ["lib"])))
-    remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
-    candidates: list[tuple[Path, bool]] = []
+    remappings = selected.get(
+        "remappings", default.get("remappings", config.get("remappings", []))
+    )
+    candidates: list[Path] = []
 
-    # An explicit remapping is authoritative. Some projects point at the package
-    # root, while others point directly at its source directory.
     for remapping in remappings if isinstance(remappings, list) else []:
         prefix, separator, destination = str(remapping).partition("=")
         if separator and prefix.rstrip("/") == "forge-std":
             target = Path(destination.strip()).expanduser()
-            target = target if target.is_absolute() else project_root / target
-            candidates.append((target, True))
+            candidates.append(target if target.is_absolute() else project_root / target)
 
-    # Automatic remappings use the project's configured source directory for
-    # dependencies too. src/Test.sol does not satisfy a forge-std/contracts/Test.sol mapping.
-    for library in libs if isinstance(libs, list) else ["lib"]:
-        base = Path(str(library)).expanduser()
-        library_root = base if base.is_absolute() else project_root / base
-        candidates.append((library_root / "forge-std", False))
-        if library_root.name == "forge-std":
-            candidates.append((library_root, False))
-
-    candidates.append((project_root / "test" / "utils" / "forge-std", True))
-    for candidate, explicit in candidates:
-        if (candidate / "Test.sol").is_file():
-            return True
-        if not explicit and (candidate / source_dir / "Test.sol").is_file():
-            return True
-    return False
-
-
-def _prepare_forge_std_source_layout(project_root: Path, config_path: Path) -> str | None:
-    """Bridge Foundry auto-remapping to a forge-std package that stores sources in src/."""
-    selected, default = _foundry_profile_config(config_path)
-    try:
-        import tomllib
-        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, ImportError):
-        config = {}
-
-    source_dir = Path(str(selected.get("src", default.get("src", config.get("src", "src")))))
-    if source_dir.is_absolute() or ".." in source_dir.parts or not source_dir.parts:
-        return None
     libs = selected.get("libs", default.get("libs", config.get("libs", ["lib"])))
-    remappings = selected.get("remappings", default.get("remappings", config.get("remappings", [])))
-    if any(
-        str(entry).partition("=")[0].rstrip("/") == "forge-std" and "=" in str(entry)
-        for entry in (remappings if isinstance(remappings, list) else [])
-    ):
-        return None
-
     for library in libs if isinstance(libs, list) else ["lib"]:
         base = Path(str(library)).expanduser()
         library_root = base if base.is_absolute() else project_root / base
-        roots = [library_root / "forge-std"]
+        candidates.append(library_root / "forge-std")
         if library_root.name == "forge-std":
-            roots.append(library_root)
-        for forge_std_root in roots:
-            canonical = forge_std_root / "src"
-            expected = forge_std_root / source_dir
-            if not (canonical / "Test.sol").is_file() or expected == canonical:
-                continue
-            if expected.exists() or expected.is_symlink():
-                continue
-            try:
-                expected.parent.mkdir(parents=True, exist_ok=True)
-                expected.symlink_to(canonical, target_is_directory=True)
-            except OSError:
-                continue
-            if (expected / "Test.sol").is_file():
-                return str(expected)
-    return None
+            candidates.append(library_root)
+
+    # A nearby nested source tree is not enough: the effective import mapping
+    # must point at a directory containing Test.sol directly.
+    return any((candidate / "Test.sol").is_file() for candidate in candidates)
+
+
+def _parse_foundry_remappings(output: str) -> list[str]:
+    """Parse the one-remapping-per-line output from forge remappings."""
+    entries: list[str] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        prefix, destination = line.split("=", 1)
+        if prefix.strip() and destination.strip() and prefix.strip().endswith("/"):
+            entries.append(f"{prefix.strip()}={destination.strip()}")
+    return entries
+
+
+def _remapping_target(project_root: Path, remapping: str) -> tuple[str, Path] | None:
+    """Resolve a Foundry remapping destination relative to the package root."""
+    prefix, separator, destination = remapping.partition("=")
+    if not separator or not prefix.strip() or not destination.strip():
+        return None
+    path = Path(destination.strip()).expanduser()
+    target = path if path.is_absolute() else project_root / path
+    return prefix.strip(), target.resolve()
+
+
+def _configure_forge_std_remapping(
+    project_root: Path,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Make the effective forge-std import mapping point at its actual source tree."""
+    discovery = run(
+        ["forge", "remappings"],
+        cwd=project_root,
+        timeout=120,
+        env=env,
+    )
+    if discovery.get("exit_code") != 0:
+        return {
+            "ok": False,
+            "status": "remapping-discovery-failed",
+            "remapping_command": discovery,
+        }
+
+    remappings = _parse_foundry_remappings(str(discovery.get("stdout_tail") or ""))
+    matching_indexes = [
+        index for index, entry in enumerate(remappings)
+        if entry.partition("=")[0].rstrip("/") == "forge-std"
+    ]
+    if not matching_indexes:
+        return {
+            "ok": False,
+            "status": "forge-std-remapping-missing",
+            "remapping_command": discovery,
+            "discovered_remappings": remappings,
+        }
+
+    corrected = list(remappings)
+    corrections: list[dict[str, str]] = []
+    for index in matching_indexes:
+        resolved = _remapping_target(project_root, remappings[index])
+        if resolved is None:
+            return {
+                "ok": False,
+                "status": "invalid-forge-std-remapping",
+                "remapping_command": discovery,
+                "remapping": remappings[index],
+            }
+        prefix, target = resolved
+        if (target / "Test.sol").is_file():
+            continue
+
+        # Foundry may autodetect the package root even though forge-std keeps
+        # its Solidity sources in src/. Only correct a known, unambiguous layout.
+        source_candidates = [
+            target / child / "Test.sol"
+            for child in ("src", "contracts")
+            if (target / child / "Test.sol").is_file()
+        ]
+        if len(source_candidates) != 1:
+            return {
+                "ok": False,
+                "status": "forge-std-test-source-unresolved",
+                "remapping_command": discovery,
+                "remapping": remappings[index],
+                "expected_test_sol": str(target / "Test.sol"),
+                "nested_candidates": [str(path) for path in source_candidates],
+            }
+
+        source_root = source_candidates[0].parent.resolve()
+        corrected[index] = f"{prefix}={source_root.as_posix().rstrip('/')}/"
+        corrections.append({
+            "from": remappings[index],
+            "to": corrected[index],
+        })
+
+    if corrections:
+        # Preserve the complete Foundry remapping set; replacing the environment
+        # with only forge-std would silently break unrelated project imports.
+        env["FOUNDRY_REMAPPINGS"] = ",".join(corrected)
+
+    verification = run(
+        ["forge", "remappings"],
+        cwd=project_root,
+        timeout=120,
+        env=env,
+    )
+    if verification.get("exit_code") != 0:
+        return {
+            "ok": False,
+            "status": "remapping-verification-failed",
+            "remapping_command": discovery,
+            "verification_command": verification,
+            "corrections": corrections,
+        }
+
+    verified = _parse_foundry_remappings(
+        str(verification.get("stdout_tail") or "")
+    )
+    verified_targets = [
+        _remapping_target(project_root, entry)
+        for entry in verified
+        if entry.partition("=")[0].rstrip("/") == "forge-std"
+    ]
+    if not verified_targets or any(
+        target is None or not (target[1] / "Test.sol").is_file()
+        for target in verified_targets
+    ):
+        return {
+            "ok": False,
+            "status": "effective-forge-std-remapping-unresolved",
+            "remapping_command": discovery,
+            "verification_command": verification,
+            "verified_remappings": [
+                entry for entry in verified
+                if entry.partition("=")[0].rstrip("/") == "forge-std"
+            ],
+            "corrections": corrections,
+        }
+
+    return {
+        "ok": True,
+        "status": "remapping-corrected-to-source" if corrections else "already-available",
+        "remapping_command": discovery,
+        "verification_command": verification,
+        "effective_remapping": [
+            entry for entry in verified
+            if entry.partition("=")[0].rstrip("/") == "forge-std"
+        ],
+        "corrections": corrections,
+    }
 
 
 def _ensure_forge_std(
@@ -447,30 +546,27 @@ def _ensure_forge_std(
     config_path: Path,
     env: dict[str, str],
 ) -> dict[str, Any]:
-    """Ensure forge-std matches the source layout used by the active Foundry profile."""
-    alias = _prepare_forge_std_source_layout(project_root, config_path)
-    if _forge_std_available(project_root, config_path):
-        return {
-            "status": "compatibility-alias-added" if alias else "already-available",
-            "compatibility_alias": alias,
-        }
-    result = run(
+    """Ensure forge-std is importable through Foundry's effective remapping."""
+    env.setdefault("FOUNDRY_CONFIG", str(config_path.resolve()))
+    setup = _configure_forge_std_remapping(project_root, env)
+    if setup.get("ok"):
+        return setup
+
+    install = run(
         ["forge", "install", "foundry-rs/forge-std", "--no-commit"],
         cwd=project_root,
         timeout=900,
         env=env,
     )
-    installed_alias = _prepare_forge_std_source_layout(project_root, config_path)
-    available = _forge_std_available(project_root, config_path)
+    after_install = _configure_forge_std_remapping(project_root, env)
     return {
+        **after_install,
+        "install_command": install,
         "status": (
-            "installed-with-compatibility-alias" if result.get("exit_code") == 0 and available and installed_alias
-            else "installed" if result.get("exit_code") == 0 and available
+            after_install.get("status")
+            if after_install.get("ok")
             else "unavailable"
         ),
-        "install_command": result,
-        "compatibility_alias": alias or installed_alias,
-        "available_after_install": available,
     }
 
 

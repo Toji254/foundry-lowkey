@@ -81,7 +81,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             (custom / "Test.sol").write_text("contract Test {}", encoding="utf-8")
             config = root / "foundry.toml"
             config.write_text(
-                '[profile.default]\nremappings = ["forge-std=test/utils/forge-std/src/"]\n',
+                '[profile.default]\nremappings = ["forge-std/=test/utils/forge-std/src/"]\n',
                 encoding="utf-8",
             )
             self.assertTrue(BENCHMARK._forge_std_available(root, config))
@@ -93,7 +93,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             config.write_text('[profile.default]\nlibs = ["lib"]\n', encoding="utf-8")
             self.assertFalse(BENCHMARK._forge_std_available(root, config))
 
-    def test_forge_std_detection_respects_configured_source_directory(self):
+    def test_forge_std_detection_does_not_treat_nested_source_as_root_mapping(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             package = root / "lib" / "forge-std"
@@ -106,7 +106,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             )
             self.assertFalse(BENCHMARK._forge_std_available(root, config))
 
-    def test_forge_std_source_layout_alias_matches_project_auto_remapping(self):
+    def test_forge_std_effective_root_remapping_is_corrected_to_src(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             package = root / "lib" / "forge-std"
@@ -117,13 +117,46 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
                 '[profile.default]\nsrc = "contracts"\nlibs = ["lib"]\n',
                 encoding="utf-8",
             )
+            env = {"FOUNDRY_CONFIG": str(config)}
+            calls = []
+            unrelated = "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/"
 
-            alias = BENCHMARK._prepare_forge_std_source_layout(root, config)
+            def fake_run(command, cwd=None, timeout=1800, env=None):
+                if command == ["forge", "remappings"]:
+                    calls.append(dict(env or {}))
+                    configured = (env or {}).get("FOUNDRY_REMAPPINGS")
+                    output = (
+                        configured.replace(",", "\n")
+                        if configured
+                        else f"forge-std/={package.as_posix()}/\n{unrelated}"
+                    )
+                    return {
+                        "command": command,
+                        "exit_code": 0,
+                        "stdout_tail": output,
+                        "stderr_tail": "",
+                    }
+                return {
+                    "command": command,
+                    "exit_code": 0,
+                    "stdout_tail": "",
+                    "stderr_tail": "",
+                }
 
-            self.assertEqual(alias, str(package / "contracts"))
-            self.assertTrue((package / "contracts").is_symlink())
-            self.assertTrue((package / "contracts" / "Test.sol").is_file())
-            self.assertTrue(BENCHMARK._forge_std_available(root, config))
+            with patch.object(BENCHMARK, "run", side_effect=fake_run):
+                result = BENCHMARK._ensure_forge_std(root, config, env)
+
+            expected_mapping = f"forge-std/={(package / 'src').resolve().as_posix()}/"
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "remapping-corrected-to-source")
+            self.assertEqual(
+                env.get("FOUNDRY_REMAPPINGS"),
+                f"{expected_mapping},{unrelated}",
+            )
+            self.assertEqual(result["effective_remapping"], [expected_mapping])
+            self.assertEqual(len(calls), 2)
+            self.assertFalse((package / "contracts").exists())
+            self.assertTrue(((package / "src") / "Test.sol").is_file())
 
     def test_foundry_node_modules_detection_reads_remapping_destinations(self):
         with tempfile.TemporaryDirectory() as tmp:
