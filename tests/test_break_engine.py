@@ -1296,5 +1296,194 @@ SECOND_RETURNDATA_LENGTH 0
                     self.assertEqual(result.detail["reason_code"], "abi_discovery_failed")
                     self.assertIn("ABI provider unavailable", result.detail["error"])
 
+
+    def test_solidity_language_support_is_not_pattern_relevance(self):
+        self.assertEqual(
+            playbook.patterns_for(
+                project={"languages": {"solidity": 1}},
+                function_name="flip",
+            ),
+            [],
+        )
+
+    def test_coinflip_selects_time_without_generic_reentrancy_or_replay(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "CoinFlip.sol").write_text(
+                """
+                pragma solidity ^0.8.20;
+                contract CoinFlip {
+                    uint256 public consecutiveWins;
+                    function flip(bool guess) external returns (bool) {
+                        uint256 blockValue = uint256(blockhash(block.number - 1));
+                        bool side = blockValue % 2 == 0;
+                        require(blockValue != 0);
+                        if (side == guess) consecutiveWins++;
+                        else consecutiveWins = 0;
+                        return side == guess;
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "flip",
+                    "inputs": [{"name": "guess", "type": "bool"}],
+                    "outputs": [{"name": "", "type": "bool"}],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"solidity": 1}},
+            )
+        self.assertEqual(list(selected), ["time"])
+        self.assertNotIn("reentrancy", selected)
+        self.assertNotIn("replay", selected)
+        self.assertNotIn("accounting", selected)
+        self.assertNotIn("boundary", selected)
+
+    def test_setter_selects_access_and_boundary_only(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Registry.sol").write_text(
+                """
+                contract Registry {
+                    address public agreementFactory;
+                    function setAgreementFactory(address factory) external {
+                        agreementFactory = factory;
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "setAgreementFactory",
+                    "inputs": [{"name": "factory", "type": "address"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"solidity": 1}},
+            )
+        self.assertEqual(list(selected), ["access", "boundary"])
+        self.assertNotIn("reentrancy", selected)
+        self.assertNotIn("replay", selected)
+        self.assertNotIn("accounting", selected)
+
+    def test_withdraw_selects_relevant_payout_families_when_source_supports_them(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                """
+                contract Vault {
+                    mapping(address => uint256) public balances;
+                    function withdraw(uint256 amount) external {
+                        require(balances[msg.sender] >= amount);
+                        balances[msg.sender] -= amount;
+                        (bool ok, ) = payable(msg.sender).call{value: amount}("");
+                        require(ok);
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "withdraw",
+                    "inputs": [{"name": "amount", "type": "uint256"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"solidity": 1}},
+            )
+        self.assertEqual(list(selected), ["reentrancy", "replay", "accounting", "boundary"])
+        self.assertTrue(all(selected.values()))
+
+    def test_reentrancy_rejection_guidance_uses_the_function_under_test(self):
+        target = break_engine.Target("CoinFlip", "0x" + "1" * 40)
+        result = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="reentrancy",
+            target=target,
+            function="flip(bool)",
+            output=(
+                "LOWKEY_BREAK_FAMILY reentrancy\n"
+                "TARGET_REJECTED_ATTACK true\n"
+                "REENTRY_REACHED false\n"
+                "TARGET_REVERT_DATA_PRESENT false\n"
+                "LOWKEY_BREAK false\n"
+            ),
+            evidence_path=None,
+            config={},
+        )
+        self.assertIn("inspect flip's guards/preconditions", result.summary)
+        self.assertNotIn("withdraw", result.summary)
+
+    def test_system_discovery_ignores_history_only_audit_targets(self):
+        import tempfile
+        from types import SimpleNamespace
+
+        live = "0x" + "1" * 40
+        historical = "0x" + "2" * 40
+
+        class Context:
+            def __init__(self, root):
+                self.root = root
+
+            def foundry_project_root(self):
+                return self.root
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = Context(root)
+                self.system_model = SimpleNamespace(
+                    refresh_manifest=lambda *args, **kwargs: (
+                        {
+                            "deployments": [
+                                {
+                                    "contract": "CoinFlip",
+                                    "address": live,
+                                    "artifact": "out/CoinFlip.sol/CoinFlip.json",
+                                    "live": True,
+                                },
+                                {
+                                    "contract": "OldDeployment",
+                                    "address": historical,
+                                    "live": False,
+                                },
+                            ],
+                            "audit_targets": [
+                                {"target": historical, "source": "old-poc.json"}
+                            ],
+                        },
+                        None,
+                    )
+                )
+
+            @staticmethod
+            def is_address(value):
+                return isinstance(value, str) and len(value) == 42 and value.startswith("0x")
+
+            @staticmethod
+            def effective_rpc(config):
+                return "http://127.0.0.1:8545"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            targets = break_engine._target_from_config(Host(tmp), {})
+        self.assertEqual([item.address for item in targets], [live])
+        self.assertEqual(targets[0].source, "system deployment")
+
 if __name__ == "__main__":
     unittest.main()
