@@ -2983,7 +2983,12 @@ def _family_selection(
     ):
         add("upgrade", "function name/source exposes initialization or upgrade lifecycle")
 
-    if PRIVILEGED_RE.search(name) or re.match(r"(?i)^set[A-Z]", name) or re.search(
+    access_control_name = re.compile(
+        r"(?i)(owner|admin|guardian|pause|unpause|upgrade|initialize|init|"
+        r"grant|revoke|renounce|transferOwnership|acceptOwnership|"
+        r"rescue|sweep|emergency|configure)"
+    )
+    if access_control_name.search(name) or re.match(r"^set[A-Z]", name) or re.search(
         r"\b(?:onlyOwner|onlyAdmin|onlyRole|hasRole|_checkRole|transferOwnership|renounceOwnership)\b",
         source,
     ):
