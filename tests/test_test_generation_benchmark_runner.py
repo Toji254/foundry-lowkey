@@ -236,6 +236,93 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
         report["generation_assessment"].pop("formal")
         self.assertFalse(BENCHMARK._report_accounts_for_every_type(report))
 
+    def test_nonzero_exit_is_explained_by_consistent_skipped_type_assessments(self):
+        report = {
+            "requested_types": ["unit", "fuzz", "formal"],
+            "generation_assessment": {
+                "unit": {
+                    "level": "requires-setup-review",
+                    "note": "Unit candidate generated; constructor setup needs review.",
+                },
+                "fuzz": {
+                    "level": "not-generated",
+                    "note": "No safe fuzz property was inferred.",
+                },
+                "formal": {
+                    "level": "not-generated",
+                    "note": "No configured formal verifier.",
+                },
+            },
+            "generated": ["LowkeyGeneratedUnit_Target.t.sol"],
+            "skipped": [
+                {"type": "fuzz", "reason": "No safe fuzz property was inferred."},
+                {"type": "formal", "reason": "No configured formal verifier."},
+            ],
+        }
+        self.assertTrue(BENCHMARK._report_explains_nonzero_exit(report))
+
+        report["skipped"][0]["reason"] = "Different reason"
+        self.assertFalse(BENCHMARK._report_explains_nonzero_exit(report))
+        report["skipped"][0]["reason"] = "No safe fuzz property was inferred."
+        report["skipped"].pop()
+        self.assertFalse(BENCHMARK._report_explains_nonzero_exit(report))
+
+    def test_partial_generation_with_validated_unit_is_an_evidence_gap_not_a_tool_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_root = root / ".audit" / "benchmark"
+
+            def fake_run(command, cwd=None, timeout=1800, env=None):
+                output_dir = Path(command[command.index("--output-dir") + 1])
+                report_dir = output_dir / "EndpointV2"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                report = {
+                    "requested_types": ["unit", "fuzz"],
+                    "generation_assessment": {
+                        "unit": {
+                            "level": "requires-setup-review",
+                            "note": "A generated unit candidate still needs setup review.",
+                        },
+                        "fuzz": {
+                            "level": "not-generated",
+                            "note": "No safe fuzz property was inferred.",
+                        },
+                    },
+                    "generated": ["LowkeyGeneratedUnit_EndpointV2.t.sol"],
+                    "skipped": [
+                        {"type": "fuzz", "reason": "No safe fuzz property was inferred."}
+                    ],
+                }
+                if "--validate" in command:
+                    report["validation"] = {
+                        "requested": True,
+                        "status": "passed",
+                        "detail": "Generated unit test compiled and executed.",
+                        "baseline_exit_code": 0,
+                        "exit_code": 0,
+                        "test_executions": [{
+                            "path": "test/lowkey-generated/LowkeyValidation_unit.t.sol",
+                            "exit_code": 0,
+                        }],
+                    }
+                (report_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+                return {
+                    "command": command,
+                    "exit_code": 1,
+                    "stdout_tail": "",
+                    "stderr_tail": "Generation incomplete because fuzz was explicitly skipped.",
+                }
+
+            with patch.object(BENCHMARK, "run", side_effect=fake_run):
+                result = BENCHMARK.evaluate_target(root, "EndpointV2", output_root)
+
+            self.assertFalse(result["generation_succeeded"])
+            self.assertTrue(result["generation_exit_explained"])
+            self.assertTrue(result["validation_succeeded"])
+            self.assertTrue(result["validation_exit_explained"])
+            self.assertEqual(result["validation_status"], "passed")
+            self.assertEqual(result["honest_result"], "assessed-with-evidence-gaps")
+
     def test_manifest_negative_control_is_recorded_as_expected_unsupported(self):
         outcome = BENCHMARK.expected_unsupported_outcome({
             "id": "non-protocol-fixture",

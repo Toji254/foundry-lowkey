@@ -603,6 +603,46 @@ def _report_accounts_for_every_type(report: dict[str, Any] | None) -> bool:
     return isinstance(report.get("generated", []), list)
 
 
+def _report_explains_nonzero_exit(report: dict[str, Any] | None) -> bool:
+    """Recognize the CLI's deliberate nonzero exit for fully reported skipped types.
+
+    A partial generation is not a tool crash when every requested type has an
+    assessment and every not-generated type has a matching skip reason. Actual
+    validation failures remain failures because their validation status and
+    test executions are checked separately by evaluate_target.
+    """
+    if not _report_accounts_for_every_type(report):
+        return False
+    requested = report.get("requested_types", [])
+    assessments = report.get("generation_assessment", {})
+    skipped = report.get("skipped")
+    if not isinstance(skipped, list) or not skipped:
+        return False
+
+    skipped_types: set[str] = set()
+    for item in skipped:
+        if not isinstance(item, dict):
+            return False
+        kind = item.get("type")
+        reason = item.get("reason")
+        if not isinstance(kind, str) or kind not in requested or kind in skipped_types:
+            return False
+        assessment = assessments.get(kind, {})
+        if assessment.get("level") != "not-generated":
+            return False
+        if not isinstance(reason, str) or not reason.strip():
+            return False
+        if assessment.get("note") != reason:
+            return False
+        skipped_types.add(kind)
+
+    expected_skipped = {
+        kind for kind in requested
+        if assessments[kind].get("level") == "not-generated"
+    }
+    return skipped_types == expected_skipped
+
+
 def evaluate_target(
     project_root: Path,
     contract: str,
@@ -635,6 +675,10 @@ def evaluate_target(
     validation_data = (validation_report or {}).get("validation", {})
     validation_status = validation_data.get("status", "report-missing")
     generation_assessed = _report_accounts_for_every_type(generation_report)
+    generation_exit_explained = (
+        generation.get("exit_code") == 0
+        or _report_explains_nonzero_exit(generation_report)
+    )
     generation_succeeded = (
         generation.get("exit_code") == 0
         and generation_assessed
@@ -647,20 +691,25 @@ def evaluate_target(
         and assessments[kind].get("level") == "executable-candidate"
         for kind in executable_kinds
     )
-    validation_succeeded = (
-        validation.get("exit_code") == 0
-        and validation_report is not None
-        and validation_status == "passed"
-        and isinstance(executions, list)
-        and bool(executions)
-        and all(isinstance(item, dict) and item.get("exit_code") == 0 for item in executions)
-    )
     no_executable_candidate = (
         not executable_expected
         and validation_report is not None
         and validation_status in {"not-applicable", "compiled-only"}
         and isinstance(executions, list)
         and not executions
+    )
+    validation_exit_explained = (
+        validation.get("exit_code") == 0
+        or _report_explains_nonzero_exit(validation_report)
+        or no_executable_candidate
+    )
+    validation_succeeded = (
+        validation_exit_explained
+        and validation_report is not None
+        and validation_status == "passed"
+        and isinstance(executions, list)
+        and bool(executions)
+        and all(isinstance(item, dict) and item.get("exit_code") == 0 for item in executions)
     )
     generated_entries = (generation_report or {}).get("generated", [])
     complete_evidence_gap_only = (
@@ -675,12 +724,14 @@ def evaluate_target(
     if generation_report is None or validation_report is None or not generation_assessed:
         honest_result = "tool-or-report-failure"
     elif (
-        generation.get("exit_code") != 0 and not complete_evidence_gap_only
+        generation.get("exit_code") != 0
+        and not generation_exit_explained
+        and not complete_evidence_gap_only
     ) or (
-        validation.get("exit_code") != 0 and not no_executable_candidate
+        validation.get("exit_code") != 0 and not validation_exit_explained
     ):
-        # Preserve actual process failures, but allow the CLI's deliberate
-        # nonzero result when it truthfully refuses to invent any test artifact.
+        # Preserve actual process failures. A nonzero CLI result is acceptable
+        # only when every skipped category is fully and consistently reported.
         honest_result = "generation-or-validation-failed"
     elif executable_expected and not validation_succeeded:
         honest_result = "execution-failed"
@@ -699,6 +750,7 @@ def evaluate_target(
         "generation_report_found": generation_report is not None,
         "generation_assessment_complete": generation_assessed,
         "generation_succeeded": generation_succeeded,
+        "generation_exit_explained": generation_exit_explained,
         "generation_assessment": assessments,
         "generation_skipped": (generation_report or {}).get("skipped", []),
         "validation_command": validation,
@@ -706,6 +758,7 @@ def evaluate_target(
         "validation_report_found": validation_report is not None,
         "validation_test_executions": executions,
         "validation_succeeded": validation_succeeded,
+        "validation_exit_explained": validation_exit_explained,
         "validation_diagnostics": {
             "detail": validation_data.get("detail"),
             "status": validation_status,
