@@ -430,14 +430,8 @@ def _target_from_config(host, config) -> list[Target]:
                         item.get("artifact"),
                         "system deployment",
                     )
-            for item in manifest.get("audit_targets") or []:
-                if isinstance(item, dict):
-                    add(
-                        item.get("contract") or item.get("name") or "Target",
-                        item.get("target") or item.get("address"),
-                        item.get("artifact"),
-                        "system audit target",
-                    )
+            # Historical audit evidence is deliberately not a deployment inventory.
+            # Only deployments with live runtime code belong in --system scope.
     except Exception:
         pass
 
@@ -2370,13 +2364,13 @@ def _result_from_output(
             summary = (
                 "Target rejected the attack before the callback boundary. "
                 + ("Revert data was returned; inspect the ABI/reason." if target_revert_data
-                   else "No revert data was returned; inspect withdraw's guards/preconditions.")
+                   else f"No revert data was returned; inspect {function_name}'s guards/preconditions.")
             )
     elif structured and target_rejected and not reentry_reached:
         summary = (
             "Target rejected the attack before the callback boundary. "
             + ("Revert data was returned; inspect the ABI/reason." if target_revert_data
-               else "No revert data was returned; inspect withdraw's guards/preconditions.")
+               else f"No revert data was returned; inspect {function_name}'s guards/preconditions.")
         )
     elif not structured and raw_tail:
         # A generated harness can fail to compile or execute before emitting
@@ -2761,12 +2755,94 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
         )
 
 
-def _families_for_function(
+def _source_function_body(project_info: dict[str, Any] | None, function_name: str) -> str:
+    """Return first-party source for one ABI function; dependencies and tests are excluded."""
+    info = project_info or {}
+    root_value = info.get("root")
+    if not root_value or not function_name:
+        return ""
+    root = Path(str(root_value)).expanduser()
+    if not root.is_dir():
+        return ""
+
+    excluded = {
+        ".git", ".audit", ".venv", "venv", "node_modules", "lib", "vendor",
+        "out", "cache", "build", "test", "tests", "script", "scripts",
+        "fixtures", "mocks", "mock",
+    }
+    matcher = re.compile(r"\bfunction\s+" + re.escape(function_name) + r"\s*\(")
+    inspected = 0
+    try:
+        candidates = sorted(
+            path for path in root.rglob("*.sol")
+            if path.is_file()
+            and not any(part.lower() in excluded for part in path.relative_to(root).parts[:-1])
+        )
+        for path in candidates[:1500]:
+            inspected += 1
+            try:
+                if path.stat().st_size > 2_000_000:
+                    continue
+                source = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for match in matcher.finditer(source):
+                open_brace = source.find("{", match.end())
+                semicolon = source.find(";", match.end())
+                if open_brace < 0 or (semicolon >= 0 and semicolon < open_brace):
+                    continue
+
+                # Find the matching function-body brace while ignoring comments and strings.
+                depth = 0
+                index = open_brace
+                quote = None
+                escaped = False
+                line_comment = False
+                block_comment = False
+                while index < len(source):
+                    char = source[index]
+                    following = source[index + 1] if index + 1 < len(source) else ""
+                    if line_comment:
+                        if char == "\n":
+                            line_comment = False
+                    elif block_comment:
+                        if char == "*" and following == "/":
+                            block_comment = False
+                            index += 1
+                    elif quote:
+                        if escaped:
+                            escaped = False
+                        elif char == "\\":
+                            escaped = True
+                        elif char == quote:
+                            quote = None
+                    elif char == "/" and following == "/":
+                        line_comment = True
+                        index += 1
+                    elif char == "/" and following == "*":
+                        block_comment = True
+                        index += 1
+                    elif char in {"'", '"'}:
+                        quote = char
+                    elif char == "{":
+                        depth += 1
+                    elif char == "}":
+                        depth -= 1
+                        if depth == 0:
+                            return source[match.start():index + 1]
+                    index += 1
+    except OSError:
+        return ""
+    return ""
+
+
+def _family_selection(
     fn: dict[str, Any],
     requested: str | None,
     project_info: dict[str, Any] | None = None,
     pattern_hint: str | None = None,
-) -> list[str]:
+) -> dict[str, list[str]]:
+    """Select only attack families supported by ABI/function/source evidence."""
     if requested:
         requested = requested.lower()
         if requested not in ATTACK_FAMILIES:
@@ -2774,53 +2850,168 @@ def _families_for_function(
                 "Unknown attack family '%s'. Choose: %s"
                 % (requested, ", ".join(ATTACK_FAMILIES))
             )
-        return [requested]
+        return {requested: ["explicitly requested by the operator"]}
 
-    name = str(fn.get("name") or "")
-    signature = _format_signature(fn)
-    patterns = patterns_for(project=project_info, function_name=name)
     if pattern_hint:
         wanted = [item for item in FINDING_PATTERNS if str(item.id).upper() == str(pattern_hint).upper()]
         if not wanted:
             raise ValueError(f"Unknown finding pattern '{pattern_hint}'.")
         mapped = family_names(wanted)
         if mapped and mapped[0] in ATTACK_FAMILIES:
-            return [mapped[0]]
+            return {mapped[0]: [f"explicit finding pattern {pattern_hint}"]}
         raise ValueError(f"Finding pattern '{pattern_hint}' has no executable attack family.")
 
-    # Initialization/upgrade entry points are not meaningful generic
-    # reentrancy/replay/accounting targets. Treat them as lifecycle/auth/proxy
-    # surfaces instead; this avoids fabricating nonsense experiments such as
-    # "reenter initialize(address[])". Explicit --family still overrides this
-    # selection because the user may be testing a protocol-specific hypothesis.
-    lifecycle = bool(UPGRADE_RE.search(name) or re.fullmatch(r"(?i)(initialize|init)", name))
-    if lifecycle:
-        families = ["boundary"]
-        if PRIVILEGED_RE.search(name):
-            families.append("access")
-        if UPGRADE_RE.search(name):
-            families.extend(["upgrade", "proxy"])
-        if TIME_RE.search(name) or TIME_RE.search(signature):
-            families.append("time")
-        if CALLBACK_RE.search(name) or CALLBACK_RE.search(signature):
-            families.append("callback")
-    else:
-        families = ["reentrancy", "replay", "accounting", "boundary"]
-        if PRIVILEGED_RE.search(name):
-            families.append("access")
-        if UPGRADE_RE.search(name):
-            families.append("upgrade")
-        if TIME_RE.search(name) or TIME_RE.search(signature):
-            families.append("time")
-        if SIGNATURE_RE.search(name) or SIGNATURE_RE.search(signature):
-            families.append("signature")
-        if CALLBACK_RE.search(name) or CALLBACK_RE.search(signature):
-            families.append("callback")
-        for family in family_names(patterns):
-            if family in ATTACK_FAMILIES and family not in families:
-                families.append(family)
-    return list(dict.fromkeys(families)) or ["dos"]
+    name = str(fn.get("name") or "")
+    signature = _format_signature(fn)
+    inputs = list(fn.get("inputs") or [])
+    outputs = list(fn.get("outputs") or [])
+    source = _source_function_body(project_info, name)
+    input_labels = " ".join(
+        f"{item.get('name') or ''} {item.get('type') or ''}" for item in inputs
+    )
+    output_labels = " ".join(
+        f"{item.get('name') or ''} {item.get('type') or ''}" for item in outputs
+    )
+    context = "\n".join((name, signature, input_labels, output_labels, source)).lower()
+    source_lower = source.lower()
+    selected: dict[str, list[str]] = {}
 
+    def add(family: str, reason: str) -> None:
+        selected.setdefault(family, []).append(reason)
+
+    # Reentrancy requires an actual external interaction in this function. A
+    # mere state-changing entry point or a generic ABI call is not enough.
+    external_interaction = re.search(
+        r"(?:\.\s*(?:call|send|transfer|delegatecall)\s*(?:\{|\()"
+        r"|safe(?:Transfer|TransferFrom|Mint)\s*\(|"
+        r"\b(?:tokensReceived|onERC721Received|onERC1155Received)\s*\()",
+        source,
+        flags=re.I,
+    )
+    payout_path = bool(
+        CLAIM_RE.search(name)
+        or re.search(r"\b(?:recipient|receiver|payable)\b", source_lower)
+        or re.search(r"\.call\s*\{\s*value\s*:", source_lower)
+    )
+    if external_interaction and (payout_path or re.search(r"\b(?:claimed|withdrawn|balances|nonce|shares)\b", source_lower)):
+        add("reentrancy", "function body performs an external interaction on a payout/state-transition path")
+
+    if re.fullmatch(r"(?i)(claim|withdraw|redeem|release|payout|refund|collect|harvest)", name):
+        add("replay", f"{name} is a one-shot/entitlement-style entry point")
+    elif CLAIM_RE.search(name) and re.search(r"\b(?:claimed|claimable|nonce|withdrawn|balances|credit)\b", source_lower):
+        add("replay", "function name and body expose entitlement/consumption state")
+
+    if re.search(r"(?i)\b(deposit|withdraw|redeem|mint|burn|swap|borrow|repay|liquidate|settle|payout|claim)\b", name):
+        add("accounting", f"{name} is an asset or entitlement accounting operation")
+    elif re.search(r"\b(?:msg\.value|balanceOf|totalSupply|totalAssets|shares|safeTransfer|transferFrom|call\s*\{\s*value)\b", source_lower):
+        add("accounting", "function body reads or moves assets/accounting quantities")
+
+    # Boolean-only inputs are not scalar boundary probes: false/true are the
+    # complete domain and the generic zero/max renderer would duplicate them.
+    boundary_types = [
+        str(item.get("type") or "").lower()
+        for item in inputs
+        if str(item.get("type") or "").lower() != "bool"
+    ]
+    if any(
+        item == "address"
+        or item.startswith(("uint", "int", "bytes", "string"))
+        or "[" in item
+        for item in boundary_types
+    ):
+        add("boundary", "ABI contains attacker-controlled scalar, address, bytes, string, or array inputs")
+
+    if UPGRADE_RE.search(name) or re.search(
+        r"\b(?:initialize|reinitialize|upgradeTo|upgradeToAndCall|implementation|proxiableUUID)\b",
+        context,
+        flags=re.I,
+    ):
+        add("upgrade", "function name/source exposes initialization or upgrade lifecycle")
+
+    if PRIVILEGED_RE.search(name) or re.search(
+        r"\b(?:onlyOwner|onlyAdmin|onlyRole|hasRole|_checkRole|transferOwnership|renounceOwnership)\b",
+        source,
+    ):
+        add("access", "function name or source exposes a privileged configuration/authorization path")
+
+    if re.search(
+        r"\b(?:block\.timestamp|block\.number|blockhash\s*\(|block\.prevrandao|block\.difficulty|"
+        r"deadline|validUntil|expiry|expiration|epoch|prevrandao|timestamp)\b",
+        context,
+        flags=re.I,
+    ):
+        add("time", "function body or ABI references block/time-dependent state")
+
+    if re.search(
+        r"\b(?:ecrecover|ECDSA|SignatureChecker|permit|signature|sigHash|nonce|authorization)\b",
+        context,
+        flags=re.I,
+    ):
+        add("signature", "function body/ABI exposes signature or nonce authorization")
+
+    if re.search(
+        r"\b(?:latestRoundData|getRoundData|AggregatorV3Interface|oracle|priceFeed|twap|slot0|getReserves)\b",
+        context,
+        flags=re.I,
+    ):
+        add("oracle", "function body references a price feed, oracle, TWAP, or pool spot-price source")
+
+    if re.search(
+        r"\b(?:flashLoan|flashloan|collateral|liquidat|borrow|repay|reserve|liquidity|"
+        r"interestRate|rewardRate|exchangeRate|feeBps|quorum|proposal)\b",
+        context,
+        flags=re.I,
+    ):
+        add("economic", "function body/ABI exposes lending, liquidity, reward, fee, or governance economics")
+
+    if re.search(
+        r"\b(?:IERC20|SafeERC20|safeTransfer|safeTransferFrom|transferFrom|approve|allowance|balanceOf)\b",
+        context,
+        flags=re.I,
+    ):
+        add("erc20", "function body/ABI interacts with ERC-20 balances, allowances, or transfers")
+
+    if re.search(
+        r"\b(?:delegatecall|implementation|upgradeTo|proxiableUUID|_IMPLEMENTATION_SLOT|ERC1967)\b",
+        context,
+        flags=re.I,
+    ):
+        add("proxy", "function body references delegatecall, implementation, or proxy storage")
+
+    if re.search(
+        r"\b(?:sstore|assembly)\b|storage\s+slot|delete\s+\w+\s*\[",
+        source,
+        flags=re.I,
+    ):
+        add("storage", "function body contains low-level storage or slot mutation")
+
+    if re.search(
+        r"\b(?:callback|hook|tokensReceived|onERC721Received|onERC1155Received|onERC1155BatchReceived|fallback|receive)\b",
+        context,
+        flags=re.I,
+    ):
+        add("callback", "function body/signature exposes a callback, receiver, hook, fallback, or receive surface")
+
+    if re.search(r"\b(?:for|while)\s*\(", source) and (
+        any("[]" in item for item in boundary_types)
+        or re.search(r"\b(?:length|count|total)\b", source_lower)
+    ):
+        add("dos", "function contains a loop coupled to attacker-influenced collection/work size")
+
+    # Keep output deterministic and aligned with the attack-library priority.
+    return {
+        family: selected[family]
+        for family in sorted(selected, key=lambda key: ATTACK_FAMILIES[key]["priority"])
+    }
+
+
+def _families_for_function(
+    fn: dict[str, Any],
+    requested: str | None,
+    project_info: dict[str, Any] | None = None,
+    pattern_hint: str | None = None,
+) -> list[str]:
+    return list(_family_selection(fn, requested, project_info, pattern_hint))
 
 def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> list[dict[str, Any]]:
     funcs = _ordered_functions([fn for fn in functions if _is_state_changing(fn)])
@@ -3225,6 +3416,14 @@ def run(config, args=None, host=None):
         return host.fail(f"Target discovery failed: {exc}")
 
     _print_banner(host, targets, opts, rpc, project_info)
+    print("TARGET INVENTORY")
+    print("----------------")
+    for index, target in enumerate(targets, start=1):
+        print(
+            f"  {index}. {target.contract} @ {target.address} "
+            f"[{target.source}]"
+        )
+    print()
 
     rounds = 0
     campaign_results: list[AttackResult] = []
@@ -3249,18 +3448,42 @@ def run(config, args=None, host=None):
                     display_functions = selected if rounds > 1 else selected[:12]
 
                 for fn in display_functions:
-                    families = _families_for_function(
+                    selection = _family_selection(
                         fn,
                         opts.get("family"),
                         project_info=project_info,
                         pattern_hint=opts.get("pattern"),
                     )
-                    for family in families:
+                    families = list(selection)
+                    if not families:
+                        skipped = AttackResult(
+                            family="none",
+                            contract=target.contract,
+                            address=target.address,
+                            function=_format_signature(fn, host),
+                            status="SKIPPED",
+                            summary="No attack family matched this function's source/ABI evidence; no probe was generated.",
+                            detail={
+                                "reason_code": "no_applicable_attack_family",
+                                "source": target.source,
+                            },
+                        )
+                        campaign_results.append(skipped)
+                        print(
+                            f"[SKIPPED] {target.contract}::{skipped.function} "
+                            "| no evidence-backed attack family; no execution"
+                        )
+                        continue
+
+                    for family, basis in selection.items():
                         made_progress = True
                         result = _safe_run_family(
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
                         result = _apply_sequential_control(host, result, opts, rpc)
+                        result.detail = result.detail or {}
+                        result.detail["selection_evidence"] = basis
+                        result.detail["target_source"] = target.source
                         campaign_results.append(result)
 
                         marker = ("SIMULATED BREAK" if result.status == "SIMULATED_BREAK"
@@ -3269,6 +3492,7 @@ def run(config, args=None, host=None):
                             f"[{marker}] {target.contract}::{result.function or '-'} "
                             f"| {family:<12} | {result.summary}"
                         )
+                        print(f"            Basis: {'; '.join(basis)}")
                         if result.evidence_path:
                             print(f"            Evidence: {result.evidence_path}")
 
@@ -3304,23 +3528,26 @@ def run(config, args=None, host=None):
         _emit(host, "break-campaign", "Break campaign completed without a concrete break.", summary)
         observed = sum(1 for item in campaign_results if item.status == "OBSERVED")
         blocked = sum(1 for item in campaign_results if item.status == "BLOCKED")
+        skipped = sum(1 for item in campaign_results if item.status == "SKIPPED")
+        lab_issues = sum(1 for item in campaign_results if item.status == "LAB_ISSUE")
+        timeouts = sum(1 for item in campaign_results if item.status == "TIMEOUT")
+        probes = len(campaign_results) - skipped
         print()
         print("LOWKEY // BREAK CAMPAIGN COMPLETE")
         print("=================================")
         print(f"Rounds   : {rounds}")
-        print(f"Executed : {len(campaign_results) - blocked}")
+        print(f"Probes   : {probes}")
+        print(f"Skipped  : {skipped} (not applicable; no harness generated)")
         print(f"Blocked  : {blocked}")
-        lab_issues = sum(1 for item in campaign_results if item.status == "LAB_ISSUE")
-        timeouts = sum(1 for item in campaign_results if item.status == "TIMEOUT")
         print(f"Observed : {observed}")
         print(f"LabIssue : {lab_issues}")
         print(f"Timeouts : {timeouts}")
         print("Breaks   : 0")
         print(f"Report   : {report}")
-        lab_issues = sum(1 for item in campaign_results if item.status == "LAB_ISSUE")
-        timeouts = sum(1 for item in campaign_results if item.status == "TIMEOUT")
-        incomplete = blocked > 0 or lab_issues > 0 or timeouts > 0
-        if incomplete:
+        incomplete = blocked > 0 or lab_issues > 0 or timeouts > 0 or probes == 0
+        if probes == 0:
+            print("Conclusion: INCOMPLETE — no applicable probe was available; no safety conclusion is supported.")
+        elif incomplete:
             print("Conclusion: INCOMPLETE — blocked/invalid/timeout probes mean this run cannot establish safety.")
         else:
             print("Conclusion: no concrete break condition was reached in this campaign; this is not a safety proof.")
