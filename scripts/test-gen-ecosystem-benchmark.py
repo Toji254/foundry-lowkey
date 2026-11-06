@@ -557,11 +557,25 @@ def evaluate_target(
         and isinstance(executions, list)
         and not executions
     )
+    generated_entries = (generation_report or {}).get("generated", [])
+    complete_evidence_gap_only = (
+        generation_report is not None
+        and generation_assessed
+        and not executable_expected
+        and isinstance(generated_entries, list)
+        and not generated_entries
+        and bool((generation_report or {}).get("skipped"))
+        and no_executable_candidate
+    )
     if generation_report is None or validation_report is None or not generation_assessed:
         honest_result = "tool-or-report-failure"
-    elif generation.get("exit_code") != 0 or validation.get("exit_code") != 0:
-        # An exit failure is not an evidence gap, even if a partial report or a
-        # later validation command happens to produce plausible output.
+    elif (
+        generation.get("exit_code") != 0 and not complete_evidence_gap_only
+    ) or (
+        validation.get("exit_code") != 0 and not no_executable_candidate
+    ):
+        # Preserve actual process failures, but allow the CLI's deliberate
+        # nonzero result when it truthfully refuses to invent any test artifact.
         honest_result = "generation-or-validation-failed"
     elif executable_expected and not validation_succeeded:
         honest_result = "execution-failed"
