@@ -93,6 +93,38 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             config.write_text('[profile.default]\nlibs = ["lib"]\n', encoding="utf-8")
             self.assertFalse(BENCHMARK._forge_std_available(root, config))
 
+    def test_forge_std_detection_respects_configured_source_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "lib" / "forge-std"
+            (package / "src").mkdir(parents=True)
+            (package / "src" / "Test.sol").write_text("contract Test {}", encoding="utf-8")
+            config = root / "foundry.toml"
+            config.write_text(
+                '[profile.default]\nsrc = "contracts"\nlibs = ["lib"]\n',
+                encoding="utf-8",
+            )
+            self.assertFalse(BENCHMARK._forge_std_available(root, config))
+
+    def test_forge_std_source_layout_alias_matches_project_auto_remapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "lib" / "forge-std"
+            (package / "src").mkdir(parents=True)
+            (package / "src" / "Test.sol").write_text("contract Test {}", encoding="utf-8")
+            config = root / "foundry.toml"
+            config.write_text(
+                '[profile.default]\nsrc = "contracts"\nlibs = ["lib"]\n',
+                encoding="utf-8",
+            )
+
+            alias = BENCHMARK._prepare_forge_std_source_layout(root, config)
+
+            self.assertEqual(alias, str(package / "contracts"))
+            self.assertTrue((package / "contracts").is_symlink())
+            self.assertTrue((package / "contracts" / "Test.sol").is_file())
+            self.assertTrue(BENCHMARK._forge_std_available(root, config))
+
     def test_foundry_node_modules_detection_reads_remapping_destinations(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
