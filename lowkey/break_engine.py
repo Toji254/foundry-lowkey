@@ -2834,6 +2834,7 @@ def _source_function_body(
             # another same-named function would contaminate this target's evidence.
             candidates = scoped
 
+        matched_bodies: list[str] = []
         for path in candidates[:1500]:
             try:
                 if path.stat().st_size > 2_000_000:
@@ -2858,7 +2859,7 @@ def _source_function_body(
                     char = source[index]
                     following = source[index + 1] if index + 1 < len(source) else ""
                     if line_comment:
-                        if char == "\n":
+                        if char == "\\n":
                             line_comment = False
                     elif block_comment:
                         if char == "*" and following == "/":
@@ -2867,7 +2868,7 @@ def _source_function_body(
                     elif quote:
                         if escaped:
                             escaped = False
-                        elif char == "\\":
+                        elif char == "\\\\":
                             escaped = True
                         elif char == quote:
                             quote = None
@@ -2884,8 +2885,12 @@ def _source_function_body(
                     elif char == "}":
                         depth -= 1
                         if depth == 0:
-                            return source[match.start():index + 1]
+                            matched_bodies.append(source[match.start():index + 1])
+                            break
                     index += 1
+        # Never select an arbitrary same-named function when the target identity
+        # is unknown or the contract has overloaded/duplicate definitions.
+        return matched_bodies[0] if len(matched_bodies) == 1 else ""
     except OSError:
         return ""
     return ""
