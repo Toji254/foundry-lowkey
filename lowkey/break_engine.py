@@ -2981,12 +2981,22 @@ def _family_selection(
     ):
         add("boundary", "ABI contains attacker-controlled scalar, address, bytes, string, or array inputs")
 
+    lifecycle_surface = bool(
+        UPGRADE_RE.search(name)
+        or re.search(
+            r"\b(?:initialize|reinitialize|upgradeTo|upgradeToAndCall|implementation|proxiableUUID)\b",
+            context,
+            flags=re.I,
+        )
+    )
+    if lifecycle_surface:
+        add("upgrade", "function name/source exposes initialization or upgrade lifecycle")
     if UPGRADE_RE.search(name) or re.search(
-        r"\b(?:initialize|reinitialize|upgradeTo|upgradeToAndCall|implementation|proxiableUUID)\b",
+        r"\b(?:delegatecall|implementation|upgradeTo|proxiableUUID|ERC1967|proxy)\b",
         context,
         flags=re.I,
     ):
-        add("upgrade", "function name/source exposes initialization or upgrade lifecycle")
+        add("proxy", "function name/source exposes proxy or implementation lifecycle")
 
     access_control_name = re.compile(
         r"(?i)(owner|admin|guardian|pause|unpause|upgrade|initialize|init|"
