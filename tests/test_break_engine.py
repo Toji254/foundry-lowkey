@@ -1339,6 +1339,7 @@ SECOND_RETURNDATA_LENGTH 0
                 },
                 None,
                 project_info={"root": str(root), "languages": {"solidity": 1}},
+                target=break_engine.Target("CoinFlip", "0x" + "1" * 40),
             )
         self.assertEqual(list(selected), ["time"])
         self.assertNotIn("reentrancy", selected)
@@ -1372,6 +1373,7 @@ SECOND_RETURNDATA_LENGTH 0
                 },
                 None,
                 project_info={"root": str(root), "languages": {"solidity": 1}},
+                target=break_engine.Target("Registry", "0x" + "1" * 40),
             )
         self.assertEqual(list(selected), ["access", "boundary"])
         self.assertNotIn("reentrancy", selected)
@@ -1407,6 +1409,7 @@ SECOND_RETURNDATA_LENGTH 0
                 },
                 None,
                 project_info={"root": str(root), "languages": {"solidity": 1}},
+                target=break_engine.Target("Vault", "0x" + "1" * 40),
             )
         self.assertEqual(list(selected), ["reentrancy", "replay", "accounting", "boundary"])
         self.assertTrue(all(selected.values()))
@@ -1562,6 +1565,49 @@ SECOND_RETURNDATA_LENGTH 0
         self.assertIn("blockhash(block.number - 1)", body)
         self.assertIn('console2.log("BLOCKHASH_CHANGED"', body)
         self.assertIn('console2.log("LOWKEY_BREAK", false);', body)
+
+
+    def test_source_selection_is_scoped_to_target_contract_name(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "Aardvark.sol").write_text(
+                """
+                contract Aardvark {
+                    function flip(bool guess) external {
+                        payable(msg.sender).call{value: 1}("");
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            (source_dir / "CoinFlip.sol").write_text(
+                """
+                contract CoinFlip {
+                    function flip(bool guess) external {
+                        uint256 value = uint256(blockhash(block.number - 1));
+                        require(value != 0);
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "flip",
+                    "inputs": [{"name": "guess", "type": "bool"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"solidity": 1}},
+                target=break_engine.Target("CoinFlip", "0x" + "1" * 40),
+            )
+        self.assertEqual(list(selected), ["time"])
+        self.assertNotIn("reentrancy", selected)
 
 if __name__ == "__main__":
     unittest.main()
