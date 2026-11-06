@@ -2977,9 +2977,9 @@ def _family_selection(
     # mere state-changing entry point or a generic ABI call is not enough.
     external_interaction = re.search(
         r"(?:\.\s*(?:call|send|transfer|delegatecall)\s*(?:\{|\()"
-        r"|\b(?:raw_call|extcall|send)\s*\(|"
-        r"|safe(?:Transfer|TransferFrom|Mint)\s*\(|"
-        r"\b(?:tokensReceived|onERC721Received|onERC1155Received)\s*\()",
+        r"|\b(?:raw_call|extcall|send)\s*\("
+        r"|safe(?:Transfer|TransferFrom|Mint)\s*\("
+        r"|\b(?:tokensReceived|onERC721Received|onERC1155Received)\s*\()",
         source,
         flags=re.I,
     )
