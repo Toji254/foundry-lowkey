@@ -2763,8 +2763,12 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
         )
 
 
-def _source_function_body(project_info: dict[str, Any] | None, function_name: str) -> str:
-    """Return first-party source for one ABI function; dependencies and tests are excluded."""
+def _source_function_body(
+    project_info: dict[str, Any] | None,
+    function_name: str,
+    target: Target | None = None,
+) -> str:
+    """Return source for this target/function; avoid cross-contract name collisions."""
     info = project_info or {}
     root_value = info.get("root")
     if not root_value or not function_name:
@@ -2779,15 +2783,58 @@ def _source_function_body(project_info: dict[str, Any] | None, function_name: st
         "fixtures", "mocks", "mock",
     }
     matcher = re.compile(r"\bfunction\s+" + re.escape(function_name) + r"\s*\(")
-    inspected = 0
     try:
         candidates = sorted(
             path for path in root.rglob("*.sol")
             if path.is_file()
             and not any(part.lower() in excluded for part in path.relative_to(root).parts[:-1])
         )
+
+        # Prefer the artifact's sourceName when available; Foundry artifacts can
+        # identify the exact source even when several contracts expose the same method.
+        artifact_source = None
+        if target and target.artifact:
+            artifact_path = Path(str(target.artifact)).expanduser()
+            if not artifact_path.is_absolute():
+                artifact_path = (root / artifact_path).resolve()
+            try:
+                artifact_data = json.loads(artifact_path.read_text(encoding="utf-8"))
+                source_name = artifact_data.get("sourceName") if isinstance(artifact_data, dict) else None
+                if not source_name and isinstance(artifact_data, dict):
+                    metadata = artifact_data.get("metadata")
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+                    compilation_target = (
+                        ((metadata or {}).get("settings") or {}).get("compilationTarget") or {}
+                        if isinstance(metadata, dict) else {}
+                    )
+                    source_name = next(iter(compilation_target), None)
+                if source_name:
+                    candidate = (root / str(source_name)).resolve()
+                    if candidate.is_relative_to(root) and candidate.is_file():
+                        artifact_source = candidate
+            except (OSError, ValueError, json.JSONDecodeError):
+                artifact_source = None
+
+        if artifact_source:
+            candidates = [artifact_source]
+        elif target and target.contract and str(target.contract).lower() not in {"target", "unknown"}:
+            contract_match = re.compile(
+                r"\b(?:contract|interface|library)\s+" + re.escape(str(target.contract)) + r"\b"
+            )
+            scoped = []
+            for path in candidates:
+                try:
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if contract_match.search(text):
+                    scoped.append(path)
+            # Fail closed on ambiguous/missing source identity. Falling back to
+            # another same-named function would contaminate this target's evidence.
+            candidates = scoped
+
         for path in candidates[:1500]:
-            inspected += 1
             try:
                 if path.stat().st_size > 2_000_000:
                     continue
@@ -2843,12 +2890,12 @@ def _source_function_body(project_info: dict[str, Any] | None, function_name: st
         return ""
     return ""
 
-
 def _family_selection(
     fn: dict[str, Any],
     requested: str | None,
     project_info: dict[str, Any] | None = None,
     pattern_hint: str | None = None,
+    target: Target | None = None,
 ) -> dict[str, list[str]]:
     """Select only attack families supported by ABI/function/source evidence."""
     if requested:
@@ -2873,7 +2920,7 @@ def _family_selection(
     signature = _format_signature(fn)
     inputs = list(fn.get("inputs") or [])
     outputs = list(fn.get("outputs") or [])
-    source = _source_function_body(project_info, name)
+    source = _source_function_body(project_info, name, target)
     input_labels = " ".join(
         f"{item.get('name') or ''} {item.get('type') or ''}" for item in inputs
     )
@@ -3018,8 +3065,9 @@ def _families_for_function(
     requested: str | None,
     project_info: dict[str, Any] | None = None,
     pattern_hint: str | None = None,
+    target: Target | None = None,
 ) -> list[str]:
-    return list(_family_selection(fn, requested, project_info, pattern_hint))
+    return list(_family_selection(fn, requested, project_info, pattern_hint, target))
 
 def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> list[dict[str, Any]]:
     funcs = _ordered_functions([fn for fn in functions if _is_state_changing(fn)])
@@ -3461,6 +3509,7 @@ def run(config, args=None, host=None):
                         opts.get("family"),
                         project_info=project_info,
                         pattern_hint=opts.get("pattern"),
+                        target=target,
                     )
                     families = list(selection)
                     if not families:
