@@ -6110,11 +6110,24 @@ def run_cast(args,config,capture=False):
             remaining = [token for token in remaining if token != "--actors"]
             return run_multi_actor_send(config, remaining)
         try:
+            remaining, repeat_count = split_send_repeat_options(remaining)
             remaining = normalize_send_options(remaining)
         except ValueError as error:
             return _lowkey_command_error(
                 f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
             )
+
+        if repeat_count > 1:
+            if "--async" in remaining:
+                return _lowkey_command_error(
+                    "Error: --async cannot be combined with --repeat/--times. "
+                    "Repeated sends must wait for each transaction receipt before submitting the next.",
+                    2, capture=capture, command=cast_cmd, config=config, target=target
+                )
+            repeated_args = list(remaining)
+            if actor_override:
+                repeated_args.extend(["--actor", actor_override])
+            return run_repeated_send(config, repeated_args, repeat_count, capture=capture)
 
         # A named actor followed by an attached ETH value is an intentional
         # direct payment recipient, not a Solidity function name. Preserve a
@@ -14123,8 +14136,9 @@ def run_multi_actor_send(config, args):
 
     if any(str(token) in {"--repeat", "--times"} for token in args):
         return fail(
-            "Error: --actors cannot be combined with --repeat/--times. "
-            "--actors already sends separate transactions from different Anvil identities."
+            "Error: --actors and --repeat/--times are separate modes. "
+            "Use --actors for one transaction per Anvil identity, or --repeat N "
+            "with --as/--actor for N transactions from one identity."
         )
 
     rpc = info.get("url")
@@ -14174,47 +14188,214 @@ def run_multi_actor_send(config, args):
     return overall_code
 
 
-def normalize_send_options(args):
-    """Normalize Lowkey-only send flags before passing arguments to Cast."""
-    cleaned=[]
-    index=0
-    raw=list(args or [])
+def split_send_repeat_options(args):
+    """Remove Lowkey's repeat flag and return its bounded transaction count."""
+    cleaned = []
+    repeat = None
+    raw = list(args or [])
+    index = 0
     while index < len(raw):
-        token=str(raw[index])
-        if token == "--eth":
-            if index + 1 >= len(raw):
-                raise ValueError("--eth needs an ETH amount")
-            amount=str(raw[index + 1])
-            index += 2
-            if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
-                amount=f"{amount} {raw[index]}"
-                index += 1
-            elif re.fullmatch(r"[0-9]+(?:.[0-9]+)?", amount):
-                amount=f"{amount} ether"
-            cleaned.extend(["--value", amount])
-            continue
-        if token in {"--repeat","--times"}:
+        token = str(raw[index])
+        if token in {"--repeat", "--times"}:
+            if repeat is not None:
+                raise ValueError("--repeat/--times may only be supplied once")
             if index + 1 >= len(raw):
                 raise ValueError(f"{token} needs a positive integer")
-            try:
-                repeat=int(raw[index + 1])
-            except (TypeError, ValueError):
+            value = str(raw[index + 1]).strip()
+            if not re.fullmatch(r"[0-9]+", value):
                 raise ValueError(f"{token} needs a positive integer")
+            repeat = int(value)
             if repeat < 1:
                 raise ValueError(f"{token} must be at least 1")
             if repeat > 100:
                 raise ValueError(f"{token} cannot exceed 100")
-            if repeat != 1:
-                raise ValueError(
-                    "--repeat/--times cannot repeat an exact call inside one generic send transaction. "
-                    "A helper contract would change msg.sender, while separate sends would be separate transactions. "
-                    "Use 'lk changes --repeat N' for one-transaction state-diff experiments."
-                )
             index += 2
             continue
         cleaned.append(raw[index])
         index += 1
+    return cleaned, (repeat if repeat is not None else 1)
+
+
+def normalize_send_options(args):
+    """Normalize Lowkey-only send flags before passing arguments to Cast."""
+    raw, _repeat = split_send_repeat_options(args)
+    cleaned = []
+    index = 0
+    while index < len(raw):
+        token = str(raw[index])
+        if token == "--eth":
+            if index + 1 >= len(raw):
+                raise ValueError("--eth needs an ETH amount")
+            amount = str(raw[index + 1])
+            index += 2
+            if index < len(raw) and str(raw[index]).lower() in {"wei", "gwei", "ether"}:
+                amount = f"{amount} {raw[index]}"
+                index += 1
+            elif re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", amount):
+                amount = f"{amount} ether"
+            cleaned.extend(["--value", amount])
+            continue
+        cleaned.append(raw[index])
+        index += 1
     return cleaned
+
+
+def run_repeated_send(config, args, repeat_count, capture=False):
+    """Send N separate transactions serially from one selected signer."""
+    raw = list(args or [])
+    count = int(repeat_count)
+    if count < 2 or count > 100:
+        message = "Error: repeated send count must be between 2 and 100."
+        if capture:
+            return CommandResult(message, 2)
+        return fail(message)
+
+    if "--async" in raw:
+        message = (
+            "Error: --async cannot be combined with --repeat/--times. "
+            "Repeated sends must wait for each transaction receipt before submitting the next."
+        )
+        if capture:
+            return CommandResult(message, 2)
+        return fail(message)
+
+    selected_actor = None
+    for index, token in enumerate(raw[:-1]):
+        if str(token) in {"--actor", "--as"}:
+            selected_actor = str(raw[index + 1])
+            break
+    selected_actor = selected_actor or config.get("actor") or "Cast default signer"
+
+    transcript = []
+
+    def emit(message, stream="stdout"):
+        message = str(message or "")
+        if not message:
+            return
+        transcript.append(message.rstrip("\n"))
+        if not capture:
+            destination = sys.stderr if stream == "stderr" else sys.stdout
+            print(message, end="" if message.endswith("\n") else "\n", file=destination)
+
+    def execute_once(call_args):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        result = None
+        try:
+            # Preserve the regular send path: target safety, signer selection,
+            # receipt decoding, last-tx tracking, and evidence generation.
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                result = run_cast(["send", *call_args], config, capture=False)
+            code = getattr(result, "code", result)
+            try:
+                code = int(code)
+            except (TypeError, ValueError):
+                code = 1
+        except KeyboardInterrupt:
+            code = 130
+            stderr.write("Interrupted by user.")
+        rendered_out = stdout.getvalue()
+        rendered_err = stderr.getvalue()
+        if isinstance(result, CommandResult) and not rendered_out and str(result):
+            rendered_out = str(result)
+        return code, rendered_out, rendered_err
+
+    def finish(code):
+        record_status(code)
+        if capture:
+            return CommandResult("\n".join(part for part in transcript if part), code)
+        return code
+
+    preview = any(token in raw for token in {"--preview", "--dry-run"})
+    explicit_confirm = "--confirm" in raw
+    bypass_confirm = "--yes" in raw
+    needs_confirm = explicit_confirm or (
+        bool(config.get("confirm_sends")) and not bypass_confirm
+    )
+
+    emit("\n".join([
+        "REPEATED SEND",
+        "=============",
+        f"Requested: {count} separate transactions",
+        f"Signer:    {selected_actor}",
+        "Execution: sequential; each next send starts after the previous receipt is returned.",
+        "",
+    ]))
+
+    if preview:
+        emit("PREVIEW ONLY: no transactions will be broadcast.")
+        code, out, err = execute_once(raw)
+        emit(out)
+        emit(err, "stderr")
+        return finish(code)
+
+    send_args = [
+        token for token in raw
+        if token not in {"--confirm", "--preview", "--dry-run"}
+    ]
+
+    if needs_confirm:
+        preview_args = [token for token in send_args if token != "--yes"]
+        preview_args.append("--preview")
+        code, out, err = execute_once(preview_args)
+        emit(out)
+        emit(err, "stderr")
+        if code != 0:
+            return finish(code)
+        try:
+            answer = input(
+                f"Send {count} separate transactions using {selected_actor}? [y/N] "
+            ).strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in {"y", "yes"}:
+            emit("Batch cancelled. No transactions were sent.")
+            return finish(0)
+        if "--yes" not in send_args:
+            send_args.append("--yes")
+
+    attempted = 0
+    completed = 0
+    failed = 0
+    overall_code = 0
+
+    for index in range(count):
+        emit(f"ATTEMPT {index + 1}/{count}")
+        code, out, err = execute_once(send_args)
+        attempted += 1
+        emit(out)
+        emit(err, "stderr")
+
+        reverted = bool(re.search(r"(?im)^Status:\s*REVERTED\s*$", out or ""))
+        if code == 0 and not reverted:
+            completed += 1
+        else:
+            failed += 1
+            overall_code = max(overall_code, 1 if code == 0 else code)
+            break
+
+    summary = [
+        "",
+        "REPEATED SEND SUMMARY",
+        "=====================",
+        f"Requested:  {count}",
+        f"Attempted:  {attempted}",
+        f"Completed:  {completed}",
+        f"Failed:     {failed}",
+    ]
+    if failed:
+        summary.append(
+            "Stopped at the first failed or reverted transaction. Earlier transactions remain mined; the batch is not atomic."
+        )
+    else:
+        summary.append(
+            "All requested transaction sends completed without a reported EVM revert."
+        )
+    summary.append(
+        "Note: a successful receipt means the transaction did not revert; it does not prove the contract-level result or exploit condition."
+    )
+    emit("\n".join(summary))
+    return finish(overall_code)
 
 def solidity_value(value):
     value=str(value or "0").strip()
@@ -20428,8 +20609,8 @@ COMMAND_HELP = {
             ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
             ("--dry-run", "Another spelling of --preview.", "lk send release 0xd9c5... --dry-run"),
             ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send release 0xd9c5... --confirm"),
-            ("--repeat <N>", "Accepted only as 1. A generic EOA transaction cannot repeat the exact target call N times without changing msg.sender or creating separate transactions. Use --actors to test multiple Anvil identities.", "lk send setValue 10 --repeat 1"),
-            ("--times <N>", "Another spelling of --repeat; values above 1 are rejected rather than silently changing transaction semantics.", "lk send setValue 10 --times 1"),
+            ("--repeat <N>", "Send the same call N times as the same selected actor, using N separate sequential transactions. Each send waits for its receipt before the next; N must be 1–100.", "lk send AttackTarget --repeat 10 --as attacker"),
+            ("--times <N>", "Alias for --repeat; sends N separate transactions from the same selected actor (maximum 100).", "lk send AttackTarget --times 10 --as attacker"),
             ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send release 0xd9c5... --yes"),
         ],
         argument_types=[
