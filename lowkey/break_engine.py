@@ -254,6 +254,7 @@ def _project_break_context(host) -> dict[str, Any]:
             "native": {},
             "detection_error": str(exc),
         }
+    info.setdefault("root", str(root))
     info["effective_languages"] = _effective_source_languages(root, info)
     info["break_backend"] = backend_for_project(info)
     info["break_catalog"] = catalog_summary(info)
@@ -412,7 +413,7 @@ def _target_from_config(host, config) -> list[Target]:
         elif host.is_address(entry):
             add(key, entry, None, "saved target")
 
-    # Project audit targets and deployments are useful when --system is requested.
+    # Live deployments are the authoritative project-system inventory.
     try:
         system = getattr(host, "system_model", None)
         if system is not None:
