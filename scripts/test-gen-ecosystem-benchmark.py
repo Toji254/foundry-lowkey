@@ -358,8 +358,34 @@ def _foundry_profile_config(config_path: Path) -> tuple[dict[str, Any], dict[str
         return {}, {}
 
 
+def _forge_std_source_directory(remapping_target: Path) -> Path | None:
+    """Resolve Test.sol for a remapping target, including sibling src/contracts layouts."""
+    target = remapping_target.expanduser().resolve()
+    if (target / "Test.sol").is_file():
+        return target
+
+    candidates = [
+        target / child
+        for child in ("src", "contracts")
+        if (target / child / "Test.sol").is_file()
+    ]
+
+    # Some repositories generate forge-std/=.../forge-std/contracts/ even
+    # though the pinned submodule keeps Test.sol in the sibling src/ directory.
+    if target.name in {"src", "contracts"}:
+        candidates.extend(
+            target.parent / sibling
+            for sibling in ("src", "contracts")
+            if sibling != target.name
+            and (target.parent / sibling / "Test.sol").is_file()
+        )
+
+    unique = {candidate.resolve() for candidate in candidates}
+    return next(iter(unique)) if len(unique) == 1 else None
+
+
 def _forge_std_available(project_root: Path, config_path: Path) -> bool:
-    """Check that a configured forge-std remapping resolves Test.sol at its destination."""
+    """Check whether a configured or library-root forge-std path resolves Test.sol."""
     selected, default = _foundry_profile_config(config_path)
     try:
         import tomllib
@@ -386,9 +412,7 @@ def _forge_std_available(project_root: Path, config_path: Path) -> bool:
         if library_root.name == "forge-std":
             candidates.append(library_root)
 
-    # A nearby nested source tree is not enough: the effective import mapping
-    # must point at a directory containing Test.sol directly.
-    return any((candidate / "Test.sol").is_file() for candidate in candidates)
+    return any(_forge_std_source_directory(candidate) is not None for candidate in candidates)
 
 
 def _parse_foundry_remappings(output: str) -> list[str]:
@@ -457,37 +481,27 @@ def _configure_forge_std_remapping(
                 "remapping": remappings[index],
             }
         prefix, target = resolved
-        if (target / "Test.sol").is_file():
-            continue
-
-        # Foundry may autodetect the package root even though forge-std keeps
-        # its Solidity sources in src/. Only correct a known, unambiguous layout.
-        source_candidates = [
-            target / child / "Test.sol"
-            for child in ("src", "contracts")
-            if (target / child / "Test.sol").is_file()
-        ]
-        if len(source_candidates) != 1:
+        source_root = _forge_std_source_directory(target)
+        if source_root is None:
             return {
                 "ok": False,
                 "status": "forge-std-test-source-unresolved",
                 "remapping_command": discovery,
                 "remapping": remappings[index],
                 "expected_test_sol": str(target / "Test.sol"),
-                "nested_candidates": [str(path) for path in source_candidates],
             }
 
-        source_root = source_candidates[0].parent.resolve()
         corrected[index] = f"{prefix}={source_root.as_posix().rstrip('/')}/"
-        corrections.append({
-            "from": remappings[index],
-            "to": corrected[index],
-        })
+        if corrected[index] != remappings[index]:
+            corrections.append({
+                "from": remappings[index],
+                "to": corrected[index],
+            })
 
     if corrections:
-        # Preserve the complete Foundry remapping set; replacing the environment
-        # with only forge-std would silently break unrelated project imports.
-        env["FOUNDRY_REMAPPINGS"] = ",".join(corrected)
+        # Foundry parses FOUNDRY_REMAPPINGS as newline-separated remappings.
+        # Keep the full resolved set so unrelated dependency imports survive.
+        env["FOUNDRY_REMAPPINGS"] = "\n".join(corrected)
 
     verification = run(
         ["forge", "remappings"],
@@ -513,7 +527,7 @@ def _configure_forge_std_remapping(
         if entry.partition("=")[0].rstrip("/") == "forge-std"
     ]
     if not verified_targets or any(
-        target is None or not (target[1] / "Test.sol").is_file()
+        target is None or _forge_std_source_directory(target[1]) is None
         for target in verified_targets
     ):
         return {

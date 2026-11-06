@@ -106,7 +106,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             )
             self.assertFalse(BENCHMARK._forge_std_available(root, config))
 
-    def test_forge_std_effective_root_remapping_is_corrected_to_src(self):
+    def test_forge_std_remapping_resolves_sibling_src_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             package = root / "lib" / "forge-std"
@@ -114,21 +114,27 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
             (package / "src" / "Test.sol").write_text("contract Test {}", encoding="utf-8")
             config = root / "foundry.toml"
             config.write_text(
-                '[profile.default]\nsrc = "contracts"\nlibs = ["lib"]\n',
+                '[profile.default]\nsrc = "contracts"\nlibs = ["../../../../lib"]\n',
                 encoding="utf-8",
             )
+            remapping_target = package / "contracts"
             env = {"FOUNDRY_CONFIG": str(config)}
-            calls = []
             unrelated = "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/"
+            ds_test = f"ds-test/={(package / 'lib' / 'ds-test' / 'src').as_posix()}/"
+            calls = []
 
             def fake_run(command, cwd=None, timeout=1800, env=None):
                 if command == ["forge", "remappings"]:
                     calls.append(dict(env or {}))
                     configured = (env or {}).get("FOUNDRY_REMAPPINGS")
                     output = (
-                        configured.replace(",", "\n")
+                        configured
                         if configured
-                        else f"forge-std/={package.as_posix()}/\n{unrelated}"
+                        else "\n".join([
+                            unrelated,
+                            ds_test,
+                            f"forge-std/={remapping_target.as_posix()}/",
+                        ])
                     )
                     return {
                         "command": command,
@@ -147,12 +153,10 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
                 result = BENCHMARK._ensure_forge_std(root, config, env)
 
             expected_mapping = f"forge-std/={(package / 'src').resolve().as_posix()}/"
+            expected_env = "\n".join([unrelated, ds_test, expected_mapping])
             self.assertTrue(result["ok"])
             self.assertEqual(result["status"], "remapping-corrected-to-source")
-            self.assertEqual(
-                env.get("FOUNDRY_REMAPPINGS"),
-                f"{expected_mapping},{unrelated}",
-            )
+            self.assertEqual(env.get("FOUNDRY_REMAPPINGS"), expected_env)
             self.assertEqual(result["effective_remapping"], [expected_mapping])
             self.assertEqual(len(calls), 2)
             self.assertFalse((package / "contracts").exists())
