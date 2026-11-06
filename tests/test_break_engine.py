@@ -1485,5 +1485,69 @@ SECOND_RETURNDATA_LENGTH 0
         self.assertEqual([item.address for item in targets], [live])
         self.assertEqual(targets[0].source, "system deployment")
 
+
+    def test_break_defaults_to_one_finite_round(self):
+        opts = break_engine._parse_args([])
+        self.assertFalse(opts["until_found"])
+        self.assertEqual(opts["max_rounds"], 1)
+
+    def test_explicit_attack_family_can_override_source_heuristics(self):
+        selected = break_engine._family_selection(
+            {
+                "name": "flip",
+                "inputs": [{"name": "guess", "type": "bool"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            },
+            "reentrancy",
+            project_info={"languages": {"solidity": 1}},
+        )
+        self.assertEqual(list(selected), ["reentrancy"])
+        self.assertIn("explicitly requested", selected["reentrancy"][0])
+
+    def test_source_matching_ignores_dependency_and_test_trees(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "lib").mkdir()
+            (root / "test").mkdir()
+            (root / "src" / "Simple.sol").write_text(
+                "contract Simple { function flip(bool guess) external {} }",
+                encoding="utf-8",
+            )
+            (root / "lib" / "Fake.sol").write_text(
+                """
+                contract Fake {
+                    function flip(bool guess) external {
+                        payable(msg.sender).call{value: 1}("");
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            (root / "test" / "Mock.sol").write_text(
+                """
+                contract Mock {
+                    function flip(bool guess) external {
+                        payable(msg.sender).call{value: 1}("");
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            selected = break_engine._family_selection(
+                {
+                    "name": "flip",
+                    "inputs": [{"name": "guess", "type": "bool"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                None,
+                project_info={"root": str(root), "languages": {"solidity": 1}},
+            )
+        self.assertEqual(selected, {})
+
 if __name__ == "__main__":
     unittest.main()
