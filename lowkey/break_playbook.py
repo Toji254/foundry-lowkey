@@ -267,16 +267,15 @@ def patterns_for(
     ranked: list[tuple[int, FindingPattern]] = []
     for item in FINDING_PATTERNS:
         score = 0
-        for anchor in item.anchors:
-            if anchor.lower() in text:
-                score += 2
-        if not item.anchors:
-            score += 1
-        languages = set(str(x).lower() for x in item.languages)
-        project_languages = set(str(x).lower() for x in ((project or {}).get("languages") or {}).keys())
-        if project_languages & languages:
-            score += 2
-        if score:
+        matched_anchors = [
+            anchor for anchor in item.anchors
+            if anchor.lower() in text
+        ]
+        # Language compatibility means a pattern can be considered for this
+        # project; it is not evidence that the vulnerability pattern exists.
+        # Require at least one concrete source/function anchor before ranking.
+        if matched_anchors:
+            score = 2 * len(matched_anchors)
             ranked.append((score, item))
     return [item for _score, item in sorted(ranked, key=lambda pair: (-pair[0], pair[1].id))]
 
