@@ -65,6 +65,52 @@ class TestGenerationTests(unittest.TestCase):
         )
         self.assertIn("assertGt(codeSize, 0);", rendered)
 
+    def test_invariant_and_fork_assertion_functions_are_not_marked_view(self):
+        fuzz_property = {"state": "value", "setter": "setValue", "type": "uint256"}
+        invariant = generation._render(
+            "invariant",
+            "Counter",
+            "../src/Counter.sol",
+            None,
+            True,
+            [],
+            False,
+            fuzz_property,
+            {},
+            "^0.8.20",
+        )
+        fork = generation._render(
+            "fork",
+            "Counter",
+            "../src/Counter.sol",
+            "0x" + "1" * 40,
+            False,
+            None,
+            False,
+            None,
+            {"state_variables": [{"visibility": "public", "name": "value"}]},
+            "^0.8.20",
+        )
+        self.assertIn(
+            "function invariant_value_matchesLastSuccessfulSetterCall() public {",
+            invariant,
+        )
+        self.assertNotIn(
+            "function invariant_value_matchesLastSuccessfulSetterCall() public view",
+            invariant,
+        )
+        self.assertIn("function _codeSize(address account) internal view", fork)
+        self.assertIn(
+            "function test_fork_target_has_runtime_code() public {",
+            fork,
+        )
+        self.assertIn(
+            "function testFork_value_publicGetterIsCallable() public {",
+            fork,
+        )
+        self.assertNotIn("function test_fork_target_has_runtime_code() public view", fork)
+        self.assertNotIn("function testFork_value_publicGetterIsCallable() public view", fork)
+
     def test_parse_types_deduplicates_and_rejects_unknown_values(self):
         self.assertEqual(generation.parse_types("unit,fuzz,unit"), ["unit", "fuzz"])
         self.assertEqual(generation.parse_types("exploit"), ["exploit"])

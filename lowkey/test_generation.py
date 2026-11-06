@@ -600,7 +600,7 @@ contract {generated} is Test {{
         targetContract(address(handler));
     }}
 
-    function invariant_{state}_matchesLastSuccessfulSetterCall() public view {{
+    function invariant_{state}_matchesLastSuccessfulSetterCall() public {{
         assertEq(target.{state}(), handler.expectedValue());
     }}
 }}
@@ -741,7 +741,7 @@ contract {generated} is Test {{
         target = {name}(TARGET);
     }}
 
-    function test_fork_target_has_runtime_code() public view {{
+    function test_fork_target_has_runtime_code() public {{
         assertGt(_codeSize(TARGET), 0, "Target has no runtime code");
     }}
 
@@ -755,7 +755,7 @@ contract {generated} is Test {{
             getter = str(state.get("name") or "")
             if not re.fullmatch(r"[A-Za-z_]\w*", getter):
                 continue
-            body += f'''    function testFork_{getter}_publicGetterIsCallable() public view {{
+            body += f'''    function testFork_{getter}_publicGetterIsCallable() public {{
         (bool ok, bytes memory result) = TARGET.staticcall(
             abi.encodeWithSignature("{getter}()")
         );
