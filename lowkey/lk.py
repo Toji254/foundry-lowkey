@@ -9923,6 +9923,29 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
     return fixture_rpc, info, None
 
 
+def _run_scoped_lab_fixture_test(root, relative_test, safe_name, threads):
+    """Run the generated lab test with Foundry's test root limited to its temp directory."""
+    test_directory = Path(relative_test).parent.as_posix()
+    if test_directory in {"", "."}:
+        test_directory = "test"
+    had_previous = "FOUNDRY_TEST" in os.environ
+    previous = os.environ.get("FOUNDRY_TEST")
+    os.environ["FOUNDRY_TEST"] = test_directory
+    try:
+        return run_foundry([
+            "test", relative_test,
+            "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
+            "--match-test", "testLowkeyLabStateDump",
+            "--threads", str(max(1, int(threads))),
+            "--disable-block-gas-limit", "-vv",
+        ], capture=True, cwd=str(Path(root).resolve()))
+    finally:
+        if had_previous:
+            os.environ["FOUNDRY_TEST"] = previous or ""
+        else:
+            os.environ.pop("FOUNDRY_TEST", None)
+
+
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
     """Run a project-owned Foundry setup/test path and materialize its full state."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
@@ -9953,13 +9976,37 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print("Action  : executing project-owned setup/test logic, then materializing its full local state...")
     print("Helper  : Foundry test-scoped filesystem permission; no project config edit or remote broadcast.")
 
+    fixture_build_code = _run_resource_aware_foundry_build(
+        root, ["--target", relative_test], lab_phase=True
+    )
+    if fixture_build_code != 0:
+        try:
+            Path(test_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return fail(
+            "Error: Lowkey could not compile the selected lab fixture within the "
+            "resource-aware target scope. The fixture was not executed.",
+            fixture_build_code,
+        )
+    try:
+        fixture_threads = _resource_aware_forge_threads(
+            root, scope="target", target=relative_test
+        )
+    except Exception as exc:
+        try:
+            Path(test_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return fail(
+            "Error: Lowkey could not establish a safe compiler limit for the selected "
+            f"lab fixture: {exc}. The fixture was not executed."
+        )
+
     before_sources = _project_source_fingerprint(root)
-    result = run_foundry([
-        "test", "--match-path", relative_test,
-        "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
-        "--match-test", "testLowkeyLabStateDump",
-        "--disable-block-gas-limit", "-vv",
-    ], capture=True, cwd=str(Path(root).resolve()))
+    result = _run_scoped_lab_fixture_test(
+        root, relative_test, safe_name, fixture_threads
+    )
     output = result.text
     changed_sources = _project_source_mutations(root, before_sources)
     # The harness exists only to execute this promotion once. Remove it after
@@ -11109,10 +11156,54 @@ def _native_command_runtime(cwd, command):
     )
 
 
+def _foundry_build_planner():
+    """Load the single resource-aware planner used by build and local lab paths."""
+    try:
+        import foundry_build as module
+    except ImportError:
+        try:
+            from lowkey import foundry_build as module
+        except ImportError as exc:
+            raise RuntimeError(
+                "the resource-aware Foundry planner is not installed; run 'bash install.sh' "
+                "from the updated foundry-lowkey checkout"
+            ) from exc
+    return module
+
+
+LAB_MIN_AVAILABLE_MEMORY_BYTES = 2 * 1024 ** 3
+
+
+def _run_resource_aware_foundry_build(root, args, *, lab_phase=False):
+    """Build through the shared planner; lab work refuses unsafe low-memory starts."""
+    try:
+        planner = _foundry_build_planner()
+        options = {
+            "root": Path(root).expanduser().resolve(),
+            "fallback_to_native": False,
+        }
+        if lab_phase:
+            options["minimum_available_memory_bytes"] = LAB_MIN_AVAILABLE_MEMORY_BYTES
+        return planner.run_build(list(args or []), **options)
+    except RuntimeError as exc:
+        return fail(f"Error: {exc}", 2)
+
+
+def _resource_aware_forge_threads(root, *, scope="production", target=None):
+    """Return the same conservative compiler-worker choice used by the planner."""
+    planner = _foundry_build_planner()
+    plan = planner.build_plan(
+        Path(root).expanduser().resolve(),
+        scope=scope,
+        target=target,
+    )
+    return max(1, int(plan.get("threads") or 1))
+
+
 def _run_project_build(config, root):
-    """Build through the shared repository-aware bootstrap/recovery layer."""
-    root_path = Path(root)
-    project = detect_project(root) if detect_project is not None else {
+    """Prepare production artifacts using the shared resource-aware Foundry planner."""
+    root_path = Path(root).expanduser().resolve()
+    project = detect_project(root_path) if detect_project is not None else {
         "root": str(root_path),
         "kind": "generic",
         "backend": "generic",
@@ -11121,9 +11212,9 @@ def _run_project_build(config, root):
 
     selected_scope = None
     if discover_nested_projects is not None and workspace_context is not None:
-        scope = workspace_context(root)
+        scope = workspace_context(root_path)
         for candidate in scope.get("projects") or []:
-            if Path(candidate["root"]).resolve() == root_path.resolve():
+            if Path(candidate["root"]).resolve() == root_path:
                 selected_scope = candidate
                 break
     if selected_scope:
@@ -11138,65 +11229,24 @@ def _run_project_build(config, root):
         if selected_scope.get("depended_on_by"):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
 
-    bootstrap_project(project, reason="prepare")
+    if bootstrap_project is not None:
+        bootstrap_project(project, reason="prepare")
 
     kind = str(project.get("kind") or project.get("backend") or "generic")
-
-    if str(project.get("backend") or "") == "foundry" or kind in {"foundry", "mixed-foundry-vyper"}:
-        result = run_foundry(["build"], capture=True, cwd=root)
-        if result.code == 0:
-            print("")
-            print("LOWKEY BUILD")
-            print("============")
-            print("Build system : forge build")
-            print(f"Project      : {root}")
-            print("Status       : complete")
-            return 0
-
-        first_output = _format_build_failure(
-            getattr(result, "text", None) or getattr(result, "output", None) or result
+    if str(project.get("backend") or "").lower() == "foundry" or kind in {"foundry", "mixed-foundry-vyper"}:
+        # Deployment artifacts do not require compiling the repository's whole
+        # test tree. Imported application dependencies are pulled in by Forge.
+        return _run_resource_aware_foundry_build(
+            root_path,
+            ["--scope", "production"],
+            lab_phase=True,
         )
-        classification = classify_build_failure(first_output, ["forge", "build"])
-        print(
-            f"BUILD FAILURE : {classification.get('category', 'unknown')}",
-            file=sys.stderr,
-        )
-        print(f"Reason        : {classification.get('reason', '')}", file=sys.stderr)
-
-        if classification.get("repairable"):
-            repair_code = bootstrap_project(
-                project,
-                force=True,
-                reason=str(classification.get("category") or "dependency"),
-                required_paths=classification.get("missing_source_paths", ()),
-            )
-            if repair_code != 0:
-                print(
-                    "Warning: repository-declared bootstrap reported a failure; "
-                    "Lowkey will still retry the build once.",
-                    file=sys.stderr,
-                )
-            retry = run_foundry(["build"], capture=True)
-            if retry.code == 0:
-                print("")
-                print("LOWKEY BUILD")
-                print("============")
-                print("Build system : forge build")
-                print(f"Project      : {root}")
-                print("Status       : complete")
-                return 0
-            first_output = _format_build_failure(
-                getattr(retry, "text", None) or getattr(retry, "output", None) or retry
-            )
-
-        print("Build diagnostics:\n" + first_output, file=sys.stderr)
-        return result.code
 
     command_info = project_build_command(project) if project_build_command is not None else None
     if not command_info:
         print("LOWKEY BUILD")
         print("============")
-        print(f"Project      : {root}")
+        print(f"Project      : {root_path}")
         print(f"Build system : {project.get('build_backend') or project.get('backend') or 'unknown'}")
         print("Status       : no safe native build command detected")
         print("Lowkey will not invent an install or build command.")
@@ -11258,14 +11308,16 @@ def _run_project_build(config, root):
                 "Lowkey will still retry the build once.",
                 file=sys.stderr,
             )
-        code, output = run_native_build()
-        if code == 0:
+        retry_code, retry_output = run_native_build()
+        if retry_code == 0:
             print("Status       : complete")
             return 0
+        output = retry_output
+    print("Build diagnostics:\n" + output, file=sys.stderr)
+    return code
 
-    if output:
-        print("Build diagnostics:\n" + output, file=sys.stderr)
-    return code or 1
+
+
 
 def _workspace_project_description(project):
     return str(project.get("description") or project.get("name") or Path(project["root"]).name).strip()
@@ -11843,10 +11895,30 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         os.environ[name] = value
 
     try:
+        script_build_code = _run_resource_aware_foundry_build(
+            root, ["--target", relative], lab_phase=True
+        )
+        if script_build_code != 0:
+            return fail(
+                "Error: Lowkey could not compile the selected deployment script within the "
+                "resource-aware build plan. No deployment script was executed.",
+                script_build_code,
+            )
+        try:
+            script_threads = _resource_aware_forge_threads(
+                root, scope="target", target=relative
+            )
+        except Exception as exc:
+            return fail(
+                "Error: Lowkey could not establish a safe compiler limit for the selected "
+                f"deployment script: {exc}. Deployment was not attempted."
+            )
         result = run_foundry(
             [
                 "script",
                 relative,
+                "--threads",
+                str(script_threads),
                 "--rpc-url",
                 rpc,
                 "--broadcast",
@@ -17591,6 +17663,9 @@ def run_native_project_command(config, command_name, args):
                     "Lowkey will continue with the native command.",
                     file=sys.stderr,
                 )
+
+        if command_name == "build":
+            return _run_resource_aware_foundry_build(root, args)
 
         native_command = [command_name, *args]
         result = run_foundry(native_command, capture=True)

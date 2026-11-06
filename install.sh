@@ -123,6 +123,13 @@ cp "$STAGE_DIR/templates/step_harness.sol.tmpl" "$TARGET_LOWKEY_DIR/templates/st
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
+# Prove the installed launcher reaches the staged resource-aware planner before
+# declaring success. This is help-only and cannot compile or deploy anything.
+if ! "$TARGET_BIN_DIR/lk" build --help >/dev/null; then
+  echo "Error: installed lk launcher could not load the resource-aware Foundry planner." >&2
+  exit 1
+fi
+
 # Reconcile the legacy ~/bin/lk location when it is an existing Lowkey install
 # or symlink, preventing PATH shadowing of the canonical ~/.foundry/bin/lk.
 if [ -L "$LEGACY_BIN" ] || { [ -f "$LEGACY_BIN" ] && grep -qE '.lowkey/(lk|forge_tools|generator)|foundry-lowkey' "$LEGACY_BIN" 2>/dev/null; }; then

@@ -690,6 +690,7 @@ def run_build(
     *,
     root: Path | None = None,
     fallback_to_native: bool = False,
+    minimum_available_memory_bytes: int = 0,
 ) -> int:
     parser = argparse.ArgumentParser(
         prog="lk build",
@@ -741,6 +742,24 @@ def run_build(
     if args.plan:
         print("\nPlan only: no compiler was started and no build artifacts were changed.")
         return 0
+
+    if minimum_available_memory_bytes < 0:
+        return forge_tools.die("minimum_available_memory_bytes must not be negative.")
+    if minimum_available_memory_bytes:
+        available = plan["resources"].get("memory_available_bytes")
+        if available is None or int(available) < int(minimum_available_memory_bytes):
+            required_gib = int(minimum_available_memory_bytes) / GIB
+            available_label = (
+                "unavailable" if available is None
+                else f"{int(available) / GIB:.2f} GiB"
+            )
+            print(
+                "\nLAB COMPILATION BLOCKED: available memory is "
+                f"{available_label}; this lab phase requires at least {required_gib:.2f} GiB. "
+                "No compiler was started. Free memory and retry after the host is healthy.",
+                file=sys.stderr,
+            )
+            return 2
 
     binary = forge_tools.forge_path()
     if not binary:

@@ -81,6 +81,11 @@ fi
 # repository-native build router rather than being forced through Forge.
 if [[ "${1:-}" == "build" ]]; then
     shift
+    if [[ ! -f "$HOME/.lowkey/foundry_build.py" ]]; then
+        echo "Lowkey's resource-aware build planner is not installed." >&2
+        echo "Pull the integration-test-drive branch and run 'bash install.sh' from its checkout." >&2
+        exit 2
+    fi
     exec python3 "$HOME/.lowkey/foundry_build.py" "$@"
 fi
 
