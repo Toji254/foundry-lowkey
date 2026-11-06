@@ -2782,11 +2782,11 @@ def _source_function_body(
         "out", "cache", "build", "test", "tests", "script", "scripts",
         "fixtures", "mocks", "mock",
     }
-    matcher = re.compile(r"\bfunction\s+" + re.escape(function_name) + r"\s*\(")
     try:
         candidates = sorted(
-            path for path in root.rglob("*.sol")
+            path for path in root.rglob("*")
             if path.is_file()
+            and path.suffix.lower() in {".sol", ".vy"}
             and not any(part.lower() in excluded for part in path.relative_to(root).parts[:-1])
         )
 
@@ -2820,7 +2820,7 @@ def _source_function_body(
             candidates = [artifact_source]
         elif target and str(target.contract or "").lower() in {"", "target", "unknown"}:
             # An ABI alias like "target" is not a source identity. Do not infer
-            # that the only same-named method in this workspace belongs to it.
+            # that a same-named method elsewhere in this workspace belongs to it.
             return ""
         elif target and target.contract:
             contract_match = re.compile(
@@ -2832,10 +2832,11 @@ def _source_function_body(
                     text = path.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
-                if contract_match.search(text):
+                if path.suffix.lower() == ".sol":
+                    if contract_match.search(text):
+                        scoped.append(path)
+                elif path.stem.lower() == str(target.contract).lower():
                     scoped.append(path)
-            # Fail closed on ambiguous/missing source identity. Falling back to
-            # another same-named function would contaminate this target's evidence.
             candidates = scoped
 
         matched_bodies: list[str] = []
@@ -2846,6 +2847,35 @@ def _source_function_body(
                 source = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
+
+            if path.suffix.lower() == ".vy":
+                matcher = re.compile(
+                    r"(?m)^(?P<indent>[ \t]*)def\s+" + re.escape(function_name) + r"\s*\("
+                )
+                lines = source.splitlines(keepends=True)
+                for match in matcher.finditer(source):
+                    line_index = source.count("\n", 0, match.start())
+                    if line_index >= len(lines):
+                        continue
+                    function_indent = len(match.group("indent").expandtabs(8))
+                    start_line = line_index
+                    while start_line > 0 and lines[start_line - 1].lstrip().startswith("@"):
+                        start_line -= 1
+                    end_line = line_index + 1
+                    while end_line < len(lines):
+                        line = lines[end_line]
+                        stripped = line.strip()
+                        if not stripped or stripped.startswith("#"):
+                            end_line += 1
+                            continue
+                        indent = len(line) - len(line.lstrip(" \t"))
+                        if indent <= function_indent:
+                            break
+                        end_line += 1
+                    matched_bodies.append("".join(lines[start_line:end_line]))
+                continue
+
+            matcher = re.compile(r"\bfunction\s+" + re.escape(function_name) + r"\s*\(")
             for match in matcher.finditer(source):
                 open_brace = source.find("{", match.end())
                 semicolon = source.find(";", match.end())
@@ -2892,12 +2922,12 @@ def _source_function_body(
                             matched_bodies.append(source[match.start():index + 1])
                             break
                     index += 1
-        # Never select an arbitrary same-named function when the target identity
+
+        # Never select an arbitrary same-named function when target identity
         # is unknown or the contract has overloaded/duplicate definitions.
         return matched_bodies[0] if len(matched_bodies) == 1 else ""
     except OSError:
         return ""
-    return ""
 
 def _family_selection(
     fn: dict[str, Any],
@@ -2947,6 +2977,7 @@ def _family_selection(
     # mere state-changing entry point or a generic ABI call is not enough.
     external_interaction = re.search(
         r"(?:\.\s*(?:call|send|transfer|delegatecall)\s*(?:\{|\()"
+        r"|\b(?:raw_call|extcall|send)\s*\(|"
         r"|safe(?:Transfer|TransferFrom|Mint)\s*\(|"
         r"\b(?:tokensReceived|onERC721Received|onERC1155Received)\s*\()",
         source,
@@ -2967,7 +2998,7 @@ def _family_selection(
 
     if re.search(r"(?i)\b(deposit|withdraw|redeem|mint|burn|swap|borrow|repay|liquidate|settle|payout|claim)\b", name):
         add("accounting", f"{name} is an asset or entitlement accounting operation")
-    elif re.search(r"\b(?:msg\.value|balanceOf|totalSupply|totalAssets|shares|safeTransfer|transferFrom|call\s*\{\s*value)\b", source_lower):
+    elif re.search(r"\b(?:msg\.value|self\.balance|balanceOf|totalSupply|totalAssets|shares|safeTransfer|transferFrom|raw_call|extcall|send|call\s*\{\s*value)\b", source_lower):
         add("accounting", "function body reads or moves assets/accounting quantities")
 
     # Boolean-only inputs are not scalar boundary probes: false/true are the
