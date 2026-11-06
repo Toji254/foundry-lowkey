@@ -1566,16 +1566,22 @@ contract LowkeyBreakTime is Test {{
         vm.deal(ATTACKER, 100 ether);
 
         vm.warp(100000);
+        vm.roll(block.number + 1);
+        bytes32 firstPriorBlockHash = blockhash(block.number - 1);
         vm.prank(ATTACKER);
         (bool first, bytes memory a) = TARGET.call{{value: {value_lit}}}(data);
 
         vm.warp(200000);
+        vm.roll(block.number + 1);
+        bytes32 secondPriorBlockHash = blockhash(block.number - 1);
         vm.prank(ATTACKER);
         (bool second, bytes memory b) = TARGET.call{{value: {value_lit}}}(data);
 
         console2.log("LOWKEY_BREAK_FAMILY", "time");
         console2.log("FIRST_SUCCESS", first);
         console2.log("SECOND_SUCCESS", second);
+        console2.log("BLOCK_NUMBER", block.number);
+        console2.log("BLOCKHASH_CHANGED", firstPriorBlockHash != secondPriorBlockHash);
         console2.log("RETURN_DATA_CHANGED", keccak256(a) != keccak256(b));
         console2.log("LOWKEY_BREAK", false);
     }}
