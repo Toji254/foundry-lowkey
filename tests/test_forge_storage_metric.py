@@ -63,11 +63,17 @@ class ForgeStorageMetricTests(unittest.TestCase):
         self.assertEqual(result["writes"], 1)
         self.assertEqual(result["observations"], 3)
 
-    def test_zero_delta_is_a_valid_observation_not_missing_fidelity(self):
+    def test_zero_delta_is_a_valid_successful_write_not_missing_fidelity(self):
         normalized = self.normalized([
             {
                 "account": self.address, "slot": self.slot,
                 "previous_value": self.zero, "new_value": self.zero,
+                "is_write": True, "reverted": False,
+            },
+            {
+                # A trailing read must not override the final successful write.
+                "account": self.address, "slot": self.slot,
+                "previous_value": self.zero, "new_value": self.one,
                 "is_write": False, "reverted": False,
             },
         ])
@@ -76,14 +82,14 @@ class ForgeStorageMetricTests(unittest.TestCase):
 
         self.assertEqual(result["delta"], 0)
         self.assertEqual(result["after"], 0)
-        self.assertEqual(result["writes"], 0)
+        self.assertEqual(result["writes"], 1)
 
     def test_reverted_write_does_not_change_the_observed_metric(self):
         normalized = self.normalized([
             {
                 "account": self.address, "slot": self.slot,
                 "previous_value": self.zero, "new_value": self.zero,
-                "is_write": False, "reverted": False,
+                "is_write": True, "reverted": False,
             },
             {
                 "account": self.address, "slot": self.slot,
@@ -100,7 +106,7 @@ class ForgeStorageMetricTests(unittest.TestCase):
         result = _forge_storage_metric(normalized, self.metric_spec)
 
         self.assertEqual(result["delta"], 0)
-        self.assertEqual(result["writes"], 0)
+        self.assertEqual(result["writes"], 1)
 
     def test_metric_refuses_to_guess_when_the_slot_was_not_recorded(self):
         normalized = self.normalized([])
@@ -123,6 +129,17 @@ class ForgeStorageMetricTests(unittest.TestCase):
             },
         ])
         with self.assertRaisesRegex(ValueError, "differs from the normalized transaction prestate"):
+            _forge_storage_metric(normalized, self.metric_spec)
+
+    def test_metric_rejects_observations_without_a_successful_write(self):
+        normalized = self.normalized([
+            {
+                "account": self.address, "slot": self.slot,
+                "previous_value": self.zero, "new_value": self.zero,
+                "is_write": False, "reverted": False,
+            },
+        ])
+        with self.assertRaisesRegex(ValueError, "no successful write"):
             _forge_storage_metric(normalized, self.metric_spec)
 
     def test_metric_rejects_unsupported_metric_kinds(self):
