@@ -282,7 +282,7 @@ def main() -> int:
             family = "reentrancy"
             manifest = {
                 "family": family,
-                "target_address": TARGET,
+                "target_address": target,
                 "steps": [{"kind": kind, "target": target, "selector": exercise_selector}],
             }
             manifest_name = f"refuse-{kind}.json"
