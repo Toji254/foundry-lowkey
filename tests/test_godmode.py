@@ -1556,7 +1556,7 @@ class GodmodeTests(unittest.TestCase):
         })
         self.assertIn("address[] memory step1Arg0 = new address[](1);", source)
         self.assertIn("uint8[2] memory step1Arg1;", source)
-        self.assertIn("vm.expectCall(address(0x" + "1" * 40 + "), step0Data, uint64(2));", source)
+        self.assertIn("vm.expectCall(address(uint160(0x" + "1" * 40 + ")), step0Data, uint64(2));", source)
         self.assertIn("STEP_1_EXPECTED_REVERT", source)
 
 
