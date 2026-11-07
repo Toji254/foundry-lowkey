@@ -1609,7 +1609,7 @@ def control(args):
         return 0
 
     freeze_status=proof_evidence.validate_control_freeze(
-        root, mf, spec, required=ns.require_frozen or ns.validate, freeze_path=ns.freeze_file
+        root, mf, spec, required=ns.require_frozen and not ns.validate, freeze_path=ns.freeze_file
     )
     if ns.validate:
         digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
