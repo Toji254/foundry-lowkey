@@ -461,7 +461,8 @@ def main() -> int:
             and mutation_report.get("attack_metric_kind") == "forge_trace_storage_uint256_delta"
             and control_metric == 0
             and attack_metric == 0
-            and (mutation_report.get("metric_evidence") or {}).get("delta") == 0
+            and (mutation_report.get("metric_evidence") or {}).get("control", {}).get("delta") == 0
+            and (mutation_report.get("metric_evidence") or {}).get("attack", {}).get("delta") == 0
         )
         mutation_rows = mutation_report.get("runs") or {}
         for scenario, expected_calls in (("control", 1), ("attack", 2)):
