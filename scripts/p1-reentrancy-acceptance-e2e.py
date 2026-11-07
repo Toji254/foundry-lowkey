@@ -171,9 +171,9 @@ def main() -> int:
             "metric_addresses": [actor],
             "metric_storage": {
                 "address": actor,
-                "slot": "0x2",
+                "slot": "0x3",
                 "kind": "uint256_delta",
-                "description": "Successful nested withdrawals recorded by ReentrancyActor.",
+                "description": "Persisted successful nested-withdrawal count recorded on every callback by ReentrancyActor.",
             },
             "scenario_parameters": [{
                 "name": "callback_mode",
