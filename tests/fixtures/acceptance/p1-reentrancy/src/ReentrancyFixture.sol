@@ -37,8 +37,9 @@ contract ReentrancyActor {
     ReentrancyVault public immutable vault;
     address public immutable owner;
 
-    // These deliberately occupy slots 0 and 1. The paired runner excludes only
-    // slot 0 (the declared scenario parameter) when comparing control prestate.
+    // mode, entered and successfulReentries occupy slots 0, 1 and 2.
+    // The paired runner excludes only slot 0 (the declared scenario parameter)
+    // when comparing control prestate; slot 2 is the trace-derived metric.
     uint256 public mode = 2;
     bool public entered;
     uint256 public successfulReentries;
