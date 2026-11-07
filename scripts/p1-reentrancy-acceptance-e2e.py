@@ -342,7 +342,7 @@ def main() -> int:
         mutation_manifest["attack"]["state_diff_file"] = ".audit/godmode/mutation-attack-state-diff.json"
         mutation_manifest_path = mutation_root / "mutation-control.json"
         mutation_manifest_path.write_text(
-            json.dumps(mutation_manifest, indent=2, sort_keys=True) + "\\n",
+            json.dumps(mutation_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         mutation_common = [
@@ -392,7 +392,7 @@ def main() -> int:
                 "control_delta": mutation_report.get("control_delta"),
             }
             (evidence_root / "mutation-failure.json").write_text(
-                json.dumps(mutation_failure, indent=2, sort_keys=True) + "\\n",
+                json.dumps(mutation_failure, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             raise AssertionError("The checks-effects-interactions mutation survived; see mutation-failure.json.")
