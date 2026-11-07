@@ -37,12 +37,13 @@ contract ReentrancyActor {
     ReentrancyVault public immutable vault;
     address public immutable owner;
 
-    // mode, entered and successfulReentries occupy slots 0, 1 and 2.
-    // The paired runner excludes only slot 0 (the declared scenario parameter)
-    // when comparing control prestate; slot 2 is the trace-derived metric.
+    // mode, entered, successfulReentries and observedReentryCount occupy
+    // storage slots 0, 1, 2 and 3 respectively. Slot 3 is written on every
+    // callback so a legitimate zero outcome remains observable in the trace.
     uint256 public mode = 2;
     bool public entered;
     uint256 public successfulReentries;
+    uint256 public observedReentryCount;
 
     constructor(address vault_) {
         require(vault_ != address(0), "ZERO_VAULT");
@@ -76,11 +77,14 @@ contract ReentrancyActor {
             if (!nestedSuccess) {
                 // A checks-effects-interactions mutation rejects the nested call.
                 entered = false;
-                return;
+            } else {
+                // Count successful nested withdrawals, not merely attempted callbacks.
+                successfulReentries += 1;
+                entered = false;
             }
-            // Count successful nested withdrawals, not merely attempted callbacks.
-            successfulReentries += 1;
-            entered = false;
         }
+        // Persist the final successful count for every callback. This produces
+        // trace evidence for both a positive count and a valid zero count.
+        observedReentryCount = successfulReentries;
     }
 }
