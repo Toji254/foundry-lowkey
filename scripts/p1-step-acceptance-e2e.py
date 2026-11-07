@@ -12,8 +12,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-TARGET = "0x1111111111111111111111111111111111111111"
-SELECTOR = "0x12345678"
+RPC = os.environ.get("LOWKEY_RPC_URL", "http://127.0.0.1:8545")
+ANVIL_KEY0 = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+STEP_TARGET_SOURCE = "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\ncontract StepTarget {\n    uint256 public total;\n    address public lastRecipient;\n    bytes32 public lastLabel;\n\n    function exercise(address[] calldata recipients, uint256 amount, bool enabled)\n        external\n        returns (uint256)\n    {\n        require(enabled, \"DISABLED\");\n        require(recipients.length != 0, \"NO_RECIPIENTS\");\n        lastRecipient = recipients[0];\n        total += amount + recipients.length;\n        return total;\n    }\n\n    function exercisePair(uint256[2] calldata) external pure {\n        revert(\"EXPECTED_REVERT\");\n    }\n\n    function read(string calldata label) external pure returns (bytes32) {\n        return keccak256(bytes(label));\n    }\n}\n"
 
 
 def run(argv: list[str], cwd: Path, *, timeout: int = 240) -> subprocess.CompletedProcess[str]:
@@ -36,8 +37,32 @@ def find_tool(name: str, fallback: Path) -> str:
     raise AssertionError(f"Required tool is unavailable: {name}")
 
 
+def deploy_step_target(forge: str, root: Path) -> str:
+    output = run(
+        [
+            forge, "create", "src/StepTarget.sol:StepTarget",
+            "--rpc-url", RPC, "--private-key", ANVIL_KEY0, "--broadcast", "--json",
+        ],
+        root,
+        timeout=360,
+    )
+    payload = json.loads(output.stdout)
+    address = payload.get("deployedTo")
+    if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+        raise AssertionError(f"forge create did not return a StepTarget address: {payload}")
+    return address
+
+
+def selector(cast: str, signature: str, cwd: Path) -> str:
+    value = run([cast, "sig", signature], cwd).stdout.strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{8}", value):
+        raise AssertionError(f"cast sig returned an invalid selector for {signature}: {value!r}")
+    return value
+
+
 def main() -> int:
     forge = find_tool("forge", Path.home() / ".foundry" / "bin" / "forge")
+    cast = find_tool("cast", Path.home() / ".foundry" / "bin" / "cast")
     lk = find_tool("lk", Path.home() / ".foundry" / "bin" / "lk")
     install_root = Path.home() / ".lowkey"
     template_path = install_root / "templates" / "step_harness.sol.tmpl"
@@ -146,19 +171,25 @@ def main() -> int:
             'solc_version = "0.8.20"\n',
             encoding="utf-8",
         )
+        )
+        (root / "src" / "StepTarget.sol").write_text(STEP_TARGET_SOURCE, encoding="utf-8")
+        run([forge, "build"], root, timeout=360)
+        target = deploy_step_target(forge, root)
+        exercise_selector = selector(cast, "exercise(address[],uint256,bool)", root)
+        pair_selector = selector(cast, "exercisePair(uint256[2])", root)
+        read_selector = selector(cast, "read(string)", root)
 
         common_steps = [
             {"kind": "snapshot"},
             {
                 "kind": "call",
-                "target": TARGET,
-                "selector": SELECTOR,
+                "target": target,
+                "selector": exercise_selector,
                 "args": [
-                    {"type": "address[]", "value": [TARGET]},
+                    {"type": "address[]", "value": [target]},
                     {"type": "uint256", "value": 1},
                     {"type": "bool", "value": True},
                 ],
-                "optional": True,
             },
             {"kind": "assert"},
             {"kind": "revert"},
@@ -166,24 +197,22 @@ def main() -> int:
             {"kind": "roll", "value": 100},
             {
                 "kind": "expect",
-                "target": TARGET,
-                "selector": SELECTOR,
+                "target": target,
+                "selector": pair_selector,
                 "args": [{"type": "uint256[2]", "value": [1, 2]}],
                 "expect": {"count": 1, "must_revert": True},
             },
             {
                 "kind": "unwind",
-                "target": TARGET,
-                "selector": SELECTOR,
+                "target": target,
+                "selector": pair_selector,
                 "args": [{"type": "uint256[2]", "value": [1, 2]}],
-                "optional": True,
             },
             {
                 "kind": "read",
-                "target": TARGET,
-                "selector": SELECTOR,
+                "target": target,
+                "selector": read_selector,
                 "args": [{"type": "string", "value": "lowkey"}],
-                "optional": True,
             },
         ]
 
@@ -298,6 +327,19 @@ def main() -> int:
                 f"{forge_output[-6000:]}"
             )
 
+        execution = run([forge, "test", "--fork-url", RPC, "-vv"], root, timeout=600)
+        forge_test_output = execution.stdout[-20000:] + "\n" + execution.stderr[-20000:]
+        summaries = re.findall(r"(?:Test result:|Suite result:).*?(\d+) passed; (\d+) failed", forge_test_output)
+        if not summaries or any(int(failed) != 0 for _, failed in summaries):
+            raise AssertionError("Generated Step harnesses did not all execute successfully:\n" + forge_test_output[-12000:])
+        total_passed = sum(int(ok) for ok, _ in summaries)
+        if total_passed != len(families):
+            raise AssertionError(
+                f"Expected {len(families)} executed Step family tests, observed {total_passed}.\n"
+                + forge_test_output[-12000:]
+            )
+        shutil.copy2(root / "src" / "StepTarget.sol", evidence_root / "StepTarget.sol")
+
     report = {
         "status": "PASS",
         "source_sha": expected_git_sha,
@@ -308,14 +350,18 @@ def main() -> int:
         "verified_vm_signatures": cheat_signatures,
         "help_lines": help_lines,
         "families_compiled": compiled_names,
+        "families_executed": total_passed,
+        "step_target": target,
         "generated": generated,
         "refusals": refusals,
         "forge_build_output_tail": forge_output,
+        "forge_test_output_tail": forge_test_output,
     }
     (evidence_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({
         "status": "PASS",
         "families_compiled": len(compiled_names),
+        "families_executed": total_passed,
         "refusals": refusals,
         "evidence": evidence_root.as_posix(),
     }, sort_keys=True))
