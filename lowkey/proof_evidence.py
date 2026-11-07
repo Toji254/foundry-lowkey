@@ -266,6 +266,8 @@ def _freeze_core(root, manifest_path, spec):
             "require_trace_storage": bool(spec.get("require_trace_storage", False)),
             "evidence_requirements": spec.get("evidence_requirements") or {},
             "metric_addresses": spec.get("metric_addresses") or [],
+            "metric_name": spec.get("metric_name"),
+            "metric_storage": spec.get("metric_storage"),
             "non_economic": bool(spec.get("non_economic", False)),
             "semantic_check_test": spec.get("semantic_check_test"),
             "require_negative_control": bool(spec.get("require_negative_control", False)),
