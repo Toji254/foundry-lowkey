@@ -947,7 +947,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(saved["economic_policy"]["accepted"])
             self.assertEqual(saved["economic_policy"]["promotion_cap"], "SIMULATED_BREAK")
             self.assertEqual(saved["control_delta"], 0)
-            self.assertNotIn("control_not_outperformed", saved["rejection_codes"])
+            self.assertNotIn("control_passed", saved["rejection_codes"])
 
     def test_control_rejects_non_positive_rpc_measured_portfolio_delta(self):
         from unittest.mock import patch
@@ -975,7 +975,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(saved["status"], "REJECTED")
             self.assertEqual(saved["outcome"], "rejected")
-            self.assertIn("control_not_outperformed", saved["rejection_codes"])
+            self.assertIn("control_passed", saved["rejection_codes"])
             self.assertEqual(saved["control_delta"], 0)
             feedback = saved["memory_feedback"]
             self.assertEqual(feedback["status"], "recorded")
@@ -1019,7 +1019,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["status"], "REJECTED")
             self.assertEqual(saved["outcome"], "rejected")
             self.assertIn("net_negative", saved["rejection_codes"])
-            self.assertIn("control_not_outperformed", saved["rejection_codes"])
+            self.assertIn("control_passed", saved["rejection_codes"])
 
     def test_generator_drift_stops_control_without_rejecting_frozen_hypothesis(self):
         from unittest.mock import patch
