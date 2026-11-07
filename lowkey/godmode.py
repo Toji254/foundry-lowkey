@@ -1995,21 +1995,25 @@ def control(args):
 
 
     rejection_codes=[]
-    if not same_entry: rejection_codes.append("mismatch")
+    if not same_entry:
+        rejection_codes.append("fidelity_insufficient")
     if (not same_prestate or not same_trace_storage_values or not same_chain or
         not same_block or not same_fork_anchor or
         (backend=="anvil-calltracer" and not same_envelope) or
         (backend=="forge-state-diff" and not fork_pin_verified)):
-        rejection_codes.append("mismatch")
-    if not trace_delta_verified: rejection_codes.append("control_path_mismatch")
+        rejection_codes.append("fidelity_insufficient")
+    if not trace_delta_verified:
+        rejection_codes.append("control_passed")
     if spec.get("require_negative_control") and not negative_control_verified:
-        rejection_codes.append("negative_control_failed")
+        rejection_codes.append("control_passed")
     if non_economic and not semantic_invariant_verified:
-        rejection_codes.append("semantic_invariant_failed")
+        rejection_codes.append("semantic_default_missing")
     if not non_economic and backend=="anvil-calltracer" and isinstance(attack_metric,int) and attack_metric<=0:
         rejection_codes.append("net_negative")
     if not non_economic and isinstance(delta,int) and delta<=0:
-        rejection_codes.append("control_not_outperformed")
+        rejection_codes.append("control_passed")
+    if not non_economic and backend=="forge-state-diff" and not attack_metric_positive:
+        rejection_codes.append("fidelity_insufficient")
     rejected=(
         execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
     )
@@ -2109,6 +2113,7 @@ def control(args):
             for item in rows.get(name,{}).get("derived_storage_accesses",[])
         }),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
+        "reason_code":sorted(set(rejection_codes))[0] if rejection_codes else None,
         "memory_feedback":memory_feedback,
         "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff can pass only as SIMULATED_BREAK; a separate mined Anvil reproof is required for LOCAL_PROFITABLE.",
     }
