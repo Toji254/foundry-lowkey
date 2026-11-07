@@ -171,7 +171,6 @@ def main() -> int:
             'solc_version = "0.8.20"\n',
             encoding="utf-8",
         )
-        )
         (root / "src" / "StepTarget.sol").write_text(STEP_TARGET_SOURCE, encoding="utf-8")
         run([forge, "build"], root, timeout=360)
         target = deploy_step_target(forge, root)
