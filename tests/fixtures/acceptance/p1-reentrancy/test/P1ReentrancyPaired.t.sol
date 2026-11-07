@@ -16,14 +16,14 @@ contract P1ReentrancyPairedTest is LowkeyForgeStateDiffRecorder {
         uint256 baseline = vm.snapshot();
         // Explicit artifact paths keep vulnerable and mutation evidence separate.
         // Defaults preserve the ordinary standalone fixture invocation.
-        string memory controlTracePath = vm.envOr(
-            "P1_CONTROL_TRACE_PATH",
-            ".audit/godmode/control-state-diff.json"
-        );
-        string memory attackTracePath = vm.envOr(
-            "P1_ATTACK_TRACE_PATH",
-            ".audit/godmode/attack-state-diff.json"
-        );
+        string memory controlTracePath = ".audit/godmode/control-state-diff.json";
+        if (vm.envExists("P1_CONTROL_TRACE_PATH")) {
+            controlTracePath = vm.envString("P1_CONTROL_TRACE_PATH");
+        }
+        string memory attackTracePath = ".audit/godmode/attack-state-diff.json";
+        if (vm.envExists("P1_ATTACK_TRACE_PATH")) {
+            attackTracePath = vm.envString("P1_ATTACK_TRACE_PATH");
+        }
 
         // Across the measured pair the vault must receive exactly three
         // withdraw() calls: one sequential control and two attack-path calls.
