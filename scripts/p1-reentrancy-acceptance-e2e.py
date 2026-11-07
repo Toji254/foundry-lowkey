@@ -378,13 +378,45 @@ def main() -> int:
         )
         if mutation_validation.get("status") != "PROPOSED" or not mutation_validation.get("freeze_valid"):
             raise AssertionError(f"Mutated experiment did not validate its frozen spec: {mutation_validation}")
-        run_expected(mutation_common + [
+        mutation_command = mutation_common + [
             "--require-frozen",
             "--output", ".audit/p1-reentrancy-acceptance/mutation-control.json",
-        ], mutation_root, mutation_env, expected=1, timeout=900)
-        mutation_report = read_json(
+        ]
+        mutation_execution = subprocess.run(
+            mutation_command,
+            cwd=mutation_root,
+            env=mutation_env,
+            text=True,
+            capture_output=True,
+            timeout=900,
+            check=False,
+        )
+        mutation_log = (
+            "--- stdout ---\\n" + (mutation_execution.stdout or "") +
+            "\\n--- stderr ---\\n" + (mutation_execution.stderr or "")
+        )
+        (evidence_root / "mutation-command.log").write_text(
+            mutation_log, encoding="utf-8"
+        )
+        mutation_report_path = (
             mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-control.json"
         )
+        if not mutation_report_path.is_file():
+            mutation_failure = {
+                "status": "BLOCKED",
+                "reason_code": "mutation_report_missing",
+                "family": "reentrancy",
+                "cli_exit_code": mutation_execution.returncode,
+                "cli_output_tail": mutation_log[-12000:],
+            }
+            (evidence_root / "mutation-failure.json").write_text(
+                json.dumps(mutation_failure, indent=2, sort_keys=True) + "\\n",
+                encoding="utf-8",
+            )
+            raise AssertionError(
+                "Mutation control did not produce a machine-readable report; see mutation-failure.json."
+            )
+        mutation_report = read_json(mutation_report_path)
         # Preserve the complete evidence before asserting, even when the gate
         # fails. The temporary mutation workspace is deleted on context exit.
         diagnostic_files = [
@@ -421,7 +453,8 @@ def main() -> int:
         control_metric = (mutation_rows.get("control") or {}).get("metric")
         attack_metric = (mutation_rows.get("attack") or {}).get("metric")
         mutation_killed = (
-            mutation_report.get("status") == "REJECTED"
+            mutation_execution.returncode == 1
+            and mutation_report.get("status") == "REJECTED"
             and mutation_report.get("reason_code") == "control_passed"
             and mutation_report.get("control_delta") == 0
             and mutation_report.get("execution_attempted") is True
@@ -445,6 +478,7 @@ def main() -> int:
                 "reason_code": "mutation_not_killed",
                 "family": "reentrancy",
                 "mutation": "move credit[msg.sender] = 0 before the external payout call",
+                "cli_exit_code": mutation_execution.returncode,
                 "observed_status": mutation_report.get("status"),
                 "observed_reason_code": mutation_report.get("reason_code"),
                 "rejection_codes": mutation_report.get("rejection_codes"),
