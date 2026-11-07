@@ -1944,17 +1944,27 @@ def control(args):
         semantic_invariant_verified=semantic_invariant_verified,
     )
     if backend=="forge-state-diff" and not non_economic:
-        # AccountAccess balance deltas are gross test-execution observations. Forge
-        # does not provide a mined EOA receipt or effective gas price, so these
-        # values must never be presented as net profitability.
-        economics={
-            "accepted":False,
-            "economic":True,
-            "gross_balance_delta_wei":attack_metric,
-            "net_profit_wei":None,
-            "reason":"Forge state-diff has no EOA receipt gas accounting; a funded Anvil reproof is required.",
-            "promotion_cap":"SIMULATED_BREAK",
-        }
+        # Forge test metrics are structural observations, never net profitability.
+        # A storage counter is dimensionless and must not be mislabeled as wei.
+        if spec.get("metric_storage") is not None:
+            economics={
+                "accepted":False,
+                "economic":False,
+                "metric_kind":"forge_trace_storage_uint256_delta",
+                "observed_metric_delta":attack_metric,
+                "net_profit_wei":None,
+                "reason":"Trace-derived storage behavior is structural evidence only; a separate mined Anvil reproof is required for economics.",
+                "promotion_cap":"SIMULATED_BREAK",
+            }
+        else:
+            economics={
+                "accepted":False,
+                "economic":True,
+                "gross_balance_delta_wei":attack_metric,
+                "net_profit_wei":None,
+                "reason":"Forge state-diff has no EOA receipt gas accounting; a funded Anvil reproof is required.",
+                "promotion_cap":"SIMULATED_BREAK",
+            }
 
     scenario_errors=[name for name,_ in scenarios if rows.get(name,{}).get("trace_error")]
     execution_names=["control","attack"]
