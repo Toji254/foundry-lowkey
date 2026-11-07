@@ -219,7 +219,7 @@ def main() -> int:
         for family in families:
             manifest = {
                 "family": family,
-                "target_address": TARGET,
+                "target_address": target,
                 "steps": common_steps,
             }
             manifest_path = root / f"{family}.json"
@@ -283,7 +283,7 @@ def main() -> int:
             manifest = {
                 "family": family,
                 "target_address": TARGET,
-                "steps": [{"kind": kind, "target": TARGET, "selector": SELECTOR}],
+                "steps": [{"kind": kind, "target": target, "selector": exercise_selector}],
             }
             manifest_name = f"refuse-{kind}.json"
             manifest_path = root / manifest_name
@@ -329,10 +329,16 @@ def main() -> int:
 
         execution = run([forge, "test", "--fork-url", RPC, "-vv"], root, timeout=600)
         forge_test_output = execution.stdout[-20000:] + "\n" + execution.stderr[-20000:]
-        summaries = re.findall(r"(?:Test result:|Suite result:).*?(\d+) passed; (\d+) failed", forge_test_output)
-        if not summaries or any(int(failed) != 0 for _, failed in summaries):
-            raise AssertionError("Generated Step harnesses did not all execute successfully:\n" + forge_test_output[-12000:])
-        total_passed = sum(int(ok) for ok, _ in summaries)
+        global_summaries = re.findall(r"Test result:.*?(\\d+) passed; (\\d+) failed", forge_test_output)
+        suite_summaries = re.findall(r"Suite result:.*?(\\d+) passed; (\\d+) failed", forge_test_output)
+        if global_summaries:
+            total_passed = int(global_summaries[-1][0])
+            total_failed = int(global_summaries[-1][1])
+        else:
+            total_passed = sum(int(ok) for ok, _ in suite_summaries)
+            total_failed = sum(int(failed) for _, failed in suite_summaries)
+        if not (global_summaries or suite_summaries) or total_failed != 0:
+            raise AssertionError("Generated Step harnesses did not all execute successfully:\\n" + forge_test_output[-12000:])
         if total_passed != len(families):
             raise AssertionError(
                 f"Expected {len(families)} executed Step family tests, observed {total_passed}.\n"
