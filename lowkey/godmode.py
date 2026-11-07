@@ -2400,6 +2400,8 @@ def reprove(args):
     p=argparse.ArgumentParser(prog="lk reprove")
     p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
     p.add_argument("--fork-block",required=True,type=int); p.add_argument("--tx-hash")
+    p.add_argument("--prior-cost-wei",type=int,default=0,
+                   help="Verified attack setup capital/gas spent before the replay transaction; subtract it from net profit.")
     p.add_argument("--target-address",required=True); p.add_argument("--profit-address",action="append",required=True)
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
     p.add_argument("--prestate-slot",action="append",default=[],help="Additional storage slot to compare between local fork and source, as ADDRESS:SLOT.")
@@ -2412,6 +2414,8 @@ def reprove(args):
     p.add_argument("--non-economic",action="store_true")
     p.add_argument("--require-trace-storage",action="store_true")
     ns=p.parse_args(args)
+    if ns.prior_cost_wei < 0:
+        raise ValueError("--prior-cost-wei must be a non-negative integer.")
     root=root_path(ns.root); harness=(root/ns.harness).resolve()
     if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be inside project.")
     try:
@@ -2649,7 +2653,13 @@ def reprove(args):
     if source_verification["verified"] and source_verification["sender_balance_at_fork_wei"]<gas_cost:
         raise ValueError("Transaction sender did not have enough native ETH on the source chain to pay the measured gas cost.")
     gross_delta=after_total-before_total
-    net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
+    # When the transaction sender is in the measured portfolio, its mined gas
+    # is already reflected in gross_delta. Otherwise subtract the receipt fee
+    # explicitly. Prior setup capital/fees are always separate measured costs.
+    transaction_gas_cost = 0 if not subtract_fee else gas_cost
+    prior_cost = int(ns.prior_cost_wei)
+    net_profit=gross_delta-transaction_gas_cost-prior_cost
+    total_cost=gas_cost+prior_cost
     if command_result is None:
         final_status="LOCAL_TRACE_ONLY"
     elif source_verification["verified"]:
@@ -2708,6 +2718,8 @@ def reprove(args):
         "target_address":target,"entry_call":entry,"entry_call_sha256":tx_digest,
         "call_trace":calls,"receipt_status":receipt.get("status"),
         "gas_used":gas_used,"effective_gas_price_wei":effective_gas_price,"gas_cost_wei":gas_cost,
+        "gas_cost_in_portfolio_delta":not subtract_fee,
+        "prior_cost_wei":prior_cost,"total_cost_wei":total_cost,
         "profit_addresses":balances,"gross_balance_delta_wei":gross_delta,
         "net_profit_wei":net_profit,
         "fidelity":fidelity,
