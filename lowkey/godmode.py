@@ -1550,10 +1550,15 @@ def control(args):
     p.add_argument("--source-rpc-url")
     p.add_argument("--output",default=".audit/godmode/control.json")
     p.add_argument("--freeze",action="store_true",help="Freeze the manifest, commands, harnesses and expectations without running them.")
+    p.add_argument("--validate",action="store_true",help="Validate a frozen spec without executing control or attack commands.")
     p.add_argument("--freeze-file",default=".audit/godmode/control.freeze.json")
     p.add_argument("--require-frozen",action="store_true",help="Refuse to execute unless a matching frozen manifest exists.")
     p.add_argument("--non-economic",action="store_true",help="Require a passing semantic invariant instead of positive profit.")
     ns=p.parse_args(args)
+    if ns.freeze and ns.validate:
+        raise ValueError("--freeze and --validate are separate operations; run them in separate invocations.")
+    if ns.validate and ns.require_frozen:
+        raise ValueError("--validate already requires an existing frozen spec; do not combine it with --require-frozen.")
 
     root=root_path(ns.root)
     url=rpc_url(ns.rpc_url)
@@ -1604,8 +1609,35 @@ def control(args):
         return 0
 
     freeze_status=proof_evidence.validate_control_freeze(
-        root, mf, spec, required=ns.require_frozen, freeze_path=ns.freeze_file
+        root, mf, spec, required=ns.require_frozen or ns.validate, freeze_path=ns.freeze_file
     )
+    if ns.validate:
+        digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
+        freeze_valid = bool(freeze_status.get("verified"))
+        status = "PROPOSED" if freeze_valid else ("REJECTED" if digest_rejected else "UNRESOLVED")
+        payload = {
+            "created_at": now(),
+            "status": status,
+            "proof_status": status,
+            "outcome": "not_run",
+            "family": proof_evidence.normalize_family(spec.get("family")),
+            "target_address": target,
+            "trace_backend": backend,
+            "freeze": freeze_status,
+            "freeze_valid": freeze_valid,
+            "execution_attempted": False,
+            "rejection_codes": ["digest_mismatch"] if digest_rejected else [],
+            "reasons": [] if freeze_valid else [freeze_status.get("reason")],
+            "next_action": (
+                "Run lk control with --require-frozen to execute the already validated experiment."
+                if freeze_valid else
+                "Review the frozen artifact and inputs; do not execute until validation succeeds."
+            ),
+        }
+        out = safe_out(root, ns.output)
+        write_json(out, payload)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if freeze_valid else (2 if digest_rejected else 1)
     if freeze_status.get("requires_refreeze"):
         digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
         rejected_status = "REJECTED" if digest_rejected else "UNPROVEN"
@@ -1835,6 +1867,18 @@ def control(args):
         family,attack_metric,non_economic=non_economic,
         semantic_invariant_verified=semantic_invariant_verified,
     )
+    if backend=="forge-state-diff" and not non_economic:
+        # AccountAccess balance deltas are gross test-execution observations. Forge
+        # does not provide a mined EOA receipt or effective gas price, so these
+        # values must never be presented as net profitability.
+        economics={
+            "accepted":False,
+            "economic":True,
+            "gross_balance_delta_wei":attack_metric,
+            "net_profit_wei":None,
+            "reason":"Forge state-diff has no EOA receipt gas accounting; a funded Anvil reproof is required.",
+            "promotion_cap":"SIMULATED_BREAK",
+        }
 
     scenario_errors=[name for name,_ in scenarios if rows.get(name,{}).get("trace_error")]
     execution_names=["control","attack"]
@@ -1864,11 +1908,15 @@ def control(args):
 
     if non_economic:
         passed=base_valid and economics["accepted"] and semantic_invariant_verified
+    elif backend=="forge-state-diff":
+        # This is a paired structural acceptance only: positive gross balance
+        # observations plus attack-over-control. It is never a profit verdict.
+        passed=bool(paired_forge and base_valid and attack_metric_positive and isinstance(delta,int) and delta>0)
     else:
-        # Anvil's metric is net of actual receipt gas. Forge's is a state-diff
-        # balance delta without gas, so it can never satisfy this profit gate.
-        passed=(base_valid and backend=="anvil-calltracer" and economics["accepted"] and
-                attack_metric_positive and isinstance(delta,int) and delta>0)
+        # The Anvil path uses mined receipts and actual gas, so it can evaluate
+        # net profitability for the selected local/forked target.
+        passed=(base_valid and economics["accepted"] and attack_metric_positive and
+                isinstance(delta,int) and delta>0)
 
     rejection_reasons=[]
     for name in ("control","attack","negative_control"):
@@ -1901,8 +1949,8 @@ def control(args):
         rejection_reasons.append("Frozen expectations are missing or were not verified; this run cannot be promoted.")
     if non_economic and not semantic_invariant_verified:
         rejection_reasons.append("Non-economic attack requires a passing semantic_check_argv.")
-    if not non_economic and backend=="forge-state-diff":
-        rejection_reasons.append("Forge state-diff has no EOA receipt gas accounting; it cannot prove net profitability.")
+    if not non_economic and backend=="forge-state-diff" and not passed:
+        rejection_reasons.append("Forge paired state-diff did not verify a positive gross attack-over-control result; gas-adjusted profitability remains unproven.")
     if not non_economic and (delta is None or delta<=0):
         rejection_reasons.append("Attack metric did not exceed the control metric.")
     if not non_economic and not attack_metric_positive:
@@ -1955,14 +2003,14 @@ def control(args):
         rejection_codes.append("negative_control_failed")
     if non_economic and not semantic_invariant_verified:
         rejection_codes.append("semantic_invariant_failed")
-    if not non_economic and isinstance(attack_metric,int) and attack_metric<=0:
+    if not non_economic and backend=="anvil-calltracer" and isinstance(attack_metric,int) and attack_metric<=0:
         rejection_codes.append("net_negative")
     if not non_economic and isinstance(delta,int) and delta<=0:
         rejection_codes.append("control_not_outperformed")
     rejected=(
         execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
     )
-    outcome="profitable" if passed and not non_economic else (
+    outcome="profitable" if passed and not non_economic and backend=="anvil-calltracer" else (
         "observed" if passed or execution_attempted else "not_run"
     )
     if rejected:
@@ -1974,11 +2022,14 @@ def control(args):
             for name in ("control","attack")
         ),
     )
-    legacy_status="BREAK" if passed else ("REJECTED" if rejected else "OBSERVED")
+    legacy_status=(
+        "SIMULATED_BREAK" if backend=="forge-state-diff" and passed else
+        ("BREAK" if passed else ("REJECTED" if rejected else "OBSERVED"))
+    )
     proof_status=proof["status"]
-    # Non-economic attacks and Forge-only state diffs must not be promoted as
-    # profitable deployment exploits even when their semantic assertions pass.
-    if non_economic and passed:
+    # Fixture/Forge evidence can establish an observed structural break, never
+    # gas-adjusted profitability or proof of an authentic deployment.
+    if (non_economic and passed) or (backend=="forge-state-diff" and passed):
         proof_status="SIMULATED_BREAK"
     if not freeze_status.get("verified"):
         proof_status="OBSERVED"
@@ -2022,6 +2073,9 @@ def control(args):
         "outcome":outcome,"family":family,"economic_policy":economics,
         "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
         "paired_forge_experiment":paired_forge,
+        "state_diff_pair_verified":bool(backend=="forge-state-diff" and paired_forge and passed),
+        "gross_attack_metric_wei":attack_metric if backend=="forge-state-diff" else None,
+        "economic_reproof_required":bool(backend=="forge-state-diff" and not non_economic and passed),
         "evidence_capabilities":evidence_capabilities,
         "evidence_requirements":evidence_checks,
         "evidence_requirements_verified":evidence_requirements_verified,
@@ -2053,7 +2107,7 @@ def control(args):
         }),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
         "memory_feedback":memory_feedback,
-        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff is test-execution evidence and cannot prove EOA gas or net profitability.",
+        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff can pass only as SIMULATED_BREAK; a separate mined Anvil reproof is required for LOCAL_PROFITABLE.",
     }
     out=safe_out(root,ns.output)
     write_json(out,payload)
