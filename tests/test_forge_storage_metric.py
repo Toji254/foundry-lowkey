@@ -1,6 +1,15 @@
+import importlib.util
+import pathlib
+import sys
 import unittest
 
-from lowkey.godmode import _forge_storage_metric
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE = ROOT / "lowkey" / "godmode.py"
+SPEC = importlib.util.spec_from_file_location("lowkey_storage_metric_tested", MODULE)
+godmode = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = godmode
+SPEC.loader.exec_module(godmode)
+_forge_storage_metric = godmode._forge_storage_metric
 
 
 class ForgeStorageMetricTests(unittest.TestCase):
