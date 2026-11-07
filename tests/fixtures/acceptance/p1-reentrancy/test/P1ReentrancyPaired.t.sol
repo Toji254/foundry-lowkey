@@ -14,6 +14,16 @@ contract P1ReentrancyPairedTest is LowkeyForgeStateDiffRecorder {
         address owner = vm.envAddress("P1_OWNER");
 
         uint256 baseline = vm.snapshot();
+        // Explicit artifact paths keep vulnerable and mutation evidence separate.
+        // Defaults preserve the ordinary standalone fixture invocation.
+        string memory controlTracePath = vm.envOr(
+            "P1_CONTROL_TRACE_PATH",
+            ".audit/godmode/control-state-diff.json"
+        );
+        string memory attackTracePath = vm.envOr(
+            "P1_ATTACK_TRACE_PATH",
+            ".audit/godmode/attack-state-diff.json"
+        );
 
         // Across the measured pair the vault must receive exactly three
         // withdraw() calls: one sequential control and two attack-path calls.
@@ -31,7 +41,7 @@ contract P1ReentrancyPairedTest is LowkeyForgeStateDiffRecorder {
         uint256 controlObservedReentries = actor.observedReentryCount();
         require(controlSuccessfulReentries == 0, "CONTROL_REENTERED");
         require(controlObservedReentries == controlSuccessfulReentries, "CONTROL_METRIC_MISMATCH");
-        _lowkeyWriteTrace(".audit/godmode/control-state-diff.json");
+        _lowkeyWriteTrace(controlTracePath);
 
         require(vault.credit(address(actor)) == 0, "CONTROL_DID_NOT_CLEAR_CREDIT");
         require(vm.revertTo(baseline), "BASELINE_REVERT_FAILED");
@@ -54,7 +64,7 @@ contract P1ReentrancyPairedTest is LowkeyForgeStateDiffRecorder {
             observedAttackReentries == actualAttackReentries,
             "ATTACK_METRIC_MISMATCH"
         );
-        _lowkeyWriteTrace(".audit/godmode/attack-state-diff.json");
+        _lowkeyWriteTrace(attackTracePath);
 
         require(vault.credit(address(actor)) == 0, "ATTACK_DID_NOT_CLEAR_CREDIT");
         require(!actor.entered(), "CALLBACK_GUARD_NOT_CLEARED");
