@@ -415,7 +415,7 @@ def main() -> int:
                 "cli_output_tail": mutation_log[-12000:],
             }
             (evidence_root / "mutation-failure.json").write_text(
-                json.dumps(mutation_failure, indent=2, sort_keys=True) + "\\n",
+                json.dumps(mutation_failure, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
             raise AssertionError(
@@ -502,7 +502,7 @@ def main() -> int:
             }
             print(json.dumps({"mutation_failure": mutation_failure}, indent=2, sort_keys=True))
             (evidence_root / "mutation-failure.json").write_text(
-                json.dumps(mutation_failure, indent=2, sort_keys=True) + "\n",
+                json.dumps(mutation_failure, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
             raise AssertionError("The checks-effects-interactions mutation survived; see mutation-failure.json.")
