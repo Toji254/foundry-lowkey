@@ -1421,6 +1421,11 @@ def _forge_storage_metric(normalized, metric_spec):
             + address + ":" + slot
         )
     try:
+        first_observed_before = int(str(observations[0].get("previous_value")), 16)
+        if first_observed_before != before:
+            raise ValueError(
+                "metric_storage first trace value differs from the normalized transaction prestate."
+            )
         # The recorder preserves ordered storage accesses. The last successful
         # access observes the final value (the fixture explicitly reads the
         # counter after the callback so zero-write outcomes are observable too).
@@ -1664,6 +1669,24 @@ def control(args):
     target=addr(spec.get("target_address"))
     if not isinstance(spec.get("metric_addresses"),list) or not spec["metric_addresses"]:
         raise ValueError("Declare metric_addresses for the attacker portfolio.")
+    metric_addresses={addr(value) for value in spec["metric_addresses"]}
+    metric_storage=spec.get("metric_storage")
+    if metric_storage is not None:
+        if backend != "forge-state-diff":
+            raise ValueError("metric_storage is supported only by the forge-state-diff backend.")
+        if not isinstance(metric_storage,dict):
+            raise ValueError("metric_storage must be an object with address, slot and optional kind.")
+        metric_storage_address=addr(metric_storage.get("address"))
+        storage_slot_key(metric_storage.get("slot"))
+        if str(metric_storage.get("kind") or "uint256_delta").lower() != "uint256_delta":
+            raise ValueError("metric_storage.kind currently supports only uint256_delta.")
+        prestate_addresses={
+            addr(value) for value in (spec.get("prestate_addresses") or [])
+        }
+        if metric_storage_address not in prestate_addresses:
+            raise ValueError("metric_storage.address must appear in prestate_addresses.")
+        if metric_storage_address not in metric_addresses:
+            raise ValueError("metric_storage.address must appear in metric_addresses.")
 
     try:
         try:
@@ -2180,7 +2203,11 @@ def control(args):
         ),
         "attack_metric":attack_metric,
         "attack_metric_kind":rows.get("attack",{}).get("metric_kind"),
-        "metric_evidence":rows.get("attack",{}).get("metric_evidence"),
+        "metric_definition":spec.get("metric_storage"),
+        "metric_evidence":{
+            scenario:rows.get(scenario,{}).get("metric_evidence")
+            for scenario in ("control","attack")
+        } if spec.get("metric_storage") is not None else rows.get("attack",{}).get("metric_evidence"),
         "economic_reproof_required":bool(backend=="forge-state-diff" and not non_economic and passed),
         "evidence_capabilities":evidence_capabilities,
         "evidence_requirements":evidence_checks,
