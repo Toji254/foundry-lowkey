@@ -261,5 +261,34 @@ class ProofEvidenceTests(unittest.TestCase):
                 validate_control_freeze(root, root / "control.json", spec, required=True)
 
 
+    def test_freeze_explicitly_binds_trace_storage_metric_definition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest_path = root / "control.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            metric = {
+                "address": "0x" + "2" * 40,
+                "slot": "0x2",
+                "kind": "uint256_delta",
+            }
+            spec = {
+                "family": "reentrancy",
+                "metric_name": "successful_reentrant_withdrawals",
+                "metric_addresses": [metric["address"]],
+                "prestate_addresses": [metric["address"]],
+                "metric_storage": metric,
+            }
+            frozen, _ = freeze_control_manifest(root, manifest_path, spec)
+            self.assertEqual(frozen["experiment"]["metric_name"], spec["metric_name"])
+            self.assertEqual(frozen["experiment"]["metric_storage"], metric)
+            self.assertTrue(validate_control_freeze(
+                root, manifest_path, spec, required=True
+            )["verified"])
+
+            changed = {**spec, "metric_storage": {**metric, "slot": "0x3"}}
+            with self.assertRaisesRegex(ValueError, "Frozen expectations"):
+                validate_control_freeze(root, manifest_path, changed, required=True)
+
+
 if __name__ == "__main__":
     unittest.main()

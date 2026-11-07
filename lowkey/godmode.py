@@ -1373,6 +1373,89 @@ def _forge_scenario_prestate(normalized, spec, scenario_name):
 
 
 
+def _forge_storage_metric(normalized, metric_spec):
+    """Compute a declared uint256 storage delta from trace-derived state accesses.
+
+    Unlike account balance deltas, this does not depend on Forge emitting a
+    balance record for every contract participating in a callback. The slot
+    must be observed in the trace and its transaction-prestate value must be
+    present in the normalized artifact.
+    """
+    if not isinstance(metric_spec, dict):
+        raise ValueError("metric_storage must be an object with address and slot.")
+    address = addr(metric_spec.get("address"))
+    slot = storage_slot_key(metric_spec.get("slot"))
+    kind = str(metric_spec.get("kind") or "uint256_delta").lower()
+    if kind != "uint256_delta":
+        raise ValueError("metric_storage.kind currently supports only uint256_delta.")
+
+    prestate_account = next(
+        (row for row in (normalized.get("prestate") or [])
+         if str(row.get("address") or "").lower() == address),
+        None,
+    )
+    prestate_slot = next(
+        (row for row in (prestate_account or {}).get("storage") or []
+         if str(row.get("slot") or "").lower() == slot),
+        None,
+    )
+    if prestate_slot is None:
+        raise ValueError(
+            "Trace did not capture the declared metric_storage prestate slot "
+            + address + ":" + slot
+        )
+    try:
+        before = int(str(prestate_slot.get("value")), 16)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric_storage prestate value is not a valid bytes32 quantity.") from exc
+
+    observations = [
+        item for item in (normalized.get("storage_accesses") or [])
+        if str(item.get("account") or "").lower() == address
+        and str(item.get("slot") or "").lower() == slot
+        and not item.get("reverted", False)
+    ]
+    if not observations:
+        raise ValueError(
+            "Trace did not observe the declared metric_storage slot during execution: "
+            + address + ":" + slot
+        )
+    try:
+        first_observed_before = int(str(observations[0].get("previous_value")), 16)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric_storage first trace value is not a valid bytes32 quantity.") from exc
+    if first_observed_before != before:
+        raise ValueError(
+            "metric_storage first trace value differs from the normalized transaction prestate."
+        )
+
+    # Use the final successful SSTORE, not the final access: the harness
+    # deliberately reads the counter after the callback, and SLOAD encoding
+    # of new_value is backend-specific. The fixture writes this counter on
+    # every callback, including a valid zero result.
+    successful_writes = [item for item in observations if item.get("is_write")]
+    if not successful_writes:
+        raise ValueError(
+            "Trace observed metric_storage but recorded no successful write to its declared slot."
+        )
+    try:
+        after = int(str(successful_writes[-1].get("new_value")), 16)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric_storage final write is not a valid bytes32 quantity.") from exc
+
+    return {
+        "kind": "forge_trace_storage_uint256_delta",
+        "address": address,
+        "slot": slot,
+        "before": before,
+        "after": after,
+        "delta": after - before,
+        "observations": len(observations),
+        "writes": len(successful_writes),
+        "source": "Vm.startStateDiffRecording successful storage writes",
+    }
+
+
 def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, paired_entry=None):
     try:
         try:
@@ -1465,8 +1548,25 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
         for scenario_name, scenario_entry, artifact_rel, scenario_argv, fidelity in validated:
             artifact_path = artifact_paths[scenario_name]
             if not artifact_path.is_file():
-                raise ValueError(scenario_name + " Forge test passed but did not write state_diff_file; " +
-                                 "ensure _lowkeyStartTrace/_lowkeyWriteTrace wrap the target call.")
+                raise ValueError(
+                    scenario_name + " Forge test passed but did not write the declared state_diff_file "
+                    + artifact_rel.as_posix()
+                    + "; ensure the harness recorder writes to that exact path."
+                )
+            # The harness runs in an isolated copy so its build/test outputs do
+            # not contaminate the caller's project. The declared evidence file,
+            # however, is an explicit output contract: persist the exact raw
+            # recorder artifact back to the project before parsing it or
+            # cleaning up the isolated workspace. This preserves diagnostics
+            # even when normalization or later proof checks fail.
+            project_root = Path(root).resolve()
+            persisted_artifact = (project_root / artifact_rel).resolve()
+            if not persisted_artifact.is_relative_to(project_root):
+                raise ValueError(
+                    scenario_name + " state_diff_file resolves outside the project root."
+                )
+            persisted_artifact.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(artifact_path, persisted_artifact)
             raw = json.loads(artifact_path.read_text(encoding="utf-8"))
             normalized = normalize_forge_state_diff(raw, expected_target=target)
             prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots = (
@@ -1494,8 +1594,16 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
             metrics = {x["address"]: x["delta_wei"] for x in normalized.get("balance_deltas", [])}
             metric_addresses = sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
             metric = None
-            if metric_addresses and all(address in metrics for address in metric_addresses):
-                metric = sum(metrics[address] for address in metric_addresses)
+            metric_evidence = None
+            metric_storage = spec.get("metric_storage")
+            if metric_storage is not None:
+                metric_evidence = _forge_storage_metric(normalized, metric_storage)
+                metric = metric_evidence["delta"]
+                metric_kind = metric_evidence["kind"]
+            else:
+                if metric_addresses and all(address in metrics for address in metric_addresses):
+                    metric = sum(metrics[address] for address in metric_addresses)
+                metric_kind = "forge_account_balance_delta_without_eoa_gas"
             source_verification = _forge_source_verification(source_url, fork_url, normalized, spec)
             fidelity_label = "simulated_caller"
             if fidelity.get("synthetic_state"):
@@ -1505,7 +1613,7 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
             results[scenario_name] = {
                 "backend": "forge-state-diff", "exit_code": proc.returncode,
                 "execution_verified": proc.returncode == 0, "metric": metric,
-                "metric_kind": "forge_account_balance_delta_without_eoa_gas",
+                "metric_kind": metric_kind, "metric_evidence": metric_evidence,
                 "metric_addresses": metric_addresses, "gas_verified": False,
                 "transaction_envelope_verified": False, "tx_hash": None,
                 "chain_id": normalized["chain_id"], "block_number": normalized["block_number"],
@@ -1550,10 +1658,15 @@ def control(args):
     p.add_argument("--source-rpc-url")
     p.add_argument("--output",default=".audit/godmode/control.json")
     p.add_argument("--freeze",action="store_true",help="Freeze the manifest, commands, harnesses and expectations without running them.")
+    p.add_argument("--validate",action="store_true",help="Validate a frozen spec without executing control or attack commands.")
     p.add_argument("--freeze-file",default=".audit/godmode/control.freeze.json")
     p.add_argument("--require-frozen",action="store_true",help="Refuse to execute unless a matching frozen manifest exists.")
     p.add_argument("--non-economic",action="store_true",help="Require a passing semantic invariant instead of positive profit.")
     ns=p.parse_args(args)
+    if ns.freeze and ns.validate:
+        raise ValueError("--freeze and --validate are separate operations; run them in separate invocations.")
+    if ns.validate and ns.require_frozen:
+        raise ValueError("--validate already requires an existing frozen spec; do not combine it with --require-frozen.")
 
     root=root_path(ns.root)
     url=rpc_url(ns.rpc_url)
@@ -1583,6 +1696,24 @@ def control(args):
     target=addr(spec.get("target_address"))
     if not isinstance(spec.get("metric_addresses"),list) or not spec["metric_addresses"]:
         raise ValueError("Declare metric_addresses for the attacker portfolio.")
+    metric_addresses={addr(value) for value in spec["metric_addresses"]}
+    metric_storage=spec.get("metric_storage")
+    if metric_storage is not None:
+        if backend != "forge-state-diff":
+            raise ValueError("metric_storage is supported only by the forge-state-diff backend.")
+        if not isinstance(metric_storage,dict):
+            raise ValueError("metric_storage must be an object with address, slot and optional kind.")
+        metric_storage_address=addr(metric_storage.get("address"))
+        storage_slot_key(metric_storage.get("slot"))
+        if str(metric_storage.get("kind") or "uint256_delta").lower() != "uint256_delta":
+            raise ValueError("metric_storage.kind currently supports only uint256_delta.")
+        prestate_addresses={
+            addr(value) for value in (spec.get("prestate_addresses") or [])
+        }
+        if metric_storage_address not in prestate_addresses:
+            raise ValueError("metric_storage.address must appear in prestate_addresses.")
+        if metric_storage_address not in metric_addresses:
+            raise ValueError("metric_storage.address must appear in metric_addresses.")
 
     try:
         try:
@@ -1604,8 +1735,35 @@ def control(args):
         return 0
 
     freeze_status=proof_evidence.validate_control_freeze(
-        root, mf, spec, required=ns.require_frozen, freeze_path=ns.freeze_file
+        root, mf, spec, required=ns.require_frozen and not ns.validate, freeze_path=ns.freeze_file
     )
+    if ns.validate:
+        digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
+        freeze_valid = bool(freeze_status.get("verified"))
+        status = "PROPOSED" if freeze_valid else ("REJECTED" if digest_rejected else "UNRESOLVED")
+        payload = {
+            "created_at": now(),
+            "status": status,
+            "proof_status": status,
+            "outcome": "not_run",
+            "family": proof_evidence.normalize_family(spec.get("family")),
+            "target_address": target,
+            "trace_backend": backend,
+            "freeze": freeze_status,
+            "freeze_valid": freeze_valid,
+            "execution_attempted": False,
+            "rejection_codes": ["digest_mismatch"] if digest_rejected else [],
+            "reasons": [] if freeze_valid else [freeze_status.get("reason")],
+            "next_action": (
+                "Run lk control with --require-frozen to execute the already validated experiment."
+                if freeze_valid else
+                "Review the frozen artifact and inputs; do not execute until validation succeeds."
+            ),
+        }
+        out = safe_out(root, ns.output)
+        write_json(out, payload)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if freeze_valid else (2 if digest_rejected else 1)
     if freeze_status.get("requires_refreeze"):
         digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
         rejected_status = "REJECTED" if digest_rejected else "UNPROVEN"
@@ -1835,6 +1993,28 @@ def control(args):
         family,attack_metric,non_economic=non_economic,
         semantic_invariant_verified=semantic_invariant_verified,
     )
+    if backend=="forge-state-diff" and not non_economic:
+        # Forge test metrics are structural observations, never net profitability.
+        # A storage counter is dimensionless and must not be mislabeled as wei.
+        if spec.get("metric_storage") is not None:
+            economics={
+                "accepted":False,
+                "economic":False,
+                "metric_kind":"forge_trace_storage_uint256_delta",
+                "observed_metric_delta":attack_metric,
+                "net_profit_wei":None,
+                "reason":"Trace-derived storage behavior is structural evidence only; a separate mined Anvil reproof is required for economics.",
+                "promotion_cap":"SIMULATED_BREAK",
+            }
+        else:
+            economics={
+                "accepted":False,
+                "economic":True,
+                "gross_balance_delta_wei":attack_metric,
+                "net_profit_wei":None,
+                "reason":"Forge state-diff has no EOA receipt gas accounting; a funded Anvil reproof is required.",
+                "promotion_cap":"SIMULATED_BREAK",
+            }
 
     scenario_errors=[name for name,_ in scenarios if rows.get(name,{}).get("trace_error")]
     execution_names=["control","attack"]
@@ -1864,11 +2044,15 @@ def control(args):
 
     if non_economic:
         passed=base_valid and economics["accepted"] and semantic_invariant_verified
+    elif backend=="forge-state-diff":
+        # This is a paired structural acceptance only: positive gross balance
+        # observations plus attack-over-control. It is never a profit verdict.
+        passed=bool(paired_forge and base_valid and attack_metric_positive and isinstance(delta,int) and delta>0)
     else:
-        # Anvil's metric is net of actual receipt gas. Forge's is a state-diff
-        # balance delta without gas, so it can never satisfy this profit gate.
-        passed=(base_valid and backend=="anvil-calltracer" and economics["accepted"] and
-                attack_metric_positive and isinstance(delta,int) and delta>0)
+        # The Anvil path uses mined receipts and actual gas, so it can evaluate
+        # net profitability for the selected local/forked target.
+        passed=(base_valid and economics["accepted"] and attack_metric_positive and
+                isinstance(delta,int) and delta>0)
 
     rejection_reasons=[]
     for name in ("control","attack","negative_control"):
@@ -1901,12 +2085,19 @@ def control(args):
         rejection_reasons.append("Frozen expectations are missing or were not verified; this run cannot be promoted.")
     if non_economic and not semantic_invariant_verified:
         rejection_reasons.append("Non-economic attack requires a passing semantic_check_argv.")
-    if not non_economic and backend=="forge-state-diff":
-        rejection_reasons.append("Forge state-diff has no EOA receipt gas accounting; it cannot prove net profitability.")
-    if not non_economic and (delta is None or delta<=0):
+    if not non_economic and backend=="forge-state-diff" and not passed:
+        rejection_reasons.append("Forge paired state-diff did not verify a positive gross attack-over-control result; gas-adjusted profitability remains unproven.")
+    if not non_economic and delta is None:
+        rejection_reasons.append("Attack-over-control delta is unavailable because one or both scenario metrics are missing.")
+    elif not non_economic and delta<=0:
         rejection_reasons.append("Attack metric did not exceed the control metric.")
     if not non_economic and not attack_metric_positive:
-        rejection_reasons.append("Attack metric is not positive after measured costs.")
+        if backend=="forge-state-diff" and rows.get("attack",{}).get("metric_kind")=="forge_trace_storage_uint256_delta":
+            rejection_reasons.append("Trace-derived attack-state metric is zero or negative; the expected mutation/control effect was not observed.")
+        elif backend=="forge-state-diff":
+            rejection_reasons.append("Gross attacker balance delta is not positive.")
+        else:
+            rejection_reasons.append("Attack metric is not positive after measured costs.")
 
     authenticity=(
         "forked_deployment" if all(
@@ -1944,25 +2135,31 @@ def control(args):
 
 
     rejection_codes=[]
-    if not same_entry: rejection_codes.append("mismatch")
+    if not same_entry:
+        rejection_codes.append("fidelity_insufficient")
     if (not same_prestate or not same_trace_storage_values or not same_chain or
         not same_block or not same_fork_anchor or
         (backend=="anvil-calltracer" and not same_envelope) or
         (backend=="forge-state-diff" and not fork_pin_verified)):
-        rejection_codes.append("mismatch")
-    if not trace_delta_verified: rejection_codes.append("control_path_mismatch")
+        rejection_codes.append("fidelity_insufficient")
+    if not trace_delta_verified:
+        rejection_codes.append("control_passed")
     if spec.get("require_negative_control") and not negative_control_verified:
-        rejection_codes.append("negative_control_failed")
+        rejection_codes.append("control_passed")
     if non_economic and not semantic_invariant_verified:
-        rejection_codes.append("semantic_invariant_failed")
-    if not non_economic and isinstance(attack_metric,int) and attack_metric<=0:
+        rejection_codes.append("semantic_default_missing")
+    if not non_economic and backend=="anvil-calltracer" and isinstance(attack_metric,int) and attack_metric<=0:
         rejection_codes.append("net_negative")
-    if not non_economic and isinstance(delta,int) and delta<=0:
-        rejection_codes.append("control_not_outperformed")
+    if not non_economic and delta is None:
+        rejection_codes.append("fidelity_insufficient")
+    elif not non_economic and isinstance(delta,int) and delta<=0:
+        rejection_codes.append("control_passed")
+    if not non_economic and backend=="forge-state-diff" and attack_metric is None:
+        rejection_codes.append("fidelity_insufficient")
     rejected=(
         execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
     )
-    outcome="profitable" if passed and not non_economic else (
+    outcome="profitable" if passed and not non_economic and backend=="anvil-calltracer" else (
         "observed" if passed or execution_attempted else "not_run"
     )
     if rejected:
@@ -1974,11 +2171,14 @@ def control(args):
             for name in ("control","attack")
         ),
     )
-    legacy_status="BREAK" if passed else ("REJECTED" if rejected else "OBSERVED")
+    legacy_status=(
+        "SIMULATED_BREAK" if backend=="forge-state-diff" and passed else
+        ("BREAK" if passed else ("REJECTED" if rejected else "OBSERVED"))
+    )
     proof_status=proof["status"]
-    # Non-economic attacks and Forge-only state diffs must not be promoted as
-    # profitable deployment exploits even when their semantic assertions pass.
-    if non_economic and passed:
+    # Fixture/Forge evidence can establish an observed structural break, never
+    # gas-adjusted profitability or proof of an authentic deployment.
+    if (non_economic and passed) or (backend=="forge-state-diff" and passed):
         proof_status="SIMULATED_BREAK"
     if not freeze_status.get("verified"):
         proof_status="OBSERVED"
@@ -2022,6 +2222,20 @@ def control(args):
         "outcome":outcome,"family":family,"economic_policy":economics,
         "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
         "paired_forge_experiment":paired_forge,
+        "state_diff_pair_verified":bool(backend=="forge-state-diff" and paired_forge and passed),
+        "gross_attack_metric_wei":(
+            attack_metric if backend=="forge-state-diff"
+            and rows.get("attack",{}).get("metric_kind")=="forge_account_balance_delta_without_eoa_gas"
+            else None
+        ),
+        "attack_metric":attack_metric,
+        "attack_metric_kind":rows.get("attack",{}).get("metric_kind"),
+        "metric_definition":spec.get("metric_storage"),
+        "metric_evidence":{
+            scenario:rows.get(scenario,{}).get("metric_evidence")
+            for scenario in ("control","attack")
+        } if spec.get("metric_storage") is not None else rows.get("attack",{}).get("metric_evidence"),
+        "economic_reproof_required":bool(backend=="forge-state-diff" and not non_economic and passed),
         "evidence_capabilities":evidence_capabilities,
         "evidence_requirements":evidence_checks,
         "evidence_requirements_verified":evidence_requirements_verified,
@@ -2032,7 +2246,8 @@ def control(args):
         "freeze":freeze_status,"negative_control_present":negative_control_present,
         "negative_control_verified":negative_control_verified,
         "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
-        "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
+        "same_calls_id":spec["same_calls_id"],"execution_attempted":execution_attempted,
+        "same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,
         "same_trace_storage_values_verified":same_trace_storage_values,
@@ -2052,8 +2267,9 @@ def control(args):
             for item in rows.get(name,{}).get("derived_storage_accesses",[])
         }),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
+        "reason_code":rejection_codes[0] if rejection_codes else None,
         "memory_feedback":memory_feedback,
-        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff is test-execution evidence and cannot prove EOA gas or net profitability.",
+        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff can pass only as SIMULATED_BREAK; a separate mined Anvil reproof is required for LOCAL_PROFITABLE.",
     }
     out=safe_out(root,ns.output)
     write_json(out,payload)
@@ -2337,6 +2553,8 @@ def reprove(args):
     p=argparse.ArgumentParser(prog="lk reprove")
     p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
     p.add_argument("--fork-block",required=True,type=int); p.add_argument("--tx-hash")
+    p.add_argument("--prior-cost-wei",type=int,default=0,
+                   help="Verified attack setup capital/gas spent before the replay transaction; subtract it from net profit.")
     p.add_argument("--target-address",required=True); p.add_argument("--profit-address",action="append",required=True)
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
     p.add_argument("--prestate-slot",action="append",default=[],help="Additional storage slot to compare between local fork and source, as ADDRESS:SLOT.")
@@ -2349,6 +2567,8 @@ def reprove(args):
     p.add_argument("--non-economic",action="store_true")
     p.add_argument("--require-trace-storage",action="store_true")
     ns=p.parse_args(args)
+    if ns.prior_cost_wei < 0:
+        raise ValueError("--prior-cost-wei must be a non-negative integer.")
     root=root_path(ns.root); harness=(root/ns.harness).resolve()
     if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be inside project.")
     try:
@@ -2586,7 +2806,13 @@ def reprove(args):
     if source_verification["verified"] and source_verification["sender_balance_at_fork_wei"]<gas_cost:
         raise ValueError("Transaction sender did not have enough native ETH on the source chain to pay the measured gas cost.")
     gross_delta=after_total-before_total
-    net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
+    # When the transaction sender is in the measured portfolio, its mined gas
+    # is already reflected in gross_delta. Otherwise subtract the receipt fee
+    # explicitly. Prior setup capital/fees are always separate measured costs.
+    transaction_gas_cost = 0 if not subtract_fee else gas_cost
+    prior_cost = int(ns.prior_cost_wei)
+    net_profit=gross_delta-transaction_gas_cost-prior_cost
+    total_cost=gas_cost+prior_cost
     if command_result is None:
         final_status="LOCAL_TRACE_ONLY"
     elif source_verification["verified"]:
@@ -2645,6 +2871,8 @@ def reprove(args):
         "target_address":target,"entry_call":entry,"entry_call_sha256":tx_digest,
         "call_trace":calls,"receipt_status":receipt.get("status"),
         "gas_used":gas_used,"effective_gas_price_wei":effective_gas_price,"gas_cost_wei":gas_cost,
+        "gas_cost_in_portfolio_delta":not subtract_fee,
+        "prior_cost_wei":prior_cost,"total_cost_wei":total_cost,
         "profit_addresses":balances,"gross_balance_delta_wei":gross_delta,
         "net_profit_wei":net_profit,
         "fidelity":fidelity,
@@ -3054,7 +3282,7 @@ def _step_uint(value, label, *, minimum=0, maximum=(1 << 256) - 1):
 def _step_address(value, label):
     if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
         raise StepPlanError(f"{label} must be a 20-byte 0x-prefixed address.")
-    return "address(" + value.lower() + ")"
+    return "address(uint160(0x00" + value.lower()[2:] + "))"
 
 
 def _step_selector(value, label):
