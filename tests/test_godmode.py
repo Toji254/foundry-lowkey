@@ -705,6 +705,7 @@ class GodmodeTests(unittest.TestCase):
                     "--source-rpc-url", "https://archive.example",
                     "--prestate-slot", target + ":" + ("0x" + "0" * 64),
                     "--target-address", target, "--profit-address", recipient,
+                    "--prior-cost-wei", str(10**18),
                     "--argv-json", json.dumps([sys.executable, "-c", "pass"]),
                 ])
             saved = json.loads((root / ".audit/godmode/reprove.json").read_text())
@@ -714,8 +715,30 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["fork_parent_block"], 100)
             self.assertEqual(saved["transaction_block"], 101)
             self.assertEqual(saved["gas_cost_wei"], expected_fee)
-            self.assertEqual(saved["net_profit_wei"], 2 * 10**18 - expected_fee)
+            self.assertEqual(saved["prior_cost_wei"], 10**18)
+            self.assertEqual(saved["total_cost_wei"], 10**18 + expected_fee)
+            self.assertEqual(saved["net_profit_wei"], 10**18 - expected_fee)
             self.assertTrue(saved["human_confirmation_required"])
+
+    def test_reprove_rejects_negative_prior_cost_before_rpc(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = root / "test" / "PriorCost.t.sol"
+            harness.parent.mkdir()
+            harness.write_text("contract PriorCost {}", encoding="utf-8")
+            with patch.object(godmode, "rpc") as rpc_mock:
+                with self.assertRaisesRegex(ValueError, "prior-cost-wei must be a non-negative integer"):
+                    godmode.reprove([
+                        "test/PriorCost.t.sol", "--root", str(root),
+                        "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
+                        "--target-address", "0x" + "1" * 40,
+                        "--profit-address", "0x" + "2" * 40,
+                        "--tx-hash", "0x" + "a" * 64,
+                        "--prior-cost-wei", "-1",
+                    ])
+            rpc_mock.assert_not_called()
 
     def test_reprove_require_trace_storage_rejects_empty_prestate_diff(self):
         from unittest.mock import patch
