@@ -63,7 +63,10 @@ contract ReentrancyActor {
     }
 
     receive() external payable {
-        if (mode == 2 && !entered) {
+        // Read the callback guard in both control and attack so the paired
+        // pre-state comparison observes the same declared storage surface.
+        bool alreadyEntered = entered;
+        if (mode == 2 && !alreadyEntered) {
             entered = true;
             (bool nestedSuccess,) = address(vault).call(
                 abi.encodeWithSelector(ReentrancyVault.withdraw.selector)
