@@ -7,7 +7,7 @@ import {LowkeyForgeStateDiffRecorder} from "../src/LowkeyForgeStateDiffRecorder.
 
 /// @dev Executes both scenarios against the same forked deployments. The only
 /// difference is the actor's mode, set outside each measured trace window.
-contract P1ReentrancyPairedTest is Test, LowkeyForgeStateDiffRecorder {
+contract P1ReentrancyPairedTest is LowkeyForgeStateDiffRecorder {
     function test_paired_reentrancy() external {
         ReentrancyVault vault = ReentrancyVault(payable(vm.envAddress("P1_VAULT")));
         ReentrancyActor actor = ReentrancyActor(payable(vm.envAddress("P1_ACTOR")));
