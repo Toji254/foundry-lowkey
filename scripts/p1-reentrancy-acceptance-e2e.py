@@ -481,9 +481,19 @@ def main() -> int:
             if len(observed_calls) != expected_calls:
                 mutation_killed = False
         if not mutation_killed:
+            evidence_incomplete = (
+                mutation_report.get("status") == "UNPROVEN"
+                or any((mutation_rows.get(scenario) or {}).get("trace_error")
+                       for scenario in ("control", "attack"))
+                or control_metric is None
+                or attack_metric is None
+            )
             mutation_failure = {
                 "status": "BLOCKED",
-                "reason_code": "mutation_not_killed",
+                "reason_code": (
+                    "mutation_evidence_incomplete" if evidence_incomplete
+                    else "mutation_not_killed"
+                ),
                 "family": "reentrancy",
                 "mutation": "move credit[msg.sender] = 0 before the external payout call",
                 "cli_exit_code": mutation_execution.returncode,
@@ -507,7 +517,10 @@ def main() -> int:
                 json.dumps(mutation_failure, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
-            raise AssertionError("The checks-effects-interactions mutation survived; see mutation-failure.json.")
+            raise AssertionError(
+                "The checks-effects-interactions mutation was not proven killed; "
+                "inspect mutation-failure.json and the preserved trace/report artifacts."
+            )
         # A separate signed transaction proves local net profitability after
         # actual receipt gas. The proof axis stays OBSERVED because this target
         # is a fixture, not an independently authenticated real deployment.
