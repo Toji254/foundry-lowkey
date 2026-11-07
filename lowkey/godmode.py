@@ -2093,7 +2093,8 @@ def control(args):
         "freeze":freeze_status,"negative_control_present":negative_control_present,
         "negative_control_verified":negative_control_verified,
         "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
-        "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
+        "same_calls_id":spec["same_calls_id"],"execution_attempted":execution_attempted,
+        "same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,
         "same_trace_storage_values_verified":same_trace_storage_values,
@@ -2113,7 +2114,7 @@ def control(args):
             for item in rows.get(name,{}).get("derived_storage_accesses",[])
         }),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
-        "reason_code":sorted(set(rejection_codes))[0] if rejection_codes else None,
+        "reason_code":rejection_codes[0] if rejection_codes else None,
         "memory_feedback":memory_feedback,
         "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff can pass only as SIMULATED_BREAK; a separate mined Anvil reproof is required for LOCAL_PROFITABLE.",
     }
