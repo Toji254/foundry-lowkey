@@ -350,6 +350,8 @@ def main() -> int:
             "P1_ACTOR": mutation_actor,
             "P1_OWNER": owner,
             "P1_EXPECT_ATTACK_REENTRIES": "0",
+            "P1_CONTROL_TRACE_PATH": ".audit/godmode/mutation-control-state-diff.json",
+            "P1_ATTACK_TRACE_PATH": ".audit/godmode/mutation-attack-state-diff.json",
         })
 
         mutation_manifest = json.loads(json.dumps(manifest))
