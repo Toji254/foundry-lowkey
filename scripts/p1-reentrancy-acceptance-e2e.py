@@ -247,6 +247,11 @@ def main() -> int:
             raise AssertionError("Sequential control unexpectedly recorded a successful nested withdrawal.")
         if paired_report.get("runs", {}).get("attack", {}).get("metric") != 1 or paired_report.get("control_delta") != 1:
             raise AssertionError(f"Vulnerable attack did not record exactly one successful nested withdrawal: {paired_report}")
+        paired_metrics = paired_report.get("metric_evidence") or {}
+        if (paired_metrics.get("control") or {}).get("delta") != 0:
+            raise AssertionError(f"Control storage metric was not a verified zero: {paired_metrics}")
+        if (paired_metrics.get("attack") or {}).get("delta") != 1:
+            raise AssertionError(f"Attack storage metric was not a verified one: {paired_metrics}")
         for field in (
             "state_diff_pair_verified",
             "same_entry_call_verified",
