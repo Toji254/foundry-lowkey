@@ -6,8 +6,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Let the current release-gate run finish; newer pushes queue behind it.
-  cancel-in-progress: false
+  # Preserve integration/release validation; superseded topic-branch runs cancel.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/integration-test-drive' && github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
