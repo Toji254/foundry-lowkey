@@ -1954,7 +1954,10 @@ def control(args):
     if not non_economic and (delta is None or delta<=0):
         rejection_reasons.append("Attack metric did not exceed the control metric.")
     if not non_economic and not attack_metric_positive:
-        rejection_reasons.append("Attack metric is not positive after measured costs.")
+        rejection_reasons.append(
+            "Gross attacker balance delta is not positive." if backend=="forge-state-diff"
+            else "Attack metric is not positive after measured costs."
+        )
 
     authenticity=(
         "forked_deployment" if all(
