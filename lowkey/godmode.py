@@ -1426,12 +1426,18 @@ def _forge_storage_metric(normalized, metric_spec):
             raise ValueError(
                 "metric_storage first trace value differs from the normalized transaction prestate."
             )
-        # The recorder preserves ordered storage accesses. The last successful
-        # access observes the final value (the fixture explicitly reads the
-        # counter after the callback so zero-write outcomes are observable too).
-        after = int(str(observations[-1].get("new_value")), 16)
+        # Use the final successful SSTORE, not the final access: the harness
+        # deliberately reads the counter after the callback, and SLOAD encoding
+        # of new_value is backend-specific. The fixture writes this counter on
+        # every callback, including a valid zero result.
+        successful_writes = [item for item in observations if item.get("is_write")]
+        if not successful_writes:
+            raise ValueError(
+                "Trace observed metric_storage but recorded no successful write to its declared slot."
+            )
+        after = int(str(successful_writes[-1].get("new_value")), 16)
     except (TypeError, ValueError) as exc:
-        raise ValueError("metric_storage final value is not a valid bytes32 quantity.") from exc
+        raise ValueError("metric_storage final write is not a valid bytes32 quantity.") from exc
 
     return {
         "kind": "forge_trace_storage_uint256_delta",
@@ -1441,8 +1447,8 @@ def _forge_storage_metric(normalized, metric_spec):
         "after": after,
         "delta": after - before,
         "observations": len(observations),
-        "writes": sum(1 for item in observations if item.get("is_write")),
-        "source": "Vm.startStateDiffRecording storage accesses",
+        "writes": len(successful_writes),
+        "source": "Vm.startStateDiffRecording successful storage writes",
     }
 
 
