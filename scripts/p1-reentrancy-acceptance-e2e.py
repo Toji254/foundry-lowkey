@@ -295,18 +295,19 @@ def main() -> int:
         (mutation_root / "lib" / "forge-std").symlink_to(forge_std, target_is_directory=True)
         mutation_source_path = mutation_root / "src" / "ReentrancyFixture.sol"
         mutation_source = mutation_source_path.read_text(encoding="utf-8")
-        vulnerable_order = (
-            '        (bool ok,) = msg.sender.call{value: amount}("");\\n'
-            '        require(ok, "PAYOUT_FAILED");\\n\\n'
-            '        // Vulnerability: this write happens after the untrusted external call.\\n'
-            '        credit[msg.sender] = 0;'
-        )
-        protected_order = (
-            '        // Mutation: checks-effects-interactions clears credit before callback.\\n'
-            '        credit[msg.sender] = 0;\\n'
-            '        (bool ok,) = msg.sender.call{value: amount}("");\\n'
-            '        require(ok, "PAYOUT_FAILED");'
-        )
+        vulnerable_order = "\n".join([
+            '        (bool ok,) = msg.sender.call{value: amount}("");',
+            '        require(ok, "PAYOUT_FAILED");',
+            "",
+            '        // Vulnerability: this write happens after the untrusted external call.',
+            '        credit[msg.sender] = 0;',
+        ])
+        protected_order = "\n".join([
+            '        // Mutation: checks-effects-interactions clears credit before callback.',
+            '        credit[msg.sender] = 0;',
+            '        (bool ok,) = msg.sender.call{value: amount}("");',
+            '        require(ok, "PAYOUT_FAILED");',
+        ])
         if mutation_source.count(vulnerable_order) != 1:
             raise AssertionError("P1 mutation target line was absent or ambiguous; do not claim mutation coverage.")
         mutation_source_path.write_text(
@@ -420,6 +421,9 @@ def main() -> int:
         # A separate signed transaction proves local net profitability after
         # actual receipt gas. The proof axis stays OBSERVED because this target
         # is a fixture, not an independently authenticated real deployment.
+        reprove_fork_block = int(run(
+            [cast, "block-number", "--rpc-url", RPC], root, env
+        ).stdout.strip())
         replay_argv = [
             sys.executable, "scripts/p1_replay_attack.py", actor, RPC, ANVIL_KEY0,
         ]
@@ -427,7 +431,7 @@ def main() -> int:
             lk, "reprove", "src/ReentrancyFixture.sol",
             "--root", str(root),
             "--rpc-url", RPC,
-            "--fork-block", str(fork_block),
+            "--fork-block", str(reprove_fork_block),
             "--target-address", vault,
             "--profit-address", owner,
             "--profit-address", actor,
@@ -466,6 +470,7 @@ def main() -> int:
             "vault": vault,
             "attacker": actor,
             "fork_block": fork_block,
+            "reprove_fork_block": reprove_fork_block,
             "forge_pair": {
                 "status": paired_report.get("status"),
                 "state_diff_pair_verified": paired_report.get("state_diff_pair_verified"),
