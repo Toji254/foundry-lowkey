@@ -189,6 +189,58 @@ class GodmodeTests(unittest.TestCase):
             raise AssertionError("Unexpected RPC method: " + method)
         return fake_rpc
 
+    def test_control_validate_checks_frozen_spec_without_executing(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._control_manifest(root)
+            with patch.object(godmode, "rpc") as rpc_mock, \
+                 patch.object(godmode, "run") as run_mock, \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545", "--validate",
+                ])
+
+            saved = json.loads((root / ".audit" / "godmode" / "control.json").read_text())
+            self.assertEqual(result, 0)
+            self.assertEqual(saved["status"], "PROPOSED")
+            self.assertTrue(saved["freeze_valid"])
+            self.assertFalse(saved["execution_attempted"])
+            self.assertTrue(saved["freeze"]["verified"])
+            rpc_mock.assert_not_called()
+            run_mock.assert_not_called()
+
+    def test_control_validate_rejects_tampered_digest_without_execution(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._control_manifest(root)
+            freeze_path = root / ".audit" / "godmode" / "control.freeze.json"
+            frozen = json.loads(freeze_path.read_text(encoding="utf-8"))
+            frozen["freeze_sha256"] = "0" * 64
+            freeze_path.write_text(json.dumps(frozen), encoding="utf-8")
+
+            with patch.object(godmode, "rpc") as rpc_mock, \
+                 patch.object(godmode, "run") as run_mock, \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545", "--validate",
+                ])
+
+            saved = json.loads((root / ".audit" / "godmode" / "control.json").read_text())
+            self.assertEqual(result, 2)
+            self.assertEqual(saved["status"], "REJECTED")
+            self.assertEqual(saved["proof_status"], "REJECTED")
+            self.assertEqual(saved["rejection_codes"], ["digest_mismatch"])
+            self.assertFalse(saved["execution_attempted"])
+            self.assertEqual(saved["freeze"]["reason_code"], "digest_mismatch")
+            rpc_mock.assert_not_called()
+            run_mock.assert_not_called()
+
     def test_control_rejects_tampered_freeze_digest_before_rpc_execution(self):
         from unittest.mock import patch
 
