@@ -1422,19 +1422,23 @@ def _forge_storage_metric(normalized, metric_spec):
         )
     try:
         first_observed_before = int(str(observations[0].get("previous_value")), 16)
-        if first_observed_before != before:
-            raise ValueError(
-                "metric_storage first trace value differs from the normalized transaction prestate."
-            )
-        # Use the final successful SSTORE, not the final access: the harness
-        # deliberately reads the counter after the callback, and SLOAD encoding
-        # of new_value is backend-specific. The fixture writes this counter on
-        # every callback, including a valid zero result.
-        successful_writes = [item for item in observations if item.get("is_write")]
-        if not successful_writes:
-            raise ValueError(
-                "Trace observed metric_storage but recorded no successful write to its declared slot."
-            )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric_storage first trace value is not a valid bytes32 quantity.") from exc
+    if first_observed_before != before:
+        raise ValueError(
+            "metric_storage first trace value differs from the normalized transaction prestate."
+        )
+
+    # Use the final successful SSTORE, not the final access: the harness
+    # deliberately reads the counter after the callback, and SLOAD encoding
+    # of new_value is backend-specific. The fixture writes this counter on
+    # every callback, including a valid zero result.
+    successful_writes = [item for item in observations if item.get("is_write")]
+    if not successful_writes:
+        raise ValueError(
+            "Trace observed metric_storage but recorded no successful write to its declared slot."
+        )
+    try:
         after = int(str(successful_writes[-1].get("new_value")), 16)
     except (TypeError, ValueError) as exc:
         raise ValueError("metric_storage final write is not a valid bytes32 quantity.") from exc
