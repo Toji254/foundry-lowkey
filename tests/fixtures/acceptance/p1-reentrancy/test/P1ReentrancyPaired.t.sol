@@ -28,7 +28,9 @@ contract P1ReentrancyPairedTest is LowkeyForgeStateDiffRecorder {
         _lowkeyStartTrace(address(vault));
         actor.execute();
         uint256 controlSuccessfulReentries = actor.successfulReentries();
+        uint256 controlObservedReentries = actor.observedReentryCount();
         require(controlSuccessfulReentries == 0, "CONTROL_REENTERED");
+        require(controlObservedReentries == controlSuccessfulReentries, "CONTROL_METRIC_MISMATCH");
         _lowkeyWriteTrace(".audit/godmode/control-state-diff.json");
 
         require(vault.credit(address(actor)) == 0, "CONTROL_DID_NOT_CLEAR_CREDIT");
@@ -42,9 +44,15 @@ contract P1ReentrancyPairedTest is LowkeyForgeStateDiffRecorder {
         // Reading the counter while recording guarantees an observable final
         // value even when the CEI mutation correctly prevents every increment.
         uint256 expectedAttackReentries = vm.envOr("P1_EXPECT_ATTACK_REENTRIES", uint256(1));
+        uint256 actualAttackReentries = actor.successfulReentries();
+        uint256 observedAttackReentries = actor.observedReentryCount();
         require(
-            actor.successfulReentries() == expectedAttackReentries,
+            actualAttackReentries == expectedAttackReentries,
             "ATTACK_SUCCESSFUL_REENTRY_COUNT_MISMATCH"
+        );
+        require(
+            observedAttackReentries == actualAttackReentries,
+            "ATTACK_METRIC_MISMATCH"
         );
         _lowkeyWriteTrace(".audit/godmode/attack-state-diff.json");
 
