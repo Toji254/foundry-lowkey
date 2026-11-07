@@ -1548,8 +1548,25 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
         for scenario_name, scenario_entry, artifact_rel, scenario_argv, fidelity in validated:
             artifact_path = artifact_paths[scenario_name]
             if not artifact_path.is_file():
-                raise ValueError(scenario_name + " Forge test passed but did not write state_diff_file; " +
-                                 "ensure _lowkeyStartTrace/_lowkeyWriteTrace wrap the target call.")
+                raise ValueError(
+                    scenario_name + " Forge test passed but did not write the declared state_diff_file "
+                    + artifact_rel.as_posix()
+                    + "; ensure the harness recorder writes to that exact path."
+                )
+            # The harness runs in an isolated copy so its build/test outputs do
+            # not contaminate the caller's project. The declared evidence file,
+            # however, is an explicit output contract: persist the exact raw
+            # recorder artifact back to the project before parsing it or
+            # cleaning up the isolated workspace. This preserves diagnostics
+            # even when normalization or later proof checks fail.
+            project_root = Path(root).resolve()
+            persisted_artifact = (project_root / artifact_rel).resolve()
+            if not persisted_artifact.is_relative_to(project_root):
+                raise ValueError(
+                    scenario_name + " state_diff_file resolves outside the project root."
+                )
+            persisted_artifact.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(artifact_path, persisted_artifact)
             raw = json.loads(artifact_path.read_text(encoding="utf-8"))
             normalized = normalize_forge_state_diff(raw, expected_target=target)
             prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots = (
