@@ -40,7 +40,7 @@ contract ReentrancyActor {
     // These deliberately occupy slots 0 and 1. The paired runner excludes only
     // slot 0 (the declared scenario parameter) when comparing control prestate.
     uint256 public mode = 2;
-    bool private entered;
+    bool public entered;
 
     constructor(address vault_) {
         require(vault_ != address(0), "ZERO_VAULT");
