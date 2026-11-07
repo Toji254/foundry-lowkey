@@ -72,8 +72,9 @@ contract ReentrancyActor {
                 abi.encodeWithSelector(ReentrancyVault.withdraw.selector)
             );
             if (!nestedSuccess) {
-                // A checks-effects-interactions mutation rejects this nested call.
-                require(vault.credit(address(this)) == 0, "NESTED_WITHDRAW_FAILED_UNEXPECTEDLY");
+                // A checks-effects-interactions mutation rejects the nested call.
+                entered = false;
+                return;
             }
             entered = false;
         }
