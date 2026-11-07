@@ -258,17 +258,17 @@ jobs:
       - name: Start deterministic Anvil for P1 runtime acceptance
         run: |
           set -euo pipefail
-          anvil --silent \\
-            --port 8545 \\
-            --chain-id 31337 \\
-            --mnemonic "test test test test test test test test test test test junk" \\
-            --accounts 10 \\
-            --balance 10000 \\
-            --gas-price 1000000000 \\
-            --block-base-fee-per-gas 1000000000 \\
-            --gas-limit 30000000 \\
-            --timestamp 1700000000 \\
-            --hardfork cancun \\
+          anvil --silent \
+            --port 8545 \
+            --chain-id 31337 \
+            --mnemonic "test test test test test test test test test test test junk" \
+            --accounts 10 \
+            --balance 10000 \
+            --gas-price 1000000000 \
+            --block-base-fee-per-gas 1000000000 \
+            --gas-limit 30000000 \
+            --timestamp 1700000000 \
+            --hardfork cancun \
             > /tmp/lowkey-p1-anvil.log 2>&1 &
           for i in $(seq 1 30); do
             if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
