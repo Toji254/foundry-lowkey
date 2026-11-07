@@ -41,6 +41,7 @@ contract ReentrancyActor {
     // slot 0 (the declared scenario parameter) when comparing control prestate.
     uint256 public mode = 2;
     bool public entered;
+    uint256 public successfulReentries;
 
     constructor(address vault_) {
         require(vault_ != address(0), "ZERO_VAULT");
@@ -76,6 +77,8 @@ contract ReentrancyActor {
                 entered = false;
                 return;
             }
+            // Count successful nested withdrawals, not merely attempted callbacks.
+            successfulReentries += 1;
             entered = false;
         }
     }
