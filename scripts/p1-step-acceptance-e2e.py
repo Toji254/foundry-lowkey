@@ -329,8 +329,8 @@ def main() -> int:
 
         execution = run([forge, "test", "--fork-url", RPC, "-vv"], root, timeout=600)
         forge_test_output = execution.stdout[-20000:] + "\n" + execution.stderr[-20000:]
-        global_summaries = re.findall(r"Test result:.*?(\\d+) passed; (\\d+) failed", forge_test_output)
-        suite_summaries = re.findall(r"Suite result:.*?(\\d+) passed; (\\d+) failed", forge_test_output)
+        global_summaries = re.findall(r"Test result:.*?([0-9]+) passed; ([0-9]+) failed", forge_test_output)
+        suite_summaries = re.findall(r"Suite result:.*?([0-9]+) passed; ([0-9]+) failed", forge_test_output)
         if global_summaries:
             total_passed = int(global_summaries[-1][0])
             total_failed = int(global_summaries[-1][1])
@@ -338,7 +338,7 @@ def main() -> int:
             total_passed = sum(int(ok) for ok, _ in suite_summaries)
             total_failed = sum(int(failed) for _, failed in suite_summaries)
         if not (global_summaries or suite_summaries) or total_failed != 0:
-            raise AssertionError("Generated Step harnesses did not all execute successfully:\\n" + forge_test_output[-12000:])
+            raise AssertionError("Generated Step harnesses did not all execute successfully:\n" + forge_test_output[-12000:])
         if total_passed != len(families):
             raise AssertionError(
                 f"Expected {len(families)} executed Step family tests, observed {total_passed}.\n"
