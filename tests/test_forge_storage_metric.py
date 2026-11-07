@@ -114,6 +114,17 @@ class ForgeStorageMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "did not observe"):
             _forge_storage_metric(normalized, self.metric_spec)
 
+    def test_metric_rejects_a_trace_that_disagrees_with_transaction_prestate(self):
+        normalized = self.normalized([
+            {
+                "account": self.address, "slot": self.slot,
+                "previous_value": self.one, "new_value": self.one,
+                "is_write": False, "reverted": False,
+            },
+        ])
+        with self.assertRaisesRegex(ValueError, "differs from the normalized transaction prestate"):
+            _forge_storage_metric(normalized, self.metric_spec)
+
     def test_metric_rejects_unsupported_metric_kinds(self):
         normalized = self.normalized([])
         metric_spec = {**self.metric_spec, "kind": "native_profit"}
