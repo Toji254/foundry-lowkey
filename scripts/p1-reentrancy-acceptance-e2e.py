@@ -282,6 +282,141 @@ def main() -> int:
             raise AssertionError("Tampered frozen digest reached experiment execution.")
         freeze_path.write_text(original_freeze, encoding="utf-8")
 
+        # Mutation acceptance: move the credit write before the untrusted
+        # external call (checks-effects-interactions). A surviving exploit is
+        # a BLOCKED/mutation_not_killed result, never a silent pass.
+        mutation_root = Path(temp) / "mutation"
+        shutil.copytree(fixture, mutation_root, dirs_exist_ok=True)
+        (mutation_root / "src" / "LowkeyForgeStateDiffRecorder.sol").write_text(
+            (repo_root / "docs" / "LowkeyForgeStateDiffRecorder.sol").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (mutation_root / "lib").mkdir(exist_ok=True)
+        (mutation_root / "lib" / "forge-std").symlink_to(forge_std, target_is_directory=True)
+        mutation_source_path = mutation_root / "src" / "ReentrancyFixture.sol"
+        mutation_source = mutation_source_path.read_text(encoding="utf-8")
+        vulnerable_order = (
+            '        (bool ok,) = msg.sender.call{value: amount}("");\\n'
+            '        require(ok, "PAYOUT_FAILED");\\n\\n'
+            '        // Vulnerability: this write happens after the untrusted external call.\\n'
+            '        credit[msg.sender] = 0;'
+        )
+        protected_order = (
+            '        // Mutation: checks-effects-interactions clears credit before callback.\\n'
+            '        credit[msg.sender] = 0;\\n'
+            '        (bool ok,) = msg.sender.call{value: amount}("");\\n'
+            '        require(ok, "PAYOUT_FAILED");'
+        )
+        if mutation_source.count(vulnerable_order) != 1:
+            raise AssertionError("P1 mutation target line was absent or ambiguous; do not claim mutation coverage.")
+        mutation_source_path.write_text(
+            mutation_source.replace(vulnerable_order, protected_order, 1),
+            encoding="utf-8",
+        )
+        run([forge, "build"], mutation_root, env, timeout=360)
+        mutation_vault = deploy(forge, mutation_root, env, "ReentrancyVault")
+        mutation_actor = deploy(forge, mutation_root, env, "ReentrancyActor", mutation_vault)
+        send(cast, mutation_root, env, mutation_vault, "seed()", value="1ether")
+        send(cast, mutation_root, env, mutation_actor, "deposit()", value="1ether")
+        mutation_block = int(run(
+            [cast, "block-number", "--rpc-url", RPC], mutation_root, env
+        ).stdout.strip())
+        mutation_env = dict(env)
+        mutation_env.update({
+            "P1_VAULT": mutation_vault,
+            "P1_ACTOR": mutation_actor,
+            "P1_OWNER": owner,
+        })
+
+        mutation_manifest = json.loads(json.dumps(manifest))
+        mutation_manifest["target_address"] = mutation_vault
+        mutation_manifest["expected_fork_block"] = mutation_block
+        mutation_manifest["same_calls_id"] = "p1-reentrancy-cei-mutation-v1"
+        mutation_manifest["metric_name"] = "mutated_attacker_contract_gross_balance_delta_wei"
+        mutation_manifest["prestate_addresses"] = [mutation_vault, mutation_actor]
+        mutation_manifest["metric_addresses"] = [mutation_actor]
+        mutation_manifest["scenario_parameters"][0]["address"] = mutation_actor
+        mutation_manifest["trace_expectations"][0]["address"] = mutation_vault
+        mutation_manifest["control"]["state_diff_file"] = ".audit/godmode/mutation-control-state-diff.json"
+        mutation_manifest["attack"]["state_diff_file"] = ".audit/godmode/mutation-attack-state-diff.json"
+        mutation_manifest_path = mutation_root / "mutation-control.json"
+        mutation_manifest_path.write_text(
+            json.dumps(mutation_manifest, indent=2, sort_keys=True) + "\\n",
+            encoding="utf-8",
+        )
+        mutation_common = [
+            lk, "control", "mutation-control.json", "--root", str(mutation_root),
+            "--rpc-url", RPC, "--freeze-file", ".audit/godmode/mutation.freeze.json",
+        ]
+        run(mutation_common + ["--freeze"], mutation_root, mutation_env)
+        run(mutation_common + [
+            "--validate",
+            "--output", ".audit/p1-reentrancy-acceptance/mutation-freeze-validation.json",
+        ], mutation_root, mutation_env)
+        mutation_validation = read_json(
+            mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-freeze-validation.json"
+        )
+        if mutation_validation.get("status") != "PROPOSED" or not mutation_validation.get("freeze_valid"):
+            raise AssertionError(f"Mutated experiment did not validate its frozen spec: {mutation_validation}")
+        run_expected(mutation_common + [
+            "--require-frozen",
+            "--output", ".audit/p1-reentrancy-acceptance/mutation-control.json",
+        ], mutation_root, mutation_env, expected=1, timeout=900)
+        mutation_report = read_json(
+            mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-control.json"
+        )
+        mutation_killed = (
+            mutation_report.get("status") == "REJECTED"
+            and mutation_report.get("reason_code") == "control_passed"
+            and mutation_report.get("control_delta") == 0
+            and mutation_report.get("execution_attempted") is True
+        )
+        mutation_rows = mutation_report.get("runs") or {}
+        for scenario, expected_calls in (("control", 1), ("attack", 2)):
+            row = mutation_rows.get(scenario) or {}
+            observed_calls = [
+                item for item in (row.get("call_trace") or [])
+                if str(item.get("to") or "").lower() == mutation_vault.lower()
+            ]
+            if len(observed_calls) != expected_calls:
+                mutation_killed = False
+        if not mutation_killed:
+            mutation_failure = {
+                "status": "BLOCKED",
+                "reason_code": "mutation_not_killed",
+                "family": "reentrancy",
+                "mutation": "move credit[msg.sender] = 0 before the external payout call",
+                "observed_status": mutation_report.get("status"),
+                "observed_reason_code": mutation_report.get("reason_code"),
+                "control_delta": mutation_report.get("control_delta"),
+            }
+            (evidence_root / "mutation-failure.json").write_text(
+                json.dumps(mutation_failure, indent=2, sort_keys=True) + "\\n",
+                encoding="utf-8",
+            )
+            raise AssertionError("The checks-effects-interactions mutation survived; see mutation-failure.json.")
+        shutil.copy2(mutation_manifest_path, evidence_root / "mutation-control.json")
+        shutil.copy2(
+            mutation_root / ".audit" / "godmode" / "mutation.freeze.json",
+            evidence_root / "mutation.freeze.json",
+        )
+        shutil.copy2(
+            mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-freeze-validation.json",
+            evidence_root / "mutation-freeze-validation.json",
+        )
+        shutil.copy2(
+            mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-control.json",
+            evidence_root / "mutation-control.json",
+        )
+        shutil.copy2(
+            mutation_root / ".audit" / "godmode" / "mutation-control-state-diff.json",
+            evidence_root / "mutation-control-state-diff.json",
+        )
+        shutil.copy2(
+            mutation_root / ".audit" / "godmode" / "mutation-attack-state-diff.json",
+            evidence_root / "mutation-attack-state-diff.json",
+        )
+
         # A separate signed transaction proves local net profitability after
         # actual receipt gas. The proof axis stays OBSERVED because this target
         # is a fixture, not an independently authenticated real deployment.
@@ -345,6 +480,13 @@ def main() -> int:
                 "tampered_status": tamper_report.get("status"),
                 "tampered_reason_codes": tamper_report.get("rejection_codes"),
                 "execution_attempted_after_tamper": tamper_report.get("execution_attempted"),
+            },
+            "mutation": {
+                "status": mutation_report.get("status"),
+                "reason_code": mutation_report.get("reason_code"),
+                "control_delta": mutation_report.get("control_delta"),
+                "execution_verified": mutation_killed,
+                "mutation": "checks-effects-interactions: credit cleared before external call",
             },
             "anvil_reproof": {
                 "legacy_status": reprove_report.get("legacy_status"),
