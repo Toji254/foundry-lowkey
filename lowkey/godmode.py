@@ -3117,7 +3117,7 @@ def _step_uint(value, label, *, minimum=0, maximum=(1 << 256) - 1):
 def _step_address(value, label):
     if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
         raise StepPlanError(f"{label} must be a 20-byte 0x-prefixed address.")
-    return "address(uint160(" + value.lower() + "))"
+    return "address(uint160(0x00" + value.lower()[2:] + "))"
 
 
 def _step_selector(value, label):
