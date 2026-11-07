@@ -144,7 +144,12 @@ def main() -> int:
         fork_block_text = run([cast, "block-number", "--rpc-url", RPC], root, env).stdout.strip()
         fork_block = int(fork_block_text)
 
-        env.update({"P1_VAULT": vault, "P1_ACTOR": actor, "P1_OWNER": owner})
+        env.update({
+            "P1_VAULT": vault,
+            "P1_ACTOR": actor,
+            "P1_OWNER": owner,
+            "P1_EXPECT_ATTACK_REENTRIES": "1",
+        })
         shared_argv = [
             forge, "test",
             "--match-path", "test/P1ReentrancyPaired.t.sol",
@@ -161,9 +166,15 @@ def main() -> int:
             "expected_fork_block": fork_block,
             "target_address": vault,
             "same_calls_id": "p1-same-vault-withdraw-control-vs-reentrancy-v1",
-            "metric_name": "attacker_contract_gross_balance_delta_wei",
+            "metric_name": "successful_reentrant_withdrawals",
             "prestate_addresses": [vault, actor],
             "metric_addresses": [actor],
+            "metric_storage": {
+                "address": actor,
+                "slot": "0x2",
+                "kind": "uint256_delta",
+                "description": "Successful nested withdrawals recorded by ReentrancyActor.",
+            },
             "scenario_parameters": [{
                 "name": "callback_mode",
                 "address": actor,
@@ -230,6 +241,12 @@ def main() -> int:
         paired_report = read_json(root / ".audit" / "p1-reentrancy-acceptance" / "paired-control.json")
         if paired.returncode != 0:
             raise AssertionError(f"Paired control did not pass: {paired_report}")
+        if paired_report.get("attack_metric_kind") != "forge_trace_storage_uint256_delta":
+            raise AssertionError(f"Paired Forge metric was not trace-derived storage: {paired_report.get('attack_metric_kind')}")
+        if paired_report.get("runs", {}).get("control", {}).get("metric") != 0:
+            raise AssertionError("Sequential control unexpectedly recorded a successful nested withdrawal.")
+        if paired_report.get("runs", {}).get("attack", {}).get("metric") != 1 or paired_report.get("control_delta") != 1:
+            raise AssertionError(f"Vulnerable attack did not record exactly one successful nested withdrawal: {paired_report}")
         for field in (
             "state_diff_pair_verified",
             "same_entry_call_verified",
@@ -327,15 +344,17 @@ def main() -> int:
             "P1_VAULT": mutation_vault,
             "P1_ACTOR": mutation_actor,
             "P1_OWNER": owner,
+            "P1_EXPECT_ATTACK_REENTRIES": "0",
         })
 
         mutation_manifest = json.loads(json.dumps(manifest))
         mutation_manifest["target_address"] = mutation_vault
         mutation_manifest["expected_fork_block"] = mutation_block
         mutation_manifest["same_calls_id"] = "p1-reentrancy-cei-mutation-v1"
-        mutation_manifest["metric_name"] = "mutated_attacker_contract_gross_balance_delta_wei"
+        mutation_manifest["metric_name"] = "successful_reentrant_withdrawals_after_cei_mutation"
         mutation_manifest["prestate_addresses"] = [mutation_vault, mutation_actor]
         mutation_manifest["metric_addresses"] = [mutation_actor]
+        mutation_manifest["metric_storage"]["address"] = mutation_actor
         mutation_manifest["scenario_parameters"][0]["address"] = mutation_actor
         mutation_manifest["trace_expectations"][0]["address"] = mutation_vault
         mutation_manifest["control"]["state_diff_file"] = ".audit/godmode/mutation-control-state-diff.json"
@@ -366,11 +385,50 @@ def main() -> int:
         mutation_report = read_json(
             mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-control.json"
         )
+        # Preserve the complete evidence before asserting, even when the gate
+        # fails. The temporary mutation workspace is deleted on context exit.
+        diagnostic_files = [
+            (
+                mutation_manifest_path,
+                evidence_root / "mutation-control.json",
+            ),
+            (
+                mutation_root / ".audit" / "godmode" / "mutation.freeze.json",
+                evidence_root / "mutation.freeze.json",
+            ),
+            (
+                mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-freeze-validation.json",
+                evidence_root / "mutation-freeze-validation.json",
+            ),
+            (
+                mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-control.json",
+                evidence_root / "mutation-control-report.json",
+            ),
+            (
+                mutation_root / ".audit" / "godmode" / "mutation-control-state-diff.json",
+                evidence_root / "mutation-control-state-diff.json",
+            ),
+            (
+                mutation_root / ".audit" / "godmode" / "mutation-attack-state-diff.json",
+                evidence_root / "mutation-attack-state-diff.json",
+            ),
+        ]
+        for source, destination in diagnostic_files:
+            if source.is_file():
+                shutil.copy2(source, destination)
+
+        mutation_rows = mutation_report.get("runs") or {}
+        control_metric = (mutation_rows.get("control") or {}).get("metric")
+        attack_metric = (mutation_rows.get("attack") or {}).get("metric")
         mutation_killed = (
             mutation_report.get("status") == "REJECTED"
             and mutation_report.get("reason_code") == "control_passed"
             and mutation_report.get("control_delta") == 0
             and mutation_report.get("execution_attempted") is True
+            and mutation_report.get("attack_metric_kind") == "forge_trace_storage_uint256_delta"
+            and control_metric == 0
+            and attack_metric == 0
+            and (mutation_report.get("metric_evidence") or {}).get("delta") == 0
         )
         mutation_rows = mutation_report.get("runs") or {}
         for scenario, expected_calls in (("control", 1), ("attack", 2)):
@@ -389,35 +447,25 @@ def main() -> int:
                 "mutation": "move credit[msg.sender] = 0 before the external payout call",
                 "observed_status": mutation_report.get("status"),
                 "observed_reason_code": mutation_report.get("reason_code"),
+                "rejection_codes": mutation_report.get("rejection_codes"),
                 "control_delta": mutation_report.get("control_delta"),
+                "attack_metric": mutation_report.get("attack_metric"),
+                "attack_metric_kind": mutation_report.get("attack_metric_kind"),
+                "metric_evidence": mutation_report.get("metric_evidence"),
+                "control_metric": control_metric,
+                "attack_metric_value": attack_metric,
+                "reasons": mutation_report.get("reasons"),
+                "scenario_errors": {
+                    scenario: (mutation_rows.get(scenario) or {}).get("trace_error")
+                    for scenario in ("control", "attack")
+                },
             }
+            print(json.dumps({"mutation_failure": mutation_failure}, indent=2, sort_keys=True))
             (evidence_root / "mutation-failure.json").write_text(
                 json.dumps(mutation_failure, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             raise AssertionError("The checks-effects-interactions mutation survived; see mutation-failure.json.")
-        shutil.copy2(mutation_manifest_path, evidence_root / "mutation-control.json")
-        shutil.copy2(
-            mutation_root / ".audit" / "godmode" / "mutation.freeze.json",
-            evidence_root / "mutation.freeze.json",
-        )
-        shutil.copy2(
-            mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-freeze-validation.json",
-            evidence_root / "mutation-freeze-validation.json",
-        )
-        shutil.copy2(
-            mutation_root / ".audit" / "p1-reentrancy-acceptance" / "mutation-control.json",
-            evidence_root / "mutation-control.json",
-        )
-        shutil.copy2(
-            mutation_root / ".audit" / "godmode" / "mutation-control-state-diff.json",
-            evidence_root / "mutation-control-state-diff.json",
-        )
-        shutil.copy2(
-            mutation_root / ".audit" / "godmode" / "mutation-attack-state-diff.json",
-            evidence_root / "mutation-attack-state-diff.json",
-        )
-
         # A separate signed transaction proves local net profitability after
         # actual receipt gas. The proof axis stays OBSERVED because this target
         # is a fixture, not an independently authenticated real deployment.
