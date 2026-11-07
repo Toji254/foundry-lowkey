@@ -1244,6 +1244,13 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(rows["control"]["prestate_sha256"], rows["attack"]["prestate_sha256"])
             self.assertEqual(rows["control"]["trace_events"][0]["selector"], "0x12345678")
             self.assertEqual(rows["attack"]["trace_events"][0]["selector"], "0x12345678")
+            # state_diff_file is an explicit output contract. The isolated
+            # Forge workspace must not cause raw evidence to disappear when
+            # the runner cleans up its temporary directory.
+            for entry in (control_entry, attack_entry):
+                persisted = root / entry["state_diff_file"]
+                self.assertTrue(persisted.is_file(), persisted)
+                self.assertEqual(json.loads(persisted.read_text(encoding="utf-8")), artifact)
 
     def test_forge_control_adapter_consumes_real_forge_artifact_without_claiming_eoa_profit(self):
         import subprocess
