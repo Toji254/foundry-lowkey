@@ -1059,6 +1059,80 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         fake_advisor.maybe_auto_explain.assert_not_called()
 
+    def test_optional_auto_error_explanation_skips_unusable_ai_provider(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(return_value="should not run")
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {"enabled": True, "usable": False}
+        output = io.StringIO()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "no saved transaction"})
+
+        self.assertEqual(output.getvalue(), "")
+        fake_advisor.maybe_auto_explain.assert_not_called()
+
+    def test_unavailable_optional_ai_explanation_does_not_pollute_native_error(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(
+            return_value=(
+                "Optional AI error explanation unavailable (AIUnavailable). "
+                "Run 'lk ai explain-error --last' after fixing the provider."
+            )
+        )
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {"enabled": True, "usable": True}
+        output = io.StringIO()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "no saved transaction"})
+
+        self.assertEqual(output.getvalue(), "")
+        fake_advisor.maybe_auto_explain.assert_called_once()
+
+    def test_available_optional_ai_explanation_is_rendered_after_native_error(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(
+            return_value="Likely cause: the selected target has no saved transaction."
+        )
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {"enabled": True, "usable": True}
+        output = io.StringIO()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "no saved transaction"})
+
+        rendered = output.getvalue()
+        self.assertIn("@ AI OUTPUT — OPTIONAL ERROR EXPLANATION", rendered)
+        self.assertIn("Likely cause:", rendered)
+
     def test_dispatcher_normalizes_direct_stderr_errors_and_sets_failure_status(self):
         output = io.StringIO()
 
