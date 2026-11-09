@@ -3784,7 +3784,13 @@ def _trace_target_msg_senders(trace, target, origin):
                     seen.add(key)
                     matches.append((str(msg_sender), frame_type))
 
-        next_context = frame_to if is_address(frame_to) else parent_context
+        # DELEGATECALL and CALLCODE execute in the parent's storage/address
+        # context. Calls made from those frames therefore originate from the
+        # inherited context address, not the code address in frame.to.
+        if frame_type in {"DELEGATECALL", "CALLCODE"}:
+            next_context = parent_context
+        else:
+            next_context = frame_to if is_address(frame_to) else parent_context
         children = frame.get("calls")
         if isinstance(children, list):
             for child in children:
