@@ -823,12 +823,15 @@ class LowkeyCastTests(unittest.TestCase):
 
     def test_receipt_records_audit_evidence(self):
         tx_hash = "0x" + "1" * 64
-        with patch.object(lk, "run_cast", return_value=0) as run_cast:
-            with patch.object(lk, "audit_context") as ctx:
-                result = lk.run_receipt({"last_tx": tx_hash})
+        config = {"last_tx": tx_hash}
+        with patch.object(lk, "effective_rpc", return_value=None), \
+             patch.object(lk, "run_cast", return_value=0) as run_cast, \
+             patch.object(lk, "audit_context") as ctx:
+            result = lk.run_receipt(config, tx_hash=tx_hash)
         self.assertEqual(result, 0)
-        run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], {"last_tx": tx_hash})
-        ctx.set_latest.assert_called_once()
+        run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
+        ctx.update.assert_called_once()
+        self.assertEqual(ctx.update.call_args.kwargs["latest"]["tx_hash"], tx_hash)
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
 
@@ -3945,16 +3948,18 @@ contract Pool {
     def test_receipt_uses_async(self):
         tx_hash = "0x" + "1" * 64
         config = {"last_tx": tx_hash}
-        with patch.object(lk, "run_cast") as run_cast:
-            with patch.object(lk, "audit_context") as audit_context:
-                lk.run_receipt(config)
-            run_cast.assert_called_once()
-            call_args = run_cast.call_args.args
-            self.assertEqual(call_args[0], ["receipt", tx_hash, "--async"])
-            self.assertEqual(call_args[1], {"last_tx": tx_hash})
-            self.assertIsNot(call_args[1], config)
-            audit_context.set_latest.assert_called_once()
-            audit_context.record_tool.assert_called_once()
+        with patch.object(lk, "effective_rpc", return_value=None), \
+             patch.object(lk, "run_cast") as run_cast, \
+             patch.object(lk, "audit_context") as audit_context:
+            lk.run_receipt(config, tx_hash=tx_hash)
+        run_cast.assert_called_once()
+        call_args = run_cast.call_args.args
+        self.assertEqual(call_args[0], ["receipt", tx_hash, "--async"])
+        self.assertEqual(call_args[1], {"last_tx": tx_hash})
+        self.assertIsNot(call_args[1], config)
+        audit_context.update.assert_called_once()
+        self.assertEqual(audit_context.update.call_args.kwargs["latest"]["tx_hash"], tx_hash)
+        audit_context.record_tool.assert_called_once()
 
     def test_scan_records_source_triage_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
