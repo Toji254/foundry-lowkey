@@ -240,11 +240,15 @@ def _maybe_explain_error(record):
         except ImportError:
             from lowkey import ai_harness
         ai_status = ai_harness.status()
+        # This is optional decoration around an already actionable native
+        # error. Do not call a provider that Lowkey already knows is unusable,
+        # disabled, or out of free-tier calls.
+        if not ai_status.get("enabled") or not ai_status.get("usable"):
+            return
         if (
             ai_status.get("jev_free_tier_mode")
             and int(ai_status.get("jev_calls_remaining") or 0) <= 0
         ):
-            # Do not repeatedly call an exhausted free-tier provider on every failure.
             return
         error_text = " ".join(
             str(record.get(key) or "")
@@ -254,23 +258,23 @@ def _maybe_explain_error(record):
             # The native error already explains how to open help. When the
             # learner note is enabled and usable, it provides the one contextual
             # AI explanation; avoid printing a second, longer diagnosis for a typo.
-            try:
-                import ai_harness
-            except ImportError:
-                from lowkey import ai_harness
-            ai_status = ai_harness.status()
-            if (
-                ai_status.get("auto_recommendations")
-                and ai_status.get("enabled")
-                and ai_status.get("usable")
-            ):
+            if ai_status.get("auto_recommendations"):
                 return
-        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
+
         result = error_advisor.maybe_auto_explain(record)
-        if result:
-            print(result, file=sys.stderr)
-    except Exception as exc:
-        print(f"Optional AI error explanation unavailable ({type(exc).__name__}); run 'lk ai explain-error --last' when ready.", file=sys.stderr)
+        # A missing/unavailable AI provider must never add another error or
+        # an empty banner after the deterministic command failure. Manual
+        # 'lk ai explain-error --last' remains available when the provider works.
+        if not isinstance(result, str) or not result.strip():
+            return
+        if result.lstrip().startswith("Optional AI error explanation unavailable"):
+            return
+        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
+        print(result, file=sys.stderr)
+    except Exception:
+        # Automatic explanations are strictly best-effort. Preserve the native
+        # CLI error and keep the terminal output useful when AI dependencies fail.
+        return
 
 
 def fail(message, code=2):
