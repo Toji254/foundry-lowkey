@@ -64,8 +64,8 @@ class BlockToolsTests(unittest.TestCase):
     def test_bare_command_defaults_to_latest_block(self):
         code, stdout, stderr, rpc = self.run_cli([])
         self.assertEqual(code, 0, stderr)
-        self.assertIn("BLOCK 5", stdout)
-        self.assertIn("Hash:", stdout)
+        self.assertIn("BLOCK SUMMARY — #5", stdout)
+        self.assertIn("Block fingerprint (block hash):", stdout)
         rpc.assert_called_once_with(
             "http://127.0.0.1:8545",
             "eth_getBlockByNumber",
@@ -95,17 +95,39 @@ class BlockToolsTests(unittest.TestCase):
     def test_full_block_view_contains_header_and_numeric_fields(self):
         code, stdout, stderr, rpc = self.run_cli(["5"])
         self.assertEqual(code, 0, stderr)
-        self.assertIn("BLOCK 5", stdout)
-        self.assertIn(f"Hash:            {self.block['hash']}", stdout)
-        self.assertIn(f"Parent hash:     {self.block['parentHash']}", stdout)
-        self.assertIn("Timestamp:       6636321 (", stdout)
-        self.assertIn("Gas used:        21000", stdout)
-        self.assertIn("Transactions:    1", stdout)
+        self.assertIn("BLOCK SUMMARY — #5", stdout)
+        self.assertIn(f"Block fingerprint (block hash):       {self.block['hash']}", stdout)
+        self.assertIn(f"Previous block fingerprint (parent hash): {self.block['parentHash']}", stdout)
+        self.assertIn("Previous block number:                 #4", stdout)
+        self.assertIn("To check the link: run lk block 4", stdout)
+        self.assertIn("Solidity timestamp (block.timestamp): 6636321", stdout)
+        self.assertIn("Gas used:                              21,000 / 30,000,000 (0.07%", stdout)
+        self.assertIn("Transactions included:                 1 transaction", stdout)
+        self.assertIn("Base fee per unit of gas:              1 Gwei", stdout)
+        self.assertIn("Same base fee in wei:                  1,000,000,000 wei", stdout)
         rpc.assert_called_once_with(
             "http://127.0.0.1:8545",
             "eth_getBlockByNumber",
             ["0x5", False],
         )
+
+    def test_gwei_conversion_is_exact_and_readable(self):
+        self.assertEqual(block_tools._format_gwei(1_000_000_000), "1")
+        self.assertEqual(block_tools._format_gwei(588_300_978), "0.588300978")
+
+    def test_zero_miner_address_is_explained_as_unset(self):
+        block = dict(self.block, miner="0x" + "0" * 40)
+        code, stdout, stderr, _ = self.run_cli(["5"], block=block)
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("Block producer / miner:                Not provided (zero address)", stdout)
+
+    def test_zero_difficulty_and_blob_gas_are_explained(self):
+        block = dict(self.block, difficulty="0x0", blobGasUsed="0x0", excessBlobGas="0x0")
+        code, stdout, stderr, _ = self.run_cli(["5"], block=block)
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("no proof-of-work mining is being reported", stdout)
+        self.assertIn("no blob data in this block", stdout)
+        self.assertIn("network's blob-fee calculation", stdout)
 
     def test_json_mode_returns_the_raw_block_object(self):
         code, stdout, stderr, _ = self.run_cli(["5", "--json"])
