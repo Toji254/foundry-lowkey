@@ -252,7 +252,7 @@ Safety:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args or any(arg in {"--h", "--help", "-h", "help"} for arg in args):
+    if any(arg in {"--h", "--help", "-h", "help"} for arg in args):
         print(help_text())
         return 0
 
