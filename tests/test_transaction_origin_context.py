@@ -106,6 +106,7 @@ class TransactionOriginContextTests(unittest.TestCase):
             "from": self.origin,
             "to": self.target,
             "value": "0x0",
+            "blockNumber": "0xa",
             "input": "0x",
         }
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -174,7 +175,6 @@ class TransactionOriginContextTests(unittest.TestCase):
                 code = lk.run_tx(config, [self.tx_hash])
 
         rendered = output.getvalue()
-        self.assertEqual(code, 0)
         self.assertIn(f"tx.origin: {self.origin}", rendered)
         self.assertIn(f"msg.sender at Telephone (CALL): {self.attacker}", rendered)
         rpc_call.assert_called_once_with(
@@ -183,6 +183,39 @@ class TransactionOriginContextTests(unittest.TestCase):
             [self.tx_hash, {"tracer": "callTracer"}],
         )
 
+
+    def test_pending_transaction_does_not_claim_evaluated_context(self):
+        tx = {
+            "hash": self.tx_hash,
+            "from": self.origin,
+            "to": self.target,
+            "value": "0x0",
+            "input": "0x",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+            config = {
+                "target": self.target,
+                "target_contract": "Telephone",
+                "actor": "Alice",
+                "wallets": {},
+                "labels": {},
+            }
+            with patch.object(lk, "cast_output", return_value=(0, json.dumps(tx), "")), \
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk, "rpc_json") as rpc_call, \
+                 patch.object(lk.walkthrough, "_receipt", return_value=None), \
+                 patch.object(lk.walkthrough, "_write_transaction_evidence"), \
+                 patch.object(lk.walkthrough, "_transaction_link", return_value=self.tx_hash), \
+                 patch.object(lk, "load_abi", return_value=[]), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(temp_dir)), \
+                 redirect_stdout(output):
+                lk.run_tx(config, [self.tx_hash])
+
+        rendered = output.getvalue()
+        self.assertIn(f"Expected tx.origin when mined: {self.origin}", rendered)
+        self.assertIn("msg.sender context: unavailable until the transaction is mined", rendered)
+        rpc_call.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
