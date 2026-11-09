@@ -49,7 +49,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py fixture_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py attack_library.py attack_catalog.py godmode.py proof_evidence.py forge_state_diff.py trace_evidence.py foundry_build.py workspace_tools.py source_risk.py finding_explainer.py; do
+for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py fixture_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py attack_library.py attack_catalog.py godmode.py proof_evidence.py forge_state_diff.py trace_evidence.py foundry_build.py workspace_tools.py source_risk.py finding_explainer.py block_tools.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
@@ -59,7 +59,7 @@ cp "$REPO_DIR/lowkey/templates/step_harness.sol.tmpl" "$STAGE_DIR/templates/step
 
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
 
-python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py" "$STAGE_DIR/fixture_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py" "$STAGE_DIR/attack_library.py" "$STAGE_DIR/attack_catalog.py" "$STAGE_DIR/godmode.py" "$STAGE_DIR/proof_evidence.py" "$STAGE_DIR/forge_state_diff.py" "$STAGE_DIR/trace_evidence.py" "$STAGE_DIR/foundry_build.py" "$STAGE_DIR/workspace_tools.py" "$STAGE_DIR/source_risk.py" "$STAGE_DIR/finding_explainer.py"
+python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py" "$STAGE_DIR/fixture_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py" "$STAGE_DIR/attack_library.py" "$STAGE_DIR/attack_catalog.py" "$STAGE_DIR/godmode.py" "$STAGE_DIR/proof_evidence.py" "$STAGE_DIR/forge_state_diff.py" "$STAGE_DIR/trace_evidence.py" "$STAGE_DIR/foundry_build.py" "$STAGE_DIR/workspace_tools.py" "$STAGE_DIR/source_risk.py" "$STAGE_DIR/finding_explainer.py" "$STAGE_DIR/block_tools.py"
 bash -n "$REPO_DIR/bin/lk"
 
 # Publish exactly the validated stage so the manifest always describes the
@@ -118,6 +118,7 @@ cp "$STAGE_DIR/foundry_build.py" "$TARGET_LOWKEY_DIR/foundry_build.py"
 cp "$STAGE_DIR/workspace_tools.py" "$TARGET_LOWKEY_DIR/workspace_tools.py"
 cp "$STAGE_DIR/source_risk.py" "$TARGET_LOWKEY_DIR/source_risk.py"
 cp "$STAGE_DIR/finding_explainer.py" "$TARGET_LOWKEY_DIR/finding_explainer.py"
+cp "$STAGE_DIR/block_tools.py" "$TARGET_LOWKEY_DIR/block_tools.py"
 mkdir -p "$TARGET_LOWKEY_DIR/templates"
 cp "$STAGE_DIR/templates/step_harness.sol.tmpl" "$TARGET_LOWKEY_DIR/templates/step_harness.sol.tmpl"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
@@ -213,6 +214,7 @@ installed = {
     str(lowkey_dir / "workspace_tools.py"): sha256(lowkey_dir / "workspace_tools.py"),
     str(lowkey_dir / "source_risk.py"): sha256(lowkey_dir / "source_risk.py"),
     str(lowkey_dir / "finding_explainer.py"): sha256(lowkey_dir / "finding_explainer.py"),
+    str(lowkey_dir / "block_tools.py"): sha256(lowkey_dir / "block_tools.py"),
     str(bin_dir / "lk"): sha256(bin_dir / "lk"),
 }
 
@@ -282,6 +284,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/workspace_tools.py
   - $TARGET_LOWKEY_DIR/source_risk.py
   - $TARGET_LOWKEY_DIR/finding_explainer.py
+  - $TARGET_LOWKEY_DIR/block_tools.py
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
 
