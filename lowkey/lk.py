@@ -3752,6 +3752,60 @@ def run_decode_error(config,args):
             print(decode_abi_input(signature,data) if item.get("inputs") else "Arguments: none"); return
     print("Loaded ABI did not contain that custom error; asking Cast resolver:")
     run_cast(["decode-error",data],config)
+def _trace_target_msg_senders(trace, target, origin):
+    """Return trace-derived msg.sender values for frames that enter target.
+
+    CALL/STATICCALL/CALLCODE use the frame's caller. DELEGATECALL preserves
+    the parent's msg.sender, so its sender is inherited instead of guessed
+    from the implementation/proxy address.
+    """
+    if not isinstance(trace, dict) or not is_address(target):
+        return []
+
+    matches = []
+    seen = set()
+
+    def visit(frame, parent_msg_sender=None, parent_context=None):
+        if not isinstance(frame, dict):
+            return
+        frame_type = str(frame.get("type") or "CALL").upper()
+        frame_from = frame.get("from")
+        if frame_type == "DELEGATECALL":
+            msg_sender = parent_msg_sender if is_address(parent_msg_sender) else frame_from
+        else:
+            msg_sender = frame_from if is_address(frame_from) else (
+                parent_context if is_address(parent_context) else parent_msg_sender
+            )
+        frame_to = frame.get("to")
+        if is_address(frame_to) and str(frame_to).lower() == str(target).lower():
+            if is_address(msg_sender):
+                key = (str(msg_sender).lower(), frame_type)
+                if key not in seen:
+                    seen.add(key)
+                    matches.append((str(msg_sender), frame_type))
+
+        next_context = frame_to if is_address(frame_to) else parent_context
+        children = frame.get("calls")
+        if isinstance(children, list):
+            for child in children:
+                visit(child, msg_sender or origin, next_context)
+
+    visit(trace, origin, None)
+    return matches
+
+
+def _transaction_target_msg_senders(rpc, tx_hash, target, origin):
+    """Best-effort callTracer lookup; unsupported RPC tracing never breaks lk tx."""
+    if not rpc or not is_tx_hash(tx_hash) or not is_address(target):
+        return []
+    trace = rpc_json(
+        rpc,
+        "debug_traceTransaction",
+        [tx_hash, {"tracer": "callTracer"}],
+    )
+    return _trace_target_msg_senders(trace, target, origin)
+
+
 def run_tx(config,args):
     tx_hash=args[0] if args else last_transaction(config)
     if not tx_hash: return fail("Error: no transaction is saved for this project and target. Send a transaction here, or pass an explicit hash: lk tx <transaction-hash>.")
@@ -3789,6 +3843,41 @@ def run_tx(config,args):
     print(f"Hash:  {walkthrough._transaction_link(root, tx_hash)}")
     print(f"From:  {apply_labels(transaction.get('from','Unknown'),config)}")
     print(f"To:    {apply_labels(transaction.get('to','Unknown'),config)}")
+
+    # For a mined EVM transaction, the top-level transaction sender is
+    # tx.origin. At the top-level recipient it is also msg.sender. If the
+    # selected target is reached through another contract, ask the node for
+    # callTracer frames so we can report that target's actual immediate caller.
+    origin = transaction.get("from")
+    if is_address(origin):
+        origin_label = apply_labels(origin, config)
+        print(f"tx.origin: {origin_label}")
+        if is_address(tx_to):
+            print(f"msg.sender at top-level recipient: {origin_label}")
+        selected_target = config.get("target")
+        if is_address(selected_target):
+            target_name = str(config.get("target_contract") or "selected target")
+            if is_address(tx_to) and str(selected_target).lower() == str(tx_to).lower():
+                print(f"msg.sender at {target_name} (direct): {origin_label}")
+            else:
+                callers = _transaction_target_msg_senders(
+                    rpc, tx_hash, selected_target, origin
+                )
+                if callers:
+                    for caller, frame_type in callers:
+                        print(
+                            f"msg.sender at {target_name} ({frame_type}): "
+                            f"{apply_labels(caller, config)}"
+                        )
+                else:
+                    print(
+                        f"msg.sender at {target_name}: not resolved "
+                        "(no matching frame in the available RPC call trace)"
+                    )
+                    print("  Run lk trace <tx-hash> for the full execution trace.")
+    else:
+        print("tx.origin: unavailable (transaction sender is missing or invalid)")
+
     value=transaction.get("value","0")
     if isinstance(value,str) and value.startswith("0x"):
         try: value=str(int(value,16))
