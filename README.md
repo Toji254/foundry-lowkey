@@ -628,45 +628,35 @@ The import helper stays separate from audit target/RPC state. Ordinary lookup, s
 
 ## Block and block-hash inspection
 
-Use the native, read-only block command to inspect EVM block headers on the
-currently selected Lowkey RPC. It does not require a contract target, ABI, or
+Use the native, read-only block command to inspect EVM blocks on the
+currently selected Lowkey RPC. It does not need a contract target, ABI, or
 wallet:
 
 ~~~bash
 lk block
-lk block latest
 lk block 5
 lk block hash 5
-lk block 0x5 --hash
+lk block 5 --verbose
 lk block latest --json
-lk block hash 5 --rpc-url http://127.0.0.1:8545
 ~~~
 
-The normal output is designed to be read by a human. It pairs blockchain field
-names with plain-English meanings:
+The default output stays focused on the essentials:
 
-- **Block fingerprint (block hash):** the unique identifier calculated for this block.
-- **Previous block fingerprint (parent hash):** the identifier of the block this one builds on. For block 5, run 'lk block 4'; the hash shown for block 4 should match block 5's parent hash.
-- **Solidity timestamp (block.timestamp):** the block's time as seconds since 1 January 1970, alongside local and UTC dates.
-- **Transactions included:** how many transactions are inside the block.
-- **Gas used:** how much transaction-computation capacity was consumed, shown against the block's gas limit and as a percentage.
-- **Base fee:** the network-set base charge for each unit of gas, shown in Gwei and wei.
-- **Extra network details:** producer address, proof-of-work difficulty, block size, and blob-data fields when the RPC provides them.
+- **Block hash:** this block's fingerprint.
+- **Previous block hash (parent hash):** the previous block's fingerprint.
+- **Time and block.timestamp:** the human-readable time and the exact value Solidity reads.
+- **Transactions:** how many transactions are included.
+- **Gas used:** consumption compared with the block's gas limit.
 
-A parent hash is not the hash of the current block. It is the previous
-block's fingerprint. That link lets nodes check that each block builds on the
-right predecessor. If an earlier block is changed, its fingerprint changes
-and the next block's parent reference no longer matches.
+Use lk block 5 --verbose for extra header/network fields, or --json for
+the raw RPC response. lk block hash 5 prints only the exact 32-byte hash.
 
-Use --json when you need the raw RPC block object rather than the
-human-readable summary. The hash subcommand prints only the exact 32-byte
-block hash.
-
-For CoinFlip, when a transaction executes in block 6 and calls
-blockhash(block.number - 1), inspect block 5 with 'lk block hash 5'.
-The EVM exposes only the previous 256 completed block hashes to contracts;
-an RPC provider may independently retain older headers. The command performs
-no transactions and changes no chain state.
+For example, Block 5's parent hash should equal Block 4's block hash. That
+parent reference links each block to the one before it. When a transaction
+executes in block 6 and calls blockhash(block.number - 1), the contract
+reads Block 5's block hash. The EVM exposes only the previous 256 completed
+block hashes to contracts; an RPC may retain older block headers separately.
+The command performs no transactions and changes no chain state.
 
 ## Storage and state forensics
 
