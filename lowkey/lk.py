@@ -3845,12 +3845,20 @@ def run_receipt(config, tx_hash=None, args=None):
     if not is_tx_hash(tx_hash):
         return fail("Error: invalid transaction ID")
     root = audit_context.foundry_project_root()
+    rpc = effective_rpc(config)
+    # The caller supplied this hash explicitly or it was already resolved
+    # from this project's context. Record it locally even when RPC lookup is
+    # temporarily unavailable; clear old target metadata until verified.
+    audit_context.update(
+        root,
+        latest={"tx_hash": tx_hash, "target": None, "rpc": rpc},
+    )
     original_config = dict(config)
 
     if raw:
-        rpc = effective_rpc(config)
         tx_target = _transaction_target_for_hash(config, tx_hash, rpc)
-        audit_context.set_latest(root, tx_hash=tx_hash, target=tx_target, rpc=rpc)
+        if tx_target:
+            audit_context.set_latest(root, tx_hash=tx_hash, target=tx_target, rpc=rpc)
         code = run_cast(["receipt", tx_hash, "--async"], original_config)
         audit_context.record_tool(
             "receipt",
@@ -3861,7 +3869,6 @@ def run_receipt(config, tx_hash=None, args=None):
         )
         return code
 
-    rpc = effective_rpc(config)
     receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash]) if rpc else None
     tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash]) if rpc else None
 
