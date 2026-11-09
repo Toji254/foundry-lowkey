@@ -64,8 +64,8 @@ class BlockToolsTests(unittest.TestCase):
     def test_bare_command_defaults_to_latest_block(self):
         code, stdout, stderr, rpc = self.run_cli([])
         self.assertEqual(code, 0, stderr)
-        self.assertIn("BLOCK SUMMARY — #5", stdout)
-        self.assertIn("Block fingerprint (block hash):", stdout)
+        self.assertIn("BLOCK #5", stdout)
+        self.assertIn("Block hash:", stdout)
         rpc.assert_called_once_with(
             "http://127.0.0.1:8545",
             "eth_getBlockByNumber",
@@ -95,21 +95,29 @@ class BlockToolsTests(unittest.TestCase):
     def test_full_block_view_contains_header_and_numeric_fields(self):
         code, stdout, stderr, rpc = self.run_cli(["5"])
         self.assertEqual(code, 0, stderr)
-        self.assertIn("BLOCK SUMMARY — #5", stdout)
-        self.assertIn(f"Block fingerprint (block hash):       {self.block['hash']}", stdout)
-        self.assertIn(f"Previous block fingerprint (parent hash): {self.block['parentHash']}", stdout)
-        self.assertIn("Previous block number:                 #4", stdout)
-        self.assertIn("To check the link: run lk block 4", stdout)
-        self.assertIn("Solidity timestamp (block.timestamp): 6636321", stdout)
-        self.assertIn("Gas used:                              21,000 / 30,000,000 (0.07%", stdout)
-        self.assertIn("Transactions included:                 1 transaction", stdout)
-        self.assertIn("Base fee per unit of gas:              1 Gwei", stdout)
-        self.assertIn("Same base fee in wei:                  1,000,000,000 wei", stdout)
+        self.assertIn("BLOCK #5", stdout)
+        self.assertIn(f"Block hash:                         {self.block['hash']}", stdout)
+        self.assertIn("Previous block:                     #4", stdout)
+        self.assertIn(f"Previous block hash (parent hash):  {self.block['parentHash']}", stdout)
+        self.assertIn("block.timestamp:                    6636321", stdout)
+        self.assertIn("Transactions:                       1 transaction", stdout)
+        self.assertIn("Gas used:                            21,000 / 30,000,000 (0.07%)", stdout)
+        self.assertNotIn("Base fee", stdout)
+        self.assertNotIn("Difficulty", stdout)
+        self.assertNotIn("QUICK RECAP", stdout)
         rpc.assert_called_once_with(
             "http://127.0.0.1:8545",
             "eth_getBlockByNumber",
             ["0x5", False],
         )
+
+    def test_verbose_flag_keeps_additional_block_details_available(self):
+        code, stdout, stderr, _ = self.run_cli(["5", "--verbose"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("BLOCK SUMMARY — #5", stdout)
+        self.assertIn("Base fee per unit of gas:", stdout)
+        self.assertIn("Block data size:", stdout)
+        self.assertIn("QUICK RECAP", stdout)
 
     def test_gwei_conversion_is_exact_and_readable(self):
         self.assertEqual(block_tools._format_gwei(1_000_000_000), "1")
