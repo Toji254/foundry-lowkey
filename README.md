@@ -626,6 +626,35 @@ The project-usage view connects dependency code back to your application. lk imp
 The import helper stays separate from audit target/RPC state. Ordinary lookup, search, explanation, graph/usage views, and JSON output are read-only; only explicit --install changes the project.
 
 
+## Block and block-hash inspection
+
+Use the native, read-only block command to inspect EVM block headers on the
+currently selected Lowkey RPC. It does not require a contract target, ABI, or
+wallet:
+
+```bash
+lk block
+lk block latest
+lk block 5
+lk block hash 5
+lk block 0x5 --hash
+lk block latest --json
+lk block hash 5 --rpc-url http://127.0.0.1:8545
+```
+
+A decimal block number is normalized to the JSON-RPC hexadecimal quantity
+before the request. The command reads `eth_getBlockByNumber` and returns the
+header hash, parent hash, timestamp, gas fields, transaction count, and
+available fork-specific fields. The hash subcommand prints only the exact
+32-byte block hash. `--rpc-url` overrides Lowkey's active project/RPC
+selection; otherwise the command reuses the same active RPC as the main CLI.
+
+For code that executes in block N and calls
+`blockhash(block.number - 1)`, inspect block N-1 with
+`lk block hash N-1`. The EVM exposes only the previous 256 completed block
+hashes to contracts; an RPC provider may independently retain older headers.
+The command performs no transactions and changes no chain state.
+
 ## Storage and state forensics
 
 ~~~bash
