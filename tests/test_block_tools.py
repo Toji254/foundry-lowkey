@@ -144,7 +144,7 @@ class BlockToolsTests(unittest.TestCase):
             lowkey_dir.mkdir()
             module = lowkey_dir / "block_tools.py"
             module.write_text(
-                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
