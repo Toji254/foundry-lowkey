@@ -903,8 +903,12 @@ def select_anvil_actor(config,index,name):
             and str(existing.get('anvil_index'))==str(index)
         ):
             return fail(
-                f"Error: wallet profile '{name}' uses an explicit key/env and cannot be rebound. "
-                "Use a new actor name or remove that profile first."
+                f"Error: '{name}' is already a saved private-key/env wallet profile; "
+                f"Lowkey will not overwrite it with Anvil account {index}. "
+                f"Use another alias (for example '{name}Anvil'), or run 'lk wallet use {name}' "
+                "to select the existing wallet. Only run 'lk wallet remove "
+                + str(name)
+                + "' if you intend to delete that saved profile."
             )
     elif existing and wallet_is_internal(name, existing):
         return fail(f"Error: '{name}' is reserved for Lowkey's internal deployment signer.")
@@ -1367,8 +1371,110 @@ def artifact_json_files(root="."):
                 if filename.endswith(".json"):
                     result.append(os.path.join(path, filename))
     return sorted(set(result))
+def _transaction_target_for_hash(config, tx_hash, rpc=None):
+    """Resolve the destination of a saved transaction on the active RPC."""
+    if not is_tx_hash(tx_hash):
+        return None
+    rpc = rpc or effective_rpc(config)
+    if not rpc:
+        return None
+    try:
+        transaction = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
+        if isinstance(transaction, dict):
+            target = transaction.get("to")
+            if is_address(target):
+                return str(target)
+        receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash])
+        if isinstance(receipt, dict):
+            target = receipt.get("contractAddress")
+            if is_address(target):
+                return str(target)
+    except Exception:
+        return None
+    return None
+
+
 def last_transaction(config):
-    return config.get("last_tx")
+    """Return only a transaction that belongs to the active project/target.
+
+    The global config still carries a legacy last_tx field for compatibility,
+    but it is never trusted across projects or targets without provenance.
+    Old unscoped values are migrated only after the active RPC proves their
+    transaction destination matches the selected project target.
+    """
+    root = audit_context.foundry_project_root()
+    try:
+        current_target = active_project_target(config, root)
+    except Exception:
+        current_target = None
+    if not is_address(current_target):
+        configured_target = config.get("target")
+        current_target = configured_target if is_address(configured_target) else None
+
+    current_rpc = effective_rpc(config)
+    context = audit_context.load(root)
+    latest = context.get("latest", {}) if isinstance(context, dict) else {}
+    if not isinstance(latest, dict):
+        latest = {}
+
+    project_tx = latest.get("tx_hash")
+    if is_tx_hash(project_tx):
+        recorded_target = latest.get("target")
+        recorded_rpc = latest.get("rpc")
+        if current_target and recorded_target and str(recorded_target).lower() != str(current_target).lower():
+            return None
+        if recorded_rpc and current_rpc and str(recorded_rpc).rstrip("/") != str(current_rpc).rstrip("/"):
+            return None
+
+        # Older context files may contain a tx hash without destination/RPC
+        # provenance. Verify it against the active target before reusing it.
+        if current_target and (not recorded_target or not recorded_rpc):
+            actual_target = _transaction_target_for_hash(config, project_tx, current_rpc)
+            if not actual_target or actual_target.lower() != str(current_target).lower():
+                return None
+            audit_context.set_latest(
+                root,
+                tx_hash=project_tx,
+                target=actual_target,
+                rpc=current_rpc,
+            )
+        return project_tx
+
+    legacy_tx = config.get("last_tx")
+    if not is_tx_hash(legacy_tx):
+        return None
+
+    root_key = str(Path(root).expanduser().resolve())
+    saved_root = config.get("last_tx_project_root")
+    saved_target = config.get("last_tx_target")
+    saved_rpc = config.get("last_tx_rpc")
+    if saved_root:
+        try:
+            if str(Path(str(saved_root)).expanduser().resolve()) != root_key:
+                return None
+        except OSError:
+            return None
+        if current_target and saved_target and str(saved_target).lower() != str(current_target).lower():
+            return None
+        if saved_rpc and current_rpc and str(saved_rpc).rstrip("/") != str(current_rpc).rstrip("/"):
+            return None
+
+    if current_target:
+        actual_target = _transaction_target_for_hash(config, legacy_tx, current_rpc)
+        if not actual_target or actual_target.lower() != str(current_target).lower():
+            return None
+        saved_target = actual_target
+    elif not saved_root:
+        # No project target and no provenance: a global hash is ambiguous.
+        return None
+
+    audit_context.set_latest(
+        root,
+        tx_hash=legacy_tx,
+        target=saved_target,
+        rpc=current_rpc or saved_rpc,
+    )
+    return legacy_tx
 
 def log_session(command, result):
     os.makedirs(AUDIT_DIR, exist_ok=True)
@@ -3066,10 +3172,10 @@ def run_functions(config, args=None):
                 _function_print_wrapped("        amount    ", outflow["amount"])
 
     print()
-    print(_function_terminal_style("ETH FLOW", "heading"))
-    print("  ↑ RECEIVES   Accepts attached ETH; use --eth <amount>.")
-    print("  ↓ SENDS      Native-ETH outflow detected in source.")
-    print("  ! UNASSESSED Source unavailable; outgoing flow could not be inspected.")
+    print(_function_terminal_style("ETH FLOW LEGEND (not additional findings)", "heading"))
+    print("  ↑ RECEIVES   Shown beside a payable function that accepts ETH.")
+    print("  ↓ SENDS      Shown beside a function with a detected native-ETH outflow.")
+    print("  ! UNASSESSED Shown when that function's source could not be inspected.")
     print("  Common Solidity/Yul patterns and same-file helpers are checked; indirect flows need review.")
     print("  Inheritance, modifiers and proxies/delegatecall may hide flows. ERC20 transfers are excluded.")
     print("  Use lk fn --verbose for full audit details.")
@@ -3644,7 +3750,7 @@ def run_decode_error(config,args):
     run_cast(["decode-error",data],config)
 def run_tx(config,args):
     tx_hash=args[0] if args else last_transaction(config)
-    if not tx_hash: return fail("Usage: lk tx <transaction-hash> (or save a transaction first)")
+    if not tx_hash: return fail("Error: no transaction is saved for this project and target. Send a transaction here, or pass an explicit hash: lk tx <transaction-hash>.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
     command=["cast","tx",tx_hash,"--json"]
     rpc=effective_rpc(config)
@@ -3731,14 +3837,16 @@ def run_receipt(config, tx_hash=None, args=None):
         tx_hash = tx_hash or values[0]
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash:
-        return fail("Error: No transaction ID supplied or saved. Run lk receipt <tx> or send a transaction first.")
+        return fail("Error: no transaction is saved for this project and target. Run lk receipt <tx> with an explicit hash, or send a transaction here first.")
     if not is_tx_hash(tx_hash):
         return fail("Error: invalid transaction ID")
     root = audit_context.foundry_project_root()
-    audit_context.set_latest(root, tx_hash=tx_hash)
     original_config = dict(config)
 
     if raw:
+        rpc = effective_rpc(config)
+        tx_target = _transaction_target_for_hash(config, tx_hash, rpc)
+        audit_context.set_latest(root, tx_hash=tx_hash, target=tx_target, rpc=rpc)
         code = run_cast(["receipt", tx_hash, "--async"], original_config)
         audit_context.record_tool(
             "receipt",
@@ -3771,6 +3879,11 @@ def run_receipt(config, tx_hash=None, args=None):
 
     if not isinstance(tx, dict):
         tx = {}
+
+    tx_target = tx.get("to") if is_address(tx.get("to")) else None
+    if not tx_target and is_address(receipt.get("contractAddress")):
+        tx_target = receipt.get("contractAddress")
+    audit_context.set_latest(root, tx_hash=tx_hash, target=tx_target, rpc=rpc)
 
     status_raw = receipt.get("status")
     if status_raw in ("0x1", 1):
@@ -3881,7 +3994,7 @@ def run_receipt(config, tx_hash=None, args=None):
 def run_trace(config,args=None):
     args=list(args or [])
     tx_hash=args.pop(0) if args and args[0].startswith("0x") else last_transaction(config)
-    if not tx_hash: return fail("Error: No transaction ID supplied or saved.")
+    if not tx_hash: return fail("Error: no transaction is saved for this project and target. Pass an explicit hash or send a transaction here first.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction ID")
     grep=None
     if "--grep" in args:
@@ -3921,7 +4034,8 @@ def run_trace(config,args=None):
     print("")
     print(trace_text)
 
-    audit_context.set_latest(root,tx_hash=tx_hash,trace=tx_hash)
+    trace_target = tx.get("to") if isinstance(tx, dict) and is_address(tx.get("to")) else None
+    audit_context.set_latest(root, tx_hash=tx_hash, trace=tx_hash, target=trace_target, rpc=rpc)
     audit_context.record_tool(
         "trace",
         root,
@@ -6364,8 +6478,23 @@ def run_cast(args,config,capture=False):
                 # was returned. Preserve it so the user can inspect the receipt.
                 config["last_tx"] = failed_tx_hash
                 config["last_tx_block"] = None
+                failed_root = audit_context.foundry_project_root()
+                failed_rpc = effective_rpc(config)
+                failed_target = target if is_address(target) else None
+                config["last_tx_project_root"] = str(Path(failed_root).expanduser().resolve())
+                if failed_target:
+                    config["last_tx_target"] = failed_target
+                else:
+                    config.pop("last_tx_target", None)
+                config["last_tx_rpc"] = failed_rpc
                 if not config.get("_ephemeral"):
                     save_config(config)
+                audit_context.set_latest(
+                    failed_root,
+                    tx_hash=failed_tx_hash,
+                    target=failed_target,
+                    rpc=failed_rpc,
+                )
             rendered_error = _format_cli_error(
                 raw_error,
                 code=code,
@@ -6387,17 +6516,38 @@ def run_cast(args,config,capture=False):
             if match:
                 tx_hash=match.group(1)
                 config["last_tx"]=tx_hash; config["last_tx_block"]=None
-                if not config.get("_ephemeral"):
-                    save_config(config)
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 root=audit_context.foundry_project_root()
-                audit_context.set_latest(root,tx_hash=tx_hash,function=call)
                 rpc = effective_rpc(config)
                 send_tx_hash = tx_hash
                 send_receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
                 send_transaction = (
                     rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
                     if rpc else None
+                )
+                tx_target = (
+                    send_transaction.get("to")
+                    if isinstance(send_transaction, dict) and is_address(send_transaction.get("to"))
+                    else None
+                )
+                if not tx_target and isinstance(send_receipt, dict) and is_address(send_receipt.get("contractAddress")):
+                    tx_target = send_receipt.get("contractAddress")
+                if not tx_target and is_address(target):
+                    tx_target = target
+                config["last_tx_project_root"] = str(Path(root).expanduser().resolve())
+                if tx_target:
+                    config["last_tx_target"] = tx_target
+                else:
+                    config.pop("last_tx_target", None)
+                config["last_tx_rpc"] = rpc
+                if not config.get("_ephemeral"):
+                    save_config(config)
+                audit_context.set_latest(
+                    root,
+                    tx_hash=tx_hash,
+                    function=call,
+                    target=tx_target,
+                    rpc=rpc,
                 )
                 receipt = send_receipt
                 step = walkthrough.Step(
@@ -18853,9 +19003,10 @@ def _sync_audit_context(config, root=None):
         actor = existing.get("actor")
 
     rpc = effective_rpc(config) or existing.get("rpc")
+    # Transaction history is already recorded by the send/receipt/trace
+    # command in this project's context. Never import the global legacy
+    # last_tx value here: that would leak another workspace's transaction.
     latest = dict(existing.get("latest", {}))
-    if config.get("last_tx"):
-        latest["tx_hash"] = config.get("last_tx")
 
     return audit_context.update(
         root,
