@@ -29,6 +29,7 @@ class BlockToolsTests(unittest.TestCase):
             "gasUsed": "0x5208",
             "gasLimit": "0x1c9c380",
             "baseFeePerGas": "0x3b9aca00",
+            "size": "0x2fb",
             "transactions": ["0x" + "c" * 64],
         }
 
