@@ -337,22 +337,23 @@ def help_text() -> str:
 ========================================================================
 
 What it does:
-  Read a block header from the currently selected EVM RPC. It can show the
-  full header summary or return only the exact block hash.
+  Shows a human-readable summary of an EVM block from the currently
+  selected RPC. Technical names are paired with plain-English meanings.
+  --json still returns the raw block data when you need the exact fields.
 
 When to use:
-  Inspect block.number, block.timestamp, parentHash, or blockhash(n)
-  dependencies while researching contracts. This is read-only and does not
-  require a target contract, ABI, wallet, or transaction.
+  Understand block.number, block.timestamp, blockhash(n), and how blocks
+  link to one another. Useful when investigating contracts such as CoinFlip.
+  This is read-only: no target contract, ABI, wallet, or transaction needed.
 
 Usage:
   lk block [number|tag] [--hash] [--json] [--rpc-url URL]
   lk block hash <number|tag> [--json] [--rpc-url URL]
 
 Examples:
-  lk block                         Show the latest block.
-  lk block 5                       Show block 5.
-  lk block hash 5                  Print only block 5's hash.
+  lk block                         Explain the latest block.
+  lk block 5                       Explain block 5.
+  lk block hash 5                  Print only block 5's fingerprint.
   lk block 0x5 --hash              Same lookup using a hex block number.
   lk block latest --json           Return the raw block object as JSON.
   lk block hash 5 --rpc-url URL    Query a specific EVM endpoint.
@@ -364,12 +365,19 @@ Block references:
 RPC selection:
   Uses Lowkey's active project/RPC selection. --rpc-url overrides it.
 
+Understanding the output:
+  Block hash       = this block's unique fingerprint.
+  Parent hash      = the previous block's fingerprint; it links the chain.
+  block.timestamp = the time value Solidity contracts can read.
+  Gas used         = transaction-computation capacity consumed in this block.
+  Base fee         = the network-set base charge for each unit of gas.
+  For block N, run lk block N-1 to compare its hash with block N's parent hash.
+
 Safety:
   Sends only eth_getBlockByNumber. No transactions or state changes.
   EVM blockhash(n) is available to contracts only for the 256 most recent
   completed blocks; an RPC may expose older headers independently.
 """
-
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
