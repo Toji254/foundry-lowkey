@@ -3177,7 +3177,7 @@ def run_functions(config, args=None):
 
     print()
     print(_function_terminal_style("ETH FLOW LEGEND (not additional findings)", "heading"))
-    print("  ↑ RECEIVES   Shown beside a payable function that accepts ETH.")
+    print("  ↑ RECEIVES   Accepts attached ETH; use --eth <amount>.")
     print("  ↓ SENDS      Shown beside a function with a detected native-ETH outflow.")
     print("  ! UNASSESSED Shown when that function's source could not be inspected.")
     print("  Common Solidity/Yul patterns and same-file helpers are checked; indirect flows need review.")
