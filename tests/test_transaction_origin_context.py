@@ -139,6 +139,7 @@ class TransactionOriginContextTests(unittest.TestCase):
             "from": self.origin,
             "to": self.attacker,
             "value": "0x0",
+            "blockNumber": "0xa",
             "input": "0x",
         }
         trace = {
