@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -182,34 +183,154 @@ def fetch_block(rpc_url: str, block_reference: str) -> dict[str, Any]:
     return result
 
 
-def render_block(block: dict[str, Any]) -> str:
-    number = _quantity(block.get("number"), "number")
-    timestamp, timestamp_utc = _timestamp(block.get("timestamp"))
-    block_label = str(number) if number is not None else "pending"
-    lines = [
-        f"BLOCK {block_label}",
-        "=" * 64,
-        f"Number:          {block_label}" + (f" (0x{number:x})" if number is not None else ""),
-        f"Hash:            {block.get('hash') or 'pending / not assigned'}",
-        f"Parent hash:     {block.get('parentHash') or 'unavailable'}",
-        f"Timestamp:       {timestamp} ({timestamp_utc})",
-        f"Miner:           {block.get('miner') or block.get('author') or 'unavailable'}",
-        f"Gas used:        {_hex_quantity(block.get('gasUsed'), 'gasUsed')}",
-        f"Gas limit:       {_hex_quantity(block.get('gasLimit'), 'gasLimit')}",
-        f"Transactions:    {len(block.get('transactions') or [])}",
-    ]
-    for field, label in (
-        ("baseFeePerGas", "Base fee (wei)"),
-        ("difficulty", "Difficulty"),
-        ("totalDifficulty", "Total difficulty"),
-        ("size", "Size (bytes)"),
-        ("blobGasUsed", "Blob gas used"),
-        ("excessBlobGas", "Excess blob gas"),
-    ):
-        if field in block and block[field] is not None:
-            lines.append(f"{label + ':':<17}{_hex_quantity(block[field], field)}")
-    return "\n".join(lines)
+def _format_gwei(wei: int) -> str:
+    """Render a wei amount as an exact, readable Gwei value."""
+    value = Decimal(wei) / Decimal(1_000_000_000)
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
 
+
+def _format_block_time(value: Any) -> tuple[str, str, str]:
+    """Return local time, UTC time, and raw Unix seconds for a block timestamp."""
+    number = _quantity(value, "timestamp")
+    if number is None:
+        return "Not assigned yet (pending block)", "pending", "pending"
+    try:
+        utc_time = datetime.fromtimestamp(number, tz=timezone.utc)
+        local_time = utc_time.astimezone()
+    except (OverflowError, OSError, ValueError):
+        return "Outside this system's date range", "unavailable", str(number)
+
+    zone_name = local_time.tzname() or "local time"
+    local_text = local_time.strftime("%Y-%m-%d %H:%M:%S") + f" {zone_name}"
+    utc_text = utc_time.strftime("%Y-%m-%d %H:%M:%SZ")
+    return local_text, utc_text, str(number)
+
+
+def _readable_quantity(value: Any, field: str) -> int | None:
+    return _quantity(value, field)
+
+
+def render_block(block: dict[str, Any]) -> str:
+    """Render a block using approachable labels and short explanations."""
+    number = _readable_quantity(block.get("number"), "number")
+    block_label = f"#{number}" if number is not None else "pending"
+    block_hash = block.get("hash") or "Not assigned yet (pending block)"
+    parent_hash = block.get("parentHash") or "Not available"
+
+    lines = [
+        f"BLOCK SUMMARY — {block_label}",
+        "=" * 72,
+        "",
+        "1. BLOCK IDENTITY",
+        f"Block number:                         {number if number is not None else 'Pending'}",
+        f"Block fingerprint (block hash):       {block_hash}",
+    ]
+
+    if number is not None and number > 0:
+        lines.append(f"Previous block number:                 #{number - 1}")
+    elif number == 0:
+        lines.append("Previous block number:                 None (this is the first block)")
+    else:
+        lines.append("Previous block number:                 Not assigned yet")
+
+    lines.extend([
+        f"Previous block fingerprint (parent hash): {parent_hash}",
+    ])
+    if number is not None and number > 0:
+        lines.append(
+            f"  To check the link: run lk block {number - 1}; its block fingerprint "
+            "should match the previous-block fingerprint above."
+        )
+
+    local_time, utc_time, unix_time = _format_block_time(block.get("timestamp"))
+    lines.extend([
+        "",
+        "2. WHEN THIS BLOCK WAS CREATED",
+        f"Block time (your computer's timezone): {local_time}",
+        f"Same time in UTC:                      {utc_time}",
+        f"Solidity timestamp (block.timestamp): {unix_time}",
+        "  Solidity reads this timestamp as seconds since 1 January 1970.",
+        "",
+        "3. WHAT HAPPENED INSIDE THE BLOCK",
+    ])
+
+    transactions = block.get("transactions") or []
+    transaction_count = len(transactions) if isinstance(transactions, list) else 0
+    noun = "transaction" if transaction_count == 1 else "transactions"
+    lines.append(f"Transactions included:                 {transaction_count} {noun}")
+
+    gas_used = _readable_quantity(block.get("gasUsed"), "gasUsed")
+    gas_limit = _readable_quantity(block.get("gasLimit"), "gasLimit")
+    if gas_used is not None and gas_limit is not None:
+        gas_line = f"Gas used:                              {gas_used:,} / {gas_limit:,}"
+        if gas_limit > 0:
+            percentage = Decimal(gas_used) * Decimal(100) / Decimal(gas_limit)
+            gas_line += f" ({percentage:.2f}% of the block's gas capacity)"
+        lines.append(gas_line)
+    elif gas_used is not None:
+        lines.append(f"Gas used:                              {gas_used:,}")
+    elif gas_limit is not None:
+        lines.append(f"Block gas capacity:                    {gas_limit:,}")
+
+    size = _readable_quantity(block.get("size"), "size")
+    if size is not None:
+        lines.append(f"Block data size:                       {size:,} bytes")
+
+    base_fee = _readable_quantity(block.get("baseFeePerGas"), "baseFeePerGas")
+    if base_fee is not None:
+        lines.extend([
+            "",
+            "4. NETWORK FEE",
+            f"Base fee per unit of gas:              {_format_gwei(base_fee)} Gwei",
+            f"Same base fee in wei:                  {base_fee:,} wei",
+            "  This is the network-set base charge for each unit of gas.",
+        ])
+
+    advanced: list[str] = []
+    producer = block.get("miner") or block.get("author")
+    if producer:
+        if isinstance(producer, str) and re.fullmatch(r"0x0{40}", producer):
+            producer_text = "Not provided (zero address)"
+        else:
+            producer_text = str(producer)
+        advanced.append(f"Block producer / miner:                {producer_text}")
+
+    difficulty = _readable_quantity(block.get("difficulty"), "difficulty")
+    if difficulty is not None:
+        note = " (no proof-of-work mining is being reported)" if difficulty == 0 else ""
+        advanced.append(f"Proof-of-work mining difficulty:       {difficulty:,}{note}")
+
+    total_difficulty = _readable_quantity(block.get("totalDifficulty"), "totalDifficulty")
+    if total_difficulty is not None:
+        advanced.append(f"Accumulated proof-of-work difficulty:  {total_difficulty:,}")
+
+    blob_gas = _readable_quantity(block.get("blobGasUsed"), "blobGasUsed")
+    if blob_gas is not None:
+        note = " (no blob data in this block)" if blob_gas == 0 else " (gas used by blob data)"
+        advanced.append(f"Blob data gas used:                    {blob_gas:,}{note}")
+
+    excess_blob_gas = _readable_quantity(block.get("excessBlobGas"), "excessBlobGas")
+    if excess_blob_gas is not None:
+        advanced.append(
+            f"Excess blob gas:                       {excess_blob_gas:,} "
+            "(used by the network's blob-fee calculation)"
+        )
+
+    if advanced:
+        lines.extend(["", "5. EXTRA NETWORK DETAILS", *advanced])
+
+    lines.extend([
+        "",
+        "QUICK RECAP",
+        "  Block hash = this block's fingerprint.",
+        "  Parent hash = the previous block's fingerprint; it links the chain together.",
+        "  block.timestamp = the time value Solidity contracts can read.",
+        "  Gas used = how much transaction-computation capacity this block consumed.",
+    ])
+    return "\n".join(lines)
 
 def help_text() -> str:
     return """LOWKEY HELP  •  lk block
