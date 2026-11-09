@@ -62,6 +62,32 @@ class TransactionOriginContextTests(unittest.TestCase):
             [(self.origin, "DELEGATECALL")],
         )
 
+    def test_call_after_delegatecall_uses_proxy_execution_context(self):
+        implementation = "0x" + "4" * 40
+        trace = {
+            "type": "CALL",
+            "from": self.origin,
+            "to": self.attacker,
+            "calls": [
+                {
+                    "type": "DELEGATECALL",
+                    "from": self.attacker,
+                    "to": implementation,
+                    "calls": [
+                        {
+                            "type": "CALL",
+                            "to": self.target,
+                            "calls": [],
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertEqual(
+            lk._trace_target_msg_senders(trace, self.target, self.origin),
+            [(self.attacker, "CALL")],
+        )
+
     def test_call_trace_without_matching_target_does_not_guess_sender(self):
         trace = {
             "type": "CALL",
