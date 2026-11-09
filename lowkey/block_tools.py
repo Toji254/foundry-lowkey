@@ -214,6 +214,53 @@ def _readable_quantity(value: Any, field: str) -> int | None:
 
 
 def render_block(block: dict[str, Any]) -> str:
+    """Render only the block details most useful during everyday investigation."""
+    number = _quantity(block.get("number"), "number")
+    block_label = f"#{number}" if number is not None else "pending"
+    block_hash = block.get("hash") or "not assigned yet"
+    parent_hash = block.get("parentHash") or "not available"
+
+    lines = [
+        f"BLOCK {block_label}",
+        "-" * 72,
+        f"Block hash:                         {block_hash}",
+    ]
+
+    if number is not None and number > 0:
+        lines.append(f"Previous block:                     #{number - 1}")
+    elif number == 0:
+        lines.append("Previous block:                     None (first block)")
+    else:
+        lines.append("Previous block:                     not assigned yet")
+
+    lines.append(f"Previous block hash (parent hash):  {parent_hash}")
+
+    local_time, _, unix_time = _format_block_time(block.get("timestamp"))
+    lines.extend([
+        f"Time:                               {local_time}",
+        f"block.timestamp:                    {unix_time}",
+    ])
+
+    transactions = block.get("transactions") or []
+    transaction_count = len(transactions) if isinstance(transactions, list) else 0
+    noun = "transaction" if transaction_count == 1 else "transactions"
+    lines.append(f"Transactions:                       {transaction_count} {noun}")
+
+    gas_used = _quantity(block.get("gasUsed"), "gasUsed")
+    gas_limit = _quantity(block.get("gasLimit"), "gasLimit")
+    if gas_used is not None and gas_limit is not None:
+        gas_line = f"Gas used:                            {gas_used:,} / {gas_limit:,}"
+        if gas_limit > 0:
+            percentage = Decimal(gas_used) * Decimal(100) / Decimal(gas_limit)
+            gas_line += f" ({percentage:.2f}%)"
+        lines.append(gas_line)
+    elif gas_used is not None:
+        lines.append(f"Gas used:                            {gas_used:,}")
+
+    return "\n".join(lines)
+
+
+def render_block_verbose(block: dict[str, Any]) -> str:
     """Render a block using approachable labels and short explanations."""
     number = _readable_quantity(block.get("number"), "number")
     block_label = f"#{number}" if number is not None else "pending"
@@ -347,7 +394,7 @@ When to use:
   This is read-only: no target contract, ABI, wallet, or transaction needed.
 
 Usage:
-  lk block [number|tag] [--hash] [--json] [--rpc-url URL]
+  lk block [number|tag] [--hash] [--verbose] [--json] [--rpc-url URL]
   lk block hash <number|tag> [--json] [--rpc-url URL]
 
 Examples:
@@ -355,6 +402,7 @@ Examples:
   lk block 5                       Explain block 5.
   lk block hash 5                  Print only block 5's fingerprint.
   lk block 0x5 --hash              Same lookup using a hex block number.
+  lk block 5 --verbose             Show additional network/header details.
   lk block latest --json           Return the raw block object as JSON.
   lk block hash 5 --rpc-url URL    Query a specific EVM endpoint.
 
@@ -399,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("reference", nargs="?", default="latest")
     parser.add_argument("--hash", action="store_true", dest="hash_only")
     parser.add_argument("--json", action="store_true", dest="json_output")
+    parser.add_argument("--verbose", action="store_true", help="show additional block details")
     parser.add_argument("--rpc-url")
     try:
         options = parser.parse_args(args)
@@ -417,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
         if options.json_output:
             print(json.dumps(block, indent=2, sort_keys=True))
         else:
-            print(render_block(block))
+            print(render_block_verbose(block) if options.verbose else render_block(block))
         return 0
     except BlockLookupError as exc:
         print(f"lk block: {exc}", file=sys.stderr)
