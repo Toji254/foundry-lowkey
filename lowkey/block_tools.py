@@ -413,13 +413,12 @@ Block references:
 RPC selection:
   Uses Lowkey's active project/RPC selection. --rpc-url overrides it.
 
-Understanding the output:
-  Block hash       = this block's unique fingerprint.
-  Parent hash      = the previous block's fingerprint; it links the chain.
-  block.timestamp = the time value Solidity contracts can read.
-  Gas used         = transaction-computation capacity consumed in this block.
-  Base fee         = the network-set base charge for each unit of gas.
-  For block N, run lk block N-1 to compare its hash with block N's parent hash.
+Normal output is intentionally short:
+  Block hash       = this block's fingerprint.
+  Previous block hash (parent hash) = the previous block's fingerprint.
+  block.timestamp = the timestamp Solidity contracts can read.
+  Gas used         = the amount of block gas capacity consumed.
+  Use --verbose for additional header/network details or --json for raw data.
 
 Safety:
   Sends only eth_getBlockByNumber. No transactions or state changes.
