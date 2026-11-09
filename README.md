@@ -649,9 +649,9 @@ available fork-specific fields. The hash subcommand prints only the exact
 32-byte block hash. `--rpc-url` overrides Lowkey's active project/RPC
 selection; otherwise the command reuses the same active RPC as the main CLI.
 
-For code that executes in block N and calls
-`blockhash(block.number - 1)`, inspect block N-1 with
-`lk block hash N-1`. The EVM exposes only the previous 256 completed block
+For example, when a transaction executes in block 6 and calls
+`blockhash(block.number - 1)`, inspect block 5 with
+`lk block hash 5`. The EVM exposes only the previous 256 completed block
 hashes to contracts; an RPC provider may independently retain older headers.
 The command performs no transactions and changes no chain state.
 
