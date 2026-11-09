@@ -192,7 +192,7 @@ def render_block(block: dict[str, Any]) -> str:
         f"Number:          {block_label}" + (f" (0x{number:x})" if number is not None else ""),
         f"Hash:            {block.get('hash') or 'pending / not assigned'}",
         f"Parent hash:     {block.get('parentHash') or 'unavailable'}",
-        f"Timestamp:       {timestamp} ({timestamp_utc} UTC)",
+        f"Timestamp:       {timestamp} ({timestamp_utc})",
         f"Miner:           {block.get('miner') or block.get('author') or 'unavailable'}",
         f"Gas used:        {_hex_quantity(block.get('gasUsed'), 'gasUsed')}",
         f"Gas limit:       {_hex_quantity(block.get('gasLimit'), 'gasLimit')}",
