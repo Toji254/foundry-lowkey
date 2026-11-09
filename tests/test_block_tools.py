@@ -61,6 +61,17 @@ class BlockToolsTests(unittest.TestCase):
                 with self.assertRaises(block_tools.BlockLookupError):
                     block_tools.parse_block_reference(reference)
 
+    def test_bare_command_defaults_to_latest_block(self):
+        code, stdout, stderr, rpc = self.run_cli([])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("BLOCK 5", stdout)
+        self.assertIn("Hash:", stdout)
+        rpc.assert_called_once_with(
+            "http://127.0.0.1:8545",
+            "eth_getBlockByNumber",
+            ["latest", False],
+        )
+
     def test_hash_subcommand_reads_block_hash_only(self):
         code, stdout, stderr, rpc = self.run_cli(["hash", "5"])
         self.assertEqual(code, 0, stderr)
