@@ -3855,32 +3855,38 @@ def run_tx(config,args):
     # selected target is reached through another contract, ask the node for
     # callTracer frames so we can report that target's actual immediate caller.
     origin = transaction.get("from")
+    block_number = transaction.get("blockNumber")
+    is_mined = block_number is not None and str(block_number).strip() != ""
     if is_address(origin):
         origin_label = apply_labels(origin, config)
-        print(f"tx.origin: {origin_label}")
-        if is_address(tx_to):
-            print(f"msg.sender at top-level recipient: {origin_label}")
-        selected_target = config.get("target")
-        if is_address(selected_target):
-            target_name = str(config.get("target_contract") or "selected target")
-            if is_address(tx_to) and str(selected_target).lower() == str(tx_to).lower():
-                print(f"msg.sender at {target_name} (direct): {origin_label}")
-            else:
-                callers = _transaction_target_msg_senders(
-                    rpc, tx_hash, selected_target, origin
-                )
-                if callers:
-                    for caller, frame_type in callers:
-                        print(
-                            f"msg.sender at {target_name} ({frame_type}): "
-                            f"{apply_labels(caller, config)}"
-                        )
+        if not is_mined:
+            print(f"Expected tx.origin when mined: {origin_label}")
+            print("msg.sender context: unavailable until the transaction is mined")
+        else:
+            print(f"tx.origin: {origin_label}")
+            if is_address(tx_to):
+                print(f"msg.sender at top-level recipient: {origin_label}")
+            selected_target = config.get("target")
+            if is_address(selected_target):
+                target_name = str(config.get("target_contract") or "selected target")
+                if is_address(tx_to) and str(selected_target).lower() == str(tx_to).lower():
+                    print(f"msg.sender at {target_name} (direct): {origin_label}")
                 else:
-                    print(
-                        f"msg.sender at {target_name}: not resolved "
-                        "(no matching frame in the available RPC call trace)"
+                    callers = _transaction_target_msg_senders(
+                        rpc, tx_hash, selected_target, origin
                     )
-                    print("  Run lk trace <tx-hash> for the full execution trace.")
+                    if callers:
+                        for caller, frame_type in callers:
+                            print(
+                                f"msg.sender at {target_name} ({frame_type}): "
+                                f"{apply_labels(caller, config)}"
+                            )
+                    else:
+                        print(
+                            f"msg.sender at {target_name}: not resolved "
+                            "(no matching frame in the available RPC call trace)"
+                        )
+                        print("  Run lk trace <tx-hash> for the full execution trace.")
     else:
         print("tx.origin: unavailable (transaction sender is missing or invalid)")
 
