@@ -632,7 +632,7 @@ Use the native, read-only block command to inspect EVM block headers on the
 currently selected Lowkey RPC. It does not require a contract target, ABI, or
 wallet:
 
-```bash
+~~~bash
 lk block
 lk block latest
 lk block 5
@@ -640,20 +640,33 @@ lk block hash 5
 lk block 0x5 --hash
 lk block latest --json
 lk block hash 5 --rpc-url http://127.0.0.1:8545
-```
+~~~
 
-A decimal block number is normalized to the JSON-RPC hexadecimal quantity
-before the request. The command reads `eth_getBlockByNumber` and returns the
-header hash, parent hash, timestamp, gas fields, transaction count, and
-available fork-specific fields. The hash subcommand prints only the exact
-32-byte block hash. `--rpc-url` overrides Lowkey's active project/RPC
-selection; otherwise the command reuses the same active RPC as the main CLI.
+The normal output is designed to be read by a human. It pairs blockchain field
+names with plain-English meanings:
 
-For example, when a transaction executes in block 6 and calls
-`blockhash(block.number - 1)`, inspect block 5 with
-`lk block hash 5`. The EVM exposes only the previous 256 completed block
-hashes to contracts; an RPC provider may independently retain older headers.
-The command performs no transactions and changes no chain state.
+- **Block fingerprint (block hash):** the unique identifier calculated for this block.
+- **Previous block fingerprint (parent hash):** the identifier of the block this one builds on. For block 5, run 'lk block 4'; the hash shown for block 4 should match block 5's parent hash.
+- **Solidity timestamp (block.timestamp):** the block's time as seconds since 1 January 1970, alongside local and UTC dates.
+- **Transactions included:** how many transactions are inside the block.
+- **Gas used:** how much transaction-computation capacity was consumed, shown against the block's gas limit and as a percentage.
+- **Base fee:** the network-set base charge for each unit of gas, shown in Gwei and wei.
+- **Extra network details:** producer address, proof-of-work difficulty, block size, and blob-data fields when the RPC provides them.
+
+A parent hash is not the hash of the current block. It is the previous
+block's fingerprint. That link lets nodes check that each block builds on the
+right predecessor. If an earlier block is changed, its fingerprint changes
+and the next block's parent reference no longer matches.
+
+Use --json when you need the raw RPC block object rather than the
+human-readable summary. The hash subcommand prints only the exact 32-byte
+block hash.
+
+For CoinFlip, when a transaction executes in block 6 and calls
+blockhash(block.number - 1), inspect block 5 with 'lk block hash 5'.
+The EVM exposes only the previous 256 completed block hashes to contracts;
+an RPC provider may independently retain older headers. The command performs
+no transactions and changes no chain state.
 
 ## Storage and state forensics
 
