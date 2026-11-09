@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
-from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -16,6 +15,7 @@ MODULE = ROOT / "lowkey" / "block_tools.py"
 spec = importlib.util.spec_from_file_location("lowkey_block_tools", MODULE)
 block_tools = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(block_tools)
+_UNSET = object()
 
 
 class BlockToolsTests(unittest.TestCase):
