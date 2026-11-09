@@ -1,7 +1,10 @@
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from types import SimpleNamespace
@@ -29,10 +32,10 @@ class BlockToolsTests(unittest.TestCase):
             "transactions": ["0x" + "c" * 64],
         }
 
-    def run_cli(self, args, block=None):
+    def run_cli(self, args, block=_UNSET):
         stdout = io.StringIO()
         stderr = io.StringIO()
-        result_block = self.block if block is None else block
+        result_block = self.block if block is _UNSET else block
         with patch.object(block_tools, "resolve_rpc", return_value="http://127.0.0.1:8545"), \
              patch.object(block_tools, "rpc_request", return_value=result_block) as rpc, \
              redirect_stdout(stdout), redirect_stderr(stderr):
@@ -130,6 +133,40 @@ class BlockToolsTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("lk block hash <number|tag>", output.getvalue())
         self.assertIn("eth_getBlockByNumber", output.getvalue())
+
+    def test_launcher_routes_block_to_installed_module_before_generic_help(self):
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        self.assertIn('if [[ "${1:-}" == "block" || "${1:-}" == "blocks" ]]', script)
+        self.assertIn('python3 "$HOME/.lowkey/block_tools.py" "$@"', script)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lowkey_dir = pathlib.Path(tmp) / ".lowkey"
+            lowkey_dir.mkdir()
+            module = lowkey_dir / "block_tools.py"
+            module.write_text(
+                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = tmp
+            result = subprocess.run(
+                ["bash", str(ROOT / "bin" / "lk"), "block", "hash", "5"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), ["hash", "5"])
+
+    def test_installer_stages_compiles_installs_and_hashes_block_module(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("finding_explainer.py block_tools.py; do", script)
+        self.assertIn('"$STAGE_DIR/block_tools.py"', script)
+        self.assertIn('cp "$STAGE_DIR/block_tools.py" "$TARGET_LOWKEY_DIR/block_tools.py"', script)
+        self.assertIn('str(lowkey_dir / "block_tools.py"): sha256(lowkey_dir / "block_tools.py")', script)
+        self.assertIn('- $TARGET_LOWKEY_DIR/block_tools.py', script)
 
 
 if __name__ == "__main__":
