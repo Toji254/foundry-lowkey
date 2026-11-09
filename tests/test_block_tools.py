@@ -125,13 +125,13 @@ class BlockToolsTests(unittest.TestCase):
 
     def test_zero_miner_address_is_explained_as_unset(self):
         block = dict(self.block, miner="0x" + "0" * 40)
-        code, stdout, stderr, _ = self.run_cli(["5"], block=block)
+        code, stdout, stderr, _ = self.run_cli(["5", "--verbose"], block=block)
         self.assertEqual(code, 0, stderr)
         self.assertIn("Block producer / miner:                Not provided (zero address)", stdout)
 
     def test_zero_difficulty_and_blob_gas_are_explained(self):
         block = dict(self.block, difficulty="0x0", blobGasUsed="0x0", excessBlobGas="0x0")
-        code, stdout, stderr, _ = self.run_cli(["5"], block=block)
+        code, stdout, stderr, _ = self.run_cli(["5", "--verbose"], block=block)
         self.assertEqual(code, 0, stderr)
         self.assertIn("no proof-of-work mining is being reported", stdout)
         self.assertIn("no blob data in this block", stdout)
