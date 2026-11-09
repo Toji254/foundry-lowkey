@@ -195,6 +195,8 @@ def _default_context(root: Path) -> dict[str, Any]:
         "focus": None,
         "latest": {
             "tx_hash": None,
+            "target": None,
+            "rpc": None,
             "function": None,
             "value": None,
             "calldata": None,
@@ -661,6 +663,8 @@ def set_latest(
     root: Path | None = None,
     *,
     tx_hash: str | None = None,
+    target: str | None = None,
+    rpc: str | None = None,
     function: str | None = None,
     value: str | None = None,
     calldata: str | None = None,
@@ -670,6 +674,8 @@ def set_latest(
     latest = {}
     for key, value_ in {
         "tx_hash": tx_hash,
+        "target": target,
+        "rpc": rpc,
         "function": function,
         "value": value,
         "calldata": calldata,
