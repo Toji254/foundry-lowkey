@@ -1424,8 +1424,8 @@ class LowkeyCastTests(unittest.TestCase):
                     }
                 return None
 
-            with patch.object(lk, "project_context_target", side_effect=project_target), \\
-                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \\
+            with patch.object(lk, "project_context_target", side_effect=project_target), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
                  patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
                 choices = lk._lab_address_choices(config, [])
 
