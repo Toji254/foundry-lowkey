@@ -4096,7 +4096,7 @@ def run_tx(config,args):
                         f"{apply_labels(caller, display_config)}"
                     )
                 if len(callers) == 1:
-                    caller_label = apply_labels(callers[0][0], config)
+                    caller_label = apply_labels(callers[0][0], display_config)
                     print(
                         f"Meaning: {origin_label} initiated the transaction; "
                         f"{caller_label} was the immediate caller to {target_name}. "
