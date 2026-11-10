@@ -7904,6 +7904,65 @@ def withdraw(amount: uint256):
                 )
             )
 
+    def test_transaction_display_config_uses_live_project_names_and_disambiguates_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "telephone"
+            target = "0x" + "1" * 40
+            first = "0x" + "2" * 40
+            second = "0x" + "3" * 40
+            conflicting = "0x" + "4" * 40
+            remembered = [
+                {
+                    "name": "Helper",
+                    "address": first,
+                    "root": active_root / "Attack",
+                    "artifact": str(active_root / "Attack" / "out" / "Helper.json"),
+                },
+                {
+                    "name": "Helper",
+                    "address": second,
+                    "root": active_root / "Other",
+                    "artifact": str(active_root / "Other" / "out" / "Helper.json"),
+                },
+                {
+                    "name": "Telephone",
+                    "address": target,
+                    "root": active_root,
+                    "artifact": str(active_root / "out" / "Telephone.json"),
+                },
+                {
+                    "name": "OldAlias",
+                    "address": conflicting,
+                    "root": active_root / "Old",
+                    "artifact": str(active_root / "Old" / "out" / "OldAlias.json"),
+                },
+                {
+                    "name": "WrongIdentity",
+                    "address": conflicting,
+                    "root": active_root / "OtherOld",
+                    "artifact": str(active_root / "OtherOld" / "out" / "WrongIdentity.json"),
+                },
+            ]
+            config = {"target": target, "target_contract": "Telephone", "wallets": {}, "labels": {}}
+            rpc = "http://127.0.0.1:8545"
+
+            def live_check(_config, address, checked_rpc, artifact_path=None):
+                self.assertEqual(checked_rpc, rpc)
+                return address.lower() != conflicting.lower()
+
+            with patch.object(lk, "_lab_workspace_remembered_targets", return_value=remembered), \
+                 patch.object(lk, "active_project_target", return_value=target), \
+                 patch.object(lk, "project_context_target", return_value={
+                     "address": target, "contract": "Telephone"
+                 }), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", side_effect=live_check):
+                display_config = lk._transaction_display_config(config, active_root, rpc)
+
+        self.assertEqual(display_config["labels"][first], "Helper (Attack)")
+        self.assertEqual(display_config["labels"][second], "Helper (Other)")
+        self.assertNotIn(conflicting, display_config["labels"])
+        self.assertNotIn(target, display_config["labels"])
+        self.assertEqual(config["labels"], {})
     def test_tx_output_explains_origin_and_intermediary_msg_sender(self):
         origin = "0x" + "1" * 40
         intermediary = "0x" + "2" * 40
@@ -7935,6 +7994,12 @@ def withdraw(amount: uint256):
                  }), \
                  patch.object(lk, "active_project_target", return_value=target), \
                  patch.object(lk, "_transaction_target_msg_senders", return_value=[(intermediary, "CALL")]), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[{
+                     "name": "attackTelephone", "address": intermediary,
+                     "root": root / "Attack",
+                     "artifact": str(root / "Attack" / "out" / "attackTelephone.json"),
+                 }]), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True), \
                  patch.object(lk.walkthrough, "_receipt", return_value={"status": "0x1"}), \
                  patch.object(lk.walkthrough, "_write_transaction_evidence"), \
                  patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash):
@@ -7945,8 +8010,9 @@ def withdraw(amount: uint256):
         rendered = output.getvalue()
         self.assertIn("EXECUTION CONTEXT", rendered)
         self.assertIn(f"tx.origin (transaction signer): {origin}", rendered)
+        self.assertIn(f"Top-level recipient: attackTelephone ({intermediary})", rendered)
         self.assertIn(f"msg.sender at top-level recipient: {origin}", rendered)
-        self.assertIn(f"msg.sender at Telephone (CALL): {intermediary}", rendered)
+        self.assertIn(f"msg.sender at Telephone (CALL): attackTelephone ({intermediary})", rendered)
         self.assertIn("was the immediate caller to Telephone", rendered)
         self.assertIn("tx.origin remains", rendered)
 
