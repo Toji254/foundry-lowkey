@@ -6533,6 +6533,187 @@ def _format_revert_error(error_text, config=None, target=None):
     )
 
 
+
+
+def _preview_option_value(command, option):
+    """Read a Cast option value without exposing or interpreting unrelated flags."""
+    values = list(command or [])
+    for index, token in enumerate(values):
+        text = str(token)
+        if text.startswith(option + "="):
+            return text.split("=", 1)[1].strip()
+        if text == option and index + 1 < len(values):
+            value = str(values[index + 1]).strip()
+            if (
+                option == "--value"
+                and index + 2 < len(values)
+                and str(values[index + 2]).strip().lower() in {"wei", "gwei", "ether"}
+                and not any(value.lower().endswith(unit) for unit in ("wei", "gwei", "ether"))
+            ):
+                value += " " + str(values[index + 2]).strip()
+            return value
+    return None
+
+
+def _preview_address_label(config, address, fallback_name=None):
+    if not is_address(address):
+        return str(address or "not resolved")
+    rendered = apply_labels(address, config)
+    if rendered != address:
+        return rendered
+    if fallback_name:
+        return f"{fallback_name} ({address})"
+    return address
+
+
+def _preview_argument_rows(config, function_item, raw_values):
+    """Pair ABI inputs with resolved positional values for a readable preview."""
+    if not isinstance(function_item, dict):
+        return []
+    inputs = function_item.get("inputs") or []
+    parsed = _cast_call_argument_positions(function_item, raw_values)
+    if parsed is None:
+        return []
+    positions, _extras = parsed
+    rows = []
+    values = list(raw_values or [])
+    for index, item in enumerate(inputs):
+        if index >= len(positions):
+            break
+        position = positions[index]
+        if position >= len(values):
+            break
+        item_type = canonical_type(item)
+        value = str(values[position]).strip()
+        if (
+            item_type.lower().startswith(("uint", "int"))
+            and index + 1 < len(positions)
+            and position + 1 < positions[index + 1]
+            and str(values[position + 1]).strip().lower() in {"wei", "gwei", "ether"}
+        ):
+            value += " " + str(values[position + 1]).strip()
+        try:
+            display_value = _humanize_abi_scalar(
+                value, item_type, item.get("name"), config
+            )
+        except Exception:
+            display_value = apply_labels(value, config)
+        label = str(item.get("name") or f"argument {index + 1}")
+        rows.append((label, item_type, _human_type_label(item_type), display_value, value))
+    return rows
+
+
+def _print_read_only_call_summary(config, target, function_item, command, actor=None):
+    """Explain the context of a simulated read before showing its decoded return."""
+    contract_name = (
+        config.get("target_contract")
+        if str(config.get("target") or "").lower() == str(target or "").lower()
+        else None
+    )
+    contract = _preview_address_label(config, target, contract_name)
+    sender = _preview_option_value(command, "--from")
+    if not sender and actor:
+        try:
+            sender = actor_address(config, actor)
+        except Exception:
+            sender = None
+
+    print("READ-ONLY CONTRACT CALL")
+    print("=======================")
+    print(f"Contract:  {contract}")
+    print(f"Function:  {format_signature(function_item)}")
+    if sender and is_address(sender):
+        print(f"Caller:    {_preview_address_label(config, sender, actor)}")
+    else:
+        print("Caller:    not explicitly resolved")
+    print("This is an eth_call simulation: it does not mine a transaction or save state changes.")
+
+
+def _print_transaction_preview(config, command, target, function_item, raw_values, actor=None):
+    """Render a learner-friendly transaction plan; this does not simulate execution."""
+    contract_name = (
+        config.get("target_contract")
+        if str(config.get("target") or "").lower() == str(target or "").lower()
+        else None
+    )
+    contract = _preview_address_label(config, target, contract_name)
+    sender = _preview_option_value(command, "--from")
+    if not sender and actor:
+        try:
+            sender = actor_address(config, actor)
+        except Exception:
+            sender = None
+    sender_label = (
+        _preview_address_label(config, sender, actor)
+        if sender and is_address(sender)
+        else "signing account not resolved"
+    )
+    signature = format_signature(function_item) if isinstance(function_item, dict) else None
+    rows = _preview_argument_rows(config, function_item, raw_values)
+    attached_value = _preview_option_value(command, "--value")
+    attached_value = attached_value if attached_value is not None else "0 ETH (no ETH attached)"
+
+    print("TRANSACTION PREVIEW — NOT SENT")
+    print("==============================")
+    print("Nothing has been broadcast. This screen describes the transaction Lowkey prepared.")
+    print("")
+    print("WHO IS CALLING WHAT")
+    print(f"  Sender:   {sender_label}")
+    print(f"  Contract: {contract}")
+    if signature:
+        print(f"  Function: {signature}")
+        print(f"  Function type: {str(function_item.get('stateMutability') or 'unknown').upper()}")
+    else:
+        print("  Function: raw transaction data (no matching ABI function)")
+    print(f"  ETH attached: {attached_value}")
+
+    if rows:
+        print("")
+        print("FUNCTION INPUTS")
+        for label, item_type, human_type, display_value, _raw_value in rows:
+            print(f"  {label} ({item_type} — {human_type}): {display_value}")
+        print("  These values are function arguments. They do not change who sent the transaction.")
+
+    if sender and is_address(sender):
+        print("")
+        print("CALLER CONTEXT AT THE CONTRACT")
+        print(f"  tx.origin  = {sender_label}")
+        print(f"  msg.sender = {sender_label}")
+        print("  Reason: this transaction calls the selected contract directly from the sender's wallet.")
+
+    encoded = None
+    if signature and len(rows) == len(function_item.get("inputs") or []):
+        try:
+            encoded_values = [row[4] for row in rows]
+            code, output, _error = cast_output(
+                ["cast", "calldata", signature, *encoded_values]
+            )
+            candidate = str(output or "").strip()
+            if code == 0 and re.fullmatch(r"0x[0-9a-fA-F]*", candidate):
+                encoded = candidate
+        except Exception:
+            encoded = None
+
+    if encoded and len(encoded) >= 10:
+        byte_length = max(0, (len(encoded) - 2) // 2)
+        print("")
+        print("ENCODED CALL DATA")
+        print(f"  Function selector: {encoded[:10]}  (the first 4 bytes identify the function)")
+        print(f"  Total size:        {byte_length} bytes")
+        if byte_length <= 96:
+            print(f"  Full calldata:     {encoded}")
+        else:
+            print(f"  Calldata preview:  {encoded[:74]}… ({byte_length} bytes total)")
+        print("  The remaining bytes encode the function arguments.")
+    elif signature:
+        print("")
+        print("Encoded calldata: Lowkey could not produce a local ABI encoding for these inputs.")
+
+    print("")
+    print("IMPORTANT")
+    print("  Preview prepares the call only. It does not execute or simulate the contract.")
+    print("  We cannot know whether the contract accepts it until we run it and inspect the result.")
+
 def run_cast(args,config,capture=False):
     if not args:
         result=CommandResult("",2)
@@ -6560,6 +6741,8 @@ def run_cast(args,config,capture=False):
         cleaned.append(token)
         index += 1
     remaining=cleaned
+    verbose = "--verbose" in remaining
+    remaining = [token for token in remaining if token != "--verbose"]
 
     if cast_cmd == "send":
         if "--actors" in remaining:
@@ -6762,13 +6945,13 @@ def run_cast(args,config,capture=False):
     if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd):
         cmd.extend(["--private-key",actor_key])
     safe_cmd=redact_secrets(shlex.join(cmd))
-    if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
-    if cast_cmd=="send" and preview:
-        print(f"Preview: {safe_cmd}")
-        print("Preview only: no transaction was broadcast. Remove --preview/--dry-run to submit; add --confirm to review once more before sending.")
+    if not capture and verbose:
+        print(f"DEBUG: Executing -> {safe_cmd}")
+    if cast_cmd == "send" and preview:
+        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor)
         return 0
-    if cast_cmd=="send" and (confirm or (config.get("confirm_sends") and not bypass)):
-        print(f"Preview: {safe_cmd}")
+    if cast_cmd == "send" and (confirm or (config.get("confirm_sends") and not bypass)):
+        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor)
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
         if answer not in {"y","yes"}: print("Transaction cancelled."); return 0
@@ -6919,6 +7102,8 @@ def run_cast(args,config,capture=False):
         record_status(code)
         if capture: return result
         if out:
+            if cast_cmd == "call" and function_item:
+                _print_read_only_call_summary(config, target, function_item, cmd, actor)
             if cast_cmd=="send":
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 summary = format_send_summary(out, config, call)
@@ -20941,6 +21126,7 @@ COMMAND_HELP = {
             ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read getValue"),
             ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, or use a saved reference such as @firstEscrow.", "lk read EscrowID @firstEscrow"),
             ("@identifier", "Use @number, @last, or @alias in any ABI argument whose type matches the saved identifier.", "lk read EscrowID @last"),
+            ("--verbose", "Show the redacted Cast command Lowkey uses for troubleshooting.", "lk read owner --verbose"),
         ],
         related=["lk ask", "lk send", "lk changes"],
     ),
@@ -20965,6 +21151,7 @@ COMMAND_HELP = {
             ("--as <name>", "Another spelling of --actor.", "lk send release 0xd9c5... --as attacker"),
             ("--actors", "Send the same call from each detected Anvil account, up to 10 accounts. These are separate transactions with different msg.sender values.", "lk send contribute --eth 0.001 --actors"),
             ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
+            ("--verbose", "Show the redacted Cast command alongside Lowkey's readable transaction preview.", "lk send release 0xd9c5... --preview --verbose"),
             ("--dry-run", "Another spelling of --preview.", "lk send release 0xd9c5... --dry-run"),
             ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send release 0xd9c5... --confirm"),
             ("--repeat <N>", "Accepted only as 1. A generic EOA transaction cannot repeat the exact target call N times without changing msg.sender or creating separate transactions. Use --actors to test multiple Anvil identities.", "lk send setValue 10 --repeat 1"),
