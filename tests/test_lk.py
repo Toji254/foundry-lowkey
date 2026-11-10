@@ -6098,7 +6098,10 @@ contract Pool {
             "target": target,
             "target_contract": "Telephone",
             "rpc": "http://127.0.0.1:8545",
-            "wallets": {},
+            "wallets": {
+                "Alice": {"address": alice},
+                "Bob": {"address": bob},
+            },
             "labels": {alice: "Alice", bob: "Bob"},
         }
         output = io.StringIO()
