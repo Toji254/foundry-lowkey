@@ -3853,6 +3853,127 @@ def _remember_transaction_for_project_target(config, root, tx_hash, tx_target, r
     return True
 
 
+
+def _transaction_display_config(config, root, rpc):
+    """Add verified, nearby project contract names to transaction output labels.
+
+    A transaction inspected from one project may call a contract remembered by a
+    nested or sibling project. Reuse those project-scoped identities only after
+    checking their runtime code against the artifact on this exact RPC. This is
+    display-only: the caller's config and saved project state are never changed.
+    """
+    if not isinstance(config, dict) or not rpc:
+        return config
+
+    workspace_config = dict(config)
+    workspace_config["_lab_system_root"] = str(root)
+    try:
+        remembered = _lab_workspace_remembered_targets(workspace_config)
+    except Exception:
+        remembered = []
+    if not remembered:
+        return config
+
+    try:
+        selected_target = active_project_target(config, root)
+    except Exception:
+        selected_target = None
+    try:
+        current_context_target = project_context_target(root)
+    except Exception:
+        current_context_target = None
+    if isinstance(current_context_target, dict) and is_address(
+        current_context_target.get("address")
+    ):
+        selected_target = current_context_target["address"]
+
+    # Group by address first. If two project records disagree about what lives
+    # at the same address, do not choose whichever happened to be discovered first.
+    by_address = {}
+    for item in remembered:
+        if not isinstance(item, dict):
+            continue
+        address = item.get("address")
+        name = str(item.get("name") or "").strip()
+        project_root = item.get("root")
+        if not is_address(address) or not name or not project_root:
+            continue
+        if is_address(selected_target) and str(address).lower() == str(selected_target).lower():
+            continue
+        try:
+            project_root = Path(project_root).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            continue
+        try:
+            live = _lab_remembered_contract_is_live(
+                config,
+                str(address),
+                rpc,
+                artifact_path=item.get("artifact"),
+            )
+        except Exception:
+            live = False
+        if not live:
+            continue
+        by_address.setdefault(str(address).lower(), []).append({
+            "address": str(address),
+            "name": name,
+            "root": project_root,
+        })
+
+    verified = []
+    for entries in by_address.values():
+        names = {item["name"] for item in entries}
+        if len(names) != 1:
+            continue
+        # Multiple projects may intentionally refer to the same contract. Keep
+        # its shared name, and choose a stable path only when disambiguation is
+        # needed because another address uses that same name.
+        unique_roots = sorted(
+            {item["root"] for item in entries},
+            key=lambda path: path.as_posix(),
+        )
+        verified.append({
+            "address": entries[0]["address"],
+            "name": next(iter(names)),
+            "root": unique_roots[0],
+        })
+
+    if not verified:
+        return config
+
+    name_counts = {}
+    for item in verified:
+        key = item["name"].casefold()
+        name_counts[key] = name_counts.get(key, 0) + 1
+
+    active_root = Path(root).expanduser().resolve()
+    labels = dict(config.get("labels") or {})
+    rendered_labels = set()
+    for item in verified:
+        label = item["name"]
+        if name_counts.get(label.casefold(), 0) > 1:
+            try:
+                common_root = Path(os.path.commonpath([
+                    str(active_root), str(item["root"])
+                ]))
+                project_hint = item["root"].relative_to(common_root).as_posix()
+            except (OSError, ValueError):
+                project_hint = item["root"].name
+            if not project_hint or project_hint == ".":
+                project_hint = item["root"].name
+            label = f"{label} ({project_hint})"
+            if label.casefold() in rendered_labels:
+                label += f" #{item['address'][-6:]}"
+        rendered_labels.add(label.casefold())
+        # Existing explicit labels remain authoritative. Wallet/actor names
+        # still take precedence inside _known_address_identities().
+        labels.setdefault(item["address"], label)
+
+    display_config = dict(config)
+    display_config["labels"] = labels
+    return display_config
+
 def run_tx(config,args):
     tx_hash=args[0] if args else last_transaction(config)
     if not tx_hash: return fail("Error: no transaction is saved for this project and target. Send a transaction here, or pass an explicit hash: lk tx <transaction-hash>.")
@@ -3875,6 +3996,7 @@ def run_tx(config,args):
     abi=load_abi(abi_target,config)
     tx_hash = transaction.get("hash") or tx_hash
     root = audit_context.foundry_project_root()
+    display_config = _transaction_display_config(config, root, rpc)
     receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
     step = walkthrough.Step(
         0,
@@ -3888,8 +4010,8 @@ def run_tx(config,args):
     )
     walkthrough._write_transaction_evidence(root, rpc or "", step, receipt)
     print(f"Hash:  {walkthrough._transaction_link(root, tx_hash)}")
-    print(f"From:  {apply_labels(transaction.get('from','Unknown'),config)}")
-    print(f"To:    {apply_labels(transaction.get('to','Unknown'),config)}")
+    print(f"From:  {apply_labels(transaction.get('from','Unknown'),display_config)}")
+    print(f"To:    {apply_labels(transaction.get('to','Unknown'),display_config)}")
 
     # Separate the transaction signer from the caller seen by each contract.
     # tx.origin is the transaction's originating account; msg.sender is derived
@@ -3900,14 +4022,14 @@ def run_tx(config,args):
     print("EXECUTION CONTEXT")
     print("-----------------")
     if is_address(origin):
-        origin_label = apply_labels(origin, config)
+        origin_label = apply_labels(origin, display_config)
         if not is_mined:
             print(f"tx.origin (expected transaction signer): {origin_label}")
             print("msg.sender: unavailable until the transaction is mined.")
         else:
             print(f"tx.origin (transaction signer): {origin_label}")
             if is_address(tx_to):
-                print(f"Top-level recipient: {apply_labels(tx_to, config)}")
+                print(f"Top-level recipient: {apply_labels(tx_to, display_config)}")
                 print(f"msg.sender at top-level recipient: {origin_label}")
             else:
                 print("Top-level recipient: contract creation")
@@ -3971,7 +4093,7 @@ def run_tx(config,args):
                 for caller, frame_type in callers:
                     print(
                         f"msg.sender at {target_name} ({frame_type}): "
-                        f"{apply_labels(caller, config)}"
+                        f"{apply_labels(caller, display_config)}"
                     )
                 if len(callers) == 1:
                     caller_label = apply_labels(callers[0][0], config)
