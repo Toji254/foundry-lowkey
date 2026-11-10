@@ -68,25 +68,25 @@ class TargetScopingTests(unittest.TestCase):
                 "abi_paths": {},
             }
 
-            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
-                 patch.object(lk, "project_context_target", return_value=context_target), \\
-                 patch.object(
-                     lk,
-                     "_project_target_entries",
-                     return_value=[{
-                         "name": "Telephone",
-                         "contract": "Telephone",
-                         "address": address,
-                     }],
-                 ), \\
-                 patch.object(lk, "_target_entry_is_protocol", return_value=True):
-                self.assertEqual(lk.target_aliases(config, root), {"Telephone": address})
-                self.assertEqual(lk.resolve_target_ref(config, "Telephone", root), address)
-                self.assertIsNone(lk.resolve_target_ref(config, "CoinFlip", root))
-                self.assertEqual(
-                    lk.apply_labels(address, config),
-                    f"Telephone ({address})",
-                )
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                with patch.object(lk, "project_context_target", return_value=context_target):
+                    with patch.object(
+                        lk,
+                        "_project_target_entries",
+                        return_value=[{
+                            "name": "Telephone",
+                            "contract": "Telephone",
+                            "address": address,
+                        }],
+                    ):
+                        with patch.object(lk, "_target_entry_is_protocol", return_value=True):
+                            self.assertEqual(lk.target_aliases(config, root), {"Telephone": address})
+                            self.assertEqual(lk.resolve_target_ref(config, "Telephone", root), address)
+                            self.assertIsNone(lk.resolve_target_ref(config, "CoinFlip", root))
+                            self.assertEqual(
+                                lk.apply_labels(address, config),
+                                f"Telephone ({address})",
+                            )
 
 
     def test_project_target_list_hides_test_mock_alias_even_when_owned_by_project(self):
