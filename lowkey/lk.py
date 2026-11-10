@@ -12655,11 +12655,28 @@ def _lab_address_choices(config, accounts, rpc=None):
             owner_root = configured_project_root(address, config)
             if not owner_root:
                 continue
+
+            # Global aliases can outlive the project that originally used an
+            # Anvil address. Anvil reuses deterministic addresses after resets,
+            # so the first legacy alias (for example CoinFlip) must not override
+            # the validated project-context identity (for example Telephone).
+            canonical_name = str(name).strip()
+            try:
+                owner_target = project_context_target(owner_root)
+            except Exception:
+                owner_target = None
+            if (
+                isinstance(owner_target, dict)
+                and str(owner_target.get("address") or "").lower() == address_key
+                and str(owner_target.get("contract") or "").strip()
+            ):
+                canonical_name = str(owner_target["contract"]).strip()
+
             if not _lab_remembered_contract_is_live(config, str(address), rpc):
                 continue
             seen_contracts.add(address_key)
             remembered.append({
-                "name": str(name).strip(),
+                "name": canonical_name,
                 "address": str(address),
                 "root": Path(owner_root).resolve(),
                 "artifact": None,
