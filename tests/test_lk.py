@@ -1436,6 +1436,44 @@ class LowkeyCastTests(unittest.TestCase):
                 1,
             )
 
+    def test_lab_address_choices_use_project_inventory_when_context_target_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "telephone" / "Attack"
+            telephone_root = active_root.parent
+            active_root.mkdir(parents=True)
+            address = "0x" + "b" * 40
+            config = {
+                "_lab_system_root": str(active_root),
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {"CoinFlip": address},
+                "aliases": {"CoinFlip": address},
+                "project_roots": {address: str(telephone_root)},
+            }
+
+            with patch.object(lk, "project_context_target", return_value=None), \\
+                 patch.object(
+                     lk,
+                     "_project_target_entries",
+                     return_value=[{
+                         "name": "Telephone",
+                         "contract": "Telephone",
+                         "address": address,
+                         "artifact": "/tmp/telephone/out/telephone.sol/Telephone.json",
+                     }],
+                 ), \\
+                 patch.object(lk, "_target_entry_is_protocol", return_value=True), \\
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \\
+                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                choices = lk._lab_address_choices(config, [])
+
+            self.assertIn(("Telephone", address), choices)
+            self.assertNotIn(("CoinFlip", address), choices)
+            self.assertEqual(
+                sum(1 for _name, candidate in choices if candidate.lower() == address.lower()),
+                1,
+            )
+
     def test_lab_address_choices_discover_targets_saved_only_in_sibling_project_contexts(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = pathlib.Path(tmp) / "Smart-contract-development-journey"

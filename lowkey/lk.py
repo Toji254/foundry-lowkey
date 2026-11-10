@@ -12661,6 +12661,11 @@ def _lab_address_choices(config, accounts, rpc=None):
             # so the first legacy alias (for example CoinFlip) must not override
             # the validated project-context identity (for example Telephone).
             canonical_name = str(name).strip()
+
+            # Prefer the active project's remembered identity, then consult
+            # the same project-scoped inventory used by "lk targets". A target
+            # can be discoverable from Foundry deployment records/artifacts
+            # even when its .audit/context.json entry is absent or stale.
             try:
                 owner_target = project_context_target(owner_root)
             except Exception:
@@ -12671,6 +12676,34 @@ def _lab_address_choices(config, accounts, rpc=None):
                 and str(owner_target.get("contract") or "").strip()
             ):
                 canonical_name = str(owner_target["contract"]).strip()
+            else:
+                try:
+                    owner_entries = _project_target_entries(config, owner_root)
+                except Exception:
+                    owner_entries = []
+                matching_entries = [
+                    entry for entry in owner_entries
+                    if str(entry.get("address") or "").lower() == address_key
+                    and _target_entry_is_protocol(owner_root, entry)
+                ]
+                if len(matching_entries) == 1:
+                    identity = matching_entries[0]
+                    discovered_name = str(
+                        identity.get("contract") or identity.get("name") or ""
+                    ).strip()
+                    if discovered_name:
+                        canonical_name = discovered_name
+                elif len(matching_entries) > 1:
+                    # Multiple project entries claiming one chain address are
+                    # not separate deployments. Keep the project alias only
+                    # when the inventory cannot establish one canonical name.
+                    canonical_names = {
+                        str(entry.get("contract") or entry.get("name") or "").strip()
+                        for entry in matching_entries
+                    }
+                    canonical_names.discard("")
+                    if len(canonical_names) == 1:
+                        canonical_name = next(iter(canonical_names))
 
             if not _lab_remembered_contract_is_live(config, str(address), rpc):
                 continue
