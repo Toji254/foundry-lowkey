@@ -1451,7 +1451,7 @@ class LowkeyCastTests(unittest.TestCase):
                 "project_roots": {address: str(telephone_root)},
             }
 
-            with patch.object(lk, "project_context_target", return_value=None), \\
+            with patch.object(lk, "project_context_target", return_value=None), \
                  patch.object(
                      lk,
                      "_project_target_entries",
@@ -1461,9 +1461,9 @@ class LowkeyCastTests(unittest.TestCase):
                          "address": address,
                          "artifact": "/tmp/telephone/out/telephone.sol/Telephone.json",
                      }],
-                 ), \\
-                 patch.object(lk, "_target_entry_is_protocol", return_value=True), \\
-                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \\
+                 ), \
+                 patch.object(lk, "_target_entry_is_protocol", return_value=True), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
                  patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
                 choices = lk._lab_address_choices(config, [])
 
