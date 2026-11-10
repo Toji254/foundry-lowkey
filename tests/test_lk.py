@@ -5513,7 +5513,9 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
+        self.assertIn("READ-ONLY CONTRACT CALL", rendered)
         self.assertIn("balance = 0 units (unit not specified by ABI) [uint256]", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
@@ -6026,7 +6028,7 @@ contract Pool {
              patch.object(lk, "cast_output") as cast_output, \
              redirect_stdout(output):
             result = lk.run_cast(
-                ["send", "createEscrow", "1", "ether", "Bob", "--eth", "2", "--confirm", "--preview"],
+                ["send", "createEscrow", "1", "ether", "Bob", "--eth", "2", "--confirm", "--preview", "--verbose"],
                 config,
             )
 
@@ -6037,7 +6039,11 @@ contract Pool {
         self.assertIn(recipient, rendered)
         self.assertIn("--value '2 ether'", rendered)
         self.assertNotIn(" Bob ", rendered)
-        cast_output.assert_not_called()
+        self.assertEqual(cast_output.call_count, 1)
+        self.assertEqual(
+            cast_output.call_args.args[0],
+            ["cast", "calldata", "createEscrow(uint256,address)", "1000000000000000000", recipient],
+        )
 
     def test_run_cast_resolves_actor_name_when_value_option_precedes_argument(self):
         target = "0x" + "1" * 40
@@ -6060,7 +6066,7 @@ contract Pool {
              patch.object(lk, "cast_output") as cast_output, \
              redirect_stdout(output):
             result = lk.run_cast(
-                ["send", "createEscrow", "--value", "2 ether", "Bob", "--preview"],
+                ["send", "createEscrow", "--value", "2 ether", "Bob", "--preview", "--verbose"],
                 config,
             )
 
@@ -6071,6 +6077,55 @@ contract Pool {
         self.assertIn("--value '2 ether'", rendered)
         self.assertNotIn(" Bob ", rendered)
         cast_output.assert_not_called()
+
+    def test_run_cast_preview_explains_direct_telephone_call_without_debug_noise(self):
+        target = "0x" + "1" * 40
+        alice = "0x" + "2" * 40
+        bob = "0x" + "3" * 40
+        encoded = "0xa6f9dae1" + "0" * 24 + bob[2:].lower()
+        abi = [{
+            "type": "function",
+            "name": "changeOwner",
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }]
+        config = {
+            "target": target,
+            "target_contract": "Telephone",
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+            "labels": {alice: "Alice", bob: "Bob"},
+        }
+        output = io.StringIO()
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "cast_output", return_value=(0, encoded, "")) as cast_output, \
+             redirect_stdout(output):
+            result = lk.run_cast(
+                ["send", "changeOwner", "Bob", "--from", alice, "--preview"],
+                config,
+            )
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("TRANSACTION PREVIEW — NOT SENT", rendered)
+        self.assertIn(f"Sender:   Alice ({alice})", rendered)
+        self.assertIn(f"Contract: Telephone ({target})", rendered)
+        self.assertIn("Function: changeOwner(address)", rendered)
+        self.assertIn(f"_owner (address — Ethereum address): Bob ({bob})", rendered)
+        self.assertIn(f"tx.origin  = Alice ({alice})", rendered)
+        self.assertIn(f"msg.sender = Alice ({alice})", rendered)
+        self.assertIn("Function selector: 0xa6f9dae1", rendered)
+        self.assertIn(encoded, rendered)
+        self.assertIn("does not execute or simulate the contract", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
+        self.assertNotIn("Preview: cast send", rendered)
+        cast_output.assert_called_once_with([
+            "cast", "calldata", "changeOwner(address)", bob,
+        ])
+
 
     def test_encode_target_call_normalizes_ether_argument(self):
         config={
