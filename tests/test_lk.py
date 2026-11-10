@@ -6076,7 +6076,11 @@ contract Pool {
         self.assertIn(recipient, rendered)
         self.assertIn("--value '2 ether'", rendered)
         self.assertNotIn(" Bob ", rendered)
-        cast_output.assert_not_called()
+        self.assertEqual(cast_output.call_count, 1)
+        self.assertEqual(
+            cast_output.call_args.args[0],
+            ["cast", "calldata", "createEscrow(address)", recipient],
+        )
 
     def test_run_cast_preview_explains_direct_telephone_call_without_debug_noise(self):
         target = "0x" + "1" * 40
