@@ -3830,7 +3830,7 @@ def _transaction_target_msg_senders(rpc, tx_hash, target, origin):
     return _trace_target_msg_senders(trace, target, origin)
 
 
-def _remember_transaction_for_project_target(config, root, tx_hash, tx_target, rpc):
+def _remember_transaction_for_project_target(config, root, tx_hash, tx_target, rpc, trace=False):
     """Update this project's default transaction only for its validated direct target."""
     if not is_tx_hash(tx_hash) or not is_address(tx_target):
         return False
@@ -3842,12 +3842,14 @@ def _remember_transaction_for_project_target(config, root, tx_hash, tx_target, r
         return False
     if str(selected_target).lower() != str(tx_target).lower():
         return False
-    audit_context.set_latest(
-        root,
-        tx_hash=tx_hash,
-        target=tx_target,
-        rpc=rpc,
-    )
+    latest = {
+        "tx_hash": tx_hash,
+        "target": tx_target,
+        "rpc": rpc,
+    }
+    if trace:
+        latest["trace"] = tx_hash
+    audit_context.set_latest(root, **latest)
     return True
 
 
@@ -3871,7 +3873,7 @@ def run_tx(config,args):
     tx_to=transaction.get("to") or ""
     abi_target=tx_to if is_address(tx_to) else config.get("target")
     abi=load_abi(abi_target,config)
-    tx_hash = transaction.get("hash", tx_hash)
+    tx_hash = transaction.get("hash") or tx_hash
     root = audit_context.foundry_project_root()
     receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
     step = walkthrough.Step(
@@ -3918,11 +3920,14 @@ def run_tx(config,args):
         project_target = project_context_target(root)
     except Exception:
         project_target = None
-    selected_target = (
-        project_target.get("address")
-        if isinstance(project_target, dict) and is_address(project_target.get("address"))
-        else active_project_target(config, root)
-    )
+    try:
+        selected_target = (
+            project_target.get("address")
+            if isinstance(project_target, dict) and is_address(project_target.get("address"))
+            else active_project_target(config, root)
+        )
+    except Exception:
+        selected_target = None
     if is_address(selected_target):
         selected_target = str(selected_target)
         target_name = "selected target"
@@ -4254,7 +4259,7 @@ def run_trace(config,args=None):
     trace_target = tx.get("to") if isinstance(tx, dict) and is_address(tx.get("to")) else None
     if trace_target:
         _remember_transaction_for_project_target(
-            config, root, tx_hash, trace_target, rpc
+            config, root, tx_hash, trace_target, rpc, trace=True
         )
     audit_context.record_tool(
         "trace",
