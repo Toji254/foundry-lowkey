@@ -830,8 +830,7 @@ class LowkeyCastTests(unittest.TestCase):
             result = lk.run_receipt(config, tx_hash=tx_hash)
         self.assertEqual(result, 0)
         run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
-        ctx.update.assert_called_once()
-        self.assertEqual(ctx.update.call_args.kwargs["latest"]["tx_hash"], tx_hash)
+        ctx.update.assert_not_called()
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
 
@@ -4032,8 +4031,7 @@ contract Pool {
         self.assertEqual(call_args[0], ["receipt", tx_hash, "--async"])
         self.assertEqual(call_args[1], {"last_tx": tx_hash})
         self.assertIsNot(call_args[1], config)
-        audit_context.update.assert_called_once()
-        self.assertEqual(audit_context.update.call_args.kwargs["latest"]["tx_hash"], tx_hash)
+        audit_context.update.assert_not_called()
         audit_context.record_tool.assert_called_once()
 
     def test_scan_records_source_triage_evidence(self):
@@ -7872,6 +7870,152 @@ def withdraw(amount: uint256):
         expected = {"total": 3, "reviews": 1, "confirmed": 1, "candidates": 1}
         with patch.object(lk.audit_context, "security_pattern_summary", return_value=expected):
             self.assertEqual(lk._security_pattern_summary(pathlib.Path("/tmp/project")), expected)
+
+
+    def test_trace_target_sender_is_the_intermediary_not_the_transaction_origin(self):
+        origin = "0x" + "1" * 40
+        intermediary = "0x" + "2" * 40
+        target = "0x" + "3" * 40
+        trace = {
+            "type": "CALL",
+            "from": origin,
+            "to": intermediary,
+            "calls": [{
+                "type": "CALL",
+                "from": intermediary,
+                "to": target,
+                "calls": [],
+            }],
+        }
+
+        self.assertEqual(
+            lk._trace_target_msg_senders(trace, target, origin),
+            [(intermediary, "CALL")],
+        )
+
+    def test_transaction_target_trace_failure_is_reported_as_unavailable(self):
+        tx_hash = "0x" + "a" * 64
+        target = "0x" + "b" * 40
+        origin = "0x" + "c" * 40
+        with patch.object(lk, "rpc_json", side_effect=RuntimeError("method not supported")):
+            self.assertIsNone(
+                lk._transaction_target_msg_senders(
+                    "http://127.0.0.1:8545", tx_hash, target, origin
+                )
+            )
+
+    def test_tx_output_explains_origin_and_intermediary_msg_sender(self):
+        origin = "0x" + "1" * 40
+        intermediary = "0x" + "2" * 40
+        target = "0x" + "3" * 40
+        tx_hash = "0x" + "4" * 64
+        transaction = {
+            "hash": tx_hash,
+            "from": origin,
+            "to": intermediary,
+            "blockNumber": "0x9",
+            "value": "0x0",
+            "input": "0x",
+        }
+        config = {
+            "actor": "alicw",
+            "target": target,
+            "target_contract": "Telephone",
+            "wallets": {},
+            "labels": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk, "cast_output", return_value=(0, json.dumps(transaction), "")), \
+                 patch.object(lk, "load_abi", return_value=[]), \
+                 patch.object(lk, "project_context_target", return_value={
+                     "address": target, "contract": "Telephone"
+                 }), \
+                 patch.object(lk, "active_project_target", return_value=target), \
+                 patch.object(lk, "_transaction_target_msg_senders", return_value=[(intermediary, "CALL")]), \
+                 patch.object(lk.walkthrough, "_receipt", return_value={"status": "0x1"}), \
+                 patch.object(lk.walkthrough, "_write_transaction_evidence"), \
+                 patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    lk.run_tx(config, [tx_hash])
+
+        rendered = output.getvalue()
+        self.assertIn("EXECUTION CONTEXT", rendered)
+        self.assertIn(f"tx.origin (transaction signer): {origin}", rendered)
+        self.assertIn(f"msg.sender at top-level recipient: {origin}", rendered)
+        self.assertIn(f"msg.sender at Telephone (CALL): {intermediary}", rendered)
+        self.assertIn("was the immediate caller to Telephone", rendered)
+        self.assertIn("tx.origin remains", rendered)
+
+    def test_project_transaction_pointer_is_not_replaced_by_another_target(self):
+        root = pathlib.Path("/tmp/lowkey-project")
+        tx_hash = "0x" + "a" * 64
+        selected_target = "0x" + "1" * 40
+        other_target = "0x" + "2" * 40
+        rpc = "http://127.0.0.1:8545"
+        with patch.object(lk, "active_project_target", return_value=selected_target), \
+             patch.object(lk.audit_context, "set_latest") as set_latest:
+            self.assertFalse(
+                lk._remember_transaction_for_project_target(
+                    {}, root, tx_hash, other_target, rpc
+                )
+            )
+            set_latest.assert_not_called()
+
+            self.assertTrue(
+                lk._remember_transaction_for_project_target(
+                    {}, root, tx_hash, selected_target, rpc
+                )
+            )
+            set_latest.assert_called_once_with(
+                root, tx_hash=tx_hash, target=selected_target, rpc=rpc
+            )
+
+    def test_lab_address_choices_do_not_reuse_alias_when_project_identity_is_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "telephone" / "Attack"
+            telephone_root = active_root.parent
+            active_root.mkdir(parents=True)
+            address = "0x" + "d" * 40
+            config = {
+                "_lab_system_root": str(active_root),
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {"CoinFlip": address},
+                "aliases": {"CoinFlip": address},
+                "project_roots": {address: str(telephone_root)},
+            }
+            inventory = [
+                {
+                    "name": "Telephone",
+                    "contract": "Telephone",
+                    "address": address,
+                    "artifact": "/tmp/telephone/out/Telephone.json",
+                },
+                {
+                    "name": "CoinFlip",
+                    "contract": "CoinFlip",
+                    "address": address,
+                    "artifact": "/tmp/telephone/out/CoinFlip.json",
+                },
+            ]
+            with patch.object(lk, "project_context_target", return_value=None), \
+                 patch.object(lk, "_project_target_entries", return_value=inventory), \
+                 patch.object(lk, "_target_entry_is_protocol", return_value=True), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                choices = lk._lab_address_choices(config, [])
+
+        expected = f"Unverified target #{address[-6:]}"
+        self.assertIn((expected, address), choices)
+        self.assertNotIn(("CoinFlip", address), choices)
+        self.assertEqual(
+            sum(1 for _name, candidate in choices if candidate.lower() == address.lower()),
+            1,
+        )
 
 if __name__ == "__main__":
     unittest.main()

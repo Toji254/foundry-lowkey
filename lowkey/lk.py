@@ -3814,15 +3814,41 @@ def _trace_target_msg_senders(trace, target, origin):
 
 
 def _transaction_target_msg_senders(rpc, tx_hash, target, origin):
-    """Best-effort callTracer lookup; unsupported RPC tracing never breaks lk tx."""
+    """Return target callers from callTracer, or None when tracing is unavailable."""
     if not rpc or not is_tx_hash(tx_hash) or not is_address(target):
-        return []
-    trace = rpc_json(
-        rpc,
-        "debug_traceTransaction",
-        [tx_hash, {"tracer": "callTracer"}],
-    )
+        return None
+    try:
+        trace = rpc_json(
+            rpc,
+            "debug_traceTransaction",
+            [tx_hash, {"tracer": "callTracer"}],
+        )
+    except Exception:
+        return None
+    if not isinstance(trace, dict):
+        return None
     return _trace_target_msg_senders(trace, target, origin)
+
+
+def _remember_transaction_for_project_target(config, root, tx_hash, tx_target, rpc):
+    """Update this project's default transaction only for its validated direct target."""
+    if not is_tx_hash(tx_hash) or not is_address(tx_target):
+        return False
+    try:
+        selected_target = active_project_target(config, root)
+    except Exception:
+        selected_target = None
+    if not is_address(selected_target):
+        return False
+    if str(selected_target).lower() != str(tx_target).lower():
+        return False
+    audit_context.set_latest(
+        root,
+        tx_hash=tx_hash,
+        target=tx_target,
+        rpc=rpc,
+    )
+    return True
 
 
 def run_tx(config,args):
@@ -3863,45 +3889,110 @@ def run_tx(config,args):
     print(f"From:  {apply_labels(transaction.get('from','Unknown'),config)}")
     print(f"To:    {apply_labels(transaction.get('to','Unknown'),config)}")
 
-    # For a mined EVM transaction, the top-level transaction sender is
-    # tx.origin. At the top-level recipient it is also msg.sender. If the
-    # selected target is reached through another contract, ask the node for
-    # callTracer frames so we can report that target's actual immediate caller.
+    # Separate the transaction signer from the caller seen by each contract.
+    # tx.origin is the transaction's originating account; msg.sender is derived
+    # from the actual call frame that entered the selected project target.
     origin = transaction.get("from")
     block_number = transaction.get("blockNumber")
     is_mined = block_number is not None and str(block_number).strip() != ""
+    print("EXECUTION CONTEXT")
+    print("-----------------")
     if is_address(origin):
         origin_label = apply_labels(origin, config)
         if not is_mined:
-            print(f"Expected tx.origin when mined: {origin_label}")
-            print("msg.sender context: unavailable until the transaction is mined")
+            print(f"tx.origin (expected transaction signer): {origin_label}")
+            print("msg.sender: unavailable until the transaction is mined.")
         else:
-            print(f"tx.origin: {origin_label}")
+            print(f"tx.origin (transaction signer): {origin_label}")
             if is_address(tx_to):
+                print(f"Top-level recipient: {apply_labels(tx_to, config)}")
                 print(f"msg.sender at top-level recipient: {origin_label}")
-            selected_target = config.get("target")
-            if is_address(selected_target):
-                target_name = str(config.get("target_contract") or "selected target")
-                if is_address(tx_to) and str(selected_target).lower() == str(tx_to).lower():
-                    print(f"msg.sender at {target_name} (direct): {origin_label}")
-                else:
-                    callers = _transaction_target_msg_senders(
-                        rpc, tx_hash, selected_target, origin
-                    )
-                    if callers:
-                        for caller, frame_type in callers:
-                            print(
-                                f"msg.sender at {target_name} ({frame_type}): "
-                                f"{apply_labels(caller, config)}"
-                            )
-                    else:
-                        print(
-                            f"msg.sender at {target_name}: not resolved "
-                            "(no matching frame in the available RPC call trace)"
-                        )
-                        print("  Run lk trace <tx-hash> for the full execution trace.")
+            else:
+                print("Top-level recipient: contract creation")
+                print(f"msg.sender during contract creation: {origin_label}")
     else:
-        print("tx.origin: unavailable (transaction sender is missing or invalid)")
+        origin_label = None
+        print("tx.origin: unavailable (transaction sender is missing or invalid).")
+
+    try:
+        project_target = project_context_target(root)
+    except Exception:
+        project_target = None
+    selected_target = (
+        project_target.get("address")
+        if isinstance(project_target, dict) and is_address(project_target.get("address"))
+        else active_project_target(config, root)
+    )
+    if is_address(selected_target):
+        selected_target = str(selected_target)
+        target_name = "selected target"
+        if (
+            isinstance(project_target, dict)
+            and str(project_target.get("address") or "").lower() == selected_target.lower()
+        ):
+            target_name = str(project_target.get("contract") or target_name)
+        elif (
+            is_address(config.get("target"))
+            and str(config.get("target")).lower() == selected_target.lower()
+            and str(config.get("target_contract") or "").strip()
+        ):
+            target_name = str(config["target_contract"]).strip()
+        target_label = f"{target_name} ({selected_target})"
+        print(f"Selected project target: {target_label}")
+
+        if not is_mined or not is_address(origin):
+            print(f"msg.sender at {target_name}: unavailable until the transaction is mined.")
+        elif is_address(tx_to) and selected_target.lower() == str(tx_to).lower():
+            print(f"msg.sender at {target_name} (direct): {origin_label}")
+            print(
+                f"Meaning: {origin_label} called {target_name} directly, so "
+                "tx.origin and msg.sender at this target are the same."
+            )
+        else:
+            callers = _transaction_target_msg_senders(
+                rpc, tx_hash, selected_target, origin
+            )
+            if callers is None:
+                print(f"msg.sender at {target_name}: unavailable (RPC call tracing is not supported or failed).")
+                print(
+                    "Meaning: Lowkey cannot determine whether this target was called "
+                    "directly or through another contract, so it will not guess."
+                )
+                print(
+                    "Try lk trace <tx-hash> or use an RPC endpoint that supports "
+                    "debug_traceTransaction with callTracer."
+                )
+            elif callers:
+                for caller, frame_type in callers:
+                    print(
+                        f"msg.sender at {target_name} ({frame_type}): "
+                        f"{apply_labels(caller, config)}"
+                    )
+                if len(callers) == 1:
+                    caller_label = apply_labels(callers[0][0], config)
+                    print(
+                        f"Meaning: {origin_label} initiated the transaction; "
+                        f"{caller_label} was the immediate caller to {target_name}. "
+                        f"tx.origin remains {origin_label}."
+                    )
+                else:
+                    print(
+                        f"Meaning: {target_name} was entered through multiple "
+                        "caller/frame combinations shown above. "
+                        f"tx.origin remains {origin_label} for the transaction."
+                    )
+            else:
+                print(f"msg.sender at {target_name}: no matching call frame found.")
+                print(
+                    "Meaning: the returned trace did not show this target being called. "
+                    "Check the transaction hash and selected project target; Lowkey "
+                    "will not infer a caller from the top-level recipient."
+                )
+    elif is_address(config.get("target")):
+        print(
+            "Selected project target: not verified for this workspace; "
+            "target-specific msg.sender was not inferred."
+        )
 
     value=transaction.get("value","0")
     if isinstance(value,str) and value.startswith("0x"):
@@ -3960,19 +4051,17 @@ def run_receipt(config, tx_hash=None, args=None):
         return fail("Error: invalid transaction ID")
     root = audit_context.foundry_project_root()
     rpc = effective_rpc(config)
-    # The caller supplied this hash explicitly or it was already resolved
-    # from this project's context. Record it locally even when RPC lookup is
-    # temporarily unavailable; clear old target metadata until verified.
-    audit_context.update(
-        root,
-        latest={"tx_hash": tx_hash, "target": None, "rpc": rpc},
-    )
+    # Explicit hashes may come from sibling workspaces. Do not replace this
+    # project's latest transaction until its active target is confirmed as
+    # the transaction's top-level destination.
     original_config = dict(config)
 
     if raw:
         tx_target = _transaction_target_for_hash(config, tx_hash, rpc)
         if tx_target:
-            audit_context.set_latest(root, tx_hash=tx_hash, target=tx_target, rpc=rpc)
+            _remember_transaction_for_project_target(
+                config, root, tx_hash, tx_target, rpc
+            )
         code = run_cast(["receipt", tx_hash, "--async"], original_config)
         audit_context.record_tool(
             "receipt",
@@ -4008,7 +4097,10 @@ def run_receipt(config, tx_hash=None, args=None):
     tx_target = tx.get("to") if is_address(tx.get("to")) else None
     if not tx_target and is_address(receipt.get("contractAddress")):
         tx_target = receipt.get("contractAddress")
-    audit_context.set_latest(root, tx_hash=tx_hash, target=tx_target, rpc=rpc)
+    if tx_target:
+        _remember_transaction_for_project_target(
+            config, root, tx_hash, tx_target, rpc
+        )
 
     status_raw = receipt.get("status")
     if status_raw in ("0x1", 1):
@@ -4160,7 +4252,10 @@ def run_trace(config,args=None):
     print(trace_text)
 
     trace_target = tx.get("to") if isinstance(tx, dict) and is_address(tx.get("to")) else None
-    audit_context.set_latest(root, tx_hash=tx_hash, trace=tx_hash, target=trace_target, rpc=rpc)
+    if trace_target:
+        _remember_transaction_for_project_target(
+            config, root, tx_hash, trace_target, rpc
+        )
     audit_context.record_tool(
         "trace",
         root,
@@ -12658,14 +12753,13 @@ def _lab_address_choices(config, accounts, rpc=None):
 
             # Global aliases can outlive the project that originally used an
             # Anvil address. Anvil reuses deterministic addresses after resets,
-            # so the first legacy alias (for example CoinFlip) must not override
-            # the validated project-context identity (for example Telephone).
-            canonical_name = str(name).strip()
+            # so a legacy alias must never win over a verified project identity.
+            canonical_name = None
 
-            # Prefer the active project's remembered identity, then consult
-            # the same project-scoped inventory used by "lk targets". A target
-            # can be discoverable from Foundry deployment records/artifacts
-            # even when its .audit/context.json entry is absent or stale.
+            # Prefer the remembered project identity, then consult the same
+            # project-scoped inventory used by "lk targets". If the inventory
+            # cannot establish one name, display an explicit unresolved label
+            # rather than pretending an old global alias is authoritative.
             try:
                 owner_target = project_context_target(owner_root)
             except Exception:
@@ -12686,24 +12780,16 @@ def _lab_address_choices(config, accounts, rpc=None):
                     if str(entry.get("address") or "").lower() == address_key
                     and _target_entry_is_protocol(owner_root, entry)
                 ]
-                if len(matching_entries) == 1:
-                    identity = matching_entries[0]
-                    discovered_name = str(
-                        identity.get("contract") or identity.get("name") or ""
-                    ).strip()
-                    if discovered_name:
-                        canonical_name = discovered_name
-                elif len(matching_entries) > 1:
-                    # Multiple project entries claiming one chain address are
-                    # not separate deployments. Keep the project alias only
-                    # when the inventory cannot establish one canonical name.
-                    canonical_names = {
-                        str(entry.get("contract") or entry.get("name") or "").strip()
-                        for entry in matching_entries
-                    }
-                    canonical_names.discard("")
-                    if len(canonical_names) == 1:
-                        canonical_name = next(iter(canonical_names))
+                canonical_names = {
+                    str(entry.get("contract") or entry.get("name") or "").strip()
+                    for entry in matching_entries
+                }
+                canonical_names.discard("")
+                if len(canonical_names) == 1:
+                    canonical_name = next(iter(canonical_names))
+
+            if not canonical_name:
+                canonical_name = f"Unverified target #{str(address)[-6:]}"
 
             if not _lab_remembered_contract_is_live(config, str(address), rpc):
                 continue
@@ -21019,7 +21105,17 @@ COMMAND_HELP = {
         },
         related=["lk receipt", "lk trace", "lk logs"],
     ),
-    "tx": _help_entry("Inspect and decode a transaction.", "lk tx [tx]", "lk tx 0x...", "Use it when you have a transaction hash and want call/receipt context.", related=["lk receipt", "lk trace", "lk logs"]),
+    "tx": _help_entry(
+        "Inspect and decode a transaction, including tx.origin and trace-derived msg.sender context.",
+        "lk tx [tx]",
+        "lk tx 0x...",
+        "Without a hash, Lowkey inspects the latest transaction saved for the current project and validated target. Pass an explicit hash to inspect a transaction from another workspace; this does not replace the current project's default transaction unless the transaction directly targets this project's validated target.",
+        forms=[
+            ("lk tx", "Inspect the latest transaction saved for this project and target.", "lk tx"),
+            ("lk tx <transaction-hash>", "Inspect a specific transaction, including the immediate caller at the selected project target when the RPC provides a call trace.", "lk tx 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ],
+        related=["lk receipt", "lk trace", "lk logs"],
+    ),
     "receipt": _help_entry(
         "Show the important result of a transaction without dumping the full raw receipt.",
         "lk receipt [tx] [--raw]",
