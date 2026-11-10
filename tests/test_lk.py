@@ -8022,7 +8022,7 @@ def withdraw(amount: uint256):
         self.assertIn(f"Top-level recipient: attackTelephone ({intermediary})", rendered)
         self.assertIn(f"msg.sender at top-level recipient: {origin}", rendered)
         self.assertIn(f"msg.sender at Telephone (CALL): attackTelephone ({intermediary})", rendered)
-        self.assertIn("was the immediate caller to Telephone", rendered)
+        self.assertIn(f"attackTelephone ({intermediary}) was the immediate caller to Telephone", rendered)
         self.assertIn("tx.origin remains", rendered)
 
     def test_project_transaction_pointer_is_not_replaced_by_another_target(self):
