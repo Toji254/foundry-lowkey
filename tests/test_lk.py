@@ -7911,6 +7911,7 @@ def withdraw(amount: uint256):
             first = "0x" + "2" * 40
             second = "0x" + "3" * 40
             conflicting = "0x" + "4" * 40
+            stale = "0x" + "5" * 40
             remembered = [
                 {
                     "name": "Helper",
@@ -7942,13 +7943,19 @@ def withdraw(amount: uint256):
                     "root": active_root / "OtherOld",
                     "artifact": str(active_root / "OtherOld" / "out" / "WrongIdentity.json"),
                 },
+                {
+                    "name": "StaleContract",
+                    "address": stale,
+                    "root": active_root / "Stale",
+                    "artifact": str(active_root / "Stale" / "out" / "StaleContract.json"),
+                },
             ]
             config = {"target": target, "target_contract": "Telephone", "wallets": {}, "labels": {}}
             rpc = "http://127.0.0.1:8545"
 
             def live_check(_config, address, checked_rpc, artifact_path=None):
                 self.assertEqual(checked_rpc, rpc)
-                return address.lower() != conflicting.lower()
+                return address.lower() != stale.lower()
 
             with patch.object(lk, "_lab_workspace_remembered_targets", return_value=remembered), \
                  patch.object(lk, "active_project_target", return_value=target), \
@@ -7961,8 +7968,10 @@ def withdraw(amount: uint256):
         self.assertEqual(display_config["labels"][first], "Helper (Attack)")
         self.assertEqual(display_config["labels"][second], "Helper (Other)")
         self.assertNotIn(conflicting, display_config["labels"])
+        self.assertNotIn(stale, display_config["labels"])
         self.assertNotIn(target, display_config["labels"])
         self.assertEqual(config["labels"], {})
+
     def test_tx_output_explains_origin_and_intermediary_msg_sender(self):
         origin = "0x" + "1" * 40
         intermediary = "0x" + "2" * 40
