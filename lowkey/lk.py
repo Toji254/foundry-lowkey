@@ -1164,6 +1164,19 @@ def target_aliases(config, root=None):
     for name, addr in names:
         if not is_address(addr):
             continue
+        # A project-scoped target is authoritative for its address in this
+        # project. Local chains (especially Anvil) reuse deterministic
+        # deployment addresses, so a global alias left by another project can
+        # otherwise misidentify the current contract or resolve an old name to
+        # a different contract. The legacy config does not retain per-alias
+        # chain provenance, so fail closed on conflicting names for this
+        # address and keep only the verified project-context identity.
+        if (
+            context_identity
+            and str(addr).lower() == str(context_address).lower()
+            and str(name).strip().lower() != str(context_name).strip().lower()
+        ):
+            continue
         owner_root = owners_by_address.get(str(addr).lower())
 
         artifact = config.get("abi_paths", {}).get(addr)

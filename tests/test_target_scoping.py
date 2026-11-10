@@ -43,6 +43,52 @@ class TargetScopingTests(unittest.TestCase):
                 {"curve": "0x1111111111111111111111111111111111111111"},
             )
 
+    def test_project_context_identity_wins_when_anvil_reuses_a_global_alias_address(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "telephone"
+            root.mkdir()
+            address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            context_target = {
+                "address": address,
+                "contract": "Telephone",
+                "artifact": str(root / "out" / "telephone.sol" / "Telephone.json"),
+                "source": "project-lab",
+            }
+            config = {
+                "aliases": {
+                    "CoinFlip": address,
+                    "Telephone": address,
+                },
+                "targets": {
+                    "CoinFlip": address,
+                    "Telephone": address,
+                },
+                "project_roots": {address: str(root)},
+                "target_owners": {address: str(root)},
+                "abi_paths": {},
+            }
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
+                 patch.object(lk, "project_context_target", return_value=context_target), \\
+                 patch.object(
+                     lk,
+                     "_project_target_entries",
+                     return_value=[{
+                         "name": "Telephone",
+                         "contract": "Telephone",
+                         "address": address,
+                     }],
+                 ), \\
+                 patch.object(lk, "_target_entry_is_protocol", return_value=True):
+                self.assertEqual(lk.target_aliases(config, root), {"Telephone": address})
+                self.assertEqual(lk.resolve_target_ref(config, "Telephone", root), address)
+                self.assertIsNone(lk.resolve_target_ref(config, "CoinFlip", root))
+                self.assertEqual(
+                    lk.apply_labels(address, config),
+                    f"Telephone ({address})",
+                )
+
+
     def test_project_target_list_hides_test_mock_alias_even_when_owned_by_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
