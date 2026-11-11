@@ -7050,7 +7050,7 @@ def run_cast(args,config,capture=False):
         _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
         return 0
     if cast_cmd == "send" and (confirm or (config.get("confirm_sends") and not bypass)):
-        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor)
+        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
         if answer not in {"y","yes"}: print("Transaction cancelled."); return 0
