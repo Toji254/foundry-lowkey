@@ -6157,7 +6157,7 @@ contract Pool {
         with patch.object(lk, "load_abi", return_value=abi), \
              patch.object(lk, "abi_selector", return_value="0xa6f9dae1"), \
              patch.object(lk, "decode_abi_input", return_value=bob), \
-             patch.object(lk, "cast_output", return_value=(0, "changeOwner(address)\\n[000]: " + data[10:], "")), \
+             patch.object(lk, "cast_output", return_value=(0, "changeOwner(address)\n[000]: " + data[10:], "")), \
              redirect_stdout(io.StringIO()) as output:
             result = lk.run_calldata(config, [data])
 
@@ -6173,7 +6173,7 @@ contract Pool {
 
     def test_run_disasm_explains_opcodes_and_preserves_raw_listing(self):
         bytecode = "0x6000353314601457"
-        disassembly = "PUSH1 0x00\\nCALLDATALOAD\\nCALLER\\nEQ\\nJUMPI\\nSLOAD\\nSSTORE"
+        disassembly = "PUSH1 0x00\nCALLDATALOAD\nCALLER\nEQ\nJUMPI\nSLOAD\nSSTORE"
         config = {"target": "0x" + "1" * 40, "target_contract": "Telephone"}
         with patch.object(lk, "run_cast", return_value=lk.CommandResult(disassembly, 0)) as run_cast, \
              redirect_stdout(io.StringIO()) as output:
