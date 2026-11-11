@@ -6304,6 +6304,31 @@ contract Pool {
         self.assertIn("balance = 123 units (unit not specified by ABI)", rendered)
         self.assertIn("not automatically proof that storage changed", rendered)
 
+    def test_common_cast_outputs_include_plain_english_meaning_and_raw_evidence(self):
+        target = "0x" + "1" * 40
+        config = {"target": target, "target_contract": "Telephone", "labels": {}}
+
+        with redirect_stdout(io.StringIO()) as bytecode_output:
+            self.assertTrue(lk._print_cast_result_guide("code", "0x60016002", config, target))
+        bytecode_text = bytecode_output.getvalue()
+        self.assertIn("Bytecode size: 4 bytes", bytecode_text)
+        self.assertIn("not the original Solidity source", bytecode_text)
+        self.assertIn("lk disasm", bytecode_text)
+        self.assertIn("0x60016002", bytecode_text)
+
+        with redirect_stdout(io.StringIO()) as gas_output:
+            self.assertTrue(lk._print_cast_result_guide("estimate", "0x5208", config, target))
+        gas_text = gas_output.getvalue()
+        self.assertIn("Estimated gas units: 21,000", gas_text)
+        self.assertIn("not an ETH amount", gas_text)
+
+        with redirect_stdout(io.StringIO()) as nonce_output:
+            self.assertTrue(lk._print_cast_result_guide("nonce", "0x3", config, target))
+        nonce_text = nonce_output.getvalue()
+        self.assertIn("Next nonce: 3", nonce_text)
+        self.assertIn("not the total number of transactions ever sent", nonce_text)
+
+
     def test_encode_target_call_normalizes_ether_argument(self):
         config={
             "target":"0x"+"1"*40,
