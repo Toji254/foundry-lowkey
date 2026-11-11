@@ -480,8 +480,11 @@ class CliConsistencyTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn(f"Preview: cast send {recipient} --value '2 ether'", rendered)
-        self.assertIn("--rpc-url http://127.0.0.1:8545", rendered)
+        self.assertIn("TRANSACTION PREVIEW — NOT SENT", rendered)
+        self.assertIn(f"Recipient: {recipient}", rendered)
+        self.assertIn("direct ETH transfer (no contract function call)", rendered)
+        self.assertIn("ETH attached: 2 ether", rendered)
+        self.assertNotIn("Preview: cast send", rendered)
         cast_output.assert_not_called()
 
     def test_actor_name_with_eth_value_resolves_as_direct_transfer_recipient(self):
@@ -508,7 +511,11 @@ class CliConsistencyTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        self.assertIn(f"Preview: cast send {recipient} --value '2 ether'", output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn("TRANSACTION PREVIEW — NOT SENT", rendered)
+        self.assertIn(f"Recipient: Alice ({recipient})", rendered)
+        self.assertIn("direct ETH transfer (no contract function call)", rendered)
+        self.assertIn("ETH attached: 2 ether", rendered)
         cast_output.assert_not_called()
 
     def test_unqualified_eth_send_to_stale_selected_target_remains_blocked(self):
