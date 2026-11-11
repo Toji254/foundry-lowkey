@@ -4556,28 +4556,81 @@ def decode_event_log(config, log, target=None):
     return None
 
 def run_logs(config,args):
-    args=list(args); decode="--decode" in args
-    if decode: args.remove("--decode")
-    if not decode: run_cast(["logs"]+args,config); return
+    args=list(args)
+    decode="--decode" in args
+    if decode:
+        args.remove("--decode")
+    if not decode:
+        result = run_cast(["logs"] + args, config, capture=True)
+        result_code = getattr(result, "code", result if isinstance(result, int) else 1)
+        raw_output = str(getattr(result, "text", str(result or "")))
+        if result_code != 0:
+            if raw_output:
+                print(raw_output, file=sys.stderr)
+            return result_code
+        print("EVENT LOGS — RAW VIEW")
+        print("=====================")
+        print("Each log records an event emitted by a contract during transaction execution.")
+        print("  address: contract that emitted the event")
+        print("  topics[0]: event-signature hash; topics[1..]: indexed event fields")
+        print("  data: ABI-encoded non-indexed event fields")
+        print("Use lk logs --decode with the same filters to decode fields against loaded ABIs.")
+        print("")
+        print("RAW LOG OUTPUT")
+        print("--------------")
+        print(raw_output)
+        return result_code
+
     command=["cast","logs","--json"]+args
     rpc=effective_rpc(config)
-    if rpc: command.extend(["--rpc-url",rpc])
+    if rpc:
+        command.extend(["--rpc-url",rpc])
     code,output,error=cast_output(command)
     if code!=0:
         print(error or "cast logs failed",file=sys.stderr)
         return record_status(code)
-    try: payload=json.loads(output)
-    except json.JSONDecodeError: print(output); return
+    try:
+        payload=json.loads(output)
+    except json.JSONDecodeError:
+        print(output)
+        return 0
     logs=payload if isinstance(payload,list) else payload.get("logs",payload.get("result",[]))
-    if not isinstance(logs,list): print(output); return
-    if not logs: print("No logs found."); return
-    for log in logs:
-        print(apply_labels(json.dumps(log,indent=2), config))
-        event=decode_event_log(config,log)
+    if not isinstance(logs,list):
+        print(output)
+        return 0
+    if not logs:
+        print("No logs found for these filters.")
+        return 0
+
+    print("DECODED EVENT LOGS")
+    print("==================")
+    print(f"Matching log entries: {len(logs)}")
+    print("Decoded fields are matched against the ABI for each log's emitting contract.")
+    print("")
+    for index,log in enumerate(logs,1):
+        print(f"LOG {index}/{len(logs)}")
+        if isinstance(log,dict):
+            emitter=log.get("address")
+            if emitter:
+                print(f"  Emitter: {apply_labels(str(emitter),config)}")
+            if log.get("transactionHash"):
+                print(f"  Transaction: {log.get('transactionHash')}")
+            if log.get("blockNumber") is not None:
+                print(f"  Block: {log.get('blockNumber')}")
+        event=decode_event_log(config,log) if isinstance(log,dict) else None
         if event:
-            print(
-                f"Event: {event[0]}\nDecoded: {apply_labels(event[1],config)}"
-            )
+            print(f"  Event: {event[0]}")
+            for line in apply_labels(event[1],config).splitlines():
+                if line.strip():
+                    print(f"    {line.strip()}")
+        else:
+            print("  ABI decode: unavailable (no matching event ABI or the log could not be decoded)")
+        print("  Raw fields:")
+        print(apply_labels(json.dumps(log,indent=2),config))
+        print("")
+    print("How to read it: indexed fields are stored in topics and can be filtered efficiently; non-indexed fields are encoded in data.")
+    return 0
+
 def _known_address_identities(config):
     """Return known address -> human identity mappings for interactive output."""
     config = config if isinstance(config, dict) else {}
@@ -14686,12 +14739,36 @@ def run_token(config,args):
     for action in ["name","symbol","decimals","total-supply"]: run_cast(["erc20-token",action,args[0]],config)
 
 def run_decode(config,args):
-    if len(args)<2: return fail("Usage: lk decode <function> <return-data>")
+    if len(args)<2:
+        return fail("Usage: lk decode <function> <return-data>")
     matches=matching_functions(load_abi(config.get("target"),config),args[0])
-    if len(matches)!=1: print("Error: function must resolve to exactly one ABI entry."); return
+    if len(matches)!=1:
+        print("Error: function must resolve to exactly one ABI entry.")
+        return 2
     item=matches[0]
-    if not item.get("outputs"): print("Function has no outputs."); return
-    run_cast(["decode-abi",format_output_signature(item),args[1]],config)
+    if not item.get("outputs"):
+        print("Function has no outputs.")
+        return 0
+
+    result=run_cast(["decode-abi",format_output_signature(item),args[1]],config,capture=True)
+    result_code=getattr(result,"code",result if isinstance(result,int) else 1)
+    decoded=str(getattr(result,"text",str(result or ""))).strip()
+    if result_code!=0:
+        if decoded:
+            print(decoded,file=sys.stderr)
+        return result_code
+
+    print("DECODED CONTRACT RETURN")
+    print("=======================")
+    print(f"Function: {format_signature(item)}")
+    print("These are values returned by this ABI signature; they are not automatically proof that storage changed.")
+    formatted=format_human_abi_return(item,decoded,config,load_abi(config.get("target"),config))
+    for line in str(formatted or "").splitlines():
+        if line.strip():
+            print(line)
+    print("")
+    print("Raw decoded values are shown above. Use the transaction receipt/trace when you need evidence of a particular on-chain execution.")
+    return 0
 
 def decode_event_values(event,data,topics):
     if not topics or len(topics[0])!=66:
@@ -16910,6 +16987,26 @@ def run_calldata(config,args):
     print("  Use lk selectors to compare selectors found in deployed bytecode against the loaded ABI.")
     return 0
 
+def _txpool_count(value):
+    """Count entries in common txpool account -> nonce -> transaction shapes."""
+    if isinstance(value, dict):
+        total = 0
+        for nested in value.values():
+            if isinstance(nested, (dict, list, tuple)):
+                total += len(nested)
+            elif nested is not None:
+                total += 1
+        return total
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    return 0
+
+
+def _txpool_count_display(value):
+    parsed = _hex_to_int(value)
+    return str(parsed) if parsed is not None else str(value)
+
+
 def run_txpool(config,args):
     rpc=effective_rpc(config)
     if not rpc:
@@ -16932,11 +17029,39 @@ def run_txpool(config,args):
     if mode=="status":
         pending=result.get("pending","?") if isinstance(result,dict) else "?"
         queued=result.get("queued","?") if isinstance(result,dict) else "?"
-        print("TXPOOL")
-        print(f"  pending: {pending}")
-        print(f"  queued:  {queued}")
+        print("TRANSACTION POOL")
+        print("================")
+        print(f"Pending: {_txpool_count_display(pending)}")
+        print(f"Queued:  {_txpool_count_display(queued)}")
+        print("")
+        print("How to read this:")
+        print("  Pending transactions are waiting to be included in a block.")
+        print("  Queued transactions are known to the node but cannot yet be processed in nonce order.")
+        print("  These counts describe this RPC node's local mempool, not the entire network.")
         return 0
 
+    if not isinstance(result, dict):
+        print("Raw transaction-pool response:")
+        print(json.dumps(result,indent=2))
+        print("Lowkey could not identify pending/queued buckets in this RPC response.")
+        return 0
+
+    pending = result.get("pending", {})
+    queued = result.get("queued", {})
+    pending_count = _txpool_count(pending)
+    queued_count = _txpool_count(queued)
+    print("TRANSACTION POOL CONTENT")
+    print("=======================")
+    print(f"Pending transactions: {pending_count}")
+    print(f"Queued transactions:  {queued_count}")
+    print("")
+    print("How to read this:")
+    print("  Each account is grouped by nonce. A nonce is the account's transaction sequence number.")
+    print("  Pending entries are ready for inclusion; queued entries are waiting for an earlier nonce or another prerequisite.")
+    print("  This is one node's mempool view, not a canonical on-chain record.")
+    print("")
+    print("RAW TXPOOL DATA")
+    print("---------------")
     print(json.dumps(result,indent=2))
     return 0
 
