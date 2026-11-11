@@ -14872,6 +14872,11 @@ def decode_event_values(event,data,topics):
     if len(topics)-1!=len(indexed):
         return fail(f"Error: expected {len(indexed)} indexed topics, received {len(topics)-1}.")
     print(f"Event: {format_signature(event)}")
+    print("How to read this event:")
+    print("  topic0 is the hash of the event signature and identifies the event type.")
+    print("  Indexed fields are stored in topics[1..] and can be searched by exact topic value.")
+    print("  Non-indexed fields are ABI-decoded from data.")
+    print("  Dynamic indexed values such as string/bytes are stored as hashes; their original contents cannot be recovered from the topic alone.")
     status=0
     for item,topic in zip(indexed,topics[1:]):
         value=topic
