@@ -133,6 +133,39 @@ class TransactionOriginContextTests(unittest.TestCase):
         self.assertIn(self.origin, rendered)
         self.assertIn("msg.sender at Telephone (direct):", rendered)
 
+    def test_transaction_value_is_shown_in_eth_and_wei(self):
+        tx = {
+            "hash": self.tx_hash,
+            "from": self.origin,
+            "to": self.target,
+            "value": hex(10**18),
+            "blockNumber": "0xa",
+            "input": "0x",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+            config = {
+                "target": self.target,
+                "target_contract": "Telephone",
+                "actor": "Alice",
+                "wallets": {},
+                "labels": {},
+            }
+            with patch.object(lk, "cast_output", return_value=(0, json.dumps(tx), "")), \
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk.walkthrough, "_receipt", return_value=None), \
+                 patch.object(lk.walkthrough, "_write_transaction_evidence"), \
+                 patch.object(lk.walkthrough, "_transaction_link", return_value=self.tx_hash), \
+                 patch.object(lk, "load_abi", return_value=[]), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(temp_dir)), \
+                 redirect_stdout(output):
+                lk.run_tx(config, [self.tx_hash])
+
+        rendered = output.getvalue()
+        self.assertIn("ETH value: 1 ETH (1,000,000,000,000,000,000 wei)", rendered)
+        self.assertIn("native ETH attached to the top-level transaction", rendered)
+
+
     def test_intermediary_transaction_uses_call_trace_for_target_sender(self):
         tx = {
             "hash": self.tx_hash,
