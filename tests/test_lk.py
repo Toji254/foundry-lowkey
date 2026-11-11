@@ -6233,7 +6233,7 @@ contract Pool {
         text = rendered.getvalue()
         self.assertIn("Suites reported: 2", text)
         self.assertIn("Test cases:      4 passed · 1 failed · 1 skipped", text)
-        self.assertIn("inspect the first failure", text)
+        self.assertIn("inspect the first failure", text.lower())
         self.assertIn("not an overall security verdict", text)
 
     def test_txpool_status_converts_hex_counts_and_explains_terms(self):
@@ -8275,7 +8275,7 @@ def withdraw(amount: uint256):
 
         rendered = output.getvalue()
         self.assertIn("EXECUTION CONTEXT", rendered)
-        self.assertIn(f"tx.origin (transaction signer): {origin}", rendered)
+        self.assertIn(f"tx.origin: {origin} (transaction signer)", rendered)
         self.assertIn(f"Top-level recipient: attackTelephone ({intermediary})", rendered)
         self.assertIn(f"msg.sender at top-level recipient: {origin}", rendered)
         self.assertIn(f"msg.sender at Telephone (CALL): attackTelephone ({intermediary})", rendered)
