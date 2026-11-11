@@ -1391,7 +1391,9 @@ class LowkeyCastTests(unittest.TestCase):
                 choices = lk._lab_address_choices(config, [actor])
 
             self.assertIn(("anvil:0", actor), choices)
-            self.assertIn(("Fallout", live_contract), choices)
+            # A legacy global alias is not enough to establish project identity.
+            # Lowkey may offer the address, but must label it as unverified.
+            self.assertIn((f"Unverified target #{live_contract[-6:]}", live_contract), choices)
             self.assertNotIn(("OldTarget", stale_contract), choices)
             self.assertEqual(
                 sum(1 for _name, address in choices if address.lower() == live_contract.lower()),
@@ -6028,7 +6030,7 @@ contract Pool {
              patch.object(lk, "cast_output") as cast_output, \
              redirect_stdout(output):
             result = lk.run_cast(
-                ["send", "createEscrow", "1", "ether", "Bob", "--eth", "2", "--confirm", "--preview", "--verbose"],
+                ["send", "createEscrow", "1", "ether", "Bob", "--eth", "2", "--confirm", "--preview"],
                 config,
             )
 
@@ -6066,7 +6068,7 @@ contract Pool {
              patch.object(lk, "cast_output") as cast_output, \
              redirect_stdout(output):
             result = lk.run_cast(
-                ["send", "createEscrow", "--value", "2 ether", "Bob", "--preview", "--verbose"],
+                ["send", "createEscrow", "--value", "2 ether", "Bob", "--preview"],
                 config,
             )
 
@@ -6132,6 +6134,60 @@ contract Pool {
         cast_output.assert_called_once_with([
             "cast", "calldata", "changeOwner(address)", bob,
         ])
+
+
+    def test_run_calldata_explains_selector_arguments_and_call_context(self):
+        target = "0x" + "1" * 40
+        alice = "0x" + "2" * 40
+        bob = "0x" + "3" * 40
+        data = "0xa6f9dae1" + "0" * 24 + bob[2:]
+        abi = [{
+            "type": "function",
+            "name": "changeOwner",
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }]
+        config = {
+            "target": target,
+            "target_contract": "Telephone",
+            "wallets": {"Alice": {"address": alice}, "Bob": {"address": bob}},
+            "labels": {alice: "Alice", bob: "Bob"},
+        }
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "abi_selector", return_value="0xa6f9dae1"), \
+             patch.object(lk, "decode_abi_input", return_value=bob), \
+             patch.object(lk, "cast_output", return_value=(0, "changeOwner(address)\\n[000]: " + data[10:], "")), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_calldata(config, [data])
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("CALLDATA INSPECTION", rendered)
+        self.assertIn("Total size:        36 bytes", rendered)
+        self.assertIn("Function selector: 0xa6f9dae1", rendered)
+        self.assertIn("Argument payload:  32 bytes", rendered)
+        self.assertIn(f"_owner (address) = Bob ({bob})", rendered)
+        self.assertIn("Calldata does not choose the caller", rendered)
+        self.assertIn("STRUCTURAL DECODE", rendered)
+
+    def test_run_disasm_explains_opcodes_and_preserves_raw_listing(self):
+        bytecode = "0x6000353314601457"
+        disassembly = "PUSH1 0x00\\nCALLDATALOAD\\nCALLER\\nEQ\\nJUMPI\\nSLOAD\\nSSTORE"
+        config = {"target": "0x" + "1" * 40, "target_contract": "Telephone"}
+        with patch.object(lk, "run_cast", return_value=lk.CommandResult(disassembly, 0)) as run_cast, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_disasm(config, [bytecode])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["disassemble", bytecode], config, capture=True)
+        rendered = output.getvalue()
+        self.assertIn("BYTECODE DISASSEMBLY: Telephone", rendered)
+        self.assertIn("CALLDATALOAD: Reads a 32-byte word", rendered)
+        self.assertIn("CALLER: Pushes the immediate caller", rendered)
+        self.assertIn("SSTORE: Writes a value to persistent contract storage.", rendered)
+        self.assertIn("RAW OPCODE LISTING", rendered)
+        self.assertIn(disassembly, rendered)
 
 
     def test_encode_target_call_normalizes_ether_argument(self):
