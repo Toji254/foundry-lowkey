@@ -6190,6 +6190,52 @@ contract Pool {
         self.assertIn(disassembly, rendered)
 
 
+    def test_run_encode_explains_what_the_encoded_bytes_represent(self):
+        target = "0x" + "1" * 40
+        bob = "0x" + "2" * 40
+        encoded = "0xa6f9dae1" + "0" * 24 + bob[2:]
+        abi = [{
+            "type": "function",
+            "name": "changeOwner",
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }]
+        config = {
+            "target": target,
+            "wallets": {"Bob": {"address": bob}},
+            "labels": {bob: "Bob"},
+        }
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "run_cast", return_value=lk.CommandResult(encoded, 0)) as run_cast, \
+             patch.object(lk, "decode_abi_input", return_value=bob), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_encode(config, ["changeOwner", "Bob"])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(
+            ["calldata", "changeOwner(address)", "Bob"], config, capture=True
+        )
+        rendered = output.getvalue()
+        self.assertIn("ABI ENCODING — NOT SENT", rendered)
+        self.assertIn("Function selector: 0xa6f9dae1", rendered)
+        self.assertIn(f"_owner (address) = Bob ({bob})", rendered)
+        self.assertIn(encoded, rendered)
+        self.assertIn("does not send a transaction", rendered)
+
+    def test_forge_test_summary_explains_counts_without_claiming_security_completeness(self):
+        output = (
+            "Suite result: ok. 3 passed; 0 failed; 1 skipped; finished in 2.1ms\n"
+            "Suite result: FAILED. 1 passed; 1 failed; 0 skipped; finished in 1.1ms\n"
+        )
+        with redirect_stdout(io.StringIO()) as rendered:
+            lk._print_forge_test_result_summary(output, 1)
+        text = rendered.getvalue()
+        self.assertIn("Suites reported: 2", text)
+        self.assertIn("Test cases:      4 passed · 1 failed · 1 skipped", text)
+        self.assertIn("inspect the first failure", text)
+        self.assertIn("not an overall security verdict", text)
+
     def test_encode_target_call_normalizes_ether_argument(self):
         config={
             "target":"0x"+"1"*40,
