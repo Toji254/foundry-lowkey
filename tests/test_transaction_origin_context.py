@@ -120,6 +120,8 @@ class TransactionOriginContextTests(unittest.TestCase):
             }
             with patch.object(lk, "cast_output", return_value=(0, json.dumps(tx), "")), \
                  patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk, "project_context_target", return_value={"address": self.target, "contract": "Telephone"}), \
+                 patch.object(lk, "active_project_target", return_value=self.target), \
                  patch.object(lk.walkthrough, "_receipt", return_value=None), \
                  patch.object(lk.walkthrough, "_write_transaction_evidence"), \
                  patch.object(lk.walkthrough, "_transaction_link", return_value=self.tx_hash), \
@@ -199,6 +201,8 @@ class TransactionOriginContextTests(unittest.TestCase):
             }
             with patch.object(lk, "cast_output", return_value=(0, json.dumps(tx), "")), \
                  patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk, "project_context_target", return_value={"address": self.target, "contract": "Telephone"}), \
+                 patch.object(lk, "active_project_target", return_value=self.target), \
                  patch.object(lk, "rpc_json", return_value=trace) as rpc_call, \
                  patch.object(lk.walkthrough, "_receipt", return_value=None), \
                  patch.object(lk.walkthrough, "_write_transaction_evidence"), \
