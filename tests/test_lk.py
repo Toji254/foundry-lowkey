@@ -6236,6 +6236,74 @@ contract Pool {
         self.assertIn("inspect the first failure", text)
         self.assertIn("not an overall security verdict", text)
 
+    def test_txpool_status_converts_hex_counts_and_explains_terms(self):
+        config = {"rpc": "http://127.0.0.1:8545"}
+        with patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
+             patch.object(lk, "rpc_json", return_value={"pending": "0x2", "queued": "0x1"}), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_txpool(config, ["status"])
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("Pending: 2", rendered)
+        self.assertIn("Queued:  1", rendered)
+        self.assertIn("local mempool", rendered)
+
+    def test_txpool_content_summarizes_counts_and_keeps_raw_json(self):
+        config = {"rpc": "http://127.0.0.1:8545"}
+        payload = {
+            "pending": {"0x" + "1" * 40: {"0x0": {"hash": "0x" + "a" * 64}, "0x1": {"hash": "0x" + "b" * 64}}},
+            "queued": {"0x" + "2" * 40: {"0x3": {"hash": "0x" + "c" * 64}}},
+        }
+        with patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
+             patch.object(lk, "rpc_json", return_value=payload), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_txpool(config, ["content"])
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("Pending transactions: 2", rendered)
+        self.assertIn("Queued transactions:  1", rendered)
+        self.assertIn("RAW TXPOOL DATA", rendered)
+        self.assertIn("transaction sequence number", rendered)
+
+    def test_raw_logs_explain_topics_and_event_data(self):
+        config = {}
+        raw = "address: 0x1111...\\ntopics: [0xaaaa...]\\ndata: 0xbbbb..."
+        with patch.object(lk, "run_cast", return_value=lk.CommandResult(raw, 0)) as run_cast, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_logs(config, [])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["logs"], config, capture=True)
+        rendered = output.getvalue()
+        self.assertIn("address: contract that emitted the event", rendered)
+        self.assertIn("topics[0]: event-signature hash", rendered)
+        self.assertIn("data: ABI-encoded non-indexed event fields", rendered)
+        self.assertIn(raw, rendered)
+
+    def test_decode_return_data_uses_abi_output_names(self):
+        target = "0x" + "1" * 40
+        item = {
+            "type": "function",
+            "name": "balanceOf",
+            "inputs": [{"name": "account", "type": "address"}],
+            "outputs": [{"name": "balance", "type": "uint256"}],
+            "stateMutability": "view",
+        }
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=[item]), \
+             patch.object(lk, "run_cast", return_value=lk.CommandResult("123", 0)) as run_cast, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_decode(config, ["balanceOf", "0x" + "0" * 64])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["decode-abi", "balanceOf(address)(uint256)", "0x" + "0" * 64], config, capture=True)
+        rendered = output.getvalue()
+        self.assertIn("DECODED CONTRACT RETURN", rendered)
+        self.assertIn("balance = 123 units (unit not specified by ABI)", rendered)
+        self.assertIn("not automatically proof that storage changed", rendered)
+
     def test_encode_target_call_normalizes_ether_argument(self):
         config={
             "target":"0x"+"1"*40,
