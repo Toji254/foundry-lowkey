@@ -3289,7 +3289,10 @@ def run_signature(config, args):
 
     code, out, err = cast_output(["cast", "sig", signature])
     if out:
-        print(out)
+        selector = str(out).splitlines()[0].strip()
+        print(f"Function selector: {selector}")
+        print("Meaning: this is the first 4 bytes of the Keccak-256 hash of the canonical function signature.")
+        print("The selector helps the EVM dispatcher choose a function; it is not a secret or an access-control check.")
     if err:
         print(err, file=sys.stderr)
     if code != 0:
@@ -3974,6 +3977,84 @@ def _transaction_display_config(config, root, rpc):
     display_config["labels"] = labels
     return display_config
 
+
+
+def _format_decoded_abi_arguments(function_item, decoded, config, indent="  "):
+    """Render ABI-decoded inputs with parameter names when the decode is unambiguous."""
+    inputs = function_item.get("inputs", []) if isinstance(function_item, dict) else []
+    if not inputs:
+        return []
+    values = _decoded_abi_output_values(decoded, inputs)
+    if len(values) != len(inputs):
+        return [f"{indent}Decoded values: {apply_labels(str(decoded or '').strip(), config)}"]
+    rendered = []
+    for index, (parameter, raw_value) in enumerate(zip(inputs, values), 1):
+        item_type = canonical_type(parameter)
+        label = str(parameter.get("name") or f"argument {index}")
+        value = _humanize_abi_scalar(raw_value, item_type, parameter.get("name"), config)
+        rendered.append(f"{indent}{label} ({item_type}) = {value}")
+    return rendered
+
+
+_EVM_OPCODE_EXPLANATIONS = {
+    "CALLDATALOAD": "Reads a 32-byte word from the transaction's input data (calldata).",
+    "CALLDATASIZE": "Returns the byte length of the transaction's input data.",
+    "CALLDATACOPY": "Copies part of calldata into EVM memory.",
+    "CALLER": "Pushes the immediate caller of this execution frame: Solidity msg.sender.",
+    "ORIGIN": "Pushes the transaction's original signer: Solidity tx.origin.",
+    "CALLVALUE": "Pushes the ETH amount attached to this call: Solidity msg.value.",
+    "SLOAD": "Reads a value from persistent contract storage.",
+    "SSTORE": "Writes a value to persistent contract storage.",
+    "EQ": "Compares two stack values and pushes 1 when they are equal.",
+    "ISZERO": "Pushes 1 when the stack value is zero; often part of a conditional check.",
+    "JUMP": "Moves execution to another bytecode position.",
+    "JUMPI": "Jumps only when its condition is non-zero; often implements an if/require branch.",
+    "CALL": "Calls another account or contract, creating a new call frame.",
+    "STATICCALL": "Calls another contract in read-only mode; state writes are prohibited.",
+    "DELEGATECALL": "Runs another contract's code using the caller's storage and execution context.",
+    "RETURN": "Ends this execution frame successfully and returns data.",
+    "REVERT": "Stops this execution frame and reverts its state changes.",
+    "MLOAD": "Reads a 32-byte word from temporary EVM memory.",
+    "MSTORE": "Writes a 32-byte word into temporary EVM memory.",
+    "KECCAK256": "Hashes a memory region; Solidity commonly uses this for mapping and dynamic-storage locations.",
+    "SHA3": "Older disassembler name for the KECCAK256 opcode.",
+    "STOP": "Halts execution successfully without return data.",
+    "SELFDESTRUCT": "Legacy contract-destruction opcode; its effects are restricted by modern EVM rules.",
+}
+
+
+def _print_disassembly_guide(disassembly):
+    """Explain only opcodes actually present in a disassembly; leave the listing intact."""
+    text_value = str(disassembly or "")
+    present = set()
+    for line in text_value.splitlines():
+        match = re.match(r"^\s*(?:0x[0-9a-fA-F]+|\d+)?\s*[: ]?\s*([A-Z][A-Z0-9_]*)\b", line.strip())
+        if match:
+            opcode = match.group(1).upper()
+            if opcode in _EVM_OPCODE_EXPLANATIONS:
+                present.add(opcode)
+            elif re.fullmatch(r"(?:PUSH|DUP|SWAP)\d+", opcode):
+                present.add(opcode)
+
+    print("HOW TO READ THE DISASSEMBLY")
+    print("---------------------------")
+    print("Each line is an EVM instruction. The EVM operates mainly on a stack, plus temporary memory and persistent storage.")
+    if not present:
+        print("Lowkey could not confidently identify familiar opcodes in this listing. Keep the raw listing as the source evidence.")
+    else:
+        for opcode in sorted(present):
+            if opcode.startswith("PUSH"):
+                meaning = "Pushes the following constant onto the EVM stack."
+            elif opcode.startswith("DUP"):
+                meaning = "Copies an existing stack item to the top without removing the original."
+            elif opcode.startswith("SWAP"):
+                meaning = "Swaps the top stack item with another item below it."
+            else:
+                meaning = _EVM_OPCODE_EXPLANATIONS[opcode]
+            print(f"  {opcode}: {meaning}")
+    print("Security note: an opcode is a clue about behavior, not proof of a vulnerability. Follow the surrounding instructions and control flow.")
+
+
 def run_tx(config,args):
     tx_hash=args[0] if args else last_transaction(config)
     if not tx_hash: return fail("Error: no transaction is saved for this project and target. Send a transaction here, or pass an explicit hash: lk tx <transaction-hash>.")
@@ -4024,10 +4105,10 @@ def run_tx(config,args):
     if is_address(origin):
         origin_label = apply_labels(origin, display_config)
         if not is_mined:
-            print(f"tx.origin (expected transaction signer): {origin_label}")
-            print("msg.sender: unavailable until the transaction is mined.")
+            print(f"Expected tx.origin when mined: {origin_label}")
+            print("msg.sender context: unavailable until the transaction is mined.")
         else:
-            print(f"tx.origin (transaction signer): {origin_label}")
+            print(f"tx.origin: {origin_label} (transaction signer)")
             if is_address(tx_to):
                 print(f"Top-level recipient: {apply_labels(tx_to, display_config)}")
                 print(f"msg.sender at top-level recipient: {origin_label}")
@@ -4133,7 +4214,11 @@ def run_tx(config,args):
             signature=format_signature(item)
             if (abi_selector(signature) or "").lower()==selector:
                 print(f"Function: {signature}")
-                print(f"Args:    {decode_abi_input(signature,input_data)}"); decoded=True; break
+                decoded_args = decode_abi_input(signature, input_data)
+                print(f"Args:    {decoded_args}")
+                for line in _format_decoded_abi_arguments(item, decoded_args, display_config, indent="  "):
+                    print(line)
+                decoded=True; break
         if not decoded:
             print(f"Selector: {selector} (unknown to loaded ABI)")
             _,fourbyte,_=cast_output(["cast","4byte",selector])
@@ -4376,6 +4461,16 @@ def run_trace(config,args=None):
         for warning in duplicate_warnings:
             print(warning)
     print("")
+    print("HOW TO READ THIS TRACE")
+    print("----------------------")
+    print("Indented call lines show nested contract calls. Each call creates a new execution frame.")
+    print("CALL: another account or contract is invoked; the callee sees the immediate caller as msg.sender.")
+    print("RETURN: that frame finished successfully. REVERT: that frame failed and reverted its own changes.")
+    print("An inner call can revert and still be caught by its caller; check the top-level receipt to know whether the whole transaction reverted.")
+    print("The trace below is detailed execution evidence; one opcode or trace line alone is not a vulnerability verdict.")
+    print("")
+    print("RAW EXECUTION TRACE")
+    print("-------------------")
     print(trace_text)
 
     trace_target = tx.get("to") if isinstance(tx, dict) and is_address(tx.get("to")) else None
@@ -6629,7 +6724,7 @@ def _print_read_only_call_summary(config, target, function_item, command, actor=
     print("This is an eth_call simulation: it does not mine a transaction or save state changes.")
 
 
-def _print_transaction_preview(config, command, target, function_item, raw_values, actor=None):
+def _print_transaction_preview(config, command, target, function_item, raw_values, actor=None, direct_eth_transfer=False):
     """Render a learner-friendly transaction plan; this does not simulate execution."""
     contract_name = (
         config.get("target_contract")
@@ -6657,14 +6752,18 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
     print("==============================")
     print("Nothing has been broadcast. This screen describes the transaction Lowkey prepared.")
     print("")
-    print("WHO IS CALLING WHAT")
+    print("WHO IS SENDING WHAT")
     print(f"  Sender:   {sender_label}")
-    print(f"  Contract: {contract}")
-    if signature:
-        print(f"  Function: {signature}")
-        print(f"  Function type: {str(function_item.get('stateMutability') or 'unknown').upper()}")
+    if direct_eth_transfer:
+        print(f"  Recipient: {_preview_address_label(config, target)}")
+        print("  Transaction: direct ETH transfer (no contract function call)")
     else:
-        print("  Function: raw transaction data (no matching ABI function)")
+        print(f"  Contract: {contract}")
+        if signature:
+            print(f"  Function: {signature}")
+            print(f"  Function type: {str(function_item.get('stateMutability') or 'unknown').upper()}")
+        else:
+            print("  Function: raw contract call (no matching ABI function)")
     print(f"  ETH attached: {attached_value}")
 
     if rows:
@@ -6948,7 +7047,7 @@ def run_cast(args,config,capture=False):
     if not capture and verbose:
         print(f"DEBUG: Executing -> {safe_cmd}")
     if cast_cmd == "send" and preview:
-        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor)
+        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
         return 0
     if cast_cmd == "send" and (confirm or (config.get("confirm_sends") and not bypass)):
         _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor)
@@ -16702,36 +16801,75 @@ def run_calldata(config,args):
     data=args[0]
     if not re.fullmatch(r"0x[0-9a-fA-F]*",data) or len(data)<10 or len(data)%2:
         return fail("Error: calldata must be even-length hex beginning with 0x.")
-    print(f"Selector: {data[:10]}")
+
+    selector = data[:10].lower()
+    payload = "0x" + data[10:]
+    total_bytes = (len(data) - 2) // 2
+    payload_bytes = max(0, total_bytes - 4)
+    print("CALLDATA INSPECTION")
+    print("===================")
+    print(f"Total size:        {total_bytes} bytes")
+    print(f"Function selector: {selector}  (first 4 bytes)")
+    print(f"Argument payload:  {payload_bytes} bytes")
+    print("")
+    print("HOW TO READ IT")
+    print("  The selector identifies the requested function signature.")
+    print("  The bytes after the selector encode that function's arguments.")
+    print("  Calldata does not choose the caller: msg.sender and tx.origin come from the EVM call chain.")
+
     abi=load_abi(config.get("target"),config)
     matches=[]
     for item in abi_functions(abi):
         signature=format_signature(item)
-        selector=abi_selector(signature)
-        if selector and selector.lower()==data[:10].lower():
+        candidate=abi_selector(signature)
+        if candidate and candidate.lower()==selector:
             matches.append((signature,item))
+
     if len(matches)==1:
         signature,item=matches[0]
-        print(f"ABI:      {signature}")
-        print(f"Args:     {decode_abi_input(signature,data)}")
+        decoded = decode_abi_input(signature,data)
+        print("")
+        print("ABI MATCH")
+        print("---------")
+        print(f"Function: {signature}")
+        print("Decoded arguments:")
+        for line in _format_decoded_abi_arguments(item, decoded, config, indent="  "):
+            print(line)
+        if not item.get("inputs"):
+            print("  This function has no ABI arguments.")
     elif len(matches)>1:
-        print("ABI:      ambiguous")
+        print("")
+        print("ABI MATCH: ambiguous")
+        print("More than one loaded ABI entry matched the four-byte selector:")
         for signature,_ in matches:
             print(f"  {signature}")
+        print("Use an exact signature and inspect the deployed runtime before assuming which function executes.")
     else:
-        print("ABI:      unknown")
+        print("")
+        print("ABI MATCH: none")
+        print("No function in the currently loaded ABI matches this selector.")
         code,out,error=cast_output(["cast","4byte-calldata",data])
         if out:
+            print("")
+            print("PUBLIC SIGNATURE LOOKUP (CANDIDATES ONLY)")
             print(out)
+            print("These are possible public signature matches, not proof that this contract implements or exposes them.")
         elif error:
-            print(error,file=sys.stderr)
+            print(f"Signature lookup unavailable: {error}",file=sys.stderr)
             record_status(code)
+
     code,out,error=cast_output(["cast","pretty-calldata",data])
     if out:
-        print("\nPretty calldata:")
+        print("")
+        print("STRUCTURAL DECODE")
+        print("-----------------")
         print(out)
+        print("Use this to inspect ABI word offsets and dynamic-data layout; it is a structural view, not a transaction trace.")
     elif error:
-        print(error,file=sys.stderr)
+        print(f"Structural decoding unavailable: {error}",file=sys.stderr)
+    print("")
+    print("NEXT INVESTIGATION")
+    print("  Use lk selectors to compare selectors found in deployed bytecode against the loaded ABI.")
     return 0
 
 def run_txpool(config,args):
@@ -16775,7 +16913,29 @@ def run_disasm(config,args):
         values=[run_cast(["code",values[0]],config,capture=True)]
     if not values[0] or not str(values[0]).startswith("0x"):
         return fail("Error: no bytecode available.")
-    return run_cast(["disassemble",values[0]],config)
+
+    result = run_cast(["disassemble",str(values[0])],config,capture=True)
+    result_code = getattr(result,"code",result if isinstance(result,int) else 1)
+    disassembly = getattr(result,"text",str(result or ""))
+    if result_code != 0:
+        if disassembly:
+            print(disassembly,file=sys.stderr)
+        return result_code
+
+    target = config.get("target")
+    contract = config.get("target_contract") or "selected contract"
+    if target:
+        print(f"BYTECODE DISASSEMBLY: {contract} ({target})")
+    else:
+        print("BYTECODE DISASSEMBLY")
+    print("====================")
+    print("This translates compiled EVM bytecode into instruction names. It is the program the EVM executes, not the original Solidity source.")
+    _print_disassembly_guide(disassembly)
+    print("")
+    print("RAW OPCODE LISTING")
+    print("------------------")
+    print(disassembly)
+    return 0
 
 def runtime_selector_set(code):
     raw=code if isinstance(code,str) else str(code)
