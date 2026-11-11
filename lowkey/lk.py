@@ -4240,11 +4240,13 @@ def run_tx(config,args):
             "target-specific msg.sender was not inferred."
         )
 
-    value=transaction.get("value","0")
-    if isinstance(value,str) and value.startswith("0x"):
-        try: value=str(int(value,16))
-        except ValueError: pass
-    print(f"Value: {humanize_value(str(value))}")
+    value_raw = transaction.get("value", "0")
+    value_wei = _hex_to_int(value_raw)
+    if value_wei is None:
+        print(f"ETH value: unavailable ({value_raw})")
+    else:
+        print(f"ETH value: {_wei_to_eth(value_wei)} ETH ({value_wei:,} wei)")
+        print("Meaning: this is the native ETH attached to the top-level transaction. It is separate from any ETH or tokens moved by internal contract calls.")
     input_data=transaction.get("input") or transaction.get("data") or "0x"
     if isinstance(input_data,str) and input_data.startswith("0x") and len(input_data)>=10:
         selector=input_data[:10].lower(); decoded=False
