@@ -3230,10 +3230,48 @@ def run_encode(config,args):
     values=list(args)
     target=config.get("target")
     if target and ("(" not in values[0] or ")" not in values[0]):
-        try: values[0]=resolve_function(values[0],target,config)
+        try:
+            values[0]=resolve_function(values[0],target,config)
         except ValueError as error:
             return fail(f"Error: {error}")
-    run_cast(["calldata"]+values,config)
+
+    result = run_cast(["calldata"] + values, config, capture=True)
+    result_code = getattr(result, "code", result if isinstance(result, int) else 1)
+    encoded = str(getattr(result, "text", str(result or ""))).strip()
+    if result_code != 0:
+        if encoded:
+            print(encoded, file=sys.stderr)
+        return result_code
+    if not re.fullmatch(r"0x[0-9a-fA-F]*", encoded) or len(encoded) < 10 or len(encoded) % 2:
+        print(encoded or "Lowkey could not produce ABI calldata.")
+        return result_code
+
+    signature = values[0]
+    total_bytes = (len(encoded) - 2) // 2
+    print("ABI ENCODING — NOT SENT")
+    print("=======================")
+    print(f"Function:          {signature}")
+    print(f"Function selector: {encoded[:10].lower()}  (first 4 bytes)")
+    print(f"Argument data:     {max(0, total_bytes - 4)} bytes")
+    print(f"Total calldata:    {total_bytes} bytes")
+
+    abi = load_abi(target, config) if target else []
+    matches = matching_functions(abi, signature) if abi else []
+    if len(matches) == 1:
+        decoded = decode_abi_input(signature, encoded)
+        print("Encoded arguments:")
+        for line in _format_decoded_abi_arguments(matches[0], decoded, config, indent="  "):
+            print(line)
+    elif values[1:]:
+        print("Input values: " + ", ".join(str(value) for value in values[1:]))
+
+    print("")
+    print("FULL CALLDATA")
+    print(encoded)
+    print("")
+    print("Meaning: this creates the bytes a caller can submit to a contract. It does not send a transaction, execute the function, or choose msg.sender/tx.origin.")
+    return result_code
+
 def run_signature(config, args):
     usage = "Usage: lk sig '<functionName>(<parameterTypes>)'"
     example = "Example: lk sig 'setValue(uint256)'"
@@ -18425,6 +18463,40 @@ def _lowkey_generated_test_safety_issue(source):
             "before running Foundry tests; execution is blocked rather than trusting an unchecked harness.",
         )
     return _verification_test_safety_issue(source)
+
+
+def _print_forge_test_result_summary(output, exit_code):
+    """Explain Foundry suite totals without pretending a passing suite is an audit verdict."""
+    text_value = str(output or "")
+    matches = re.findall(
+        r"(?im)^Suite result:\s*(?:ok|FAILED)\.\s*(\d+)\s+passed;\s*(\d+)\s+failed;\s*(\d+)\s+skipped\b",
+        text_value,
+    )
+    print("")
+    print("TEST RESULTS — PLAIN ENGLISH")
+    print("============================")
+    if not matches:
+        if exit_code == 0:
+            print("Forge exited successfully, but Lowkey could not find a per-suite pass/fail summary in its output.")
+            print("Check the output above to confirm that tests were actually discovered and executed.")
+        else:
+            print("Forge exited with an error. Read the first failing test or compiler/runtime diagnostic above.")
+        print("A test-run result is evidence about the tests that ran, not an overall security verdict.")
+        return
+
+    passed = sum(int(item[0]) for item in matches)
+    failed = sum(int(item[1]) for item in matches)
+    skipped = sum(int(item[2]) for item in matches)
+    print(f"Suites reported: {len(matches)}")
+    print(f"Test cases:      {passed} passed · {failed} failed · {skipped} skipped")
+    if failed or exit_code != 0:
+        print("Meaning: at least one test or the overall Forge process failed. Inspect the first failure and its assertion/trace before changing contract code.")
+    else:
+        print("Meaning: the discovered tests passed. This confirms those test assertions, not that every exploit path or security property is covered.")
+    if skipped:
+        print("Skipped tests did not execute, so they provide no pass/fail evidence.")
+
+
 def run_native_project_command(config, command_name, args):
     """Run one repository-native build/test command without invoking an unrelated EVM tool."""
     root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
@@ -18485,6 +18557,8 @@ def run_native_project_command(config, command_name, args):
         native_output = str(getattr(result, "text", "") or "")
         if native_output:
             print(native_output)
+        if command_name == "test":
+            _print_forge_test_result_summary(native_output, native_code)
 
         if native_code == 0 or not callable(classify_build_failure):
             return native_code
@@ -18543,6 +18617,8 @@ def run_native_project_command(config, command_name, args):
         retry_output = str(getattr(retry_result, "text", "") or "")
         if retry_output:
             print(retry_output)
+        if command_name == "test":
+            _print_forge_test_result_summary(retry_output, retry_code)
         if retry_code == 0:
             print("PASS  native command after dependency recovery")
         return retry_code
