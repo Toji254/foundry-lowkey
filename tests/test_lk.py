@@ -6034,11 +6034,11 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("'createEscrow(uint256,address)'", rendered)
-        self.assertIn("1000000000000000000", rendered)
-        self.assertIn(recipient, rendered)
-        self.assertIn("--value '2 ether'", rendered)
-        self.assertNotIn(" Bob ", rendered)
+        self.assertIn("Function: createEscrow(uint256,address)", rendered)
+        self.assertIn("amount (uint256 — integer): 1,000,000,000,000,000,000", rendered)
+        self.assertIn(f"recipient (address — Ethereum address): Bob ({recipient})", rendered)
+        self.assertIn("ETH attached: 2 ether", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
         self.assertEqual(cast_output.call_count, 1)
         self.assertEqual(
             cast_output.call_args.args[0],
@@ -6072,10 +6072,10 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("'createEscrow(address)'", rendered)
-        self.assertIn(recipient, rendered)
-        self.assertIn("--value '2 ether'", rendered)
-        self.assertNotIn(" Bob ", rendered)
+        self.assertIn("Function: createEscrow(address)", rendered)
+        self.assertIn(f"recipient (address — Ethereum address): Bob ({recipient})", rendered)
+        self.assertIn("ETH attached: 2 ether", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
         self.assertEqual(cast_output.call_count, 1)
         self.assertEqual(
             cast_output.call_args.args[0],
