@@ -6904,6 +6904,94 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
     print("  Preview prepares the call only. It does not execute or simulate the contract.")
     print("  We cannot know whether the contract accepts it until we run it and inspect the result.")
 
+
+
+def _print_cast_result_guide(command, output, config=None, target=None):
+    """Attach a small plain-English interpretation to common low-level Cast values."""
+    raw = str(output or "").strip()
+    config = config if isinstance(config, dict) else {}
+    target_label = _preview_address_label(
+        config,
+        target,
+        config.get("target_contract") if str(config.get("target") or "").lower() == str(target or "").lower() else None,
+    )
+
+    if command == "code":
+        size = (len(raw) - 2) // 2 if re.fullmatch(r"0x[0-9a-fA-F]*", raw) else None
+        print("RUNTIME BYTECODE")
+        print("================")
+        print(f"Contract: {target_label}")
+        if size is not None:
+            print(f"Bytecode size: {size:,} bytes")
+        print("Meaning: this is the compiled EVM program stored at the address, not the original Solidity source.")
+        print("Next: use lk disasm to read its opcodes or lk selectors to compare function selectors with the loaded ABI.")
+        print("")
+        print("RAW BYTECODE")
+        print("------------")
+        print(raw)
+        return True
+
+    if command == "codehash":
+        print("RUNTIME CODE HASH")
+        print("=================")
+        print(f"Contract: {target_label}")
+        print(f"Hash:     {raw}")
+        print("Meaning: this hash identifies the runtime bytecode at this address. It does not explain what the code does or prove that it is safe.")
+        return True
+
+    if command == "codesize":
+        number = _hex_to_int(raw)
+        print("RUNTIME CODE SIZE")
+        print("=================")
+        print(f"Contract: {target_label}")
+        print(f"Size:     {number:,} bytes" if number is not None else raw)
+        print("Meaning: this is the byte length of the deployed runtime bytecode, not a security score.")
+        return True
+
+    if command == "estimate":
+        number = _hex_to_int(raw)
+        print("GAS ESTIMATE")
+        print("============")
+        print(f"Estimated gas units: {number:,}" if number is not None else raw)
+        print("Meaning: gas measures EVM computation. It is not an ETH amount; the actual fee also depends on the gas price and the transaction's execution conditions.")
+        print("An estimate can change when contract state, calldata, caller, or block conditions change.")
+        return True
+
+    if command == "nonce":
+        number = _hex_to_int(raw)
+        print("ACCOUNT NONCE")
+        print("=============")
+        print(f"Next nonce: {number:,}" if number is not None else raw)
+        print("Meaning: this is the account's transaction sequence number. It is not the total number of transactions ever sent.")
+        return True
+
+    if command in {"chain-id", "block-number"}:
+        number = _hex_to_int(raw)
+        title = "CHAIN ID" if command == "chain-id" else "LATEST BLOCK NUMBER"
+        print(title)
+        print("=" * len(title))
+        print(f"Value: {number:,}" if number is not None else raw)
+        if command == "chain-id":
+            print("Meaning: the chain identifier used in transaction signing and replay protection; it is not a block number.")
+        else:
+            print("Meaning: the height of the latest block reported by the selected RPC.")
+        return True
+
+    if command == "balance":
+        wei = _hex_to_int(raw)
+        print("ACCOUNT ETH BALANCE")
+        print("===================")
+        if wei is not None:
+            print(f"Balance: {_wei_to_eth(wei)} ETH")
+            print(f"Raw:     {wei:,} wei")
+        else:
+            print(raw)
+        print("Meaning: this is the account's native ETH balance at the RPC's current state, not its ERC-20 token balance.")
+        return True
+
+    return False
+
+
 def run_cast(args,config,capture=False):
     if not args:
         result=CommandResult("",2)
@@ -7328,7 +7416,8 @@ def run_cast(args,config,capture=False):
                     print(f"  Reason: {decode_error}", file=sys.stderr)
                     print(f"  Raw return data: {apply_labels(output_payload,config)}")
             else:
-                print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
+                if not _print_cast_result_guide(cast_cmd, out, config, target):
+                    print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
         if err:
             # Some successful commands emit non-fatal diagnostics on stderr.
             print(apply_labels(err,config),file=sys.stderr)
