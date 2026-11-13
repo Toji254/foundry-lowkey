@@ -667,8 +667,57 @@ def main() -> int:
         reprove_fork_block = int(run(
             [cast, "block-number", "--rpc-url", RPC], root, env
         ).stdout.strip())
+        # The replay helper must live inside the isolated fixture root so
+        # lk reprove can inspect it, execute it, and include it in fidelity evidence.
+        replay_helper = root / "scripts" / "p1_replay_attack.py"
+        replay_helper.parent.mkdir(parents=True, exist_ok=True)
+        replay_helper.write_text(
+            """#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+
+
+def main() -> int:
+    if len(sys.argv) != 5:
+        raise SystemExit("usage: p1_replay_attack.py ACTOR RPC_URL PRIVATE_KEY CAST_BIN")
+    actor, rpc_url, private_key, cast = sys.argv[1:]
+    result = subprocess.run(
+        [
+            cast, "send", actor, "execute()",
+            "--rpc-url", rpc_url,
+            "--private-key", private_key,
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        print(result.stdout, end="")
+        print(result.stderr, file=sys.stderr, end="")
+        return result.returncode
+    try:
+        receipt = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"cast send returned invalid JSON: {error}: {result.stdout[-2000:]}")
+    tx_hash = receipt.get("transactionHash") or receipt.get("hash")
+    if not isinstance(tx_hash, str) or re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash) is None:
+        raise SystemExit(f"cast send omitted a valid transaction hash: {receipt}")
+    print(f"LOWKEY_TRACE_TX_HASH {tx_hash}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            encoding="utf-8",
+        )
         replay_argv = [
-            sys.executable, "scripts/p1_replay_attack.py", actor, RPC, ANVIL_KEY0,
+            sys.executable, "scripts/p1_replay_attack.py", actor, RPC, ANVIL_KEY0, cast,
         ]
         reprove_command = [
             lk, "reprove", "src/ReentrancyFixture.sol",
