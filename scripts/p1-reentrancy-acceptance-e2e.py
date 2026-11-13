@@ -13,6 +13,8 @@ from pathlib import Path
 
 RPC = os.environ.get("LOWKEY_RPC_URL", "http://127.0.0.1:8545")
 ANVIL_KEY0 = None
+# Deterministic Anvil account 1 is the independent victim funding the vault reserve.
+ANVIL_KEY1 = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 
 
 def run(argv: list[str], cwd: Path, env: dict[str, str], timeout: int = 360) -> subprocess.CompletedProcess[str]:
@@ -51,7 +53,7 @@ def find_tool(name: str, fallback: Path) -> str:
     raise AssertionError(f"Required tool is unavailable: {name}")
 
 
-def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: str) -> str:
+def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: str) -> tuple[str, str]:
     command = [
         forge, "create", f"src/ReentrancyFixture.sol:{contract}",
         "--rpc-url", RPC, "--private-key", ANVIL_KEY0, "--broadcast", "--json",
@@ -63,14 +65,63 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
     address = payload.get("deployedTo")
     if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
         raise AssertionError(f"forge create did not return {contract} address: {payload}")
-    return address
+    tx_hash = payload.get("transactionHash") or payload.get("hash")
+    if not isinstance(tx_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash):
+        raise AssertionError(f"forge create did not return a valid transaction hash for {contract}: {payload}")
+    return address, tx_hash
 
 
-def send(cast: str, root: Path, env: dict[str, str], to: str, signature: str, *args: str, value: str | None = None):
-    command = [cast, "send", to, signature, *args, "--rpc-url", RPC, "--private-key", ANVIL_KEY0]
+def send(
+    cast: str, root: Path, env: dict[str, str], to: str, signature: str,
+    *args: str, value: str | None = None, private_key: str | None = None,
+) -> str:
+    command = [
+        cast, "send", to, signature, *args, "--rpc-url", RPC,
+        "--private-key", private_key or ANVIL_KEY0, "--json",
+    ]
     if value is not None:
         command.extend(["--value", value])
-    return run(command, root, env)
+    result = run(command, root, env)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise AssertionError(f"cast send did not return JSON receipt metadata: {error}: {result.stdout[-2000:]}")
+    tx_hash = payload.get("transactionHash") or payload.get("hash")
+    if not isinstance(tx_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash):
+        raise AssertionError(f"cast send did not return a valid transaction hash: {payload}")
+    return tx_hash
+
+
+def _hex_quantity(value, field: str) -> int:
+    if isinstance(value, bool) or value is None:
+        raise AssertionError(f"Transaction evidence omitted {field}: {value!r}")
+    try:
+        return int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
+    except (TypeError, ValueError) as error:
+        raise AssertionError(f"Invalid {field} in transaction evidence: {value!r}") from error
+
+
+def transaction_evidence(cast: str, root: Path, env: dict[str, str], tx_hash: str) -> dict:
+    receipt_result = run([cast, "receipt", tx_hash, "--rpc-url", RPC, "--json"], root, env)
+    transaction_result = run([cast, "tx", tx_hash, "--rpc-url", RPC, "--json"], root, env)
+    try:
+        receipt = json.loads(receipt_result.stdout)
+        transaction = json.loads(transaction_result.stdout)
+    except json.JSONDecodeError as error:
+        raise AssertionError(f"Could not parse transaction/receipt JSON for {tx_hash}: {error}")
+    gas_used = _hex_quantity(receipt.get("gasUsed"), "receipt.gasUsed")
+    effective_gas_price = _hex_quantity(receipt.get("effectiveGasPrice"), "receipt.effectiveGasPrice")
+    value_wei = _hex_quantity(transaction.get("value", "0x0"), "transaction.value")
+    if gas_used <= 0 or effective_gas_price <= 0:
+        raise AssertionError(f"Setup transaction has no measured gas cost: {tx_hash}")
+    return {
+        "tx_hash": tx_hash,
+        "receipt_status": _hex_quantity(receipt.get("status"), "receipt.status"),
+        "gas_used": gas_used,
+        "effective_gas_price_wei": effective_gas_price,
+        "gas_cost_wei": gas_used * effective_gas_price,
+        "value_wei": value_wei,
+    }
 
 
 def read_json(path: Path) -> dict:
@@ -130,13 +181,63 @@ def main() -> int:
         (root / "lib" / "forge-std").symlink_to(forge_std, target_is_directory=True)
 
         run([forge, "build"], root, env, timeout=360)
-        vault = deploy(forge, root, env, "ReentrancyVault")
-        actor = deploy(forge, root, env, "ReentrancyActor", vault)
+        vault, vault_deploy_hash = deploy(forge, root, env, "ReentrancyVault")
+        actor, actor_deploy_hash = deploy(forge, root, env, "ReentrancyActor", vault)
 
-        # One ETH is withdrawable; one ETH is reserve liquidity for the second,
-        # reentrant withdrawal. No balance/storage state is fabricated.
-        send(cast, root, env, vault, "seed()", value="1ether")
-        send(cast, root, env, actor, "deposit()", value="1ether")
+        # The reserve is victim capital, funded by a separate deterministic Anvil
+        # account. The attacker/deployer funds only the actor's withdrawable deposit.
+        # This keeps the victim's reserve out of the attacker's measured portfolio.
+        seed_hash = send(
+            cast, root, env, vault, "seed()", value="1ether", private_key=ANVIL_KEY1,
+        )
+        deposit_hash = send(cast, root, env, actor, "deposit()", value="1ether")
+
+        vault_deploy_evidence = transaction_evidence(cast, root, env, vault_deploy_hash)
+        actor_deploy_evidence = transaction_evidence(cast, root, env, actor_deploy_hash)
+        seed_evidence = transaction_evidence(cast, root, env, seed_hash)
+        deposit_evidence = transaction_evidence(cast, root, env, deposit_hash)
+        if any(item["receipt_status"] != 1 for item in (
+            vault_deploy_evidence, actor_deploy_evidence, seed_evidence, deposit_evidence,
+        )):
+            raise AssertionError("A required P1 setup transaction did not succeed.")
+        if seed_evidence["value_wei"] != 10**18 or deposit_evidence["value_wei"] != 10**18:
+            raise AssertionError("P1 seed/deposit value did not match the intended one-ETH fixture funding.")
+        prior_cost_components = {
+            "attacker_actor_deployment_gas_wei": actor_deploy_evidence["gas_cost_wei"],
+            "attacker_deposit_principal_wei": deposit_evidence["value_wei"],
+            "attacker_deposit_transaction_gas_wei": deposit_evidence["gas_cost_wei"],
+        }
+        prior_cost_wei = sum(prior_cost_components.values())
+        if prior_cost_wei <= 0:
+            raise AssertionError("Measured attacker setup cost must be positive.")
+        setup_cost_evidence = {
+            "attacker_prior_cost_wei": prior_cost_wei,
+            "attacker_cost_components_wei": prior_cost_components,
+            "included_transactions": {
+                "actor_deployment": actor_deploy_evidence,
+                "attacker_deposit": deposit_evidence,
+            },
+            "excluded_fixture_transactions": {
+                "vault_deployment": {
+                    **vault_deploy_evidence,
+                    "reason": "Target fixture provisioning, not attacker capital or attacker-paid setup.",
+                },
+                "victim_reserve_seed": {
+                    **seed_evidence,
+                    "reason": "One-ETH reserve is independently funded by the victim account, not the attacker portfolio.",
+                },
+            },
+            "accounting_policy": (
+                "The reproof portfolio contains the attacker deployer and actor. Its snapshot is taken after setup, "
+                "so attacker deposit principal and attacker setup gas are subtracted once as prior costs. Replay gas "
+                "is already reflected in the deployer's portfolio delta and must not be subtracted a second time. "
+                "Victim reserve capital and its gas are excluded from attacker costs."
+            ),
+        }
+        (evidence_root / "setup-costs.json").write_text(
+            json.dumps(setup_cost_evidence, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         owner_result = run([cast, "wallet", "address", "--private-key", ANVIL_KEY0], root, env)
         owner = owner_result.stdout.strip().splitlines()[-1]
         if not re.fullmatch(r"0x[0-9a-fA-F]{40}", owner):
@@ -535,6 +636,7 @@ def main() -> int:
             "--root", str(root),
             "--rpc-url", RPC,
             "--fork-block", str(reprove_fork_block),
+            "--prior-cost-wei", str(prior_cost_wei),
             "--target-address", vault,
             "--profit-address", owner,
             "--profit-address", actor,
@@ -547,10 +649,34 @@ def main() -> int:
         reprove_report = read_json(root / ".audit" / "godmode" / "reprove.json")
         if reprove.returncode != 0:
             raise AssertionError(f"Funded local reproof failed: {reprove_report}\n{reprove.stdout[-8000:]}")
-        if reprove_report.get("legacy_status") != "LOCAL_PROFITABLE":
-            raise AssertionError(f"Funded reproof did not reach LOCAL_PROFITABLE: {reprove_report}")
-        if int(reprove_report.get("net_profit_wei") or 0) <= 0 or int(reprove_report.get("gas_cost_wei") or 0) <= 0:
-            raise AssertionError("Local reproof did not record positive net profit after nonzero gas cost.")
+        reported_prior_cost = _hex_quantity(reprove_report.get("prior_cost_wei"), "reprove.prior_cost_wei")
+        gross_delta = _hex_quantity(reprove_report.get("gross_balance_delta_wei"), "reprove.gross_balance_delta_wei")
+        replay_gas_cost = _hex_quantity(reprove_report.get("gas_cost_wei"), "reprove.gas_cost_wei")
+        reported_net = _hex_quantity(reprove_report.get("net_profit_wei"), "reprove.net_profit_wei")
+        if reported_prior_cost != prior_cost_wei:
+            raise AssertionError(
+                f"Reprove artifact prior cost {reported_prior_cost} does not match independently measured setup "
+                f"cost {prior_cost_wei}: {setup_cost_evidence}"
+            )
+        replay_gas_in_delta = reprove_report.get("gas_cost_in_portfolio_delta")
+        if not isinstance(replay_gas_in_delta, bool):
+            raise AssertionError("Reprove artifact omitted gas_cost_in_portfolio_delta accounting evidence.")
+        independently_expected_net = gross_delta - prior_cost_wei
+        if not replay_gas_in_delta:
+            independently_expected_net -= replay_gas_cost
+        if reported_net != independently_expected_net:
+            raise AssertionError(
+                f"Reprove net profit mismatch: artifact={reported_net}, independently recomputed="
+                f"{independently_expected_net}, gross_delta={gross_delta}, prior_cost={prior_cost_wei}, "
+                f"replay_gas={replay_gas_cost}, replay_gas_in_delta={replay_gas_in_delta}"
+            )
+        if reprove_report.get("legacy_status") != "LOCAL_PROFITABLE" or reported_net <= 0:
+            raise AssertionError(
+                "Funded reproof did not demonstrate positive net profit after measured attacker setup costs "
+                f"and replay gas: {reprove_report}"
+            )
+        if replay_gas_cost <= 0:
+            raise AssertionError("Local reproof did not record positive receipt-derived replay gas cost.")
         if not (reprove_report.get("storage_trace") or {}).get("slots"):
             raise AssertionError("Local reproof did not include prestateTracer-derived storage slots.")
         if reprove_report.get("target_authenticity") != "unknown" or reprove_report.get("status") != "OBSERVED":
@@ -600,7 +726,12 @@ def main() -> int:
                 "legacy_status": reprove_report.get("legacy_status"),
                 "proof_status": reprove_report.get("status"),
                 "net_profit_wei": reprove_report.get("net_profit_wei"),
+                "gross_balance_delta_wei": reprove_report.get("gross_balance_delta_wei"),
+                "prior_cost_wei": reprove_report.get("prior_cost_wei"),
                 "gas_cost_wei": reprove_report.get("gas_cost_wei"),
+                "gas_cost_in_portfolio_delta": reprove_report.get("gas_cost_in_portfolio_delta"),
+                "independently_recomputed_net_profit_wei": independently_expected_net,
+                "setup_costs": setup_cost_evidence,
                 "trace_storage_slots": len((reprove_report.get("storage_trace") or {}).get("slots") or []),
                 "target_authenticity": reprove_report.get("target_authenticity"),
             },
