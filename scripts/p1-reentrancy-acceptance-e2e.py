@@ -13,8 +13,6 @@ from pathlib import Path
 
 RPC = os.environ.get("LOWKEY_RPC_URL", "http://127.0.0.1:8545")
 ANVIL_KEY0 = None
-# Deterministic Anvil account 1 is the independent victim funding the vault reserve.
-ANVIL_KEY1 = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 
 
 def run(argv: list[str], cwd: Path, env: dict[str, str], timeout: int = 360) -> subprocess.CompletedProcess[str]:
@@ -73,12 +71,13 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
 
 def send(
     cast: str, root: Path, env: dict[str, str], to: str, signature: str,
-    *args: str, value: str | None = None, private_key: str | None = None,
+    *args: str, value: str | None = None, from_address: str | None = None,
 ) -> str:
-    command = [
-        cast, "send", to, signature, *args, "--rpc-url", RPC,
-        "--private-key", private_key or ANVIL_KEY0, "--json",
-    ]
+    command = [cast, "send", to, signature, *args, "--rpc-url", RPC, "--json"]
+    if from_address is None:
+        command.extend(["--private-key", ANVIL_KEY0])
+    else:
+        command.extend(["--from", from_address, "--unlocked"])
     if value is not None:
         command.extend(["--value", value])
     result = run(command, root, env)
@@ -187,8 +186,18 @@ def main() -> int:
         # The reserve is victim capital, funded by a separate deterministic Anvil
         # account. The attacker/deployer funds only the actor's withdrawable deposit.
         # This keeps the victim's reserve out of the attacker's measured portfolio.
+        accounts_result = run([cast, "rpc", "eth_accounts", "--rpc-url", RPC], root, env)
+        try:
+            anvil_accounts = json.loads(accounts_result.stdout)
+        except json.JSONDecodeError as error:
+            raise AssertionError(f"Anvil eth_accounts did not return JSON: {error}")
+        if not isinstance(anvil_accounts, list) or len(anvil_accounts) < 2:
+            raise AssertionError("P1 fixture requires a second unlocked Anvil account for independent victim reserve funding.")
+        victim_address = anvil_accounts[1]
+        if not isinstance(victim_address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", victim_address):
+            raise AssertionError(f"Anvil returned an invalid victim account address: {victim_address!r}")
         seed_hash = send(
-            cast, root, env, vault, "seed()", value="1ether", private_key=ANVIL_KEY1,
+            cast, root, env, vault, "seed()", value="1ether", from_address=victim_address,
         )
         deposit_hash = send(cast, root, env, actor, "deposit()", value="1ether")
 
@@ -438,8 +447,8 @@ def main() -> int:
             encoding="utf-8",
         )
         run([forge, "build"], mutation_root, env, timeout=360)
-        mutation_vault = deploy(forge, mutation_root, env, "ReentrancyVault")
-        mutation_actor = deploy(forge, mutation_root, env, "ReentrancyActor", mutation_vault)
+        mutation_vault, _mutation_vault_deploy_hash = deploy(forge, mutation_root, env, "ReentrancyVault")
+        mutation_actor, _mutation_actor_deploy_hash = deploy(forge, mutation_root, env, "ReentrancyActor", mutation_vault)
         send(cast, mutation_root, env, mutation_vault, "seed()", value="1ether")
         send(cast, mutation_root, env, mutation_actor, "deposit()", value="1ether")
         mutation_block = int(run(
