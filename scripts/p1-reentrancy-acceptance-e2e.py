@@ -100,6 +100,17 @@ def _hex_quantity(value, field: str) -> int:
         raise AssertionError(f"Invalid {field} in transaction evidence: {value!r}") from error
 
 
+def balance_wei(cast: str, root: Path, env: dict[str, str], address: str) -> int:
+    result = run(
+        [cast, "rpc", "eth_getBalance", address, "latest", "--rpc-url", RPC],
+        root, env,
+    )
+    try:
+        return _hex_quantity(json.loads(result.stdout), f"eth_getBalance({address})")
+    except json.JSONDecodeError as error:
+        raise AssertionError(f"Anvil eth_getBalance did not return JSON for {address}: {error}")
+
+
 def transaction_evidence(cast: str, root: Path, env: dict[str, str], tx_hash: str) -> dict:
     receipt_result = run([cast, "receipt", tx_hash, "--rpc-url", RPC, "--json"], root, env)
     transaction_result = run([cast, "tx", tx_hash, "--rpc-url", RPC, "--json"], root, env)
@@ -181,6 +192,11 @@ def main() -> int:
 
         run([forge, "build"], root, env, timeout=360)
         vault, vault_deploy_hash = deploy(forge, root, env, "ReentrancyVault")
+        owner_result = run([cast, "wallet", "address", "--private-key", ANVIL_KEY0], root, env)
+        owner = owner_result.stdout.strip().splitlines()[-1]
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", owner):
+            raise AssertionError(f"cast wallet address returned an invalid owner address: {owner!r}")
+        owner_balance_before_attacker_setup = balance_wei(cast, root, env, owner)
         actor, actor_deploy_hash = deploy(forge, root, env, "ReentrancyActor", vault)
 
         # The reserve is victim capital, funded by a separate deterministic Anvil
@@ -219,9 +235,27 @@ def main() -> int:
         prior_cost_wei = sum(prior_cost_components.values())
         if prior_cost_wei <= 0:
             raise AssertionError("Measured attacker setup cost must be positive.")
+        owner_balance_after_attacker_setup = balance_wei(cast, root, env, owner)
+        observed_owner_outflow = owner_balance_before_attacker_setup - owner_balance_after_attacker_setup
+        if observed_owner_outflow != prior_cost_wei:
+            raise AssertionError(
+                "Receipt-derived attacker setup costs do not reconcile with the deployer's actual balance "
+                f"outflow: receipts={prior_cost_wei}, balance_delta={observed_owner_outflow}, "
+                f"before={owner_balance_before_attacker_setup}, after={owner_balance_after_attacker_setup}"
+            )
+        vault_balance_after_setup = balance_wei(cast, root, env, vault)
+        if vault_balance_after_setup != 2 * 10**18:
+            raise AssertionError(
+                f"Vault balance does not equal the independently funded one-ETH reserve plus one-ETH deposit: "
+                f"{vault_balance_after_setup}"
+            )
         setup_cost_evidence = {
             "attacker_prior_cost_wei": prior_cost_wei,
             "attacker_cost_components_wei": prior_cost_components,
+            "attacker_deployer_balance_before_setup_wei": owner_balance_before_attacker_setup,
+            "attacker_deployer_balance_after_setup_wei": owner_balance_after_attacker_setup,
+            "attacker_deployer_observed_outflow_wei": observed_owner_outflow,
+            "vault_balance_after_setup_wei": vault_balance_after_setup,
             "included_transactions": {
                 "actor_deployment": actor_deploy_evidence,
                 "attacker_deposit": deposit_evidence,
@@ -247,10 +281,6 @@ def main() -> int:
             json.dumps(setup_cost_evidence, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        owner_result = run([cast, "wallet", "address", "--private-key", ANVIL_KEY0], root, env)
-        owner = owner_result.stdout.strip().splitlines()[-1]
-        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", owner):
-            raise AssertionError(f"cast wallet address returned an invalid owner address: {owner!r}")
         fork_block_text = run([cast, "block-number", "--rpc-url", RPC], root, env).stdout.strip()
         fork_block = int(fork_block_text)
 
