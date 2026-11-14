@@ -113,19 +113,40 @@ def balance_wei(cast: str, root: Path, env: dict[str, str], address: str) -> int
 
 def transaction_evidence(cast: str, root: Path, env: dict[str, str], tx_hash: str) -> dict:
     receipt_result = run([cast, "receipt", tx_hash, "--rpc-url", RPC, "--json"], root, env)
-    transaction_result = run([cast, "tx", tx_hash, "--rpc-url", RPC, "--json"], root, env)
+    # Read the raw JSON-RPC transaction rather than Cast's presentation layer:
+    # the RPC value is an unambiguous hex quantity in wei.
+    transaction_result = run(
+        [cast, "rpc", "eth_getTransactionByHash", tx_hash, "--rpc-url", RPC],
+        root, env,
+    )
     try:
         receipt = json.loads(receipt_result.stdout)
         transaction = json.loads(transaction_result.stdout)
     except json.JSONDecodeError as error:
-        raise AssertionError(f"Could not parse transaction/receipt JSON for {tx_hash}: {error}")
+        raise AssertionError(f"Could not parse transaction/receipt JSON for {tx_hash}: {error}") from error
+    if not isinstance(receipt, dict):
+        raise AssertionError(f"Receipt lookup did not return an object for {tx_hash}: {receipt!r}")
+    if not isinstance(transaction, dict):
+        raise AssertionError(f"eth_getTransactionByHash did not return a transaction object for {tx_hash}: {transaction!r}")
+    returned_hash = str(transaction.get("hash") or "").lower()
+    if returned_hash != tx_hash.lower():
+        raise AssertionError(
+            f"RPC transaction hash mismatch: requested={tx_hash}, returned={returned_hash or '<missing>'}"
+        )
+    receipt_hash = str(receipt.get("transactionHash") or "").lower()
+    if receipt_hash and receipt_hash != tx_hash.lower():
+        raise AssertionError(
+            f"Receipt transaction hash mismatch: requested={tx_hash}, returned={receipt_hash}"
+        )
     gas_used = _hex_quantity(receipt.get("gasUsed"), "receipt.gasUsed")
     effective_gas_price = _hex_quantity(receipt.get("effectiveGasPrice"), "receipt.effectiveGasPrice")
-    value_wei = _hex_quantity(transaction.get("value", "0x0"), "transaction.value")
+    value_wei = _hex_quantity(transaction.get("value"), "transaction.value")
     if gas_used <= 0 or effective_gas_price <= 0:
         raise AssertionError(f"Setup transaction has no measured gas cost: {tx_hash}")
     return {
         "tx_hash": tx_hash,
+        "from_address": str(transaction.get("from") or "").lower(),
+        "to_address": str(transaction.get("to") or "").lower() or None,
         "receipt_status": _hex_quantity(receipt.get("status"), "receipt.status"),
         "gas_used": gas_used,
         "effective_gas_price_wei": effective_gas_price,
@@ -212,9 +233,13 @@ def main() -> int:
         victim_address = anvil_accounts[1]
         if not isinstance(victim_address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", victim_address):
             raise AssertionError(f"Anvil returned an invalid victim account address: {victim_address!r}")
+        if victim_address.lower() == owner.lower():
+            raise AssertionError("Victim reserve funding must use an account distinct from the attacker deployer.")
+        victim_balance_before_seed = balance_wei(cast, root, env, victim_address)
         seed_hash = send(
             cast, root, env, vault, "seed()", value="1ether", from_address=victim_address,
         )
+        victim_balance_after_seed = balance_wei(cast, root, env, victim_address)
         deposit_hash = send(cast, root, env, actor, "deposit()", value="1ether")
 
         vault_deploy_evidence = transaction_evidence(cast, root, env, vault_deploy_hash)
@@ -225,8 +250,26 @@ def main() -> int:
             vault_deploy_evidence, actor_deploy_evidence, seed_evidence, deposit_evidence,
         )):
             raise AssertionError("A required P1 setup transaction did not succeed.")
+        if actor_deploy_evidence["from_address"] != owner.lower():
+            raise AssertionError("Attacker actor deployment was not paid by the measured attacker deployer.")
+        if seed_evidence["from_address"] != victim_address.lower() or seed_evidence["to_address"] != vault.lower():
+            raise AssertionError("Victim reserve seed did not originate from the separate victim account and target vault.")
+        if deposit_evidence["from_address"] != owner.lower() or deposit_evidence["to_address"] != actor.lower():
+            raise AssertionError("Attacker deposit did not originate from the measured deployer and fund the actor.")
         if seed_evidence["value_wei"] != 10**18 or deposit_evidence["value_wei"] != 10**18:
-            raise AssertionError("P1 seed/deposit value did not match the intended one-ETH fixture funding.")
+            raise AssertionError(
+                "P1 seed/deposit value did not match the intended one-ETH fixture funding: "
+                f"seed={seed_evidence['value_wei']} wei ({seed_hash}), "
+                f"deposit={deposit_evidence['value_wei']} wei ({deposit_hash})"
+            )
+        observed_victim_seed_outflow = victim_balance_before_seed - victim_balance_after_seed
+        expected_victim_seed_outflow = seed_evidence["value_wei"] + seed_evidence["gas_cost_wei"]
+        if observed_victim_seed_outflow != expected_victim_seed_outflow:
+            raise AssertionError(
+                "Victim reserve funding does not reconcile with its transaction value and receipt gas: "
+                f"balance_outflow={observed_victim_seed_outflow}, "
+                f"value_plus_gas={expected_victim_seed_outflow}"
+            )
         prior_cost_components = {
             "attacker_actor_deployment_gas_wei": actor_deploy_evidence["gas_cost_wei"],
             "attacker_deposit_principal_wei": deposit_evidence["value_wei"],
@@ -267,7 +310,11 @@ def main() -> int:
                 },
                 "victim_reserve_seed": {
                     **seed_evidence,
-                    "reason": "One-ETH reserve is independently funded by the victim account, not the attacker portfolio.",
+                    "payer_balance_before_wei": victim_balance_before_seed,
+                    "payer_balance_after_wei": victim_balance_after_seed,
+                    "payer_observed_outflow_wei": observed_victim_seed_outflow,
+                    "payer_expected_outflow_wei": expected_victim_seed_outflow,
+                    "reason": "One-ETH reserve and its measured gas are independently funded by the victim account, not the attacker portfolio.",
                 },
             },
             "accounting_policy": (
@@ -747,11 +794,30 @@ if __name__ == "__main__":
                 f"cost {prior_cost_wei}: {setup_cost_evidence}"
             )
         replay_gas_in_delta = reprove_report.get("gas_cost_in_portfolio_delta")
-        if not isinstance(replay_gas_in_delta, bool):
-            raise AssertionError("Reprove artifact omitted gas_cost_in_portfolio_delta accounting evidence.")
+        if replay_gas_in_delta is not True:
+            raise AssertionError(
+                "The replay gas payer is explicitly included in the attacker portfolio; "
+                "receipt gas must already be reflected in its measured balance delta."
+            )
+        reported_total_cost = _hex_quantity(reprove_report.get("total_cost_wei"), "reprove.total_cost_wei")
+        if reported_total_cost != prior_cost_wei + replay_gas_cost:
+            raise AssertionError(
+                "Reprove total-cost evidence does not equal measured setup costs plus actual replay receipt gas: "
+                f"artifact={reported_total_cost}, setup={prior_cost_wei}, replay_gas={replay_gas_cost}"
+            )
+        portfolio_rows = reprove_report.get("profit_addresses") or []
+        portfolio_addresses = {
+            str(row.get("address") or "").lower()
+            for row in portfolio_rows if isinstance(row, dict)
+        }
+        if not {owner.lower(), actor.lower()} <= portfolio_addresses:
+            raise AssertionError(
+                "Reprove portfolio must contain both the attacker gas payer and the contract receiving the payout: "
+                f"expected={[owner.lower(), actor.lower()]}, observed=sorted(portfolio_addresses)"
+            )
+        # The replay sender is in the portfolio, so its mined gas is already
+        # reflected in gross_delta. Subtract only the prior setup outlays here.
         independently_expected_net = gross_delta - prior_cost_wei
-        if not replay_gas_in_delta:
-            independently_expected_net -= replay_gas_cost
         if reported_net != independently_expected_net:
             raise AssertionError(
                 f"Reprove net profit mismatch: artifact={reported_net}, independently recomputed="
