@@ -42,6 +42,13 @@ if [[ "${1:-}" == "state-diff" ]]; then
     fi
 fi
 
+# Read-only EVM block/header inspection is protocol-agnostic and does not
+# require a selected contract target or ABI.
+if [[ "${1:-}" == "block" || "${1:-}" == "blocks" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/block_tools.py" "$@"
+fi
+
 # "lk coverage" is the short alias for target-line coverage. It does not
 # replace the existing audit pipeline coverage command.
 if [[ "${1:-}" == "coverage" ]]; then

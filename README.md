@@ -626,6 +626,38 @@ The project-usage view connects dependency code back to your application. lk imp
 The import helper stays separate from audit target/RPC state. Ordinary lookup, search, explanation, graph/usage views, and JSON output are read-only; only explicit --install changes the project.
 
 
+## Block and block-hash inspection
+
+Use the native, read-only block command to inspect EVM blocks on the
+currently selected Lowkey RPC. It does not need a contract target, ABI, or
+wallet:
+
+~~~bash
+lk block
+lk block 5
+lk block hash 5
+lk block 5 --verbose
+lk block latest --json
+~~~
+
+The default output stays focused on the essentials:
+
+- **Block hash:** this block's fingerprint.
+- **Previous block hash (parent hash):** the previous block's fingerprint.
+- **Time and block.timestamp:** the human-readable time and the exact value Solidity reads.
+- **Transactions:** how many transactions are included.
+- **Gas used:** consumption compared with the block's gas limit.
+
+Use lk block 5 --verbose for extra header/network fields, or --json for
+the raw RPC response. lk block hash 5 prints only the exact 32-byte hash.
+
+For example, Block 5's parent hash should equal Block 4's block hash. That
+parent reference links each block to the one before it. When a transaction
+executes in block 6 and calls blockhash(block.number - 1), the contract
+reads Block 5's block hash. The EVM exposes only the previous 256 completed
+block hashes to contracts; an RPC may retain older block headers separately.
+The command performs no transactions and changes no chain state.
+
 ## Storage and state forensics
 
 ~~~bash

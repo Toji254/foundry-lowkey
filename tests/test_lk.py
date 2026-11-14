@@ -823,12 +823,14 @@ class LowkeyCastTests(unittest.TestCase):
 
     def test_receipt_records_audit_evidence(self):
         tx_hash = "0x" + "1" * 64
-        with patch.object(lk, "run_cast", return_value=0) as run_cast:
-            with patch.object(lk, "audit_context") as ctx:
-                result = lk.run_receipt({"last_tx": tx_hash})
+        config = {"last_tx": tx_hash}
+        with patch.object(lk, "effective_rpc", return_value=None), \
+             patch.object(lk, "run_cast", return_value=0) as run_cast, \
+             patch.object(lk, "audit_context") as ctx:
+            result = lk.run_receipt(config, tx_hash=tx_hash)
         self.assertEqual(result, 0)
-        run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], {"last_tx": tx_hash})
-        ctx.set_latest.assert_called_once()
+        run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
+        ctx.update.assert_not_called()
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
 
@@ -1058,6 +1060,80 @@ class LowkeyCastTests(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), "")
         fake_advisor.maybe_auto_explain.assert_not_called()
+
+    def test_optional_auto_error_explanation_skips_unusable_ai_provider(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(return_value="should not run")
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {"enabled": True, "usable": False}
+        output = io.StringIO()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "no saved transaction"})
+
+        self.assertEqual(output.getvalue(), "")
+        fake_advisor.maybe_auto_explain.assert_not_called()
+
+    def test_unavailable_optional_ai_explanation_does_not_pollute_native_error(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(
+            return_value=(
+                "Optional AI error explanation unavailable (AIUnavailable). "
+                "Run 'lk ai explain-error --last' after fixing the provider."
+            )
+        )
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {"enabled": True, "usable": True}
+        output = io.StringIO()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "no saved transaction"})
+
+        self.assertEqual(output.getvalue(), "")
+        fake_advisor.maybe_auto_explain.assert_called_once()
+
+    def test_available_optional_ai_explanation_is_rendered_after_native_error(self):
+        fake_context = types.ModuleType("error_context")
+        fake_context.auto_error_explain_enabled = lambda: True
+        fake_advisor = types.ModuleType("error_advisor")
+        fake_advisor.maybe_auto_explain = unittest.mock.Mock(
+            return_value="Likely cause: the selected target has no saved transaction."
+        )
+        fake_ai = types.ModuleType("ai_harness")
+        fake_ai.status = lambda: {"enabled": True, "usable": True}
+        output = io.StringIO()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "error_context": fake_context,
+                "error_advisor": fake_advisor,
+                "ai_harness": fake_ai,
+            },
+        ), redirect_stderr(output):
+            lk._maybe_explain_error({"error": "no saved transaction"})
+
+        rendered = output.getvalue()
+        self.assertIn("@ AI OUTPUT — OPTIONAL ERROR EXPLANATION", rendered)
+        self.assertIn("Likely cause:", rendered)
 
     def test_dispatcher_normalizes_direct_stderr_errors_and_sets_failure_status(self):
         output = io.StringIO()
@@ -1315,10 +1391,87 @@ class LowkeyCastTests(unittest.TestCase):
                 choices = lk._lab_address_choices(config, [actor])
 
             self.assertIn(("anvil:0", actor), choices)
-            self.assertIn(("Fallout", live_contract), choices)
+            # A legacy global alias is not enough to establish project identity.
+            # Lowkey may offer the address, but must label it as unverified.
+            self.assertIn((f"Unverified target #{live_contract[-6:]}", live_contract), choices)
             self.assertNotIn(("OldTarget", stale_contract), choices)
             self.assertEqual(
                 sum(1 for _name, address in choices if address.lower() == live_contract.lower()),
+                1,
+            )
+
+    def test_lab_address_choices_prefer_project_context_name_over_stale_global_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "telephone" / "Attack"
+            telephone_root = active_root.parent
+            active_root.mkdir(parents=True)
+            address = "0x" + "a" * 40
+            config = {
+                "_lab_system_root": str(active_root),
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {"CoinFlip": address},
+                "aliases": {"CoinFlip": address},
+                "project_roots": {address: str(telephone_root)},
+            }
+
+            def project_target(root):
+                if pathlib.Path(root).resolve() == telephone_root.resolve():
+                    return {
+                        "contract": "Telephone",
+                        "address": address,
+                        "artifact": None,
+                        "source": "project-lab",
+                    }
+                return None
+
+            with patch.object(lk, "project_context_target", side_effect=project_target), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                choices = lk._lab_address_choices(config, [])
+
+            self.assertIn(("Telephone", address), choices)
+            self.assertNotIn(("CoinFlip", address), choices)
+            self.assertEqual(
+                sum(1 for _name, candidate in choices if candidate.lower() == address.lower()),
+                1,
+            )
+
+    def test_lab_address_choices_use_project_inventory_when_context_target_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "telephone" / "Attack"
+            telephone_root = active_root.parent
+            active_root.mkdir(parents=True)
+            address = "0x" + "b" * 40
+            config = {
+                "_lab_system_root": str(active_root),
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {"CoinFlip": address},
+                "aliases": {"CoinFlip": address},
+                "project_roots": {address: str(telephone_root)},
+            }
+
+            with patch.object(lk, "project_context_target", return_value=None), \
+                 patch.object(
+                     lk,
+                     "_project_target_entries",
+                     return_value=[{
+                         "name": "Telephone",
+                         "contract": "Telephone",
+                         "address": address,
+                         "artifact": "/tmp/telephone/out/telephone.sol/Telephone.json",
+                     }],
+                 ), \
+                 patch.object(lk, "_target_entry_is_protocol", return_value=True), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                choices = lk._lab_address_choices(config, [])
+
+            self.assertIn(("Telephone", address), choices)
+            self.assertNotIn(("CoinFlip", address), choices)
+            self.assertEqual(
+                sum(1 for _name, candidate in choices if candidate.lower() == address.lower()),
                 1,
             )
 
@@ -3871,16 +4024,17 @@ contract Pool {
     def test_receipt_uses_async(self):
         tx_hash = "0x" + "1" * 64
         config = {"last_tx": tx_hash}
-        with patch.object(lk, "run_cast") as run_cast:
-            with patch.object(lk, "audit_context") as audit_context:
-                lk.run_receipt(config)
-            run_cast.assert_called_once()
-            call_args = run_cast.call_args.args
-            self.assertEqual(call_args[0], ["receipt", tx_hash, "--async"])
-            self.assertEqual(call_args[1], {"last_tx": tx_hash})
-            self.assertIsNot(call_args[1], config)
-            audit_context.set_latest.assert_called_once()
-            audit_context.record_tool.assert_called_once()
+        with patch.object(lk, "effective_rpc", return_value=None), \
+             patch.object(lk, "run_cast") as run_cast, \
+             patch.object(lk, "audit_context") as audit_context:
+            lk.run_receipt(config, tx_hash=tx_hash)
+        run_cast.assert_called_once()
+        call_args = run_cast.call_args.args
+        self.assertEqual(call_args[0], ["receipt", tx_hash, "--async"])
+        self.assertEqual(call_args[1], {"last_tx": tx_hash})
+        self.assertIsNot(call_args[1], config)
+        audit_context.update.assert_not_called()
+        audit_context.record_tool.assert_called_once()
 
     def test_scan_records_source_triage_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5361,7 +5515,9 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
+        self.assertIn("READ-ONLY CONTRACT CALL", rendered)
         self.assertIn("balance = 0 units (unit not specified by ABI) [uint256]", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
@@ -5880,12 +6036,16 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("'createEscrow(uint256,address)'", rendered)
-        self.assertIn("1000000000000000000", rendered)
-        self.assertIn(recipient, rendered)
-        self.assertIn("--value '2 ether'", rendered)
-        self.assertNotIn(" Bob ", rendered)
-        cast_output.assert_not_called()
+        self.assertIn("Function: createEscrow(uint256,address)", rendered)
+        self.assertIn("amount (uint256 — integer): 1,000,000,000,000,000,000", rendered)
+        self.assertIn(f"recipient (address — Ethereum address): Bob ({recipient})", rendered)
+        self.assertIn("ETH attached: 2 ether", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
+        self.assertEqual(cast_output.call_count, 1)
+        self.assertEqual(
+            cast_output.call_args.args[0],
+            ["cast", "calldata", "createEscrow(uint256,address)", "1000000000000000000", recipient],
+        )
 
     def test_run_cast_resolves_actor_name_when_value_option_precedes_argument(self):
         target = "0x" + "1" * 40
@@ -5914,11 +6074,260 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("'createEscrow(address)'", rendered)
-        self.assertIn(recipient, rendered)
-        self.assertIn("--value '2 ether'", rendered)
-        self.assertNotIn(" Bob ", rendered)
-        cast_output.assert_not_called()
+        self.assertIn("Function: createEscrow(address)", rendered)
+        self.assertIn(f"recipient (address — Ethereum address): Bob ({recipient})", rendered)
+        self.assertIn("ETH attached: 2 ether", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
+        self.assertEqual(cast_output.call_count, 1)
+        self.assertEqual(
+            cast_output.call_args.args[0],
+            ["cast", "calldata", "createEscrow(address)", recipient],
+        )
+
+    def test_run_cast_preview_explains_direct_telephone_call_without_debug_noise(self):
+        target = "0x" + "1" * 40
+        alice = "0x" + "2" * 40
+        bob = "0x" + "3" * 40
+        encoded = "0xa6f9dae1" + "0" * 24 + bob[2:].lower()
+        abi = [{
+            "type": "function",
+            "name": "changeOwner",
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }]
+        config = {
+            "target": target,
+            "target_contract": "Telephone",
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {
+                "Alice": {"address": alice},
+                "Bob": {"address": bob},
+            },
+            "labels": {alice: "Alice", bob: "Bob"},
+        }
+        output = io.StringIO()
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "cast_output", return_value=(0, encoded, "")) as cast_output, \
+             redirect_stdout(output):
+            result = lk.run_cast(
+                ["send", "changeOwner", "Bob", "--from", alice, "--preview"],
+                config,
+            )
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("TRANSACTION PREVIEW — NOT SENT", rendered)
+        self.assertIn(f"Sender:   Alice ({alice})", rendered)
+        self.assertIn(f"Contract: Telephone ({target})", rendered)
+        self.assertIn("Function: changeOwner(address)", rendered)
+        self.assertIn(f"_owner (address — Ethereum address): Bob ({bob})", rendered)
+        self.assertIn(f"tx.origin  = Alice ({alice})", rendered)
+        self.assertIn(f"msg.sender = Alice ({alice})", rendered)
+        self.assertIn("Function selector: 0xa6f9dae1", rendered)
+        self.assertIn(encoded, rendered)
+        self.assertIn("does not execute or simulate the contract", rendered)
+        self.assertNotIn("DEBUG: Executing", rendered)
+        self.assertNotIn("Preview: cast send", rendered)
+        cast_output.assert_called_once_with([
+            "cast", "calldata", "changeOwner(address)", bob,
+        ])
+
+
+    def test_run_calldata_explains_selector_arguments_and_call_context(self):
+        target = "0x" + "1" * 40
+        alice = "0x" + "2" * 40
+        bob = "0x" + "3" * 40
+        data = "0xa6f9dae1" + "0" * 24 + bob[2:]
+        abi = [{
+            "type": "function",
+            "name": "changeOwner",
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }]
+        config = {
+            "target": target,
+            "target_contract": "Telephone",
+            "wallets": {"Alice": {"address": alice}, "Bob": {"address": bob}},
+            "labels": {alice: "Alice", bob: "Bob"},
+        }
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "abi_selector", return_value="0xa6f9dae1"), \
+             patch.object(lk, "decode_abi_input", return_value=bob), \
+             patch.object(lk, "cast_output", return_value=(0, "changeOwner(address)\n[000]: " + data[10:], "")), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_calldata(config, [data])
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("CALLDATA INSPECTION", rendered)
+        self.assertIn("Total size:        36 bytes", rendered)
+        self.assertIn("Function selector: 0xa6f9dae1", rendered)
+        self.assertIn("Argument payload:  32 bytes", rendered)
+        self.assertIn(f"_owner (address) = Bob ({bob})", rendered)
+        self.assertIn("Calldata does not choose the caller", rendered)
+        self.assertIn("STRUCTURAL DECODE", rendered)
+
+    def test_run_disasm_explains_opcodes_and_preserves_raw_listing(self):
+        bytecode = "0x6000353314601457"
+        disassembly = "PUSH1 0x00\nCALLDATALOAD\nCALLER\nEQ\nJUMPI\nSLOAD\nSSTORE"
+        config = {"target": "0x" + "1" * 40, "target_contract": "Telephone"}
+        with patch.object(lk, "run_cast", return_value=lk.CommandResult(disassembly, 0)) as run_cast, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_disasm(config, [bytecode])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["disassemble", bytecode], config, capture=True)
+        rendered = output.getvalue()
+        self.assertIn("BYTECODE DISASSEMBLY: Telephone", rendered)
+        self.assertIn("CALLDATALOAD: Reads a 32-byte word", rendered)
+        self.assertIn("CALLER: Pushes the immediate caller", rendered)
+        self.assertIn("SSTORE: Writes a value to persistent contract storage.", rendered)
+        self.assertIn("RAW OPCODE LISTING", rendered)
+        self.assertIn(disassembly, rendered)
+
+
+    def test_run_encode_explains_what_the_encoded_bytes_represent(self):
+        target = "0x" + "1" * 40
+        bob = "0x" + "2" * 40
+        encoded = "0xa6f9dae1" + "0" * 24 + bob[2:]
+        abi = [{
+            "type": "function",
+            "name": "changeOwner",
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "outputs": [],
+            "stateMutability": "nonpayable",
+        }]
+        config = {
+            "target": target,
+            "wallets": {"Bob": {"address": bob}},
+            "labels": {bob: "Bob"},
+        }
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "run_cast", return_value=lk.CommandResult(encoded, 0)) as run_cast, \
+             patch.object(lk, "decode_abi_input", return_value=bob), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_encode(config, ["changeOwner", "Bob"])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(
+            ["calldata", "changeOwner(address)", "Bob"], config, capture=True
+        )
+        rendered = output.getvalue()
+        self.assertIn("ABI ENCODING — NOT SENT", rendered)
+        self.assertIn("Function selector: 0xa6f9dae1", rendered)
+        self.assertIn(f"_owner (address) = Bob ({bob})", rendered)
+        self.assertIn(encoded, rendered)
+        self.assertIn("does not send a transaction", rendered)
+
+    def test_forge_test_summary_explains_counts_without_claiming_security_completeness(self):
+        output = (
+            "Suite result: ok. 3 passed; 0 failed; 1 skipped; finished in 2.1ms\n"
+            "Suite result: FAILED. 1 passed; 1 failed; 0 skipped; finished in 1.1ms\n"
+        )
+        with redirect_stdout(io.StringIO()) as rendered:
+            lk._print_forge_test_result_summary(output, 1)
+        text = rendered.getvalue()
+        self.assertIn("Suites reported: 2", text)
+        self.assertIn("Test cases:      4 passed · 1 failed · 1 skipped", text)
+        self.assertIn("inspect the first failure", text.lower())
+        self.assertIn("not an overall security verdict", text)
+
+    def test_txpool_status_converts_hex_counts_and_explains_terms(self):
+        config = {"rpc": "http://127.0.0.1:8545"}
+        with patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
+             patch.object(lk, "rpc_json", return_value={"pending": "0x2", "queued": "0x1"}), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_txpool(config, ["status"])
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("Pending: 2", rendered)
+        self.assertIn("Queued:  1", rendered)
+        self.assertIn("local mempool", rendered)
+
+    def test_txpool_content_summarizes_counts_and_keeps_raw_json(self):
+        config = {"rpc": "http://127.0.0.1:8545"}
+        payload = {
+            "pending": {"0x" + "1" * 40: {"0x0": {"hash": "0x" + "a" * 64}, "0x1": {"hash": "0x" + "b" * 64}}},
+            "queued": {"0x" + "2" * 40: {"0x3": {"hash": "0x" + "c" * 64}}},
+        }
+        with patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
+             patch.object(lk, "rpc_json", return_value=payload), \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_txpool(config, ["content"])
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("Pending transactions: 2", rendered)
+        self.assertIn("Queued transactions:  1", rendered)
+        self.assertIn("RAW TXPOOL DATA", rendered)
+        self.assertIn("transaction sequence number", rendered)
+
+    def test_raw_logs_explain_topics_and_event_data(self):
+        config = {}
+        raw = "address: 0x1111...\\ntopics: [0xaaaa...]\\ndata: 0xbbbb..."
+        with patch.object(lk, "run_cast", return_value=lk.CommandResult(raw, 0)) as run_cast, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_logs(config, [])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["logs"], config, capture=True)
+        rendered = output.getvalue()
+        self.assertIn("address: contract that emitted the event", rendered)
+        self.assertIn("topics[0]: event-signature hash", rendered)
+        self.assertIn("data: ABI-encoded non-indexed event fields", rendered)
+        self.assertIn(raw, rendered)
+
+    def test_decode_return_data_uses_abi_output_names(self):
+        target = "0x" + "1" * 40
+        item = {
+            "type": "function",
+            "name": "balanceOf",
+            "inputs": [{"name": "account", "type": "address"}],
+            "outputs": [{"name": "balance", "type": "uint256"}],
+            "stateMutability": "view",
+        }
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=[item]), \
+             patch.object(lk, "run_cast", return_value=lk.CommandResult("123", 0)) as run_cast, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_decode(config, ["balanceOf", "0x" + "0" * 64])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["decode-abi", "balanceOf(address)(uint256)", "0x" + "0" * 64], config, capture=True)
+        rendered = output.getvalue()
+        self.assertIn("DECODED CONTRACT RETURN", rendered)
+        self.assertIn("balance = 123 units (unit not specified by ABI)", rendered)
+        self.assertIn("not automatically proof that storage changed", rendered)
+
+    def test_common_cast_outputs_include_plain_english_meaning_and_raw_evidence(self):
+        target = "0x" + "1" * 40
+        config = {"target": target, "target_contract": "Telephone", "labels": {}}
+
+        with redirect_stdout(io.StringIO()) as bytecode_output:
+            self.assertTrue(lk._print_cast_result_guide("code", "0x60016002", config, target))
+        bytecode_text = bytecode_output.getvalue()
+        self.assertIn("Bytecode size: 4 bytes", bytecode_text)
+        self.assertIn("not the original Solidity source", bytecode_text)
+        self.assertIn("lk disasm", bytecode_text)
+        self.assertIn("0x60016002", bytecode_text)
+
+        with redirect_stdout(io.StringIO()) as gas_output:
+            self.assertTrue(lk._print_cast_result_guide("estimate", "0x5208", config, target))
+        gas_text = gas_output.getvalue()
+        self.assertIn("Estimated gas units: 21,000", gas_text)
+        self.assertIn("not an ETH amount", gas_text)
+
+        with redirect_stdout(io.StringIO()) as nonce_output:
+            self.assertTrue(lk._print_cast_result_guide("nonce", "0x3", config, target))
+        nonce_text = nonce_output.getvalue()
+        self.assertIn("Next nonce: 3", nonce_text)
+        self.assertIn("not the total number of transactions ever sent", nonce_text)
+
 
     def test_encode_target_call_normalizes_ether_argument(self):
         config={
@@ -7718,6 +8127,227 @@ def withdraw(amount: uint256):
         expected = {"total": 3, "reviews": 1, "confirmed": 1, "candidates": 1}
         with patch.object(lk.audit_context, "security_pattern_summary", return_value=expected):
             self.assertEqual(lk._security_pattern_summary(pathlib.Path("/tmp/project")), expected)
+
+
+    def test_trace_target_sender_is_the_intermediary_not_the_transaction_origin(self):
+        origin = "0x" + "1" * 40
+        intermediary = "0x" + "2" * 40
+        target = "0x" + "3" * 40
+        trace = {
+            "type": "CALL",
+            "from": origin,
+            "to": intermediary,
+            "calls": [{
+                "type": "CALL",
+                "from": intermediary,
+                "to": target,
+                "calls": [],
+            }],
+        }
+
+        self.assertEqual(
+            lk._trace_target_msg_senders(trace, target, origin),
+            [(intermediary, "CALL")],
+        )
+
+    def test_transaction_target_trace_failure_is_reported_as_unavailable(self):
+        tx_hash = "0x" + "a" * 64
+        target = "0x" + "b" * 40
+        origin = "0x" + "c" * 40
+        with patch.object(lk, "rpc_json", side_effect=RuntimeError("method not supported")):
+            self.assertIsNone(
+                lk._transaction_target_msg_senders(
+                    "http://127.0.0.1:8545", tx_hash, target, origin
+                )
+            )
+
+    def test_transaction_display_config_uses_live_project_names_and_disambiguates_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "telephone"
+            target = "0x" + "1" * 40
+            first = "0x" + "2" * 40
+            second = "0x" + "3" * 40
+            conflicting = "0x" + "4" * 40
+            stale = "0x" + "5" * 40
+            remembered = [
+                {
+                    "name": "Helper",
+                    "address": first,
+                    "root": active_root / "Attack",
+                    "artifact": str(active_root / "Attack" / "out" / "Helper.json"),
+                },
+                {
+                    "name": "Helper",
+                    "address": second,
+                    "root": active_root / "Other",
+                    "artifact": str(active_root / "Other" / "out" / "Helper.json"),
+                },
+                {
+                    "name": "Telephone",
+                    "address": target,
+                    "root": active_root,
+                    "artifact": str(active_root / "out" / "Telephone.json"),
+                },
+                {
+                    "name": "OldAlias",
+                    "address": conflicting,
+                    "root": active_root / "Old",
+                    "artifact": str(active_root / "Old" / "out" / "OldAlias.json"),
+                },
+                {
+                    "name": "WrongIdentity",
+                    "address": conflicting,
+                    "root": active_root / "OtherOld",
+                    "artifact": str(active_root / "OtherOld" / "out" / "WrongIdentity.json"),
+                },
+                {
+                    "name": "StaleContract",
+                    "address": stale,
+                    "root": active_root / "Stale",
+                    "artifact": str(active_root / "Stale" / "out" / "StaleContract.json"),
+                },
+            ]
+            config = {"target": target, "target_contract": "Telephone", "wallets": {}, "labels": {}}
+            rpc = "http://127.0.0.1:8545"
+
+            def live_check(_config, address, checked_rpc, artifact_path=None):
+                self.assertEqual(checked_rpc, rpc)
+                return address.lower() != stale.lower()
+
+            with patch.object(lk, "_lab_workspace_remembered_targets", return_value=remembered), \
+                 patch.object(lk, "active_project_target", return_value=target), \
+                 patch.object(lk, "project_context_target", return_value={
+                     "address": target, "contract": "Telephone"
+                 }), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", side_effect=live_check):
+                display_config = lk._transaction_display_config(config, active_root, rpc)
+
+        self.assertEqual(display_config["labels"][first], "Helper (Attack)")
+        self.assertEqual(display_config["labels"][second], "Helper (Other)")
+        self.assertNotIn(conflicting, display_config["labels"])
+        self.assertNotIn(stale, display_config["labels"])
+        self.assertNotIn(target, display_config["labels"])
+        self.assertEqual(config["labels"], {})
+
+    def test_tx_output_explains_origin_and_intermediary_msg_sender(self):
+        origin = "0x" + "1" * 40
+        intermediary = "0x" + "2" * 40
+        target = "0x" + "3" * 40
+        tx_hash = "0x" + "4" * 64
+        transaction = {
+            "hash": tx_hash,
+            "from": origin,
+            "to": intermediary,
+            "blockNumber": "0x9",
+            "value": "0x0",
+            "input": "0x",
+        }
+        config = {
+            "actor": "alicw",
+            "target": target,
+            "target_contract": "Telephone",
+            "wallets": {},
+            "labels": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk, "cast_output", return_value=(0, json.dumps(transaction), "")), \
+                 patch.object(lk, "load_abi", return_value=[]), \
+                 patch.object(lk, "project_context_target", return_value={
+                     "address": target, "contract": "Telephone"
+                 }), \
+                 patch.object(lk, "active_project_target", return_value=target), \
+                 patch.object(lk, "_transaction_target_msg_senders", return_value=[(intermediary, "CALL")]), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[{
+                     "name": "attackTelephone", "address": intermediary,
+                     "root": root / "Attack",
+                     "artifact": str(root / "Attack" / "out" / "attackTelephone.json"),
+                 }]), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True), \
+                 patch.object(lk.walkthrough, "_receipt", return_value={"status": "0x1"}), \
+                 patch.object(lk.walkthrough, "_write_transaction_evidence"), \
+                 patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    lk.run_tx(config, [tx_hash])
+
+        rendered = output.getvalue()
+        self.assertIn("EXECUTION CONTEXT", rendered)
+        self.assertIn(f"tx.origin: {origin} (transaction signer)", rendered)
+        self.assertIn(f"Top-level recipient: attackTelephone ({intermediary})", rendered)
+        self.assertIn(f"msg.sender at top-level recipient: {origin}", rendered)
+        self.assertIn(f"msg.sender at Telephone (CALL): attackTelephone ({intermediary})", rendered)
+        self.assertIn(f"attackTelephone ({intermediary}) was the immediate caller to Telephone", rendered)
+        self.assertIn("tx.origin remains", rendered)
+
+    def test_project_transaction_pointer_is_not_replaced_by_another_target(self):
+        root = pathlib.Path("/tmp/lowkey-project")
+        tx_hash = "0x" + "a" * 64
+        selected_target = "0x" + "1" * 40
+        other_target = "0x" + "2" * 40
+        rpc = "http://127.0.0.1:8545"
+        with patch.object(lk, "active_project_target", return_value=selected_target), \
+             patch.object(lk.audit_context, "set_latest") as set_latest:
+            self.assertFalse(
+                lk._remember_transaction_for_project_target(
+                    {}, root, tx_hash, other_target, rpc
+                )
+            )
+            set_latest.assert_not_called()
+
+            self.assertTrue(
+                lk._remember_transaction_for_project_target(
+                    {}, root, tx_hash, selected_target, rpc
+                )
+            )
+            set_latest.assert_called_once_with(
+                root, tx_hash=tx_hash, target=selected_target, rpc=rpc
+            )
+
+    def test_lab_address_choices_do_not_reuse_alias_when_project_identity_is_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp) / "telephone" / "Attack"
+            telephone_root = active_root.parent
+            active_root.mkdir(parents=True)
+            address = "0x" + "d" * 40
+            config = {
+                "_lab_system_root": str(active_root),
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {"CoinFlip": address},
+                "aliases": {"CoinFlip": address},
+                "project_roots": {address: str(telephone_root)},
+            }
+            inventory = [
+                {
+                    "name": "Telephone",
+                    "contract": "Telephone",
+                    "address": address,
+                    "artifact": "/tmp/telephone/out/Telephone.json",
+                },
+                {
+                    "name": "CoinFlip",
+                    "contract": "CoinFlip",
+                    "address": address,
+                    "artifact": "/tmp/telephone/out/CoinFlip.json",
+                },
+            ]
+            with patch.object(lk, "project_context_target", return_value=None), \
+                 patch.object(lk, "_project_target_entries", return_value=inventory), \
+                 patch.object(lk, "_target_entry_is_protocol", return_value=True), \
+                 patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
+                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                choices = lk._lab_address_choices(config, [])
+
+        expected = f"Unverified target #{address[-6:]}"
+        self.assertIn((expected, address), choices)
+        self.assertNotIn(("CoinFlip", address), choices)
+        self.assertEqual(
+            sum(1 for _name, candidate in choices if candidate.lower() == address.lower()),
+            1,
+        )
 
 if __name__ == "__main__":
     unittest.main()

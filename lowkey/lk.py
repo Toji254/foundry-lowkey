@@ -240,11 +240,15 @@ def _maybe_explain_error(record):
         except ImportError:
             from lowkey import ai_harness
         ai_status = ai_harness.status()
+        # This is optional decoration around an already actionable native
+        # error. Do not call a provider that Lowkey already knows is unusable,
+        # disabled, or out of free-tier calls.
+        if not ai_status.get("enabled") or not ai_status.get("usable"):
+            return
         if (
             ai_status.get("jev_free_tier_mode")
             and int(ai_status.get("jev_calls_remaining") or 0) <= 0
         ):
-            # Do not repeatedly call an exhausted free-tier provider on every failure.
             return
         error_text = " ".join(
             str(record.get(key) or "")
@@ -254,23 +258,23 @@ def _maybe_explain_error(record):
             # The native error already explains how to open help. When the
             # learner note is enabled and usable, it provides the one contextual
             # AI explanation; avoid printing a second, longer diagnosis for a typo.
-            try:
-                import ai_harness
-            except ImportError:
-                from lowkey import ai_harness
-            ai_status = ai_harness.status()
-            if (
-                ai_status.get("auto_recommendations")
-                and ai_status.get("enabled")
-                and ai_status.get("usable")
-            ):
+            if ai_status.get("auto_recommendations"):
                 return
-        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
+
         result = error_advisor.maybe_auto_explain(record)
-        if result:
-            print(result, file=sys.stderr)
-    except Exception as exc:
-        print(f"Optional AI error explanation unavailable ({type(exc).__name__}); run 'lk ai explain-error --last' when ready.", file=sys.stderr)
+        # A missing/unavailable AI provider must never add another error or
+        # an empty banner after the deterministic command failure. Manual
+        # 'lk ai explain-error --last' remains available when the provider works.
+        if not isinstance(result, str) or not result.strip():
+            return
+        if result.lstrip().startswith("Optional AI error explanation unavailable"):
+            return
+        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
+        print(result, file=sys.stderr)
+    except Exception:
+        # Automatic explanations are strictly best-effort. Preserve the native
+        # CLI error and keep the terminal output useful when AI dependencies fail.
+        return
 
 
 def fail(message, code=2):
@@ -903,8 +907,12 @@ def select_anvil_actor(config,index,name):
             and str(existing.get('anvil_index'))==str(index)
         ):
             return fail(
-                f"Error: wallet profile '{name}' uses an explicit key/env and cannot be rebound. "
-                "Use a new actor name or remove that profile first."
+                f"Error: '{name}' is already a saved private-key/env wallet profile; "
+                f"Lowkey will not overwrite it with Anvil account {index}. "
+                f"Use another alias (for example '{name}Anvil'), or run 'lk wallet use {name}' "
+                "to select the existing wallet. Only run 'lk wallet remove "
+                + str(name)
+                + "' if you intend to delete that saved profile."
             )
     elif existing and wallet_is_internal(name, existing):
         return fail(f"Error: '{name}' is reserved for Lowkey's internal deployment signer.")
@@ -1156,6 +1164,19 @@ def target_aliases(config, root=None):
     for name, addr in names:
         if not is_address(addr):
             continue
+        # A project-scoped target is authoritative for its address in this
+        # project. Local chains (especially Anvil) reuse deterministic
+        # deployment addresses, so a global alias left by another project can
+        # otherwise misidentify the current contract or resolve an old name to
+        # a different contract. The legacy config does not retain per-alias
+        # chain provenance, so fail closed on conflicting names for this
+        # address and keep only the verified project-context identity.
+        if (
+            context_identity
+            and str(addr).lower() == str(context_address).lower()
+            and str(name).strip().lower() != str(context_name).strip().lower()
+        ):
+            continue
         owner_root = owners_by_address.get(str(addr).lower())
 
         artifact = config.get("abi_paths", {}).get(addr)
@@ -1367,8 +1388,110 @@ def artifact_json_files(root="."):
                 if filename.endswith(".json"):
                     result.append(os.path.join(path, filename))
     return sorted(set(result))
+def _transaction_target_for_hash(config, tx_hash, rpc=None):
+    """Resolve the destination of a saved transaction on the active RPC."""
+    if not is_tx_hash(tx_hash):
+        return None
+    rpc = rpc or effective_rpc(config)
+    if not rpc:
+        return None
+    try:
+        transaction = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
+        if isinstance(transaction, dict):
+            target = transaction.get("to")
+            if is_address(target):
+                return str(target)
+        receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash])
+        if isinstance(receipt, dict):
+            target = receipt.get("contractAddress")
+            if is_address(target):
+                return str(target)
+    except Exception:
+        return None
+    return None
+
+
 def last_transaction(config):
-    return config.get("last_tx")
+    """Return only a transaction that belongs to the active project/target.
+
+    The global config still carries a legacy last_tx field for compatibility,
+    but it is never trusted across projects or targets without provenance.
+    Old unscoped values are migrated only after the active RPC proves their
+    transaction destination matches the selected project target.
+    """
+    root = audit_context.foundry_project_root()
+    try:
+        current_target = active_project_target(config, root)
+    except Exception:
+        current_target = None
+    if not is_address(current_target):
+        configured_target = config.get("target")
+        current_target = configured_target if is_address(configured_target) else None
+
+    current_rpc = effective_rpc(config)
+    context = audit_context.load(root)
+    latest = context.get("latest", {}) if isinstance(context, dict) else {}
+    if not isinstance(latest, dict):
+        latest = {}
+
+    project_tx = latest.get("tx_hash")
+    if is_tx_hash(project_tx):
+        recorded_target = latest.get("target")
+        recorded_rpc = latest.get("rpc")
+        if current_target and recorded_target and str(recorded_target).lower() != str(current_target).lower():
+            return None
+        if recorded_rpc and current_rpc and str(recorded_rpc).rstrip("/") != str(current_rpc).rstrip("/"):
+            return None
+
+        # Older context files may contain a tx hash without destination/RPC
+        # provenance. Verify it against the active target before reusing it.
+        if current_target and (not recorded_target or not recorded_rpc):
+            actual_target = _transaction_target_for_hash(config, project_tx, current_rpc)
+            if not actual_target or actual_target.lower() != str(current_target).lower():
+                return None
+            audit_context.set_latest(
+                root,
+                tx_hash=project_tx,
+                target=actual_target,
+                rpc=current_rpc,
+            )
+        return project_tx
+
+    legacy_tx = config.get("last_tx")
+    if not is_tx_hash(legacy_tx):
+        return None
+
+    root_key = str(Path(root).expanduser().resolve())
+    saved_root = config.get("last_tx_project_root")
+    saved_target = config.get("last_tx_target")
+    saved_rpc = config.get("last_tx_rpc")
+    if saved_root:
+        try:
+            if str(Path(str(saved_root)).expanduser().resolve()) != root_key:
+                return None
+        except OSError:
+            return None
+        if current_target and saved_target and str(saved_target).lower() != str(current_target).lower():
+            return None
+        if saved_rpc and current_rpc and str(saved_rpc).rstrip("/") != str(current_rpc).rstrip("/"):
+            return None
+
+    if current_target:
+        actual_target = _transaction_target_for_hash(config, legacy_tx, current_rpc)
+        if not actual_target or actual_target.lower() != str(current_target).lower():
+            return None
+        saved_target = actual_target
+    elif not saved_root:
+        # No project target and no provenance: a global hash is ambiguous.
+        return None
+
+    audit_context.set_latest(
+        root,
+        tx_hash=legacy_tx,
+        target=saved_target,
+        rpc=current_rpc or saved_rpc,
+    )
+    return legacy_tx
 
 def log_session(command, result):
     os.makedirs(AUDIT_DIR, exist_ok=True)
@@ -3066,10 +3189,10 @@ def run_functions(config, args=None):
                 _function_print_wrapped("        amount    ", outflow["amount"])
 
     print()
-    print(_function_terminal_style("ETH FLOW", "heading"))
+    print(_function_terminal_style("ETH FLOW LEGEND (not additional findings)", "heading"))
     print("  ↑ RECEIVES   Accepts attached ETH; use --eth <amount>.")
-    print("  ↓ SENDS      Native-ETH outflow detected in source.")
-    print("  ! UNASSESSED Source unavailable; outgoing flow could not be inspected.")
+    print("  ↓ SENDS      Shown beside a function with a detected native-ETH outflow.")
+    print("  ! UNASSESSED Shown when that function's source could not be inspected.")
     print("  Common Solidity/Yul patterns and same-file helpers are checked; indirect flows need review.")
     print("  Inheritance, modifiers and proxies/delegatecall may hide flows. ERC20 transfers are excluded.")
     print("  Use lk fn --verbose for full audit details.")
@@ -3107,10 +3230,48 @@ def run_encode(config,args):
     values=list(args)
     target=config.get("target")
     if target and ("(" not in values[0] or ")" not in values[0]):
-        try: values[0]=resolve_function(values[0],target,config)
+        try:
+            values[0]=resolve_function(values[0],target,config)
         except ValueError as error:
             return fail(f"Error: {error}")
-    run_cast(["calldata"]+values,config)
+
+    result = run_cast(["calldata"] + values, config, capture=True)
+    result_code = getattr(result, "code", result if isinstance(result, int) else 1)
+    encoded = str(getattr(result, "text", str(result or ""))).strip()
+    if result_code != 0:
+        if encoded:
+            print(encoded, file=sys.stderr)
+        return result_code
+    if not re.fullmatch(r"0x[0-9a-fA-F]*", encoded) or len(encoded) < 10 or len(encoded) % 2:
+        print(encoded or "Lowkey could not produce ABI calldata.")
+        return result_code
+
+    signature = values[0]
+    total_bytes = (len(encoded) - 2) // 2
+    print("ABI ENCODING — NOT SENT")
+    print("=======================")
+    print(f"Function:          {signature}")
+    print(f"Function selector: {encoded[:10].lower()}  (first 4 bytes)")
+    print(f"Argument data:     {max(0, total_bytes - 4)} bytes")
+    print(f"Total calldata:    {total_bytes} bytes")
+
+    abi = load_abi(target, config) if target else []
+    matches = matching_functions(abi, signature) if abi else []
+    if len(matches) == 1:
+        decoded = decode_abi_input(signature, encoded)
+        print("Encoded arguments:")
+        for line in _format_decoded_abi_arguments(matches[0], decoded, config, indent="  "):
+            print(line)
+    elif values[1:]:
+        print("Input values: " + ", ".join(str(value) for value in values[1:]))
+
+    print("")
+    print("FULL CALLDATA")
+    print(encoded)
+    print("")
+    print("Meaning: this creates the bytes a caller can submit to a contract. It does not send a transaction, execute the function, or choose msg.sender/tx.origin.")
+    return result_code
+
 def run_signature(config, args):
     usage = "Usage: lk sig '<functionName>(<parameterTypes>)'"
     example = "Example: lk sig 'setValue(uint256)'"
@@ -3166,7 +3327,10 @@ def run_signature(config, args):
 
     code, out, err = cast_output(["cast", "sig", signature])
     if out:
-        print(out)
+        selector = str(out).splitlines()[0].strip()
+        print(f"Function selector: {selector}")
+        print("Meaning: this is the first 4 bytes of the Keccak-256 hash of the canonical function signature.")
+        print("The selector helps the EVM dispatcher choose a function; it is not a secret or an access-control check.")
     if err:
         print(err, file=sys.stderr)
     if code != 0:
@@ -3642,9 +3806,296 @@ def run_decode_error(config,args):
             print(decode_abi_input(signature,data) if item.get("inputs") else "Arguments: none"); return
     print("Loaded ABI did not contain that custom error; asking Cast resolver:")
     run_cast(["decode-error",data],config)
+def _trace_target_msg_senders(trace, target, origin):
+    """Return trace-derived msg.sender values for frames that enter target.
+
+    CALL/STATICCALL/CALLCODE use the frame's caller. DELEGATECALL preserves
+    the parent's msg.sender, so its sender is inherited instead of guessed
+    from the implementation/proxy address.
+    """
+    if not isinstance(trace, dict) or not is_address(target):
+        return []
+
+    matches = []
+    seen = set()
+
+    def visit(frame, parent_msg_sender=None, parent_context=None):
+        if not isinstance(frame, dict):
+            return
+        frame_type = str(frame.get("type") or "CALL").upper()
+        frame_from = frame.get("from")
+        if frame_type == "DELEGATECALL":
+            msg_sender = parent_msg_sender if is_address(parent_msg_sender) else frame_from
+        else:
+            msg_sender = frame_from if is_address(frame_from) else (
+                parent_context if is_address(parent_context) else parent_msg_sender
+            )
+        frame_to = frame.get("to")
+        if is_address(frame_to) and str(frame_to).lower() == str(target).lower():
+            if is_address(msg_sender):
+                key = (str(msg_sender).lower(), frame_type)
+                if key not in seen:
+                    seen.add(key)
+                    matches.append((str(msg_sender), frame_type))
+
+        # DELEGATECALL and CALLCODE execute in the parent's storage/address
+        # context. Calls made from those frames therefore originate from the
+        # inherited context address, not the code address in frame.to.
+        if frame_type in {"DELEGATECALL", "CALLCODE"}:
+            next_context = parent_context
+        else:
+            next_context = frame_to if is_address(frame_to) else parent_context
+        children = frame.get("calls")
+        if isinstance(children, list):
+            for child in children:
+                visit(child, msg_sender or origin, next_context)
+
+    visit(trace, origin, None)
+    return matches
+
+
+def _transaction_target_msg_senders(rpc, tx_hash, target, origin):
+    """Return target callers from callTracer, or None when tracing is unavailable."""
+    if not rpc or not is_tx_hash(tx_hash) or not is_address(target):
+        return None
+    try:
+        trace = rpc_json(
+            rpc,
+            "debug_traceTransaction",
+            [tx_hash, {"tracer": "callTracer"}],
+        )
+    except Exception:
+        return None
+    if not isinstance(trace, dict):
+        return None
+    return _trace_target_msg_senders(trace, target, origin)
+
+
+def _remember_transaction_for_project_target(config, root, tx_hash, tx_target, rpc, trace=False):
+    """Update this project's default transaction only for its validated direct target."""
+    if not is_tx_hash(tx_hash) or not is_address(tx_target):
+        return False
+    try:
+        selected_target = active_project_target(config, root)
+    except Exception:
+        selected_target = None
+    if not is_address(selected_target):
+        return False
+    if str(selected_target).lower() != str(tx_target).lower():
+        return False
+    latest = {
+        "tx_hash": tx_hash,
+        "target": tx_target,
+        "rpc": rpc,
+    }
+    if trace:
+        latest["trace"] = tx_hash
+    audit_context.set_latest(root, **latest)
+    return True
+
+
+
+def _transaction_display_config(config, root, rpc):
+    """Add verified, nearby project contract names to transaction output labels.
+
+    A transaction inspected from one project may call a contract remembered by a
+    nested or sibling project. Reuse those project-scoped identities only after
+    checking their runtime code against the artifact on this exact RPC. This is
+    display-only: the caller's config and saved project state are never changed.
+    """
+    if not isinstance(config, dict) or not rpc:
+        return config
+
+    workspace_config = dict(config)
+    workspace_config["_lab_system_root"] = str(root)
+    try:
+        remembered = _lab_workspace_remembered_targets(workspace_config)
+    except Exception:
+        remembered = []
+    if not remembered:
+        return config
+
+    try:
+        selected_target = active_project_target(config, root)
+    except Exception:
+        selected_target = None
+    try:
+        current_context_target = project_context_target(root)
+    except Exception:
+        current_context_target = None
+    if isinstance(current_context_target, dict) and is_address(
+        current_context_target.get("address")
+    ):
+        selected_target = current_context_target["address"]
+
+    # Group by address first. If two project records disagree about what lives
+    # at the same address, do not choose whichever happened to be discovered first.
+    by_address = {}
+    for item in remembered:
+        if not isinstance(item, dict):
+            continue
+        address = item.get("address")
+        name = str(item.get("name") or "").strip()
+        project_root = item.get("root")
+        if not is_address(address) or not name or not project_root:
+            continue
+        if is_address(selected_target) and str(address).lower() == str(selected_target).lower():
+            continue
+        try:
+            project_root = Path(project_root).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            continue
+        try:
+            live = _lab_remembered_contract_is_live(
+                config,
+                str(address),
+                rpc,
+                artifact_path=item.get("artifact"),
+            )
+        except Exception:
+            live = False
+        if not live:
+            continue
+        by_address.setdefault(str(address).lower(), []).append({
+            "address": str(address),
+            "name": name,
+            "root": project_root,
+        })
+
+    verified = []
+    for entries in by_address.values():
+        names = {item["name"] for item in entries}
+        if len(names) != 1:
+            continue
+        # Multiple projects may intentionally refer to the same contract. Keep
+        # its shared name, and choose a stable path only when disambiguation is
+        # needed because another address uses that same name.
+        unique_roots = sorted(
+            {item["root"] for item in entries},
+            key=lambda path: path.as_posix(),
+        )
+        verified.append({
+            "address": entries[0]["address"],
+            "name": next(iter(names)),
+            "root": unique_roots[0],
+        })
+
+    if not verified:
+        return config
+
+    name_counts = {}
+    for item in verified:
+        key = item["name"].casefold()
+        name_counts[key] = name_counts.get(key, 0) + 1
+
+    active_root = Path(root).expanduser().resolve()
+    labels = dict(config.get("labels") or {})
+    rendered_labels = set()
+    for item in verified:
+        label = item["name"]
+        if name_counts.get(label.casefold(), 0) > 1:
+            try:
+                common_root = Path(os.path.commonpath([
+                    str(active_root), str(item["root"])
+                ]))
+                project_hint = item["root"].relative_to(common_root).as_posix()
+            except (OSError, ValueError):
+                project_hint = item["root"].name
+            if not project_hint or project_hint == ".":
+                project_hint = item["root"].name
+            label = f"{label} ({project_hint})"
+            if label.casefold() in rendered_labels:
+                label += f" #{item['address'][-6:]}"
+        rendered_labels.add(label.casefold())
+        # Existing explicit labels remain authoritative. Wallet/actor names
+        # still take precedence inside _known_address_identities().
+        labels.setdefault(item["address"], label)
+
+    display_config = dict(config)
+    display_config["labels"] = labels
+    return display_config
+
+
+
+def _format_decoded_abi_arguments(function_item, decoded, config, indent="  "):
+    """Render ABI-decoded inputs with parameter names when the decode is unambiguous."""
+    inputs = function_item.get("inputs", []) if isinstance(function_item, dict) else []
+    if not inputs:
+        return []
+    values = _decoded_abi_output_values(decoded, inputs)
+    if len(values) != len(inputs):
+        return [f"{indent}Decoded values: {apply_labels(str(decoded or '').strip(), config)}"]
+    rendered = []
+    for index, (parameter, raw_value) in enumerate(zip(inputs, values), 1):
+        item_type = canonical_type(parameter)
+        label = str(parameter.get("name") or f"argument {index}")
+        value = _humanize_abi_scalar(raw_value, item_type, parameter.get("name"), config)
+        rendered.append(f"{indent}{label} ({item_type}) = {value}")
+    return rendered
+
+
+_EVM_OPCODE_EXPLANATIONS = {
+    "CALLDATALOAD": "Reads a 32-byte word from the transaction's input data (calldata).",
+    "CALLDATASIZE": "Returns the byte length of the transaction's input data.",
+    "CALLDATACOPY": "Copies part of calldata into EVM memory.",
+    "CALLER": "Pushes the immediate caller of this execution frame: Solidity msg.sender.",
+    "ORIGIN": "Pushes the transaction's original signer: Solidity tx.origin.",
+    "CALLVALUE": "Pushes the ETH amount attached to this call: Solidity msg.value.",
+    "SLOAD": "Reads a value from persistent contract storage.",
+    "SSTORE": "Writes a value to persistent contract storage.",
+    "EQ": "Compares two stack values and pushes 1 when they are equal.",
+    "ISZERO": "Pushes 1 when the stack value is zero; often part of a conditional check.",
+    "JUMP": "Moves execution to another bytecode position.",
+    "JUMPI": "Jumps only when its condition is non-zero; often implements an if/require branch.",
+    "CALL": "Calls another account or contract, creating a new call frame.",
+    "STATICCALL": "Calls another contract in read-only mode; state writes are prohibited.",
+    "DELEGATECALL": "Runs another contract's code using the caller's storage and execution context.",
+    "RETURN": "Ends this execution frame successfully and returns data.",
+    "REVERT": "Stops this execution frame and reverts its state changes.",
+    "MLOAD": "Reads a 32-byte word from temporary EVM memory.",
+    "MSTORE": "Writes a 32-byte word into temporary EVM memory.",
+    "KECCAK256": "Hashes a memory region; Solidity commonly uses this for mapping and dynamic-storage locations.",
+    "SHA3": "Older disassembler name for the KECCAK256 opcode.",
+    "STOP": "Halts execution successfully without return data.",
+    "SELFDESTRUCT": "Legacy contract-destruction opcode; its effects are restricted by modern EVM rules.",
+}
+
+
+def _print_disassembly_guide(disassembly):
+    """Explain only opcodes actually present in a disassembly; leave the listing intact."""
+    text_value = str(disassembly or "")
+    present = set()
+    for line in text_value.splitlines():
+        match = re.match(r"^\s*(?:0x[0-9a-fA-F]+|\d+)?\s*[: ]?\s*([A-Z][A-Z0-9_]*)\b", line.strip())
+        if match:
+            opcode = match.group(1).upper()
+            if opcode in _EVM_OPCODE_EXPLANATIONS:
+                present.add(opcode)
+            elif re.fullmatch(r"(?:PUSH|DUP|SWAP)\d+", opcode):
+                present.add(opcode)
+
+    print("HOW TO READ THE DISASSEMBLY")
+    print("---------------------------")
+    print("Each line is an EVM instruction. The EVM operates mainly on a stack, plus temporary memory and persistent storage.")
+    if not present:
+        print("Lowkey could not confidently identify familiar opcodes in this listing. Keep the raw listing as the source evidence.")
+    else:
+        for opcode in sorted(present):
+            if opcode.startswith("PUSH"):
+                meaning = "Pushes the following constant onto the EVM stack."
+            elif opcode.startswith("DUP"):
+                meaning = "Copies an existing stack item to the top without removing the original."
+            elif opcode.startswith("SWAP"):
+                meaning = "Swaps the top stack item with another item below it."
+            else:
+                meaning = _EVM_OPCODE_EXPLANATIONS[opcode]
+            print(f"  {opcode}: {meaning}")
+    print("Security note: an opcode is a clue about behavior, not proof of a vulnerability. Follow the surrounding instructions and control flow.")
+
+
 def run_tx(config,args):
     tx_hash=args[0] if args else last_transaction(config)
-    if not tx_hash: return fail("Usage: lk tx <transaction-hash> (or save a transaction first)")
+    if not tx_hash: return fail("Error: no transaction is saved for this project and target. Send a transaction here, or pass an explicit hash: lk tx <transaction-hash>.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
     command=["cast","tx",tx_hash,"--json"]
     rpc=effective_rpc(config)
@@ -3662,8 +4113,9 @@ def run_tx(config,args):
     tx_to=transaction.get("to") or ""
     abi_target=tx_to if is_address(tx_to) else config.get("target")
     abi=load_abi(abi_target,config)
-    tx_hash = transaction.get("hash", tx_hash)
+    tx_hash = transaction.get("hash") or tx_hash
     root = audit_context.foundry_project_root()
+    display_config = _transaction_display_config(config, root, rpc)
     receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
     step = walkthrough.Step(
         0,
@@ -3677,13 +4129,124 @@ def run_tx(config,args):
     )
     walkthrough._write_transaction_evidence(root, rpc or "", step, receipt)
     print(f"Hash:  {walkthrough._transaction_link(root, tx_hash)}")
-    print(f"From:  {apply_labels(transaction.get('from','Unknown'),config)}")
-    print(f"To:    {apply_labels(transaction.get('to','Unknown'),config)}")
-    value=transaction.get("value","0")
-    if isinstance(value,str) and value.startswith("0x"):
-        try: value=str(int(value,16))
-        except ValueError: pass
-    print(f"Value: {humanize_value(str(value))}")
+    print(f"From:  {apply_labels(transaction.get('from','Unknown'),display_config)}")
+    print(f"To:    {apply_labels(transaction.get('to','Unknown'),display_config)}")
+
+    # Separate the transaction signer from the caller seen by each contract.
+    # tx.origin is the transaction's originating account; msg.sender is derived
+    # from the actual call frame that entered the selected project target.
+    origin = transaction.get("from")
+    block_number = transaction.get("blockNumber")
+    is_mined = block_number is not None and str(block_number).strip() != ""
+    print("EXECUTION CONTEXT")
+    print("-----------------")
+    if is_address(origin):
+        origin_label = apply_labels(origin, display_config)
+        if not is_mined:
+            print(f"Expected tx.origin when mined: {origin_label}")
+            print("msg.sender context: unavailable until the transaction is mined.")
+        else:
+            print(f"tx.origin: {origin_label} (transaction signer)")
+            if is_address(tx_to):
+                print(f"Top-level recipient: {apply_labels(tx_to, display_config)}")
+                print(f"msg.sender at top-level recipient: {origin_label}")
+            else:
+                print("Top-level recipient: contract creation")
+                print(f"msg.sender during contract creation: {origin_label}")
+    else:
+        origin_label = None
+        print("tx.origin: unavailable (transaction sender is missing or invalid).")
+
+    try:
+        project_target = project_context_target(root)
+    except Exception:
+        project_target = None
+    try:
+        selected_target = (
+            project_target.get("address")
+            if isinstance(project_target, dict) and is_address(project_target.get("address"))
+            else active_project_target(config, root)
+        )
+    except Exception:
+        selected_target = None
+    if is_address(selected_target):
+        selected_target = str(selected_target)
+        target_name = "selected target"
+        if (
+            isinstance(project_target, dict)
+            and str(project_target.get("address") or "").lower() == selected_target.lower()
+        ):
+            target_name = str(project_target.get("contract") or target_name)
+        elif (
+            is_address(config.get("target"))
+            and str(config.get("target")).lower() == selected_target.lower()
+            and str(config.get("target_contract") or "").strip()
+        ):
+            target_name = str(config["target_contract"]).strip()
+        target_label = f"{target_name} ({selected_target})"
+        print(f"Selected project target: {target_label}")
+
+        if not is_mined or not is_address(origin):
+            print(f"msg.sender at {target_name}: unavailable until the transaction is mined.")
+        elif is_address(tx_to) and selected_target.lower() == str(tx_to).lower():
+            print(f"msg.sender at {target_name} (direct): {origin_label}")
+            print(
+                f"Meaning: {origin_label} called {target_name} directly, so "
+                "tx.origin and msg.sender at this target are the same."
+            )
+        else:
+            callers = _transaction_target_msg_senders(
+                rpc, tx_hash, selected_target, origin
+            )
+            if callers is None:
+                print(f"msg.sender at {target_name}: unavailable (RPC call tracing is not supported or failed).")
+                print(
+                    "Meaning: Lowkey cannot determine whether this target was called "
+                    "directly or through another contract, so it will not guess."
+                )
+                print(
+                    "Try lk trace <tx-hash> or use an RPC endpoint that supports "
+                    "debug_traceTransaction with callTracer."
+                )
+            elif callers:
+                for caller, frame_type in callers:
+                    print(
+                        f"msg.sender at {target_name} ({frame_type}): "
+                        f"{apply_labels(caller, display_config)}"
+                    )
+                if len(callers) == 1:
+                    caller_label = apply_labels(callers[0][0], display_config)
+                    print(
+                        f"Meaning: {origin_label} initiated the transaction; "
+                        f"{caller_label} was the immediate caller to {target_name}. "
+                        f"tx.origin remains {origin_label}."
+                    )
+                else:
+                    print(
+                        f"Meaning: {target_name} was entered through multiple "
+                        "caller/frame combinations shown above. "
+                        f"tx.origin remains {origin_label} for the transaction."
+                    )
+            else:
+                print(f"msg.sender at {target_name}: no matching call frame found.")
+                print(
+                    "Meaning: the returned trace did not show this target being called. "
+                    "Check the transaction hash and selected project target; Lowkey "
+                    "will not infer a caller from the top-level recipient."
+                )
+    elif is_address(config.get("target")):
+        print(
+            "Selected project target: not verified for this workspace; "
+            "target-specific msg.sender was not inferred."
+        )
+
+    value_raw = transaction.get("value", "0")
+    value_wei = _hex_to_int(value_raw)
+    if value_wei is None:
+        print(f"ETH value: unavailable ({value_raw})")
+    else:
+        print(f"ETH value: {_wei_to_eth(value_wei)} ETH ({value_wei:,} wei)")
+        print("Meaning: this is the native ETH attached to the top-level transaction. It is separate from any ETH or tokens moved by internal contract calls.")
     input_data=transaction.get("input") or transaction.get("data") or "0x"
     if isinstance(input_data,str) and input_data.startswith("0x") and len(input_data)>=10:
         selector=input_data[:10].lower(); decoded=False
@@ -3691,7 +4254,11 @@ def run_tx(config,args):
             signature=format_signature(item)
             if (abi_selector(signature) or "").lower()==selector:
                 print(f"Function: {signature}")
-                print(f"Args:    {decode_abi_input(signature,input_data)}"); decoded=True; break
+                decoded_args = decode_abi_input(signature, input_data)
+                print(f"Args:    {decoded_args}")
+                for line in _format_decoded_abi_arguments(item, decoded_args, display_config, indent="  "):
+                    print(line)
+                decoded=True; break
         if not decoded:
             print(f"Selector: {selector} (unknown to loaded ABI)")
             _,fourbyte,_=cast_output(["cast","4byte",selector])
@@ -3731,14 +4298,22 @@ def run_receipt(config, tx_hash=None, args=None):
         tx_hash = tx_hash or values[0]
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash:
-        return fail("Error: No transaction ID supplied or saved. Run lk receipt <tx> or send a transaction first.")
+        return fail("Error: no transaction is saved for this project and target. Run lk receipt <tx> with an explicit hash, or send a transaction here first.")
     if not is_tx_hash(tx_hash):
         return fail("Error: invalid transaction ID")
     root = audit_context.foundry_project_root()
-    audit_context.set_latest(root, tx_hash=tx_hash)
+    rpc = effective_rpc(config)
+    # Explicit hashes may come from sibling workspaces. Do not replace this
+    # project's latest transaction until its active target is confirmed as
+    # the transaction's top-level destination.
     original_config = dict(config)
 
     if raw:
+        tx_target = _transaction_target_for_hash(config, tx_hash, rpc)
+        if tx_target:
+            _remember_transaction_for_project_target(
+                config, root, tx_hash, tx_target, rpc
+            )
         code = run_cast(["receipt", tx_hash, "--async"], original_config)
         audit_context.record_tool(
             "receipt",
@@ -3749,7 +4324,6 @@ def run_receipt(config, tx_hash=None, args=None):
         )
         return code
 
-    rpc = effective_rpc(config)
     receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash]) if rpc else None
     tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash]) if rpc else None
 
@@ -3771,6 +4345,14 @@ def run_receipt(config, tx_hash=None, args=None):
 
     if not isinstance(tx, dict):
         tx = {}
+
+    tx_target = tx.get("to") if is_address(tx.get("to")) else None
+    if not tx_target and is_address(receipt.get("contractAddress")):
+        tx_target = receipt.get("contractAddress")
+    if tx_target:
+        _remember_transaction_for_project_target(
+            config, root, tx_hash, tx_target, rpc
+        )
 
     status_raw = receipt.get("status")
     if status_raw in ("0x1", 1):
@@ -3881,7 +4463,7 @@ def run_receipt(config, tx_hash=None, args=None):
 def run_trace(config,args=None):
     args=list(args or [])
     tx_hash=args.pop(0) if args and args[0].startswith("0x") else last_transaction(config)
-    if not tx_hash: return fail("Error: No transaction ID supplied or saved.")
+    if not tx_hash: return fail("Error: no transaction is saved for this project and target. Pass an explicit hash or send a transaction here first.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction ID")
     grep=None
     if "--grep" in args:
@@ -3919,9 +4501,23 @@ def run_trace(config,args=None):
         for warning in duplicate_warnings:
             print(warning)
     print("")
+    print("HOW TO READ THIS TRACE")
+    print("----------------------")
+    print("Indented call lines show nested contract calls. Each call creates a new execution frame.")
+    print("CALL: another account or contract is invoked; the callee sees the immediate caller as msg.sender.")
+    print("RETURN: that frame finished successfully. REVERT: that frame failed and reverted its own changes.")
+    print("An inner call can revert and still be caught by its caller; check the top-level receipt to know whether the whole transaction reverted.")
+    print("The trace below is detailed execution evidence; one opcode or trace line alone is not a vulnerability verdict.")
+    print("")
+    print("RAW EXECUTION TRACE")
+    print("-------------------")
     print(trace_text)
 
-    audit_context.set_latest(root,tx_hash=tx_hash,trace=tx_hash)
+    trace_target = tx.get("to") if isinstance(tx, dict) and is_address(tx.get("to")) else None
+    if trace_target:
+        _remember_transaction_for_project_target(
+            config, root, tx_hash, trace_target, rpc, trace=True
+        )
     audit_context.record_tool(
         "trace",
         root,
@@ -3962,28 +4558,81 @@ def decode_event_log(config, log, target=None):
     return None
 
 def run_logs(config,args):
-    args=list(args); decode="--decode" in args
-    if decode: args.remove("--decode")
-    if not decode: run_cast(["logs"]+args,config); return
+    args=list(args)
+    decode="--decode" in args
+    if decode:
+        args.remove("--decode")
+    if not decode:
+        result = run_cast(["logs"] + args, config, capture=True)
+        result_code = getattr(result, "code", result if isinstance(result, int) else 1)
+        raw_output = str(getattr(result, "text", str(result or "")))
+        if result_code != 0:
+            if raw_output:
+                print(raw_output, file=sys.stderr)
+            return result_code
+        print("EVENT LOGS — RAW VIEW")
+        print("=====================")
+        print("Each log records an event emitted by a contract during transaction execution.")
+        print("  address: contract that emitted the event")
+        print("  topics[0]: event-signature hash; topics[1..]: indexed event fields")
+        print("  data: ABI-encoded non-indexed event fields")
+        print("Use lk logs --decode with the same filters to decode fields against loaded ABIs.")
+        print("")
+        print("RAW LOG OUTPUT")
+        print("--------------")
+        print(raw_output)
+        return result_code
+
     command=["cast","logs","--json"]+args
     rpc=effective_rpc(config)
-    if rpc: command.extend(["--rpc-url",rpc])
+    if rpc:
+        command.extend(["--rpc-url",rpc])
     code,output,error=cast_output(command)
     if code!=0:
         print(error or "cast logs failed",file=sys.stderr)
         return record_status(code)
-    try: payload=json.loads(output)
-    except json.JSONDecodeError: print(output); return
+    try:
+        payload=json.loads(output)
+    except json.JSONDecodeError:
+        print(output)
+        return 0
     logs=payload if isinstance(payload,list) else payload.get("logs",payload.get("result",[]))
-    if not isinstance(logs,list): print(output); return
-    if not logs: print("No logs found."); return
-    for log in logs:
-        print(apply_labels(json.dumps(log,indent=2), config))
-        event=decode_event_log(config,log)
+    if not isinstance(logs,list):
+        print(output)
+        return 0
+    if not logs:
+        print("No logs found for these filters.")
+        return 0
+
+    print("DECODED EVENT LOGS")
+    print("==================")
+    print(f"Matching log entries: {len(logs)}")
+    print("Decoded fields are matched against the ABI for each log's emitting contract.")
+    print("")
+    for index,log in enumerate(logs,1):
+        print(f"LOG {index}/{len(logs)}")
+        if isinstance(log,dict):
+            emitter=log.get("address")
+            if emitter:
+                print(f"  Emitter: {apply_labels(str(emitter),config)}")
+            if log.get("transactionHash"):
+                print(f"  Transaction: {log.get('transactionHash')}")
+            if log.get("blockNumber") is not None:
+                print(f"  Block: {log.get('blockNumber')}")
+        event=decode_event_log(config,log) if isinstance(log,dict) else None
         if event:
-            print(
-                f"Event: {event[0]}\nDecoded: {apply_labels(event[1],config)}"
-            )
+            print(f"  Event: {event[0]}")
+            for line in apply_labels(event[1],config).splitlines():
+                if line.strip():
+                    print(f"    {line.strip()}")
+        else:
+            print("  ABI decode: unavailable (no matching event ABI or the log could not be decoded)")
+        print("  Raw fields:")
+        print(apply_labels(json.dumps(log,indent=2),config))
+        print("")
+    print("How to read it: indexed fields are stored in topics and can be filtered efficiently; non-indexed fields are encoded in data.")
+    return 0
+
 def _known_address_identities(config):
     """Return known address -> human identity mappings for interactive output."""
     config = config if isinstance(config, dict) else {}
@@ -6072,6 +6721,279 @@ def _format_revert_error(error_text, config=None, target=None):
     )
 
 
+
+
+def _preview_option_value(command, option):
+    """Read a Cast option value without exposing or interpreting unrelated flags."""
+    values = list(command or [])
+    for index, token in enumerate(values):
+        text = str(token)
+        if text.startswith(option + "="):
+            return text.split("=", 1)[1].strip()
+        if text == option and index + 1 < len(values):
+            value = str(values[index + 1]).strip()
+            if (
+                option == "--value"
+                and index + 2 < len(values)
+                and str(values[index + 2]).strip().lower() in {"wei", "gwei", "ether"}
+                and not any(value.lower().endswith(unit) for unit in ("wei", "gwei", "ether"))
+            ):
+                value += " " + str(values[index + 2]).strip()
+            return value
+    return None
+
+
+def _preview_address_label(config, address, fallback_name=None):
+    if not is_address(address):
+        return str(address or "not resolved")
+    rendered = apply_labels(address, config)
+    if rendered != address:
+        return rendered
+    if fallback_name:
+        return f"{fallback_name} ({address})"
+    return address
+
+
+def _preview_argument_rows(config, function_item, raw_values):
+    """Pair ABI inputs with resolved positional values for a readable preview."""
+    if not isinstance(function_item, dict):
+        return []
+    inputs = function_item.get("inputs") or []
+    parsed = _cast_call_argument_positions(function_item, raw_values)
+    if parsed is None:
+        return []
+    positions, _extras = parsed
+    rows = []
+    values = list(raw_values or [])
+    for index, item in enumerate(inputs):
+        if index >= len(positions):
+            break
+        position = positions[index]
+        if position >= len(values):
+            break
+        item_type = canonical_type(item)
+        value = str(values[position]).strip()
+        if (
+            item_type.lower().startswith(("uint", "int"))
+            and index + 1 < len(positions)
+            and position + 1 < positions[index + 1]
+            and str(values[position + 1]).strip().lower() in {"wei", "gwei", "ether"}
+        ):
+            value += " " + str(values[position + 1]).strip()
+        try:
+            display_value = _humanize_abi_scalar(
+                value, item_type, item.get("name"), config
+            )
+        except Exception:
+            display_value = apply_labels(value, config)
+        label = str(item.get("name") or f"argument {index + 1}")
+        rows.append((label, item_type, _human_type_label(item_type), display_value, value))
+    return rows
+
+
+def _print_read_only_call_summary(config, target, function_item, command, actor=None):
+    """Explain the context of a simulated read before showing its decoded return."""
+    contract_name = (
+        config.get("target_contract")
+        if str(config.get("target") or "").lower() == str(target or "").lower()
+        else None
+    )
+    contract = _preview_address_label(config, target, contract_name)
+    sender = _preview_option_value(command, "--from")
+    if not sender and actor:
+        try:
+            sender = actor_address(config, actor)
+        except Exception:
+            sender = None
+
+    print("READ-ONLY CONTRACT CALL")
+    print("=======================")
+    print(f"Contract:  {contract}")
+    print(f"Function:  {format_signature(function_item)}")
+    if sender and is_address(sender):
+        print(f"Caller:    {_preview_address_label(config, sender, actor)}")
+    else:
+        print("Caller:    not explicitly resolved")
+    print("This is an eth_call simulation: it does not mine a transaction or save state changes.")
+
+
+def _print_transaction_preview(config, command, target, function_item, raw_values, actor=None, direct_eth_transfer=False):
+    """Render a learner-friendly transaction plan; this does not simulate execution."""
+    contract_name = (
+        config.get("target_contract")
+        if str(config.get("target") or "").lower() == str(target or "").lower()
+        else None
+    )
+    contract = _preview_address_label(config, target, contract_name)
+    sender = _preview_option_value(command, "--from")
+    if not sender and actor:
+        try:
+            sender = actor_address(config, actor)
+        except Exception:
+            sender = None
+    sender_label = (
+        _preview_address_label(config, sender, actor)
+        if sender and is_address(sender)
+        else "signing account not resolved"
+    )
+    signature = format_signature(function_item) if isinstance(function_item, dict) else None
+    rows = _preview_argument_rows(config, function_item, raw_values)
+    attached_value = _preview_option_value(command, "--value")
+    attached_value = attached_value if attached_value is not None else "0 ETH (no ETH attached)"
+
+    print("TRANSACTION PREVIEW — NOT SENT")
+    print("==============================")
+    print("Nothing has been broadcast. This screen describes the transaction Lowkey prepared.")
+    print("")
+    print("WHO IS SENDING WHAT")
+    print(f"  Sender:   {sender_label}")
+    if direct_eth_transfer:
+        print(f"  Recipient: {_preview_address_label(config, target)}")
+        print("  Transaction: direct ETH transfer (no contract function call)")
+    else:
+        print(f"  Contract: {contract}")
+        if signature:
+            print(f"  Function: {signature}")
+            print(f"  Function type: {str(function_item.get('stateMutability') or 'unknown').upper()}")
+        else:
+            print("  Function: raw contract call (no matching ABI function)")
+    print(f"  ETH attached: {attached_value}")
+
+    if rows:
+        print("")
+        print("FUNCTION INPUTS")
+        for label, item_type, human_type, display_value, _raw_value in rows:
+            print(f"  {label} ({item_type} — {human_type}): {display_value}")
+        print("  These values are function arguments. They do not change who sent the transaction.")
+
+    if sender and is_address(sender):
+        print("")
+        print("CALLER CONTEXT AT THE CONTRACT")
+        print(f"  tx.origin  = {sender_label}")
+        print(f"  msg.sender = {sender_label}")
+        print("  Reason: this transaction calls the selected contract directly from the sender's wallet.")
+
+    encoded = None
+    if signature and len(rows) == len(function_item.get("inputs") or []):
+        try:
+            encoded_values = [row[4] for row in rows]
+            code, output, _error = cast_output(
+                ["cast", "calldata", signature, *encoded_values]
+            )
+            candidate = str(output or "").strip()
+            if code == 0 and re.fullmatch(r"0x[0-9a-fA-F]*", candidate):
+                encoded = candidate
+        except Exception:
+            encoded = None
+
+    if encoded and len(encoded) >= 10:
+        byte_length = max(0, (len(encoded) - 2) // 2)
+        print("")
+        print("ENCODED CALL DATA")
+        print(f"  Function selector: {encoded[:10]}  (the first 4 bytes identify the function)")
+        print(f"  Total size:        {byte_length} bytes")
+        if byte_length <= 96:
+            print(f"  Full calldata:     {encoded}")
+        else:
+            print(f"  Calldata preview:  {encoded[:74]}… ({byte_length} bytes total)")
+        print("  The remaining bytes encode the function arguments.")
+    elif signature:
+        print("")
+        print("Encoded calldata: Lowkey could not produce a local ABI encoding for these inputs.")
+
+    print("")
+    print("IMPORTANT")
+    print("  Preview prepares the call only. It does not execute or simulate the contract.")
+    print("  We cannot know whether the contract accepts it until we run it and inspect the result.")
+
+
+
+def _print_cast_result_guide(command, output, config=None, target=None):
+    """Attach a small plain-English interpretation to common low-level Cast values."""
+    raw = str(output or "").strip()
+    config = config if isinstance(config, dict) else {}
+    target_label = _preview_address_label(
+        config,
+        target,
+        config.get("target_contract") if str(config.get("target") or "").lower() == str(target or "").lower() else None,
+    )
+
+    if command == "code":
+        size = (len(raw) - 2) // 2 if re.fullmatch(r"0x[0-9a-fA-F]*", raw) else None
+        print("RUNTIME BYTECODE")
+        print("================")
+        print(f"Contract: {target_label}")
+        if size is not None:
+            print(f"Bytecode size: {size:,} bytes")
+        print("Meaning: this is the compiled EVM program stored at the address, not the original Solidity source.")
+        print("Next: use lk disasm to read its opcodes or lk selectors to compare function selectors with the loaded ABI.")
+        print("")
+        print("RAW BYTECODE")
+        print("------------")
+        print(raw)
+        return True
+
+    if command == "codehash":
+        print("RUNTIME CODE HASH")
+        print("=================")
+        print(f"Contract: {target_label}")
+        print(f"Hash:     {raw}")
+        print("Meaning: this hash identifies the runtime bytecode at this address. It does not explain what the code does or prove that it is safe.")
+        return True
+
+    if command == "codesize":
+        number = _hex_to_int(raw)
+        print("RUNTIME CODE SIZE")
+        print("=================")
+        print(f"Contract: {target_label}")
+        print(f"Size:     {number:,} bytes" if number is not None else raw)
+        print("Meaning: this is the byte length of the deployed runtime bytecode, not a security score.")
+        return True
+
+    if command == "estimate":
+        number = _hex_to_int(raw)
+        print("GAS ESTIMATE")
+        print("============")
+        print(f"Estimated gas units: {number:,}" if number is not None else raw)
+        print("Meaning: gas measures EVM computation. It is not an ETH amount; the actual fee also depends on the gas price and the transaction's execution conditions.")
+        print("An estimate can change when contract state, calldata, caller, or block conditions change.")
+        return True
+
+    if command == "nonce":
+        number = _hex_to_int(raw)
+        print("ACCOUNT NONCE")
+        print("=============")
+        print(f"Next nonce: {number:,}" if number is not None else raw)
+        print("Meaning: this is the account's transaction sequence number. It is not the total number of transactions ever sent.")
+        return True
+
+    if command in {"chain-id", "block-number"}:
+        number = _hex_to_int(raw)
+        title = "CHAIN ID" if command == "chain-id" else "LATEST BLOCK NUMBER"
+        print(title)
+        print("=" * len(title))
+        print(f"Value: {number:,}" if number is not None else raw)
+        if command == "chain-id":
+            print("Meaning: the chain identifier used in transaction signing and replay protection; it is not a block number.")
+        else:
+            print("Meaning: the height of the latest block reported by the selected RPC.")
+        return True
+
+    if command == "balance":
+        wei = _hex_to_int(raw)
+        print("ACCOUNT ETH BALANCE")
+        print("===================")
+        if wei is not None:
+            print(f"Balance: {_wei_to_eth(wei)} ETH")
+            print(f"Raw:     {wei:,} wei")
+        else:
+            print(raw)
+        print("Meaning: this is the account's native ETH balance at the RPC's current state, not its ERC-20 token balance.")
+        return True
+
+    return False
+
+
 def run_cast(args,config,capture=False):
     if not args:
         result=CommandResult("",2)
@@ -6099,6 +7021,8 @@ def run_cast(args,config,capture=False):
         cleaned.append(token)
         index += 1
     remaining=cleaned
+    verbose = "--verbose" in remaining
+    remaining = [token for token in remaining if token != "--verbose"]
 
     if cast_cmd == "send":
         if "--actors" in remaining:
@@ -6301,13 +7225,13 @@ def run_cast(args,config,capture=False):
     if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd):
         cmd.extend(["--private-key",actor_key])
     safe_cmd=redact_secrets(shlex.join(cmd))
-    if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
-    if cast_cmd=="send" and preview:
-        print(f"Preview: {safe_cmd}")
-        print("Preview only: no transaction was broadcast. Remove --preview/--dry-run to submit; add --confirm to review once more before sending.")
+    if not capture and verbose:
+        print(f"DEBUG: Executing -> {safe_cmd}")
+    if cast_cmd == "send" and preview:
+        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
         return 0
-    if cast_cmd=="send" and (confirm or (config.get("confirm_sends") and not bypass)):
-        print(f"Preview: {safe_cmd}")
+    if cast_cmd == "send" and (confirm or (config.get("confirm_sends") and not bypass)):
+        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
         if answer not in {"y","yes"}: print("Transaction cancelled."); return 0
@@ -6364,8 +7288,23 @@ def run_cast(args,config,capture=False):
                 # was returned. Preserve it so the user can inspect the receipt.
                 config["last_tx"] = failed_tx_hash
                 config["last_tx_block"] = None
+                failed_root = audit_context.foundry_project_root()
+                failed_rpc = effective_rpc(config)
+                failed_target = target if is_address(target) else None
+                config["last_tx_project_root"] = str(Path(failed_root).expanduser().resolve())
+                if failed_target:
+                    config["last_tx_target"] = failed_target
+                else:
+                    config.pop("last_tx_target", None)
+                config["last_tx_rpc"] = failed_rpc
                 if not config.get("_ephemeral"):
                     save_config(config)
+                audit_context.set_latest(
+                    failed_root,
+                    tx_hash=failed_tx_hash,
+                    target=failed_target,
+                    rpc=failed_rpc,
+                )
             rendered_error = _format_cli_error(
                 raw_error,
                 code=code,
@@ -6387,17 +7326,38 @@ def run_cast(args,config,capture=False):
             if match:
                 tx_hash=match.group(1)
                 config["last_tx"]=tx_hash; config["last_tx_block"]=None
-                if not config.get("_ephemeral"):
-                    save_config(config)
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 root=audit_context.foundry_project_root()
-                audit_context.set_latest(root,tx_hash=tx_hash,function=call)
                 rpc = effective_rpc(config)
                 send_tx_hash = tx_hash
                 send_receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
                 send_transaction = (
                     rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
                     if rpc else None
+                )
+                tx_target = (
+                    send_transaction.get("to")
+                    if isinstance(send_transaction, dict) and is_address(send_transaction.get("to"))
+                    else None
+                )
+                if not tx_target and isinstance(send_receipt, dict) and is_address(send_receipt.get("contractAddress")):
+                    tx_target = send_receipt.get("contractAddress")
+                if not tx_target and is_address(target):
+                    tx_target = target
+                config["last_tx_project_root"] = str(Path(root).expanduser().resolve())
+                if tx_target:
+                    config["last_tx_target"] = tx_target
+                else:
+                    config.pop("last_tx_target", None)
+                config["last_tx_rpc"] = rpc
+                if not config.get("_ephemeral"):
+                    save_config(config)
+                audit_context.set_latest(
+                    root,
+                    tx_hash=tx_hash,
+                    function=call,
+                    target=tx_target,
+                    rpc=rpc,
                 )
                 receipt = send_receipt
                 step = walkthrough.Step(
@@ -6422,6 +7382,8 @@ def run_cast(args,config,capture=False):
         record_status(code)
         if capture: return result
         if out:
+            if cast_cmd == "call" and function_item:
+                _print_read_only_call_summary(config, target, function_item, cmd, actor)
             if cast_cmd=="send":
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 summary = format_send_summary(out, config, call)
@@ -6456,7 +7418,8 @@ def run_cast(args,config,capture=False):
                     print(f"  Reason: {decode_error}", file=sys.stderr)
                     print(f"  Raw return data: {apply_labels(output_payload,config)}")
             else:
-                print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
+                if not _print_cast_result_guide(cast_cmd, out, config, target):
+                    print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
         if err:
             # Some successful commands emit non-fatal diagnostics on stderr.
             print(apply_labels(err,config),file=sys.stderr)
@@ -12380,11 +13343,52 @@ def _lab_address_choices(config, accounts, rpc=None):
             owner_root = configured_project_root(address, config)
             if not owner_root:
                 continue
+
+            # Global aliases can outlive the project that originally used an
+            # Anvil address. Anvil reuses deterministic addresses after resets,
+            # so a legacy alias must never win over a verified project identity.
+            canonical_name = None
+
+            # Prefer the remembered project identity, then consult the same
+            # project-scoped inventory used by "lk targets". If the inventory
+            # cannot establish one name, display an explicit unresolved label
+            # rather than pretending an old global alias is authoritative.
+            try:
+                owner_target = project_context_target(owner_root)
+            except Exception:
+                owner_target = None
+            if (
+                isinstance(owner_target, dict)
+                and str(owner_target.get("address") or "").lower() == address_key
+                and str(owner_target.get("contract") or "").strip()
+            ):
+                canonical_name = str(owner_target["contract"]).strip()
+            else:
+                try:
+                    owner_entries = _project_target_entries(config, owner_root)
+                except Exception:
+                    owner_entries = []
+                matching_entries = [
+                    entry for entry in owner_entries
+                    if str(entry.get("address") or "").lower() == address_key
+                    and _target_entry_is_protocol(owner_root, entry)
+                ]
+                canonical_names = {
+                    str(entry.get("contract") or entry.get("name") or "").strip()
+                    for entry in matching_entries
+                }
+                canonical_names.discard("")
+                if len(canonical_names) == 1:
+                    canonical_name = next(iter(canonical_names))
+
+            if not canonical_name:
+                canonical_name = f"Unverified target #{str(address)[-6:]}"
+
             if not _lab_remembered_contract_is_live(config, str(address), rpc):
                 continue
             seen_contracts.add(address_key)
             remembered.append({
-                "name": str(name).strip(),
+                "name": canonical_name,
                 "address": str(address),
                 "root": Path(owner_root).resolve(),
                 "artifact": None,
@@ -13826,12 +14830,36 @@ def run_token(config,args):
     for action in ["name","symbol","decimals","total-supply"]: run_cast(["erc20-token",action,args[0]],config)
 
 def run_decode(config,args):
-    if len(args)<2: return fail("Usage: lk decode <function> <return-data>")
+    if len(args)<2:
+        return fail("Usage: lk decode <function> <return-data>")
     matches=matching_functions(load_abi(config.get("target"),config),args[0])
-    if len(matches)!=1: print("Error: function must resolve to exactly one ABI entry."); return
+    if len(matches)!=1:
+        print("Error: function must resolve to exactly one ABI entry.")
+        return 2
     item=matches[0]
-    if not item.get("outputs"): print("Function has no outputs."); return
-    run_cast(["decode-abi",format_output_signature(item),args[1]],config)
+    if not item.get("outputs"):
+        print("Function has no outputs.")
+        return 0
+
+    result=run_cast(["decode-abi",format_output_signature(item),args[1]],config,capture=True)
+    result_code=getattr(result,"code",result if isinstance(result,int) else 1)
+    decoded=str(getattr(result,"text",str(result or ""))).strip()
+    if result_code!=0:
+        if decoded:
+            print(decoded,file=sys.stderr)
+        return result_code
+
+    print("DECODED CONTRACT RETURN")
+    print("=======================")
+    print(f"Function: {format_signature(item)}")
+    print("These are values returned by this ABI signature; they are not automatically proof that storage changed.")
+    formatted=format_human_abi_return(item,decoded,config,load_abi(config.get("target"),config))
+    for line in str(formatted or "").splitlines():
+        if line.strip():
+            print(line)
+    print("")
+    print("Raw decoded values are shown above. Use the transaction receipt/trace when you need evidence of a particular on-chain execution.")
+    return 0
 
 def decode_event_values(event,data,topics):
     if not topics or len(topics[0])!=66:
@@ -13844,6 +14872,11 @@ def decode_event_values(event,data,topics):
     if len(topics)-1!=len(indexed):
         return fail(f"Error: expected {len(indexed)} indexed topics, received {len(topics)-1}.")
     print(f"Event: {format_signature(event)}")
+    print("How to read this event:")
+    print("  topic0 is the hash of the event signature and identifies the event type.")
+    print("  Indexed fields are stored in topics[1..] and can be searched by exact topic value.")
+    print("  Non-indexed fields are ABI-decoded from data.")
+    print("  Dynamic indexed values such as string/bytes are stored as hashes; their original contents cannot be recovered from the topic alone.")
     status=0
     for item,topic in zip(indexed,topics[1:]):
         value=topic
@@ -15979,37 +17012,96 @@ def run_calldata(config,args):
     data=args[0]
     if not re.fullmatch(r"0x[0-9a-fA-F]*",data) or len(data)<10 or len(data)%2:
         return fail("Error: calldata must be even-length hex beginning with 0x.")
-    print(f"Selector: {data[:10]}")
+
+    selector = data[:10].lower()
+    payload = "0x" + data[10:]
+    total_bytes = (len(data) - 2) // 2
+    payload_bytes = max(0, total_bytes - 4)
+    print("CALLDATA INSPECTION")
+    print("===================")
+    print(f"Total size:        {total_bytes} bytes")
+    print(f"Function selector: {selector}  (first 4 bytes)")
+    print(f"Argument payload:  {payload_bytes} bytes")
+    print("")
+    print("HOW TO READ IT")
+    print("  The selector identifies the requested function signature.")
+    print("  The bytes after the selector encode that function's arguments.")
+    print("  Calldata does not choose the caller: msg.sender and tx.origin come from the EVM call chain.")
+
     abi=load_abi(config.get("target"),config)
     matches=[]
     for item in abi_functions(abi):
         signature=format_signature(item)
-        selector=abi_selector(signature)
-        if selector and selector.lower()==data[:10].lower():
+        candidate=abi_selector(signature)
+        if candidate and candidate.lower()==selector:
             matches.append((signature,item))
+
     if len(matches)==1:
         signature,item=matches[0]
-        print(f"ABI:      {signature}")
-        print(f"Args:     {decode_abi_input(signature,data)}")
+        decoded = decode_abi_input(signature,data)
+        print("")
+        print("ABI MATCH")
+        print("---------")
+        print(f"Function: {signature}")
+        print("Decoded arguments:")
+        for line in _format_decoded_abi_arguments(item, decoded, config, indent="  "):
+            print(line)
+        if not item.get("inputs"):
+            print("  This function has no ABI arguments.")
     elif len(matches)>1:
-        print("ABI:      ambiguous")
+        print("")
+        print("ABI MATCH: ambiguous")
+        print("More than one loaded ABI entry matched the four-byte selector:")
         for signature,_ in matches:
             print(f"  {signature}")
+        print("Use an exact signature and inspect the deployed runtime before assuming which function executes.")
     else:
-        print("ABI:      unknown")
+        print("")
+        print("ABI MATCH: none")
+        print("No function in the currently loaded ABI matches this selector.")
         code,out,error=cast_output(["cast","4byte-calldata",data])
         if out:
+            print("")
+            print("PUBLIC SIGNATURE LOOKUP (CANDIDATES ONLY)")
             print(out)
+            print("These are possible public signature matches, not proof that this contract implements or exposes them.")
         elif error:
-            print(error,file=sys.stderr)
+            print(f"Signature lookup unavailable: {error}",file=sys.stderr)
             record_status(code)
+
     code,out,error=cast_output(["cast","pretty-calldata",data])
     if out:
-        print("\nPretty calldata:")
+        print("")
+        print("STRUCTURAL DECODE")
+        print("-----------------")
         print(out)
+        print("Use this to inspect ABI word offsets and dynamic-data layout; it is a structural view, not a transaction trace.")
     elif error:
-        print(error,file=sys.stderr)
+        print(f"Structural decoding unavailable: {error}",file=sys.stderr)
+    print("")
+    print("NEXT INVESTIGATION")
+    print("  Use lk selectors to compare selectors found in deployed bytecode against the loaded ABI.")
     return 0
+
+def _txpool_count(value):
+    """Count entries in common txpool account -> nonce -> transaction shapes."""
+    if isinstance(value, dict):
+        total = 0
+        for nested in value.values():
+            if isinstance(nested, (dict, list, tuple)):
+                total += len(nested)
+            elif nested is not None:
+                total += 1
+        return total
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    return 0
+
+
+def _txpool_count_display(value):
+    parsed = _hex_to_int(value)
+    return str(parsed) if parsed is not None else str(value)
+
 
 def run_txpool(config,args):
     rpc=effective_rpc(config)
@@ -16033,11 +17125,39 @@ def run_txpool(config,args):
     if mode=="status":
         pending=result.get("pending","?") if isinstance(result,dict) else "?"
         queued=result.get("queued","?") if isinstance(result,dict) else "?"
-        print("TXPOOL")
-        print(f"  pending: {pending}")
-        print(f"  queued:  {queued}")
+        print("TRANSACTION POOL")
+        print("================")
+        print(f"Pending: {_txpool_count_display(pending)}")
+        print(f"Queued:  {_txpool_count_display(queued)}")
+        print("")
+        print("How to read this:")
+        print("  Pending transactions are waiting to be included in a block.")
+        print("  Queued transactions are known to the node but cannot yet be processed in nonce order.")
+        print("  These counts describe this RPC node's local mempool, not the entire network.")
         return 0
 
+    if not isinstance(result, dict):
+        print("Raw transaction-pool response:")
+        print(json.dumps(result,indent=2))
+        print("Lowkey could not identify pending/queued buckets in this RPC response.")
+        return 0
+
+    pending = result.get("pending", {})
+    queued = result.get("queued", {})
+    pending_count = _txpool_count(pending)
+    queued_count = _txpool_count(queued)
+    print("TRANSACTION POOL CONTENT")
+    print("=======================")
+    print(f"Pending transactions: {pending_count}")
+    print(f"Queued transactions:  {queued_count}")
+    print("")
+    print("How to read this:")
+    print("  Each account is grouped by nonce. A nonce is the account's transaction sequence number.")
+    print("  Pending entries are ready for inclusion; queued entries are waiting for an earlier nonce or another prerequisite.")
+    print("  This is one node's mempool view, not a canonical on-chain record.")
+    print("")
+    print("RAW TXPOOL DATA")
+    print("---------------")
     print(json.dumps(result,indent=2))
     return 0
 
@@ -16052,7 +17172,29 @@ def run_disasm(config,args):
         values=[run_cast(["code",values[0]],config,capture=True)]
     if not values[0] or not str(values[0]).startswith("0x"):
         return fail("Error: no bytecode available.")
-    return run_cast(["disassemble",values[0]],config)
+
+    result = run_cast(["disassemble",str(values[0])],config,capture=True)
+    result_code = getattr(result,"code",result if isinstance(result,int) else 1)
+    disassembly = getattr(result,"text",str(result or ""))
+    if result_code != 0:
+        if disassembly:
+            print(disassembly,file=sys.stderr)
+        return result_code
+
+    target = config.get("target")
+    contract = config.get("target_contract") or "selected contract"
+    if target:
+        print(f"BYTECODE DISASSEMBLY: {contract} ({target})")
+    else:
+        print("BYTECODE DISASSEMBLY")
+    print("====================")
+    print("This translates compiled EVM bytecode into instruction names. It is the program the EVM executes, not the original Solidity source.")
+    _print_disassembly_guide(disassembly)
+    print("")
+    print("RAW OPCODE LISTING")
+    print("------------------")
+    print(disassembly)
+    return 0
 
 def runtime_selector_set(code):
     raw=code if isinstance(code,str) else str(code)
@@ -17542,6 +18684,40 @@ def _lowkey_generated_test_safety_issue(source):
             "before running Foundry tests; execution is blocked rather than trusting an unchecked harness.",
         )
     return _verification_test_safety_issue(source)
+
+
+def _print_forge_test_result_summary(output, exit_code):
+    """Explain Foundry suite totals without pretending a passing suite is an audit verdict."""
+    text_value = str(output or "")
+    matches = re.findall(
+        r"(?im)^Suite result:\s*(?:ok|FAILED)\.\s*(\d+)\s+passed;\s*(\d+)\s+failed;\s*(\d+)\s+skipped\b",
+        text_value,
+    )
+    print("")
+    print("TEST RESULTS — PLAIN ENGLISH")
+    print("============================")
+    if not matches:
+        if exit_code == 0:
+            print("Forge exited successfully, but Lowkey could not find a per-suite pass/fail summary in its output.")
+            print("Check the output above to confirm that tests were actually discovered and executed.")
+        else:
+            print("Forge exited with an error. Read the first failing test or compiler/runtime diagnostic above.")
+        print("A test-run result is evidence about the tests that ran, not an overall security verdict.")
+        return
+
+    passed = sum(int(item[0]) for item in matches)
+    failed = sum(int(item[1]) for item in matches)
+    skipped = sum(int(item[2]) for item in matches)
+    print(f"Suites reported: {len(matches)}")
+    print(f"Test cases:      {passed} passed · {failed} failed · {skipped} skipped")
+    if failed or exit_code != 0:
+        print("Meaning: at least one test or the overall Forge process failed. Inspect the first failure and its assertion/trace before changing contract code.")
+    else:
+        print("Meaning: the discovered tests passed. This confirms those test assertions, not that every exploit path or security property is covered.")
+    if skipped:
+        print("Skipped tests did not execute, so they provide no pass/fail evidence.")
+
+
 def run_native_project_command(config, command_name, args):
     """Run one repository-native build/test command without invoking an unrelated EVM tool."""
     root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
@@ -17602,6 +18778,8 @@ def run_native_project_command(config, command_name, args):
         native_output = str(getattr(result, "text", "") or "")
         if native_output:
             print(native_output)
+        if command_name == "test":
+            _print_forge_test_result_summary(native_output, native_code)
 
         if native_code == 0 or not callable(classify_build_failure):
             return native_code
@@ -17660,6 +18838,8 @@ def run_native_project_command(config, command_name, args):
         retry_output = str(getattr(retry_result, "text", "") or "")
         if retry_output:
             print(retry_output)
+        if command_name == "test":
+            _print_forge_test_result_summary(retry_output, retry_code)
         if retry_code == 0:
             print("PASS  native command after dependency recovery")
         return retry_code
@@ -18853,9 +20033,10 @@ def _sync_audit_context(config, root=None):
         actor = existing.get("actor")
 
     rpc = effective_rpc(config) or existing.get("rpc")
+    # Transaction history is already recorded by the send/receipt/trace
+    # command in this project's context. Never import the global legacy
+    # last_tx value here: that would leak another workspace's transaction.
     latest = dict(existing.get("latest", {}))
-    if config.get("last_tx"):
-        latest["tx_hash"] = config.get("last_tx")
 
     return audit_context.update(
         root,
@@ -20402,6 +21583,7 @@ COMMAND_HELP = {
             ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read getValue"),
             ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, or use a saved reference such as @firstEscrow.", "lk read EscrowID @firstEscrow"),
             ("@identifier", "Use @number, @last, or @alias in any ABI argument whose type matches the saved identifier.", "lk read EscrowID @last"),
+            ("--verbose", "Show the redacted Cast command Lowkey uses for troubleshooting.", "lk read owner --verbose"),
         ],
         related=["lk ask", "lk send", "lk changes"],
     ),
@@ -20426,6 +21608,7 @@ COMMAND_HELP = {
             ("--as <name>", "Another spelling of --actor.", "lk send release 0xd9c5... --as attacker"),
             ("--actors", "Send the same call from each detected Anvil account, up to 10 accounts. These are separate transactions with different msg.sender values.", "lk send contribute --eth 0.001 --actors"),
             ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
+            ("--verbose", "Show the redacted Cast command alongside Lowkey's readable transaction preview.", "lk send release 0xd9c5... --preview --verbose"),
             ("--dry-run", "Another spelling of --preview.", "lk send release 0xd9c5... --dry-run"),
             ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send release 0xd9c5... --confirm"),
             ("--repeat <N>", "Accepted only as 1. A generic EOA transaction cannot repeat the exact target call N times without changing msg.sender or creating separate transactions. Use --actors to test multiple Anvil identities.", "lk send setValue 10 --repeat 1"),
@@ -20693,7 +21876,17 @@ COMMAND_HELP = {
         },
         related=["lk receipt", "lk trace", "lk logs"],
     ),
-    "tx": _help_entry("Inspect and decode a transaction.", "lk tx [tx]", "lk tx 0x...", "Use it when you have a transaction hash and want call/receipt context.", related=["lk receipt", "lk trace", "lk logs"]),
+    "tx": _help_entry(
+        "Inspect and decode a transaction, including tx.origin and trace-derived msg.sender context.",
+        "lk tx [tx]",
+        "lk tx 0x...",
+        "Without a hash, Lowkey inspects the latest transaction saved for the current project and validated target. Pass an explicit hash to inspect a transaction from another workspace; this does not replace the current project's default transaction unless the transaction directly targets this project's validated target.",
+        forms=[
+            ("lk tx", "Inspect the latest transaction saved for this project and target.", "lk tx"),
+            ("lk tx <transaction-hash>", "Inspect a specific transaction, including the immediate caller at the selected project target when the RPC provides a call trace.", "lk tx 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ],
+        related=["lk receipt", "lk trace", "lk logs"],
+    ),
     "receipt": _help_entry(
         "Show the important result of a transaction without dumping the full raw receipt.",
         "lk receipt [tx] [--raw]",
