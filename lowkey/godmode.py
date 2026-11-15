@@ -82,7 +82,7 @@ HELP_FLAGS = {"-h", "--h", "--help", "help"}
 # compares the two, so adding a shell route without adding it here fails CI.
 ROUTED_COMMANDS = (
     "capabilities", "godmode", "control", "steps", "mutation-score",
-    "target-coverage", "provenance", "fidelity", "sandbox", "decompile",
+    "target-coverage", "provenance", "fidelity", "sandbox", "cheat-fingerprint", "decompile",
     "storage-infer", "proxy-resolve", "selectors-full", "cfg",
     "reentrancy-graph", "fallback-map", "calldata-mine", "attack-forge",
     "invariant-forge", "archetype", "token-weird", "oracle-map", "skew",
