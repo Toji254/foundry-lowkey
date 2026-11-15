@@ -609,14 +609,19 @@ def _normalize_candidates(
     snippets = []
     for path in sorted(allowed_paths):
         source = source_lookup[path]
-        symbols = [str(unit.get("symbol") or "") for unit in agent["units"] if unit.get("source_path") == path]
-        entries = _snippets(source, symbols) if symbols else [
-            {"path": path, "source_excerpt": str(source.get("source_excerpt") or "")[:MAX_FILE_CONTEXT]}
-        ]
-        snippets.append({
-            "path": path,
-            "source_excerpt": "\n\n".join(str(item.get("source_excerpt") or "") for item in entries)[:MAX_FILE_CONTEXT * 2],
-        })
+        assigned = [unit for unit in agent["units"] if unit.get("source_path") == path]
+        if any(unit.get("symbol") == "contract-scope" for unit in assigned):
+            excerpt = str(source.get("source_text") or "")[:MAX_FILE_CONTEXT * 2]
+        else:
+            allowed_signatures = {str(unit.get("signature") or unit.get("symbol") or "") for unit in assigned}
+            entrypoints = _entrypoints(str(source.get("source_text") or ""), Path(path).suffix)
+            fragments = [
+                str(item.get("fragment") or "")
+                for item in entrypoints
+                if str(item.get("signature") or item.get("symbol") or "") in allowed_signatures
+            ]
+            excerpt = "\n\n".join(fragments)[:MAX_FILE_CONTEXT * 2]
+        snippets.append({"path": path, "source_excerpt": excerpt})
     try:
         try:
             from . import security_review
