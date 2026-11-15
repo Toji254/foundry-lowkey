@@ -73,7 +73,7 @@ lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 
 lk provenance --root . --verify .audit/godmode/provenance.json
 
 # Run untrusted tests in a disposable, network-disabled sandbox.
-lk sandbox --root . --timeout 300 --cpu-seconds 180 --memory-mb 2048 -- forge test
+lk sandbox --root . --timeout 300 --cpu-seconds 180 --memory-mb 2048 --processes 512 -- forge test
 ```
 
 #### Sandbox network policy
@@ -84,7 +84,9 @@ Network is disabled by default. When a sandboxed build genuinely needs one RPC d
 lk sandbox --root . --network allowlist --allow-host rpc.example.net --timeout 300 --memory-mb 2048 -- forge test --fork-url "$FOUNDRY_ETH_RPC_URL"
 ```
 
-Network allowlisting requires `bwrap`, `sudo`, `systemd-run`, and cgroup v2. Lowkey uses a transient system service with `IPAddressDeny=any` and `IPAddressAllow` for the resolved allowlist and configured DNS resolvers; it refuses rather than silently falling back to unrestricted networking. Filtering is by destination IP, not port: all ports to an allowed IP are available. Review the hostname's resolved IPs and only allow hosts you trust.
+Network allowlisting requires `bwrap`, `sudo`, `systemd-run`, and cgroup v2. Lowkey uses a transient system service with `IPAddressDeny=any` and `IPAddressAllow` for the resolved allowlist and configured DNS resolvers; it also applies cgroup `MemoryMax` and `TasksMax`. It refuses rather than silently falling back to unrestricted networking. Filtering is by destination IP, not port: all ports to an allowed IP are available. Review the hostname's resolved IPs and only allow hosts you trust.
+
+The sandbox copies the project into a disposable workspace, drops common repository/credential paths, mounts system/tool inputs read-only, applies an architecture-checked seccomp filter and terminates the launched process group on timeout. CPU, address-space, file-size and file-descriptor limits are set on the child process tree. `--processes` sets `RLIMIT_NPROC` for network-disabled mode (a per-real-UID kernel limit); allowlist mode additionally applies a per-sandbox cgroup `TasksMax`. Network-disabled mode does not claim aggregate cgroup memory accounting: its memory cap is per-process address space.
 
 #### Mutation manifest shape
 
