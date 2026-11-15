@@ -566,10 +566,12 @@ def _mapping_call_write_sequences(token_rows, file_name):
                 if depth == 0:
                     closing_index = close - 1
                     key_tokens = tokens[index + 2:closing_index]
-                    tail = tokens[closing_index + 1:min(body_end, closing_index + 10)]
+                    following = tokens[closing_index + 1] if closing_index + 1 < body_end else None
                     is_delete = index > body_start and tokens[index - 1] == "delete"
-                    write_operator = next((item for item in tail if item in assignment_ops), None)
-                    is_write = bool(is_delete or write_operator)
+                    is_prefix_update = index > body_start and tokens[index - 1] in {"++", "--"}
+                    is_write = bool(
+                        is_delete or is_prefix_update or following in assignment_ops
+                    )
                     key_expression = " ".join(key_tokens).strip()
                     if key_expression:
                         mappings.append({
