@@ -402,14 +402,19 @@ def _snippets(source: Mapping[str, Any], symbols: Sequence[str]) -> list[dict[st
     text = str(source.get("source_text") or "")
     excerpts = []
     for symbol in sorted(set(symbols)):
-        matches = list(re.finditer(r"\b" + re.escape(symbol) + r"\b", text))
+        if symbol in {"receive", "fallback"}:
+            pattern = re.compile(r"\b" + re.escape(symbol) + r"\s*\(")
+        elif Path(str(source.get("path") or "")).suffix.lower() == ".vy":
+            pattern = re.compile(r"(?m)^\s*def\s+" + re.escape(symbol) + r"\s*\(")
+        else:
+            pattern = re.compile(r"\bfunction\s+" + re.escape(symbol) + r"\s*\(")
+        matches = list(pattern.finditer(text))
         if not matches:
-            continue
-        match = matches[0]
-        start = max(0, match.start() - 1800)
-        end = min(len(text), match.end() + 5000)
-        excerpt = text[start:end]
-        excerpts.append({"path": str(source["path"]), "source_excerpt": excerpt})
+            matches = list(re.finditer(r"\b" + re.escape(symbol) + r"\b", text))[:1]
+        for match in matches[:8]:
+            start = max(0, match.start() - 1800)
+            end = min(len(text), match.end() + 5000)
+            excerpts.append({"path": str(source["path"]), "source_excerpt": text[start:end]})
     if not excerpts:
         excerpts.append({"path": str(source["path"]), "source_excerpt": str(source.get("source_excerpt") or "")[:MAX_FILE_CONTEXT]})
     return excerpts
@@ -503,7 +508,7 @@ def _critic_task(final: bool = False) -> str:
         "assumptions. Challenge the coverage plan, not just the finding list. "
         "Use only source paths and real symbols in supplied source_files. Every new_coverage item must include an exact "
         "source quote from the provided excerpt. Return JSON only: clean (boolean), gaps (array of strings), "
-        "new_coverage (at most 24 objects {source_path,symbol,family,reason,evidence_quote}). "
+        "new_coverage (at most 24 objects {source_path,symbol,signature,family,reason,evidence_quote}). "
         "clean is true only when there is no additional material in-scope coverage unit and no unresolved material gap."
     )
 
@@ -536,6 +541,7 @@ def _accept_critic(
             continue
         path = str(proposal.get("source_path") or "")
         symbol = str(proposal.get("symbol") or "")
+        signature = str(proposal.get("signature") or "").strip()
         family = str(proposal.get("family") or "")
         source = sources.get(path)
         quote = str(proposal.get("evidence_quote") or "").strip()
@@ -545,24 +551,33 @@ def _accept_critic(
         if not reason or len(reason) > 1200 or len(quote) < 16:
             continue
         full_source = str(source.get("source_text") or "")
+        entrypoints = _entrypoints(full_source, Path(path).suffix)
+        matches = [item for item in entrypoints if item["symbol"] == symbol]
+        if signature:
+            matches = [item for item in matches if item.get("signature") == signature]
+        elif len(matches) == 1:
+            signature = str(matches[0].get("signature") or symbol)
+        else:
+            # An overloaded symbol must identify the exact entrypoint signature.
+            continue
+        if symbol != "contract-scope" and not matches and not re.search(r"\b" + re.escape(symbol) + r"\b", full_source):
+            continue
         excerpt = "\n\n".join(
             str(item.get("source_excerpt") or "") for item in _snippets(source, [symbol])
         )
-        if symbol != "contract-scope" and not re.search(r"\b" + re.escape(symbol) + r"\b", full_source):
-            continue
         if _normal(quote) not in _normal(excerpt):
             continue
-        identifier = _unit_id(path, symbol, family)
+        identifier = _unit_id(path, symbol, family, signature)
         if identifier in existing:
             continue
-        line_match = re.search(r"\b" + re.escape(symbol) + r"\b", full_source)
-        line_number = full_source.count("\n", 0, line_match.start()) + 1 if line_match else None
+        line_number = matches[0]["line"] if matches else 1
         accepted.append({
             "coverage_id": identifier,
-            "canonical_refs": {"source_path": path, "symbol": symbol, "attack_family": family},
+            "canonical_refs": {"source_path": path, "symbol": symbol, "entrypoint_signature": signature, "attack_family": family},
             "source_path": path,
             "source_sha256": source["source_sha256"],
             "symbol": symbol,
+            "signature": signature,
             "line": line_number,
             "family": family,
             "status": "planned",
@@ -944,7 +959,7 @@ def run_multiwave_audit(
                 "agent_id": agent["agent_id"],
                 "focus_families": agent["families"],
                 "assigned_units": [
-                    {key: unit.get(key) for key in ("coverage_id", "source_path", "symbol", "line", "family", "reason")}
+                    {key: unit.get(key) for key in ("coverage_id", "source_path", "symbol", "signature", "line", "family", "reason")}
                     for unit in agent["units"]
                 ],
                 "symbols_by_path": symbols_by_path,
