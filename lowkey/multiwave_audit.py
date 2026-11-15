@@ -622,19 +622,15 @@ def _render_report(metadata: Mapping[str, Any], units: Sequence[Mapping[str, Any
         "",
         "Coverage completion applies only to the recorded in-scope units. It is not proof that the protocol is vulnerability-free.",
         "",
-        "## Coverage critic notes",
+        "## Coverage critic observations",
         "",
-    ]
+    ])
     critic_notes = metadata.get("coverage_critic_notes", [])
     if isinstance(critic_notes, list) and critic_notes:
         lines.extend("- " + str(note) for note in critic_notes[-80:])
     else:
-        lines.append("No unresolved textual critic notes were returned.")
-    lines.extend([
-        "",
-        "## Candidate findings",
-        "",
-    ]))
+        lines.append("No additional critic observations were recorded.")
+    lines.extend(["", "## Candidate findings", ""])
     if not findings:
         lines.append("No AI candidate findings were retained. This is not a security clearance.")
     for index, finding in enumerate(findings, 1):
@@ -937,7 +933,9 @@ def run_multiwave_audit(
                     paths = []
                 checked_paths = sorted({str(path) for path in paths if isinstance(path, str) and path in allowed_paths})
                 note = str(check.get("note") or "").strip()[:1200]
-                if check_status == "reviewed" and (not checked_paths or not note):
+                expected_path = next((str(row["source_path"]) for row in agent["units"]
+                                       if str(row["coverage_id"]) == coverage_id), None)
+                if check_status == "reviewed" and (expected_path not in checked_paths or not note):
                     check_status = "needs_validation"
                 normalized[coverage_id] = {
                     "agent_id": agent["agent_id"], "role": "hunter", "status": check_status,
