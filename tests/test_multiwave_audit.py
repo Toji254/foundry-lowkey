@@ -110,7 +110,8 @@ class MultiWaveAuditTests(unittest.TestCase):
         changed_rows = [row for row in refreshed if row["source_path"] == "src/Vault.sol"]
         token_rows = [row for row in refreshed if row["source_path"] == "src/Token.sol"]
         self.assertTrue(all(not row["carried_forward"] for row in changed_rows))
-        self.assertTrue(all(row["carried_forward"] for row in token_rows))
+        self.assertTrue(all(row["carried_forward"] for row in token_rows if row["family"] != "business-logic"))
+        self.assertTrue(all(not row["carried_forward"] for row in token_rows if row["family"] == "business-logic"))
 
     def test_critic_only_adds_real_source_backed_units(self):
         sources = {
