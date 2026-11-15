@@ -3,14 +3,22 @@ import contextlib
 import io
 import pathlib
 import re
+import sys
 import unittest
 
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+LOWKEY_RUNTIME = ROOT / "lowkey"
+if str(LOWKEY_RUNTIME) not in sys.path:
+    sys.path.insert(0, str(LOWKEY_RUNTIME))
+
+# Match the installed runtime: lowkey/ is on sys.path and both modules are
+# imported by their command names, so lk's root-help hook resolves godmode.
 import godmode
 import lk
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-GODMODE_SOURCE = ROOT / "lowkey" / "godmode.py"
+GODMODE_SOURCE = LOWKEY_RUNTIME / "godmode.py"
 LAUNCHER = ROOT / "bin" / "lk"
 
 
