@@ -568,14 +568,31 @@ def _mapping_call_write_sequences(token_rows, file_name):
                     closing_index = close - 1
                     key_tokens = tokens[index + 2:closing_index]
                     following_index = closing_index + 1
-                    # Mapping values are often structs. Treat an assignment to
-                    # balances[user].amount as a mapping write, not merely a read.
-                    while (
-                        following_index + 1 < body_end
-                        and tokens[following_index] == "."
-                        and re.fullmatch(r"[a-z_$][a-z0-9_$]*", tokens[following_index + 1])
-                    ):
-                        following_index += 2
+                    # Mapping values can be structs or nested mappings/arrays.
+                    # Walk postfix member and index selectors before checking the
+                    # assignment operator so balances[user].amount and
+                    # balances[user][asset] count as writes.
+                    while following_index < body_end:
+                        if (
+                            following_index + 1 < body_end
+                            and tokens[following_index] == "."
+                            and re.fullmatch(r"[a-z_$][a-z0-9_$]*", tokens[following_index + 1])
+                        ):
+                            following_index += 2
+                            continue
+                        if tokens[following_index] == "[":
+                            nested_depth = 1
+                            nested_close = following_index + 1
+                            while nested_close < body_end and nested_depth:
+                                if tokens[nested_close] == "[":
+                                    nested_depth += 1
+                                elif tokens[nested_close] == "]":
+                                    nested_depth -= 1
+                                nested_close += 1
+                            if nested_depth == 0:
+                                following_index = nested_close
+                                continue
+                        break
                     following = tokens[following_index] if following_index < body_end else None
                     is_delete = index > body_start and tokens[index - 1] == "delete"
                     is_prefix_update = index > body_start and tokens[index - 1] in {"++", "--"}
@@ -3293,11 +3310,24 @@ def sandbox(args):
 
         path_value = str(foundry_bin) + ":/usr/local/bin:/usr/bin:/bin"
         workspace_mount = "--ro-bind" if ns.readonly_workspace else "--bind"
+        runtime_mount_args = []
+        # Minimal bwrap roots do not automatically expose the traditional
+        # /bin and ELF loader paths. Recreate the standard usr-merge links and
+        # mount the host's read-only loader directories when present.
+        if not Path("/bin").exists():
+            runtime_mount_args.extend(["--symlink", "usr/bin", "/bin"])
+        if not Path("/sbin").exists():
+            runtime_mount_args.extend(["--symlink", "usr/sbin", "/sbin"])
+        for library_path in (Path("/lib"), Path("/lib64")):
+            if library_path.exists():
+                runtime_mount_args.extend(["--ro-bind", str(library_path), str(library_path)])
+
         bwrap_argv = [
             "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
             "--seccomp", seccomp_argument, "--clearenv", "--setenv", "HOME", str(home),
             "--setenv", "PATH", path_value, "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/etc", "/etc", "--dev", "/dev", "--proc", "/proc",
+            "--ro-bind", "/etc", "/etc", *runtime_mount_args,
+            "--dev", "/dev", "--proc", "/proc",
             "--tmpfs", "/tmp", *home_args, "--dir", "/workspace",
             workspace_mount, str(work), "/workspace", "--chdir", "/workspace",
             "--", *ns.command[1:],
