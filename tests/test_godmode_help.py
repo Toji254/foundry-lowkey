@@ -140,6 +140,10 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         launcher_commands = set(match.group(1).strip().split("|"))
         registered_commands = set(godmode.ROUTED_COMMANDS)
         dispatch_commands = _main_dispatch_commands()
+        # state-diff is intentionally owned by Lowkey's primary router: its
+        # public lk state-diff syntax is distinct from this unused Godmode
+        # helper, so the shell must not shadow it with the Godmode subcommand.
+        dispatch_commands.discard("state-diff")
         self.assertEqual(dispatch_commands, registered_commands)
         self.assertEqual(launcher_commands, registered_commands)
 
