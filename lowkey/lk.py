@@ -23372,6 +23372,16 @@ SAFETY / EXPECTATIONS
   • Heuristics and analyzer findings are review leads, not vulnerability verdicts.
   • The goal is RECON → ATTACK → PROVE: understand the system, reproduce behavior, then prove impact.
 """)
+    try:
+        import godmode as _godmode_help
+    except ImportError:
+        try:
+            from lowkey import godmode as _godmode_help
+        except ImportError:
+            _godmode_help = None
+    if _godmode_help is not None:
+        _godmode_help.print_command_catalog()
+
 
 # Root commands with a deliberate workflow. Reasons are sourced from COMMAND_HELP
 # so the recommendation UX stays aligned with the command documentation.
