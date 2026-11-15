@@ -2890,90 +2890,6 @@ def coverage(args):
     return 0 if passed else 1
 
 
-def coverage(args):
-    p = LowkeyArgumentParser(prog="lk target-coverage")
-    p.add_argument("source_file", help="Target source file, relative to --root.")
-    p.add_argument("--start-line", type=int, default=1)
-    p.add_argument("--end-line", type=int)
-    p.add_argument("--root", default=".")
-    p.add_argument("--match-test", help="Foundry test-name regex used to scope the execution run.")
-    p.add_argument("--match-path", help="Foundry test path/glob used to scope the execution run.")
-    p.add_argument("--min-percent", type=float, default=0.0, help="Fail unless the selected target lines reach this percentage.")
-    p.add_argument("--output", default=".audit/godmode/target-coverage.json")
-    ns = p.parse_args(args)
-
-    if ns.start_line < 1 or (ns.end_line is not None and ns.end_line < ns.start_line):
-        raise ValueError("Coverage line range must be positive and end-line must not precede start-line.")
-    if not 0.0 <= ns.min_percent <= 100.0:
-        raise ValueError("--min-percent must be between 0 and 100.")
-
-    root = root_path(ns.root)
-    source = (root / ns.source_file).resolve()
-    if not source.is_relative_to(root) or not source.is_file():
-        raise ValueError("Target source must be an existing file inside --root.")
-    if not shutil.which("forge"):
-        raise RuntimeError("Forge is not installed; target coverage cannot run.")
-
-    command = ["forge", "coverage", "--report", "lcov"]
-    if ns.match_test:
-        command.extend(["--match-test", ns.match_test])
-    if ns.match_path:
-        command.extend(["--match-path", ns.match_path])
-
-    lcov_candidates = [root / "lcov.info", root / "coverage" / "lcov.info"]
-    for candidate in lcov_candidates:
-        if candidate.is_file():
-            candidate.unlink()
-
-    proc = run(command, root, 900)
-    lcov = next((item for item in lcov_candidates if item.is_file()), None)
-    if proc.returncode or lcov is None:
-        raise RuntimeError(
-            "Forge did not produce fresh lcov.info; inspect coverage output. "
-            + (proc.stderr[-1500:] if proc.stderr else proc.stdout[-1500:])
-        )
-
-    current = None
-    rows = []
-    for line in lcov.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith("SF:"):
-            candidate = Path(line[3:])
-            current = (candidate if candidate.is_absolute() else root / candidate).resolve()
-        elif line.startswith("DA:") and current == source:
-            try:
-                number, count = map(int, line[3:].split(",")[:2])
-            except (ValueError, TypeError):
-                continue
-            if number >= ns.start_line and (ns.end_line is None or number <= ns.end_line):
-                rows.append({"line": number, "hits": count, "covered": count > 0})
-
-    total = len(rows)
-    covered = sum(1 for item in rows if item["covered"])
-    percent = round(covered * 100 / total, 2) if total else None
-    passed = bool(total and percent is not None and percent >= ns.min_percent)
-    payload = {
-        "schema_version": 2,
-        "status": "passed" if passed else "below_threshold_or_no_executable_lines",
-        "source": source.relative_to(root).as_posix(),
-        "source_sha256": sha(source),
-        "start_line": ns.start_line,
-        "end_line": ns.end_line,
-        "test_filter": {"match_test": ns.match_test, "match_path": ns.match_path},
-        "command": command,
-        "lines": total,
-        "covered": covered,
-        "uncovered": [item["line"] for item in rows if not item["covered"]],
-        "percent": percent,
-        "minimum_percent": ns.min_percent,
-        "gate_passed": passed,
-        "warning": "Execution reachability is not assertion quality, exploitability, or security proof.",
-    }
-    out = safe_out(root, ns.output)
-    write_json(out, payload)
-    print(json.dumps(payload, indent=2))
-    return 0 if passed else 1
-
-
 def provenance(args):
     p = LowkeyArgumentParser(prog="lk provenance")
     p.add_argument("artifacts", nargs="*")
@@ -3284,18 +3200,26 @@ def sandbox(args):
             home_args += ["--dir", str(home / ".svm"), "--ro-bind", str(svm), str(svm)]
 
         seccomp_bytes, denied_names = _sandbox_seccomp_filter()
-        read_fd, write_fd = os.pipe()
-        seccomp_read_fd = read_fd
-        try:
-            os.write(write_fd, seccomp_bytes)
-        finally:
-            os.close(write_fd)
+        read_fd = None
+        seccomp_file = None
+        if ns.network == "allowlist":
+            seccomp_file = temporary / "seccomp.filter"
+            seccomp_file.write_bytes(seccomp_bytes)
+            seccomp_argument = "3"
+        else:
+            read_fd, write_fd = os.pipe()
+            seccomp_read_fd = read_fd
+            try:
+                os.write(write_fd, seccomp_bytes)
+            finally:
+                os.close(write_fd)
+            seccomp_argument = str(read_fd)
 
         path_value = str(foundry_bin) + ":/usr/local/bin:/usr/bin:/bin"
         workspace_mount = "--ro-bind" if ns.readonly_workspace else "--bind"
         bwrap_argv = [
             "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-            "--seccomp", str(read_fd), "--clearenv", "--setenv", "HOME", str(home),
+            "--seccomp", seccomp_argument, "--clearenv", "--setenv", "HOME", str(home),
             "--setenv", "PATH", path_value, "--ro-bind", "/usr", "/usr",
             "--ro-bind", "/etc", "/etc", "--dev", "/dev", "--proc", "/proc",
             "--tmpfs", "/tmp", *home_args, "--dir", "/workspace",
@@ -3334,9 +3258,14 @@ def sandbox(args):
                 "--property=LimitNOFILE=" + str(ns.nofile),
             ]
             outer_argv.extend("--property=IPAddressAllow=" + address for address in allow_ips)
-            outer_argv.extend(["--", *bwrap_argv])
+            seccomp_wrapper = [
+                "/bin/bash", "-c", 'exec 3< "$1"; shift; exec "$@"',
+                "lowkey-sandbox-seccomp", str(seccomp_file), *bwrap_argv,
+            ]
+            outer_argv.extend(["--", *seccomp_wrapper])
             preexec = None
 
+        pass_fds = (read_fd,) if read_fd is not None else ()
         try:
             proc = subprocess.run(
                 outer_argv,
@@ -3345,7 +3274,7 @@ def sandbox(args):
                 text=True,
                 timeout=ns.timeout,
                 check=False,
-                pass_fds=(read_fd,),
+                pass_fds=pass_fds,
                 preexec_fn=preexec,
                 start_new_session=True,
             )
@@ -3516,34 +3445,6 @@ def run_control(args):
     """Entry point used by break_engine for the mandatory control gate."""
     return control(args)
 
-
-def mutation(args):
-    p=LowkeyArgumentParser(prog="lk mutation-score")
-    p.add_argument("manifest")
-    p.add_argument("--min-score",type=float,default=0.90)
-    p.add_argument("--timeout",type=int,default=300)
-    p.add_argument("--output",default=".audit/verification/mutation-score-report.json")
-    ns=p.parse_args(args)
-    if not 0.0<=ns.min_score<=1.0: raise ValueError("--min-score must be between 0 and 1.")
-    try:
-        try: from . import behavioral_validation
-        except ImportError: import behavioral_validation
-    except ImportError as exc: raise RuntimeError("Existing mutation runner unavailable: "+str(exc))
-    rc=behavioral_validation.run_cli([ns.manifest,"--output",ns.output,"--timeout",str(ns.timeout)])
-    if rc!=0:
-        print("MUTATION GATE: FAIL (baseline or mutation campaign did not complete)")
-        return rc
-    report_path=Path(ns.output).expanduser()
-    if not report_path.is_absolute(): report_path=Path.cwd()/report_path
-    if not report_path.is_file(): raise RuntimeError("Mutation runner did not create its report: "+str(report_path))
-    report=json.loads(report_path.read_text(encoding="utf-8"))
-    score=report.get("mutation_score")
-    passed=isinstance(score,(float,int)) and score>=ns.min_score
-    print("MUTATION GATE: "+("PASS" if passed else "FAIL"))
-    print("  Required: "+format(ns.min_score,".1%"))
-    print("  Observed: "+(format(score,".1%") if isinstance(score,(int,float)) else "not available"))
-    print("  Invalid/timeouts are excluded from the score and must be reviewed separately.")
-    return 0 if passed else 1
 
 def inspect_reproduction_command(root, argv):
     """Inspect the replay argv and referenced local scripts for state-fabricating RPCs."""
