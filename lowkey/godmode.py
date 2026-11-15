@@ -482,7 +482,7 @@ def _cheat_catalog_patterns():
                 continue
             for line in item.splitlines():
                 if not re.search(
-                    r"(?:mapping|call|delegatecall|keccak|sload|sstore|fallback|receive|signature|nonce|vm\\.)",
+                    r"(?:mapping|call|delegatecall|keccak|sload|sstore|fallback|receive|signature|nonce|vm\.)",
                     line,
                     re.I,
                 ):
@@ -3264,7 +3264,7 @@ def sandbox(args):
                 "/bin/bash", "-c", 'exec 3< "$1"; shift; exec "$@"',
                 "lowkey-sandbox-seccomp", str(seccomp_file), *bwrap_argv,
             ]
-            outer_argv.extend(["--", *seccomp_wrapper])
+            outer_argv.extend(["--property=RuntimeMaxSec=" + str(ns.timeout) + "s", "--", *seccomp_wrapper])
             preexec = None
 
         pass_fds = (read_fd,) if read_fd is not None else ()
