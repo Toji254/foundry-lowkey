@@ -153,6 +153,12 @@ GODMODE_COMMAND_DETAILS = {
         "example": "lk sandbox --root . --timeout 300 -- forge test",
         "limits": "If bubblewrap is unavailable, Lowkey refuses to run the command unsandboxed.",
     },
+    "cheat-fingerprint": {
+        "summary": "Scan source for dangerous cheatcode and state-fabrication sequences that can weaken exploit evidence.",
+        "when": "Use it to review generated harnesses or replay scripts for synthetic state changes before trusting a reproduction.",
+        "example": "lk cheat-fingerprint --root .",
+        "limits": "This is a static source-pattern scan. A hit is a review lead, not proof that a test is invalid or an exploit is real.",
+    },
     "decompile": {
         "summary": "Decompile unverified bytecode through a configured Heimdall adapter.",
         "when": "Use it when source is unavailable and a supported decompiler adapter is installed.",
@@ -2539,7 +2545,7 @@ def source_cmd(command,args):
     if command=="reentrancy-graph": payload["confidence"]="heuristic; check exact storage identity and run a callback plus sequential control."
     return output(payload)
 def fingerprint(args):
-    p=LowkeyArgumentParser(prog="lk cheat fingerprint"); p.add_argument("--root",default="."); ns=p.parse_args(args); data=cheat_fingerprints(root_path(ns.root)); print(json.dumps(data,indent=2)); return 0
+    p=LowkeyArgumentParser(prog="lk cheat-fingerprint"); p.add_argument("--root",default="."); ns=p.parse_args(args); data=cheat_fingerprints(root_path(ns.root)); print(json.dumps(data,indent=2)); return 0
 def economic(args):
     p=LowkeyArgumentParser(prog="lk economic"); p.add_argument("--gross-wei",type=int,required=True); p.add_argument("--gas-used",type=int,required=True); p.add_argument("--max-fee-wei",type=int,required=True); p.add_argument("--pool-fee-bps",type=int,default=0); p.add_argument("--slippage-bps",type=int,default=0); p.add_argument("--capital-cost-wei",type=int,default=0); ns=p.parse_args(args)
     vals=[ns.gross_wei,ns.gas_used,ns.max_fee_wei,ns.pool_fee_bps,ns.slippage_bps,ns.capital_cost_wei]

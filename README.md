@@ -50,6 +50,7 @@ The Godmode commands are included in the root lk --help catalog. Every Godmode c
 
 ~~~bash
 lk capabilities --help
+lk cheat-fingerprint --help
 lk godmode --help
 lk control --help
 lk steps --help

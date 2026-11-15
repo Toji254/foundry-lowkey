@@ -33,6 +33,35 @@ def _capture_help(command, spelling="--help"):
     return result, output.getvalue()
 
 
+def _main_dispatch_commands():
+    """Extract command names handled by godmode.main() from its actual AST."""
+    tree = ast.parse(GODMODE_SOURCE.read_text(encoding="utf-8"))
+    main = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    commands = set()
+    for node in ast.walk(main):
+        if not isinstance(node, ast.If):
+            continue
+        expression = node.test
+        if not isinstance(expression, ast.Compare):
+            continue
+        if not isinstance(expression.left, ast.Name) or expression.left.id != "cmd":
+            continue
+        for operator, value in zip(expression.ops, expression.comparators):
+            if not isinstance(operator, (ast.Eq, ast.In)):
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                commands.add(value.value)
+            elif isinstance(value, (ast.Set, ast.Tuple, ast.List)):
+                commands.update(
+                    item.value for item in value.elts
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                )
+    return commands
+
+
 def _parser_arguments_from_source():
     """Read parser declarations so future flag additions are automatically tested."""
     tree = ast.parse(GODMODE_SOURCE.read_text(encoding="utf-8"))
@@ -109,7 +138,10 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         )
         self.assertIsNotNone(match, "Could not locate the Godmode route case in bin/lk.")
         launcher_commands = set(match.group(1).strip().split("|"))
-        self.assertEqual(launcher_commands, set(godmode.ROUTED_COMMANDS))
+        registered_commands = set(godmode.ROUTED_COMMANDS)
+        dispatch_commands = _main_dispatch_commands()
+        self.assertEqual(dispatch_commands, registered_commands)
+        self.assertEqual(launcher_commands, registered_commands)
 
         catalog = io.StringIO()
         with contextlib.redirect_stdout(catalog):
