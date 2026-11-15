@@ -72,7 +72,7 @@ lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 
 
 # First obtain/pin the signer's public key through a trusted channel, store it
 # outside the project, then verify the detached signature and artifact hashes.
-lk provenance --root . --verify .audit/godmode/provenance.json --public-key ~/.config/lowkey/trusted-provenance.pub.pem --public-key ~/.config/lowkey/trusted-provenance.pub.pem
+lk provenance --root . --verify .audit/godmode/provenance.json --public-key ~/.config/lowkey/trusted-provenance.pub.pem
 
 # Run untrusted tests in a disposable, network-disabled sandbox.
 lk sandbox --root . --timeout 300 --cpu-seconds 180 --memory-mb 2048 --processes 512 -- forge test
