@@ -3022,8 +3022,11 @@ def provenance(args):
                     "actual_sha256": actual_hash,
                     "verified": bool(exists and expected_hash_valid and actual_hash == expected_hash),
                 })
-        artifacts_ok = bool(artifact_results) and len(artifact_results) == len(artifact_rows or []) and all(
-            item["verified"] for item in artifact_results
+        artifact_rows_valid = isinstance(artifact_rows, list) and bool(artifact_rows)
+        artifacts_ok = bool(
+            artifact_rows_valid
+            and len(artifact_results) == len(artifact_rows)
+            and all(item["verified"] for item in artifact_results)
         )
         passed = bool(signature_ok and artifacts_ok)
         print("PROVENANCE VERIFY: " + ("PASS" if passed else "FAIL"))
