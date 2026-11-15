@@ -2751,39 +2751,72 @@ def mutation(args):
     finally:
         os.chdir(previous)
 
-    if runner_status != 0:
-        print("MUTATION GATE: FAIL (baseline or mutation campaign did not complete)")
-        return runner_status or 1
     if not out.is_file():
         raise RuntimeError("Mutation runner did not create its report: " + str(out))
 
     report = json.loads(out.read_text(encoding="utf-8"))
-    summary = report.get("summary") or {}
-    mutants = report.get("mutants") or []
-    killed = int(summary.get("killed", 0) or 0)
-    survived = int(summary.get("survived", 0) or 0)
-    invalid = int(summary.get("invalid", 0) or 0)
-    timed_out = int(summary.get("timeout", 0) or 0)
-    errors = int(summary.get("error", 0) or 0)
+    if not isinstance(report, dict):
+        raise RuntimeError("Mutation runner report must be a JSON object.")
+    summary = report.get("summary")
+    mutants = report.get("mutants")
+    if not isinstance(summary, dict) or not isinstance(mutants, list):
+        raise RuntimeError("Mutation runner report must contain summary and mutants objects.")
+
+    statuses = ("killed", "survived", "invalid", "timeout", "error")
+    observed_counts = {status: 0 for status in statuses}
+    rows_valid = True
+    seen_ids = set()
+    for item in mutants:
+        if not isinstance(item, dict):
+            rows_valid = False
+            continue
+        mutant_id = item.get("id")
+        status = item.get("status")
+        if not isinstance(mutant_id, str) or not mutant_id.strip() or mutant_id in seen_ids:
+            rows_valid = False
+        else:
+            seen_ids.add(mutant_id)
+        if status not in observed_counts:
+            rows_valid = False
+        else:
+            observed_counts[status] += 1
+
+    summary_consistent = True
+    for status in statuses:
+        value = summary.get(status)
+        if type(value) is not int or value < 0 or value != observed_counts[status]:
+            summary_consistent = False
+
+    killed = observed_counts["killed"]
+    survived = observed_counts["survived"]
+    invalid = observed_counts["invalid"]
+    timed_out = observed_counts["timeout"]
+    errors = observed_counts["error"]
     scored = killed + survived
     total = len(mutants)
     score = report.get("mutation_score")
+    expected_score = (killed / scored) if scored else None
+    score_consistent = (
+        isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and expected_score is not None
+        and abs(float(score) - expected_score) <= 1e-9
+    )
     baseline_passed = (report.get("baseline") or {}).get("status") == "passed"
     campaign_complete = (
-        report.get("status") == "completed"
+        runner_status == 0
+        and report.get("status") == "completed"
         and baseline_passed
         and total > 0
+        and rows_valid
+        and summary_consistent
         and scored == total
         and invalid == 0
         and timed_out == 0
         and errors == 0
+        and score_consistent
     )
-    passed = (
-        campaign_complete
-        and isinstance(score, (int, float))
-        and not isinstance(score, bool)
-        and float(score) >= ns.min_score
-    )
+    passed = campaign_complete and float(score) >= ns.min_score
     report["family"] = family
     report["gate"] = {
         "passed": bool(passed),
@@ -2795,7 +2828,11 @@ def mutation(args):
         "timed_out": timed_out,
         "errors": errors,
         "all_mutants_scored": bool(campaign_complete),
-        "policy": "Invalid, timed-out, errored, missing, or unscored mutants fail the gate; they are never silently excluded.",
+        "mutant_rows_valid": bool(rows_valid),
+        "summary_matches_mutants": bool(summary_consistent),
+        "score_matches_killed_survived": bool(score_consistent),
+        "runner_exit_code": runner_status,
+        "policy": "Invalid, timed-out, errored, missing, duplicate, mismatched, or unscored mutants fail the gate; report totals and score must match individual mutant rows.",
     }
     write_json(out, report)
     print("MUTATION GATE: " + ("PASS" if passed else "FAIL"))
@@ -2912,10 +2949,17 @@ def provenance(args):
         manifest_path = (root / ns.verify).resolve()
         if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
             raise ValueError("Provenance manifest must be an existing file inside --root.")
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        signature_info = payload.get("signature") or {}
-        if signature_info.get("status") != "signed":
-            print("PROVENANCE VERIFY: FAIL (manifest is unsigned)")
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print("PROVENANCE VERIFY: FAIL (manifest cannot be read: " + str(exc) + ")")
+            return 1
+        if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+            print("PROVENANCE VERIFY: FAIL (unsupported or malformed manifest)")
+            return 1
+        signature_info = payload.get("signature")
+        if not isinstance(signature_info, dict) or signature_info.get("status") != "signed":
+            print("PROVENANCE VERIFY: FAIL (manifest is unsigned or malformed)")
             return 1
         signature_path = Path(ns.signature_file or signature_info.get("signature_file") or "").expanduser()
         public_path = Path(ns.public_key or signature_info.get("public_key_file") or "").expanduser()
@@ -2938,22 +2982,39 @@ def provenance(args):
         ], root, 20)
         signature_ok = signature_ok and verify_proc.returncode == 0
 
-        artifact_rows = payload.get("artifacts") or []
+        artifact_rows = payload.get("artifacts")
         artifact_results = []
-        for row in artifact_rows:
-            relative = str(row.get("path") or "")
-            candidate = (root / relative).resolve()
-            exists = candidate.is_relative_to(root) and candidate.is_file()
-            actual_hash = sha(candidate) if exists else None
-            expected_hash = row.get("sha256")
-            artifact_results.append({
-                "path": relative,
-                "exists": exists,
-                "expected_sha256": expected_hash,
-                "actual_sha256": actual_hash,
-                "verified": bool(exists and actual_hash == expected_hash),
-            })
-        artifacts_ok = all(item["verified"] for item in artifact_results)
+        if isinstance(artifact_rows, list):
+            for row in artifact_rows:
+                if not isinstance(row, dict):
+                    artifact_results.append({
+                        "path": None, "exists": False, "expected_sha256": None,
+                        "actual_sha256": None, "verified": False,
+                    })
+                    continue
+                relative = str(row.get("path") or "")
+                expected_hash = row.get("sha256")
+                candidate = (root / relative).resolve() if relative else root
+                exists = bool(
+                    relative
+                    and not Path(relative).is_absolute()
+                    and candidate.is_relative_to(root)
+                    and candidate.is_file()
+                )
+                actual_hash = sha(candidate) if exists else None
+                expected_hash_valid = isinstance(expected_hash, str) and bool(
+                    re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+                )
+                artifact_results.append({
+                    "path": relative,
+                    "exists": exists,
+                    "expected_sha256": expected_hash,
+                    "actual_sha256": actual_hash,
+                    "verified": bool(exists and expected_hash_valid and actual_hash == expected_hash),
+                })
+        artifacts_ok = bool(artifact_results) and len(artifact_results) == len(artifact_rows or []) and all(
+            item["verified"] for item in artifact_results
+        )
         passed = bool(signature_ok and artifacts_ok)
         print("PROVENANCE VERIFY: " + ("PASS" if passed else "FAIL"))
         print("  Signature: " + ("valid" if signature_ok else "invalid"))
@@ -3310,7 +3371,21 @@ def sandbox(args):
 
 
 def fingerprint(args):
-    p=LowkeyArgumentParser(prog="lk cheat-fingerprint"); p.add_argument("--root",default="."); ns=p.parse_args(args); data=cheat_fingerprints(root_path(ns.root)); print(json.dumps(data,indent=2)); return 0
+    p = LowkeyArgumentParser(prog="lk cheat-fingerprint")
+    p.add_argument("--root", default=".", help="Project root to scan.")
+    p.add_argument("--output", help="Write the machine-readable fingerprint report to this path inside --root.")
+    ns = p.parse_args(args)
+
+    root = root_path(ns.root)
+    data = cheat_fingerprints(root)
+    if ns.output:
+        out = safe_out(root, ns.output)
+        write_json(out, data)
+        print("Fingerprint report: " + str(out.relative_to(root)))
+        print("Ordered mapping/call/write sequences: " + str(len(data.get("ordered_sequences") or [])))
+    else:
+        print(json.dumps(data, indent=2))
+    return 0
 def economic(args):
     p=LowkeyArgumentParser(prog="lk economic"); p.add_argument("--gross-wei",type=int,required=True); p.add_argument("--gas-used",type=int,required=True); p.add_argument("--max-fee-wei",type=int,required=True); p.add_argument("--pool-fee-bps",type=int,default=0); p.add_argument("--slippage-bps",type=int,default=0); p.add_argument("--capital-cost-wei",type=int,default=0); ns=p.parse_args(args)
     vals=[ns.gross_wei,ns.gas_used,ns.max_fee_wei,ns.pool_fee_bps,ns.slippage_bps,ns.capital_cost_wei]
