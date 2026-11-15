@@ -560,7 +560,7 @@ def _accept_critic(
         else:
             # An overloaded symbol must identify the exact entrypoint signature.
             continue
-        if symbol != "contract-scope" and not matches and not re.search(r"\b" + re.escape(symbol) + r"\b", full_source):
+        if symbol != "contract-scope" and not matches:
             continue
         excerpt = "\n\n".join(
             str(item.get("source_excerpt") or "") for item in _snippets(source, [symbol])
