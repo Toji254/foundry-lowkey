@@ -565,6 +565,10 @@ def _normalize_candidates(
     if not isinstance(raw, list) or len(raw) > MAX_CANDIDATES_PER_HUNTER:
         raise ValueError("Hunter candidate_findings must be a bounded array.")
     allowed_paths = set(agent["source_paths"])
+    allowed_symbols = {
+        path: {str(unit.get("symbol") or "") for unit in agent["units"] if unit.get("source_path") == path}
+        for path in allowed_paths
+    }
     snippets = []
     for path in sorted(allowed_paths):
         source = source_lookup[path]
@@ -590,7 +594,10 @@ def _normalize_candidates(
     accepted = []
     for finding in normalized["candidate_findings"]:
         path = str(finding.get("location", {}).get("path") or "")
+        symbol = str(finding.get("location", {}).get("symbol") or "")
         if path not in allowed_paths or finding.get("source_quote_status") != "matched":
+            continue
+        if symbol not in allowed_symbols.get(path, set()) and "contract-scope" not in allowed_symbols.get(path, set()):
             continue
         source = source_lookup[path]
         finding.update({
