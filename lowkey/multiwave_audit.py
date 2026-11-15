@@ -156,9 +156,9 @@ def _safe_source(root: Path, record: Mapping[str, Any]) -> dict[str, Any] | None
     }
 
 def _entrypoints(source: str, suffix: str = ".sol") -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     if suffix.lower() == ".vy":
         lines = source.splitlines(keepends=True)
-        rows: list[dict[str, Any]] = []
         offsets = []
         cursor = 0
         for line in lines:
@@ -171,6 +171,8 @@ def _entrypoints(source: str, suffix: str = ".sol") -> list[dict[str, Any]]:
             decorators = "\n".join(lines[max(0, index - 4):index])
             if not re.search(r"@(?:external|public)\b", decorators):
                 continue
+            signature_match = re.search(r"\bdef\s+[A-Za-z_][A-Za-z0-9_]*\s*(\([^)]*\))", line)
+            signature = match.group(1) + re.sub(r"\s+", "", signature_match.group(1)) if signature_match else match.group(1) + "@line-" + str(index + 1)
             indent = len(line) - len(line.lstrip())
             end_index = index + 1
             while end_index < len(lines):
@@ -178,21 +180,38 @@ def _entrypoints(source: str, suffix: str = ".sol") -> list[dict[str, Any]]:
                 if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= indent:
                     break
                 end_index += 1
-            start = offsets[index]
-            end = offsets[end_index] if end_index < len(offsets) else len(source)
+            start_offset = offsets[index]
+            end_offset = offsets[end_index] if end_index < len(offsets) else len(source)
             rows.append({
                 "symbol": match.group(1),
+                "signature": signature,
                 "line": index + 1,
-                "fragment": source[start:end],
+                "fragment": source[start_offset:end_offset],
             })
         return rows
 
-    rows: list[dict[str, Any]] = []
     pattern = re.compile(r"\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
     for match in pattern.finditer(source):
-        limit = min(len(source), match.end() + 1600)
-        brace = source.find("{", match.end(), limit)
-        semi = source.find(";", match.end(), limit)
+        open_paren = match.end() - 1
+        depth = 0
+        close_paren = -1
+        cursor = open_paren
+        while cursor < len(source):
+            character = source[cursor]
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    close_paren = cursor
+                    break
+            cursor += 1
+        if close_paren < 0:
+            continue
+        signature = match.group(1) + "(" + re.sub(r"\s+", "", source[open_paren + 1:close_paren]) + ")"
+        limit = min(len(source), close_paren + 1600)
+        brace = source.find("{", close_paren + 1, limit)
+        semi = source.find(";", close_paren + 1, limit)
         endings = [value for value in (brace, semi) if value >= 0]
         if not endings:
             continue
@@ -202,23 +221,25 @@ def _entrypoints(source: str, suffix: str = ".sol") -> list[dict[str, Any]]:
             continue
         end = boundary + 1
         if source[boundary] == "{":
-            depth = 1
-            cursor = end
-            while cursor < len(source) and depth:
-                if source[cursor] == "{":
-                    depth += 1
-                elif source[cursor] == "}":
-                    depth -= 1
-                cursor += 1
-            if depth == 0:
-                end = cursor
+            body_depth = 1
+            body_cursor = end
+            while body_cursor < len(source) and body_depth:
+                if source[body_cursor] == "{":
+                    body_depth += 1
+                elif source[body_cursor] == "}":
+                    body_depth -= 1
+                body_cursor += 1
+            if body_depth == 0:
+                end = body_cursor
             else:
                 end = min(len(source), boundary + 6000)
         rows.append({
             "symbol": match.group(1),
+            "signature": signature,
             "line": source.count("\n", 0, match.start()) + 1,
             "fragment": source[match.start():end],
         })
+
     for match in re.finditer(r"\b(receive|fallback)\s*\(", source):
         brace = source.find("{", match.end(), min(len(source), match.end() + 1000))
         if brace < 0:
@@ -230,15 +251,14 @@ def _entrypoints(source: str, suffix: str = ".sol") -> list[dict[str, Any]]:
             elif source[cursor] == "}":
                 depth -= 1
             cursor += 1
+        symbol = match.group(1)
         rows.append({
-            "symbol": match.group(1),
+            "symbol": symbol,
+            "signature": symbol + "()",
             "line": source.count("\n", 0, match.start()) + 1,
             "fragment": source[match.start():cursor if depth == 0 else min(len(source), brace + 6000)],
         })
-    unique: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        unique.setdefault(row["symbol"], row)
-    return [unique[key] for key in sorted(unique)]
+    return rows
 
 def _families(fragment: str) -> list[str]:
     selected = [
@@ -250,8 +270,9 @@ def _families(fragment: str) -> list[str]:
     selected.append("business-logic")
     return list(dict.fromkeys(selected))
 
-def _unit_id(path: str, symbol: str, family: str) -> str:
-    return "CU-" + hashlib.sha256((path + "\n" + symbol + "\n" + family).encode("utf-8")).hexdigest()[:20]
+def _unit_id(path: str, symbol: str, family: str, signature: str | None = None) -> str:
+    entrypoint = signature or symbol
+    return "CU-" + hashlib.sha256((path + "\n" + entrypoint + "\n" + family).encode("utf-8")).hexdigest()[:20]
 
 def build_coverage_ledger(
     context: Mapping[str, Any], root: str | Path, profile: str = "standard",
@@ -276,7 +297,7 @@ def build_coverage_ledger(
             functions = [{"symbol": "contract-scope", "line": 1, "fragment": source["source_text"][:20_000]}]
         for function in functions:
             for family in _families(function["fragment"]):
-                coverage_id = _unit_id(source["path"], function["symbol"], family)
+                coverage_id = _unit_id(source["path"], function["symbol"], family, function.get("signature"))
                 prior = previous.get(coverage_id, {})
                 unchanged = prior.get("source_sha256") == source["source_sha256"]
                 carried = bool(
@@ -287,10 +308,11 @@ def build_coverage_ledger(
                 )
                 rows.append({
                     "coverage_id": coverage_id,
-                    "canonical_refs": {"source_path": source["path"], "symbol": function["symbol"], "attack_family": family},
+                    "canonical_refs": {"source_path": source["path"], "symbol": function["symbol"], "entrypoint_signature": function.get("signature") or function["symbol"], "attack_family": family},
                     "source_path": source["path"],
                     "source_sha256": source["source_sha256"],
                     "symbol": function["symbol"],
+                    "signature": function.get("signature") or function["symbol"],
                     "line": function["line"],
                     "family": family,
                     "status": "reviewed" if carried else "planned",
