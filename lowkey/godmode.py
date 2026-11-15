@@ -3311,16 +3311,12 @@ def sandbox(args):
         path_value = str(foundry_bin) + ":/usr/local/bin:/usr/bin:/bin"
         workspace_mount = "--ro-bind" if ns.readonly_workspace else "--bind"
         runtime_mount_args = []
-        # Minimal bwrap roots do not automatically expose the traditional
-        # /bin and ELF loader paths. Recreate the standard usr-merge links and
-        # mount the host's read-only loader directories when present.
-        if not Path("/bin").exists():
-            runtime_mount_args.extend(["--symlink", "usr/bin", "/bin"])
-        if not Path("/sbin").exists():
-            runtime_mount_args.extend(["--symlink", "usr/sbin", "/sbin"])
-        for library_path in (Path("/lib"), Path("/lib64")):
-            if library_path.exists():
-                runtime_mount_args.extend(["--ro-bind", str(library_path), str(library_path)])
+        # A minimal bwrap root does not inherit host /bin, /sbin or ELF loader
+        # directories just because those paths exist on the host. Bind the
+        # existing runtime paths read-only into the disposable namespace.
+        for runtime_path in ("/bin", "/sbin", "/lib", "/lib64"):
+            if Path(runtime_path).exists():
+                runtime_mount_args.extend(["--ro-bind", runtime_path, runtime_path])
 
         bwrap_argv = [
             "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
