@@ -138,6 +138,28 @@ class Tier0MutationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Declare one family"):
                 godmode.mutation(["mutations.json", "--root", str(root)])
 
+    def test_mutation_gate_rejects_summary_that_disagrees_with_mutant_rows(self):
+        report = {
+            "status": "completed",
+            "baseline": {"status": "passed"},
+            "summary": {"killed": 10, "survived": 0, "invalid": 0, "timeout": 0, "error": 0},
+            "mutants": [
+                {"id": f"m{index}", "status": "killed"} for index in range(9)
+            ] + [{"id": "m-invalid", "status": "invalid"}],
+            "mutation_score": 1.0,
+        }
+        temporary, root, module_patch = self._run(report)
+        try:
+            with module_patch:
+                code = godmode.mutation(["mutations.json", "--root", str(root), "--min-score", "0.9"])
+            self.assertEqual(code, 1)
+            saved = json.loads((root / ".audit" / "verification" / "mutation-score-report.json").read_text())
+            self.assertFalse(saved["gate"]["passed"])
+            self.assertFalse(saved["gate"]["summary_matches_mutants"])
+            self.assertFalse(saved["gate"]["all_mutants_scored"])
+        finally:
+            temporary.cleanup()
+
 
 class Tier0CoverageTests(unittest.TestCase):
     def test_coverage_threshold_is_enforced_against_fresh_lcov(self):
@@ -205,6 +227,21 @@ class Tier0ProvenanceTests(unittest.TestCase):
                 "--root", str(root), "--verify", ".audit/godmode/provenance.json",
             ])
             self.assertEqual(tampered, 1)
+
+            # A correctly signed manifest with no artifacts must still fail:
+            # signature validity alone is not proof that evidence was recorded.
+            signed["artifacts"] = []
+            manifest.write_text(json.dumps(signed, indent=2) + "\n", encoding="utf-8")
+            signature_path = root / signed["signature"]["signature_file"]
+            resigned = subprocess.run(
+                [openssl, "dgst", "-sha256", "-sign", str(key), "-out", str(signature_path), str(manifest)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(resigned.returncode, 0, resigned.stderr)
+            empty = godmode.provenance([
+                "--root", str(root), "--verify", ".audit/godmode/provenance.json",
+            ])
+            self.assertEqual(empty, 1)
 
 
 class Tier0SandboxTests(unittest.TestCase):
