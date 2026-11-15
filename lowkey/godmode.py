@@ -3288,7 +3288,8 @@ def sandbox(args):
                 print(exc.stderr, file=sys.stderr, end="" if str(exc.stderr).endswith("\n") else "\n")
             return 124
         finally:
-            os.close(read_fd)
+            if read_fd is not None:
+                os.close(read_fd)
             seccomp_read_fd = None
 
         print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
