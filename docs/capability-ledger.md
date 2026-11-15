@@ -6,7 +6,7 @@ This ledger separates implementation, isolated component coverage, installed-com
 **P0 baseline:** `0d13d33b91c1c2c7c82ad6f37fa7eb8f6d3f814c`  
 **P0 full integration CI:** [run 7442](https://github.com/Toji254/foundry-lowkey/actions/runs/42163749361), on `0d13d33b91c1c2c7c82ad6f37fa7eb8f6d3f814c`, completed with all 10 jobs successful.  
 **P0 latest installed-CLI acceptance:** [run 7485](https://github.com/Toji254/foundry-lowkey/actions/runs/42363585120), on the P1 feature branch before the renderer checksum fix; the dedicated P0 acceptance job passed. The full run remains separate from the P0 job result.  
-**P1 integration PR:** [PR 64](https://github.com/Toji254/foundry-lowkey/pull/64), targeting `integration-test-drive`; `master` is not part of this change. On candidate head `6cbe8704afe8f875019b6ac254c48d1068a7767f`, the dedicated P1 runtime acceptance job passed in [run 7661](https://github.com/Toji254/foundry-lowkey/actions/runs/43760379664). The remaining exact-head CI jobs are still pending, so the full P1 phase remains pending until the complete run is green.
+**P1 integration PR:** [PR 64](https://github.com/Toji254/foundry-lowkey/pull/64), targeting `integration-test-drive`; `master` is not part of this change. On candidate head `9eb97460e780290f447280f1f4143453672bdb4a`, the dedicated P1 runtime acceptance job passed in [run 7663](https://github.com/Toji254/foundry-lowkey/actions/runs/43760724039). The remaining exact-head CI jobs are still pending, so the full P1 phase remains pending until the complete run is green.
 
 | Capability | Current status | Evidence and limits |
 |---|---|---|
@@ -33,7 +33,7 @@ Until those acceptance cases exist in the same PR, the following remain **teleme
 
 | Family label | Scope |
 |---|---|
-| reentrancy | P1 behavioural acceptance in PR 63; not accepted until exact-head CI passes |
+| reentrancy | P1 behavioural acceptance in PR 64; local fixture gate passed; full exact-head CI pending |
 | replay | telemetry-only |
 | access | telemetry-only |
 | accounting | telemetry-only |
@@ -59,7 +59,7 @@ P0 fixture acceptance is not a promise that every ABI, ERC-20 implementation, to
 
 ## P1 gate and stop condition
 
-PR 64 must pass, on its exact latest head SHA, the complete CI matrix before P1 is accepted. The dedicated P1 runtime job has passed on candidate head `6cbe8704afe8f875019b6ac254c48d1068a7767f`; the following are the P1 acceptance requirements already exercised by that job:
+PR 64 must pass, on its exact latest head SHA, the complete CI matrix before P1 is accepted. The dedicated P1 runtime job has passed on candidate head `9eb97460e780290f447280f1f4143453672bdb4a`; the following are the P1 acceptance requirements already exercised by that job:
 
 1. Installed `lk steps` renders all 15 labels, validates template/harness hashes, records refusals, compiles, and **executes** every generated harness on the Anvil fixture.
 2. One deployed vault and actor are reused for the sequential control and reentrant attack; the only scenario difference is the declared callback mode set outside each measured window.
