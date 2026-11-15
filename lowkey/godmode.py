@@ -100,10 +100,10 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "A registered name is not proof of a working exploit generator; partial and adapter-required states are deliberate.",
     },
     "godmode": {
-        "summary": "Run the evidence-first audit orchestrator: source recon, on-chain recon, optional local attack, control, mutation, and coverage stages.",
-        "when": "Use it to produce one staged audit report and see which evidence gates are still missing.",
-        "example": "lk godmode 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545 --plan-only",
-        "limits": "Attack execution is local-Anvil-only. The orchestrator does not turn static signals or skipped stages into a BREAK.",
+        "summary": "Run evidence-first reconnaissance and proof stages, with optional multi-agent Solidity hunting across repeated coverage-critic waves.",
+        "when": "Use --multi-agent for separate EVM hunters, a fresh coverage critic after each wave, a distinct final-clean review, and independent candidate challenges.",
+        "example": "lk godmode --root . --multi-agent --profile standard",
+        "limits": "Multi-agent review is source-only and never confirms a vulnerability. Surviving candidates still require native LK proof, fidelity, control, economics and human disposition.",
     },
     "control": {
         "summary": "Compare an attack against a sequential control using matched execution evidence and a frozen experiment specification.",
@@ -3152,7 +3152,7 @@ def learn(args):
         finally: os.chdir(old)
     except ImportError as exc: raise RuntimeError(str(exc))
 def godmode(args):
-    p=LowkeyArgumentParser(prog="lk godmode"); p.add_argument("target",nargs="?"); p.add_argument("--root",default="."); p.add_argument("--rpc-url"); p.add_argument("--profile",choices=("light","balanced","deep"),default="balanced"); p.add_argument("--attack",action="store_true"); p.add_argument("--control-manifest"); p.add_argument("--mutation-manifest"); p.add_argument("--coverage-source"); p.add_argument("--plan-only",action="store_true"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk godmode"); p.add_argument("target",nargs="?"); p.add_argument("--root",default="."); p.add_argument("--rpc-url"); p.add_argument("--profile",choices=("light","balanced","quick","standard","deep"),default="balanced"); p.add_argument("--attack",action="store_true"); p.add_argument("--control-manifest"); p.add_argument("--mutation-manifest"); p.add_argument("--coverage-source"); p.add_argument("--plan-only",action="store_true"); p.add_argument("--multi-agent",action="store_true",help="Run the source-only multi-wave Solidity audit with independent hunters and critics."); p.add_argument("--agent-budget",type=int,help="Maximum independent AI invocations for the multi-agent audit (4..64)."); ns=p.parse_args(args)
     root=root_path(ns.root); target=addr(ns.target) if ns.target else None; maps=source_maps(root); cheat=cheat_fingerprints(root); stages=[]
     stages.append({"name":"source-recon","status":"completed","signals":sum(len(v) for v in maps.values() if isinstance(v,list))})
     stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"])})
@@ -3187,9 +3187,29 @@ def godmode(args):
         finally: os.chdir(old)
         stages.append({"name":"target-coverage","status":"completed" if rc==0 else "review","exit_code":rc})
     else: stages.append({"name":"target-coverage","status":"not-run","reason":"No target source line scope."})
+    multiwave_result=None
+    if ns.multi_agent:
+        try:
+            try: from . import multiwave_audit
+            except ImportError: import multiwave_audit
+            audit_profile={"light":"quick","quick":"quick","balanced":"standard","standard":"standard","deep":"deep"}[ns.profile]
+            multiwave_result=multiwave_audit.run_multiwave_audit(root,profile=audit_profile,max_agent_calls=ns.agent_budget)
+            audit_state=multiwave_result.get("status")
+            stage_state="completed" if audit_state=="coverage_complete" else ("blocked" if audit_state=="blocked" else "review")
+            stages.append({"name":"multiwave-smart-contract-audit","status":stage_state,
+                           "reason":multiwave_result.get("stopped_reason"),
+                           "run_id":multiwave_result.get("run_id"),
+                           "report":multiwave_result.get("report"),
+                           "coverage_units":multiwave_result.get("coverage_units"),
+                           "candidate_findings":multiwave_result.get("candidate_findings"),
+                           "waves_completed":multiwave_result.get("waves_completed")})
+        except Exception as exc:
+            multiwave_result={"status":"blocked","stopped_reason":str(exc)[:500]}
+            stages.append({"name":"multiwave-smart-contract-audit","status":"blocked","reason":str(exc)[:500]})
     blockers=[s for s in stages if s["status"] in {"blocked","review","not-run","skipped"}]
     payload={"created_at":now(),"target":target,"project_root":str(root),"git_revision":None,"chain_id":chain,"fork_block":block,
              "profile":ns.profile,"stages":stages,"signals":maps,"cheat_fingerprints":cheat,
+             "multiwave_audit":multiwave_result,
              "onchain":onchain,"overall_status":"REVIEW_REQUIRED",
              "proof_gate":["attack must demonstrate a measurable security-property delta","matched sequential control must pass",
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
