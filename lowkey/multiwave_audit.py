@@ -24,6 +24,7 @@ MAX_FILE_CONTEXT = 8_000
 MAX_TOTAL_CONTEXT = 30_000
 MAX_CANDIDATES_PER_HUNTER = 12
 MAX_NEW_UNITS_PER_CRITIC = 24
+EVM_SOURCE_SUFFIXES = frozenset({".sol", ".vy", ".yul", ".huff"})
 
 ATTACK_FAMILIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "access-control": ("authorization, ownership, roles and privilege transitions", (
@@ -121,6 +122,8 @@ def _safe_source(root: Path, record: Mapping[str, Any]) -> dict[str, Any] | None
     relative = str(record.get("path") or "")
     if not _valid_relpath(relative):
         return None
+    if Path(relative).suffix.lower() not in EVM_SOURCE_SUFFIXES:
+        return None
     path = root / relative
     try:
         if path.is_symlink():
@@ -152,7 +155,38 @@ def _safe_source(root: Path, record: Mapping[str, Any]) -> dict[str, Any] | None
         "source_bytes": len(raw),
     }
 
-def _entrypoints(source: str) -> list[dict[str, Any]]:
+def _entrypoints(source: str, suffix: str = ".sol") -> list[dict[str, Any]]:
+    if suffix.lower() == ".vy":
+        lines = source.splitlines(keepends=True)
+        rows: list[dict[str, Any]] = []
+        offsets = []
+        cursor = 0
+        for line in lines:
+            offsets.append(cursor)
+            cursor += len(line)
+        for index, line in enumerate(lines):
+            match = re.match(r"\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+            if not match:
+                continue
+            decorators = "\n".join(lines[max(0, index - 4):index])
+            if not re.search(r"@(?:external|public)\b", decorators):
+                continue
+            indent = len(line) - len(line.lstrip())
+            end_index = index + 1
+            while end_index < len(lines):
+                candidate = lines[end_index]
+                if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= indent:
+                    break
+                end_index += 1
+            start = offsets[index]
+            end = offsets[end_index] if end_index < len(offsets) else len(source)
+            rows.append({
+                "symbol": match.group(1),
+                "line": index + 1,
+                "fragment": source[start:end],
+            })
+        return rows
+
     rows: list[dict[str, Any]] = []
     pattern = re.compile(r"\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
     for match in pattern.finditer(source):
@@ -237,7 +271,7 @@ def build_coverage_ledger(
     previous = prior_units or {}
     rows: list[dict[str, Any]] = []
     for source in safe_sources:
-        functions = _entrypoints(source["source_text"])
+        functions = _entrypoints(source["source_text"], Path(source["path"]).suffix)
         if not functions:
             functions = [{"symbol": "contract-scope", "line": 1, "fragment": source["source_text"][:20_000]}]
         for function in functions:
@@ -309,14 +343,26 @@ def _read_prior(root: Path) -> tuple[dict[str, dict[str, Any]], list[dict[str, A
 
 def _safe_write(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name("." + path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 def _safe_output(root: Path, relative: str) -> Path:
     if not _valid_relpath(relative):
         raise ValueError("Audit output path must remain project-relative.")
     target = root / relative
+    cursor = root
+    for part in relative.split("/")[:-1]:
+        cursor = cursor / part
+        if cursor.exists() and cursor.is_symlink():
+            raise ValueError("Audit output parent must not traverse a symlink.")
     parent = target.parent.resolve()
     if not parent.is_relative_to(root):
         raise ValueError("Audit output path escapes the project root.")
@@ -576,9 +622,19 @@ def _render_report(metadata: Mapping[str, Any], units: Sequence[Mapping[str, Any
         "",
         "Coverage completion applies only to the recorded in-scope units. It is not proof that the protocol is vulnerability-free.",
         "",
+        "## Coverage critic notes",
+        "",
+    ]
+    critic_notes = metadata.get("coverage_critic_notes", [])
+    if isinstance(critic_notes, list) and critic_notes:
+        lines.extend("- " + str(note) for note in critic_notes[-80:])
+    else:
+        lines.append("No unresolved textual critic notes were returned.")
+    lines.extend([
+        "",
         "## Candidate findings",
         "",
-    ])
+    ]))
     if not findings:
         lines.append("No AI candidate findings were retained. This is not a security clearance.")
     for index, finding in enumerate(findings, 1):
@@ -620,6 +676,7 @@ def _finish(
     calls: Sequence[Mapping[str, Any]], units: Sequence[Mapping[str, Any]],
     findings: Sequence[Mapping[str, Any]], architecture: Mapping[str, Any],
     waves: int, critic_clean: bool, stopped_reason: str | None, ai_state: Mapping[str, Any],
+    critic_notes: Sequence[str] = (),
 ) -> dict[str, Any]:
     unit_rows = [dict(item) for item in units]
     finding_rows = [dict(item) for item in findings]
@@ -642,6 +699,7 @@ def _finish(
         "candidate_count": len(finding_rows),
         "unverified_candidate_count": len(unverified),
         "critic_clean": bool(critic_clean),
+        "coverage_critic_notes": list(critic_notes)[-80:],
         "stopped_reason": stopped_reason,
         "execution_policy": "source-only; no target code, build, test, RPC, signing or transactions",
         "proof_policy": "AI cannot assign confirmed, profitable or human-confirmed status",
@@ -1114,7 +1172,7 @@ def run_multiwave_audit(
         if not stopped_reason and not critic_clean:
             stopped_reason = "No clean coverage-critic result was recorded."
         return _finish(project, run_dir, run_id, profile, config, calls, units, findings, architecture,
-                       waves, critic_clean, stopped_reason, state)
+                       waves, critic_clean, stopped_reason, state, unresolved_gaps)
     except Exception as exc:
         stopped_reason = type(exc).__name__ + ": " + str(exc)[:500]
         return _finish(project, run_dir, run_id, profile, config, calls, units, findings, architecture,
