@@ -44,6 +44,48 @@ lk report
 
 The capability inventory uses three honest states: `implemented` means the command has a working local workflow; `partial` means it produces a useful lead, starter, bounded measurement, or needs protocol-specific input; `adapter-required` means an external runtime/provider integration is not available and Lowkey will stop rather than fake a result. A registered capability is not automatically an automated exploit.
 
+### P1 command reference and help
+
+The Godmode commands are included in the root lk --help catalog. Every Godmode command accepts the help spellings --h, --help, -h, and help. Use a command's help page for its complete positional arguments, options, defaults, and examples:
+
+~~~bash
+lk capabilities --help
+lk cheat-fingerprint --help
+lk godmode --help
+lk control --help
+lk steps --help
+lk mutation-score --help
+lk target-coverage --help
+lk provenance --help
+lk reprove --help
+~~~
+
+The P1 workflow commands are:
+
+~~~bash
+# Freeze the experiment without executing either side
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --freeze
+
+# Validate the frozen spec without executing commands or contacting RPC
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate
+
+# Render a typed Step[] manifest and write both the harness and refusal location
+lk steps .audit/steps.json --root . --output test/GeneratedSteps.t.sol --refusal-output .audit/steps-refusal.json
+
+# Enforce the configured mutation score
+lk mutation-score .audit/mutations.json --min-score 0.90 --timeout 300
+
+# Record selected artifact hashes and run provenance
+lk provenance .audit/godmode/latest.json --chain-id 31337 --fork-block 100
+
+# Reproduce on a pinned local fork and include verified prior setup costs
+lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --prior-cost-wei 1000000000000000
+~~~
+
+lk reprove --prior-cost-wei subtracts measured setup expenditure in addition to replay gas. Its default is zero; do not leave it at zero when deployment, funding, or other attack setup costs were incurred. lk control --validate is read-only and does not execute either scenario. lk steps currently executes a generic sequence for its 15 registered labels; it does not implement 15 separate protocol-specific generators. Generic flash_borrow and reenter callback Steps remain fail-closed with backend_unsupported.
+
+lk godmode is an orchestrator, not an automatic vulnerability verdict. It reports skipped, blocked, and review-required stages explicitly. A fixture-level local proof remains fixture evidence; it is not proof against an authenticated production deployment.
+
 ### Sequential control is mandatory for BREAK
 
 The lk break engine can find candidate behavioral breaks, but a candidate is downgraded to OBSERVED unless a matching trace-backed sequential-control manifest passes. lk control accepts **only a local Anvil RPC** and requires each scenario to execute one real, mined transaction.
@@ -625,38 +667,6 @@ The project-usage view connects dependency code back to your application. lk imp
 
 The import helper stays separate from audit target/RPC state. Ordinary lookup, search, explanation, graph/usage views, and JSON output are read-only; only explicit --install changes the project.
 
-
-## Block and block-hash inspection
-
-Use the native, read-only block command to inspect EVM blocks on the
-currently selected Lowkey RPC. It does not need a contract target, ABI, or
-wallet:
-
-~~~bash
-lk block
-lk block 5
-lk block hash 5
-lk block 5 --verbose
-lk block latest --json
-~~~
-
-The default output stays focused on the essentials:
-
-- **Block hash:** this block's fingerprint.
-- **Previous block hash (parent hash):** the previous block's fingerprint.
-- **Time and block.timestamp:** the human-readable time and the exact value Solidity reads.
-- **Transactions:** how many transactions are included.
-- **Gas used:** consumption compared with the block's gas limit.
-
-Use lk block 5 --verbose for extra header/network fields, or --json for
-the raw RPC response. lk block hash 5 prints only the exact 32-byte hash.
-
-For example, Block 5's parent hash should equal Block 4's block hash. That
-parent reference links each block to the one before it. When a transaction
-executes in block 6 and calls blockhash(block.number - 1), the contract
-reads Block 5's block hash. The EVM exposes only the previous 256 completed
-block hashes to contracts; an RPC may retain older block headers separately.
-The command performs no transactions and changes no chain state.
 
 ## Storage and state forensics
 
