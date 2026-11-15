@@ -2985,8 +2985,6 @@ def provenance(args):
             raise ValueError("Detached signature must be an existing file inside --root.")
         if not public_path.is_file():
             raise ValueError("Trusted public key must be an existing readable file.")
-        if public_path == Path(ns.signing_key or "/__not_a_real_signing_key__").resolve():
-            raise ValueError("A private signing key cannot be used as a trusted public key.")
         if not shutil.which("openssl"):
             raise RuntimeError("OpenSSL is required to verify provenance signatures.")
         public_hash = sha(public_path)
@@ -3215,7 +3213,7 @@ def sandbox(args):
     p.add_argument("--memory-mb", type=int, default=4096)
     p.add_argument("--file-size-mb", type=int, default=512)
     p.add_argument("--nofile", type=int, default=256)
-    p.add_argument("--processes", type=int, default=512, help="Maximum processes/threads for the real UID; cgroup-backed allowlist mode also applies a per-sandbox TasksMax.")
+    p.add_argument("--processes", type=int, default=512, help="Maximum processes/threads in this sandbox's systemd cgroup TasksMax.")
     p.add_argument("--readonly-workspace", action="store_true", help="Mount the disposable project copy read-only.")
     p.add_argument("--network", choices=("none", "allowlist"), default="none")
     p.add_argument("--allow-host", action="append", default=[], help="Allow this hostname/IP when --network allowlist is selected. All ports to resolved IPs are allowed.")
@@ -3258,7 +3256,6 @@ def sandbox(args):
 
     temporary = Path(tempfile.mkdtemp(prefix="lk-sandbox-"))
     work = temporary / "project"
-    seccomp_read_fd = None
     try:
         def ignore_sensitive(directory, names):
             ignored = []
@@ -3308,22 +3305,6 @@ def sandbox(args):
         if ns.network == "none":
             bwrap_argv.insert(2, "--unshare-net")
 
-        def apply_limits():
-            import resource
-            limits = (
-                (resource.RLIMIT_CPU, ns.cpu_seconds),
-                (resource.RLIMIT_AS, ns.memory_mb * 1024 * 1024),
-                (resource.RLIMIT_FSIZE, ns.file_size_mb * 1024 * 1024),
-                (resource.RLIMIT_NOFILE, ns.nofile),
-                (resource.RLIMIT_NPROC, ns.processes),
-                (resource.RLIMIT_CORE, 0),
-            )
-            for resource_id, requested in limits:
-                current_soft, current_hard = resource.getrlimit(resource_id)
-                hard = requested if current_hard == resource.RLIM_INFINITY else min(requested, current_hard)
-                soft = min(requested, hard)
-                resource.setrlimit(resource_id, (soft, hard))
-
         # Per-sandbox cgroup controls apply in both network modes. Network-none
         # additionally uses a fresh network namespace; allowlist mode relies on
         # systemd's cgroup IP filter and therefore needs the system manager.
@@ -3370,9 +3351,9 @@ def sandbox(args):
                 preexec_fn=preexec,
                 start_new_session=True,
             )
-            # In allowlist mode systemd's RuntimeMaxSec is the authoritative
-            # service timeout; give systemd a short grace period to stop the unit.
-            client_timeout = ns.timeout + (5 if ns.network == "allowlist" else 0)
+            # RuntimeMaxSec is the authoritative service timeout; give the
+            # systemd-run client a short grace period to receive the unit result.
+            client_timeout = ns.timeout + 5
             try:
                 stdout_text, stderr_text = proc.communicate(timeout=client_timeout)
             except subprocess.TimeoutExpired:
@@ -3398,9 +3379,6 @@ def sandbox(args):
                 if stderr_text:
                     print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
                 return 124
-        finally:
-            seccomp_read_fd = None
-
         print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
         print("SANDBOX SECCOMP: active; denied syscalls: " + ", ".join(denied_names))
         print("SANDBOX LIMITS: cgroup MemoryMax=" + str(ns.memory_mb) + "MiB TasksMax=" + str(ns.processes) + " LimitCPU=" + str(ns.cpu_seconds) + "s file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile))
