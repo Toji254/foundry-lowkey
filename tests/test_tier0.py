@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import resource
 import subprocess
 import sys
 import tempfile
@@ -289,6 +290,18 @@ class Tier0ProvenanceTests(unittest.TestCase):
             ])
             self.assertEqual(empty, 1)
 
+            signed["artifacts"] = 42
+            manifest.write_text(json.dumps(signed, indent=2) + "\n", encoding="utf-8")
+            resigned = subprocess.run(
+                [openssl, "dgst", "-sha256", "-sign", str(key), "-out", str(signature_path), str(manifest)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(resigned.returncode, 0, resigned.stderr)
+            malformed = godmode.provenance([
+                "--root", str(root), "--verify", ".audit/godmode/provenance.json",
+            ])
+            self.assertEqual(malformed, 1)
+
 
 class Tier0SandboxTests(unittest.TestCase):
     def test_seccomp_filter_is_architecture_checked_and_nonempty(self):
@@ -324,6 +337,15 @@ class Tier0SandboxTests(unittest.TestCase):
             self.assertIn("pass_fds", popen_mock.call_args.kwargs)
             self.assertIsNotNone(popen_mock.call_args.kwargs["preexec_fn"])
             self.assertTrue(popen_mock.call_args.kwargs["start_new_session"])
+            applied_limits = []
+            with patch.object(resource, "getrlimit", return_value=(0, resource.RLIM_INFINITY)), patch.object(
+                resource, "setrlimit", side_effect=lambda kind, values: applied_limits.append((kind, values))
+            ):
+                popen_mock.call_args.kwargs["preexec_fn"]()
+            self.assertIn(
+                (resource.RLIMIT_NPROC, (64, 64)),
+                applied_limits,
+            )
 
     def test_sandbox_refuses_unsandboxed_execution_when_bwrap_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary:
