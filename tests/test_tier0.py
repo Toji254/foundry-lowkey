@@ -7,7 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lowkey"))
@@ -64,6 +64,45 @@ contract Vault {
             report = json.loads((root / ".audit" / "fingerprints.json").read_text(encoding="utf-8"))
             self.assertIn("ordered_sequences", report)
             self.assertIn("pattern_hashes", report)
+
+    def test_fingerprint_recognizes_safe_transfer_and_struct_field_write(self):
+        source = """contract Vault {
+    struct Account { uint256 balance; }
+    mapping(address => Account) internal accounts;
+    IERC20 token;
+    function withdraw() external {
+        uint256 amount = accounts[msg.sender].balance;
+        token.safeTransfer(msg.sender, amount);
+        accounts[msg.sender].balance = 0;
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "Vault.sol").write_text(source, encoding="utf-8")
+            sequences = godmode.cheat_fingerprints(root)["ordered_sequences"]
+            match = next(row for row in sequences if row["mapping"] == "accounts")
+            self.assertEqual(match["external_method"], "safeTransfer")
+            self.assertEqual(match["key_expression"], "msg . sender")
+            self.assertLess(match["read_line"], match["call_line"])
+            self.assertLess(match["call_line"], match["write_line"])
+
+    def test_fingerprint_does_not_treat_local_assignment_as_mapping_write(self):
+        source = """contract Vault {
+    mapping(address => uint256) internal balances;
+    IERC20 token;
+    function inspect() external {
+        uint256 amount = balances[msg.sender];
+        token.transfer(msg.sender, amount);
+        uint256 localCopy = amount;
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "Vault.sol").write_text(source, encoding="utf-8")
+            sequences = godmode.cheat_fingerprints(root)["ordered_sequences"]
+            self.assertFalse(sequences)
 
 
 class Tier0MutationTests(unittest.TestCase):
@@ -188,6 +227,13 @@ class Tier0CoverageTests(unittest.TestCase):
             self.assertFalse(report["gate_passed"])
             self.assertIn("--match-test", report["command"])
 
+            passed = godmode.coverage([
+                "src/Vault.sol", "--root", str(root), "--min-percent", "50",
+            ])
+            self.assertEqual(passed, 0)
+            passed_report = json.loads((root / ".audit" / "godmode" / "target-coverage.json").read_text())
+            self.assertTrue(passed_report["gate_passed"])
+
 
 class Tier0ProvenanceTests(unittest.TestCase):
     def test_signed_provenance_verifies_signature_and_artifact_hashes(self):
@@ -258,20 +304,26 @@ class Tier0SandboxTests(unittest.TestCase):
             (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             (root / "src").mkdir()
 
-            completed = subprocess.CompletedProcess(["bwrap"], 0, "sandbox ok\n", "")
-            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else None), patch.object(godmode.subprocess, "run", return_value=completed) as run_mock:
+            completed = Mock()
+            completed.pid = 445566
+            completed.returncode = 0
+            completed.communicate.return_value = ("sandbox ok\n", "")
+            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else None), patch.object(godmode.subprocess, "Popen", return_value=completed) as popen_mock:
                 code = godmode.sandbox([
                     "--root", str(root), "--timeout", "10", "--memory-mb", "256",
-                    "--readonly-workspace", "--", "python3", "-c", "print('sandbox ok')",
+                    "--processes", "64", "--readonly-workspace",
+                    "--", "python3", "-c", "print('sandbox ok')",
                 ])
 
             self.assertEqual(code, 0)
-            argv = run_mock.call_args.args[0]
+            argv = popen_mock.call_args.args[0]
             self.assertIn("bwrap", argv[0])
             self.assertIn("--unshare-net", argv)
             self.assertIn("--seccomp", argv)
             self.assertIn("--ro-bind", argv)
-            self.assertIn("pass_fds", run_mock.call_args.kwargs if hasattr(run_mock.call_args, "kwargs") else {})
+            self.assertIn("pass_fds", popen_mock.call_args.kwargs)
+            self.assertIsNotNone(popen_mock.call_args.kwargs["preexec_fn"])
+            self.assertTrue(popen_mock.call_args.kwargs["start_new_session"])
 
     def test_sandbox_refuses_unsandboxed_execution_when_bwrap_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -295,7 +347,11 @@ class Tier0SandboxTests(unittest.TestCase):
             real_is_file = pathlib.Path.is_file
             with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/" + name if name in {"bwrap", "sudo", "systemd-run"} else None), patch.object(pathlib.Path, "is_file", autospec=True, side_effect=lambda path: True if str(path) == "/sys/fs/cgroup/cgroup.controllers" else real_is_file(path)):
                 with patch.object(godmode.socket, "getaddrinfo", return_value=[(None, None, None, None, ("203.0.113.5", 0))]):
-                    with patch.object(godmode.subprocess, "run", return_value=subprocess.CompletedProcess(["systemd-run"], 0, "", "")) as run_mock:
+                    completed = Mock()
+                    completed.pid = 445567
+                    completed.returncode = 0
+                    completed.communicate.return_value = ("", "")
+                    with patch.object(godmode.subprocess, "Popen", return_value=completed) as run_mock:
                         code = godmode.sandbox([
                             "--root", str(root), "--network", "allowlist",
                             "--allow-host", "rpc.example.test", "--timeout", "10",
@@ -306,7 +362,26 @@ class Tier0SandboxTests(unittest.TestCase):
             self.assertIn("--system", argv)
             self.assertIn("--property=IPAddressDeny=any", argv)
             self.assertIn("--property=IPAddressAllow=203.0.113.5", argv)
+            self.assertIn("--property=TasksMax=512", argv)
+            self.assertIn("--property=MemoryMax=268435456", argv)
             self.assertTrue(any(value.startswith("--property=RuntimeMaxSec=") for value in argv))
+
+
+    def test_sandbox_timeout_terminates_the_entire_process_group(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            completed = Mock()
+            completed.pid = 445568
+            completed.returncode = -15
+            completed.communicate.side_effect = [
+                subprocess.TimeoutExpired(["bwrap"], 1),
+                ("partial output\n", "terminated\n"),
+            ]
+            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else None), patch.object(godmode.subprocess, "Popen", return_value=completed), patch.object(godmode.os, "killpg") as killpg:
+                code = godmode.sandbox([
+                    "--root", temporary, "--timeout", "1", "--", "python3", "-c", "pass",
+                ])
+            self.assertEqual(code, 124)
+            killpg.assert_called_once_with(completed.pid, godmode.signal.SIGTERM)
 
 
 if __name__ == "__main__":
