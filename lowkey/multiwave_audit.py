@@ -279,7 +279,12 @@ def build_coverage_ledger(
                 coverage_id = _unit_id(source["path"], function["symbol"], family)
                 prior = previous.get(coverage_id, {})
                 unchanged = prior.get("source_sha256") == source["source_sha256"]
-                carried = bool(unchanged and prior.get("status") == "reviewed")
+                carried = bool(
+                    unchanged
+                    and prior.get("status") == "reviewed"
+                    and family != "business-logic"
+                    and profile != "deep"
+                )
                 rows.append({
                     "coverage_id": coverage_id,
                     "canonical_refs": {"source_path": source["path"], "symbol": function["symbol"], "attack_family": family},
@@ -874,7 +879,7 @@ def run_multiwave_audit(
         recon_context = _context(
             base, sources, list(sources), {},
             {"stage": "protocol-reconnaissance",
-             "symbols_by_path": {path: [row["symbol"] for row in _entrypoints(source["source_text"])]
+             "symbols_by_path": {path: [row["symbol"] for row in _entrypoints(source["source_text"], Path(path).suffix)]
                                  for path, source in sources.items()}},
         )
         architecture = invoke(
@@ -1016,7 +1021,7 @@ def run_multiwave_audit(
                 base, sources, list(sources), architecture,
                 {
                     "stage": role,
-                    "symbols_by_path": {path: [row["symbol"] for row in _entrypoints(source["source_text"])]
+                    "symbols_by_path": {path: [row["symbol"] for row in _entrypoints(source["source_text"], Path(path).suffix)]
                                         for path, source in sources.items()},
                     "wave": wave,
                     "coverage_units": [
@@ -1074,7 +1079,7 @@ def run_multiwave_audit(
                 base, sources, list(sources), architecture,
                 {
                     "stage": "final_clean_review",
-                    "symbols_by_path": {path: [row["symbol"] for row in _entrypoints(source["source_text"])]
+                    "symbols_by_path": {path: [row["symbol"] for row in _entrypoints(source["source_text"], Path(path).suffix)]
                                         for path, source in sources.items()},
                     "coverage_units": [
                         {key: unit.get(key) for key in ("coverage_id", "source_path", "symbol", "family", "status")}
