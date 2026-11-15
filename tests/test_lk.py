@@ -6236,6 +6236,14 @@ contract Pool {
         self.assertIn("inspect the first failure", text.lower())
         self.assertIn("not an overall security verdict", text)
 
+    def test_forge_test_summary_disclaims_security_verdict_when_tests_pass(self):
+        output = "Suite result: ok. 2 passed; 0 failed; 0 skipped; finished in 1.0ms\n"
+        with redirect_stdout(io.StringIO()) as rendered:
+            lk._print_forge_test_result_summary(output, 0)
+        text = rendered.getvalue()
+        self.assertIn("2 passed · 0 failed · 0 skipped", text)
+        self.assertIn("not an overall security verdict", text)
+
     def test_txpool_status_converts_hex_counts_and_explains_terms(self):
         config = {"rpc": "http://127.0.0.1:8545"}
         with patch.object(lk, "effective_rpc", return_value=config["rpc"]), \

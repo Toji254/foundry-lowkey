@@ -189,6 +189,58 @@ class GodmodeTests(unittest.TestCase):
             raise AssertionError("Unexpected RPC method: " + method)
         return fake_rpc
 
+    def test_control_validate_checks_frozen_spec_without_executing(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._control_manifest(root)
+            with patch.object(godmode, "rpc") as rpc_mock, \
+                 patch.object(godmode, "run") as run_mock, \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545", "--validate",
+                ])
+
+            saved = json.loads((root / ".audit" / "godmode" / "control.json").read_text())
+            self.assertEqual(result, 0)
+            self.assertEqual(saved["status"], "PROPOSED")
+            self.assertTrue(saved["freeze_valid"])
+            self.assertFalse(saved["execution_attempted"])
+            self.assertTrue(saved["freeze"]["verified"])
+            rpc_mock.assert_not_called()
+            run_mock.assert_not_called()
+
+    def test_control_validate_rejects_tampered_digest_without_execution(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._control_manifest(root)
+            freeze_path = root / ".audit" / "godmode" / "control.freeze.json"
+            frozen = json.loads(freeze_path.read_text(encoding="utf-8"))
+            frozen["freeze_sha256"] = "0" * 64
+            freeze_path.write_text(json.dumps(frozen), encoding="utf-8")
+
+            with patch.object(godmode, "rpc") as rpc_mock, \
+                 patch.object(godmode, "run") as run_mock, \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545", "--validate",
+                ])
+
+            saved = json.loads((root / ".audit" / "godmode" / "control.json").read_text())
+            self.assertEqual(result, 2)
+            self.assertEqual(saved["status"], "REJECTED")
+            self.assertEqual(saved["proof_status"], "REJECTED")
+            self.assertEqual(saved["rejection_codes"], ["digest_mismatch"])
+            self.assertFalse(saved["execution_attempted"])
+            self.assertEqual(saved["freeze"]["reason_code"], "digest_mismatch")
+            rpc_mock.assert_not_called()
+            run_mock.assert_not_called()
+
     def test_control_rejects_tampered_freeze_digest_before_rpc_execution(self):
         from unittest.mock import patch
 
@@ -653,6 +705,7 @@ class GodmodeTests(unittest.TestCase):
                     "--source-rpc-url", "https://archive.example",
                     "--prestate-slot", target + ":" + ("0x" + "0" * 64),
                     "--target-address", target, "--profit-address", recipient,
+                    "--prior-cost-wei", str(10**18),
                     "--argv-json", json.dumps([sys.executable, "-c", "pass"]),
                 ])
             saved = json.loads((root / ".audit/godmode/reprove.json").read_text())
@@ -662,8 +715,30 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["fork_parent_block"], 100)
             self.assertEqual(saved["transaction_block"], 101)
             self.assertEqual(saved["gas_cost_wei"], expected_fee)
-            self.assertEqual(saved["net_profit_wei"], 2 * 10**18 - expected_fee)
+            self.assertEqual(saved["prior_cost_wei"], 10**18)
+            self.assertEqual(saved["total_cost_wei"], 10**18 + expected_fee)
+            self.assertEqual(saved["net_profit_wei"], 10**18 - expected_fee)
             self.assertTrue(saved["human_confirmation_required"])
+
+    def test_reprove_rejects_negative_prior_cost_before_rpc(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            harness = root / "test" / "PriorCost.t.sol"
+            harness.parent.mkdir()
+            harness.write_text("contract PriorCost {}", encoding="utf-8")
+            with patch.object(godmode, "rpc") as rpc_mock:
+                with self.assertRaisesRegex(ValueError, "prior-cost-wei must be a non-negative integer"):
+                    godmode.reprove([
+                        "test/PriorCost.t.sol", "--root", str(root),
+                        "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
+                        "--target-address", "0x" + "1" * 40,
+                        "--profit-address", "0x" + "2" * 40,
+                        "--tx-hash", "0x" + "a" * 64,
+                        "--prior-cost-wei", "-1",
+                    ])
+            rpc_mock.assert_not_called()
 
     def test_reprove_require_trace_storage_rejects_empty_prestate_diff(self):
         from unittest.mock import patch
@@ -895,7 +970,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(saved["economic_policy"]["accepted"])
             self.assertEqual(saved["economic_policy"]["promotion_cap"], "SIMULATED_BREAK")
             self.assertEqual(saved["control_delta"], 0)
-            self.assertNotIn("control_not_outperformed", saved["rejection_codes"])
+            self.assertNotIn("control_passed", saved["rejection_codes"])
 
     def test_control_rejects_non_positive_rpc_measured_portfolio_delta(self):
         from unittest.mock import patch
@@ -923,7 +998,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(saved["status"], "REJECTED")
             self.assertEqual(saved["outcome"], "rejected")
-            self.assertIn("control_not_outperformed", saved["rejection_codes"])
+            self.assertIn("control_passed", saved["rejection_codes"])
             self.assertEqual(saved["control_delta"], 0)
             feedback = saved["memory_feedback"]
             self.assertEqual(feedback["status"], "recorded")
@@ -967,7 +1042,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(saved["status"], "REJECTED")
             self.assertEqual(saved["outcome"], "rejected")
             self.assertIn("net_negative", saved["rejection_codes"])
-            self.assertIn("control_not_outperformed", saved["rejection_codes"])
+            self.assertIn("control_passed", saved["rejection_codes"])
 
     def test_generator_drift_stops_control_without_rejecting_frozen_hypothesis(self):
         from unittest.mock import patch
@@ -1169,6 +1244,13 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(rows["control"]["prestate_sha256"], rows["attack"]["prestate_sha256"])
             self.assertEqual(rows["control"]["trace_events"][0]["selector"], "0x12345678")
             self.assertEqual(rows["attack"]["trace_events"][0]["selector"], "0x12345678")
+            # state_diff_file is an explicit output contract. The isolated
+            # Forge workspace must not cause raw evidence to disappear when
+            # the runner cleans up its temporary directory.
+            for entry in (control_entry, attack_entry):
+                persisted = root / entry["state_diff_file"]
+                self.assertTrue(persisted.is_file(), persisted)
+                self.assertEqual(json.loads(persisted.read_text(encoding="utf-8")), artifact)
 
     def test_forge_control_adapter_consumes_real_forge_artifact_without_claiming_eoa_profit(self):
         import subprocess
@@ -1504,7 +1586,7 @@ class GodmodeTests(unittest.TestCase):
         })
         self.assertIn("address[] memory step1Arg0 = new address[](1);", source)
         self.assertIn("uint8[2] memory step1Arg1;", source)
-        self.assertIn("vm.expectCall(address(0x" + "1" * 40 + "), step0Data, uint64(2));", source)
+        self.assertIn("vm.expectCall(address(uint160(0x00" + "1" * 40 + ")), step0Data, uint64(2));", source)
         self.assertIn("STEP_1_EXPECTED_REVERT", source)
 
 

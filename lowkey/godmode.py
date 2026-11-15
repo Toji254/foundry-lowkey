@@ -75,6 +75,205 @@ CAPABILITIES = [
 (43,"learn","Evidence-backed experience learning","implemented"),
 (44,"report","Reproducible audit report","implemented"),
 ]
+
+HELP_FLAGS = {"-h", "--h", "--help", "help"}
+
+# This list mirrors the first Godmode dispatch case in bin/lk. The help test
+# compares the two, so adding a shell route without adding it here fails CI.
+ROUTED_COMMANDS = (
+    "capabilities", "godmode", "control", "steps", "mutation-score",
+    "target-coverage", "provenance", "fidelity", "sandbox", "cheat-fingerprint", "decompile",
+    "storage-infer", "proxy-resolve", "selectors-full", "cfg",
+    "reentrancy-graph", "fallback-map", "calldata-mine", "attack-forge",
+    "invariant-forge", "archetype", "token-weird", "oracle-map", "skew",
+    "flashmax", "time", "sig-matrix", "init-frontrun", "path", "compose",
+    "reprove", "economic", "gas-ladder", "watch", "custody", "agent-split",
+    "verify-hack", "unravel", "bundle", "sandwich", "jit", "fork-cache",
+    "upgrade-diff", "cross-vm", "learn", "report", "questions",
+)
+
+GODMODE_COMMAND_DETAILS = {
+    "capabilities": {
+        "summary": "List the 44 registered Godmode capabilities and their honest implementation states.",
+        "when": "Use it before relying on a capability or planning an audit workflow.",
+        "example": "lk capabilities",
+        "limits": "A registered name is not proof of a working exploit generator; partial and adapter-required states are deliberate.",
+    },
+    "godmode": {
+        "summary": "Run the evidence-first audit orchestrator: source recon, on-chain recon, optional local attack, control, mutation, and coverage stages.",
+        "when": "Use it to produce one staged audit report and see which evidence gates are still missing.",
+        "example": "lk godmode 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545 --plan-only",
+        "limits": "Attack execution is local-Anvil-only. The orchestrator does not turn static signals or skipped stages into a BREAK.",
+    },
+    "control": {
+        "summary": "Compare an attack against a sequential control using matched execution evidence and a frozen experiment specification.",
+        "when": "Use it before promoting a candidate BREAK; freeze expectations first, validate the freeze, then execute with the matching frozen inputs.",
+        "example": "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate",
+        "limits": "Anvil callTracer mode accepts a local Anvil RPC only. Forge state-diff results are structural evidence, not gas-adjusted EOA profit.",
+    },
+    "steps": {
+        "summary": "Validate a typed Step[] manifest and render a hash-addressed Foundry harness, with explicit machine-readable refusals.",
+        "when": "Use it to turn a supported execution plan into a reviewable Solidity harness before running Forge tests.",
+        "example": "lk steps .audit/steps.json --root . --output test/GeneratedSteps.t.sol --refusal-output .audit/steps-refusal.json",
+        "limits": "The 15 family labels share a generic executable sequence; they are not 15 protocol-specific exploit generators. Generic flash_borrow and reenter callback steps remain backend_unsupported.",
+    },
+    "reprove": {
+        "summary": "Re-run a PoC on a cheatcode-free local fork and calculate portfolio profit from a mined transaction receipt.",
+        "when": "Use it after a candidate exploit has a reproducible harness and you need transaction, trace, gas, storage, and net-cost evidence.",
+        "example": "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --prior-cost-wei 1000000000000000",
+        "limits": "Pass verified prior deployment/funding/setup expenditure through --prior-cost-wei. Without it, net profit subtracts replay gas only. A local fixture is not production-deployment proof.",
+    },
+    "mutation-score": {
+        "summary": "Run the configured mutation campaign against a manifest and enforce a minimum mutation score.",
+        "when": "Use it to check whether the test suite detects representative security-relevant code changes.",
+        "example": "lk mutation-score .audit/mutations.json --min-score 0.90 --timeout 300",
+        "limits": "A mutation score measures test sensitivity; it does not establish exploitability or impact by itself.",
+    },
+    "target-coverage": {
+        "summary": "Report Forge LCOV reachability for a selected source file and optional line interval.",
+        "when": "Use it to see whether a harness reaches the target lines being discussed.",
+        "example": "lk target-coverage src/Vault.sol --start-line 40 --end-line 95",
+        "limits": "Coverage is reachability evidence, not assertion quality or proof of security impact.",
+    },
+    "provenance": {
+        "summary": "Hash selected evidence artifacts and record the project revision, chain, fork, and tool versions; optionally sign the report.",
+        "when": "Use it when saving a reproducible audit run or preparing evidence for review.",
+        "example": "lk provenance .audit/godmode/latest.json --chain-id 31337 --fork-block 100",
+        "limits": "A hash proves artifact identity, not correctness of the experiment or its conclusion.",
+    },
+    "fidelity": {
+        "summary": "Inspect harness fidelity or append a declared evidence-strength record to the evidence ledger.",
+        "when": "Use it to distinguish heuristic/simulated evidence from more realistic fork reproduction.",
+        "example": "lk fidelity --inspect test/Exploit.t.sol",
+        "limits": "The scanner is static and can miss aliases, wrappers, or custom state manipulation.",
+    },
+    "sandbox": {
+        "summary": "Run an untrusted command in an isolated, network-disabled bubblewrap copy of the project.",
+        "when": "Use it before executing untrusted build/test steps when bubblewrap is installed.",
+        "example": "lk sandbox --root . --timeout 300 -- forge test",
+        "limits": "If bubblewrap is unavailable, Lowkey refuses to run the command unsandboxed.",
+    },
+    "cheat-fingerprint": {
+        "summary": "Scan source for dangerous cheatcode and state-fabrication sequences that can weaken exploit evidence.",
+        "when": "Use it to review generated harnesses or replay scripts for synthetic state changes before trusting a reproduction.",
+        "example": "lk cheat-fingerprint --root .",
+        "limits": "This is a static source-pattern scan. A hit is a review lead, not proof that a test is invalid or an exploit is real.",
+    },
+    "decompile": {
+        "summary": "Decompile unverified bytecode through a configured Heimdall adapter.",
+        "when": "Use it when source is unavailable and a supported decompiler adapter is installed.",
+        "example": "lk decompile --help",
+        "limits": "Currently adapter-required; Lowkey refuses to guess a decompiler invocation.",
+    },
+    "flashmax": {
+        "summary": "Prepare a venue-specific flash-loan integration plan for Aave, Balancer, or Uniswap V3.",
+        "when": "Use it only after a protocol-specific callback adapter and venue details are available.",
+        "example": "lk flashmax aave 0x1111111111111111111111111111111111111111 --adapter ./adapters/aave.py",
+        "limits": "Requires a venue adapter. The command does not borrow funds or claim profitability.",
+    },
+    "sandwich": {
+        "summary": "Simulate sandwich ordering using a pending-transaction feed and pool-specific simulator.",
+        "when": "Use it only when a supported mempool feed and pool adapter are configured.",
+        "example": "lk sandwich --help",
+        "limits": "Adapter-required; no transaction is broadcast.",
+    },
+    "jit": {
+        "summary": "Simulate just-in-time liquidity ordering using a pool-specific simulator.",
+        "when": "Use it only when a supported pool adapter is configured.",
+        "example": "lk jit --help",
+        "limits": "Adapter-required; no transaction is broadcast.",
+    },
+}
+
+_CAPABILITY_BY_NAME = {
+    name: {"title": title, "status": status}
+    for _number, name, title, status in CAPABILITIES
+}
+
+
+def _godmode_help_details(command):
+    command = str(command or "").strip().lower()
+    if command in GODMODE_COMMAND_DETAILS:
+        return GODMODE_COMMAND_DETAILS[command]
+    capability = _CAPABILITY_BY_NAME.get(command)
+    if capability:
+        title = capability["title"]
+        return {
+            "summary": title + ".",
+            "when": "Use it when this review surface is relevant to the current protocol or evidence.",
+            "example": "lk " + command + " --help",
+            "limits": "Capability status: " + capability["status"] + ". Review the returned evidence and limitations before treating it as a finding.",
+        }
+    return None
+
+
+class LowkeyArgumentParser(argparse.ArgumentParser):
+    """Godmode parser with consistent help aliases and human-readable command context."""
+
+    def __init__(self, *args, **kwargs):
+        raw_prog = kwargs.get("prog")
+        command = str(raw_prog or "").strip().split()[-1] if raw_prog else ""
+        details = _godmode_help_details(command)
+        existing_description = str(kwargs.get("description") or "").strip()
+        if details:
+            context = (
+                "What it does: " + details["summary"] + "\n"
+                "When to use: " + details["when"]
+            )
+            kwargs["description"] = context + (
+                "\n\n" + existing_description if existing_description else ""
+            )
+            existing_epilog = str(kwargs.get("epilog") or "").strip()
+            command_epilog = (
+                "Example: " + details["example"] + "\n"
+                "Limitations: " + details["limits"]
+            )
+            kwargs["epilog"] = (
+                existing_epilog + "\n\n" + command_epilog
+                if existing_epilog else command_epilog
+            )
+        kwargs.setdefault("formatter_class", argparse.ArgumentDefaultsHelpFormatter)
+        kwargs["add_help"] = False
+        super().__init__(*args, **kwargs)
+        self.add_argument(
+            "-h", "--help", "--h",
+            action="help",
+            help="Show this command's usage, options, examples, and limitations.",
+        )
+
+    def parse_args(self, args=None, namespace=None):
+        # argparse requires option strings to begin with a prefix character.
+        # Keep bare "help" as a CLI alias by normalizing it before parsing.
+        values = list(sys.argv[1:] if args is None else args)
+        values = ["--help" if str(value).strip().lower() == "help" else value for value in values]
+        return super().parse_args(values, namespace)
+
+
+def print_command_catalog():
+    """Print the Godmode command inventory used by the root Lowkey help menu."""
+    print()
+    print("GODMODE / EVIDENCE-FIRST SECURITY COMMANDS")
+    print("------------------------------------------")
+    capability_by_name = _CAPABILITY_BY_NAME
+    for command in ROUTED_COMMANDS:
+        details = _godmode_help_details(command)
+        summary = details["summary"] if details else "Godmode evidence workflow."
+        status = capability_by_name.get(command, {}).get("status")
+        if command == "capabilities":
+            status = "catalog"
+        elif command == "steps":
+            status = "partial"
+        elif command == "skew":
+            status = "partial"
+        elif command in {"jit", "sandwich", "decompile"}:
+            status = "adapter-required"
+        status_text = (" [" + status + "]") if status else ""
+        print(f"  lk {command:<22} {summary}{status_text}")
+    print()
+    print("  Detailed flags/defaults/examples: lk <command> --help")
+    print("  Help spellings accepted by these commands: --h, --help, -h, help")
+    print("  lk capabilities lists all 44 capability states; registered does not mean fully implemented.")
+
 FALLBACK = {
 "receive":r"\breceive\s*\(\s*\)\s*external",
 "fallback":r"\bfallback\s*(?:\([^)]*\))?\s*external",
@@ -1373,6 +1572,89 @@ def _forge_scenario_prestate(normalized, spec, scenario_name):
 
 
 
+def _forge_storage_metric(normalized, metric_spec):
+    """Compute a declared uint256 storage delta from trace-derived state accesses.
+
+    Unlike account balance deltas, this does not depend on Forge emitting a
+    balance record for every contract participating in a callback. The slot
+    must be observed in the trace and its transaction-prestate value must be
+    present in the normalized artifact.
+    """
+    if not isinstance(metric_spec, dict):
+        raise ValueError("metric_storage must be an object with address and slot.")
+    address = addr(metric_spec.get("address"))
+    slot = storage_slot_key(metric_spec.get("slot"))
+    kind = str(metric_spec.get("kind") or "uint256_delta").lower()
+    if kind != "uint256_delta":
+        raise ValueError("metric_storage.kind currently supports only uint256_delta.")
+
+    prestate_account = next(
+        (row for row in (normalized.get("prestate") or [])
+         if str(row.get("address") or "").lower() == address),
+        None,
+    )
+    prestate_slot = next(
+        (row for row in (prestate_account or {}).get("storage") or []
+         if str(row.get("slot") or "").lower() == slot),
+        None,
+    )
+    if prestate_slot is None:
+        raise ValueError(
+            "Trace did not capture the declared metric_storage prestate slot "
+            + address + ":" + slot
+        )
+    try:
+        before = int(str(prestate_slot.get("value")), 16)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric_storage prestate value is not a valid bytes32 quantity.") from exc
+
+    observations = [
+        item for item in (normalized.get("storage_accesses") or [])
+        if str(item.get("account") or "").lower() == address
+        and str(item.get("slot") or "").lower() == slot
+        and not item.get("reverted", False)
+    ]
+    if not observations:
+        raise ValueError(
+            "Trace did not observe the declared metric_storage slot during execution: "
+            + address + ":" + slot
+        )
+    try:
+        first_observed_before = int(str(observations[0].get("previous_value")), 16)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric_storage first trace value is not a valid bytes32 quantity.") from exc
+    if first_observed_before != before:
+        raise ValueError(
+            "metric_storage first trace value differs from the normalized transaction prestate."
+        )
+
+    # Use the final successful SSTORE, not the final access: the harness
+    # deliberately reads the counter after the callback, and SLOAD encoding
+    # of new_value is backend-specific. The fixture writes this counter on
+    # every callback, including a valid zero result.
+    successful_writes = [item for item in observations if item.get("is_write")]
+    if not successful_writes:
+        raise ValueError(
+            "Trace observed metric_storage but recorded no successful write to its declared slot."
+        )
+    try:
+        after = int(str(successful_writes[-1].get("new_value")), 16)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("metric_storage final write is not a valid bytes32 quantity.") from exc
+
+    return {
+        "kind": "forge_trace_storage_uint256_delta",
+        "address": address,
+        "slot": slot,
+        "before": before,
+        "after": after,
+        "delta": after - before,
+        "observations": len(observations),
+        "writes": len(successful_writes),
+        "source": "Vm.startStateDiffRecording successful storage writes",
+    }
+
+
 def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, paired_entry=None):
     try:
         try:
@@ -1465,8 +1747,25 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
         for scenario_name, scenario_entry, artifact_rel, scenario_argv, fidelity in validated:
             artifact_path = artifact_paths[scenario_name]
             if not artifact_path.is_file():
-                raise ValueError(scenario_name + " Forge test passed but did not write state_diff_file; " +
-                                 "ensure _lowkeyStartTrace/_lowkeyWriteTrace wrap the target call.")
+                raise ValueError(
+                    scenario_name + " Forge test passed but did not write the declared state_diff_file "
+                    + artifact_rel.as_posix()
+                    + "; ensure the harness recorder writes to that exact path."
+                )
+            # The harness runs in an isolated copy so its build/test outputs do
+            # not contaminate the caller's project. The declared evidence file,
+            # however, is an explicit output contract: persist the exact raw
+            # recorder artifact back to the project before parsing it or
+            # cleaning up the isolated workspace. This preserves diagnostics
+            # even when normalization or later proof checks fail.
+            project_root = Path(root).resolve()
+            persisted_artifact = (project_root / artifact_rel).resolve()
+            if not persisted_artifact.is_relative_to(project_root):
+                raise ValueError(
+                    scenario_name + " state_diff_file resolves outside the project root."
+                )
+            persisted_artifact.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(artifact_path, persisted_artifact)
             raw = json.loads(artifact_path.read_text(encoding="utf-8"))
             normalized = normalize_forge_state_diff(raw, expected_target=target)
             prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots = (
@@ -1494,8 +1793,16 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
             metrics = {x["address"]: x["delta_wei"] for x in normalized.get("balance_deltas", [])}
             metric_addresses = sorted({addr(x) for x in (spec.get("metric_addresses") or [])})
             metric = None
-            if metric_addresses and all(address in metrics for address in metric_addresses):
-                metric = sum(metrics[address] for address in metric_addresses)
+            metric_evidence = None
+            metric_storage = spec.get("metric_storage")
+            if metric_storage is not None:
+                metric_evidence = _forge_storage_metric(normalized, metric_storage)
+                metric = metric_evidence["delta"]
+                metric_kind = metric_evidence["kind"]
+            else:
+                if metric_addresses and all(address in metrics for address in metric_addresses):
+                    metric = sum(metrics[address] for address in metric_addresses)
+                metric_kind = "forge_account_balance_delta_without_eoa_gas"
             source_verification = _forge_source_verification(source_url, fork_url, normalized, spec)
             fidelity_label = "simulated_caller"
             if fidelity.get("synthetic_state"):
@@ -1505,7 +1812,7 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
             results[scenario_name] = {
                 "backend": "forge-state-diff", "exit_code": proc.returncode,
                 "execution_verified": proc.returncode == 0, "metric": metric,
-                "metric_kind": "forge_account_balance_delta_without_eoa_gas",
+                "metric_kind": metric_kind, "metric_evidence": metric_evidence,
                 "metric_addresses": metric_addresses, "gas_verified": False,
                 "transaction_envelope_verified": False, "tx_hash": None,
                 "chain_id": normalized["chain_id"], "block_number": normalized["block_number"],
@@ -1543,17 +1850,22 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
 
 
 def control(args):
-    p=argparse.ArgumentParser(prog="lk control")
-    p.add_argument("manifest")
-    p.add_argument("--root",default=".")
-    p.add_argument("--rpc-url",required=True)
-    p.add_argument("--source-rpc-url")
-    p.add_argument("--output",default=".audit/godmode/control.json")
+    p=LowkeyArgumentParser(prog="lk control")
+    p.add_argument("manifest",help="JSON experiment manifest containing the target, sequential control, attack, and evidence expectations.")
+    p.add_argument("--root",default=".",help="Foundry project root; manifest and evidence paths are resolved inside it.")
+    p.add_argument("--rpc-url",required=True,help="Local Anvil RPC for callTracer mode or pinned fork RPC for Forge state-diff mode.")
+    p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used for source-chain verification.")
+    p.add_argument("--output",default=".audit/godmode/control.json",help="Path for the machine-readable control verdict.")
     p.add_argument("--freeze",action="store_true",help="Freeze the manifest, commands, harnesses and expectations without running them.")
-    p.add_argument("--freeze-file",default=".audit/godmode/control.freeze.json")
+    p.add_argument("--validate",action="store_true",help="Validate a frozen spec without executing control or attack commands.")
+    p.add_argument("--freeze-file",default=".audit/godmode/control.freeze.json",help="Path for the integrity-bound frozen expectations file.")
     p.add_argument("--require-frozen",action="store_true",help="Refuse to execute unless a matching frozen manifest exists.")
     p.add_argument("--non-economic",action="store_true",help="Require a passing semantic invariant instead of positive profit.")
     ns=p.parse_args(args)
+    if ns.freeze and ns.validate:
+        raise ValueError("--freeze and --validate are separate operations; run them in separate invocations.")
+    if ns.validate and ns.require_frozen:
+        raise ValueError("--validate already requires an existing frozen spec; do not combine it with --require-frozen.")
 
     root=root_path(ns.root)
     url=rpc_url(ns.rpc_url)
@@ -1583,6 +1895,24 @@ def control(args):
     target=addr(spec.get("target_address"))
     if not isinstance(spec.get("metric_addresses"),list) or not spec["metric_addresses"]:
         raise ValueError("Declare metric_addresses for the attacker portfolio.")
+    metric_addresses={addr(value) for value in spec["metric_addresses"]}
+    metric_storage=spec.get("metric_storage")
+    if metric_storage is not None:
+        if backend != "forge-state-diff":
+            raise ValueError("metric_storage is supported only by the forge-state-diff backend.")
+        if not isinstance(metric_storage,dict):
+            raise ValueError("metric_storage must be an object with address, slot and optional kind.")
+        metric_storage_address=addr(metric_storage.get("address"))
+        storage_slot_key(metric_storage.get("slot"))
+        if str(metric_storage.get("kind") or "uint256_delta").lower() != "uint256_delta":
+            raise ValueError("metric_storage.kind currently supports only uint256_delta.")
+        prestate_addresses={
+            addr(value) for value in (spec.get("prestate_addresses") or [])
+        }
+        if metric_storage_address not in prestate_addresses:
+            raise ValueError("metric_storage.address must appear in prestate_addresses.")
+        if metric_storage_address not in metric_addresses:
+            raise ValueError("metric_storage.address must appear in metric_addresses.")
 
     try:
         try:
@@ -1604,8 +1934,35 @@ def control(args):
         return 0
 
     freeze_status=proof_evidence.validate_control_freeze(
-        root, mf, spec, required=ns.require_frozen, freeze_path=ns.freeze_file
+        root, mf, spec, required=ns.require_frozen and not ns.validate, freeze_path=ns.freeze_file
     )
+    if ns.validate:
+        digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
+        freeze_valid = bool(freeze_status.get("verified"))
+        status = "PROPOSED" if freeze_valid else ("REJECTED" if digest_rejected else "UNRESOLVED")
+        payload = {
+            "created_at": now(),
+            "status": status,
+            "proof_status": status,
+            "outcome": "not_run",
+            "family": proof_evidence.normalize_family(spec.get("family")),
+            "target_address": target,
+            "trace_backend": backend,
+            "freeze": freeze_status,
+            "freeze_valid": freeze_valid,
+            "execution_attempted": False,
+            "rejection_codes": ["digest_mismatch"] if digest_rejected else [],
+            "reasons": [] if freeze_valid else [freeze_status.get("reason")],
+            "next_action": (
+                "Run lk control with --require-frozen to execute the already validated experiment."
+                if freeze_valid else
+                "Review the frozen artifact and inputs; do not execute until validation succeeds."
+            ),
+        }
+        out = safe_out(root, ns.output)
+        write_json(out, payload)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if freeze_valid else (2 if digest_rejected else 1)
     if freeze_status.get("requires_refreeze"):
         digest_rejected = freeze_status.get("reason_code") == "digest_mismatch"
         rejected_status = "REJECTED" if digest_rejected else "UNPROVEN"
@@ -1835,6 +2192,28 @@ def control(args):
         family,attack_metric,non_economic=non_economic,
         semantic_invariant_verified=semantic_invariant_verified,
     )
+    if backend=="forge-state-diff" and not non_economic:
+        # Forge test metrics are structural observations, never net profitability.
+        # A storage counter is dimensionless and must not be mislabeled as wei.
+        if spec.get("metric_storage") is not None:
+            economics={
+                "accepted":False,
+                "economic":False,
+                "metric_kind":"forge_trace_storage_uint256_delta",
+                "observed_metric_delta":attack_metric,
+                "net_profit_wei":None,
+                "reason":"Trace-derived storage behavior is structural evidence only; a separate mined Anvil reproof is required for economics.",
+                "promotion_cap":"SIMULATED_BREAK",
+            }
+        else:
+            economics={
+                "accepted":False,
+                "economic":True,
+                "gross_balance_delta_wei":attack_metric,
+                "net_profit_wei":None,
+                "reason":"Forge state-diff has no EOA receipt gas accounting; a funded Anvil reproof is required.",
+                "promotion_cap":"SIMULATED_BREAK",
+            }
 
     scenario_errors=[name for name,_ in scenarios if rows.get(name,{}).get("trace_error")]
     execution_names=["control","attack"]
@@ -1864,11 +2243,15 @@ def control(args):
 
     if non_economic:
         passed=base_valid and economics["accepted"] and semantic_invariant_verified
+    elif backend=="forge-state-diff":
+        # This is a paired structural acceptance only: positive gross balance
+        # observations plus attack-over-control. It is never a profit verdict.
+        passed=bool(paired_forge and base_valid and attack_metric_positive and isinstance(delta,int) and delta>0)
     else:
-        # Anvil's metric is net of actual receipt gas. Forge's is a state-diff
-        # balance delta without gas, so it can never satisfy this profit gate.
-        passed=(base_valid and backend=="anvil-calltracer" and economics["accepted"] and
-                attack_metric_positive and isinstance(delta,int) and delta>0)
+        # The Anvil path uses mined receipts and actual gas, so it can evaluate
+        # net profitability for the selected local/forked target.
+        passed=(base_valid and economics["accepted"] and attack_metric_positive and
+                isinstance(delta,int) and delta>0)
 
     rejection_reasons=[]
     for name in ("control","attack","negative_control"):
@@ -1901,12 +2284,19 @@ def control(args):
         rejection_reasons.append("Frozen expectations are missing or were not verified; this run cannot be promoted.")
     if non_economic and not semantic_invariant_verified:
         rejection_reasons.append("Non-economic attack requires a passing semantic_check_argv.")
-    if not non_economic and backend=="forge-state-diff":
-        rejection_reasons.append("Forge state-diff has no EOA receipt gas accounting; it cannot prove net profitability.")
-    if not non_economic and (delta is None or delta<=0):
+    if not non_economic and backend=="forge-state-diff" and not passed:
+        rejection_reasons.append("Forge paired state-diff did not verify a positive gross attack-over-control result; gas-adjusted profitability remains unproven.")
+    if not non_economic and delta is None:
+        rejection_reasons.append("Attack-over-control delta is unavailable because one or both scenario metrics are missing.")
+    elif not non_economic and delta<=0:
         rejection_reasons.append("Attack metric did not exceed the control metric.")
     if not non_economic and not attack_metric_positive:
-        rejection_reasons.append("Attack metric is not positive after measured costs.")
+        if backend=="forge-state-diff" and rows.get("attack",{}).get("metric_kind")=="forge_trace_storage_uint256_delta":
+            rejection_reasons.append("Trace-derived attack-state metric is zero or negative; the expected mutation/control effect was not observed.")
+        elif backend=="forge-state-diff":
+            rejection_reasons.append("Gross attacker balance delta is not positive.")
+        else:
+            rejection_reasons.append("Attack metric is not positive after measured costs.")
 
     authenticity=(
         "forked_deployment" if all(
@@ -1944,25 +2334,31 @@ def control(args):
 
 
     rejection_codes=[]
-    if not same_entry: rejection_codes.append("mismatch")
+    if not same_entry:
+        rejection_codes.append("fidelity_insufficient")
     if (not same_prestate or not same_trace_storage_values or not same_chain or
         not same_block or not same_fork_anchor or
         (backend=="anvil-calltracer" and not same_envelope) or
         (backend=="forge-state-diff" and not fork_pin_verified)):
-        rejection_codes.append("mismatch")
-    if not trace_delta_verified: rejection_codes.append("control_path_mismatch")
+        rejection_codes.append("fidelity_insufficient")
+    if not trace_delta_verified:
+        rejection_codes.append("control_passed")
     if spec.get("require_negative_control") and not negative_control_verified:
-        rejection_codes.append("negative_control_failed")
+        rejection_codes.append("control_passed")
     if non_economic and not semantic_invariant_verified:
-        rejection_codes.append("semantic_invariant_failed")
-    if not non_economic and isinstance(attack_metric,int) and attack_metric<=0:
+        rejection_codes.append("semantic_default_missing")
+    if not non_economic and backend=="anvil-calltracer" and isinstance(attack_metric,int) and attack_metric<=0:
         rejection_codes.append("net_negative")
-    if not non_economic and isinstance(delta,int) and delta<=0:
-        rejection_codes.append("control_not_outperformed")
+    if not non_economic and delta is None:
+        rejection_codes.append("fidelity_insufficient")
+    elif not non_economic and isinstance(delta,int) and delta<=0:
+        rejection_codes.append("control_passed")
+    if not non_economic and backend=="forge-state-diff" and attack_metric is None:
+        rejection_codes.append("fidelity_insufficient")
     rejected=(
         execution_attempted and not scenario_errors and not passed and bool(rejection_codes)
     )
-    outcome="profitable" if passed and not non_economic else (
+    outcome="profitable" if passed and not non_economic and backend=="anvil-calltracer" else (
         "observed" if passed or execution_attempted else "not_run"
     )
     if rejected:
@@ -1974,11 +2370,14 @@ def control(args):
             for name in ("control","attack")
         ),
     )
-    legacy_status="BREAK" if passed else ("REJECTED" if rejected else "OBSERVED")
+    legacy_status=(
+        "SIMULATED_BREAK" if backend=="forge-state-diff" and passed else
+        ("BREAK" if passed else ("REJECTED" if rejected else "OBSERVED"))
+    )
     proof_status=proof["status"]
-    # Non-economic attacks and Forge-only state diffs must not be promoted as
-    # profitable deployment exploits even when their semantic assertions pass.
-    if non_economic and passed:
+    # Fixture/Forge evidence can establish an observed structural break, never
+    # gas-adjusted profitability or proof of an authentic deployment.
+    if (non_economic and passed) or (backend=="forge-state-diff" and passed):
         proof_status="SIMULATED_BREAK"
     if not freeze_status.get("verified"):
         proof_status="OBSERVED"
@@ -2022,6 +2421,20 @@ def control(args):
         "outcome":outcome,"family":family,"economic_policy":economics,
         "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
         "paired_forge_experiment":paired_forge,
+        "state_diff_pair_verified":bool(backend=="forge-state-diff" and paired_forge and passed),
+        "gross_attack_metric_wei":(
+            attack_metric if backend=="forge-state-diff"
+            and rows.get("attack",{}).get("metric_kind")=="forge_account_balance_delta_without_eoa_gas"
+            else None
+        ),
+        "attack_metric":attack_metric,
+        "attack_metric_kind":rows.get("attack",{}).get("metric_kind"),
+        "metric_definition":spec.get("metric_storage"),
+        "metric_evidence":{
+            scenario:rows.get(scenario,{}).get("metric_evidence")
+            for scenario in ("control","attack")
+        } if spec.get("metric_storage") is not None else rows.get("attack",{}).get("metric_evidence"),
+        "economic_reproof_required":bool(backend=="forge-state-diff" and not non_economic and passed),
         "evidence_capabilities":evidence_capabilities,
         "evidence_requirements":evidence_checks,
         "evidence_requirements_verified":evidence_requirements_verified,
@@ -2032,7 +2445,8 @@ def control(args):
         "freeze":freeze_status,"negative_control_present":negative_control_present,
         "negative_control_verified":negative_control_verified,
         "control_delta":delta,"metric_name":spec.get("metric_name","attacker_gain"),
-        "same_calls_id":spec["same_calls_id"],"same_entry_call_verified":same_entry,
+        "same_calls_id":spec["same_calls_id"],"execution_attempted":execution_attempted,
+        "same_entry_call_verified":same_entry,
         "same_transaction_envelope_verified":same_envelope,
         "same_prestate_verified":same_prestate,
         "same_trace_storage_values_verified":same_trace_storage_values,
@@ -2052,8 +2466,9 @@ def control(args):
             for item in rows.get(name,{}).get("derived_storage_accesses",[])
         }),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
+        "reason_code":rejection_codes[0] if rejection_codes else None,
         "memory_feedback":memory_feedback,
-        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff is test-execution evidence and cannot prove EOA gas or net profitability.",
+        "gate":"Promotion requires frozen expectations, matched entry calls and pre-state, the configured trace backend, expected path/callback deltas, and a family-appropriate outcome. Forge state-diff can pass only as SIMULATED_BREAK; a separate mined Anvil reproof is required for LOCAL_PROFITABLE.",
     }
     out=safe_out(root,ns.output)
     write_json(out,payload)
@@ -2063,7 +2478,7 @@ def control(args):
 
 
 def coverage(args):
-    p=argparse.ArgumentParser(prog="lk target-coverage"); p.add_argument("source_file"); p.add_argument("--start-line",type=int,default=1); p.add_argument("--end-line",type=int); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/target-coverage.json"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk target-coverage"); p.add_argument("source_file"); p.add_argument("--start-line",type=int,default=1); p.add_argument("--end-line",type=int); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/target-coverage.json"); ns=p.parse_args(args)
     root=root_path(ns.root); src=(root/ns.source_file).resolve()
     if not src.is_relative_to(root) or not src.is_file(): raise ValueError("Target source must be inside the project.")
     if not shutil.which("forge"): raise RuntimeError("Forge not installed.")
@@ -2084,7 +2499,7 @@ def coverage(args):
              "percent":round(covered*100/total,2) if total else None,"warning":"Execution reachability is not assertion quality or security proof."}
     write_json(safe_out(root,ns.output),payload); print(json.dumps(payload,indent=2)); return 0 if total else 1
 def provenance(args):
-    p=argparse.ArgumentParser(prog="lk provenance")
+    p=LowkeyArgumentParser(prog="lk provenance")
     p.add_argument("artifacts",nargs="*"); p.add_argument("--root",default="."); p.add_argument("--chain-id")
     p.add_argument("--fork-block"); p.add_argument("--signing-key")
     p.add_argument("--output",default=".audit/godmode/provenance.json"); ns=p.parse_args(args)
@@ -2121,7 +2536,7 @@ def provenance(args):
 def output(payload):
     print(json.dumps(payload,indent=2,sort_keys=True)); return 0
 def source_cmd(command,args):
-    p=argparse.ArgumentParser(prog="lk "+command); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); data=source_maps(root)
+    p=LowkeyArgumentParser(prog="lk "+command); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); data=source_maps(root)
     key={"fallback-map":"fallback_map","oracle-map":"oracle_map","sig-matrix":"signature_map","init-frontrun":"initializer_map","custody":"custody_map","cross-vm":"cross_vm_map","reentrancy-graph":"reentrancy_graph","cfg":"cfg_outline"}[command]
     payload={"command":command,"signals":data[key]}
     if command=="sig-matrix": payload["candidate_replay_cases"]=["same signature twice","nonce not consumed","wrong chain ID","wrong verifying contract","expired deadline","wrong signer","malleable s","v normalization","wrong action/domain","packed-encoding collision","ERC-1271 contract signer"]
@@ -2130,16 +2545,16 @@ def source_cmd(command,args):
     if command=="reentrancy-graph": payload["confidence"]="heuristic; check exact storage identity and run a callback plus sequential control."
     return output(payload)
 def fingerprint(args):
-    p=argparse.ArgumentParser(prog="lk cheat fingerprint"); p.add_argument("--root",default="."); ns=p.parse_args(args); data=cheat_fingerprints(root_path(ns.root)); print(json.dumps(data,indent=2)); return 0
+    p=LowkeyArgumentParser(prog="lk cheat-fingerprint"); p.add_argument("--root",default="."); ns=p.parse_args(args); data=cheat_fingerprints(root_path(ns.root)); print(json.dumps(data,indent=2)); return 0
 def economic(args):
-    p=argparse.ArgumentParser(prog="lk economic"); p.add_argument("--gross-wei",type=int,required=True); p.add_argument("--gas-used",type=int,required=True); p.add_argument("--max-fee-wei",type=int,required=True); p.add_argument("--pool-fee-bps",type=int,default=0); p.add_argument("--slippage-bps",type=int,default=0); p.add_argument("--capital-cost-wei",type=int,default=0); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk economic"); p.add_argument("--gross-wei",type=int,required=True); p.add_argument("--gas-used",type=int,required=True); p.add_argument("--max-fee-wei",type=int,required=True); p.add_argument("--pool-fee-bps",type=int,default=0); p.add_argument("--slippage-bps",type=int,default=0); p.add_argument("--capital-cost-wei",type=int,default=0); ns=p.parse_args(args)
     vals=[ns.gross_wei,ns.gas_used,ns.max_fee_wei,ns.pool_fee_bps,ns.slippage_bps,ns.capital_cost_wei]
     if min(vals)<0 or ns.pool_fee_bps>10000 or ns.slippage_bps>10000: raise ValueError("Economic inputs must be nonnegative; bps <= 10000.")
     gas=ns.gas_used*ns.max_fee_wei; pool=ns.gross_wei*ns.pool_fee_bps//10000; slip=ns.gross_wei*ns.slippage_bps//10000
     net=ns.gross_wei-gas-pool-slip-ns.capital_cost_wei
     return output({"gross_wei":ns.gross_wei,"gas_cost_wei":gas,"pool_fee_wei":pool,"slippage_wei":slip,"capital_cost_wei":ns.capital_cost_wei,"net_profit_wei":net,"status":"positive-candidate" if net>0 else "OBSERVED","limitations":["MEV competition and unmodeled price impact are excluded."]})
 def rpc_command(kind,args):
-    p=argparse.ArgumentParser(prog="lk "+kind); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--slots",type=int,default=120); p.add_argument("--no-resolve",action="store_true"); p.add_argument("--key",action="append",default=[]); ns=p.parse_args(args); url=rpc_url(ns.rpc_url); target=addr(ns.target)
+    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--slots",type=int,default=120); p.add_argument("--no-resolve",action="store_true"); p.add_argument("--key",action="append",default=[]); ns=p.parse_args(args); url=rpc_url(ns.rpc_url); target=addr(ns.target)
     if kind=="selectors-full": return output(selectors(target,url))
     if kind=="proxy-resolve": return output(proxy(target,url,ns.slots))
     count=max(1,min(ns.slots,120))
@@ -2177,7 +2592,7 @@ def rpc_command(kind,args):
                    "known_key_probes":probes,"probe_derivation":derivation,
                    "warning":"A hit supports a mapping candidate at that anchor. No hit does not disprove a mapping; nested mappings and struct offsets need explicit modelling."})
 def unravel(args):
-    p=argparse.ArgumentParser(prog="lk unravel"); p.add_argument("tx_hash"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk unravel"); p.add_argument("tx_hash"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
     if not re.fullmatch(r"0x[0-9a-fA-F]{64}",ns.tx_hash): raise ValueError("Transaction hash must be 32-byte hex.")
     trace=rpc(rpc_url(ns.rpc_url),"debug_traceTransaction",[ns.tx_hash,{"tracer":"callTracer"}],60)
     def walk(x,d=0):
@@ -2187,7 +2602,7 @@ def unravel(args):
         return rows
     return output({"tx_hash":ns.tx_hash,"call_tree":walk(trace)})
 def state_diff(args):
-    p=argparse.ArgumentParser(prog="lk state-diff"); p.add_argument("target"); p.add_argument("--before",required=True); p.add_argument("--after",required=True); p.add_argument("--slot",action="append",required=True); p.add_argument("--rpc-url"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk state-diff"); p.add_argument("target"); p.add_argument("--before",required=True); p.add_argument("--after",required=True); p.add_argument("--slot",action="append",required=True); p.add_argument("--rpc-url"); ns=p.parse_args(args)
     url=rpc_url(ns.rpc_url); target=addr(ns.target); rows=[]
     for x in ns.slot:
         slot=x if x.startswith("0x") else hex(int(x))
@@ -2196,7 +2611,7 @@ def state_diff(args):
         if a!=b: rows.append({"slot":slot,"before":a,"after":b})
     return output({"target":target,"changed_slots":rows,"count":len(rows)})
 def attack_forge(args):
-    p=argparse.ArgumentParser(prog="lk attack forge"); p.add_argument("attack_id"); p.add_argument("--target",required=True); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk attack forge"); p.add_argument("attack_id"); p.add_argument("--target",required=True); p.add_argument("--root",default="."); ns=p.parse_args(args)
     root=root_path(ns.root); target=addr(ns.target)
     try:
         try: from .attack_catalog import ATTACKS
@@ -2231,7 +2646,7 @@ def attack_forge(args):
     return 0
 
 def generate(args,kind):
-    p=argparse.ArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",default="general"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
+    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",default="general"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
     templates={
       "invariant-forge":{"vault":["totalAssets >= totalSupply after matching units/fees","sum(user shares) == totalSupply"],"lending":["total debt reconciles with account debt","collateral and debt valuation obey liquidation rules"],"amm":["fee-adjusted invariant is preserved","pool balances reconcile with reserves"],"staking":["sum(user stake) == totalStaked","claimed rewards never exceed earned rewards"],"bridge":["message nonce consumed at most once","minted representation never exceeds finalized deposits"],"governance":["proposal executes at most once","vote weight counted once at declared snapshot"]},
       "archetype":{"vault":["deposit/withdraw/preview/share-inflation handlers","donation and rounding ghost state"],"lending":["borrow/repay/liquidate handlers","health-factor and bad-debt ghosts"],"amm":["swap/mint/burn/flash handlers","reserve and invariant ghosts"],"staking":["stake/unstake/claim handlers","reward-index and lockup ghosts"],"bridge":["send/relay/claim handlers","message nonce and finality ghosts"],"governance":["propose/vote/queue/execute handlers","snapshot and timelock ghosts"]}
@@ -2240,7 +2655,7 @@ def generate(args,kind):
     out.write_text("# "+kind+" / "+ns.profile+"\n\n"+"".join("- [ ] "+x+"\n" for x in templates[kind][ns.profile])+"\nThese are candidates/starters. Bind the real protocol, actors, ghost state and assertions before running a proof engine.\n")
     print(f"Starter: {out.relative_to(root)}"); return 0
 def token_weird(args):
-    p=argparse.ArgumentParser(prog="lk token-weird"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root)
+    p=LowkeyArgumentParser(prog="lk token-weird"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root)
     out=safe_out(root,".audit/godmode/token-weird/WeirdTokens.sol")
     out.write_text("""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
@@ -2270,7 +2685,7 @@ def run_control(args):
 
 
 def mutation(args):
-    p=argparse.ArgumentParser(prog="lk mutation-score")
+    p=LowkeyArgumentParser(prog="lk mutation-score")
     p.add_argument("manifest")
     p.add_argument("--min-score",type=float,default=0.90)
     p.add_argument("--timeout",type=int,default=300)
@@ -2334,21 +2749,25 @@ def inspect_reproduction_command(root, argv):
 
 
 def reprove(args):
-    p=argparse.ArgumentParser(prog="lk reprove")
-    p.add_argument("harness"); p.add_argument("--root",default="."); p.add_argument("--rpc-url",required=True)
-    p.add_argument("--fork-block",required=True,type=int); p.add_argument("--tx-hash")
-    p.add_argument("--target-address",required=True); p.add_argument("--profit-address",action="append",required=True)
+    p=LowkeyArgumentParser(prog="lk reprove")
+    p.add_argument("harness", help="Existing Foundry harness/source file to replay; it must stay inside --root."); p.add_argument("--root",default=".",help="Project root containing the harness and optional replay support files."); p.add_argument("--rpc-url",required=True,help="Local Anvil fork endpoint used for the replay.")
+    p.add_argument("--fork-block",required=True,type=int,help="Pinned fork block whose parent state anchors the reproduction."); p.add_argument("--tx-hash",help="Already-mined transaction hash to inspect instead of running --argv-json.")
+    p.add_argument("--prior-cost-wei",type=int,default=0,
+                   help="Verified prior deployment/funding/setup expenditure in wei; subtract it from net profit in addition to replay gas. Defaults to 0, so pass measured costs when they exist.")
+    p.add_argument("--target-address",required=True,help="Contract address whose execution and runtime code are verified."); p.add_argument("--profit-address",action="append",required=True,help="Portfolio address to measure; repeat for attacker, gas payer, and payout recipient.")
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
     p.add_argument("--prestate-slot",action="append",default=[],help="Additional storage slot to compare between local fork and source, as ADDRESS:SLOT.")
-    p.add_argument("--argv-json")
+    p.add_argument("--argv-json",help="JSON string array for the replay command; it is never shell-evaluated.")
     p.add_argument("--support-file",action="append",default=[],
                    help="Additional project file imported by the harness/replay script; repeat for transitive helpers.")
     p.add_argument("--semantic-check-argv-json",help="Separate command whose passing assertion demonstrates the non-economic security invariant.")
     p.add_argument("--semantic-test",help="Exact Foundry test name expected to emit [PASS] in the semantic check output.")
-    p.add_argument("--family",default="unknown")
-    p.add_argument("--non-economic",action="store_true")
-    p.add_argument("--require-trace-storage",action="store_true")
+    p.add_argument("--family",default="unknown",help="Attack family used by the evidence and economic policy.")
+    p.add_argument("--non-economic",action="store_true",help="Require a separately passing semantic invariant instead of positive net profit.")
+    p.add_argument("--require-trace-storage",action="store_true",help="Reject the replay unless trace-derived storage observations are present.")
     ns=p.parse_args(args)
+    if ns.prior_cost_wei < 0:
+        raise ValueError("--prior-cost-wei must be a non-negative integer.")
     root=root_path(ns.root); harness=(root/ns.harness).resolve()
     if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be inside project.")
     try:
@@ -2586,7 +3005,13 @@ def reprove(args):
     if source_verification["verified"] and source_verification["sender_balance_at_fork_wei"]<gas_cost:
         raise ValueError("Transaction sender did not have enough native ETH on the source chain to pay the measured gas cost.")
     gross_delta=after_total-before_total
-    net_profit=gross_delta-gas_cost if subtract_fee else gross_delta
+    # When the transaction sender is in the measured portfolio, its mined gas
+    # is already reflected in gross_delta. Otherwise subtract the receipt fee
+    # explicitly. Prior setup capital/fees are always separate measured costs.
+    transaction_gas_cost = 0 if not subtract_fee else gas_cost
+    prior_cost = int(ns.prior_cost_wei)
+    net_profit=gross_delta-transaction_gas_cost-prior_cost
+    total_cost=gas_cost+prior_cost
     if command_result is None:
         final_status="LOCAL_TRACE_ONLY"
     elif source_verification["verified"]:
@@ -2645,6 +3070,8 @@ def reprove(args):
         "target_address":target,"entry_call":entry,"entry_call_sha256":tx_digest,
         "call_trace":calls,"receipt_status":receipt.get("status"),
         "gas_used":gas_used,"effective_gas_price_wei":effective_gas_price,"gas_cost_wei":gas_cost,
+        "gas_cost_in_portfolio_delta":not subtract_fee,
+        "prior_cost_wei":prior_cost,"total_cost_wei":total_cost,
         "profit_addresses":balances,"gross_balance_delta_wei":gross_delta,
         "net_profit_wei":net_profit,
         "fidelity":fidelity,
@@ -2696,7 +3123,7 @@ def reprove(args):
                   (not non_economic or semantic_invariant_verified)) else 1
 
 def fork_cache(args):
-    p=argparse.ArgumentParser(prog="lk fork-cache"); p.add_argument("action",choices=("snapshot","revert","list")); p.add_argument("--id"); p.add_argument("--rpc-url"); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk fork-cache"); p.add_argument("action",choices=("snapshot","revert","list")); p.add_argument("--id"); p.add_argument("--rpc-url"); p.add_argument("--root",default="."); ns=p.parse_args(args)
     root=root_path(ns.root); f=safe_out(root,".audit/godmode/fork-cache.json"); data=json.loads(f.read_text()) if f.exists() else {}
     if ns.action=="list": return output(data)
     url=rpc_url(ns.rpc_url)
@@ -2707,14 +3134,14 @@ def fork_cache(args):
     if ns.id not in data: raise ValueError("Snapshot ID not found.")
     ok=rpc(url,"evm_revert",[ns.id]); data.pop(ns.id,None) if ok else None; write_json(f,data); print("Reverted: "+str(bool(ok))); return 0 if ok else 1
 def questions(args):
-    p=argparse.ArgumentParser(prog="lk questions"); p.add_argument("action",nargs="?",default="current"); p.add_argument("--root",default="."); p.add_argument("note",nargs="*"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk questions"); p.add_argument("action",nargs="?",default="current"); p.add_argument("--root",default="."); p.add_argument("note",nargs="*"); ns=p.parse_args(args)
     try:
         try: from . import question_engine
         except ImportError: import question_engine
         return question_engine.run({},[ns.action,*ns.note],root=root_path(ns.root),mode="current")
     except ImportError as exc: raise RuntimeError(str(exc))
 def learn(args):
-    p=argparse.ArgumentParser(prog="lk learn"); p.add_argument("--kind",default="protocol-pattern",choices=("protocol-pattern","test-procedure","tool-configuration","project-fact","false-positive-rule")); p.add_argument("--title",required=True); p.add_argument("--lesson",required=True); p.add_argument("--evidence",required=True); p.add_argument("--when",default=""); p.add_argument("--rationale",default=""); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk learn"); p.add_argument("--kind",default="protocol-pattern",choices=("protocol-pattern","test-procedure","tool-configuration","project-fact","false-positive-rule")); p.add_argument("--title",required=True); p.add_argument("--lesson",required=True); p.add_argument("--evidence",required=True); p.add_argument("--when",default=""); p.add_argument("--rationale",default=""); p.add_argument("--root",default="."); ns=p.parse_args(args)
     try:
         try: from . import experience_memory
         except ImportError: import experience_memory
@@ -2725,7 +3152,7 @@ def learn(args):
         finally: os.chdir(old)
     except ImportError as exc: raise RuntimeError(str(exc))
 def godmode(args):
-    p=argparse.ArgumentParser(prog="lk godmode"); p.add_argument("target",nargs="?"); p.add_argument("--root",default="."); p.add_argument("--rpc-url"); p.add_argument("--profile",choices=("light","balanced","deep"),default="balanced"); p.add_argument("--attack",action="store_true"); p.add_argument("--control-manifest"); p.add_argument("--mutation-manifest"); p.add_argument("--coverage-source"); p.add_argument("--plan-only",action="store_true"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk godmode"); p.add_argument("target",nargs="?"); p.add_argument("--root",default="."); p.add_argument("--rpc-url"); p.add_argument("--profile",choices=("light","balanced","deep"),default="balanced"); p.add_argument("--attack",action="store_true"); p.add_argument("--control-manifest"); p.add_argument("--mutation-manifest"); p.add_argument("--coverage-source"); p.add_argument("--plan-only",action="store_true"); ns=p.parse_args(args)
     root=root_path(ns.root); target=addr(ns.target) if ns.target else None; maps=source_maps(root); cheat=cheat_fingerprints(root); stages=[]
     stages.append({"name":"source-recon","status":"completed","signals":sum(len(v) for v in maps.values() if isinstance(v,list))})
     stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"])})
@@ -2773,7 +3200,7 @@ def godmode(args):
     for s in stages: print("  ["+s["status"].upper()+"] "+s["name"]+": "+str(s.get("reason",s.get("signals",s.get("output",""))))[:190])
     print("Report: "+str(out.relative_to(root))); return 2 if blockers else 0
 def report(args):
-    p=argparse.ArgumentParser(prog="lk report")
+    p=LowkeyArgumentParser(prog="lk report")
     p.add_argument("--root",default="."); p.add_argument("--input",default=".audit/godmode/latest.json")
     p.add_argument("--output",default=".audit/godmode/report.md"); ns=p.parse_args(args)
     root=root_path(ns.root); src=(root/ns.input).resolve()
@@ -2831,7 +3258,7 @@ def report(args):
 def provenance_cli(args): return provenance(args)
 
 def calldata_mine(args):
-    p=argparse.ArgumentParser(prog="lk calldata-mine"); p.add_argument("target"); p.add_argument("hash_file"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk calldata-mine"); p.add_argument("target"); p.add_argument("hash_file"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
     target=addr(ns.target); url=rpc_url(ns.rpc_url); hashes=[]
     for line in Path(ns.hash_file).expanduser().read_text(encoding="utf-8").splitlines():
         value=line.strip()
@@ -2849,7 +3276,7 @@ def calldata_mine(args):
                    "limitation":"The supplied transaction list is the discovery boundary; full address history needs an explorer/indexer adapter."})
 
 def gas_ladder(args):
-    p=argparse.ArgumentParser(prog="lk gas-ladder"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk gas-ladder"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
     root=root_path(ns.root); mf=(root/ns.manifest).resolve()
     if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Gas-ladder manifest must be inside the project.")
     spec=json.loads(mf.read_text()); template=spec.get("argv")
@@ -2887,7 +3314,7 @@ def gas_ladder(args):
     write_json(safe_out(root,".audit/godmode/gas-ladder.json"),payload); print(json.dumps(payload,indent=2)); return 0 if threshold is not None else 2
 
 def symbolic_path(args):
-    p=argparse.ArgumentParser(prog="lk path"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk path"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
     root=root_path(ns.root); mf=(root/ns.manifest).resolve()
     if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Path manifest must be inside the project.")
     spec=json.loads(mf.read_text()); argv=spec.get("argv")
@@ -2899,7 +3326,7 @@ def symbolic_path(args):
     return proc.returncode
 
 def watch(args):
-    p=argparse.ArgumentParser(prog="lk watch"); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--count",type=int,default=1); p.add_argument("--interval",type=float,default=3); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk watch"); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--count",type=int,default=1); p.add_argument("--interval",type=float,default=3); ns=p.parse_args(args)
     target=addr(ns.target); url=rpc_url(ns.rpc_url)
     if not 1<=ns.count<=100 or not 0<=ns.interval<=60: raise ValueError("Bounded watch accepts count 1..100 and interval 0..60 seconds.")
     checks=[]; previous=None
@@ -2914,7 +3341,7 @@ def watch(args):
     print(json.dumps(payload,indent=2)); return 0
 
 def upgrade_diff(args):
-    p=argparse.ArgumentParser(prog="lk upgrade-diff"); p.add_argument("old_address"); p.add_argument("new_address"); p.add_argument("--rpc-url"); p.add_argument("--old-layout"); p.add_argument("--new-layout"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk upgrade-diff"); p.add_argument("old_address"); p.add_argument("new_address"); p.add_argument("--rpc-url"); p.add_argument("--old-layout"); p.add_argument("--new-layout"); ns=p.parse_args(args)
     url=rpc_url(ns.rpc_url); old=addr(ns.old_address); new=addr(ns.new_address)
     a=rpc(url,"eth_getCode",[old,"latest"]); b=rpc(url,"eth_getCode",[new,"latest"])
     old_selectors=set(push4(a or "0x")); new_selectors=set(push4(b or "0x")); layout={"status":"not-supplied"}
@@ -2931,7 +3358,7 @@ def upgrade_diff(args):
                    "storage_layout":layout,"warning":"PUSH4 extraction is a candidate selector set and can include constants. Use compiler storage layout before judging compatibility."})
 
 def verify_hack(args):
-    p=argparse.ArgumentParser(prog="lk verify-hack"); p.add_argument("tx_hash"); p.add_argument("--rpc-url",required=True); p.add_argument("--block",type=int,required=True); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk verify-hack"); p.add_argument("tx_hash"); p.add_argument("--rpc-url",required=True); p.add_argument("--block",type=int,required=True); ns=p.parse_args(args)
     if not re.fullmatch(r"0x[0-9a-fA-F]{64}",ns.tx_hash) or ns.block<1: raise ValueError("Supply a transaction hash and positive attacked block.")
     tx=rpc(rpc_url(ns.rpc_url),"eth_getTransactionByHash",[ns.tx_hash])
     if not tx: raise RuntimeError("Transaction not found on this RPC.")
@@ -2944,7 +3371,7 @@ def verify_hack(args):
     return 2
 
 def compose(args):
-    p=argparse.ArgumentParser(prog="lk compose"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); m=source_maps(root)
+    p=LowkeyArgumentParser(prog="lk compose"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); m=source_maps(root)
     nodes=[{"id":"attacker","kind":"actor"},{"id":"asset","kind":"asset-impact","status":"not-measured"}]; edges=[]
     signals=[("reentrancy",m["reentrancy_graph"]),("oracle",m["oracle_map"]),("signature",m["signature_map"]),("custody",m["custody_map"]),("initializer",m["initializer_map"])]
     index=0
@@ -2959,7 +3386,7 @@ def compose(args):
     write_json(safe_out(root,".audit/godmode/compose.json"),payload); return output(payload)
 
 def skew_plan(args):
-    p=argparse.ArgumentParser(prog="lk skew"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk skew"); p.add_argument("manifest"); p.add_argument("--root",default="."); ns=p.parse_args(args)
     root=root_path(ns.root); mf=(root/ns.manifest).resolve()
     if not mf.is_relative_to(root) or not mf.is_file(): raise ValueError("Skew manifest must be inside the project.")
     spec=json.loads(mf.read_text()); required=("pool","asset","oracle_read","consumer_call","amounts")
@@ -2973,7 +3400,7 @@ def skew_plan(args):
     write_json(safe_out(root,".audit/godmode/skew-plan.json"),plan); return output(plan)
 
 def flashmax(args):
-    p=argparse.ArgumentParser(prog="lk flashmax"); p.add_argument("venue",choices=("aave","balancer","uniswap-v3")); p.add_argument("asset"); p.add_argument("--adapter",required=True); p.add_argument("--rpc-url"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk flashmax"); p.add_argument("venue",choices=("aave","balancer","uniswap-v3")); p.add_argument("asset"); p.add_argument("--adapter",required=True); p.add_argument("--rpc-url"); ns=p.parse_args(args)
     asset=addr(ns.asset); spec=json.loads(Path(ns.adapter).expanduser().read_text())
     if str(spec.get("venue","")).lower()!=ns.venue or str(spec.get("asset","")).lower()!=asset: raise ValueError("Adapter venue/asset must match command.")
     pool=addr(str(spec.get("pool") or "")); calldata=str(spec.get("liquidity_call") or "")
@@ -2987,7 +3414,7 @@ def flashmax(args):
                    "warning":"Adapter must encode the right reserve/liquidity read and fee. This does not borrow, deploy a callback, or prove a profitable attack."})
 
 def agent_split(args):
-    p=argparse.ArgumentParser(prog="lk agent-split"); p.add_argument("--root",default="."); p.add_argument("--harness"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk agent-split"); p.add_argument("--root",default="."); p.add_argument("--harness"); ns=p.parse_args(args)
     root=root_path(ns.root); m=source_maps(root); cheat=[]
     if ns.harness:
         h=(root/ns.harness).resolve()
@@ -3001,7 +3428,7 @@ def agent_split(args):
     write_json(safe_out(root,".audit/godmode/agent-split.json"),payload); return output(payload)
 
 def bundle_simulate(args):
-    p=argparse.ArgumentParser(prog="lk bundle"); p.add_argument("--tx",action="append",required=True); p.add_argument("--target-block",type=int,required=True); p.add_argument("--relay-url",required=True); p.add_argument("--auth-signature",required=True); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk bundle"); p.add_argument("--tx",action="append",required=True); p.add_argument("--target-block",type=int,required=True); p.add_argument("--relay-url",required=True); p.add_argument("--auth-signature",required=True); ns=p.parse_args(args)
     if ns.target_block<1: raise ValueError("Target block must be positive.")
     if not all(re.fullmatch(r"0x[0-9a-fA-F]+",x) for x in ns.tx): raise ValueError("Provide raw signed transactions as 0x hex.")
     params={"txs":ns.tx,"blockNumber":hex(ns.target_block),"stateBlockNumber":"latest"}
@@ -3054,7 +3481,7 @@ def _step_uint(value, label, *, minimum=0, maximum=(1 << 256) - 1):
 def _step_address(value, label):
     if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
         raise StepPlanError(f"{label} must be a 20-byte 0x-prefixed address.")
-    return "address(" + value.lower() + ")"
+    return "address(uint160(0x00" + value.lower()[2:] + "))"
 
 
 def _step_selector(value, label):
@@ -3335,7 +3762,7 @@ def render_step_harness(spec):
 
 
 def steps(args):
-    class StepArgumentParser(argparse.ArgumentParser):
+    class StepArgumentParser(LowkeyArgumentParser):
         def error(self, message):
             raise StepPlanError(str(message), "unsupported_abi")
 
@@ -3343,10 +3770,10 @@ def steps(args):
         prog="lk steps",
         description="Validate and render an execution-checked Step[] Foundry harness.",
     )
-    parser.add_argument("manifest")
-    parser.add_argument("--root", default=".")
-    parser.add_argument("--output", default=".audit/godmode/steps/step-harness.t.sol")
-    parser.add_argument("--refusal-output", default=".audit/godmode/steps-refusal.json")
+    parser.add_argument("manifest", help="JSON file describing the typed Step[] sequence to validate and render.")
+    parser.add_argument("--root", default=".", help="Project root; manifest and output paths must remain inside it.")
+    parser.add_argument("--output", default=".audit/godmode/steps/step-harness.t.sol", help="Generated Solidity harness path, relative to --root.")
+    parser.add_argument("--refusal-output", default=".audit/godmode/steps-refusal.json", help="Machine-readable refusal JSON path for unsupported or invalid plans.")
 
     ns = None
     root = None
@@ -3425,11 +3852,17 @@ def steps(args):
 
 def main(argv=None):
     a=list(sys.argv[1:] if argv is None else argv)
-    if not a or a[0] in {"-h","--help","help"}:
-        print("Usage: lk capabilities | godmode | control | steps | mutation-score | target-coverage | provenance | fallback-map | oracle-map | reentrancy-graph | custody | sig-matrix | init-frontrun | cfg | cross-vm | proxy-resolve | storage-infer | selectors-full | calldata-mine | unravel | state-diff | attack-forge | invariant-forge | archetype | token-weird | time | compose | skew | flashmax | path | reprove | economic | gas-ladder | fidelity | watch | verify-hack | bundle | sandwich | jit | fork-cache | upgrade-diff | agent-split | learn | questions | report")
+    if not a or a[0] in HELP_FLAGS:
+        print_command_catalog()
         return 0
     cmd,rest=a[0],a[1:]
     if cmd=="capabilities":
+        if any(str(token).strip().lower() in HELP_FLAGS for token in rest):
+            help_parser = LowkeyArgumentParser(
+                prog="lk capabilities",
+                description="Show the registered Godmode capability inventory and implementation state.",
+            )
+            help_parser.parse_args(rest)
         for n,name,title,status in CAPABILITIES: print(f"{n:02d} {name:20} [{status:16}] {title}")
         print("All 44 capabilities are registered. Partial and adapter-required are explicit.")
         return 0
@@ -3440,7 +3873,7 @@ def main(argv=None):
     if cmd=="target-coverage": return coverage(rest)
     if cmd=="provenance": return provenance(rest)
     if cmd=="fidelity":
-        p=argparse.ArgumentParser(prog="lk fidelity"); p.add_argument("--root",default="."); p.add_argument("--record",action="store_true"); p.add_argument("--inspect"); p.add_argument("--cheatcode",action="append",default=[]); p.add_argument("--strength",choices=("heuristic","simulated-funds","reproduced-fork"),default="heuristic"); ns=p.parse_args(rest); root=root_path(ns.root)
+        p=LowkeyArgumentParser(prog="lk fidelity"); p.add_argument("--root",default="."); p.add_argument("--record",action="store_true"); p.add_argument("--inspect"); p.add_argument("--cheatcode",action="append",default=[]); p.add_argument("--strength",choices=("heuristic","simulated-funds","reproduced-fork"),default="heuristic"); ns=p.parse_args(rest); root=root_path(ns.root)
         try:
             if ns.inspect:
                 harness=(root/ns.inspect).resolve()
@@ -3453,7 +3886,7 @@ def main(argv=None):
             rows=[e for e in evidence_ledger.read_events(root) if e.get("event_type")=="fidelity_record"]; return output(rows)
         except ImportError as exc: raise RuntimeError(str(exc))
     if cmd=="sandbox":
-        p=argparse.ArgumentParser(prog="lk sandbox"); p.add_argument("--root",default="."); p.add_argument("--timeout",type=int,default=300); p.add_argument("command",nargs=argparse.REMAINDER); ns=p.parse_args(rest)
+        p=LowkeyArgumentParser(prog="lk sandbox"); p.add_argument("--root",default="."); p.add_argument("--timeout",type=int,default=300); p.add_argument("command",nargs=argparse.REMAINDER); ns=p.parse_args(rest)
         root=root_path(ns.root)
         if not shutil.which("bwrap"): raise RuntimeError("bubblewrap unavailable; refusing unsandboxed execution.")
         if not ns.command or ns.command[0]!="--": raise ValueError("Usage: lk sandbox -- <command> [args]")
@@ -3508,7 +3941,7 @@ def main(argv=None):
     if cmd=="report": return report(rest)
     if cmd=="reprove": return reprove(rest)
     if cmd=="time":
-        p=argparse.ArgumentParser(prog="lk time"); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/TimeLadder.template.t.sol"); ns=p.parse_args(rest); root=root_path(ns.root); out=safe_out(root,ns.output)
+        p=LowkeyArgumentParser(prog="lk time"); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/TimeLadder.template.t.sol"); ns=p.parse_args(rest); root=root_path(ns.root); out=safe_out(root,ns.output)
         offsets=(3600,86400,604800,2592000); body="\n".join(" function test_warp_"+str(x)+"() public { vm.warp(block.timestamp + "+str(x)+"); vm.roll(block.number + "+str(max(1,x//12))+"); /* invoke target and assert invariant */ }" for x in offsets)
         out.write_text("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\nimport \"forge-std/Test.sol\";\ncontract LowkeyTimeLadder is Test {\n"+body+"\n}\n"); print("Time ladder template: "+str(out.relative_to(root))); return 0
     if cmd=="compose": return compose(rest)
@@ -3522,11 +3955,23 @@ def main(argv=None):
     if cmd=="upgrade-diff": return upgrade_diff(rest)
     if cmd=="agent-split": return agent_split(rest)
     if cmd=="calldata-mine": return calldata_mine(rest)
-    if cmd in {"sandwich","jit"}:
-        print("BLOCKED: "+cmd+" requires a pending-transaction feed and pool-specific simulation adapter. No transaction was sent.")
+    if cmd in {"sandwich","jit","decompile"}:
+        if any(str(token).strip().lower() in HELP_FLAGS for token in rest):
+            details = _godmode_help_details(cmd)
+            print("LOWKEY GODMODE HELP  •  lk " + cmd)
+            print("=" * 72)
+            print("What it does: " + details["summary"])
+            print("When to use: " + details["when"])
+            print("Usage: lk " + cmd + " [adapter-specific options]")
+            print("Example: " + details["example"])
+            print("Limitations: " + details["limits"])
+            print("Help spellings: --h, --help, -h, help")
+            return 0
+        if cmd=="decompile":
+            print("BLOCKED: install and configure a supported Heimdall adapter; no decompiler invocation guessed.")
+        else:
+            print("BLOCKED: "+cmd+" requires a pending-transaction feed and pool-specific simulation adapter. No transaction was sent.")
         return 2
-    if cmd=="decompile":
-        print("BLOCKED: install and configure a supported Heimdall adapter; no decompiler invocation guessed."); return 2
     if cmd=="flashmax":
         print("BLOCKED: requires Aave/Balancer/Uniswap V3 venue-specific pool and callback adapter."); return 2
     if cmd=="time":

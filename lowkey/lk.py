@@ -18716,6 +18716,7 @@ def _print_forge_test_result_summary(output, exit_code):
         print("Meaning: the discovered tests passed. This confirms those test assertions, not that every exploit path or security property is covered.")
     if skipped:
         print("Skipped tests did not execute, so they provide no pass/fail evidence.")
+    print("A test-run result is evidence about the tests that ran, not an overall security verdict.")
 
 
 def run_native_project_command(config, command_name, args):
