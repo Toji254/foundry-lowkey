@@ -3363,7 +3363,6 @@ def sandbox(args):
                 *resource_properties,
             ]
         outer_argv.extend(["--", *seccomp_wrapper])
-        preexec = None
 
         proc = subprocess.Popen(
             outer_argv,
@@ -3371,8 +3370,7 @@ def sandbox(args):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            pass_fds=pass_fds,
-            preexec_fn=preexec,
+            pass_fds=(),
             start_new_session=True,
         )
         # RuntimeMaxSec is the authoritative service timeout; give the
