@@ -230,10 +230,17 @@ class LowkeyArgumentParser(argparse.ArgumentParser):
         kwargs["add_help"] = False
         super().__init__(*args, **kwargs)
         self.add_argument(
-            "-h", "--help", "--h", "help",
+            "-h", "--help", "--h",
             action="help",
             help="Show this command's usage, options, examples, and limitations.",
         )
+
+    def parse_args(self, args=None, namespace=None):
+        # argparse requires option strings to begin with a prefix character.
+        # Keep bare "help" as a CLI alias by normalizing it before parsing.
+        values = list(sys.argv[1:] if args is None else args)
+        values = ["--help" if str(value).strip().lower() == "help" else value for value in values]
+        return super().parse_args(values, namespace)
 
 
 def print_command_catalog():
