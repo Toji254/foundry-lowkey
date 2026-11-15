@@ -32,12 +32,12 @@ Tier 0 is the reliability layer used by every later attack capability. These imp
 
 | Capability | Implementation contract | Required acceptance |
 |---|---|---|
-| Cheat fingerprint | Stable SHA-256 pattern IDs, normalized token scan, Aho-Corasick matching, ordered mapping-read → external-call → mapping-write sequences, line/offset/snippet provenance, explicit heuristic limits | Fixture detects the ordered sequence, ignores comments, and returns stable pattern IDs |
+| Cheat fingerprint | Stable SHA-256 pattern IDs, normalized token scan, Aho-Corasick matching, ordered mapping-read → external-call → mapping-write sequences including struct-member writes and case-insensitive external method names, line/offset/snippet provenance, explicit heuristic limits | Fixtures detect ordered sequences, ignore comments, distinguish local assignments from mapping writes, and return stable pattern IDs |
 | Control | Frozen experiment manifest, same entry-call/prestate checks, trace evidence and fail-closed BREAK downgrade | Existing control/freeze/tamper/trace tests plus P1 paired fixture |
-| Mutation score | One family per manifest, passing baseline, every mutant accounted for; invalid, timeout, error or missing outcomes fail the score gate | Tests prove ≥90% valid score passes and an excluded invalid mutant fails |
-| Target coverage | Fresh LCOV only, target source/line filtering, optional test filters and explicit minimum percentage | Fresh-LCOV fixture test proves threshold pass/fail behavior |
-| Provenance | Artifact hashes, Git revision/branch/dirty state, chain/fork/tool metadata, detached signature and public-key sidecar, signature + artifact re-verification | Sign → verify passes; artifact tamper fails verification |
-| Sandbox | Disposable project copy, default network namespace isolation, seccomp syscall filter, CPU/address-space/file-size/FD limits, read-only host/tool mounts; opt-in IP allowlist through a system service or fail closed | Unit tests cover deny-by-default, seccomp, resource options, and refusal without required isolation dependencies |
+| Mutation score | One family per manifest, passing baseline, every mutant accounted for; invalid, timeout, error, duplicate/missing IDs, inconsistent summary totals or a mismatched score fail the gate | Tests prove ≥90% valid score passes and malformed/inconsistent reports fail |
+| Target coverage | Fresh LCOV only, target source/line filtering, optional test filters and explicit minimum percentage | Fresh-LCOV fixture test proves threshold pass and fail behavior |
+| Provenance | Artifact hashes, Git revision/branch/dirty state, chain/fork/tool metadata, detached signature and public-key sidecar, signature + artifact re-verification; malformed or empty artifact lists fail | Sign → verify passes; artifact tamper and signed-empty-manifest cases fail verification |
+| Sandbox | Disposable project copy, default network namespace isolation, architecture-checked seccomp syscall filter, CPU/address-space/file-size/FD/process limits, read-only host/tool mounts, whole-process-group timeout cleanup; opt-in IP allowlist adds systemd cgroup MemoryMax/TasksMax and fails closed | Unit tests cover network isolation, seccomp, limits, timeout cleanup, allowlist policy and refusal without required isolation dependencies |
 
 "Implemented" in the registry means the documented command path exists and its acceptance tests pass. It does not mean heuristic source matching is a vulnerability verdict, coverage proves security, mutation score proves exploitability, or sandboxing makes arbitrary code harmless. Network allowlisting is IP-based; all ports to an allowed IP are available. The allowlist backend requires `sudo`, `systemd-run`, and cgroup v2, and refuses rather than running without the requested network policy.
 
@@ -49,7 +49,7 @@ Until those acceptance cases exist in the same PR, the following remain **teleme
 
 | Family label | Scope |
 |---|---|
-| reentrancy | P1 behavioural acceptance in PR 64; local fixture gate passed; full exact-head CI pending |
+| reentrancy | P1 behavioural acceptance in PR 64; local fixture gate and exact-head CI passed |
 | replay | telemetry-only |
 | access | telemetry-only |
 | accounting | telemetry-only |
@@ -93,4 +93,4 @@ P1 is accepted for this controlled fixture and implemented execution path. It is
 
 P0's installed compatibility gate and receiver fixture are implemented and covered by dedicated Anvil/Foundry acceptance. P0's result remains fixture-scoped.
 
-P1 remains pending until the complete exact-head CI matrix for PR 64 passes. Its dedicated runtime, paired-control, mutation, and funded-reproof job has passed, but other CI jobs were still running when this ledger was updated. No `HUMAN_CONFIRMED` or authentic deployment claim is made by the fixture.
+P1 is accepted for the controlled fixture and implemented execution path; the exact-head PR #64 CI matrix passed all 10 jobs. The result remains fixture-scoped. No `HUMAN_CONFIRMED` or authentic deployment claim is made by the fixture.
