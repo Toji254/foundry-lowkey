@@ -18,6 +18,7 @@ import re
 import socket
 import struct
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -566,7 +567,16 @@ def _mapping_call_write_sequences(token_rows, file_name):
                 if depth == 0:
                     closing_index = close - 1
                     key_tokens = tokens[index + 2:closing_index]
-                    following = tokens[closing_index + 1] if closing_index + 1 < body_end else None
+                    following_index = closing_index + 1
+                    # Mapping values are often structs. Treat an assignment to
+                    # balances[user].amount as a mapping write, not merely a read.
+                    while (
+                        following_index + 1 < body_end
+                        and tokens[following_index] == "."
+                        and re.fullmatch(r"[a-z_$][a-z0-9_$]*", tokens[following_index + 1])
+                    ):
+                        following_index += 2
+                    following = tokens[following_index] if following_index < body_end else None
                     is_delete = index > body_start and tokens[index - 1] == "delete"
                     is_prefix_update = index > body_start and tokens[index - 1] in {"++", "--"}
                     is_write = bool(
@@ -586,7 +596,7 @@ def _mapping_call_write_sequences(token_rows, file_name):
             if tokens[index] == "." and index + 2 < body_end:
                 method = tokens[index + 1]
                 after = index + 2
-                if method in external_methods and tokens[after] in {"(", "{"}:
+                if method.lower() in external_methods and tokens[after] in {"(", "{"}:
                     calls.append({
                         "method": method,
                         "token_index": index,
@@ -3194,6 +3204,7 @@ def sandbox(args):
     p.add_argument("--memory-mb", type=int, default=4096)
     p.add_argument("--file-size-mb", type=int, default=512)
     p.add_argument("--nofile", type=int, default=256)
+    p.add_argument("--processes", type=int, default=512, help="Maximum processes/threads for the real UID; cgroup-backed allowlist mode also applies a per-sandbox TasksMax.")
     p.add_argument("--readonly-workspace", action="store_true", help="Mount the disposable project copy read-only.")
     p.add_argument("--network", choices=("none", "allowlist"), default="none")
     p.add_argument("--allow-host", action="append", default=[], help="Allow this hostname/IP when --network allowlist is selected. All ports to resolved IPs are allowed.")
@@ -3202,8 +3213,8 @@ def sandbox(args):
 
     if not ns.command or ns.command[0] != "--":
         raise ValueError("Usage: lk sandbox [options] -- <command> [args]")
-    if min(ns.timeout, ns.cpu_seconds, ns.memory_mb, ns.file_size_mb, ns.nofile) < 1:
-        raise ValueError("Sandbox time, CPU, memory, file-size, and nofile limits must all be positive.")
+    if min(ns.timeout, ns.cpu_seconds, ns.memory_mb, ns.file_size_mb, ns.nofile, ns.processes) < 1:
+        raise ValueError("Sandbox time, CPU, memory, file-size, nofile, and process limits must all be positive.")
     if ns.network == "none" and ns.allow_host:
         raise ValueError("--allow-host requires --network allowlist.")
     if ns.network == "allowlist" and not ns.allow_host:
@@ -3299,6 +3310,7 @@ def sandbox(args):
                 (resource.RLIMIT_AS, ns.memory_mb * 1024 * 1024),
                 (resource.RLIMIT_FSIZE, ns.file_size_mb * 1024 * 1024),
                 (resource.RLIMIT_NOFILE, ns.nofile),
+                (resource.RLIMIT_NPROC, ns.processes),
                 (resource.RLIMIT_CORE, 0),
             )
             for resource_id, requested in limits:
@@ -3317,8 +3329,10 @@ def sandbox(args):
                 "--property=IPAddressDeny=any",
                 "--property=LimitCPU=" + str(ns.cpu_seconds) + "s",
                 "--property=LimitAS=" + str(ns.memory_mb * 1024 * 1024),
+                "--property=MemoryMax=" + str(ns.memory_mb * 1024 * 1024),
                 "--property=LimitFSIZE=" + str(ns.file_size_mb * 1024 * 1024),
                 "--property=LimitNOFILE=" + str(ns.nofile),
+                "--property=TasksMax=" + str(ns.processes),
             ]
             outer_argv.extend("--property=IPAddressAllow=" + address for address in allow_ips)
             seccomp_wrapper = [
@@ -3330,24 +3344,44 @@ def sandbox(args):
 
         pass_fds = (read_fd,) if read_fd is not None else ()
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 outer_argv,
                 cwd=str(root),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=ns.timeout,
-                check=False,
                 pass_fds=pass_fds,
                 preexec_fn=preexec,
                 start_new_session=True,
             )
-        except subprocess.TimeoutExpired as exc:
-            print("SANDBOX: TIMEOUT after " + str(ns.timeout) + " seconds", file=sys.stderr)
-            if exc.stdout:
-                print(exc.stdout, end="" if str(exc.stdout).endswith("\n") else "\n")
-            if exc.stderr:
-                print(exc.stderr, file=sys.stderr, end="" if str(exc.stderr).endswith("\n") else "\n")
-            return 124
+            # In allowlist mode systemd's RuntimeMaxSec is the authoritative
+            # service timeout; give systemd a short grace period to stop the unit.
+            client_timeout = ns.timeout + (5 if ns.network == "allowlist" else 0)
+            try:
+                stdout_text, stderr_text = proc.communicate(timeout=client_timeout)
+            except subprocess.TimeoutExpired:
+                print("SANDBOX: TIMEOUT after " + str(ns.timeout) + " seconds; terminating process group", file=sys.stderr)
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    proc.terminate()
+                try:
+                    stdout_text, stderr_text = proc.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        proc.kill()
+                    stdout_text, stderr_text = proc.communicate()
+                if stdout_text:
+                    print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+                if stderr_text:
+                    print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
+                return 124
         finally:
             if read_fd is not None:
                 os.close(read_fd)
@@ -3355,11 +3389,13 @@ def sandbox(args):
 
         print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
         print("SANDBOX SECCOMP: active; denied syscalls: " + ", ".join(denied_names))
-        print("SANDBOX LIMITS: cpu=" + str(ns.cpu_seconds) + "s memory=" + str(ns.memory_mb) + "MiB file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile))
-        if proc.stdout:
-            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
-        if proc.stderr:
-            print(proc.stderr, file=sys.stderr, end="" if proc.stderr.endswith("\n") else "\n")
+        process_scope = "cgroup TasksMax=" + str(ns.processes) if ns.network == "allowlist" else "per-UID RLIMIT_NPROC=" + str(ns.processes)
+        memory_scope = "cgroup MemoryMax + " if ns.network == "allowlist" else "per-process "
+        print("SANDBOX LIMITS: cpu=" + str(ns.cpu_seconds) + "s " + memory_scope + "memory=" + str(ns.memory_mb) + "MiB file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile) + " " + process_scope)
+        if stdout_text:
+            print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+        if stderr_text:
+            print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
         return proc.returncode
     finally:
         if seccomp_read_fd is not None:
