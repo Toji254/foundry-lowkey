@@ -353,7 +353,7 @@ class Tier0SandboxTests(unittest.TestCase):
             self.assertIn("--property=TasksMax=64", argv)
             self.assertIn("--property=LimitCPU=10s", argv)
             self.assertIn("pass_fds", popen_mock.call_args.kwargs)
-            self.assertEqual(popen_mock.call_args.kwargs["preexec_fn"], None)
+            self.assertIsNone(popen_mock.call_args.kwargs.get("preexec_fn"))
             self.assertTrue(popen_mock.call_args.kwargs["start_new_session"])
             self.assertIn('exec 3< "$1"', argv)
 
