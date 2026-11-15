@@ -109,7 +109,7 @@ cp "$STAGE_DIR/walkthrough_finding_patterns.py" "$TARGET_LOWKEY_DIR/walkthrough_
 cp "$STAGE_DIR/break_playbook.py" "$TARGET_LOWKEY_DIR/break_playbook.py"
 cp "$STAGE_DIR/break_engine.py" "$TARGET_LOWKEY_DIR/break_engine.py"
 cp "$STAGE_DIR/attack_library.py" "$TARGET_LOWKEY_DIR/attack_library.py"
-$cp "$STAGE_DIR/attack_catalog.py" "$TARGET_LOWKEY_DIR/attack_catalog.py"
+cp "$STAGE_DIR/attack_catalog.py" "$TARGET_LOWKEY_DIR/attack_catalog.py"
 cp "$STAGE_DIR/multiwave_audit.py" "$TARGET_LOWKEY_DIR/multiwave_audit.py"
 cp "$STAGE_DIR/godmode.py" "$TARGET_LOWKEY_DIR/godmode.py"
 cp "$STAGE_DIR/proof_evidence.py" "$TARGET_LOWKEY_DIR/proof_evidence.py"
