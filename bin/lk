@@ -18,10 +18,22 @@ if [[ "${1:-}" == "cheat" && "${2:-}" == "fingerprint" ]]; then
     exec python3 "$HOME/.lowkey/godmode.py" cheat-fingerprint "$@"
 fi
 
+# Root help includes the evidence-first Godmode command catalogue as a second section.
+# Keep the primary Lowkey help output unchanged, then append the installed Godmode index.
+if [[ "$#" -eq 1 ]]; then
+    case "${1:-}" in
+        --h|--help|-h|help)
+            python3 "$HOME/.lowkey/lk.py" "$@"
+            python3 "$HOME/.lowkey/godmode.py"
+            exit 0
+            ;;
+    esac
+fi
+
 # Integrated offensive-security workflows. Native commands not listed here
 # continue through the original Lowkey router unchanged.
 case "${1:-}" in
-    capabilities|godmode|control|steps|mutation-score|target-coverage|provenance|fidelity|sandbox|decompile|storage-infer|proxy-resolve|selectors-full|cfg|reentrancy-graph|fallback-map|calldata-mine|attack-forge|invariant-forge|archetype|token-weird|oracle-map|skew|flashmax|time|sig-matrix|init-frontrun|path|compose|reprove|economic|gas-ladder|watch|custody|agent-split|verify-hack|unravel|bundle|sandwich|jit|fork-cache|upgrade-diff|cross-vm|learn|report|questions)
+    capabilities|godmode|control|steps|mutation-score|target-coverage|provenance|fidelity|sandbox|cheat-fingerprint|decompile|storage-infer|proxy-resolve|selectors-full|cfg|reentrancy-graph|fallback-map|calldata-mine|attack-forge|invariant-forge|archetype|token-weird|oracle-map|skew|flashmax|time|sig-matrix|init-frontrun|path|compose|reprove|economic|gas-ladder|watch|custody|agent-split|verify-hack|unravel|bundle|sandwich|jit|fork-cache|upgrade-diff|cross-vm|learn|report|questions)
         exec python3 "$HOME/.lowkey/godmode.py" "$@"
         ;;
 esac
