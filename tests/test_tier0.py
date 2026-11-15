@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-import resource
 import subprocess
 import sys
 import tempfile
@@ -239,10 +238,12 @@ class Tier0CoverageTests(unittest.TestCase):
 class Tier0ProvenanceTests(unittest.TestCase):
     def test_signed_provenance_verifies_signature_and_artifact_hashes(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
+            workspace = pathlib.Path(temporary)
+            root = workspace / "project"
+            root.mkdir()
             source = root / "Exploit.t.sol"
             source.write_text("contract Exploit {}", encoding="utf-8")
-            key = root / "provenance-private.pem"
+            key = workspace / "provenance-private.pem"
 
             openssl = godmode.shutil.which("openssl")
             if not openssl:
@@ -264,14 +265,25 @@ class Tier0ProvenanceTests(unittest.TestCase):
             self.assertTrue((root / signed["signature"]["signature_file"]).is_file())
             self.assertTrue((root / signed["signature"]["public_key_file"]).is_file())
 
+            self.assertEqual(
+                godmode.provenance([
+                    "--root", str(root), "--verify", ".audit/godmode/provenance.json",
+                ]),
+                1,
+                "A public key shipped beside a manifest must not be trusted automatically.",
+            )
+            trusted_key = workspace / "trusted-provenance-public.pem"
+            trusted_key.write_bytes((root / signed["signature"]["public_key_file"]).read_bytes())
             verified = godmode.provenance([
                 "--root", str(root), "--verify", ".audit/godmode/provenance.json",
+                "--public-key", str(trusted_key),
             ])
             self.assertEqual(verified, 0)
 
             source.write_text("contract Exploit { function changed() external {} }", encoding="utf-8")
             tampered = godmode.provenance([
                 "--root", str(root), "--verify", ".audit/godmode/provenance.json",
+                "--public-key", str(trusted_key),
             ])
             self.assertEqual(tampered, 1)
 
@@ -287,6 +299,7 @@ class Tier0ProvenanceTests(unittest.TestCase):
             self.assertEqual(resigned.returncode, 0, resigned.stderr)
             empty = godmode.provenance([
                 "--root", str(root), "--verify", ".audit/godmode/provenance.json",
+                "--public-key", str(trusted_key),
             ])
             self.assertEqual(empty, 1)
 
@@ -299,6 +312,7 @@ class Tier0ProvenanceTests(unittest.TestCase):
             self.assertEqual(resigned.returncode, 0, resigned.stderr)
             malformed = godmode.provenance([
                 "--root", str(root), "--verify", ".audit/godmode/provenance.json",
+                "--public-key", str(trusted_key),
             ])
             self.assertEqual(malformed, 1)
 
@@ -321,7 +335,7 @@ class Tier0SandboxTests(unittest.TestCase):
             completed.pid = 445566
             completed.returncode = 0
             completed.communicate.return_value = ("sandbox ok\n", "")
-            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else None), patch.object(godmode.subprocess, "Popen", return_value=completed) as popen_mock:
+            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/" + name if name in {"bwrap", "systemd-run"} else None), patch.object(godmode.subprocess, "Popen", return_value=completed) as popen_mock:
                 code = godmode.sandbox([
                     "--root", str(root), "--timeout", "10", "--memory-mb", "256",
                     "--processes", "64", "--readonly-workspace",
@@ -330,22 +344,24 @@ class Tier0SandboxTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             argv = popen_mock.call_args.args[0]
-            self.assertIn("bwrap", argv[0])
+            self.assertEqual(argv[0], "systemd-run")
+            self.assertIn("--user", argv)
             self.assertIn("--unshare-net", argv)
             self.assertIn("--seccomp", argv)
             self.assertIn("--ro-bind", argv)
+            self.assertIn("--property=MemoryMax=268435456", argv)
+            self.assertIn("--property=TasksMax=64", argv)
+            self.assertIn("--property=LimitCPU=10s", argv)
             self.assertIn("pass_fds", popen_mock.call_args.kwargs)
-            self.assertIsNotNone(popen_mock.call_args.kwargs["preexec_fn"])
+            self.assertEqual(popen_mock.call_args.kwargs["preexec_fn"], None)
             self.assertTrue(popen_mock.call_args.kwargs["start_new_session"])
-            applied_limits = []
-            with patch.object(resource, "getrlimit", return_value=(0, resource.RLIM_INFINITY)), patch.object(
-                resource, "setrlimit", side_effect=lambda kind, values: applied_limits.append((kind, values))
-            ):
-                popen_mock.call_args.kwargs["preexec_fn"]()
-            self.assertIn(
-                (resource.RLIMIT_NPROC, (64, 64)),
-                applied_limits,
-            )
+            self.assertIn('exec 3< "$1"', argv)
+
+    def test_sandbox_refuses_weaker_resource_limits_without_systemd(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else None):
+                with self.assertRaisesRegex(RuntimeError, "systemd-run cgroup controls"):
+                    godmode.sandbox(["--root", temporary, "--", "true"])
 
     def test_sandbox_refuses_unsandboxed_execution_when_bwrap_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -398,7 +414,7 @@ class Tier0SandboxTests(unittest.TestCase):
                 subprocess.TimeoutExpired(["bwrap"], 1),
                 ("partial output\n", "terminated\n"),
             ]
-            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else None), patch.object(godmode.subprocess, "Popen", return_value=completed), patch.object(godmode.os, "killpg") as killpg:
+            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/" + name if name in {"bwrap", "systemd-run"} else None), patch.object(godmode.subprocess, "Popen", return_value=completed), patch.object(godmode.os, "killpg") as killpg:
                 code = godmode.sandbox([
                     "--root", temporary, "--timeout", "1", "--", "python3", "-c", "pass",
                 ])
