@@ -99,8 +99,10 @@ class MultiWaveAuditTests(unittest.TestCase):
             for row in first
         }
         carried = audit.build_coverage_ledger(self.context(), self.root, "standard", prior)
-        self.assertTrue(all(row["carried_forward"] for row in carried))
-        self.assertTrue(all(row["status"] == "reviewed" for row in carried))
+        self.assertTrue(all(row["carried_forward"] for row in carried if row["family"] != "business-logic"))
+        self.assertTrue(all(not row["carried_forward"] for row in carried if row["family"] == "business-logic"))
+        self.assertTrue(all(row["status"] == "reviewed" for row in carried if row["family"] != "business-logic"))
+        self.assertTrue(all(row["status"] == "planned" for row in carried if row["family"] == "business-logic"))
 
         changed = self.root / "src" / "Vault.sol"
         changed.write_text(VAULT + "\n// changed\n", encoding="utf-8")
