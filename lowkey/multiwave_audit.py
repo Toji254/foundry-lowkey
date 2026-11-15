@@ -823,6 +823,12 @@ def run_multiwave_audit(
                     unit["status"] = "candidate"
                     unit["candidate_ids"].append(str(carried.get("finding_id")))
 
+        # Re-run the wildcard business-logic pass on every audit, even when
+        # prior specific-family units and source-identical findings are carried.
+        for unit in units:
+            if unit.get("family") == "business-logic" and unit.get("status") != "deferred":
+                unit["status"] = "planned"
+
         budget = int(config["max_calls"])
         if state.get("jev_free_tier_mode") and isinstance(state.get("jev_calls_remaining"), int):
             budget = min(budget, max(0, int(state["jev_calls_remaining"])))
