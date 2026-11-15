@@ -29,6 +29,21 @@ contract Vault {
 }
 """
 
+OVERLOADED = """
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract Overloaded {
+    function quote(uint256 amount) external pure returns (uint256) {
+        return amount;
+    }
+
+    function quote(address account) external pure returns (address) {
+        return account;
+    }
+}
+"""
+
 TOKEN = """
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
@@ -54,6 +69,7 @@ class MultiWaveAuditTests(unittest.TestCase):
         (self.root / "src").mkdir()
         (self.root / "src" / "Vault.sol").write_text(VAULT, encoding="utf-8")
         (self.root / "src" / "Token.sol").write_text(TOKEN, encoding="utf-8")
+        (self.root / "src" / "Overloaded.sol").write_text(OVERLOADED, encoding="utf-8")
 
     def context(self):
         return {
@@ -61,6 +77,7 @@ class MultiWaveAuditTests(unittest.TestCase):
             "source_files": [
                 {"path": "src/Vault.sol", "source_excerpt": VAULT},
                 {"path": "src/Token.sol", "source_excerpt": TOKEN},
+                {"path": "src/Overloaded.sol", "source_excerpt": OVERLOADED},
             ],
         }
 
@@ -85,6 +102,16 @@ class MultiWaveAuditTests(unittest.TestCase):
         self.assertIn("accounting", families)
         self.assertIn("business-logic", families)
         self.assertTrue(all(row["coverage_id"].startswith("CU-") for row in first))
+
+    def test_overloaded_public_functions_get_distinct_coverage_units(self):
+        units = audit.build_coverage_ledger(self.context(), self.root, "standard")
+        quote_units = [
+            row for row in units
+            if row["source_path"] == "src/Overloaded.sol" and row["symbol"] == "quote"
+        ]
+        signatures = {row["signature"] for row in quote_units}
+        self.assertEqual(signatures, {"quote(uint256amount)", "quote(addressaccount)"})
+        self.assertEqual(len({row["coverage_id"] for row in quote_units}), len(quote_units))
 
     def test_unchanged_reviewed_units_can_be_carried_but_changed_source_cannot(self):
         first = audit.build_coverage_ledger(self.context(), self.root, "standard")
