@@ -2947,7 +2947,7 @@ def provenance(args):
     p.add_argument("--fork-block")
     p.add_argument("--signing-key")
     p.add_argument("--verify", help="Verify an existing signed provenance JSON file and its artifact hashes.")
-    p.add_argument("--public-key", help="Public PEM used with --verify; defaults to the recorded sidecar.")
+    p.add_argument("--public-key", help="Trusted public PEM to pin for --verify; required because a co-located key sidecar is not a trust anchor.")
     p.add_argument("--signature-file", help="Detached signature file used with --verify; defaults to the recorded sidecar.")
     p.add_argument("--output", default=".audit/godmode/provenance.json")
     ns = p.parse_args(args)
@@ -2971,16 +2971,22 @@ def provenance(args):
         if not isinstance(signature_info, dict) or signature_info.get("status") != "signed":
             print("PROVENANCE VERIFY: FAIL (manifest is unsigned or malformed)")
             return 1
+        if not ns.public_key:
+            print("PROVENANCE VERIFY: FAIL (pass --public-key with a separately trusted/pinned public key)")
+            return 1
         signature_path = Path(ns.signature_file or signature_info.get("signature_file") or "").expanduser()
-        public_path = Path(ns.public_key or signature_info.get("public_key_file") or "").expanduser()
+        public_path = Path(ns.public_key).expanduser()
         if not signature_path.is_absolute():
             signature_path = (root / signature_path).resolve()
-        if not public_path.is_absolute():
-            public_path = (root / public_path).resolve()
+        else:
+            signature_path = signature_path.resolve()
+        public_path = public_path.resolve()
         if not signature_path.is_relative_to(root) or not signature_path.is_file():
             raise ValueError("Detached signature must be an existing file inside --root.")
-        if not public_path.is_relative_to(root) or not public_path.is_file():
-            raise ValueError("Public key must be an existing file inside --root.")
+        if not public_path.is_file():
+            raise ValueError("Trusted public key must be an existing readable file.")
+        if public_path == Path(ns.signing_key or "/__not_a_real_signing_key__").resolve():
+            raise ValueError("A private signing key cannot be used as a trusted public key.")
         if not shutil.which("openssl"):
             raise RuntimeError("OpenSSL is required to verify provenance signatures.")
         public_hash = sha(public_path)
@@ -3075,6 +3081,8 @@ def provenance(args):
         signing_key = Path(ns.signing_key).expanduser().resolve()
         if not signing_key.is_file():
             raise ValueError("Signing key file does not exist.")
+        if signing_key.is_relative_to(root):
+            raise ValueError("Keep the private signing key outside --root; use a protected path such as ~/.config/lowkey/provenance.pem.")
         if not shutil.which("openssl"):
             raise RuntimeError("OpenSSL is required for provenance signing.")
         public_path = Path(str(out) + ".pub.pem")
@@ -3226,9 +3234,11 @@ def sandbox(args):
     root = root_path(ns.root)
     if not shutil.which("bwrap"):
         raise RuntimeError("bubblewrap is unavailable; refusing unsandboxed execution.")
+    if not shutil.which("systemd-run"):
+        raise RuntimeError("Sandbox resource isolation requires systemd-run cgroup controls; refusing a weaker fallback.")
     if ns.network == "allowlist":
-        if not shutil.which("sudo") or not shutil.which("systemd-run"):
-            raise RuntimeError("Network allowlisting requires sudo and systemd-run; refusing an unrestricted network fallback.")
+        if not shutil.which("sudo"):
+            raise RuntimeError("Network allowlisting requires sudo; refusing an unrestricted network fallback.")
         if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
             raise RuntimeError("Network allowlisting requires cgroup v2; refusing an unrestricted network fallback.")
         allow_ips = _sandbox_resolve_allowlist(ns.allow_host)
@@ -3277,20 +3287,12 @@ def sandbox(args):
             home_args += ["--dir", str(home / ".svm"), "--ro-bind", str(svm), str(svm)]
 
         seccomp_bytes, denied_names = _sandbox_seccomp_filter()
-        read_fd = None
-        seccomp_file = None
-        if ns.network == "allowlist":
-            seccomp_file = temporary / "seccomp.filter"
-            seccomp_file.write_bytes(seccomp_bytes)
-            seccomp_argument = "3"
-        else:
-            read_fd, write_fd = os.pipe()
-            seccomp_read_fd = read_fd
-            try:
-                os.write(write_fd, seccomp_bytes)
-            finally:
-                os.close(write_fd)
-            seccomp_argument = str(read_fd)
+        # systemd-run creates a new service process: an FD passed to its client
+        # is not inherited by the transient service. Open the filter in a small
+        # trusted wrapper before exec'ing bubblewrap in that service.
+        seccomp_file = temporary / "seccomp.filter"
+        seccomp_file.write_bytes(seccomp_bytes)
+        seccomp_argument = "3"
 
         path_value = str(foundry_bin) + ":/usr/local/bin:/usr/bin:/bin"
         workspace_mount = "--ro-bind" if ns.readonly_workspace else "--bind"
@@ -3322,30 +3324,41 @@ def sandbox(args):
                 soft = min(requested, hard)
                 resource.setrlimit(resource_id, (soft, hard))
 
-        outer_argv = bwrap_argv
-        preexec = apply_limits
+        # Per-sandbox cgroup controls apply in both network modes. Network-none
+        # additionally uses a fresh network namespace; allowlist mode relies on
+        # systemd's cgroup IP filter and therefore needs the system manager.
+        resource_properties = [
+            "--property=Type=exec",
+            "--property=LimitCPU=" + str(ns.cpu_seconds) + "s",
+            "--property=LimitAS=" + str(ns.memory_mb * 1024 * 1024),
+            "--property=MemoryMax=" + str(ns.memory_mb * 1024 * 1024),
+            "--property=LimitFSIZE=" + str(ns.file_size_mb * 1024 * 1024),
+            "--property=LimitNOFILE=" + str(ns.nofile),
+            "--property=TasksMax=" + str(ns.processes),
+            "--property=RuntimeMaxSec=" + str(ns.timeout) + "s",
+        ]
+        seccomp_wrapper = [
+            "/bin/bash", "-c", 'exec 3< "$1"; shift; exec "$@"',
+            "lowkey-sandbox-seccomp", str(seccomp_file), *bwrap_argv,
+        ]
         if ns.network == "allowlist":
             current_user = pwd.getpwuid(os.getuid()).pw_name
             outer_argv = [
                 "sudo", "systemd-run", "--system", "--wait", "--pipe", "--collect",
-                "--property=Type=exec", "--property=User=" + current_user,
+                "--property=User=" + current_user,
                 "--property=IPAddressDeny=any",
-                "--property=LimitCPU=" + str(ns.cpu_seconds) + "s",
-                "--property=LimitAS=" + str(ns.memory_mb * 1024 * 1024),
-                "--property=MemoryMax=" + str(ns.memory_mb * 1024 * 1024),
-                "--property=LimitFSIZE=" + str(ns.file_size_mb * 1024 * 1024),
-                "--property=LimitNOFILE=" + str(ns.nofile),
-                "--property=TasksMax=" + str(ns.processes),
+                *resource_properties,
             ]
             outer_argv.extend("--property=IPAddressAllow=" + address for address in allow_ips)
-            seccomp_wrapper = [
-                "/bin/bash", "-c", 'exec 3< "$1"; shift; exec "$@"',
-                "lowkey-sandbox-seccomp", str(seccomp_file), *bwrap_argv,
+        else:
+            outer_argv = [
+                "systemd-run", "--user", "--wait", "--pipe", "--collect",
+                *resource_properties,
             ]
-            outer_argv.extend(["--property=RuntimeMaxSec=" + str(ns.timeout) + "s", "--", *seccomp_wrapper])
-            preexec = None
+        outer_argv.extend(["--", *seccomp_wrapper])
+        preexec = None
 
-        pass_fds = (read_fd,) if read_fd is not None else ()
+        pass_fds = ()
         try:
             proc = subprocess.Popen(
                 outer_argv,
@@ -3386,26 +3399,17 @@ def sandbox(args):
                     print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
                 return 124
         finally:
-            if read_fd is not None:
-                os.close(read_fd)
             seccomp_read_fd = None
 
         print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
         print("SANDBOX SECCOMP: active; denied syscalls: " + ", ".join(denied_names))
-        process_scope = "cgroup TasksMax=" + str(ns.processes) if ns.network == "allowlist" else "per-UID RLIMIT_NPROC=" + str(ns.processes)
-        memory_scope = "cgroup MemoryMax + " if ns.network == "allowlist" else "per-process "
-        print("SANDBOX LIMITS: cpu=" + str(ns.cpu_seconds) + "s " + memory_scope + "memory=" + str(ns.memory_mb) + "MiB file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile) + " " + process_scope)
+        print("SANDBOX LIMITS: cgroup MemoryMax=" + str(ns.memory_mb) + "MiB TasksMax=" + str(ns.processes) + " LimitCPU=" + str(ns.cpu_seconds) + "s file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile))
         if stdout_text:
             print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
         if stderr_text:
             print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
         return proc.returncode
     finally:
-        if seccomp_read_fd is not None:
-            try:
-                os.close(seccomp_read_fd)
-            except OSError:
-                pass
         shutil.rmtree(temporary, ignore_errors=True)
 
 
