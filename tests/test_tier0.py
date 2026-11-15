@@ -53,7 +53,7 @@ contract Vault {
             self.assertEqual(match["external_method"], "call")
             self.assertLess(match["read_line"], match["call_line"])
             self.assertLess(match["call_line"], match["write_line"])
-            self.assertIn("not proof", match["meaning"].lower())
+            self.assertIn("unproven", match["meaning"].lower())
 
     def test_fingerprint_cli_writes_machine_readable_report(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -145,11 +145,11 @@ class Tier0CoverageTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             source = root / "src" / "Vault.sol"
             source.parent.mkdir()
-            source.write_text("contract Vault {\\n    function withdraw() external {}\\n}\\n", encoding="utf-8")
+            source.write_text("contract Vault {\n    function withdraw() external {}\n}\n", encoding="utf-8")
 
             def fake_run(argv, cwd, timeout=300, env=None):
                 (pathlib.Path(cwd) / "lcov.info").write_text(
-                    f"SF:{source}\\nDA:1,1\\nDA:2,0\\nend_of_record\\n",
+                    f"SF:{source}\nDA:1,1\nDA:2,0\nend_of_record\n",
                     encoding="utf-8",
                 )
                 return subprocess.CompletedProcess(argv, 0, "", "")
@@ -218,10 +218,10 @@ class Tier0SandboxTests(unittest.TestCase):
     def test_sandbox_runs_without_network_and_applies_seccomp_and_readonly_mounts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
-            (root / "foundry.toml").write_text("[profile.default]\\n", encoding="utf-8")
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             (root / "src").mkdir()
 
-            completed = subprocess.CompletedProcess(["bwrap"], 0, "sandbox ok\\n", "")
+            completed = subprocess.CompletedProcess(["bwrap"], 0, "sandbox ok\n", "")
             with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else None), patch.object(godmode.subprocess, "run", return_value=completed) as run_mock:
                 code = godmode.sandbox([
                     "--root", str(root), "--timeout", "10", "--memory-mb", "256",
@@ -246,7 +246,8 @@ class Tier0SandboxTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             (root / "src").mkdir()
-            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/" + name if name in {"bwrap", "sudo", "systemd-run"} else None), patch.object(pathlib.Path, "is_file", autospec=True, side_effect=lambda path: True if str(path) == "/sys/fs/cgroup/cgroup.controllers" else pathlib.Path.is_file(path)):
+            real_is_file = pathlib.Path.is_file
+            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/" + name if name in {"bwrap", "sudo", "systemd-run"} else None), patch.object(pathlib.Path, "is_file", autospec=True, side_effect=lambda path: True if str(path) == "/sys/fs/cgroup/cgroup.controllers" else real_is_file(path)):
                 with patch.object(godmode.socket, "getaddrinfo", return_value=[(None, None, None, None, ("203.0.113.5", 0))]):
                     with patch.object(godmode.subprocess, "run", return_value=subprocess.CompletedProcess(["systemd-run"], 0, "", "")) as run_mock:
                         code = godmode.sandbox([
