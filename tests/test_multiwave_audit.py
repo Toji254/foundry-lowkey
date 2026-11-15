@@ -294,7 +294,7 @@ class MultiWaveAuditTests(unittest.TestCase):
         self.assertEqual(result["status"], "coverage_complete", result)
         self.assertEqual(result["waves_completed"], 2)
         self.assertIn(2, hunter_waves)
-        self.assertIn(("final_clean_critic", None), critic_rounds)
+        self.assertIn(("final_clean_review", None), critic_rounds)
 
 
 if __name__ == "__main__":
