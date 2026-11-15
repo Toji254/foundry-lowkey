@@ -3365,46 +3365,44 @@ def sandbox(args):
         outer_argv.extend(["--", *seccomp_wrapper])
         preexec = None
 
-        pass_fds = ()
+        proc = subprocess.Popen(
+            outer_argv,
+            cwd=str(root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            pass_fds=pass_fds,
+            preexec_fn=preexec,
+            start_new_session=True,
+        )
+        # RuntimeMaxSec is the authoritative service timeout; give the
+        # systemd-run client a short grace period to receive the unit result.
+        client_timeout = ns.timeout + 5
         try:
-            proc = subprocess.Popen(
-                outer_argv,
-                cwd=str(root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                pass_fds=pass_fds,
-                preexec_fn=preexec,
-                start_new_session=True,
-            )
-            # RuntimeMaxSec is the authoritative service timeout; give the
-            # systemd-run client a short grace period to receive the unit result.
-            client_timeout = ns.timeout + 5
+            stdout_text, stderr_text = proc.communicate(timeout=client_timeout)
+        except subprocess.TimeoutExpired:
+            print("SANDBOX: TIMEOUT after " + str(ns.timeout) + " seconds; terminating process group", file=sys.stderr)
             try:
-                stdout_text, stderr_text = proc.communicate(timeout=client_timeout)
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                proc.terminate()
+            try:
+                stdout_text, stderr_text = proc.communicate(timeout=3)
             except subprocess.TimeoutExpired:
-                print("SANDBOX: TIMEOUT after " + str(ns.timeout) + " seconds; terminating process group", file=sys.stderr)
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
+                    os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 except PermissionError:
-                    proc.terminate()
-                try:
-                    stdout_text, stderr_text = proc.communicate(timeout=3)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    except PermissionError:
-                        proc.kill()
-                    stdout_text, stderr_text = proc.communicate()
-                if stdout_text:
-                    print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
-                if stderr_text:
-                    print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
-                return 124
+                    proc.kill()
+                stdout_text, stderr_text = proc.communicate()
+            if stdout_text:
+                print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+            if stderr_text:
+                print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
+            return 124
         print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
         print("SANDBOX SECCOMP: active; denied syscalls: " + ", ".join(denied_names))
         print("SANDBOX LIMITS: cgroup MemoryMax=" + str(ns.memory_mb) + "MiB TasksMax=" + str(ns.processes) + " LimitCPU=" + str(ns.cpu_seconds) + "s file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile))
