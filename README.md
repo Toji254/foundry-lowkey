@@ -73,7 +73,7 @@ lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 
 # Before verification, pin the signer's public key outside this project
 # through an independent trusted channel; do not trust the co-located sidecar.
 install -d -m 700 ~/.config/lowkey
-install -m 600 .audit/godmode/provenance.json.pub.pem ~/.config/lowkey/trusted-provenance.pub.pem
+install -m 644 .audit/godmode/provenance.json.pub.pem ~/.config/lowkey/trusted-provenance.pub.pem
 lk provenance --root . --verify .audit/godmode/provenance.json --public-key ~/.config/lowkey/trusted-provenance.pub.pem
 
 # Run untrusted tests in a disposable, network-disabled sandbox.
