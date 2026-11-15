@@ -67,10 +67,12 @@ lk mutation-score .audit/reentrancy-mutations.json --root . --family reentrancy 
 lk target-coverage src/Vault.sol --root . --start-line 40 --end-line 95 --match-path test/Vault.t.sol --min-percent 85
 
 # Hash artifacts and record repo/chain/fork/tool provenance, then sign.
+# Keep the private key outside the project root.
 lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 100 --signing-key ~/.config/lowkey/provenance.pem
 
-# Verify the detached signature and that all listed artifacts still match.
-lk provenance --root . --verify .audit/godmode/provenance.json
+# First obtain/pin the signer's public key through a trusted channel, store it
+# outside the project, then verify the detached signature and artifact hashes.
+lk provenance --root . --verify .audit/godmode/provenance.json --public-key ~/.config/lowkey/trusted-provenance.pub.pem --public-key ~/.config/lowkey/trusted-provenance.pub.pem
 
 # Run untrusted tests in a disposable, network-disabled sandbox.
 lk sandbox --root . --timeout 300 --cpu-seconds 180 --memory-mb 2048 --processes 512 -- forge test
@@ -86,7 +88,7 @@ lk sandbox --root . --network allowlist --allow-host rpc.example.net --timeout 3
 
 Network allowlisting requires `bwrap`, `sudo`, `systemd-run`, and cgroup v2. Lowkey uses a transient system service with `IPAddressDeny=any` and `IPAddressAllow` for the resolved allowlist and configured DNS resolvers; it also applies cgroup `MemoryMax` and `TasksMax`. It refuses rather than silently falling back to unrestricted networking. Filtering is by destination IP, not port: all ports to an allowed IP are available. Review the hostname's resolved IPs and only allow hosts you trust.
 
-The sandbox copies the project into a disposable workspace, drops common repository/credential paths, mounts system/tool inputs read-only, applies an architecture-checked seccomp filter and terminates the launched process group on timeout. CPU, address-space, file-size and file-descriptor limits are set on the child process tree. `--processes` sets `RLIMIT_NPROC` for network-disabled mode (a per-real-UID kernel limit); allowlist mode additionally applies a per-sandbox cgroup `TasksMax`. Network-disabled mode does not claim aggregate cgroup memory accounting: its memory cap is per-process address space.
+The sandbox copies the project into a disposable workspace, drops common repository/credential paths, mounts system/tool inputs read-only, applies an architecture-checked seccomp filter and terminates the launched process group on timeout. Both network modes run under a transient systemd cgroup with `MemoryMax`, `TasksMax`, `RuntimeMaxSec`, CPU-time, address-space, file-size and file-descriptor limits. Network-disabled mode uses the user systemd manager plus a fresh network namespace; allowlist mode uses the system manager plus `IPAddressDeny=any` and resolved `IPAddressAllow` entries. If the required systemd/bubblewrap controls are unavailable, Lowkey refuses to run instead of silently dropping a limit. Allowlisting is IP-based and permits all ports to an allowed IP.
 
 #### Mutation manifest shape
 
