@@ -242,7 +242,16 @@ class Tier0SandboxTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "bubblewrap is unavailable"):
                     godmode.sandbox(["--root", temporary, "--", "true"])
 
-    def test_sandbox_allowlist_requires_systemd_and_cgroup_v2(self):
+    def test_sandbox_allowlist_refuses_when_systemd_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else "/usr/bin/sudo" if name == "sudo" else None):
+                with self.assertRaisesRegex(RuntimeError, "requires sudo and systemd-run"):
+                    godmode.sandbox([
+                        "--root", temporary, "--network", "allowlist",
+                        "--allow-host", "rpc.example.test", "--", "true",
+                    ])
+
+    def test_sandbox_allowlist_builds_systemd_ip_deny_and_allow_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             (root / "src").mkdir()
