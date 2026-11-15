@@ -137,7 +137,7 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
             launcher,
         )
         self.assertIsNotNone(match, "Could not locate the Godmode route case in bin/lk.")
-        launcher_commands = set(match.group(1).strip().split("|"))
+        launcher_commands = set(match.group(1).strip().rstrip(")").split("|"))
         registered_commands = set(godmode.ROUTED_COMMANDS)
         dispatch_commands = _main_dispatch_commands()
         # state-diff is intentionally owned by Lowkey's primary router: its
