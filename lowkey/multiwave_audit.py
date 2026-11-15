@@ -827,6 +827,7 @@ def run_multiwave_audit(
     waves = 0
     critic_clean = False
     stopped_reason: str | None = None
+    unresolved_gaps: list[str] = []
     lock = threading.Lock()
 
     try:
