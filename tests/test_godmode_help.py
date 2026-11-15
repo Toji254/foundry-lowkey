@@ -179,10 +179,10 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
             lowkey_dir = home / ".lowkey"
             lowkey_dir.mkdir()
             (lowkey_dir / "lk.py").write_text(
-                'print("BASE LOWKEY HELP")\\n', encoding="utf-8"
+                'print("BASE LOWKEY HELP")' + chr(10), encoding="utf-8"
             )
             (lowkey_dir / "godmode.py").write_text(
-                'print("GODMODE CATALOG MARKER")\\n', encoding="utf-8"
+                'print("GODMODE CATALOG MARKER")' + chr(10), encoding="utf-8"
             )
             env = os.environ.copy()
             env["HOME"] = str(home)
