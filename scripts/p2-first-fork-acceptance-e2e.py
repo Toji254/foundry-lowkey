@@ -29,6 +29,7 @@ ACTOR = "0x000000000000000000000000000000000000a11c"
 DEFAULT_FORK_UPSTREAM = "https://eth-mainnet.public.blastapi.io"
 DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
+FORGE_STD_COMMIT = "15b2df92a05d4d2f76a06653872fefb287e0e01c"
 ARTIFACT_ROOT = ROOT / ".audit" / "p2-first-fork"
 
 
@@ -172,7 +173,9 @@ contract P2FirstYearnForkTest is LowkeyForgeStateDiffRecorder {
     run(["git", "init", "-q"], cwd=project, env=os.environ.copy(), timeout=30)
     run(["git", "config", "user.email", "ci@example.invalid"], cwd=project, env=os.environ.copy(), timeout=30)
     run(["git", "config", "user.name", "Lowkey P2 CI"], cwd=project, env=os.environ.copy(), timeout=30)
-    run(["forge", "install", "foundry-rs/forge-std", "--no-commit"], cwd=project, env=os.environ.copy(), timeout=180)
+    run([
+        "forge", "install", f"foundry-rs/forge-std@{FORGE_STD_COMMIT}", "--no-commit"
+    ], cwd=project, env=os.environ.copy(), timeout=180)
 
 
 def main() -> int:
