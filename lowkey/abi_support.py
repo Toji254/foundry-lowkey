@@ -12,6 +12,7 @@ from typing import Any, Sequence
 
 
 _MAX_ARRAY_ITEMS = 64
+_MAX_TOTAL_ELEMENTS = 4096
 _MAX_ABI_DEPTH = 10
 
 
@@ -103,6 +104,7 @@ def sample_abi_value(
     rng: random.Random | None = None,
     fallback_address: str = "0x" + "11" * 20,
     depth: int = 0,
+    _budget: list[int] | None = None,
 ) -> str:
     """Create a conservative Cast-compatible value for scalar, tuple and array ABI inputs.
 
@@ -115,6 +117,7 @@ def sample_abi_value(
     if depth > _MAX_ABI_DEPTH:
         raise ValueError("ABI value nesting exceeds the generic depth limit")
     generator = rng or random.Random(1337)
+    budget = _budget if _budget is not None else [0]
     if not isinstance(item, dict):
         raise ValueError("ABI input must be an object")
     raw = item.get("type")
@@ -148,9 +151,15 @@ def sample_abi_value(
                     rng=generator,
                     fallback_address=fallback_address,
                     depth=current_depth + 1,
+                    _budget=budget,
                 )
                 for component in components
             ) + ")"
+        budget[0] += 1
+        if budget[0] > _MAX_TOTAL_ELEMENTS:
+            raise ValueError(
+                f"ABI sample exceeds the generic {_MAX_TOTAL_ELEMENTS}-element safety limit"
+            )
         return _sample_scalar(base, mode, generator, fallback_address)
 
     return build(0, depth)
