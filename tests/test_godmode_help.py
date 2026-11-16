@@ -181,7 +181,7 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
             "START HERE", "source-only scan", "no address or RPC",
             "--plan-only", "--attack", "local Anvil",
             "--control-manifest", "mutation", "coverage",
-            "still writes .audit/godmode/latest.json",
+            ".audit/godmode/latest.json", "provenance.json",
             "Optional deployed contract address",
             "Project folder containing the Solidity source",
         ):
