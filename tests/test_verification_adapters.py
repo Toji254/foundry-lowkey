@@ -301,6 +301,28 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(tool_error.status, "error")
         self.assertEqual(tool_error.metadata["result_semantics"], "certora_cli_execution_error")
 
+    def test_certora_registry_reports_missing_credentials_as_missing_configuration(self):
+        adapter = CertoraAdapter(EngineCapability(
+            "certora", sys.executable, ("formal",), memory_class="high"
+        ))
+        registry = CapabilityRegistry([adapter])
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "rules.conf").write_text("{}", encoding="utf-8")
+            with (
+                patch.dict("os.environ", {}, clear=True),
+                patch("lowkey.verification_adapters.shutil.which", return_value=sys.executable),
+            ):
+                plan = registry.plan(
+                    {"root": root, "languages": ["solidity"], "build_systems": ["foundry"]},
+                    "formal",
+                    profile="deep",
+                    request={"engine_config_by_engine": {"certora": {"config": "rules.conf"}}},
+                )
+        self.assertEqual(plan["selected"], [])
+        rejected = next(row for row in plan["rejected"] if row["engine"] == "certora")
+        self.assertEqual(rejected["status"], "missing_configuration")
+        self.assertIn("CERTORAKEY", rejected["reason"])
+
     def test_certora_requires_credentials_before_remote_execution(self):
         adapter = CertoraAdapter(EngineCapability(
             "certora", sys.executable, ("formal",), memory_class="high"
