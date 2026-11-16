@@ -79,7 +79,7 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         )
         self.assertIn("new address[](1)", declarations)
         self.assertIn("testArgArg0[0] = address(ATTACKER);", declarations)
-        self.assertEqual(expressions, ["testArg_0"])
+        self.assertEqual(expressions, ["testArgArg0"])
 
     def test_setup_discovery_supports_address_array_abi(self):
         setup = break_engine._find_setup_function([
@@ -95,16 +95,16 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         self.assertEqual(setup["signature"], "deposit(address[])")
 
     def test_unsupported_setup_type_is_not_guessed(self):
-        setup = break_engine._find_setup_abi([
-            {
-                "type": "function",
-                "name": "deposit",
-                "stateMutability": "nonpayable",
-                "inputs": [{"name": "details", "type": "tuple"}],
-                "outputs": [],
-            }
-        ])
-        self.assertIsNone(setup)
+        with self.assertRaisesRegex(ValueError, "supported ABI"):
+            break_engine._find_setup_function([
+                {
+                    "type": "function",
+                    "name": "deposit",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{"name": "details", "type": "tuple"}],
+                    "outputs": [],
+                }
+            ])
 
     def test_repeat_harness_uses_token_decimals_and_optional_return_approval(self):
         body = break_engine._render_repeat_test(
@@ -116,6 +116,7 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             "accounting",
             None,
             entitlement_signature="credit(address)",
+            setup_signature="deposit(uint256)",
             asset_signature="asset()",
             setup_params=[{"name": "amount", "type": "uint256"}],
             setup_payable=False,
@@ -167,6 +168,7 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             "withdraw(address[])",
             ["[0x2222222222222222222222222222222222222222]"],
             2,
+            setup_signature="deposit(address[])",
             setup_params=[{"name": "recipients", "type": "address[]"}],
             setup_payable=True,
         )
