@@ -26,8 +26,11 @@ if str(ROOT) not in sys.path:
 TARGET = "0xbe53a109b494e5c9f97b9cd39fe969be68bf6204"
 TARGET_DEPLOYMENT_BLOCK = 19_419_991
 ACTOR = "0x000000000000000000000000000000000000a11c"
-DEFAULT_FORK_UPSTREAM = "https://eth-mainnet.public.blastapi.io"
-DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io"
+DEFAULT_FORK_UPSTREAMS = (
+    "https://eth-mainnet.public.blastapi.io",
+    "https://rpc.mevblocker.io/noreverts",
+)
+DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io/fullprivacy"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
 FORGE_STD_COMMIT = "15b2df92a05d4d2f76a06653872fefb287e0e01c"
 ARTIFACT_ROOT = ROOT / ".audit" / "p2-first-fork"
@@ -82,25 +85,72 @@ def quantity(value: Any, label: str) -> int:
     return int(value, 16)
 
 
-def pick_common_block(fork_upstream: str, source_rpc: str) -> tuple[int, dict[str, Any]]:
-    fork_tip = quantity(rpc(fork_upstream, "eth_blockNumber", []), "fork upstream tip")
+def parse_endpoint_list(raw: str | None, defaults: tuple[str, ...]) -> list[str]:
+    """Parse comma-separated fork RPC URLs while preserving order and uniqueness."""
+    values = [item.strip() for item in (raw or "").split(",") if item.strip()]
+    if not values:
+        values = list(defaults)
+    result = []
+    seen = set()
+    for value in values:
+        if not value.startswith(("https://", "http://")):
+            raise AssertionError("P2 fork RPC endpoints must be absolute HTTP(S) URLs.")
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def rpc_first_available(urls: list[str], method: str, params: list[Any]) -> tuple[Any, str]:
+    errors = []
+    for url in urls:
+        try:
+            return rpc(url, method, params), url
+        except Exception as exc:
+            errors.append(f"{urlparse_safe(url)}: {type(exc).__name__}: {str(exc)[:260]}")
+    raise RuntimeError(f"No P2 fork RPC endpoint served {method}: " + "; ".join(errors))
+
+
+def pick_common_block(
+    fork_upstreams: list[str], source_rpc: str
+) -> tuple[int, dict[str, Any], list[str]]:
     source_tip = quantity(rpc(source_rpc, "eth_blockNumber", []), "source RPC tip")
-    candidate = min(fork_tip, source_tip) - 12
+    fork_tips = []
+    failures = []
+    for endpoint in fork_upstreams:
+        try:
+            tip = quantity(rpc(endpoint, "eth_blockNumber", []), "fork upstream tip")
+            fork_tips.append((endpoint, tip))
+        except Exception as exc:
+            failures.append(f"{urlparse_safe(endpoint)}: {type(exc).__name__}: {str(exc)[:260]}")
+    if not fork_tips:
+        raise AssertionError("Every P2 fork endpoint failed eth_blockNumber: " + "; ".join(failures))
+    candidate = min(source_tip, *(tip for _, tip in fork_tips)) - 12
     if candidate <= TARGET_DEPLOYMENT_BLOCK:
-        raise AssertionError("Public RPC endpoints did not expose a recent block after the Yearn vault deployment.")
+        raise AssertionError("RPC endpoints did not expose a recent common block after the Yearn vault deployment.")
+
     for _ in range(24):
         tag = hex(candidate)
-        fork_block = rpc(fork_upstream, "eth_getBlockByNumber", [tag, False])
         source_block = rpc(source_rpc, "eth_getBlockByNumber", [tag, False])
-        if isinstance(fork_block, dict) and isinstance(source_block, dict):
-            fork_hash = str(fork_block.get("hash") or "").lower()
-            source_hash = str(source_block.get("hash") or "").lower()
-            if fork_hash and fork_hash == source_hash:
-                return candidate, fork_block
+        source_hash = str((source_block or {}).get("hash") or "").lower()
+        matching = []
+        for endpoint, _ in fork_tips:
+            try:
+                fork_block = rpc(endpoint, "eth_getBlockByNumber", [tag, False])
+                fork_hash = str((fork_block or {}).get("hash") or "").lower()
+                if fork_hash and fork_hash == source_hash:
+                    matching.append(endpoint)
+            except Exception as exc:
+                failures.append(f"{urlparse_safe(endpoint)} block {candidate}: {type(exc).__name__}: {str(exc)[:180]}")
+        if source_hash and matching:
+            return candidate, source_block, matching
         candidate -= 12
         if candidate <= TARGET_DEPLOYMENT_BLOCK:
             break
-    raise AssertionError("Could not find a recent common Ethereum block across the two independent RPC providers.")
+    raise AssertionError(
+        "Could not find a recent common Ethereum block across independent RPC providers. "
+        + "; ".join(failures[-8:])
+    )
 
 
 def find_free_port() -> int:
@@ -186,15 +236,29 @@ def main() -> int:
     if not forge or not anvil or not cast or not Path(lk).is_file():
         raise AssertionError("P2 requires installed forge, anvil, cast and lk executables.")
 
-    fork_upstream = os.environ.get("LOWKEY_P2_FORK_UPSTREAM_RPC_URL") or DEFAULT_FORK_UPSTREAM
+    fork_upstreams = parse_endpoint_list(
+        os.environ.get("LOWKEY_P2_FORK_UPSTREAM_RPC_URL"), DEFAULT_FORK_UPSTREAMS
+    )
     source_rpc = os.environ.get("LOWKEY_P2_SOURCE_RPC_URL") or DEFAULT_SOURCE_RPC
-    if urlparse_safe(fork_upstream) == urlparse_safe(source_rpc):
-        raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
+    if any(urlparse_safe(endpoint) == urlparse_safe(source_rpc) for endpoint in fork_upstreams):
+        raise AssertionError("P2 source/archive RPC must be a separate endpoint from every fork upstream.")
 
-    chain_id = quantity(rpc(fork_upstream, "eth_chainId", []), "fork upstream chain ID")
+    ready_fork_upstreams = []
+    fork_chain_failures = []
+    for endpoint in fork_upstreams:
+        try:
+            endpoint_chain_id = quantity(rpc(endpoint, "eth_chainId", []), "fork upstream chain ID")
+            if endpoint_chain_id == 1:
+                ready_fork_upstreams.append(endpoint)
+            else:
+                fork_chain_failures.append(f"{urlparse_safe(endpoint)} returned chain ID {endpoint_chain_id}")
+        except Exception as exc:
+            fork_chain_failures.append(f"{urlparse_safe(endpoint)}: {type(exc).__name__}: {str(exc)[:260]}")
     source_chain_id = quantity(rpc(source_rpc, "eth_chainId", []), "source chain ID")
-    if chain_id != 1 or source_chain_id != 1:
-        raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
+    if source_chain_id != 1:
+        raise AssertionError(f"P2 source/archive RPC is chain ID {source_chain_id}, expected Ethereum mainnet chain ID 1.")
+    if not ready_fork_upstreams:
+        raise AssertionError("No P2 fork endpoint passed the Ethereum chain-ID preflight: " + "; ".join(fork_chain_failures))
 
     # Fail early when either endpoint is a latest-state-only RPC. P2 needs
     # historical code/state and EIP-1186 proof support; a valid chainId/latest
@@ -209,13 +273,15 @@ def main() -> int:
     )
     if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
         raise AssertionError("Source RPC cannot return Yearn clone runtime at its deployment block; archive state is required.")
-    fork_block, common_header = pick_common_block(fork_upstream, source_rpc)
-    source_proof = rpc(
-        source_rpc, "eth_getProof", [TARGET, [], hex(fork_block)]
+    fork_block, common_header, matching_fork_upstreams = pick_common_block(
+        ready_fork_upstreams, source_rpc
     )
+    source_proof = rpc(source_rpc, "eth_getProof", [TARGET, [], hex(fork_block)])
     if not isinstance(source_proof, dict) or not str(source_proof.get("codeHash") or "").startswith("0x"):
         raise AssertionError("Source RPC must support historical EIP-1186 eth_getProof for the pinned fork block.")
-    fork_code = rpc(fork_upstream, "eth_getCode", [TARGET, hex(fork_block)])
+    fork_code, serving_fork_endpoint = rpc_first_available(
+        matching_fork_upstreams, "eth_getCode", [TARGET, hex(fork_block)]
+    )
     if not isinstance(fork_code, str) or fork_code in {"0x", "0x0"}:
         raise AssertionError("Yearn yvUSDC clone has no runtime code at the selected pinned block.")
 
@@ -234,12 +300,17 @@ def main() -> int:
         "FOUNDRY_ETH_RPC_URL": anvil_url,
         "LOWKEY_RPC_URL": anvil_url,
     })
+    anvil_argv = [
+        anvil, "--silent", "--host", "127.0.0.1", "--port", str(port),
+        "--chain-id", "1", "--fork-chain-id", "1",
+        "--fork-block-number", str(fork_block),
+        "--retries", "12", "--timeout", "120000", "--fork-retry-backoff", "1000",
+        "--fork-header", "User-Agent: LowkeyCast-P2-acceptance/0.1",
+    ]
+    for endpoint in matching_fork_upstreams:
+        anvil_argv.extend(["--fork-url", endpoint])
     anvil_process = subprocess.Popen(
-        [
-            anvil, "--silent", "--host", "127.0.0.1", "--port", str(port),
-            "--chain-id", "1", "--fork-url", fork_upstream,
-            "--fork-block-number", str(fork_block),
-        ],
+        anvil_argv,
         cwd=ROOT, env=env, stdout=anvil_log.open("w", encoding="utf-8"),
         stderr=subprocess.STDOUT,
     )
@@ -396,7 +467,8 @@ def main() -> int:
                 "fork_block": fork_block,
                 "fork_block_hash": common_header.get("hash"),
                 "source_provider": urlparse_safe(source_rpc),
-                "fork_provider": urlparse_safe(fork_upstream),
+                "fork_provider": [urlparse_safe(endpoint) for endpoint in matching_fork_upstreams],
+                "fork_code_served_by": urlparse_safe(serving_fork_endpoint),
                 "proof_status": proof["status"],
                 "target_authenticity": identity.get("identity", {}).get("target", {}),
                 "forge_event_count": len(forge_events),
