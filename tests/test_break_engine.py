@@ -1918,6 +1918,80 @@ SECOND_RETURNDATA_LENGTH 0
         self.assertIn("no runtime bytecode", rejected[0]["reason"])
         self.assertIn("could not be verified", rejected[1]["reason"])
 
+    def test_discover_functions_exposes_receive_without_abi_entry(self):
+        import tempfile
+        from types import SimpleNamespace
+
+        source = """
+        pragma solidity ^0.8.20;
+        contract FallbackAccessTarget {
+            mapping(address => uint256) public contributions;
+            address payable public owner;
+
+            constructor() payable {
+                owner = payable(msg.sender);
+                contributions[msg.sender] = 1000 ether;
+            }
+
+            receive() external payable {
+                require(msg.value > 0 && contributions[msg.sender] > 0);
+                owner = payable(msg.sender);
+            }
+
+            function withdraw() external {
+                require(msg.sender == owner);
+                payable(msg.sender).transfer(address(this).balance);
+            }
+        }
+        """
+
+        class AuditContext:
+            def __init__(self, root):
+                self.root = root
+            def foundry_project_root(self):
+                return self.root
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = AuditContext(root)
+            def load_abi(self, address, config):
+                # Solidity ABIs intentionally omit receive()/fallback().
+                return [{
+                    "type": "function",
+                    "name": "withdraw",
+                    "inputs": [],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                }]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text(
+                '[profile.default]\\nsrc = "src"\\n', encoding="utf-8"
+            )
+            (root / "src" / "FallbackAccessTarget.sol").write_text(source, encoding="utf-8")
+            host = Host(root)
+            target = break_engine.Target(
+                "FallbackAccessTarget",
+                "0x" + "a" * 40,
+            )
+            with mock.patch.object(
+                break_engine,
+                "_project_break_context",
+                return_value={"root": str(root)},
+            ):
+                functions = break_engine._discover_functions(host, {}, target)
+
+            receive = next((item for item in functions if item.get("name") == "receive"), None)
+            self.assertIsNotNone(receive)
+            self.assertTrue(receive["_lowkey_special_entry"])
+            self.assertEqual(receive["stateMutability"], "payable")
+            selected = break_engine._select_functions(
+                functions, {"function": "receive"}
+            )
+            self.assertEqual([item["name"] for item in selected], ["receive"])
+
     def test_source_derived_receive_entry_selects_access_family(self):
         import tempfile
 
