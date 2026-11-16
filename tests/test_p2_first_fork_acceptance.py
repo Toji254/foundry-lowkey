@@ -73,6 +73,49 @@ class P2ForkFailoverTests(unittest.TestCase):
                 )
         resolve.assert_called_once_with(self.primary, self.source, 100)
 
+    def test_source_archive_timeout_selects_independent_fallback(self):
+        timeout = RuntimeError(
+            "RPC eth_getBlockByNumber failed at rpc.mevblocker.io: "
+            "TimeoutError: The read operation timed out"
+        )
+        header = {"hash": "0x" + "1" * 64}
+        proof = {"codeHash": "0x" + "2" * 64}
+        responses = [
+            "0x1",          # primary chain ID is healthy
+            timeout,        # but its historical deployment block times out
+            "0x1",          # fallback chain ID
+            header,         # fallback historical block
+            "0x6000",       # fallback deployment code
+            proof,          # fallback EIP-1186 proof
+        ]
+        with mock.patch.object(p2, "rpc", side_effect=responses) as request:
+            active, attempts, evidence = p2.resolve_source_archive_provider(
+                self.source,
+                self.fallback,
+                self.primary,
+                123,
+            )
+        self.assertEqual(active, self.fallback)
+        self.assertEqual([item["status"] for item in attempts], ["unavailable", "selected"])
+        self.assertEqual(evidence["deployment_block_header"], header)
+        self.assertEqual(evidence["deployment_code"], "0x6000")
+        self.assertEqual(evidence["deployment_proof"], proof)
+        self.assertEqual(request.call_count, 6)
+
+    def test_source_archive_provider_never_reuses_fork_endpoint(self):
+        with mock.patch.object(
+            p2,
+            "rpc",
+            side_effect=RuntimeError("primary source timed out"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "No independent source/archive RPC"):
+                p2.resolve_source_archive_provider(
+                    self.source,
+                    self.primary,
+                    self.primary,
+                    123,
+                )
+
     def test_snapshot_success_keeps_primary_provider(self):
         with mock.patch.object(p2, "resolve_fork_snapshot", return_value=self.snapshot) as resolve:
             active, snapshot, attempts = p2.resolve_fork_snapshot_with_fallback(
