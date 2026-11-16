@@ -27,13 +27,13 @@ Create a project-relative JSON file, for example .audit/portfolio.json:
       "address": "0x4444444444444444444444444444444444444444",
       "asset": "0x5555555555555555555555555555555555555555",
       "symbol": "yvUSDC",
-      "oracle": "0x3333333333333333333333333333333333333333"
+      "asset_oracle": "0x3333333333333333333333333333333333333333"
     }
   ]
 }
 ```
 
-The addresses above are schema examples only; replace every address with the intended chain deployment. Every price feed must implement the Chainlink AggregatorV3 decimals() and latestRoundData() read interface and quote USD. A token/vault without a defensible USD feed is refused. The feed is an auditor-supplied trust assumption; Lowkey verifies its code and pinned round against the independent source RPC but does not decide whether the feed is economically appropriate.
+The addresses above are schema examples only; replace every address with the intended chain deployment. Every price feed must implement the Chainlink AggregatorV3 decimals() and latestRoundData() read interface and quote USD. ERC-20 entries use `oracle` to price the token itself; ERC-4626 entries use `asset_oracle` to price the declared underlying asset, never the vault share token. A token/vault without a defensible USD feed is refused. The feed is an auditor-supplied trust assumption; Lowkey verifies its code and pinned round against the independent source RPC but does not decide whether the feed is economically appropriate.
 
 Run the existing source-verified reproof with the additional option:
 
