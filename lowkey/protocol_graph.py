@@ -22,6 +22,13 @@ MAX_BUILD_INFO_BYTES = 32 * 1024 * 1024
 MAX_AUDIT_TRACE_FILES = 2500
 MAX_TRACE_BYTES = 16 * 1024 * 1024
 
+AST_GRAPH_LIMITATIONS = [
+    "Compiler AST is static source structure, not runtime reachability.",
+    "Function and state dependency edges are AST-derived candidates, not full SSA or path-sensitive data-flow proofs.",
+    "Dynamic dispatch, delegatecall targets and assembly storage semantics require separate runtime or semantic evidence.",
+    "Build-info is accepted only when literal source content still matches the current project files.",
+]
+
 
 class ProtocolGraphError(ValueError):
     """A fail-closed error while deriving compiler or runtime graph evidence."""
@@ -108,6 +115,7 @@ def compiler_ast_graph(
             "nodes": [],
             "edges": [],
             "rejected_sources": [],
+            "limitations": list(AST_GRAPH_LIMITATIONS),
         }
     paths = sorted(path for path in directory.glob("*.json") if path.is_file() and not path.is_symlink())
     if len(paths) > MAX_BUILD_INFO_FILES:
@@ -118,6 +126,7 @@ def compiler_ast_graph(
             "nodes": [],
             "edges": [],
             "rejected_sources": [],
+            "limitations": list(AST_GRAPH_LIMITATIONS),
         }
 
     nodes: dict[str, dict[str, Any]] = {}
@@ -394,12 +403,7 @@ def compiler_ast_graph(
         "nodes": sorted(nodes.values(), key=lambda row: row["id"]),
         "edges": edges,
         "rejected_sources": rejected_sources,
-        "limitations": [
-            "Compiler AST is static source structure, not runtime reachability.",
-            "Function and state dependency edges are AST-derived candidates, not full SSA or path-sensitive data-flow proofs.",
-            "Dynamic dispatch, delegatecall targets and assembly storage semantics require separate runtime or semantic evidence.",
-            "Build-info is accepted only when literal source content still matches the current project files.",
-        ],
+        "limitations": list(AST_GRAPH_LIMITATIONS),
     }
 
 
