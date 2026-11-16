@@ -62,6 +62,15 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertEqual(event["calldata"], "0x12345678")
         self.assertEqual(event["storage_support"], "exact")
 
+    def test_forge_depth_is_normalized_relative_to_root(self):
+        events = normalize_forge_events([
+            {"kind": "Call", "accessor": A, "account": B, "depth": 1,
+             "value": 0, "input": "0x12345678", "reverted": False, "storage": []},
+            {"kind": "DelegateCall", "accessor": B, "account": A, "depth": 2,
+             "value": 0, "input": "0xaabbccdd", "reverted": False, "storage": []},
+        ])
+        self.assertEqual([event["depth"] for event in events], [0, 1])
+
     def test_missing_fields_stay_null_not_zero_or_false(self):
         event = build_trace_event(
             seq=0, backend="anvil-calltracer", kind="Call",
