@@ -214,14 +214,14 @@ def _find_wrapped_native_round_trip_property(source: str, name: str) -> dict[str
         return None
     searchable = mask_solidity(body) if mask_solidity else body
     contract_header = re.search(
-        r"\\b(?:abstract\\s+)?contract\\s+" + re.escape(name) + r"\\b([^\\{]*)\\{",
+        r"\b(?:abstract\s+)?contract\s+" + re.escape(name) + r"\b([^\{]*)\{",
         mask_solidity(source) if mask_solidity else source,
     )
-    if not contract_header or not re.search(r"\\bis\\s+[^\\n]*\\bERC20\\b", contract_header.group(1)):
+    if not contract_header or not re.search(r"\bis\s+[^\n]*\bERC20\b", contract_header.group(1)):
         return None
 
     deposit = re.search(
-        r"\\bfunction\\s+deposit\\s*\\(\\s*\\)\\s*public\\s+payable\\b[^\\{]*\\{",
+        r"\bfunction\s+deposit\s*\(\s*\)\s*public\s+payable\b[^\{]*\{",
         searchable,
     )
     if not deposit:
@@ -230,11 +230,11 @@ def _find_wrapped_native_round_trip_property(source: str, name: str) -> dict[str
     if deposit_end is None:
         return None
     deposit_body = searchable[deposit.end():deposit_end]
-    if not re.search(r"\\b_mint\\s*\\(\\s*msg\\.sender\\s*,\\s*msg\\.value\\s*\\)\\s*;", deposit_body):
+    if not re.search(r"\b_mint\s*\(\s*msg\.sender\s*,\s*msg\.value\s*\)\s*;", deposit_body):
         return None
 
     withdraw = re.search(
-        r"\\bfunction\\s+withdraw\\s*\\(\\s*uint256\\s+([A-Za-z_]\\w*)\\s*\\)\\s*public\\b[^\\{]*\\{",
+        r"\bfunction\s+withdraw\s*\(\s*uint256\s+([A-Za-z_]\w*)\s*\)\s*public\b[^\{]*\{",
         searchable,
     )
     if not withdraw:
@@ -245,13 +245,13 @@ def _find_wrapped_native_round_trip_property(source: str, name: str) -> dict[str
     withdraw_body = searchable[withdraw.end():withdraw_end]
     amount_name = withdraw.group(1)
     if not re.search(
-        rf"\\b_burn\\s*\\(\\s*msg\\.sender\\s*,\\s*{re.escape(amount_name)}\\s*\\)\\s*;",
+        rf"\b_burn\s*\(\s*msg\.sender\s*,\s*{re.escape(amount_name)}\s*\)\s*;",
         withdraw_body,
     ):
         return None
     # Support only an explicit ETH call to msg.sender using the same burned amount.
     if not re.search(
-        rf"call\\s*\\([^;]*\\bcaller\\s*\\(\\s*\\)[^;]*\\b{re.escape(amount_name)}\\b",
+        rf"call\s*\([^;]*\bcaller\s*\(\s*\)[^;]*\b{re.escape(amount_name)}\b",
         withdraw_body,
         re.S,
     ):
