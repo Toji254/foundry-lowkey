@@ -213,15 +213,16 @@ def build_protocol_graph(root: Path, sources: dict[str, str], source_hashes: dic
             imported = import_pattern.search(line)
             if imported:
                 raw = imported.group(1)
-                candidate = (Path(filename).parent / raw).as_posix()
-                normalized = Path(candidate)
+                normalized = (root / Path(filename).parent / raw).resolve()
                 try:
-                    target = normalized.resolve().relative_to(root).as_posix()
+                    target = normalized.relative_to(root).as_posix() if normalized.is_relative_to(root) else None
                 except (OSError, ValueError):
                     target = None
                 if target not in sources:
-                    root_candidate = Path(raw)
-                    target = root_candidate.as_posix() if root_candidate.as_posix() in sources else None
+                    root_candidate = (root / raw).resolve()
+                    target = root_candidate.relative_to(root).as_posix() if root_candidate.is_relative_to(root) else None
+                    if target not in sources:
+                        target = None
                 edges.append({
                     "source": filename,
                     "target": target,
@@ -446,11 +447,31 @@ def main(args: list[str] | None = None) -> int:
     parser.add_argument("--output", default=".audit/godmode/archetype-classification.json")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--verify", metavar="REPORT", help="re-read and verify citations in an existing report")
+    parser.add_argument("--report", default=".audit/godmode/archetype-classification.json")
+    parser.add_argument("--assumptions", action="store_true", help="print and re-verify the assumption ledger")
+    parser.add_argument("--capability", action="store_true", help="print capability negotiation from a saved report")
     ns = parser.parse_args(args)
     try:
         root = project_root(ns.root)
-        if ns.verify:
-            report = verify_report(root, ns.verify)
+        if ns.verify or ns.assumptions or ns.capability:
+            report_path = ns.verify or ns.report
+            path = Path(report_path)
+            if path.is_absolute() or ".." in path.parts:
+                raise ArchetypeError("Report path must be project-relative and must not traverse outside the project.")
+            saved_path = (root / path).resolve()
+            if not saved_path.is_relative_to(root) or not saved_path.is_file():
+                raise ArchetypeError("Classification report is missing or outside the project.")
+            saved = json.loads(saved_path.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict) or saved.get("schema_version") != SCHEMA_VERSION:
+                raise ArchetypeError("Unsupported classification report schema.")
+            if ns.capability:
+                report = {"status": saved.get("status"), "archetype": saved.get("archetype"),
+                          "capabilities": saved.get("capabilities", {}),
+                          "generic_mode": saved.get("generic_mode", {})}
+            else:
+                report = verify_report(root, report_path)
+                if ns.assumptions:
+                    report["assumptions"] = saved.get("assumptions", [])
         else:
             report = classify_project(root)
             report["citation_fingerprints"] = {}
@@ -466,10 +487,20 @@ def main(args: list[str] | None = None) -> int:
             report["report_path"] = output_path
         if ns.json:
             print(json.dumps(report, indent=2, sort_keys=True))
-        elif ns.verify:
-            print("Citation verification: " + ("OBSERVED" if report["citations_all_resolved"] else "REJECTED"))
+        elif ns.verify or ns.assumptions:
+            print("Citation verification: " + ("OBSERVED" if report["citations_all_resolved"] else "UNRESOLVED"))
             for item in report["citation_resolution"]:
                 print(f"  {item['assumption_id']}: {item['reason']}")
+            for item in report.get("assumptions", []):
+                print(f"  {item['class']}: {item['citation']['file']}:{item['citation']['line']} [{item['verification_status']}]")
+        elif ns.capability:
+            print("Archetype: " + str(report.get("archetype") or "UNCLASSIFIED"))
+            print("Capability negotiation:")
+            for name, details in sorted(report.get("capabilities", {}).items()):
+                print(f"  {name}: {details.get('status')} (available={details.get('available')})")
+            print("Generic-mode skip list:")
+            for item in report.get("generic_mode", {}).get("skip_list", []):
+                print("  - " + item)
         else:
             print("Protocol archetype: " + (report["archetype"] or "UNCLASSIFIED"))
             print(f"Confidence: {report['confidence']:.3f} (floor {report['confidence_floor']:.2f})")
