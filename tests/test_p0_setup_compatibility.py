@@ -54,30 +54,35 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(values, ["[1]"])
 
-    def test_nested_and_tuple_abi_types_refuse_with_type_name(self):
-        for abi_type in ("address[][]", "tuple"):
-            with self.subTest(abi_type=abi_type):
-                with self.assertRaisesRegex(ValueError, re.escape(abi_type)):
-                    break_engine._make_value(
-                        self.host,
-                        {"inputs": [{"name": "value", "type": abi_type}]},
-                        random.Random(7),
-                        "one",
-                    )
+    def test_nested_arrays_are_sampled_but_incomplete_tuples_refuse(self):
+        values = break_engine._make_value(
+            self.host,
+            {"inputs": [{"name": "recipients", "type": "address[][]"}]},
+            random.Random(7),
+            "one",
+        )
+        self.assertEqual(values, ["[[0x2222222222222222222222222222222222222222]]"])
+        with self.assertRaisesRegex(ValueError, "tuple"):
+            break_engine._make_value(
+                self.host,
+                {"inputs": [{"name": "value", "type": "tuple"}]},
+                random.Random(7),
+                "one",
+            )
 
     def test_renderer_materializes_memory_array_and_uses_actor(self):
-        declarations, expressions = break_engine._render_abi_arguments(
+        declarations, expressions = break_engine._solidity_argument_declarations(
             [{"name": "recipients", "type": "address[]"}],
             ["[0x2222222222222222222222222222222222222222]"],
-            actor_expr="address(ATTACKER)",
             prefix="testArg",
+            address_expression="address(ATTACKER)",
         )
         self.assertIn("new address[](1)", declarations)
-        self.assertIn("testArg_0[0] = address(ATTACKER);", declarations)
+        self.assertIn("testArgArg0[0] = address(ATTACKER);", declarations)
         self.assertEqual(expressions, ["testArg_0"])
 
     def test_setup_discovery_supports_address_array_abi(self):
-        setup = break_engine._find_setup_abi([
+        setup = break_engine._find_setup_function([
             {
                 "type": "function",
                 "name": "deposit",
@@ -87,7 +92,7 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             }
         ])
         self.assertIsNotNone(setup)
-        self.assertEqual(setup["name"], "deposit")
+        self.assertEqual(setup["signature"], "deposit(address[])")
 
     def test_unsupported_setup_type_is_not_guessed(self):
         setup = break_engine._find_setup_abi([
@@ -112,12 +117,8 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             None,
             entitlement_signature="credit(address)",
             asset_signature="asset()",
-            setup_abi={
-                "name": "deposit",
-                "stateMutability": "nonpayable",
-                "inputs": [{"name": "amount", "type": "uint256"}],
-                "outputs": [],
-            },
+            setup_params=[{"name": "amount", "type": "uint256"}],
+            setup_payable=False,
         )
         self.assertIn('abi.encodeWithSignature("decimals()")', body)
         self.assertIn("reportedDecimals <= 77", body)
@@ -166,12 +167,8 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             "withdraw(address[])",
             ["[0x2222222222222222222222222222222222222222]"],
             2,
-            setup_abi={
-                "name": "deposit",
-                "stateMutability": "payable",
-                "inputs": [{"name": "recipients", "type": "address[]"}],
-                "outputs": [],
-            },
+            setup_params=[{"name": "recipients", "type": "address[]"}],
+            setup_payable=True,
         )
         for marker in (
             "tokensReceived(",
