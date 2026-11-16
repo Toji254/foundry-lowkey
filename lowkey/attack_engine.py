@@ -34,7 +34,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["reachable external call", "attacker-controlled callback", "shared state or entitlement"],
         "property": "reentrancy-invariant-violation",
         "signals": [r"\.call\s*(?:\{|\()", r"\b(?:receive|fallback|tokensReceived|onERC721Received)\b", r"\b(?:withdraw|claim|redeem|borrow)\s*\("],
-        "min_events": 2, "min_depth": 2, "exact_storage": True, "economic": False,
+        "min_events": 2, "min_depth": 2, "exact_storage": True, "economic": True,
     },
     "replay": {
         "title": "Replay",
@@ -42,7 +42,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["replayable identifier or signed payload", "repeatable entrypoint", "observable consumed-state or duplicate effect"],
         "property": "replayed-action-applied",
         "signals": [r"\b(?:nonce|used|consumed|messageId|digest|claimId)\b", r"\b(?:claim|execute|complete|redeem|fulfill)\s*\(", r"\becrecover\b|\bECDSA\b"],
-        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
+        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": True,
     },
     "access": {
         "title": "Access control",
@@ -50,7 +50,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["sensitive state-changing entrypoint", "intended role or principal", "unauthorized and authorized actors"],
         "property": "unauthorized-state-change",
         "signals": [r"\b(?:onlyOwner|onlyRole|hasRole|_checkRole|owner|admin|guardian)\b", r"\b(?:setOwner|upgradeTo|pause|unpause|setFee|withdrawAdmin)\s*\("],
-        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
+        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": True,
     },
     "accounting": {
         "title": "Accounting",
@@ -58,7 +58,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["explicit accounting invariant", "measurable pre/post balances or liabilities", "attacker-controlled state transition"],
         "property": "accounting-invariant-violation",
         "signals": [r"\b(?:totalAssets|totalSupply|totalDebt|totalShares|borrowed|collateral|reserve|liabilit)\w*\b", r"\b(?:deposit|withdraw|redeem|borrow|repay|liquidate)\s*\("],
-        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
+        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": True,
     },
     "boundary": {
         "title": "Boundary conditions",
@@ -82,7 +82,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["upgrade or initializer entrypoint", "implementation identity", "upgrade authority and storage invariants"],
         "property": "unauthorized-upgrade-or-initializer",
         "signals": [r"\b(?:upgradeTo|upgradeToAndCall|_authorizeUpgrade|implementation|beacon|proxiableUUID)\b", r"\b(?:initialize|reinitializer|_disableInitializers)\b"],
-        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
+        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": True,
     },
     "callback": {
         "title": "Callback and hook behavior",
@@ -98,7 +98,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["identified price source", "freshness/round/decimal assumptions", "independent reference or bounded price range"],
         "property": "oracle-integrity-violation",
         "signals": [r"\b(?:latestRoundData|latestAnswer|priceFeed|oracle|TWAP|twap|consult)\b", r"\b(?:price|exchangeRate|quote|healthFactor|collateralRatio)\b"],
-        "min_events": 2, "min_depth": 0, "exact_storage": False, "economic": False,
+        "min_events": 2, "min_depth": 0, "exact_storage": False, "economic": True,
     },
     "economic": {
         "title": "Economic and compositional",
@@ -114,7 +114,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["token implementation and decimals identified", "before/after balances", "transfer or approval path"],
         "property": "token-delta-accounting-mismatch",
         "signals": [r"\b(?:transferFrom|safeTransferFrom|transfer|approve|allowance|balanceOf|decimals)\s*\(", r"\b(?:feeOnTransfer|rebasing|permit|nonces)\b"],
-        "min_events": 1, "min_depth": 0, "exact_storage": False, "economic": False,
+        "min_events": 1, "min_depth": 0, "exact_storage": False, "economic": True,
     },
     "proxy": {
         "title": "Proxy and delegatecall routing",
@@ -138,7 +138,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["signature-producing domain", "signer identity", "nonce/deadline/chain binding rules"],
         "property": "signature-domain-or-replay-bypass",
         "signals": [r"\b(?:ecrecover|ECDSA|SignatureChecker|isValidSignature|DOMAIN_SEPARATOR|domainSeparator|permit)\b", r"\b(?:nonce|deadline|chainId|vrs|signature)\b"],
-        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
+        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": True,
     },
     "dos": {
         "title": "Denial of service and liveness",
@@ -338,7 +338,7 @@ def _validate_precondition_evidence(value: Any, family: str, label: str) -> dict
 
 
 def _validate_reproof(
-    value: Any, *, root: Path, target: dict[str, Any], family: str, label: str
+    value: Any, *, root: Path, target: dict[str, Any], family: str, impact_mode: str, label: str
 ) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != {"reproof_file"}:
         raise AttackEngineError(f"{label} must reference the independent lk reproof artifact.", "reproof_missing")
@@ -361,7 +361,7 @@ def _validate_reproof(
     if payload.get("command_run") is not True or str(payload.get("receipt_status")).lower() not in {"0x1", "1"}:
         raise AttackEngineError(f"{label} reproof did not execute a mined successful transaction.", "reproof_execution_missing")
     tx_hash = _hex(payload.get("tx_hash"), r"0x[0-9a-fA-F]{64}", f"{label}.tx_hash")
-    if FAMILIES[family]["economic"]:
+    if impact_mode == "economic":
         if payload.get("status") != "PROFITABLE" or payload.get("legacy_status") != "PROFITABLE":
             raise AttackEngineError(f"{label} economic reproof is not independently classified PROFITABLE.", "not_profitable")
         net_profit = _wei(payload.get("net_profit_wei"), f"{label}.net_profit_wei")
@@ -434,7 +434,7 @@ def validate_experiment_manifest(value: Any, root: str | Path = ".") -> dict[str
     base = project_root(root)
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise AttackEngineError(f"Experiment manifest schema_version must be {SCHEMA_VERSION}.")
-    allowed = {"schema_version", "id", "family", "target", "discovery", "property_id", "attack", "control", "reproof", "mutation", "timeout_seconds"}
+    allowed = {"schema_version", "id", "family", "target", "discovery", "impact_mode", "property_id", "attack", "control", "reproof", "mutation", "timeout_seconds"}
     if set(value) - allowed:
         raise AttackEngineError("Unexpected experiment manifest fields: " + ", ".join(sorted(set(value) - allowed)))
     experiment_id = value.get("id")
@@ -450,6 +450,9 @@ def validate_experiment_manifest(value: Any, root: str | Path = ".") -> dict[str
     if timeout > 3600:
         raise AttackEngineError("timeout_seconds may not exceed 3600.", "resource_limit")
     target = _validate_target(value.get("target"))
+    impact_mode = value.get("impact_mode", "economic" if FAMILIES[family]["economic"] else "semantic")
+    if impact_mode not in {"economic", "semantic"}:
+        raise AttackEngineError("impact_mode must be economic or semantic.")
     discovery = _validate_discovery(value.get("discovery"), base, family, "discovery")
     reproof = value.get("reproof")
     if not isinstance(reproof, dict) or not isinstance(reproof.get("reproof_file"), str):
@@ -464,7 +467,7 @@ def validate_experiment_manifest(value: Any, root: str | Path = ".") -> dict[str
     mutants = _validate_mutants(mutation_value.get("mutants"), base)
     return {
         "schema_version": SCHEMA_VERSION, "id": experiment_id, "family": family,
-        "target": target, "discovery": discovery, "reproof": reproof,
+        "target": target, "discovery": discovery, "reproof": reproof, "impact_mode": impact_mode,
         "property_id": property_id, "attack": attack, "control": control,
         "mutants": mutants, "timeout_seconds": timeout, "project_root": str(base),
     }
@@ -554,7 +557,7 @@ def validate_evidence_pair(
 ) -> dict[str, Any]:
     left = _validate_evidence(attack, manifest=manifest, role="attack", label="attack evidence")
     right = _validate_evidence(control, manifest=manifest, role="control", label="control evidence")
-    reproof = _validate_reproof(manifest["reproof"], root=Path(manifest["project_root"]), target=manifest["target"], family=manifest["family"], label="independent reproof")
+    reproof = _validate_reproof(manifest["reproof"], root=Path(manifest["project_root"]), target=manifest["target"], family=manifest["family"], impact_mode=manifest["impact_mode"], label="independent reproof")
     if left["target"] != right["target"]:
         raise AttackEngineError("Attack and control targets differ.", "control_mismatch")
     if left["pair_anchor"] != right["pair_anchor"]:
@@ -674,7 +677,7 @@ def run_experiment(value: Any, root: str | Path = ".", *, output_path: str | Non
 def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise AttackEngineError(f"Chain manifest schema_version must be {SCHEMA_VERSION}.")
-    allowed = {"schema_version", "id", "target", "property_id", "mode", "timeout_seconds",
+    allowed = {"schema_version", "id", "target", "property_id", "impact_mode", "mode", "timeout_seconds",
                "stages", "attack", "control", "failure", "reproof", "mutation"}
     if set(value) - allowed:
         raise AttackEngineError("Unexpected chain fields: " + ", ".join(sorted(set(value) - allowed)))
@@ -685,6 +688,9 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
     reproof = value.get("reproof")
     if not isinstance(reproof, dict) or not isinstance(reproof.get("reproof_file"), str):
         raise AttackEngineError("chain reproof.reproof_file must reference an independent fork reproof.", "reproof_missing")
+    impact_mode = value.get("impact_mode", "economic" if any(FAMILIES[item.get("family")]["economic"] for item in value.get("stages", []) if isinstance(item, dict) and item.get("family") in FAMILIES) else "semantic")
+    if impact_mode not in {"economic", "semantic"}:
+        raise AttackEngineError("chain impact_mode must be economic or semantic.")
     property_id = value.get("property_id")
     if not isinstance(property_id, str) or not re.fullmatch(r"[a-zA-Z0-9_.:-]{3,120}", property_id):
         raise AttackEngineError("chain property_id is required.")
@@ -772,7 +778,7 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
         raise AttackEngineError("mutation must be an object.")
     mutants = _validate_mutants(mutation_value.get("mutants"), root)
     return {"schema_version": SCHEMA_VERSION, "id": chain_id, "target": target, "reproof": reproof,
-            "property_id": property_id, "mode": mode, "timeout_seconds": timeout,
+            "property_id": property_id, "impact_mode": impact_mode, "mode": mode, "timeout_seconds": timeout,
             "stages": normalized, "attack": attack, "control": control,
             "failure": failure, "mutants": mutants, "project_root": str(root)}
 
@@ -866,9 +872,8 @@ def _validate_chain_evidence(
 def validate_chain_evidence_pair(attack: Any, control: Any, manifest: dict[str, Any]) -> dict[str, Any]:
     left = _validate_chain_evidence(attack, manifest=manifest, role="attack")
     right = _validate_chain_evidence(control, manifest=manifest, role="control")
-    economic_stage = any(FAMILIES[stage["family"]]["economic"] for stage in manifest["stages"])
-    reproof_family = "economic" if economic_stage else manifest["stages"][0]["family"]
-    reproof = _validate_reproof(manifest["reproof"], root=Path(manifest["project_root"]), target=manifest["target"], family=reproof_family, label="chain independent reproof")
+    reproof_family = "economic" if manifest["impact_mode"] == "economic" else manifest["stages"][0]["family"]
+    reproof = _validate_reproof(manifest["reproof"], root=Path(manifest["project_root"]), target=manifest["target"], family=reproof_family, impact_mode=manifest["impact_mode"], label="chain independent reproof")
     if left["pair_anchor"] != right["pair_anchor"]:
         raise AttackEngineError("Attack/control chains do not share the same pinned starting state and entry call.", "control_mismatch")
     if left["predicate"].get("observed") is not True:
