@@ -6297,8 +6297,12 @@ def _report_latest_attack_evidence(root, attack_stage, target):
         if isinstance(payload, dict) and isinstance(payload.get("results"), list):
             return candidate, payload
 
-    # A concrete BREAK exits before the campaign summary is written. In that
-    # case _record_break leaves a dedicated AttackResult JSON file.
+    # A concrete BREAK exits before the campaign summary is written. Only
+    # search for a prior break record when this report actually ran an attack;
+    # a source-only report must not pick up an unrelated older campaign.
+    attack_status = str((attack_stage or {}).get("status") or "").lower()
+    if attack_status not in {"completed", "review", "interrupted", "blocked"}:
+        return None, None
     run_root = root / ".audit" / "break" / "runs"
     if run_root.is_dir():
         break_files = sorted(
