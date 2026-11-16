@@ -7,17 +7,93 @@ exit status while sharing the project's append-only audit event journal.
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Iterable
 
 try:
     import audit_context
+    import shared_context
 except ImportError:
-    from lowkey import audit_context
+    from lowkey import audit_context, shared_context
 
 
 HELP_FLAGS = {"-h", "--h", "--help", "help"}
+RPC_CONTEXT_COMMANDS = {
+    "attack", "block", "coverage", "forge", "godmode", "control", "trace-parity",
+    "decompile", "storage-infer", "proxy-resolve", "selectors-full",
+    "reentrancy-graph", "fallback-map", "calldata-mine", "oracle-map", "skew",
+    "flashmax", "time", "sig-matrix", "init-frontrun", "path", "compose",
+    "reprove", "economic", "gas-ladder", "watch", "custody", "verify-hack",
+    "unravel", "bundle", "sandwich", "jit", "fork-cache", "upgrade-diff",
+    "cross-vm", "state-diff",
+}
+
+
+def _load_global_config() -> dict:
+    path = Path.home() / ".lowkey" / "config.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _has_explicit_rpc(command: list[str]) -> bool:
+    for index, raw in enumerate(command):
+        token = str(raw)
+        if token == "--rpc-url" and index + 1 < len(command):
+            return True
+        if token.startswith("--rpc-url="):
+            return True
+    return False
+
+
+def _explicit_root(command: list[str]) -> str | None:
+    for index, raw in enumerate(command):
+        token = str(raw)
+        if token == "--root" and index + 1 < len(command):
+            return str(command[index + 1])
+        if token.startswith("--root="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def _project_rpc_environment(command_name: str, command: list[str]) -> dict[str, str] | None:
+    """Apply project-owned RPC defaults to RPC-aware child routes only.
+
+    An explicit --rpc-url remains authoritative. The inherited process
+    environment is not mutated; project RPC values exist only in the child.
+    """
+    if command_name not in RPC_CONTEXT_COMMANDS or _has_explicit_rpc(command):
+        return None
+    try:
+        explicit_root = _explicit_root(command)
+        root = audit_context.foundry_project_root(explicit_root) if explicit_root else audit_context.foundry_project_root()
+        state = audit_context.load(root)
+        resolved = shared_context.resolve_runtime_context(
+            root,
+            state,
+            _load_global_config(),
+            allow_legacy_target=True,
+            environ={},
+        )
+        selected_rpc = resolved.get("rpc")
+        if not isinstance(selected_rpc, str) or not selected_rpc.strip():
+            return None
+        child_env = os.environ.copy()
+        selected_rpc = selected_rpc.strip()
+        child_env["FOUNDRY_ETH_RPC_URL"] = selected_rpc
+        child_env["ETH_RPC_URL"] = selected_rpc
+        child_env["LOWKEY_RPC_URL"] = selected_rpc
+        return child_env
+    except Exception:
+        # A context lookup must never make an otherwise valid specialized
+        # command unusable. Native parsing and explicit options still apply.
+        return None
 
 
 def _record_completion(command_name: str, exit_code: int) -> None:
@@ -46,8 +122,12 @@ def run_command(
     if not command:
         return 127
     help_only = any(str(value).strip().lower() in HELP_FLAGS for value in command[1:])
+    child_env = _project_rpc_environment(name, command)
     try:
-        result = subprocess.run(command, check=False)
+        if child_env is None:
+            result = subprocess.run(command, check=False)
+        else:
+            result = subprocess.run(command, check=False, env=child_env)
         status = result.returncode if isinstance(result.returncode, int) else 1
         if status < 0:
             status = 128 + abs(status)
