@@ -5525,6 +5525,28 @@ def _load_godmode_project_context(root, config_path=None):
     return data
 
 
+def _resolve_godmode_rpc(explicit_rpc=None, project_context=None, environ=None):
+    """Resolve RPC by explicit override, project memory, then environment.
+
+    A target-address override does not change project ownership: the project's
+    configured RPC remains valid for other targets in the same audit project.
+    """
+    if isinstance(explicit_rpc, str) and explicit_rpc.strip():
+        return explicit_rpc.strip(), "command-line"
+
+    context = project_context if isinstance(project_context, dict) else {}
+    project_rpc = context.get("rpc")
+    if isinstance(project_rpc, str) and project_rpc.strip():
+        return project_rpc.strip(), "project"
+
+    env = os.environ if environ is None else environ
+    for name in ("FOUNDRY_ETH_RPC_URL", "ETH_RPC_URL", "LOWKEY_RPC_URL"):
+        value = env.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), "environment"
+    return None, None
+
+
 def godmode(args):
     if _is_godmode_help_request(args):
         return print_godmode_command_help("godmode")
@@ -5548,15 +5570,16 @@ def godmode(args):
     remembered_target=(project_context.get("target") or {}).get("address") if isinstance(project_context.get("target"),dict) else None
     selected_target=ns.target or remembered_target
     target=addr(selected_target) if selected_target else None
-    selected_rpc=ns.rpc_url
-    if selected_rpc is None and (not ns.target or (remembered_target and str(ns.target).lower()==str(remembered_target).lower())):
-        selected_rpc=project_context.get("rpc")
-    if selected_rpc is None:
-        selected_rpc=os.environ.get("FOUNDRY_ETH_RPC_URL") or os.environ.get("ETH_RPC_URL") or os.environ.get("LOWKEY_RPC_URL")
+    selected_rpc,rpc_source=_resolve_godmode_rpc(ns.rpc_url, project_context)
     if not ns.target and remembered_target:
         print("INFO  Using the deployed target remembered for this project: " + str(remembered_target))
     if selected_rpc and target and not ns.plan_only:
-        print("INFO  Using configured RPC for read-only inspection: " + str(selected_rpc))
+        rpc_label = {
+            "command-line": "the explicitly supplied",
+            "project": "the current project's remembered",
+            "environment": "the environment-configured",
+        }.get(rpc_source, "the configured")
+        print(f"INFO  Using {rpc_label} RPC for read-only inspection.")
     maps=source_maps(root)
     cheat=cheat_fingerprints(root)
     stages=[]

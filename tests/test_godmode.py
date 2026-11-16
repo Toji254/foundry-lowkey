@@ -180,6 +180,34 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(context["rpc"], "http://127.0.0.1:8546")
 
 
+    def test_godmode_reuses_project_rpc_when_target_address_is_overridden(self):
+        project_rpc = "http://127.0.0.1:8545"
+        selected, source = godmode._resolve_godmode_rpc(
+            None,
+            {"target": {"address": "0x" + "a" * 40}, "rpc": project_rpc},
+            {"FOUNDRY_ETH_RPC_URL": "http://127.0.0.1:9999"},
+        )
+        self.assertEqual(selected, project_rpc)
+        self.assertEqual(source, "project")
+
+    def test_godmode_explicit_rpc_overrides_project_context(self):
+        selected, source = godmode._resolve_godmode_rpc(
+            "http://127.0.0.1:9545",
+            {"rpc": "http://127.0.0.1:8545"},
+            {"FOUNDRY_ETH_RPC_URL": "http://127.0.0.1:9999"},
+        )
+        self.assertEqual(selected, "http://127.0.0.1:9545")
+        self.assertEqual(source, "command-line")
+
+    def test_godmode_uses_environment_rpc_only_when_project_rpc_is_absent(self):
+        selected, source = godmode._resolve_godmode_rpc(
+            None,
+            {},
+            {"FOUNDRY_ETH_RPC_URL": "https://rpc.example/private-key"},
+        )
+        self.assertEqual(selected, "https://rpc.example/private-key")
+        self.assertEqual(source, "environment")
+
     def test_rpc_sets_descriptive_user_agent_for_public_provider_access(self):
         from unittest.mock import patch
 
