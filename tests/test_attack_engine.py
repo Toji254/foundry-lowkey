@@ -42,6 +42,7 @@ class AttackEngineTests(unittest.TestCase):
         )
         self.test_file = self.root / "test" / "Attack.t.sol"
         self.test_file.write_text("// target-specific Foundry adapter test fixture\n", encoding="utf-8")
+        self.test_hash = hashlib.sha256(self.test_file.read_bytes()).hexdigest()
         self.source_hash = hashlib.sha256(self.source.read_bytes()).hexdigest()
         self.target = {
             "address": ADDR,
@@ -103,11 +104,13 @@ class AttackEngineTests(unittest.TestCase):
             "attack": {
                 "test_file": "test/Attack.t.sol",
                 "test_name": "testAttack",
+                "test_sha256": self.test_hash,
                 "evidence_file": ".audit/lowkey/attack.json",
             },
             "control": {
                 "test_file": "test/Attack.t.sol",
                 "test_name": "testControl",
+                "test_sha256": self.test_hash,
                 "evidence_file": ".audit/lowkey/control.json",
             },
             "reproof": dict(self.reproof),
@@ -153,6 +156,7 @@ class AttackEngineTests(unittest.TestCase):
             "role": role,
             "target": dict(self.target),
             "discovery_sha256": self.source_hash,
+            "adapter_sha256": self.test_hash,
             "preconditions": {item: True for item in spec["preconditions"]},
             "pair_anchor": anchor or {
                 "entry_selector": "0x12345678",
@@ -231,6 +235,11 @@ class AttackEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(engine.AttackEngineError, "same entry call"):
             engine.validate_evidence_pair(attack, mismatched, manifest)
 
+    def test_manifest_pins_adapter_test_source_hash(self):
+        value = self._manifest()
+        value["attack"]["test_sha256"] = "0" * 64
+        with self.assertRaisesRegex(engine.AttackEngineError, "adapter test source hash"):
+            engine.validate_experiment_manifest(value, self.root)
     def test_pair_fails_closed_on_control_failure_and_false_preconditions(self):
         manifest = engine.validate_experiment_manifest(self._manifest(), self.root)
         with self.assertRaisesRegex(engine.AttackEngineError, "Control run"):
@@ -424,6 +433,7 @@ class AttackEngineTests(unittest.TestCase):
             "experiment_id": manifest["id"],
             "role": role,
             "target": dict(self.target),
+            "adapter_sha256": self.test_hash,
             "pair_anchor": anchor,
             "predicate": {"id": manifest["property_id"], "observed": observed},
             "execution": {
@@ -463,6 +473,7 @@ class AttackEngineTests(unittest.TestCase):
             "experiment_id": manifest["id"],
             "role": "failure",
             "target": dict(self.target),
+            "adapter_sha256": self.test_hash,
             "failure_injection": {
                 "executed": True,
                 "failed_stage": "repay",
