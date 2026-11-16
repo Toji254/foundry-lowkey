@@ -271,8 +271,86 @@ class BreakEngineTests(unittest.TestCase):
             "inputs": [{"name": "payload", "type": "tuple"}],
             "stateMutability": "nonpayable",
         }
-        with self.assertRaisesRegex(ValueError, "unsupported"):
+        with self.assertRaisesRegex(ValueError, "component"):
             break_engine._find_setup_function([function])
+
+    def test_recursive_tuple_setup_uses_canonical_signature(self):
+        function = {
+            "name": "deposit",
+            "inputs": [{
+                "name": "request",
+                "type": "tuple",
+                "components": [
+                    {"name": "receiver", "type": "address"},
+                    {"name": "amounts", "type": "uint256[]"},
+                    {"name": "enabled", "type": "bool"},
+                ],
+            }],
+            "stateMutability": "nonpayable",
+        }
+        self.assertEqual(
+            break_engine._format_signature(function),
+            "deposit((address,uint256[],bool))",
+        )
+        self.assertEqual(
+            break_engine._setup_argument_samples(function["inputs"]),
+            ["(0x" + "11" * 20 + ",[1],true)"],
+        )
+
+    def test_make_value_accepts_nested_tuple_arrays(self):
+        function = {
+            "inputs": [{
+                "name": "requests",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "receiver", "type": "address"},
+                    {"name": "limits", "type": "uint256[2][]"},
+                    {"name": "memo", "type": "bytes"},
+                ],
+            }],
+        }
+        values = break_engine._make_value(object(), function, __import__("random").Random(3), "one")
+        self.assertEqual(values, ["[(0x" + "11" * 20 + ",[[1,1]],0x01)]"])
+
+    def test_repeat_renderer_uses_preencoded_recursive_abi_data(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_repeat_test(
+            target,
+            {"name": "withdraw", "inputs": [{"type": "tuple"}], "stateMutability": "nonpayable"},
+            "withdraw((uint256,address))",
+            ["(1,0x" + "22" * 20 + ")"],
+            "0",
+            "accounting",
+            None,
+            setup_signature="deposit((uint256,address))",
+            setup_params=[{"type": "tuple", "components": [{"type": "uint256"}, {"type": "address"}]}],
+            setup_payable=False,
+            payload_calldata="0x12345678",
+            setup_calldata="0xabcdef01",
+        )
+        self.assertIn('bytes memory setupData = hex"abcdef01";', body)
+        self.assertIn('bytes memory data = hex"12345678";', body)
+        self.assertNotIn("setupArg0", body)
+        self.assertNotIn("targetArg0", body)
+
+    def test_reentrancy_renderer_uses_preencoded_recursive_abi_data(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_reentrancy_test(
+            target,
+            {"name": "withdraw", "inputs": [{"type": "tuple"}], "stateMutability": "nonpayable"},
+            "withdraw((uint256,address))",
+            ["(1,0x" + "22" * 20 + ")"],
+            2,
+            setup_signature="deposit((uint256,address))",
+            setup_params=[{"type": "tuple", "components": [{"type": "uint256"}, {"type": "address"}]}],
+            setup_payable=False,
+            payload_calldata="0x12345678",
+            setup_calldata="0xabcdef01",
+        )
+        self.assertIn('bytes memory setupData = hex"abcdef01";', body)
+        self.assertIn('bytes memory payload = hex"12345678";', body)
+        self.assertNotIn("setupArg0", body)
+        self.assertNotIn("targetArg0", body)
 
     def test_fixed_array_values_must_match_declared_length(self):
         with self.assertRaisesRegex(ValueError, "exactly 3"):
