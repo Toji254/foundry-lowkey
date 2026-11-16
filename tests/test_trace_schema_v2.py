@@ -521,7 +521,7 @@ class TraceSchemaV2Tests(unittest.TestCase):
                 {"type": "DELEGATECALL", "from": B, "to": A, "input": "0xaabbccdd", "calls": []}
             ]}
         ]
-        with self.assertRaisesRegex(ValueError, "every callTracer frame"):
+        with self.assertRaisesRegex(ValueError, "every call frame"):
             normalize_calltracer(calls, per_access_storage={0: []})
 
     def test_exact_structlogs_storage_matches_forge_access_sequences(self):
