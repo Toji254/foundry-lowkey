@@ -175,7 +175,7 @@ def build_trace_event(
     if not isinstance(backend, str) or not backend.strip():
         raise ValueError("TraceEvent backend is required.")
     backend = backend.strip().lower()
-    if backend not in {"anvil-calltracer", "anvil-prestate-diff", "forge-state-diff"}:
+    if backend not in {"anvil-calltracer", "anvil-structlog", "anvil-prestate-diff", "forge-state-diff"}:
         raise ValueError(f"Unsupported TraceEvent backend '{backend}'.")
     if storage_support not in STORAGE_SUPPORT:
         raise ValueError("TraceEvent storage_support must be exact, partial or declared_only.")
@@ -358,6 +358,7 @@ def normalize_calltracer(
     storage_support: str = "declared_only",
     partial_storage: Mapping[int, list[dict[str, Any]]] | None = None,
     exact_storage: Mapping[int, list[dict[str, Any]]] | None = None,
+    per_access_storage: Mapping[int, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize callTracer rows with declared, transaction-partial or opcode-exact storage.
 
@@ -374,6 +375,14 @@ def normalize_calltracer(
     rows = []
     partial_storage = partial_storage or {}
     exact_storage = exact_storage or {}
+    structlog_storage = per_access_storage is not None
+    per_access_storage = per_access_storage or {}
+    if structlog_storage:
+        expected_indices = set(range(len(calls)))
+        if set(per_access_storage) != expected_indices:
+            raise ValueError("Exact Anvil structLogs storage requires an explicit per-frame array for every call frame.")
+        if any(not isinstance(per_access_storage[index], list) for index in expected_indices):
+            raise ValueError("Anvil structLogs storage values must be per-frame arrays.")
     if storage_support == "exact":
         expected_indices = set(range(len(calls)))
         if set(exact_storage) != expected_indices:
@@ -384,7 +393,10 @@ def normalize_calltracer(
         if not isinstance(call, Mapping):
             raise ValueError(f"callTracer event #{index} must be an object.")
         error = call.get("error")
-        if storage_support == "exact":
+        if structlog_storage:
+            event_support = "exact"
+            event_storage = per_access_storage[index]
+        elif storage_support == "exact":
             event_support = "exact"
             event_storage = exact_storage[index]
         elif storage_support == "partial" and index in partial_storage:
@@ -395,7 +407,7 @@ def normalize_calltracer(
             event_storage = None
         rows.append(build_trace_event(
             seq=index,
-            backend="anvil-calltracer",
+            backend="anvil-structlog" if structlog_storage else "anvil-calltracer",
             kind=call.get("type"),
             accessor=call.get("accessor", call.get("from")),
             account=call.get("to") or call.get("created_address") or call.get("createdAddress"),
