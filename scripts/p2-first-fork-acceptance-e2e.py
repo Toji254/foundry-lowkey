@@ -217,7 +217,10 @@ def resolve_fork_snapshot_with_fallback(
         snapshot = resolve_fork_snapshot(primary_rpc, source_rpc, deployment_block)
         return primary_rpc, snapshot, attempts
     except Exception as primary_error:
-        if not is_rate_limit_failure(str(primary_error)):
+        error_text = str(primary_error)
+        # Do not retry the fork provider when the independent source/archive
+        # endpoint was the service that returned 429.
+        if urlparse_safe(source_rpc) in error_text or not is_rate_limit_failure(error_text):
             raise
         fallback_key = urlparse_safe(fallback_rpc)
         if fallback_key in {urlparse_safe(primary_rpc), urlparse_safe(source_rpc)}:
