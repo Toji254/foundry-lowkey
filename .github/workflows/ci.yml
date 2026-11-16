@@ -326,7 +326,7 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/lowkey-foundry/foundry-toolchain.tar.gz"
-          printf '%s  %s\\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          printf '%s  %s\n' "$FOUNDRY_ARCHIVE_SHA256" "$archive" | sha256sum -c -
           tar -xzf "$archive" -C "$HOME"
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.foundry/bin:$PATH"
