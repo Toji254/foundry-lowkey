@@ -1433,6 +1433,7 @@ class GodmodeTests(unittest.TestCase):
             self.assertIn("Unauthorized withdrawal", rendered)
             self.assertIn("Attacker withdraws another user's balance", rendered)
             self.assertIn("src/Vault.sol:18", rendered)
+            self.assertIn("](../../src/Vault.sol#L18)", rendered)
             self.assertIn("Relevant source evidence", rendered)
             self.assertIn("Source-navigation markers (not findings)", rendered)
             self.assertIn("Not requested", rendered)
