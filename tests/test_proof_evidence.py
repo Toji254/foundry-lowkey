@@ -213,7 +213,7 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertEqual(anvil_without_tracer["storage"], "declared_only")
         self.assertEqual(anvil_with_tracer["storage"], "partial")
         self.assertEqual(anvil_exact["storage"], "derived_per_access")
-        self.assertEqual(anvil_exact["storage_source"], "Anvil structLogs SLOAD/SSTORE")
+        self.assertEqual(anvil_exact["storage_source"], "Anvil structLogs SLOAD/SSTORE/TLOAD/TSTORE")
         self.assertTrue(evaluate_evidence_requirements(
             "reentrancy", anvil_exact
         )["accepted"])
