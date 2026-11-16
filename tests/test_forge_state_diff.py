@@ -160,13 +160,25 @@ class ForgeStateDiffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must match the target AccountAccess"):
             normalize_forge_state_diff(value, expected_target=TARGET)
 
-    def test_records_start_time_hash_separately_from_measured_hash(self):
+    def test_target_identity_hash_is_the_pre_execution_target_hash(self):
         value = artifact()
-        value["target_code_hash_at_start"] = "0x" + "e" * 64
+        value["target_code_hash_at_start"] = CODE_HASH
+        # The implementation AccountAccess is allowed to expose a different
+        # code hash; it must not replace the clone/proxy target identity hash.
+        value["accesses"][1]["code_hash"] = "0x" + "e" * 64
         result = normalize_forge_state_diff(value, expected_target=TARGET)
         self.assertEqual(result["target_code_hash"], CODE_HASH)
-        self.assertEqual(result["target_code_hash_at_start"], "0x" + "e" * 64)
-        self.assertEqual(result["target_code_hash_source"], "forge_account_access")
+        self.assertEqual(result["target_code_hash_at_start"], CODE_HASH)
+        self.assertEqual(result["target_code_hash_source"], "forge_start_and_account_access")
+        observations = result["target_account_access_code_hash_observations"]
+        self.assertEqual({item["code_hash"] for item in observations}, {CODE_HASH})
+
+    def test_rejects_target_hash_replaced_by_delegatecall_implementation_hash(self):
+        value = artifact()
+        value["target_code_hash"] = "0x" + "e" * 64
+        value["target_code_hash_at_start"] = CODE_HASH
+        with self.assertRaisesRegex(ValueError, "delegatecall implementation hash"):
+            normalize_forge_state_diff(value, expected_target=TARGET)
 
     def test_rejects_missing_fork_parent_hash(self):
         value = artifact()
