@@ -151,7 +151,7 @@ import {LowkeyForgeStateDiffRecorder} from "../src/LowkeyForgeStateDiffRecorder.
 
 contract P2FirstForkTest is LowkeyForgeStateDiffRecorder {
     address private constant TARGET =
-        address(uint160(0x0000000071727de22e5e9d8baf0edac6f37da032));
+        address(uint160(0x0000000071727De22E5E9d8BAf0edAc6f37da032));
     address private constant ACTOR = address(uint160(0xA11C));
 
     event NonceObserved(uint256 nonce);
