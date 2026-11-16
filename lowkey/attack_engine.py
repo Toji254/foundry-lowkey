@@ -705,13 +705,16 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise AttackEngineError(f"Chain manifest schema_version must be {SCHEMA_VERSION}.")
     allowed = {"schema_version", "id", "target", "property_id", "mode", "timeout_seconds",
-               "stages", "attack", "control", "failure", "mutation"}
+               "stages", "attack", "control", "failure", "reproof", "mutation"}
     if set(value) - allowed:
         raise AttackEngineError("Unexpected chain fields: " + ", ".join(sorted(set(value) - allowed)))
     chain_id = value.get("id")
     if not isinstance(chain_id, str) or not re.fullmatch(r"[a-zA-Z0-9_.-]{3,100}", chain_id):
         raise AttackEngineError("chain id must be a stable 3-100 character identifier.")
     target = _validate_target(value.get("target"))
+    reproof = value.get("reproof")
+    if not isinstance(reproof, dict) or not isinstance(reproof.get("reproof_file"), str):
+        raise AttackEngineError("chain reproof.reproof_file must reference an independent fork reproof.", "reproof_missing")
     property_id = value.get("property_id")
     if not isinstance(property_id, str) or not re.fullmatch(r"[a-zA-Z0-9_.:-]{3,120}", property_id):
         raise AttackEngineError("chain property_id is required.")
@@ -730,12 +733,20 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
     for index, stage in enumerate(stages):
         if not isinstance(stage, dict):
             raise AttackEngineError(f"stages[{index}] must be an object.")
+        allowed_stage = {"id", "family", "discovery", "preconditions", "depends_on", "consumes", "produces", "on_failure", "rollback"}
+        if set(stage) != allowed_stage:
+            raise AttackEngineError(f"stages[{index}] must contain exactly: " + ", ".join(sorted(allowed_stage)))
         stage_id, family = stage.get("id"), stage.get("family")
         if not isinstance(stage_id, str) or not re.fullmatch(r"[a-zA-Z0-9_.-]{2,80}", stage_id) or stage_id in ids:
             raise AttackEngineError(f"stages[{index}].id is invalid or duplicated.")
         if family not in FAMILIES:
             raise AttackEngineError(f"stages[{index}].family is unsupported.")
         ids.add(stage_id)
+        discovery = _validate_discovery(stage.get("discovery"), root, family, f"stages[{index}].discovery")
+        preconditions = stage.get("preconditions")
+        expected_preconditions = FAMILIES[family]["preconditions"]
+        if not isinstance(preconditions, list) or sorted(preconditions) != sorted(expected_preconditions):
+            raise AttackEngineError(f"stages[{index}].preconditions must explicitly enumerate the family preconditions: {expected_preconditions}")
         dependencies = stage.get("depends_on", [])
         consumes = stage.get("consumes", [])
         produces = stage.get("produces", [])
@@ -757,7 +768,8 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
             if artifact in producers:
                 raise AttackEngineError(f"Artifact '{artifact}' is produced by more than one stage.")
             producers[artifact] = stage_id
-        normalized.append({"id": stage_id, "family": family, "depends_on": list(dependencies),
+        normalized.append({"id": stage_id, "family": family, "discovery": discovery,
+                           "preconditions": list(preconditions), "depends_on": list(dependencies),
                            "consumes": list(consumes), "produces": list(produces),
                            "on_failure": policy, "rollback": rollback})
     # Topological ordering is deterministic; manifest order is required to equal the
@@ -789,7 +801,7 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
     if not isinstance(mutation_value, dict):
         raise AttackEngineError("mutation must be an object.")
     mutants = _validate_mutants(mutation_value.get("mutants"), root)
-    return {"schema_version": SCHEMA_VERSION, "id": chain_id, "target": target,
+    return {"schema_version": SCHEMA_VERSION, "id": chain_id, "target": target, "reproof": reproof,
             "property_id": property_id, "mode": mode, "timeout_seconds": timeout,
             "stages": normalized, "attack": attack, "control": control,
             "failure": failure, "mutants": mutants, "project_root": str(root)}
@@ -851,6 +863,9 @@ def _validate_chain_evidence(
             raise AttackEngineError(f"{role} stage {spec['id']} must record consumed and produced artifact names.")
         if sorted(consumed) != sorted(spec["consumes"]) or sorted(produced) != sorted(spec["produces"]):
             raise AttackEngineError(f"{role} stage {spec['id']} artifact flow differs from the manifest.")
+        if _hex(raw.get("discovery_sha256"), r"[0-9a-fA-F]{64}", f"{role}.{spec['id']}.discovery_sha256") != spec["discovery"]["source_sha256"]:
+            raise AttackEngineError(f"{role} stage {spec['id']} discovery digest differs from the pinned source.", "source_identity_mismatch")
+        preconditions = _validate_precondition_evidence(raw.get("preconditions"), spec["family"], f"{role}.{spec['id']}")
         stage_events = _load_trace_events(raw.get("trace_events"), spec["family"], f"{role}.{spec['id']}")
         stage_tx = _hex(raw.get("tx_hash"), r"0x[0-9a-fA-F]{64}", f"{role}.{spec['id']}.tx_hash")
         stage_block = _positive_int(raw.get("block_number"), f"{role}.{spec['id']}.block_number", allow_zero=True)
@@ -860,8 +875,10 @@ def _validate_chain_evidence(
             raise AttackEngineError("stateful_fork stage block precedes its chain transaction.")
         if FAMILIES[spec["family"]]["economic"] and role == "attack":
             _validate_economic_data(evidence.get("economic"), f"{role} chain economic stage {spec['id']}")
-        normalized_stages.append({"id": spec["id"], "family": spec["family"], "prestate_sha256": pre,
-                                  "poststate_sha256": post, "trace_events": len(stage_events)})
+        normalized_stages.append({"id": spec["id"], "family": spec["family"],
+                                  "discovery": spec["discovery"], "preconditions": preconditions,
+                                  "prestate_sha256": pre, "poststate_sha256": post,
+                                  "trace_events": len(stage_events)})
         previous_post = post
     return {"role": role, "target": manifest["target"], "pair_anchor": normalized_anchor,
             "predicate": predicate, "execution": {"tx_hash": tx_hash, "block_number": block_number,
@@ -872,6 +889,9 @@ def _validate_chain_evidence(
 def validate_chain_evidence_pair(attack: Any, control: Any, manifest: dict[str, Any]) -> dict[str, Any]:
     left = _validate_chain_evidence(attack, manifest=manifest, role="attack")
     right = _validate_chain_evidence(control, manifest=manifest, role="control")
+    economic_stage = any(FAMILIES[stage["family"]]["economic"] for stage in manifest["stages"])
+    reproof_family = "economic" if economic_stage else manifest["stages"][0]["family"]
+    reproof = _validate_reproof(manifest["reproof"], root=Path(manifest["project_root"]), target=manifest["target"], family=reproof_family, label="chain independent reproof")
     if left["pair_anchor"] != right["pair_anchor"]:
         raise AttackEngineError("Attack/control chains do not share the same pinned starting state and entry call.", "control_mismatch")
     if left["predicate"].get("observed") is not True:
@@ -880,7 +900,7 @@ def validate_chain_evidence_pair(attack: Any, control: Any, manifest: dict[str, 
         raise AttackEngineError("Control chain also observed the declared impact.", "control_failed")
     return {"status": "CHAIN_PAIRED", "mode": manifest["mode"], "stage_count": len(manifest["stages"]),
             "attack_stages": left["stages"], "control_stages": right["stages"],
-            "target": manifest["target"], "pair_anchor": left["pair_anchor"]}
+            "target": manifest["target"], "pair_anchor": left["pair_anchor"], "independent_reproof": reproof}
 
 
 def validate_failure_rollback(evidence: Any, manifest: dict[str, Any]) -> dict[str, Any]:
