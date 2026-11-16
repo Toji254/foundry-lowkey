@@ -397,9 +397,14 @@ def _validate_reproof(
                 raise AttackEngineError(f"{label} USD portfolio proof lacks independently source-verified asset/feed prestate.", "portfolio_source_unverified")
             if payload.get("source_fork_verification", {}).get("portfolio_assets_verified") is not True:
                 raise AttackEngineError(f"{label} source verification did not include declared portfolio assets.", "portfolio_source_unverified")
+            def signed_metric(metric: Any, metric_label: str) -> int:
+                if type(metric) is not int:
+                    raise AttackEngineError(f"{metric_label} must be a signed integer USD 1e-18 value.")
+                return metric
+
             expected_net = (
-                _wei(valuation.get("native_delta_usd_18"), f"{label}.native_delta_usd_18")
-                + _wei(valuation.get("token_delta_usd_18"), f"{label}.token_delta_usd_18")
+                signed_metric(valuation.get("native_delta_usd_18"), f"{label}.native_delta_usd_18")
+                + signed_metric(valuation.get("token_delta_usd_18"), f"{label}.token_delta_usd_18")
                 - _wei(valuation.get("external_gas_cost_usd_18"), f"{label}.external_gas_cost_usd_18")
                 - _wei(valuation.get("prior_cost_usd_18"), f"{label}.prior_cost_usd_18")
             )
