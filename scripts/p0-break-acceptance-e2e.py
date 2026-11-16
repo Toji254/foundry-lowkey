@@ -213,7 +213,12 @@ def target_identity_diagnostic(
     )
     actual = str(result.stdout or "").strip().lower()
     candidates = []
-    for path in sorted((root / "out").rglob("*.json")):
+    candidate_paths = []
+    ignored_parts = {".git", ".audit", "__pycache__", "node_modules", "cache", "build-info"}
+    for path in sorted(root.rglob("*.json")):
+        if any(part in ignored_parts for part in path.relative_to(root).parts):
+            continue
+        candidate_paths.append(path.relative_to(root).as_posix())
         try:
             artifact = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -251,6 +256,7 @@ def target_identity_diagnostic(
         "address": address,
         "cast_code_exit": result.returncode,
         "cast_code_stderr": str(result.stderr or "")[-1200:],
+        "candidate_json_paths": candidate_paths[:80],
         "artifacts": candidates,
     }
 
