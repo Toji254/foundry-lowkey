@@ -414,12 +414,15 @@ def _validate_test(value: Any, root: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise AttackEngineError(f"{label} must be an object.")
     path = safe_relative_file(root, value.get("test_file"), f"{label}.test_file")
+    test_sha256 = _hex(value.get("test_sha256"), r"[0-9a-fA-F]{64}", f"{label}.test_sha256")
+    if _sha256_file(path) != test_sha256:
+        raise AttackEngineError(f"{label} adapter test source hash does not match the manifest.", "adapter_source_mismatch")
     name = value.get("test_name")
     if not isinstance(name, str) or not re.fullmatch(r"test[A-Za-z0-9_]*", name):
         raise AttackEngineError(f"{label}.test_name must be a Foundry test function name.")
     evidence = safe_evidence_file(root, value.get("evidence_file"), f"{label}.evidence_file")
     return {"test_file": path.relative_to(root).as_posix(), "test_name": name,
-            "evidence_file": evidence.relative_to(root).as_posix()}
+            "test_sha256": test_sha256, "evidence_file": evidence.relative_to(root).as_posix()}
 
 
 def _validate_mutants(value: Any, root: Path) -> list[dict[str, str]]:
@@ -541,7 +544,7 @@ def _validate_evidence(
     if not isinstance(evidence, dict):
         raise AttackEngineError(f"{label} must be an object.", "evidence_invalid")
     required = {"schema_version", "experiment_id", "family", "role", "target",
-                "discovery_sha256", "preconditions", "pair_anchor", "predicate", "trace_events"}
+                "discovery_sha256", "adapter_sha256", "preconditions", "pair_anchor", "predicate", "trace_events"}
     missing = required - set(evidence)
     if missing:
         raise AttackEngineError(f"{label} is missing: " + ", ".join(sorted(missing)), "evidence_invalid")
@@ -554,6 +557,8 @@ def _validate_evidence(
         raise AttackEngineError(f"{label} target identity/chain/block does not match the pinned manifest.", "identity_mismatch")
     if _hex(evidence["discovery_sha256"], r"[0-9a-fA-F]{64}", f"{label}.discovery_sha256") != manifest["discovery"]["source_sha256"]:
         raise AttackEngineError(f"{label} source discovery does not match the pinned source.", "source_identity_mismatch")
+    if _hex(evidence["adapter_sha256"], r"[0-9a-fA-F]{64}", f"{label}.adapter_sha256") != manifest[role]["test_sha256"]:
+        raise AttackEngineError(f"{label} adapter test hash does not match the executed test.", "adapter_source_mismatch")
     preconditions = _validate_precondition_evidence(evidence["preconditions"], manifest["family"], label)
     anchor = evidence["pair_anchor"]
     if not isinstance(anchor, dict) or set(anchor) != {"entry_selector", "calldata_sha256", "prestate_sha256", "setup_sha256"}:
@@ -602,6 +607,9 @@ def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str
     forge = shutil.which("forge")
     if not forge:
         raise AttackEngineError("Foundry forge is unavailable; refusing to substitute another backend.", "backend_unsupported")
+    adapter_path = safe_relative_file(root, test["test_file"], f"{role}.test_file")
+    if _sha256_file(adapter_path) != test["test_sha256"]:
+        raise AttackEngineError(f"{role} adapter test source changed after manifest validation.", "adapter_source_mismatch")
     evidence = safe_evidence_file(root, test["evidence_file"], f"{role}.evidence_file")
     if evidence.exists():
         evidence.unlink()
@@ -626,6 +634,8 @@ def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str
                      "stdout": str(exc.stdout or "")[-12000:],
                      "stderr": str(exc.stderr or "")[-12000:]}
     execution["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    if _sha256_file(adapter_path) != test["test_sha256"]:
+        raise AttackEngineError(f"{role} adapter test source changed during execution.", "adapter_source_mismatch")
     execution["evidence_path"] = evidence.relative_to(root).as_posix()
     if execution["status"] != "passed":
         return execution
@@ -839,6 +849,8 @@ def _validate_chain_evidence(
         raise AttackEngineError(f"{role} chain evidence identity does not match.", "evidence_mismatch")
     if _validate_target(evidence["target"]) != manifest["target"]:
         raise AttackEngineError(f"{role} chain target does not match the pinned manifest.", "identity_mismatch")
+    if _hex(evidence.get("adapter_sha256"), r"[0-9a-fA-F]{64}", f"{role}.adapter_sha256") != manifest[role]["test_sha256"]:
+        raise AttackEngineError(f"{role} chain adapter test hash does not match the executed test.", "adapter_source_mismatch")
     anchor = evidence["pair_anchor"]
     if not isinstance(anchor, dict) or set(anchor) != {"entry_selector", "calldata_sha256", "prestate_sha256", "setup_sha256"}:
         raise AttackEngineError(f"{role} pair_anchor must contain exactly entry selector, calldata, prestate and setup digests.")
@@ -926,6 +938,8 @@ def validate_failure_rollback(evidence: Any, manifest: dict[str, Any]) -> dict[s
         raise AttackEngineError("Rollback evidence schema is invalid.")
     if evidence.get("experiment_id") != manifest["id"] or evidence.get("role") != "failure":
         raise AttackEngineError("Rollback evidence identity/role does not match.")
+    if _hex(evidence.get("adapter_sha256"), r"[0-9a-fA-F]{64}", "failure.adapter_sha256") != manifest["failure"]["test_sha256"]:
+        raise AttackEngineError("Rollback adapter test hash does not match the executed failure test.", "adapter_source_mismatch")
     if _validate_target(evidence.get("target")) != manifest["target"]:
         raise AttackEngineError("Rollback target identity does not match.", "identity_mismatch")
     failure = evidence.get("failure_injection")
