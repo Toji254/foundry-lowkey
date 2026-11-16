@@ -2175,5 +2175,14 @@ SECOND_RETURNDATA_LENGTH 0
         self.assertTrue(break_engine._probe_is_terminal(rejected))
         self.assertFalse(break_engine._probe_is_terminal(exploratory))
 
+        generic_observation = break_engine.AttackResult(
+            "callback", "Fallback", "0x" + "a" * 40, "receive()", "OBSERVED",
+            "Attack executed; no concrete break condition reached.",
+        )
+        self.assertTrue(break_engine._probe_is_terminal(generic_observation, {"inputs": []}))
+        self.assertFalse(break_engine._probe_is_terminal(
+            generic_observation, {"inputs": [{"name": "amount", "type": "uint256"}]}
+        ))
+
 if __name__ == "__main__":
     unittest.main()
