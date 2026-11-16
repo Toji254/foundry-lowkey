@@ -141,11 +141,20 @@ def validate_mutations(
                 "interpretation": "No mutation conclusion: the unmodified project test command did not pass.",
             }
 
+        seen_mutant_ids: set[str] = set()
         for index, mutant in enumerate(mutants):
             if not isinstance(mutant, dict):
-                results.append({"id": f"mutant-{index + 1}", "status": "invalid", "reason": "each mutant must be an object"})
+                results.append({"id": f"invalid-row-{index + 1}", "status": "invalid", "reason": "each mutant must be an object"})
                 continue
-            mutant_id = str(mutant.get("id") or f"mutant-{index + 1}")
+            raw_mutant_id = mutant.get("id")
+            if not isinstance(raw_mutant_id, str) or not raw_mutant_id.strip():
+                results.append({"id": f"invalid-row-{index + 1}", "status": "invalid", "reason": "each mutant must declare a non-empty string id"})
+                continue
+            mutant_id = raw_mutant_id.strip()
+            if mutant_id in seen_mutant_ids:
+                results.append({"id": mutant_id, "status": "invalid", "reason": "mutant id must be unique"})
+                continue
+            seen_mutant_ids.add(mutant_id)
             relative = Path(str(mutant.get("file") or ""))
             if relative.is_absolute() or not relative.parts or ".." in relative.parts:
                 results.append({"id": mutant_id, "status": "invalid", "reason": "mutant file must be a safe relative path"})
