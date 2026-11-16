@@ -271,7 +271,7 @@ def main() -> int:
             raw_forge = json.loads(trace_path.read_text(encoding="utf-8"))
 
             from lowkey.forge_state_diff import normalize_forge_state_diff
-            from lowkey.trace_schema import normalize_calltracer
+            from lowkey.trace_schema import normalize_calltracer, normalize_prestate_diff
             from lowkey.trace_parity import compare_trace_events
             from lowkey import proof_evidence, godmode
 
@@ -286,19 +286,34 @@ def main() -> int:
             signature = run([cast, "sig", "totalAssets()"], cwd=ROOT, env=test_env, timeout=20).stdout.strip()
             if not signature.startswith("0x") or len(signature) != 10:
                 raise AssertionError(f"cast could not derive totalAssets selector: {signature!r}")
+            call_request = {
+                "from": ACTOR,
+                "to": TARGET,
+                "data": signature,
+                "value": "0x0",
+                "gas": hex(30_000_000),
+            }
             call_trace = rpc(
                 anvil_url,
                 "debug_traceCall",
-                [{
-                    "from": ACTOR,
-                    "to": TARGET,
-                    "data": signature,
-                    "value": "0x0",
-                    "gas": hex(30_000_000),
-                }, hex(fork_block), {"tracer": "callTracer"}],
+                [call_request, hex(fork_block), {"tracer": "callTracer"}],
                 timeout=60,
             )
-            anvil_events = normalize_calltracer(call_trace, storage_support="declared_only")
+            prestate_diff = rpc(
+                anvil_url,
+                "debug_traceCall",
+                [call_request, hex(fork_block), {
+                    "tracer": "prestateTracer",
+                    "tracerConfig": {"diffMode": True},
+                }],
+                timeout=60,
+            )
+            partial_storage_rows = normalize_prestate_diff(prestate_diff)
+            anvil_events = normalize_calltracer(
+                call_trace,
+                storage_support="partial",
+                partial_storage={0: partial_storage_rows},
+            )
             parity = compare_trace_events(forge_events, anvil_events)
             if parity["status"] != "MATCHED":
                 raise AssertionError("Forge/Anvil call-tree parity did not match:\n" + json.dumps(parity, indent=2))
@@ -338,7 +353,8 @@ def main() -> int:
             anvil_report = {
                 "chain_id": 1, "block_number": fork_block,
                 "runs": {"attack": {"chain_id": 1, "block_number": fork_block,
-                                    "canonical_trace_events": anvil_events}},
+                                    "canonical_trace_events": anvil_events,
+                                    "prestate_diff": prestate_diff}},
             }
             ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
             forge_file = ARTIFACT_ROOT / "forge-evidence.json"
@@ -381,6 +397,8 @@ def main() -> int:
                 "call_tree_parity": parity["status"],
                 "storage_parity": parity["storage_parity"],
                 "storage_support": parity["storage_support"],
+                "anvil_prestate_slots": len(partial_storage_rows),
+                "anvil_prestate_scope": "transaction-level only; attached to root trace event, not attributed to nested frames",
                 "call": "totalAssets()",
                 "call_kind": "read-only protocol view invoked with no value; no transaction broadcast",
                 "identity_verified": identity.get("identity_verified"),
