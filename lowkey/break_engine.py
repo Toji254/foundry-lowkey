@@ -1194,9 +1194,9 @@ library LowkeyABIPatch {
         // ABI argument words start four bytes after the function selector.
         for (uint256 offset = 4; offset + 32 <= data.length; offset += 32) {
             uint256 word;
-            assembly { word := mload(add(add(data, 32), offset)) }
+            assembly ("memory-safe") { word := mload(add(add(data, 32), offset)) }
             if (word == marker) {
-                assembly { mstore(add(add(data, 32), offset), replacement) }
+                assembly ("memory-safe") { mstore(add(add(data, 32), offset), replacement) }
             }
         }
         return data;
