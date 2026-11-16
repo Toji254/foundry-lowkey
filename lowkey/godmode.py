@@ -1277,18 +1277,19 @@ def _verify_eip1167_implementation(
     ).lower()
     if local_implementation_code != implementation_code:
         raise ValueError("EIP-1167 implementation bytecode differs between local fork and source archive.")
-    try:
-        deployment_block = int(proxy_spec.get("implementation_deployment_block"))
-    except (TypeError, ValueError):
-        raise ValueError("EIP-1167 target_identity.proxy requires implementation_deployment_block.")
+    source_identity = _verify_sourcify_exact(chain_id, implementation)
+    declared_deployment = proxy_spec.get("implementation_deployment_block")
+    deployment_block = (
+        int(declared_deployment) if declared_deployment is not None
+        else int(source_identity["deployment_block"])
+    )
     if deployment_block > block_number:
         raise ValueError("EIP-1167 implementation deployment block is after the pinned fork block.")
+    if source_identity["deployment_block"] != deployment_block:
+        raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
     deployment = _verify_first_code_block(
         source_url, implementation, deployment_block, implementation_code
     )
-    source_identity = _verify_sourcify_exact(chain_id, implementation)
-    if source_identity["deployment_block"] != deployment_block:
-        raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
     implementation_prestate = prestate_by_address.get(implementation) or {}
     trace_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}", trace_code_hash):
