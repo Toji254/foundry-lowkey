@@ -20182,6 +20182,63 @@ def run_investigate(config, args):
     print("  lk context")
     return 0
 
+def activate_project_actor(config, root=None):
+    """Restore the signer alias selected for this Foundry project.
+
+    Actor profiles remain globally available, but the active signer is
+    project-owned. Older contexts stored only the rendered actor display;
+    migrate that label when it can be matched safely to a saved wallet alias.
+    """
+    if not isinstance(config, dict):
+        return None
+    # "lk as <actor> ..." is an intentional one-command override. Never
+    # replace it with the project's default actor while executing the nested
+    # command.
+    if config.get("_ephemeral"):
+        return config.get("actor")
+
+    root = root or audit_context.foundry_project_root()
+    try:
+        if not audit_context.is_audit_project(root):
+            return config.get("actor")
+        context = audit_context.load(root)
+    except Exception:
+        return config.get("actor")
+
+    wallets = config.get("wallets", {})
+    if not isinstance(wallets, dict):
+        wallets = {}
+
+    stored_profile = context.get("actor_profile")
+    selected = stored_profile.strip() if isinstance(stored_profile, str) else ""
+
+    # Migrate the old project-scoped display string, e.g.
+    # "jesee (0x...) [Anvil #1]", without copying keys into audit context.
+    if not selected:
+        legacy_actor = str(context.get("actor") or "").strip()
+        if legacy_actor.lower() not in {"", "none", "null"}:
+            for profile in sorted(
+                (str(name) for name in wallets),
+                key=len,
+                reverse=True,
+            ):
+                if legacy_actor == profile or legacy_actor.startswith(profile + " ("):
+                    selected = profile
+                    break
+
+    # Do not fall back to the previous project's global selection when a
+    # project-local alias was removed. Account zero is the safe lab default.
+    if selected != "lab-deployer" and selected not in wallets:
+        selected = ""
+    if not selected:
+        selected = "lab-deployer"
+
+    config["actor"] = selected
+    if context.get("actor_profile") != selected:
+        audit_context.update(root, actor_profile=selected)
+    return selected
+
+
 def _sync_audit_context(config, root=None):
     root = root or audit_context.foundry_project_root()
     existing = audit_context.load(root)
@@ -20210,9 +20267,23 @@ def _sync_audit_context(config, root=None):
                 "source": "project-auto",
             }
 
-    actor = actor_display(config)
-    if actor == "none":
-        actor = existing.get("actor")
+    if config.get("_ephemeral"):
+        # Temporary "lk as" execution must not rewrite either the project's
+        # selected actor or its human-readable context snapshot.
+        actor = existing.get("actor") or actor_display(config)
+        actor_profile = existing.get("actor_profile")
+    else:
+        actor = actor_display(config)
+        if actor == "none":
+            actor = existing.get("actor")
+        selected_actor = str(config.get("actor") or "").strip()
+        wallets = config.get("wallets", {})
+        actor_profile = (
+            selected_actor
+            if selected_actor == "lab-deployer"
+            or (isinstance(wallets, dict) and selected_actor in wallets)
+            else None
+        )
 
     rpc = effective_rpc(config) or existing.get("rpc")
     # Transaction history is already recorded by the send/receipt/trace
@@ -20224,6 +20295,7 @@ def _sync_audit_context(config, root=None):
         root,
         target=target,
         actor=actor,
+        actor_profile=actor_profile,
         rpc=rpc,
         latest=latest,
     )
@@ -25232,6 +25304,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
 
     # Resolve documented short forms before runtime dispatch as well as help lookup.
     cmd = HELP_ALIASES.get(lowered_cmd, lowered_cmd)
+    activate_project_actor(config)
     activate_project_target(config)
     if cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
@@ -26122,6 +26195,7 @@ def main():
         return
 
     root = audit_context.foundry_project_root()
+    activate_project_actor(config, root)
     _sync_audit_context(config, root)
     _attach_shared_command_context(config, root)
 
