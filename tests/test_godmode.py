@@ -1389,7 +1389,6 @@ class GodmodeTests(unittest.TestCase):
                 "target": "0x0000000000000000000000000000000000000001",
                 "chain_id": "0x7a69",
                 "fork_block": "0x10",
-                "stages": [{"name": "control", "status": "passed"}],
                 "project_root": str(root),
                 "signals": {
                     "access_control": [{
