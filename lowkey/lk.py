@@ -701,7 +701,7 @@ def anvil_rpc_info(config):
         config["_auto_rpc_info"]=info
     return info
 
-def effective_rpc(config, explicit_rpc=None):
+def effective_rpc(config, explicit_rpc=None, target=None):
     # A per-command RPC flag must govern both the external Cast invocation and
     # Lowkey's follow-up receipt/trace/evidence requests.
     if explicit_rpc is not None:
@@ -735,7 +735,7 @@ def effective_rpc(config, explicit_rpc=None):
         state = audit_context.load(root)
         legacy_rpc = (
             config.get("rpc") or config.get("rpc_url")
-            if shared_context.target_owned_by_project(config.get("target"), config, root)
+            if shared_context.target_owned_by_project(target or config.get("target"), config, root)
             else None
         )
         selected, _source = shared_context.choose_rpc(
@@ -7343,7 +7343,10 @@ def run_cast(args,config,capture=False):
             explicit_rpc = token.split("=", 1)[1]
 
     def command_rpc():
-        return effective_rpc(config, explicit_rpc=explicit_rpc)
+        # The resolved invocation target may differ from the project's active
+        # target (for example: lk read Fallback owner). Resolve ownership/RPC
+        # against that exact target, not an unrelated previously selected one.
+        return effective_rpc(config, explicit_rpc=explicit_rpc, target=target)
 
     rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","rpc","access-list"}
     active_rpc=command_rpc()
@@ -7638,7 +7641,7 @@ def run_balance(config,args=None):
         address=resolve_target_ref(config, ref, root=root)
     if not address or not is_address(address):
         return fail(f"Error: Could not resolve '{ref}' to an address. Use a full address, actor name, or target name.")
-    rpc=effective_rpc(config)
+    rpc=effective_rpc(config, target=address)
     if not rpc:
         return fail("Error: No RPC is configured. Start Anvil or set an RPC with lk rpc <url>.")
     raw=rpc_json(rpc, "eth_getBalance", [address, "latest"])
