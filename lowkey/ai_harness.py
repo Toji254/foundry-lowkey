@@ -2208,7 +2208,9 @@ AUTOMATION SETTINGS
   lk build --guide / --lazy   One-command override.
   lk ai mode {manual|auto}    Guide eligible commands; labs may request reviews.
   lk ai recommendations {status|auto|manual}
+  lk ai recommendations auto   Add optional notes after attempts.
   lk ai errors {status|auto|manual}
+  lk ai errors auto             Explain supported failures without rerunning.
 
 Each setting is independent. Use manual to disable it and status to inspect it.
 Guide offers clues; lazy repairs eligible tests. Requests may send context and incur charges.
