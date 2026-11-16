@@ -129,6 +129,17 @@ class ProtocolGraphTests(unittest.TestCase):
         self.assertEqual(graph["nodes"], [])
         self.assertTrue(any("changed since" in item["reason"] for item in graph["rejected_sources"]))
 
+    def test_missing_build_info_returns_consistent_unavailable_shape(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ast = compiler_ast_graph(root)
+            graph = build_full_protocol_graph(root)
+        self.assertEqual(ast["status"], "AST_UNAVAILABLE")
+        self.assertTrue(ast["limitations"])
+        self.assertEqual(graph["state_dependency_graph"]["status"], "UNAVAILABLE")
+        self.assertTrue(graph["state_dependency_graph"]["limitations"])
+        self.assertEqual(graph["runtime_call_graph"]["status"], "RUNTIME_TRACE_UNAVAILABLE")
+
     def test_runtime_graph_uses_only_validated_canonical_trace_streams(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
