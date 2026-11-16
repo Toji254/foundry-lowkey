@@ -366,6 +366,15 @@ def classify_project(root: str | Path = ".") -> dict[str, Any]:
             "protocol-specific attack adapters",
             "asset-specific economic valuation",
         })
+    else:
+        # Generic tooling can be present while protocol-specific executable
+        # adapters and asset valuation are still absent. Keep those gaps loud.
+        if capability_states.get("invariant-forge") != "implemented":
+            skip_list.append("archetype-specific invariant handlers")
+        skip_list.append("protocol-specific attack adapters")
+        if "economic" in selected["attack_families"]:
+            skip_list.append("asset-specific economic valuation")
+    skip_list = sorted(set(skip_list))
     graph = build_protocol_graph(base, sources, source_hashes)
     return {
         "schema_version": SCHEMA_VERSION,
