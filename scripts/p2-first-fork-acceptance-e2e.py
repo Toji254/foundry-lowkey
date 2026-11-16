@@ -173,6 +173,77 @@ def start_anvil(
     return process, url
 
 
+def resolve_fork_upstream(
+    primary_rpc: str, fallback_rpc: str, source_rpc: str
+) -> tuple[str, int, list[dict[str, str]]]:
+    """Choose a mainnet fork RPC before any Sourcify/archive lookups depend on it."""
+    attempts: list[dict[str, str]] = []
+    try:
+        chain_id = quantity(rpc(primary_rpc, "eth_chainId", []), "fork upstream chain ID")
+        active_rpc = primary_rpc
+        attempts.append({"provider": urlparse_safe(primary_rpc), "status": "selected"})
+    except Exception as primary_error:
+        if not is_rate_limit_failure(str(primary_error)):
+            raise
+        fallback_key = urlparse_safe(fallback_rpc)
+        if fallback_key in {urlparse_safe(primary_rpc), urlparse_safe(source_rpc)}:
+            raise AssertionError(
+                "The primary fork RPC was rate-limited and no independent fallback is configured."
+            ) from primary_error
+        chain_id = quantity(rpc(fallback_rpc, "eth_chainId", []), "fallback fork RPC chain ID")
+        active_rpc = fallback_rpc
+        attempts.extend([
+            {
+                "provider": urlparse_safe(primary_rpc),
+                "status": "rate_limited",
+                "reason": "Initial eth_chainId request was rate-limited",
+            },
+            {"provider": fallback_key, "status": "selected_fallback"},
+        ])
+    if chain_id != 1:
+        raise AssertionError(f"Fork upstream must be Ethereum mainnet; received chain ID {chain_id}.")
+    return active_rpc, chain_id, attempts
+
+
+def resolve_fork_snapshot_with_fallback(
+    primary_rpc: str,
+    fallback_rpc: str,
+    source_rpc: str,
+    deployment_block: int,
+) -> tuple[str, tuple[int, dict[str, Any], dict[str, Any], str], list[dict[str, str]]]:
+    """Apply fallback to historical code/proof lookups as well as Anvil startup."""
+    attempts = [{"provider": urlparse_safe(primary_rpc), "status": "selected"}]
+    try:
+        snapshot = resolve_fork_snapshot(primary_rpc, source_rpc, deployment_block)
+        return primary_rpc, snapshot, attempts
+    except Exception as primary_error:
+        if not is_rate_limit_failure(str(primary_error)):
+            raise
+        fallback_key = urlparse_safe(fallback_rpc)
+        if fallback_key in {urlparse_safe(primary_rpc), urlparse_safe(source_rpc)}:
+            raise AssertionError(
+                "The fork RPC was rate-limited during historical snapshot resolution, "
+                "but the configured fallback is not an independent provider."
+            ) from primary_error
+        fallback_chain = quantity(
+            rpc(fallback_rpc, "eth_chainId", []), "fallback fork RPC chain ID"
+        )
+        if fallback_chain != 1:
+            raise AssertionError(
+                f"Fork fallback must be Ethereum mainnet; received chain ID {fallback_chain}."
+            )
+        snapshot = resolve_fork_snapshot(fallback_rpc, source_rpc, deployment_block)
+        attempts = [
+            {
+                "provider": urlparse_safe(primary_rpc),
+                "status": "rate_limited",
+                "reason": "Historical fork snapshot lookup was rate-limited",
+            },
+            {"provider": fallback_key, "status": "selected_fallback"},
+        ]
+        return fallback_rpc, snapshot, attempts
+
+
 def resolve_fork_snapshot(
     fork_upstream: str, source_rpc: str, deployment_block: int
 ) -> tuple[int, dict[str, Any], dict[str, Any], str]:
@@ -262,7 +333,13 @@ def main() -> int:
     if urlparse_safe(fork_upstream) == urlparse_safe(source_rpc):
         raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
 
-    chain_id = quantity(rpc(fork_upstream, "eth_chainId", []), "fork upstream chain ID")
+    fallback_rpc = (
+        os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
+        or DEFAULT_FORK_FALLBACK_RPC
+    )
+    fork_upstream, chain_id, fork_provider_attempts = resolve_fork_upstream(
+        fork_upstream, fallback_rpc, source_rpc
+    )
     source_chain_id = quantity(rpc(source_rpc, "eth_chainId", []), "source chain ID")
     if chain_id != 1 or source_chain_id != 1:
         raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
@@ -287,16 +364,18 @@ def main() -> int:
     )
     if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
         raise AssertionError("Source RPC cannot return target runtime at its Sourcify deployment block; archive state is required.")
-    fork_block, common_header, source_proof, fork_code = resolve_fork_snapshot(
-        fork_upstream, source_rpc, target_deployment_block
+    fork_upstream, fork_snapshot, snapshot_attempts = resolve_fork_snapshot_with_fallback(
+        fork_upstream, fallback_rpc, source_rpc, target_deployment_block
     )
+    fork_block, common_header, source_proof, fork_code = fork_snapshot
+    # If historical lookup had to switch providers, retain that transition in
+    # the same provenance ledger used by Anvil-startup failover.
+    if snapshot_attempts and snapshot_attempts[0].get("status") == "rate_limited":
+        fork_provider_attempts = snapshot_attempts
 
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     anvil_log = ARTIFACT_ROOT / "anvil.log"
     env = os.environ.copy()
-    fork_provider_attempts = [{
-        "provider": urlparse_safe(fork_upstream), "status": "selected",
-    }]
     anvil_process: subprocess.Popen | None = None
     try:
         try:
@@ -307,10 +386,6 @@ def main() -> int:
             primary_log = anvil_log.read_text(encoding="utf-8", errors="replace") if anvil_log.exists() else ""
             if not is_rate_limit_failure(f"{primary_error}\\n{primary_log}"):
                 raise
-            fallback_rpc = (
-                os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
-                or DEFAULT_FORK_FALLBACK_RPC
-            )
             fallback_key = urlparse_safe(fallback_rpc)
             if fallback_key in {urlparse_safe(fork_upstream), urlparse_safe(source_rpc)}:
                 raise AssertionError(
