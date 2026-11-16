@@ -283,6 +283,12 @@ class AttackEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(engine.AttackEngineError, "source-verified"):
             engine.validate_evidence_pair(attack, control, manifest)
 
+    def test_access_control_is_semantic_not_inherently_economic(self):
+        inventory = {row["family"]: row for row in engine.family_inventory()}
+        self.assertFalse(engine.FAMILIES["access"]["economic"])
+        self.assertFalse(inventory["access"]["requires_economic_reproof"])
+        self.assertEqual(engine.FAMILIES["access"]["property"], "unauthorized-state-change")
+
     def test_economic_mode_requires_verified_profitable_reproof(self):
         self._write_reproof(semantic=False, profitable=True)
         manifest = engine.validate_experiment_manifest(
