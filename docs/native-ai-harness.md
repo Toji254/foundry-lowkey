@@ -289,3 +289,14 @@ Lowkey's AI commands are intended to be understandable without reading internal 
 Run `lk ai --help` (or `lk ai help`) for a compact command index showing every subcommand, common variation, and flag family. Use `lk ai <command> --help` for concise descriptions and examples of that command's flags; use `lk ai keys <action> --help` for nested key-management variations. This follows Lowkey's native help pattern: a short index, then command-specific details when needed.
 
 Human-readable output is the default. Use `--json` on commands that support it when you need machine-readable data. The root guide is built alongside the argument parser; update its command syntax and tests whenever a CLI option is added or changed.
+
+
+## Quiet setup reasoning during local break experiments
+
+When automatic AI assistance is enabled (\`lk ai mode auto\`, or the Jev autonomous mode), \`lk break\` may ask the configured model to rank multiple plausible setup functions discovered from the target ABI. This happens inside the native workflow; it does not open a chat panel or print a separate assistant conversation.
+
+The model receives only a bounded list of ABI function names, canonical signatures, mutability and input names/types. It does not receive the target address, RPC URL, credentials, raw transaction data or project source. It may return only one exact signature from that candidate list, or decline to select one. Lowkey validates that signature against the candidate list and then uses its own deterministic ABI sampler, Cast encoder, local Forge execution and evidence checks.
+
+The model cannot invent a function, selector, argument, shell command, adapter, transaction or verdict. A missing/unusable provider, disabled auto mode, malformed response or exhausted request budget falls back to deterministic selection. The selected mode, candidate digest and provider/model metadata are recorded in the experiment evidence; the raw prompt and model response are not.
+
+Automatic setup reasoning is advisory and can consume provider quota or incur charges. It does not make an unsupported protocol setup valid. Lowkey still requires the native setup call to execute and records failures as failures.

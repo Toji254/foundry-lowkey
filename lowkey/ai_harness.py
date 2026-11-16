@@ -30,7 +30,7 @@ JEV_MAX_DAILY_LIMIT = 24
 JEV_RESPONSE_CACHE_TTL_SECONDS = 1_800
 JEV_RESPONSE_CACHE_MAX_ENTRIES = 40
 PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama", "orcarouter", "openrouter", "nvidia"}
-PURPOSES = {"provider_test", "lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan"}
+PURPOSES = {"provider_test", "lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan", "setup_reasoning"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1", "orcarouter": "https://api.orcarouter.ai/v1", "openrouter": "https://openrouter.ai/api/v1", "nvidia": "https://integrate.api.nvidia.com/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
@@ -813,6 +813,12 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
         raise AIHarnessError(f"AI context exceeds {MAX_CONTEXT_BYTES} bytes; narrow it to relevant evidence.")
     digest = hashlib.sha256(encoded_context).hexdigest()
     candidates = _key_candidates(config)
+    # Setup ranking is optional assistance on a latency-sensitive CLI path.
+    # Use one configured credential slot only; authentication/quota/network
+    # failure returns to the deterministic setup selector instead of rotating
+    # through every saved key.
+    if purpose == "setup_reasoning":
+        candidates = candidates[:1]
     if not candidates:
         _api_key(config)  # raise the safe, actionable missing-key diagnostic
         raise AIUnavailable("No usable API key slot is configured.")
@@ -1037,12 +1043,19 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
             f"AI is not ready ({current.get('reason') or 'configuration problem'}). "
             "Run 'lk ai status' for the next step. Native workflows remain available."
         )
+    if purpose == "setup_reasoning":
+        # Keep the user-facing CLI responsive. A slow model is skipped, not
+        # allowed to hold up deterministic setup or attack verification.
+        cfg = dict(cfg)
+        cfg["timeout_seconds"] = min(int(cfg.get("timeout_seconds", DEFAULT_TIMEOUT)), 3)
+        cfg["max_output_tokens"] = min(int(cfg.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)), 128)
     if not isinstance(task, str) or not task.strip() or len(task) > 6000:
         raise AIHarnessError("Task must contain 1–6000 characters.")
     request_context: Mapping[str, Any] = context
     cache_key = None
     free_tier = bool(cfg.get("jev_free_tier_mode"))
-    if free_tier and purpose != "provider_test":
+    cache_enabled = free_tier or purpose == "setup_reasoning"
+    if cache_enabled and purpose != "provider_test":
         cache_key = _jev_cache_key(cfg, purpose, task.strip(), context, required_fields)
         cached = _read_jev_cached_response(cache_key, required_fields)
         if cached is not None:

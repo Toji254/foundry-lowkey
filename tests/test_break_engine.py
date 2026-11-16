@@ -4,6 +4,7 @@ import json
 import pathlib
 import sys
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 
 
@@ -23,6 +24,59 @@ spec.loader.exec_module(break_engine)
 
 
 class BreakEngineTests(unittest.TestCase):
+    def test_encode_call_normalizes_bare_hex_selector(self):
+        class Host:
+            def encode_target_call(self, config, signature, values):
+                return signature, "3ccfd60b"
+
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        calldata, error = break_engine._encode_call(
+            Host(), {}, target, {"name": "withdraw", "inputs": []}, []
+        )
+        self.assertEqual(calldata, "0x3ccfd60b")
+        self.assertIsNone(error)
+
+    def test_encode_call_preserves_prefixed_hex_selector(self):
+        class Host:
+            def encode_target_call(self, config, signature, values):
+                return signature, "0X3CCFD60B"
+
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        calldata, error = break_engine._encode_call(
+            Host(), {}, target, {"name": "withdraw", "inputs": []}, []
+        )
+        self.assertEqual(calldata, "0x3ccfd60b")
+        self.assertIsNone(error)
+
+    def test_encode_call_accepts_bytes_return_from_encoder(self):
+        class Host:
+            def encode_target_call(self, config, signature, values):
+                return signature, bytes.fromhex("3ccfd60b")
+
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        calldata, error = break_engine._encode_call(
+            Host(), {}, target, {"name": "withdraw", "inputs": []}, []
+        )
+        self.assertEqual(calldata, "0x3ccfd60b")
+        self.assertIsNone(error)
+
+    def test_encode_call_rejects_malformed_or_unsupported_calldata(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+
+        class Host:
+            def __init__(self, calldata):
+                self.calldata = calldata
+            def encode_target_call(self, config, signature, values):
+                return signature, self.calldata
+
+        for malformed in ("0x123", "not-hex", "", 123):
+            with self.subTest(malformed=malformed):
+                calldata, error = break_engine._encode_call(
+                    Host(malformed), {}, target, {"name": "withdraw", "inputs": []}, []
+                )
+                self.assertIsNone(calldata)
+                self.assertTrue(error)
+
     def test_parse_supports_evidence_explainer(self):
         opts = break_engine._parse_args(["--explain", "/tmp/example.json"])
         self.assertEqual(opts["explain"], "/tmp/example.json")
@@ -271,8 +325,127 @@ class BreakEngineTests(unittest.TestCase):
             "inputs": [{"name": "payload", "type": "tuple"}],
             "stateMutability": "nonpayable",
         }
-        with self.assertRaisesRegex(ValueError, "unsupported"):
+        with self.assertRaisesRegex(ValueError, "component"):
             break_engine._find_setup_function([function])
+
+    def test_recursive_tuple_setup_uses_canonical_signature(self):
+        function = {
+            "name": "deposit",
+            "inputs": [{
+                "name": "request",
+                "type": "tuple",
+                "components": [
+                    {"name": "receiver", "type": "address"},
+                    {"name": "amounts", "type": "uint256[]"},
+                    {"name": "enabled", "type": "bool"},
+                ],
+            }],
+            "stateMutability": "nonpayable",
+        }
+        self.assertEqual(
+            break_engine._format_signature(function),
+            "deposit((address,uint256[],bool))",
+        )
+        self.assertEqual(
+            break_engine._setup_argument_samples(function["inputs"]),
+            ["(0x" + "11" * 20 + ",[1],true)"],
+        )
+
+    def test_background_ai_ranks_only_discovered_setup_abi_candidates(self):
+        functions = [
+            {
+                "name": "deposit",
+                "inputs": [{"name": "amount", "type": "uint256"}],
+                "stateMutability": "nonpayable",
+            },
+            {
+                "name": "stake",
+                "inputs": [
+                    {"name": "token", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+                "stateMutability": "nonpayable",
+            },
+        ]
+        decision = {
+            "selected_signature": "stake(address,uint256)",
+            "mode": "ai_ranked_candidate",
+            "reason": "The stake method is a stronger candidate for creating the initial position.",
+            "provider": "ollama",
+            "model": "test-model",
+            "candidate_sha256": "a" * 64,
+        }
+        with mock.patch.object(
+            break_engine, "rank_setup_candidates", return_value=decision
+        ) as rank:
+            selected = break_engine._find_setup_function(functions)
+        self.assertEqual(selected["name"], "stake")
+        self.assertEqual(selected["_lowkey_setup_reasoning"]["mode"], "ai_ranked_candidate")
+        allowed_signatures = {
+            item["signature"] for item in rank.call_args.args[0]
+        }
+        self.assertEqual(allowed_signatures, {"deposit(uint256)", "stake(address,uint256)"})
+
+    def test_make_value_accepts_nested_tuple_arrays(self):
+        function = {
+            "inputs": [{
+                "name": "requests",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "receiver", "type": "address"},
+                    {"name": "limits", "type": "uint256[2][]"},
+                    {"name": "memo", "type": "bytes"},
+                ],
+            }],
+        }
+        values = break_engine._make_value(object(), function, __import__("random").Random(3), "one")
+        self.assertEqual(values, ["[(0x" + "11" * 20 + ",[[1,1]],0x01)]"])
+
+    def test_repeat_renderer_uses_preencoded_recursive_abi_data(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_repeat_test(
+            target,
+            {"name": "withdraw", "inputs": [{"type": "tuple"}], "stateMutability": "nonpayable"},
+            "withdraw((uint256,address))",
+            ["(1,0x" + "22" * 20 + ")"],
+            "0",
+            "accounting",
+            None,
+            setup_signature="deposit((uint256,address))",
+            setup_params=[{"type": "tuple", "components": [{"type": "uint256"}, {"type": "address"}]}],
+            setup_payable=False,
+            payload_calldata="0x12345678",
+            setup_calldata="0xabcdef01",
+        )
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"abcdef01"', body)
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"12345678"', body)
+        self.assertIn('address(uint160(0x00' + "aa" * 20 + ")), ATTACKER)", body)
+        self.assertIn("offset = 4; offset + 32 <= data.length; offset += 32", body)
+        self.assertIn('assembly ("memory-safe")', body)
+        self.assertNotIn("setupArg0", body)
+        self.assertNotIn("targetArg0", body)
+
+    def test_reentrancy_renderer_uses_preencoded_recursive_abi_data(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        body = break_engine._render_reentrancy_test(
+            target,
+            {"name": "withdraw", "inputs": [{"type": "tuple"}], "stateMutability": "nonpayable"},
+            "withdraw((uint256,address))",
+            ["(1,0x" + "22" * 20 + ")"],
+            2,
+            setup_signature="deposit((uint256,address))",
+            setup_params=[{"type": "tuple", "components": [{"type": "uint256"}, {"type": "address"}]}],
+            setup_payable=False,
+            payload_calldata="0x12345678",
+            setup_calldata="0xabcdef01",
+        )
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"abcdef01"', body)
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"12345678"', body)
+        self.assertIn('address(uint160(0x00' + "aa" * 20 + ")), address(hostile))", body)
+        self.assertIn("offset = 4; offset + 32 <= data.length; offset += 32", body)
+        self.assertIn('assembly ("memory-safe")', body)
+        self.assertNotIn("setupArg0", body)
+        self.assertNotIn("targetArg0", body)
 
     def test_fixed_array_values_must_match_declared_length(self):
         with self.assertRaisesRegex(ValueError, "exactly 3"):
