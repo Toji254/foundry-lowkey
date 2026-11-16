@@ -201,6 +201,7 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
     address = payload.get("deployedTo")
     if not isinstance(address, str) or not address.startswith("0x"):
         raise AssertionError(f"forge create did not return deployedTo for {contract}: {payload}")
+    print(f"DEPLOYED {contract} at {address}")
     return address
 
 
@@ -215,6 +216,8 @@ def target_identity_diagnostic(
     actual = str(result.stdout or "").strip().lower()
     candidates = []
     candidate_paths = []
+    runtime_candidates = []
+    actual_body = actual.removeprefix("0x")
     ignored_parts = {".git", ".audit", "__pycache__", "node_modules", "cache", "build-info"}
     for path in sorted(root.rglob("*.json")):
         if any(part in ignored_parts for part in path.relative_to(root).parts):
@@ -225,6 +228,31 @@ def target_identity_diagnostic(
         except (OSError, json.JSONDecodeError):
             continue
         artifact_name = str(artifact.get("contractName") or path.stem)
+        deployed_candidate = artifact.get("deployedBytecode")
+        deployed_candidate = (
+            deployed_candidate.get("object")
+            if isinstance(deployed_candidate, dict) else deployed_candidate
+        )
+        expected_candidate = str(deployed_candidate or "").strip().lower().removeprefix("0x")
+        if expected_candidate:
+            differing_bytes = (
+                sum(
+                    left != right
+                    for left, right in zip(
+                        (expected_candidate[index:index + 2] for index in range(0, len(expected_candidate), 2)),
+                        (actual_body[index:index + 2] for index in range(0, len(actual_body), 2)),
+                    )
+                )
+                if len(expected_candidate) == len(actual_body) else None
+            )
+            runtime_candidates.append({
+                "artifact": path.relative_to(root).as_posix(),
+                "contract": artifact_name,
+                "runtime_bytes": len(expected_candidate) // 2,
+                "exact_match": expected_candidate == actual_body,
+                "same_length": len(expected_candidate) == len(actual_body),
+                "differing_byte_pairs": differing_bytes,
+            })
         if artifact_name.casefold() != contract.casefold():
             continue
         deployed = artifact.get("deployedBytecode")
@@ -254,11 +282,26 @@ def target_identity_diagnostic(
             "first_difference_byte_offset": first_difference,
             "immutable_reference_groups": len(immutable_refs) if isinstance(immutable_refs, dict) else None,
         })
+    asset_getter = subprocess.run(
+        [cast, "call", address, "asset()", "--rpc-url", RPC],
+        cwd=root, env=env, text=True, capture_output=True, timeout=30, check=False,
+    )
     return {
         "address": address,
         "cast_code_exit": result.returncode,
         "cast_code_stderr": str(result.stderr or "")[-1200:],
+        "asset_getter_exit": asset_getter.returncode,
+        "asset_getter_stdout": str(asset_getter.stdout or "").strip()[-500:],
+        "asset_getter_stderr": str(asset_getter.stderr or "")[-800:],
         "candidate_json_paths": candidate_paths[:80],
+        "artifact_runtime_candidates": sorted(
+            runtime_candidates,
+            key=lambda row: (
+                not row["exact_match"],
+                row["differing_byte_pairs"] if row["differing_byte_pairs"] is not None else 10**9,
+                abs(row["runtime_bytes"] - len(actual_body) // 2),
+            ),
+        )[:30],
         "artifacts": candidates,
     }
 
