@@ -808,11 +808,14 @@ class GodmodeTests(unittest.TestCase):
                             sender: {"balance": "0x1", "nonce": "0x1", "storage": {}},
                         },
                     }
+                if method == "debug_traceTransaction" and params[1].get("disableMemory") is True:
+                    # No SLOAD/SSTORE operations: exact storage evidence must still refuse.
+                    return {"structLogs": [{"depth": 1, "op": "STOP", "stack": []}], "failed": False}
                 raise AssertionError("Unexpected RPC call: " + method)
 
             with patch.object(godmode, "rpc", side_effect=fake_rpc), \
                  redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(ValueError, "no changed storage slots"):
+                with self.assertRaisesRegex(ValueError, "required derived-storage evidence is unavailable"):
                     godmode.reprove([
                         "test/EmptyStorageDiff.t.sol", "--root", str(root),
                         "--rpc-url", "http://127.0.0.1:8545", "--fork-block", "100",
