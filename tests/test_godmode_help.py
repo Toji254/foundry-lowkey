@@ -220,17 +220,16 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, output)
 
-    def test_godmode_plan_only_rejects_options_that_would_be_silently_skipped(self):
+    def test_godmode_plan_only_rejects_active_attack_execution(self):
         output = io.StringIO()
         errors = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             with self.assertRaises(SystemExit) as raised:
                 godmode.main([
-                    "godmode", "--root", ".", "--plan-only",
-                    "--coverage-source", "src/Token.sol",
+                    "godmode", "--root", ".", "--plan-only", "--attack",
                 ])
         self.assertEqual(raised.exception.code, 2)
-        self.assertIn("--plan-only cannot be combined", errors.getvalue())
+        self.assertIn("--plan-only cannot be combined with --attack", errors.getvalue())
 
     def test_control_manifest_requires_attack_mode(self):
         output = io.StringIO()

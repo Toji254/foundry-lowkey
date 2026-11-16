@@ -5479,8 +5479,8 @@ def godmode(args):
     p.add_argument("--coverage-source", help="Solidity source file whose target lines should be checked with Forge coverage.")
     p.add_argument("--plan-only", action="store_true", help="Static source scan only: skip RPC, attack, mutation and coverage execution; still save a local report.")
     ns=p.parse_args(args)
-    if ns.plan_only and (ns.attack or ns.control_manifest or ns.mutation_manifest or ns.coverage_source):
-        p.error("--plan-only cannot be combined with --attack, --control-manifest, --mutation-manifest or --coverage-source; remove --plan-only or the execution option.")
+    if ns.plan_only and ns.attack:
+        p.error("--plan-only cannot be combined with --attack; remove one of the flags.")
     if ns.control_manifest and not ns.attack:
         p.error("--control-manifest is only used by the attack workflow; add --attack or remove --control-manifest.")
     root=resolve_godmode_root(ns.root)
