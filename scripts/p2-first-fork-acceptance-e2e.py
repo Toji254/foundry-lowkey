@@ -56,11 +56,26 @@ def rpc(url: str, method: str, params: list[Any], timeout: int = 25) -> Any:
         headers={"Content-Type": "application/json", "User-Agent": "LowkeyCast-P2-acceptance/0.1"},
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read(8_000_000).decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"RPC {method} failed at {urlparse_safe(url)}: {type(exc).__name__}: {exc}") from exc
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read(8_000_000).decode("utf-8"))
+            break
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
+            retryable = (
+                isinstance(exc, (URLError, TimeoutError))
+                or (isinstance(exc, HTTPError) and (exc.code == 429 or 500 <= exc.code <= 599))
+            )
+            if not retryable or attempt == 2:
+                raise RuntimeError(
+                    f"RPC {method} failed at {urlparse_safe(url)} after {attempt + 1} attempt(s): "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            time.sleep(0.4 * (attempt + 1))
+    else:
+        raise RuntimeError(f"RPC {method} failed at {urlparse_safe(url)}: {last_error}")
     if not isinstance(payload, dict):
         raise RuntimeError(f"RPC {method} returned a non-object payload.")
     if payload.get("error"):
@@ -128,6 +143,111 @@ def is_rate_limit_failure(details: str) -> bool:
         "http error 429", "status code 429", "too many requests",
         "compute units per second", "rate limit", "rate exceeded",
     ))
+
+
+def is_transient_provider_failure(details: str) -> bool:
+    lowered = details.lower()
+    return is_rate_limit_failure(lowered) or any(marker in lowered for marker in (
+        "timed out", "timeout", "connection reset", "connection refused",
+        "temporarily unavailable", "http error 502", "http error 503",
+        "http error 504", "bad gateway", "service unavailable",
+    ))
+
+
+def select_fork_provider(primary_rpc: str, source_rpc: str) -> tuple[str, int, list[dict[str, str]]]:
+    """Select a live Ethereum fork endpoint without sharing the archive/source provider."""
+    if urlparse_safe(primary_rpc) == urlparse_safe(source_rpc):
+        raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
+    try:
+        chain_id = quantity(rpc(primary_rpc, "eth_chainId", []), "fork upstream chain ID")
+        return primary_rpc, chain_id, [{"provider": urlparse_safe(primary_rpc), "status": "selected"}]
+    except Exception as primary_error:
+        if not is_transient_provider_failure(str(primary_error)):
+            raise
+        fallback_rpc = (
+            os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
+            or DEFAULT_FORK_FALLBACK_RPC
+        )
+        fallback_key = urlparse_safe(fallback_rpc)
+        if fallback_key in {urlparse_safe(primary_rpc), urlparse_safe(source_rpc)}:
+            raise AssertionError(
+                "The fork RPC failed transiently and no independent fallback is available. "
+                "Set LOWKEY_P2_FORK_FALLBACK_RPC_URL to a different Ethereum mainnet RPC."
+            ) from primary_error
+        fallback_chain_id = quantity(
+            rpc(fallback_rpc, "eth_chainId", []), "fallback fork upstream chain ID"
+        )
+        attempts = [
+            {
+                "provider": urlparse_safe(primary_rpc),
+                "status": "transient_failure",
+                "reason": str(primary_error)[:500],
+            },
+            {"provider": fallback_key, "status": "selected_fallback"},
+        ]
+        return fallback_rpc, fallback_chain_id, attempts
+
+
+def select_source_provider(
+    primary_rpc: str,
+    fork_rpc: str,
+    deployment_block: int,
+) -> tuple[str, int, tuple[int, dict[str, Any], dict[str, Any], str], list[dict[str, str]]]:
+    """Require an independent archive endpoint with pinned-block code and EIP-1186 proof."""
+    candidates = [
+        primary_rpc,
+        os.environ.get("LOWKEY_P2_SOURCE_FALLBACK_RPC_URL", ""),
+        DEFAULT_SOURCE_RPC,
+        DEFAULT_FORK_UPSTREAM,
+        DEFAULT_FORK_FALLBACK_RPC,
+    ]
+    seen: set[str] = set()
+    attempts: list[dict[str, str]] = []
+    failures: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        key = urlparse_safe(candidate)
+        if key in seen or key == urlparse_safe(fork_rpc):
+            continue
+        seen.add(key)
+        try:
+            source_chain_id = quantity(
+                rpc(candidate, "eth_chainId", []), "source chain ID"
+            )
+            if source_chain_id != 1:
+                raise AssertionError(
+                    f"source provider {key} returned chain ID {source_chain_id}, expected 1"
+                )
+            deployment_header = rpc(
+                candidate, "eth_getBlockByNumber", [hex(deployment_block), False]
+            )
+            if not isinstance(deployment_header, dict) or not deployment_header.get("hash"):
+                raise AssertionError(
+                    "source RPC cannot return the exact-match target deployment block; archive history is required"
+                )
+            deployment_code = rpc(
+                candidate, "eth_getCode", [TARGET, hex(deployment_block)]
+            )
+            if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
+                raise AssertionError(
+                    "source RPC cannot return target runtime at its Sourcify deployment block; archive state is required"
+                )
+            snapshot = resolve_fork_snapshot(fork_rpc, candidate, deployment_block)
+            attempts.append({"provider": key, "status": "selected"})
+            return candidate, source_chain_id, snapshot, attempts
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"[:900]
+            failures.append(f"{key}: {reason}")
+            attempts.append({
+                "provider": key,
+                "status": "rejected",
+                "reason": reason,
+            })
+    raise AssertionError(
+        "No independent source/archive RPC passed deployment-history and EIP-1186 checks. "
+        + " | ".join(failures[-5:])
+    )
 
 
 def stop_anvil(process: subprocess.Popen | None) -> None:
@@ -257,46 +377,30 @@ def main() -> int:
     if not forge or not anvil or not cast or not Path(lk).is_file():
         raise AssertionError("P2 requires installed forge, anvil, cast and lk executables.")
 
-    fork_upstream = os.environ.get("LOWKEY_P2_FORK_UPSTREAM_RPC_URL") or DEFAULT_FORK_UPSTREAM
-    source_rpc = os.environ.get("LOWKEY_P2_SOURCE_RPC_URL") or DEFAULT_SOURCE_RPC
-    if urlparse_safe(fork_upstream) == urlparse_safe(source_rpc):
-        raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
+    requested_fork_rpc = os.environ.get("LOWKEY_P2_FORK_UPSTREAM_RPC_URL") or DEFAULT_FORK_UPSTREAM
+    requested_source_rpc = os.environ.get("LOWKEY_P2_SOURCE_RPC_URL") or DEFAULT_SOURCE_RPC
+    fork_upstream, chain_id, fork_provider_attempts = select_fork_provider(
+        requested_fork_rpc, requested_source_rpc
+    )
+    if chain_id != 1:
+        raise AssertionError(f"P2 first target is Ethereum mainnet; fork RPC chain ID was {chain_id}.")
 
-    chain_id = quantity(rpc(fork_upstream, "eth_chainId", []), "fork upstream chain ID")
-    source_chain_id = quantity(rpc(source_rpc, "eth_chainId", []), "source chain ID")
-    if chain_id != 1 or source_chain_id != 1:
-        raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
-
-    # Resolve the source identity first and require Sourcify's strict exact
-    # match before choosing the fork block. The deployment block comes from
-    # Sourcify metadata, not a hand-maintained fixture constant.
+    # Sourcify remains the strict source-identity authority. Provider fallback
+    # changes only the independent RPC used to inspect pinned historical state.
     from lowkey.godmode import _eip1167_implementation, _verify_sourcify_exact
     target_source_identity = _verify_sourcify_exact(chain_id, TARGET)
     target_deployment_block = int(target_source_identity["deployment_block"])
 
-    # Fail early when either endpoint is a latest-state-only RPC. P2 needs
-    # historical code/state and EIP-1186 proof support; a valid chainId/latest
-    # response is not enough to establish a pinned deployment identity.
-    deployment_block_header = rpc(
-        source_rpc, "eth_getBlockByNumber", [hex(target_deployment_block), False]
+    source_rpc, source_chain_id, snapshot, source_provider_attempts = select_source_provider(
+        requested_source_rpc, fork_upstream, target_deployment_block
     )
-    if not isinstance(deployment_block_header, dict) or not deployment_block_header.get("hash"):
-        raise AssertionError("Source RPC cannot return the exact-match target deployment block; archive history is required.")
-    deployment_code = rpc(
-        source_rpc, "eth_getCode", [TARGET, hex(target_deployment_block)]
-    )
-    if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
-        raise AssertionError("Source RPC cannot return target runtime at its Sourcify deployment block; archive state is required.")
-    fork_block, common_header, source_proof, fork_code = resolve_fork_snapshot(
-        fork_upstream, source_rpc, target_deployment_block
-    )
+    if source_chain_id != 1:
+        raise AssertionError(f"P2 source/archive RPC chain ID was {source_chain_id}, expected 1.")
+    fork_block, common_header, source_proof, fork_code = snapshot
 
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     anvil_log = ARTIFACT_ROOT / "anvil.log"
     env = os.environ.copy()
-    fork_provider_attempts = [{
-        "provider": urlparse_safe(fork_upstream), "status": "selected",
-    }]
     anvil_process: subprocess.Popen | None = None
     try:
         try:
@@ -317,11 +421,11 @@ def main() -> int:
                     "The configured fork RPC was rate-limited and no independent fallback is available. "
                     "Set LOWKEY_P2_FORK_FALLBACK_RPC_URL to a different Ethereum mainnet RPC."
                 ) from primary_error
-            fork_provider_attempts[0] = {
+            fork_provider_attempts.append({
                 "provider": urlparse_safe(fork_upstream),
                 "status": "rate_limited",
                 "reason": "Anvil startup returned HTTP 429",
-            }
+            })
             # Re-pin both providers at a common block for the fallback. The
             # source/archive RPC remains independent and is re-checked at the
             # newly selected block before Anvil is started.
@@ -503,6 +607,7 @@ def main() -> int:
                 "fork_block": fork_block,
                 "fork_block_hash": common_header.get("hash"),
                 "source_provider": urlparse_safe(source_rpc),
+                "source_provider_attempts": source_provider_attempts,
                 "fork_provider": urlparse_safe(fork_upstream),
                 "fork_provider_attempts": fork_provider_attempts,
                 "proof_status": proof["status"],

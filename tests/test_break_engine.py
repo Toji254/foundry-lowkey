@@ -861,6 +861,8 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("TARGET_SETUP_RETURNDATA_LENGTH", body)
         self.assertIn("TARGET_CODE_LENGTH", body)
         self.assertIn("TARGET_BALANCE_AFTER_SETUP", body)
+        self.assertIn("vm.deal(address(this), 1 wei);", body)
+        self.assertIn("0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24", body)
 
     def test_entitlement_getter_discovery_prefers_balances(self):
         functions = [
@@ -954,6 +956,14 @@ class BreakEngineTests(unittest.TestCase):
             retry = run.call_args_list[1].args[0]
             self.assertIn("--via-ir", retry)
             self.assertIn("--optimize", retry)
+            self.assertIn("--out", retry)
+            self.assertIn("--cache-path", retry)
+            out_path = pathlib.Path(retry[retry.index("--out") + 1])
+            cache_path = pathlib.Path(retry[retry.index("--cache-path") + 1])
+            self.assertNotEqual(out_path, root / "out")
+            self.assertNotEqual(cache_path, root / "cache")
+            self.assertFalse(out_path.exists(), "temporary IR output must be removed after retry")
+            self.assertFalse(cache_path.exists(), "temporary IR cache must be removed after retry")
 
     def test_result_parser_distinguishes_target_rejection_before_callback(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)

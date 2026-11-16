@@ -26,7 +26,20 @@ IGNORED_COPY_DIRS = {
 DEFAULT_INVALID_MARKERS = (
     "compiler run failed", "could not compile", "compilation failed",
     "syntaxerror:", "modulenotfounderror:", "no module named",
-    "cannot find module", "command not found",
+    "cannot find module", "command not found", "connection refused",
+    "connection reset", "network is unreachable", "temporary failure in name resolution",
+    "could not resolve host", "failed to resolve", "timed out",
+    "timeout expired", "no space left on device", "permission denied",
+    "address already in use", "cannot connect to the rpc", "rpc error",
+    "http 5", "gateway timeout", "service unavailable", "killed process",
+    "out of memory", "oom-kill", "compiler error", "solc exited",
+)
+
+DEFAULT_BEHAVIORAL_FAILURE_MARKERS = (
+    "[fail. reason:", "test result: failed", "failing tests:",
+    "assertionerror", "assertion failed", "assertionfailure",
+    "panic: assertion", "unittest.case.failure", "failed: test_",
+    "fail: test_",
 )
 
 
@@ -134,11 +147,20 @@ def validate_mutations(
                 "interpretation": "No mutation conclusion: the unmodified project test command did not pass.",
             }
 
+        seen_mutant_ids: set[str] = set()
         for index, mutant in enumerate(mutants):
             if not isinstance(mutant, dict):
-                results.append({"id": f"mutant-{index + 1}", "status": "invalid", "reason": "each mutant must be an object"})
+                results.append({"id": f"invalid-row-{index + 1}", "status": "invalid", "reason": "each mutant must be an object"})
                 continue
-            mutant_id = str(mutant.get("id") or f"mutant-{index + 1}")
+            raw_mutant_id = mutant.get("id")
+            if not isinstance(raw_mutant_id, str) or not raw_mutant_id.strip():
+                results.append({"id": f"invalid-row-{index + 1}", "status": "invalid", "reason": "each mutant must declare a non-empty string id"})
+                continue
+            mutant_id = raw_mutant_id.strip()
+            if mutant_id in seen_mutant_ids:
+                results.append({"id": mutant_id, "status": "invalid", "reason": "mutant id must be unique"})
+                continue
+            seen_mutant_ids.add(mutant_id)
             relative = Path(str(mutant.get("file") or ""))
             if relative.is_absolute() or not relative.parts or ".." in relative.parts:
                 results.append({"id": mutant_id, "status": "invalid", "reason": "mutant file must be a safe relative path"})
@@ -175,8 +197,12 @@ def validate_mutations(
                     status = "survived"
                 elif any(marker.lower() in combined for marker in invalid_markers):
                     status = "invalid"
-                else:
+                elif any(marker.lower() in combined for marker in DEFAULT_BEHAVIORAL_FAILURE_MARKERS):
                     status = "killed"
+                else:
+                    # An unexplained nonzero exit is not evidence that a test
+                    # caught the mutation; classify it as unscored/invalid.
+                    status = "invalid"
                 results.append({
                     "id": mutant_id, "status": status, "file": str(relative),
                     "mutated_file_sha256": mutant_hash, "before_sha256": hashlib.sha256(before.encode()).hexdigest(),
