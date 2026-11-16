@@ -172,6 +172,19 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
                 source_backend="forge-state-diff",error="reverted" if reverted else None,
             ))
 
+    target_account_state = accounts.get(target) or {}
+    account_access_code_hash = str(target_account_state.get("code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", account_access_code_hash):
+        raise ValueError("Forge state-diff target account access must expose its runtime code_hash.")
+    if account_access_code_hash != code_hash:
+        raise ValueError(
+            "Forge state-diff target_code_hash must match the target AccountAccess code_hash "
+            f"(artifact={code_hash}, account_access={account_access_code_hash})."
+        )
+    target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
+    if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
+        raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
+
     prestate=[]
     balance_deltas=[]
     for row in accounts.values():
@@ -202,7 +215,10 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "canonical_trace_events":canonical_trace_events,
         "canonical_trace_events_error":canonical_trace_error,
         "chain_id":chain_id,"block_number":block_number,
-        "target_address":target,"target_code_hash":code_hash,"fork_parent_hash":fork_parent_hash,
+        "target_address":target,"target_code_hash":code_hash,
+        "target_code_hash_at_start":target_code_hash_at_start,
+        "target_code_hash_source":"forge_account_access",
+        "fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
         "setup_events":setup_events,"domain_events":domain_events,
         "prestate":prestate,"prestate_sha256":prestate_digest,"balance_deltas":balance_deltas,
