@@ -356,10 +356,26 @@ def _validate_reproof(
         same_chain = str(raw_chain).lower() == hex(target["chain_id"]).lower()
     if not same_chain:
         raise AttackEngineError(f"{label} reproof chain id differs from the pinned experiment.", "identity_mismatch")
+    source_chain = source.get("source_chain_id")
+    try:
+        source_chain_matches = int(str(source_chain), 0) == target["chain_id"]
+    except (TypeError, ValueError):
+        source_chain_matches = str(source_chain).lower() == hex(target["chain_id"]).lower()
+    if not source_chain_matches:
+        raise AttackEngineError(f"{label} independent source chain id differs from the pinned target.", "identity_mismatch")
+    if str(source.get("target_code_sha256") or "").lower() != target["code_sha256"]:
+        raise AttackEngineError(f"{label} target runtime code SHA-256 differs from the independently checked source deployment.", "identity_mismatch")
     if payload.get("fork_parent_block") != target["block_number"]:
         raise AttackEngineError(f"{label} reproof fork block differs from the pinned experiment.", "identity_mismatch")
     if payload.get("command_run") is not True or str(payload.get("receipt_status")).lower() not in {"0x1", "1"}:
         raise AttackEngineError(f"{label} reproof did not execute a mined successful transaction.", "reproof_execution_missing")
+    call_trace = payload.get("call_trace")
+    if not isinstance(call_trace, list) or not call_trace:
+        raise AttackEngineError(f"{label} reproof has no transaction call-trace evidence.", "trace_incomplete")
+    if FAMILIES[family]["exact_storage"]:
+        storage_trace = payload.get("storage_trace") or {}
+        if storage_trace.get("supported") is not True or not payload.get("derived_storage_slots"):
+            raise AttackEngineError(f"{label} requires trace-derived changed-storage observations from the independent fork reproof.", "storage_evidence_insufficient")
     tx_hash = _hex(payload.get("tx_hash"), r"0x[0-9a-fA-F]{64}", f"{label}.tx_hash")
     if impact_mode == "economic":
         if payload.get("status") != "PROFITABLE" or payload.get("legacy_status") != "PROFITABLE":
@@ -386,10 +402,10 @@ def _validate_target(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise AttackEngineError("target must be an object.")
     address = _hex(value.get("address"), r"0x[0-9a-fA-F]{40}", "target.address")
-    code_hash = _hex(value.get("code_hash"), r"0x[0-9a-fA-F]{64}", "target.code_hash")
+    code_hash = _hex(value.get("code_sha256"), r"0x[0-9a-fA-F]{64}", "target.code_sha256")
     chain_id = _positive_int(value.get("chain_id"), "target.chain_id")
     block_number = _positive_int(value.get("block_number"), "target.block_number", allow_zero=True)
-    return {"address": address, "code_hash": code_hash, "chain_id": chain_id, "block_number": block_number}
+    return {"address": address, "code_sha256": code_hash, "chain_id": chain_id, "block_number": block_number}
 
 
 def _validate_test(value: Any, root: Path, label: str) -> dict[str, Any]:
