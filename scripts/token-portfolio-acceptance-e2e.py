@@ -246,7 +246,7 @@ print("LOWKEY_TRACE_TX_HASH " + match.group(0))
                     {"kind": "erc20", "address": token, "symbol": "mUSD",
                      "expected_decimals": 6, "oracle": token_feed},
                     {"kind": "erc4626", "address": vault, "asset": underlying,
-                     "symbol": "vUND", "oracle": token_feed},
+                     "symbol": "vUND", "asset_oracle": token_feed},
                 ],
             }, indent=2), encoding="utf-8")
             fork_block = int(rpc(url, "eth_blockNumber", []), 16)
