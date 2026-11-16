@@ -216,12 +216,27 @@ def flatten_calltracer(root: Mapping[str, Any]) -> list[dict[str, Any]]:
         raise ValueError("callTracer root must be an object.")
     flattened: list[dict[str, Any]] = []
 
-    def visit(node: Mapping[str, Any], depth: int) -> None:
+    def visit(
+        node: Mapping[str, Any],
+        depth: int,
+        inherited_msg_sender: str | None = None,
+    ) -> None:
         if not isinstance(node, Mapping):
             raise ValueError("callTracer child must be an object.")
+        kind = str(node.get("type") or node.get("callType") or "CALL").upper()
+        opcode_from = node.get("from")
+        # callTracer.from is the opcode caller. For DELEGATECALL/CALLCODE,
+        # Solidity msg.sender is inherited from the parent frame instead.
+        # Forge AccountAccess.accessor records that inherited message sender.
+        accessor = (
+            inherited_msg_sender
+            if depth > 0 and kind in {"DELEGATECALL", "CALLCODE"}
+            else opcode_from
+        )
         row = {
-            "type": node.get("type") or node.get("callType") or "CALL",
-            "from": node.get("from"),
+            "type": kind,
+            "from": opcode_from,
+            "accessor": accessor,
             "to": node.get("to"),
             "created_address": node.get("created_address", node.get("createdAddress")),
             "depth": depth,
@@ -234,8 +249,13 @@ def flatten_calltracer(root: Mapping[str, Any]) -> list[dict[str, Any]]:
         children = node.get("calls") or []
         if not isinstance(children, list):
             raise ValueError("callTracer nested calls must be an array.")
+        # For the child opcode, the caller contract address is the current
+        # execution context (node.to), but delegatecall preserves this frame's
+        # msg.sender for its own context. A normal child CALL's opcode sender
+        # is supplied by child.from and its msg.sender is that contract.
+        current_msg_sender = accessor
         for child in children:
-            visit(child, depth + 1)
+            visit(child, depth + 1, current_msg_sender)
 
     visit(root, 0)
     return flattened
@@ -271,7 +291,7 @@ def normalize_calltracer(
             seq=index,
             backend="anvil-calltracer",
             kind=call.get("type"),
-            accessor=call.get("from"),
+            accessor=call.get("accessor", call.get("from")),
             account=call.get("to") or call.get("created_address") or call.get("createdAddress"),
             depth=call.get("depth"),
             value=call.get("value"),
