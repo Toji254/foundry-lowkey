@@ -2958,22 +2958,23 @@ _TERMINAL_PROBE_REASON_CODES = {
 }
 
 
-def _probe_is_terminal(result: AttackResult) -> bool:
-    """Return true when another identical probe cannot make useful progress."""
+def _probe_is_terminal(result: AttackResult, fn: dict[str, Any] | None = None) -> bool:
+    """Retire unchanged failures without disabling fuzzing of parameterized calls."""
     if result.status in {"BLOCKED", "LAB_ISSUE", "TIMEOUT", "SKIPPED"}:
         return True
     reason_code = str((result.detail or {}).get("reason_code") or "")
     if reason_code in _TERMINAL_PROBE_REASON_CODES:
         return True
     if result.status == "OBSERVED":
-        return any(
-            phrase in result.summary
-            for phrase in (
-                "Target rejected the first",
-                "Target rejected the attack before the callback boundary",
-                "no concrete break condition reached",
-            )
-        )
+        if (
+            "Target rejected the first" in result.summary
+            or "Target rejected the attack before the callback boundary" in result.summary
+        ):
+            return True
+        # No-input functions have no ABI values to mutate between rounds.
+        # Parameterized functions remain eligible for new generated inputs.
+        if "no concrete break condition reached" in result.summary.lower():
+            return not bool((fn or {}).get("inputs"))
     return False
 
 
@@ -4155,7 +4156,7 @@ def run(config, args=None, host=None):
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
                         result = _apply_sequential_control(host, result, opts, rpc)
-                        if _probe_is_terminal(result):
+                        if _probe_is_terminal(result, fn):
                             terminal_probes.add(probe_key)
                         result.detail = result.detail or {}
                         result.detail["selection_evidence"] = basis
