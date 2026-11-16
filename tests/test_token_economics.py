@@ -28,11 +28,13 @@ def round_data(answer, *, updated=9990, answered_round=5):
 
 
 class RpcFixture:
-    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, wrong_vault_asset=False):
+    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
         self.stale = stale
         self.incomplete = incomplete
         self.source_code_mismatch = source_code_mismatch
         self.wrong_vault_asset = wrong_vault_asset
+        self.changed_decimals = changed_decimals
+        self.changed_vault_asset = changed_vault_asset
 
     def __call__(self, url, method, params, timeout=30):
         if method == "eth_getCode":
@@ -47,11 +49,11 @@ class RpcFixture:
             block = int(block_tag, 16)
             if data == "0x313ce567":
                 if target == TOKEN:
-                    return word(6)
+                    return word(7 if self.changed_decimals and block > 100 else 6)
                 if target == VAULT:
                     return word(18)
                 if target == UNDERLYING:
-                    return word(6)
+                    return word(7 if self.changed_decimals and block > 100 else 6)
                 if target in {NATIVE_FEED, TOKEN_FEED, USD_FEED}:
                     return word(8)
             if data == "0xfeaf968c":
@@ -60,7 +62,7 @@ class RpcFixture:
                 answer = 200_000_000 if target == NATIVE_FEED else 100_000_000
                 return round_data(answer, updated=updated, answered_round=answered)
             if data == "0x38d52e0f":
-                asset = "0x" + "8" * 40 if self.wrong_vault_asset else UNDERLYING
+                asset = ("0x" + "8" * 40) if (self.wrong_vault_asset or (self.changed_vault_asset and block > 100)) else UNDERLYING
                 return "0x" + "0" * 24 + asset[2:]
             if data.startswith("0x70a08231"):
                 address = "0x" + data[-40:]
@@ -155,6 +157,22 @@ class TokenEconomicsTests(unittest.TestCase):
                         manifest=manifest(), accounts=[ACTOR], before_block=100,
                         after_block=101, block_timestamp=10_000,
                     )
+
+    def test_token_decimals_mutation_during_measurement_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "decimals changed"):
+            measure_token_portfolio(
+                RpcFixture(changed_decimals=True), local_url="local", source_url=None,
+                manifest=manifest(), accounts=[ACTOR], before_block=100,
+                after_block=101, block_timestamp=10_000,
+            )
+
+    def test_erc4626_asset_change_during_measurement_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "asset"):
+            measure_token_portfolio(
+                RpcFixture(changed_vault_asset=True), local_url="local", source_url=None,
+                manifest=manifest(kind="erc4626"), accounts=[ACTOR],
+                before_block=100, after_block=101, block_timestamp=10_000,
+            )
 
     def test_source_code_mismatch_is_refused(self):
         with self.assertRaisesRegex(TokenEconomicsError, "bytecode differs"):
