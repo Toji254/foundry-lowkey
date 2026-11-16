@@ -1,0 +1,54 @@
+{
+  "name": "escrow",
+  "detect_signals": [
+    {
+      "kind": "access_control",
+      "value": "\\b(?:beneficiary|arbiter|refund|release|claim)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "time_dependence",
+      "value": "\\b(?:deadline|expiry|expiration|block\\.timestamp|timeout)\\b",
+      "weight": 2
+    },
+    {
+      "kind": "external_call_safety",
+      "value": "\\.(?:call|transfer|send)\\s*(?:\\(|\\{)",
+      "weight": 2
+    },
+    {
+      "kind": "precision",
+      "value": "\\b(?:amount|deposit|fee|balance)\\b",
+      "weight": 1
+    }
+  ],
+  "invariants": [
+    "Only the authorized party may release, refund or resolve escrowed value.",
+    "A release and refund must be mutually exclusive and replay-resistant.",
+    "Timeout rules must not strand assets or permit early release."
+  ],
+  "required_capabilities": [
+    "control",
+    "invariant-forge",
+    "economic",
+    "reprove",
+    "trace-parity",
+    "custody"
+  ],
+  "forbidden_capabilities": [],
+  "attack_families": [
+    "access",
+    "replay",
+    "time",
+    "reentrancy",
+    "accounting",
+    "dos",
+    "economic"
+  ],
+  "assumption_classes": [
+    "access_control",
+    "time_dependence",
+    "external_call_safety",
+    "precision"
+  ]
+}

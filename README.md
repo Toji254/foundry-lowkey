@@ -1520,3 +1520,16 @@ does not claim that the address is a deployed contract.
 ## Finding-specific source review
 
 See [Finding-specific investigation and remote evidence](docs/finding-specific-review.md) for the local-first finding explainer, preview-only behaviour, explicitly requested public URLs, remote-source safety limits, and the plan-first verification/test-execution boundary.
+
+
+## P3 protocol intelligence
+
+The first deterministic genericity slice adds ten data-driven protocol archetype packs, explicit UNCLASSIFIED fallback, source-linked assumption candidates, conservative source relationship mapping and capability negotiation:
+
+~~~bash
+lk archetype classify --root . --json
+lk assumptions --root .
+lk capability --root .
+~~~
+
+See [P3 genericity design and boundaries](docs/p3-genericity.md). Classification is a source-level observation, not deployment authentication or vulnerability proof. AI-driven novel hypothesis proposals remain in P9.

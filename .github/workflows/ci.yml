@@ -126,6 +126,46 @@ jobs:
       - name: Shell syntax
         run: bash -n bin/lk install.sh scripts/install-verification-engines.sh scripts/install-lh-jev-shortcuts.sh
 
+  p3-genericity-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Compile P3 protocol-intelligence module
+        run: python -m py_compile lowkey/archetypes/_index.py
+      - name: Run P3 archetype, UNCLASSIFIED, graph and citation acceptance
+        run: python -m unittest tests/test_archetype_index.py -v
+      - name: Verify P3 package and CLI in installed Lowkey
+        run: |
+          export HOME="$RUNNER_TEMP/lowkey-p3-home"
+          mkdir -p "$HOME"
+          bash install.sh
+          "$HOME/.foundry/bin/lk" archetype classify --help > /tmp/p3-archetype-help.txt
+          grep -q -- "--root" /tmp/p3-archetype-help.txt
+          grep -q -- "--json" /tmp/p3-archetype-help.txt
+          "$HOME/.foundry/bin/lk" assumptions --help > /tmp/p3-assumptions-help.txt
+          grep -q -- "--root" /tmp/p3-assumptions-help.txt
+          "$HOME/.foundry/bin/lk" capability --help > /tmp/p3-capability-help.txt
+          grep -q -- "--root" /tmp/p3-capability-help.txt
+          "$HOME/.foundry/bin/lk" archetype classify --root tests/fixtures/acceptance/p3-genericity/vault --json > /tmp/p3-vault.json
+          "$HOME/.foundry/bin/lk" archetype classify --root tests/fixtures/acceptance/p3-genericity/amm --json > /tmp/p3-amm.json
+          "$HOME/.foundry/bin/lk" archetype classify --root tests/fixtures/acceptance/p3-genericity/unknown --json > /tmp/p3-unknown.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          expected = (("vault", "vault4626"), ("amm", "amm_cp"), ("unknown", None))
+          for name, archetype in expected:
+              payload = json.loads(Path(f"/tmp/p3-{name}.json").read_text())
+              assert payload["archetype"] == archetype, (name, payload["archetype"])
+              if name == "unknown":
+                  assert payload["status"] == "UNCLASSIFIED"
+              else:
+                  assert payload["status"] == "OBSERVED"
+          PY
   p0-break-acceptance:
     needs: foundry-toolchain
     runs-on: ubuntu-latest

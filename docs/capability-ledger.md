@@ -97,3 +97,11 @@ The new lowkey/attack_engine.py provides:
 Commands: lk attack engines, lk attack discover, lk attack verify, and lk attack chain validate|run. See [docs/attack-engine.md](attack-engine.md) for the strict manifest/evidence formats, impact-mode rules, chain-stage contract and remaining boundaries.
 
 This feature branch's own CI, installed-runtime smoke, and acceptance status must be recorded against its exact head SHA before merge. A P2 green run does not validate this new engine.
+
+## P3.1 — Deterministic protocol archetype discovery
+
+**Status: PENDING exact-head CI.** P3 adds ten data-driven ArchetypePack records, a bounded deterministic source classifier, a conservative import/typed-call-candidate graph, source-hash-pinned assumption citations, and capability negotiation with a generic-mode skip list. Acceptance fixtures cover vault4626, constant-product AMM and an unknown target.
+
+No archetype is an attack-family acceptance. An OBSERVED classification means only that source signals selected a pack; it does not authenticate a deployment or promote a vulnerability. Assumptions remain unverified. Full compiler AST/Slither call-graph/data-flow extraction remains outstanding. Model-driven novel hypotheses remain P9; full attack-chain composition remains in the attack-engine phase.
+
+The exact-head P3 acceptance job must pass classification, citation re-read/tamper rejection, graph citations, package install/manifest and installed CLI checks before this ledger row can be marked accepted.

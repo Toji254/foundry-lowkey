@@ -1,0 +1,54 @@
+{
+  "name": "vault4626",
+  "detect_signals": [
+    {
+      "kind": "token_standardness",
+      "value": "\\b(?:ERC4626|IERC4626)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "precision",
+      "value": "\\b(?:totalAssets|convertToShares|convertToAssets|previewDeposit|previewWithdraw)\\s*\\(",
+      "weight": 3
+    },
+    {
+      "kind": "external_call_safety",
+      "value": "\\b(?:deposit|mint|withdraw|redeem)\\s*\\(",
+      "weight": 2
+    },
+    {
+      "kind": "reentrancy_safety",
+      "value": "\\.(?:call|transfer|safeTransfer)\\s*(?:\\(|\\{)",
+      "weight": 2
+    }
+  ],
+  "invariants": [
+    "Shares must reconcile with the value of redeemable underlying assets.",
+    "Deposits and withdrawals must preserve consistent rounding and unit assumptions.",
+    "A donation or strategy loss must not create an exploitable mismatch between share price and realizable assets."
+  ],
+  "required_capabilities": [
+    "control",
+    "invariant-forge",
+    "reprove",
+    "economic",
+    "token-weird",
+    "trace-parity"
+  ],
+  "forbidden_capabilities": [],
+  "attack_families": [
+    "accounting",
+    "boundary",
+    "reentrancy",
+    "erc20",
+    "oracle",
+    "economic"
+  ],
+  "assumption_classes": [
+    "token_standardness",
+    "precision",
+    "external_call_safety",
+    "reentrancy_safety",
+    "oracle_trust"
+  ]
+}
