@@ -111,14 +111,84 @@ def find_free_port() -> int:
 def wait_for_anvil(process: subprocess.Popen, url: str, log_path: Path) -> None:
     for _ in range(60):
         if process.poll() is not None:
-            raise AssertionError("Anvil exited during startup:\n" + log_path.read_text(encoding="utf-8", errors="replace")[-6000:])
+            raise AssertionError("Anvil exited during startup:\\n" + log_path.read_text(encoding="utf-8", errors="replace")[-6000:])
         try:
             if quantity(rpc(url, "eth_chainId", [], timeout=2), "Anvil chain ID") == 1:
                 return
         except Exception:
             pass
         time.sleep(0.5)
-    raise AssertionError("Anvil did not become ready:\n" + log_path.read_text(encoding="utf-8", errors="replace")[-6000:])
+    raise AssertionError("Anvil did not become ready:\\n" + log_path.read_text(encoding="utf-8", errors="replace")[-6000:])
+
+
+def is_rate_limit_failure(details: str) -> bool:
+    lowered = details.lower()
+    return any(marker in lowered for marker in (
+        "http error 429", "status code 429", "too many requests",
+        "compute units per second", "rate limit", "rate exceeded",
+    ))
+
+
+def stop_anvil(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def start_anvil(
+    binary: str,
+    fork_upstream: str,
+    fork_block: int,
+    root_env: dict[str, str],
+    log_path: Path,
+) -> tuple[subprocess.Popen, str]:
+    port = find_free_port()
+    url = f"http://127.0.0.1:{port}"
+    env = root_env.copy()
+    env.update({
+        "ETH_RPC_URL": url,
+        "FOUNDRY_ETH_RPC_URL": url,
+        "LOWKEY_RPC_URL": url,
+    })
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        process = subprocess.Popen(
+            [
+                binary, "--silent", "--host", "127.0.0.1", "--port", str(port),
+                "--chain-id", "1", "--fork-url", fork_upstream,
+                "--fork-block-number", str(fork_block),
+            ],
+            cwd=ROOT, env=env, stdout=log_handle, stderr=subprocess.STDOUT,
+        )
+    try:
+        wait_for_anvil(process, url, log_path)
+    except Exception:
+        stop_anvil(process)
+        raise
+    return process, url
+
+
+def resolve_fork_snapshot(
+    fork_upstream: str, source_rpc: str, deployment_block: int
+) -> tuple[int, dict[str, Any], dict[str, Any], str]:
+    fork_chain_id = quantity(rpc(fork_upstream, "eth_chainId", []), "fork upstream chain ID")
+    if fork_chain_id != 1:
+        raise AssertionError(f"Fork fallback must be Ethereum mainnet; received chain ID {fork_chain_id}.")
+    fork_block, common_header = pick_common_block(fork_upstream, source_rpc, deployment_block)
+    source_proof = rpc(source_rpc, "eth_getProof", [TARGET, [], hex(fork_block)])
+    if not isinstance(source_proof, dict) or not str(source_proof.get("codeHash") or "").startswith("0x"):
+        raise AssertionError("Source RPC must support historical EIP-1186 eth_getProof for the pinned fork block.")
+    fork_code = rpc(fork_upstream, "eth_getCode", [TARGET, hex(fork_block)])
+    if not isinstance(fork_code, str) or fork_code in {"0x", "0x0"}:
+        raise AssertionError("EntryPoint v0.7 has no runtime code at the selected pinned block.")
+    from lowkey.godmode import _eip1167_implementation
+    if _eip1167_implementation(fork_code):
+        raise AssertionError("The EntryPoint v0.7 acceptance target unexpectedly resolved as an EIP-1167 clone.")
+    return fork_block, common_header, source_proof, fork_code
 
 
 def prepare_forge_project(project: Path) -> None:
@@ -216,40 +286,56 @@ def main() -> int:
     )
     if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
         raise AssertionError("Source RPC cannot return target runtime at its Sourcify deployment block; archive state is required.")
-    fork_block, common_header = pick_common_block(fork_upstream, source_rpc, target_deployment_block)
-    source_proof = rpc(
-        source_rpc, "eth_getProof", [TARGET, [], hex(fork_block)]
+    fork_block, common_header, source_proof, fork_code = resolve_fork_snapshot(
+        fork_upstream, source_rpc, target_deployment_block
     )
-    if not isinstance(source_proof, dict) or not str(source_proof.get("codeHash") or "").startswith("0x"):
-        raise AssertionError("Source RPC must support historical EIP-1186 eth_getProof for the pinned fork block.")
-    fork_code = rpc(fork_upstream, "eth_getCode", [TARGET, hex(fork_block)])
-    if not isinstance(fork_code, str) or fork_code in {"0x", "0x0"}:
-        raise AssertionError("EntryPoint v0.7 has no runtime code at the selected pinned block.")
-    if _eip1167_implementation(fork_code):
-        raise AssertionError("The EntryPoint v0.7 acceptance target unexpectedly resolved as an EIP-1167 clone.")
 
-    port = find_free_port()
-    anvil_url = f"http://127.0.0.1:{port}"
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     anvil_log = ARTIFACT_ROOT / "anvil.log"
     env = os.environ.copy()
-    env.update({
-        "ETH_RPC_URL": anvil_url,
-        "FOUNDRY_ETH_RPC_URL": anvil_url,
-        "LOWKEY_RPC_URL": anvil_url,
-    })
-    anvil_process = subprocess.Popen(
-        [
-            anvil, "--silent", "--host", "127.0.0.1", "--port", str(port),
-            "--chain-id", "1", "--fork-url", fork_upstream,
-            "--fork-block-number", str(fork_block),
-        ],
-        cwd=ROOT, env=env, stdout=anvil_log.open("w", encoding="utf-8"),
-        stderr=subprocess.STDOUT,
-    )
-
+    fork_provider_attempts = [{
+        "provider": urlparse_safe(fork_upstream), "status": "selected",
+    }]
+    anvil_process: subprocess.Popen | None = None
     try:
-        wait_for_anvil(anvil_process, anvil_url, anvil_log)
+        try:
+            anvil_process, anvil_url = start_anvil(
+                anvil, fork_upstream, fork_block, env, anvil_log
+            )
+        except AssertionError as primary_error:
+            primary_log = anvil_log.read_text(encoding="utf-8", errors="replace") if anvil_log.exists() else ""
+            if not is_rate_limit_failure(f"{primary_error}\\n{primary_log}"):
+                raise
+            fallback_rpc = (
+                os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
+                or DEFAULT_FORK_UPSTREAM
+            )
+            fallback_key = urlparse_safe(fallback_rpc)
+            if fallback_key in {urlparse_safe(fork_upstream), urlparse_safe(source_rpc)}:
+                raise AssertionError(
+                    "The configured fork RPC was rate-limited and no independent fallback is available. "
+                    "Set LOWKEY_P2_FORK_FALLBACK_RPC_URL to a different Ethereum mainnet RPC."
+                ) from primary_error
+            fork_provider_attempts[0] = {
+                "provider": urlparse_safe(fork_upstream),
+                "status": "rate_limited",
+                "reason": "Anvil startup returned HTTP 429",
+            }
+            # Re-pin both providers at a common block for the fallback. The
+            # source/archive RPC remains independent and is re-checked at the
+            # newly selected block before Anvil is started.
+            fork_block, common_header, source_proof, fork_code = resolve_fork_snapshot(
+                fallback_rpc, source_rpc, target_deployment_block
+            )
+            fork_provider_attempts.append({
+                "provider": fallback_key, "status": "selected_fallback",
+            })
+            fork_upstream = fallback_rpc
+            anvil_process, anvil_url = start_anvil(
+                anvil, fork_upstream, fork_block, env,
+                ARTIFACT_ROOT / "anvil-fallback.log",
+            )
+
         local_chain = quantity(rpc(anvil_url, "eth_chainId", []), "fork chain ID")
         if local_chain != 1:
             raise AssertionError(f"Anvil fork returned chain ID {local_chain}, expected 1.")
@@ -417,6 +503,7 @@ def main() -> int:
                 "fork_block_hash": common_header.get("hash"),
                 "source_provider": urlparse_safe(source_rpc),
                 "fork_provider": urlparse_safe(fork_upstream),
+                "fork_provider_attempts": fork_provider_attempts,
                 "proof_status": proof["status"],
                 "target_authenticity": identity.get("identity", {}).get("target", {}),
                 "forge_event_count": len(forge_events),
@@ -436,12 +523,7 @@ def main() -> int:
             print(json.dumps(report, indent=2, sort_keys=True))
             print(parity_cli.stdout[-6000:])
     finally:
-        anvil_process.terminate()
-        try:
-            anvil_process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            anvil_process.kill()
-            anvil_process.wait(timeout=5)
+        stop_anvil(anvil_process)
     return 0
 
 
