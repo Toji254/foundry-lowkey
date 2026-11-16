@@ -15,6 +15,35 @@ ANVIL_KEY0 = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 SOURCE = """// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+contract FallbackAccessTarget {
+    mapping(address => uint256) public contributions;
+    address payable public owner;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "caller is not the owner");
+        _;
+    }
+
+    constructor() payable {
+        owner = payable(msg.sender);
+        contributions[msg.sender] = 1000 ether;
+    }
+
+    function contribute() external payable {
+        require(msg.value < 0.001 ether, "too much");
+        contributions[msg.sender] += msg.value;
+    }
+
+    receive() external payable {
+        require(msg.value > 0 && contributions[msg.sender] > 0, "not a contributor");
+        owner = payable(msg.sender);
+    }
+
+    function withdraw() external onlyOwner {
+        payable(msg.sender).transfer(address(this).balance);
+    }
+}
+
 contract AddressArraySetupTarget {
     mapping(address => uint256) public balances;
 
@@ -253,6 +282,91 @@ def exercise(
     }
 
 
+def exercise_fallback_takeover(
+    lk: str,
+    cast: str,
+    forge: str,
+    root: Path,
+    env: dict[str, str],
+    evidence_root: Path,
+) -> dict[str, object]:
+    """Prove the Fallback receive() authority write on a real local Anvil node."""
+    contract = "FallbackAccessTarget"
+    address = deploy(forge, root, env, contract)
+    run([lk, "target", "reset"], root, env)
+    run([lk, "target", contract, address], root, env)
+
+    output = run(
+        [lk, "break", "--family", "access", "--function", "receive", "--rounds", "1"],
+        root, env, timeout=180,
+    )
+    if "CONCRETE BREAK CONDITION REACHED" not in output.stdout:
+        raise AssertionError(
+            "Fallback takeover probe did not reach the expected local break condition.\\n"
+            + output.stdout[-12000:]
+        )
+
+    runs_dir = root / ".audit" / "break" / "runs"
+    evidence_files = sorted(
+        runs_dir.glob(f"*_access_authority_{contract}_receive_*.json")
+    )
+    if not evidence_files:
+        raise AssertionError(
+            f"Fallback authority-write evidence was not saved under {runs_dir}.\\n"
+            + output.stdout[-12000:]
+        )
+    evidence_path = evidence_files[-1]
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    before = str(evidence.get("authority_before") or "").lower()
+    after = str(evidence.get("authority_after") or "").lower()
+    attacker = str(evidence.get("attacker") or "").lower()
+    if not before or not attacker or before == attacker or after != attacker:
+        raise AssertionError(
+            "Fallback evidence did not prove an unauthorized owner change: "
+            + json.dumps(evidence, indent=2)
+        )
+    if evidence.get("break_condition") is not True:
+        raise AssertionError("Fallback evidence omitted its explicit break_condition=true marker.")
+
+    # The experiment must restore the exact pre-probe Anvil snapshot.
+    restored_owner = run(
+        [cast, "call", address, "owner()(address)", "--rpc-url", RPC], root, env
+    ).stdout.strip().lower()
+    restored_contribution = run(
+        [cast, "call", address, "contributions(address)(uint256)", attacker, "--rpc-url", RPC],
+        root, env,
+    ).stdout.strip().splitlines()[0]
+    if restored_owner != before:
+        raise AssertionError(
+            f"Authority probe did not restore owner after evm_revert: before={before}, after={restored_owner}"
+        )
+    try:
+        contribution_value = int(restored_contribution, 0)
+    except ValueError as exc:
+        raise AssertionError(
+            f"Could not decode restored contribution balance: {restored_contribution!r}"
+        ) from exc
+    if contribution_value != 0:
+        raise AssertionError(
+            f"Authority probe left attacker contribution state behind: {contribution_value}"
+        )
+
+    destination = evidence_root / contract
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(evidence_path, destination / evidence_path.name)
+    return {
+        "contract": contract,
+        "status": "BREAK",
+        "entry": "receive()",
+        "authority_before": before,
+        "authority_after": after,
+        "attacker": attacker,
+        "snapshot_restored": True,
+        "attacker_contribution_after_restore": contribution_value,
+        "evidence_path": (destination / evidence_path.name).as_posix(),
+    }
+
+
 def main() -> int:
     forge = shutil.which("forge")
     cast = shutil.which("cast") or str(Path.home() / ".foundry" / "bin" / "cast")
@@ -346,7 +460,14 @@ def main() -> int:
                 "TOKEN_APPROVAL_ATTEMPTED true",
                 "TOKEN_APPROVAL_SUCCESS true",
             ], evidence_root))
-        if len(cases) != 4 or any(case.get("status") != "OBSERVED" for case in cases):
+            cases.append(exercise_fallback_takeover(
+                lk, cast, forge, root, env, evidence_root
+            ))
+        if (
+            len(cases) != 5
+            or any(case.get("status") not in {"OBSERVED", "BREAK"} for case in cases)
+            or not cases[-1].get("snapshot_restored")
+        ):
             raise AssertionError(f"P0 acceptance did not observe all four cases: {cases}")
         report = {
             "gate": "P0 installed-lk break acceptance",
@@ -354,7 +475,7 @@ def main() -> int:
             "source_sha": expected_git_sha,
             "installed_git_sha": installed_git_sha,
             "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
-            "expected_case_count": 4,
+            "expected_case_count": 5,
             "observed_case_count": len(cases),
             "cases": cases,
         }
@@ -363,7 +484,7 @@ def main() -> int:
             encoding="utf-8",
         )
         print(json.dumps(report, indent=2, sort_keys=True))
-        print("PASS: all four P0 end-to-end installed-lk acceptance cases reached OBSERVED.")
+        print("PASS: four accounting acceptance cases and the Fallback authority-takeover proof passed.")
     finally:
         # Do not leave the CI runner's global target pointed at a temporary deployment.
         subprocess.run([lk, "target", "reset"], env=env, text=True, capture_output=True, check=False)
