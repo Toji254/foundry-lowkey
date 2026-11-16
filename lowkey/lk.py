@@ -701,7 +701,13 @@ def anvil_rpc_info(config):
         config["_auto_rpc_info"]=info
     return info
 
-def effective_rpc(config):
+def effective_rpc(config, explicit_rpc=None):
+    # A per-command RPC flag must govern both the external Cast invocation and
+    # Lowkey's follow-up receipt/trace/evidence requests.
+    if explicit_rpc is not None:
+        selected, _source = shared_context.choose_rpc(explicit_rpc=explicit_rpc)
+        if selected:
+            return selected
     project_info = project_fixture_rpc_info(config)
     fixture_rpc = project_info.get("url") if isinstance(project_info, dict) else None
     if fixture_rpc:
@@ -7319,9 +7325,20 @@ def run_cast(args,config,capture=False):
     for flag in ["--preview","--dry-run","--confirm","--yes"]:
         while flag in remaining: remaining.remove(flag)
     cmd.extend(remaining)
+    explicit_rpc = None
+    for rpc_index, token in enumerate(cmd):
+        token = str(token)
+        if token == "--rpc-url" and rpc_index + 1 < len(cmd):
+            explicit_rpc = str(cmd[rpc_index + 1])
+        elif token.startswith("--rpc-url="):
+            explicit_rpc = token.split("=", 1)[1]
+
+    def command_rpc():
+        return effective_rpc(config, explicit_rpc=explicit_rpc)
+
     rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","rpc","access-list"}
-    active_rpc=effective_rpc(config)
-    if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
+    active_rpc=command_rpc()
+    if cast_cmd in rpc_commands and active_rpc and explicit_rpc is None: cmd.extend(["--rpc-url",active_rpc])
     actor=actor_override or config.get("actor")
 
     # eth_call has no wallet signer, but msg.sender still matters to contract
@@ -7434,7 +7451,7 @@ def run_cast(args,config,capture=False):
                 config["last_tx"] = failed_tx_hash
                 config["last_tx_block"] = None
                 failed_root = audit_context.foundry_project_root()
-                failed_rpc = effective_rpc(config)
+                failed_rpc = command_rpc()
                 failed_target = target if is_address(target) else None
                 config["last_tx_project_root"] = str(Path(failed_root).expanduser().resolve())
                 if failed_target:
@@ -7473,7 +7490,7 @@ def run_cast(args,config,capture=False):
                 config["last_tx"]=tx_hash; config["last_tx_block"]=None
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 root=audit_context.foundry_project_root()
-                rpc = effective_rpc(config)
+                rpc = command_rpc()
                 send_tx_hash = tx_hash
                 send_receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
                 send_transaction = (
