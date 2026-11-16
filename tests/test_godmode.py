@@ -289,6 +289,60 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(any(x["kind"] == "receive" for x in maps["fallback_map"]))
             self.assertTrue(any("credit" in x["variables"] for x in maps["reentrancy_graph"]))
 
+    def test_source_security_review_finds_unguarded_authority_writes_without_flagging_guarded_withdraw(self):
+        fallback = """
+        pragma solidity ^0.8.20;
+        contract Fallback {
+            mapping(address => uint256) public contributions;
+            address payable public owner;
+
+            modifier onlyOwner() {
+                require(msg.sender == owner);
+                _;
+            }
+
+            constructor() payable {
+                owner = payable(msg.sender);
+                contributions[msg.sender] = 1000 ether;
+            }
+
+            function contribute() public payable {
+                require(msg.value < 0.001 ether);
+                contributions[msg.sender] += msg.value;
+                if (contributions[msg.sender] > contributions[owner]) {
+                    owner = payable(msg.sender);
+                }
+            }
+
+            receive() external payable {
+                require(msg.value > 0 && contributions[msg.sender] > 0);
+                owner = payable(msg.sender);
+            }
+
+            function withdraw() external onlyOwner {
+                owner.transfer(address(this).balance);
+            }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "Fallback.sol").write_text(fallback, encoding="utf-8")
+
+            findings = godmode._source_security_candidates(root)
+
+        vulnerable_entries = {
+            (item["function"], item["privileged_variable"])
+            for item in findings
+        }
+        self.assertIn(("receive", "owner"), vulnerable_entries)
+        self.assertIn(("contribute", "owner"), vulnerable_entries)
+        self.assertNotIn(("withdraw", "owner"), vulnerable_entries)
+        self.assertTrue(all(item["verified"] is False for item in findings))
+
+
     def _control_manifest(self, root):
         target = "0x" + "1" * 40
         sender = "0x" + "2" * 40
