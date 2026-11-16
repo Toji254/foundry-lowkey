@@ -814,6 +814,40 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertFalse(gas["available"])
         self.assertIn("execution reverted", gas["reason"])
 
+
+    def test_transaction_preview_encodes_full_signature_when_abi_is_unavailable(self):
+        target = "0x" + "9" * 40
+        rpc = "http://127.0.0.1:8545"
+        with patch.object(lk, "cast_output", return_value=(0, "0x12345678", "")), \
+             patch.object(lk, "_rpc_json_response", side_effect=[
+                 {"result": "0x5208"},
+                 {"result": "0x3b9aca00"},
+             ]) as request:
+            gas = lk._transaction_preview_gas(
+                {"rpc": rpc},
+                ["cast", "send", target, "setValue(uint256)", "10", "--rpc-url", rpc],
+                target,
+                None,
+                ["10"],
+            )
+        self.assertTrue(gas["available"])
+        self.assertEqual(request.call_args_list[0].args[2][0]["data"], "0x12345678")
+
+    def test_transaction_preview_refuses_ambiguous_unencoded_function_data(self):
+        target = "0x" + "9" * 40
+        with patch.object(lk, "cast_output", return_value=(1, "", "unknown function")), \
+             patch.object(lk, "_rpc_json_response") as request:
+            gas = lk._transaction_preview_gas(
+                {"rpc": "http://127.0.0.1:8545"},
+                ["cast", "send", target, "setValue", "10"],
+                target,
+                None,
+                ["10"],
+            )
+        self.assertFalse(gas["available"])
+        self.assertIn("calldata encoding failed", gas["reason"])
+        request.assert_not_called()
+
     def test_repeated_send_confirms_once_by_default(self):
         calls = []
 
