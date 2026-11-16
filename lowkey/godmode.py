@@ -3631,10 +3631,12 @@ def godmode(args):
             print(f'  [{row.get("status")}] {location}{function}: {row.get("expression")}')
     print("Report: "+str(out.relative_to(root)))
     print("Next: inspect .audit/godmode/latest.json, then use lk findings / lk ai preview for source context; build a focused PoC before claiming exploitability.")
-    # A deliberately static plan completed successfully even though it does not
-    # attempt to satisfy exploit-proof gates. Keep REVIEW_REQUIRED in the report.
-    if ns.plan_only:
-        return 0
+    # Source reconnaissance is a successful task by itself. Missing optional
+    # proof stages keep the saved audit REVIEW_REQUIRED, but must not look like
+    # a crashed/failed command when the operator never requested those stages.
+    if ns.plan_only or not (ns.attack or ns.mutation_manifest or ns.coverage_source):
+        hard_failures=[stage for stage in stages if stage["status"] in {"blocked","review"}]
+        return 2 if hard_failures else 0
     return 2 if blockers else 0
 def report(args):
     p=LowkeyArgumentParser(prog="lk report")

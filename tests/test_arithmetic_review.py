@@ -113,6 +113,31 @@ class ArithmeticReviewTests(unittest.TestCase):
         self.assertEqual(len(maps["arithmetic_review"]), 1)
         self.assertEqual(maps["arithmetic_review"][0]["status"], "WRAPAROUND_POSSIBLE")
 
+
+    def test_source_only_scan_succeeds_without_claiming_a_complete_audit(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import io
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "Token.sol").write_text(VULNERABLE_TOKEN, encoding="utf-8")
+            with patch.object(godmode, "rpc", side_effect=AssertionError("source-only scan must not call RPC")), \
+                 redirect_stdout(io.StringIO()):
+                result_code = godmode.godmode(["--root", str(root)])
+
+            self.assertEqual(result_code, 0)
+            report = json.loads(
+                (root / ".audit" / "godmode" / "latest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["overall_status"], "REVIEW_REQUIRED")
+            self.assertTrue(any(
+                stage["name"] == "onchain-recon" and stage["status"] == "skipped"
+                for stage in report["stages"]
+            ))
+            self.assertEqual(len(report["signals"]["arithmetic_review"]), 1)
+
     def test_plan_only_does_not_touch_rpc_or_execute_optional_stages(self):
         from contextlib import redirect_stdout
         from unittest.mock import patch
