@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from scripts import p2_first_fork_acceptance_e2e as p2
+ROOT = Path(__file__).resolve().parents[1]
+P2_SCRIPT = ROOT / "scripts" / "p2-first-fork-acceptance-e2e.py"
+P2_SPEC = importlib.util.spec_from_file_location("p2_first_fork_acceptance_e2e", P2_SCRIPT)
+if P2_SPEC is None or P2_SPEC.loader is None:
+    raise ImportError(f"Cannot load P2 acceptance module from {P2_SCRIPT}")
+p2 = importlib.util.module_from_spec(P2_SPEC)
+sys.modules[P2_SPEC.name] = p2
+P2_SPEC.loader.exec_module(p2)
 
 
 class P2RpcFallbackTests(unittest.TestCase):
