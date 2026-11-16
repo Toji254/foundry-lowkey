@@ -297,6 +297,41 @@ class BreakEngineTests(unittest.TestCase):
             ["(0x" + "11" * 20 + ",[1],true)"],
         )
 
+    def test_background_ai_ranks_only_discovered_setup_abi_candidates(self):
+        functions = [
+            {
+                "name": "deposit",
+                "inputs": [{"name": "amount", "type": "uint256"}],
+                "stateMutability": "nonpayable",
+            },
+            {
+                "name": "stake",
+                "inputs": [
+                    {"name": "token", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+                "stateMutability": "nonpayable",
+            },
+        ]
+        decision = {
+            "selected_signature": "stake(address,uint256)",
+            "mode": "ai_ranked_candidate",
+            "reason": "The stake method is a stronger candidate for creating the initial position.",
+            "provider": "ollama",
+            "model": "test-model",
+            "candidate_sha256": "a" * 64,
+        }
+        with __import__("unittest").mock.patch.object(
+            break_engine, "rank_setup_candidates", return_value=decision
+        ) as rank:
+            selected = break_engine._find_setup_function(functions)
+        self.assertEqual(selected["name"], "stake")
+        self.assertEqual(selected["_lowkey_setup_reasoning"]["mode"], "ai_ranked_candidate")
+        allowed_signatures = {
+            item["signature"] for item in rank.call_args.args[0]
+        }
+        self.assertEqual(allowed_signatures, {"deposit(uint256)", "stake(address,uint256)"})
+
     def test_make_value_accepts_nested_tuple_arrays(self):
         function = {
             "inputs": [{
