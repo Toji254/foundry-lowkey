@@ -204,18 +204,18 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
 def _find_wrapped_native_round_trip_property(source: str, name: str) -> dict[str, str] | None:
     """Recognize a concrete ERC20-wrapped-native deposit/withdraw round trip.
 
-    This accepts only the narrow source pattern where deposit forwards msg.value
-    into _mint(msg.sender, msg.value), and withdraw burns the caller's requested
-    amount before making a value-bearing call to the caller. It does not infer
-    this property from the WETH name or ABI alone.
+    Only a very narrow source pattern is accepted. It must inherit ERC20,
+    mint msg.value to msg.sender in an unguarded payable deposit(), and burn
+    exactly the withdrawn amount before a value-bearing caller() payment.
     """
     body = _contract_body(source, name)
     if body is None:
         return None
     searchable = mask_solidity(body) if mask_solidity else body
+    whole_source = mask_solidity(source) if mask_solidity else source
     contract_header = re.search(
         r"\b(?:abstract\s+)?contract\s+" + re.escape(name) + r"\b([^\{]*)\{",
-        mask_solidity(source) if mask_solidity else source,
+        whole_source,
     )
     if not contract_header or not re.search(r"\bis\s+[^\n]*\bERC20\b", contract_header.group(1)):
         return None
@@ -225,6 +225,12 @@ def _find_wrapped_native_round_trip_property(source: str, name: str) -> dict[str
         searchable,
     )
     if not deposit:
+        return None
+    deposit_header = searchable[deposit.start():deposit.end() - 1]
+    if not re.fullmatch(
+        r"\s*function\s+deposit\s*\(\s*\)\s*public\s+payable(?:\s+virtual)?\s*",
+        deposit_header,
+    ):
         return None
     deposit_end = _matching_brace(searchable, deposit.end() - 1)
     if deposit_end is None:
@@ -239,22 +245,31 @@ def _find_wrapped_native_round_trip_property(source: str, name: str) -> dict[str
     )
     if not withdraw:
         return None
+    amount_name = withdraw.group(1)
+    withdraw_header = searchable[withdraw.start():withdraw.end() - 1]
+    if not re.fullmatch(
+        r"\s*function\s+withdraw\s*\(\s*uint256\s+"
+        + re.escape(amount_name)
+        + r"\s*\)\s*public(?:\s+virtual)?\s*",
+        withdraw_header,
+    ):
+        return None
     withdraw_end = _matching_brace(searchable, withdraw.end() - 1)
     if withdraw_end is None:
         return None
     withdraw_body = searchable[withdraw.end():withdraw_end]
-    amount_name = withdraw.group(1)
-    if not re.search(
+    burn_match = re.search(
         rf"\b_burn\s*\(\s*msg\.sender\s*,\s*{re.escape(amount_name)}\s*\)\s*;",
         withdraw_body,
-    ):
+    )
+    if not burn_match:
         return None
-    # Support only an explicit ETH call to msg.sender using the same burned amount.
-    if not re.search(
-        rf"call\s*\([^;]*\bcaller\s*\(\s*\)[^;]*\b{re.escape(amount_name)}\b",
+    payout_match = re.search(
+        rf"call\s*\(\s*gas\s*\(\s*\)\s*,\s*caller\s*\(\s*\)\s*,"
+        rf"\s*{re.escape(amount_name)}\s*,",
         withdraw_body,
-        re.S,
-    ):
+    )
+    if not payout_match or burn_match.start() >= payout_match.start():
         return None
     return {
         "kind": "wrapped-native-round-trip",
