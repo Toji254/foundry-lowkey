@@ -1638,6 +1638,9 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
     result["identity_verified"] = True
     result["verified"] = True
     result["identity_method"] = (
+        "Canonical EIP-1167 runtime bytecode and archive first-code-present target deployment block, "
+        "plus exact Sourcify v2 implementation source/deployment/code-hash verification"
+        if target_clone_implementation else
         "Sourcify v2 exact runtime+creation match, archive first-code-present deployment block, "
         "and EIP-1967 implementation resolution where applicable"
     )
