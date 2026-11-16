@@ -56,8 +56,9 @@ def _git_revision(root: Path) -> str | None:
 
 
 def _source_line_offsets(source: str) -> list[int]:
+    raw = source.encode("utf-8")
     offsets = [0]
-    offsets.extend(index + 1 for index, char in enumerate(source) if char == "\n")
+    offsets.extend(index + 1 for index, byte in enumerate(raw) if byte == 10)
     return offsets
 
 
@@ -125,25 +126,38 @@ def _validated_candidates(
             continue
         if not isinstance(refs, list) or not 1 <= len(refs) <= MAX_SOURCE_REFS:
             continue
-        for ref in refs:
+        for ref_index, ref in enumerate(refs):
             if not isinstance(ref, dict):
-                continue
+                raise AttackSynthesisError(
+                    f"Candidate {candidate_id} source_refs[{ref_index}] is malformed."
+                )
             path = ref.get("path")
             source = source_texts.get(path) if isinstance(path, str) else None
             if source is None:
-                continue
+                raise AttackSynthesisError(
+                    f"Candidate {candidate_id} cites a source file absent from the validated report."
+                )
             lines = source.splitlines()
             start_line, end_line = ref.get("line_start"), ref.get("line_end")
             if (
                 type(start_line) is not int or type(end_line) is not int
                 or not 1 <= start_line <= end_line <= len(lines)
             ):
-                continue
+                raise AttackSynthesisError(
+                    f"Candidate {candidate_id} has an invalid source citation line range."
+                )
             if ref.get("source_sha256") != _sha256(source.encode("utf-8")):
-                continue
+                raise AttackSynthesisError(
+                    f"Candidate {candidate_id} source citation hash is stale."
+                )
             quote = ref.get("quote")
-            if not isinstance(quote, str) or quote.strip() not in "\n".join(lines[start_line - 1:end_line]):
-                continue
+            if (
+                not isinstance(quote, str)
+                or quote.strip() not in "\n".join(lines[start_line - 1:end_line])
+            ):
+                raise AttackSynthesisError(
+                    f"Candidate {candidate_id} source quote does not match the current cited lines."
+                )
         validated.append(candidate)
     if len(validated) != len(candidates):
         # Refuse the complete report rather than silently synthesizing from a
