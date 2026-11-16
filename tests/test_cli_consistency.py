@@ -341,7 +341,8 @@ class CliConsistencyTests(unittest.TestCase):
             "target": target,
             "rpc": "http://127.0.0.1:0",
         }
-        with patch.object(lk, "activate_project_target", return_value=target), \
+        with patch.object(lk, "activate_project_context"), \
+             patch.object(lk, "activate_project_target", return_value=target), \
              patch.object(lk, "storage_layout_details", return_value=({}, [])), \
              patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output, \
              patch.object(lk.shared_context, "target_owned_by_project", return_value=True):
