@@ -2598,7 +2598,14 @@ def control(args):
     # Fixture/Forge evidence can establish an observed structural break, never
     # gas-adjusted profitability or proof of an authentic deployment.
     if (non_economic and passed) or (backend=="forge-state-diff" and passed):
-        proof_status="SIMULATED_BREAK"
+        # Forge state-diff remains non-economic/simulated-caller evidence, but
+        # an independently verified real deployment can be reported as
+        # FORK_OBSERVED. A fixture or unverified target remains SIMULATED_BREAK.
+        proof_status=(
+            "FORK_OBSERVED"
+            if proof.get("target_authenticity_verified")
+            else "SIMULATED_BREAK"
+        )
     if not freeze_status.get("verified"):
         proof_status="OBSERVED"
     if not evidence_requirements_verified and not rejected:
