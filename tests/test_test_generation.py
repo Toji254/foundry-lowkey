@@ -88,7 +88,7 @@ contract WETH is ERC20 {
             root = Path(tmp)
             (root / "src").mkdir()
             (root / "foundry.toml").write_text(
-                '[profile.default]\\nsrc = "src"\\n', encoding="utf-8"
+                '[profile.default]\nsrc = "src"\n', encoding="utf-8"
             )
             (root / "src" / "ERC20.sol").write_text(
                 """pragma solidity ^0.8.20;
@@ -124,7 +124,7 @@ abstract contract ERC20 {
             self.assertIn("target.balanceOf(address(this))", unit)
             self.assertIn("target.withdraw(amount)", fuzz)
             self.assertIn("receive() external payable {}", fuzz)
-            self.assertNotRegex(unit + fuzz, r"(?i)\\bTODO\\b|\\bscaffold\\b|\\bstarter\\b")
+            self.assertNotRegex(unit + fuzz, r"(?i)\bTODO\b|\bscaffold\b|\bstarter\b")
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["fuzz_property"]["kind"], "wrapped-native-round-trip")
             self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
