@@ -102,6 +102,30 @@ class P2ForkFailoverTests(unittest.TestCase):
         self.assertEqual(evidence["deployment_proof"], proof)
         self.assertEqual(request.call_count, 6)
 
+    def test_source_archive_tries_independent_fork_fallback_if_first_source_fallback_fails(self):
+        primary_timeout = RuntimeError("primary archive timed out")
+        fallback_error = RuntimeError("fallback archive lacks historical state")
+        header = {"hash": "0x" + "3" * 64}
+        proof = {"codeHash": "0x" + "4" * 64}
+        responses = [
+            "0x1", primary_timeout,
+            "0x1", fallback_error,
+            "0x1", header, "0x6000", proof,
+        ]
+        alternate = "https://ethereum-rpc.publicnode.com"
+        with mock.patch.object(p2, "rpc", side_effect=responses) as request:
+            active, attempts, evidence = p2.resolve_source_archive_provider(
+                self.source,
+                self.fallback,
+                self.primary,
+                123,
+                alternate_rpc=alternate,
+            )
+        self.assertEqual(active, alternate)
+        self.assertEqual([item["status"] for item in attempts], ["unavailable", "unavailable", "selected"])
+        self.assertEqual(evidence["deployment_code"], "0x6000")
+        self.assertEqual(request.call_count, 8)
+
     def test_source_archive_provider_never_reuses_fork_endpoint(self):
         with mock.patch.object(
             p2,
