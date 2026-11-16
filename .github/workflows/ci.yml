@@ -190,7 +190,7 @@ jobs:
           python3 scripts/verify_foundry_toolchain.py 1.9.0
 
       - name: Install Lowkey
-        run: ./install.sh
+        run: bash install.sh
 
       - name: Prepare isolated P0 forge-std fixture
         run: |
@@ -272,7 +272,7 @@ jobs:
           python3 scripts/verify_foundry_toolchain.py 1.9.0
 
       - name: Install Lowkey
-        run: ./install.sh
+        run: bash install.sh
 
       - name: Prepare isolated P1 forge-std fixture
         run: |
@@ -374,7 +374,7 @@ jobs:
           python3 scripts/verify_foundry_toolchain.py 1.9.0
 
       - name: Install Lowkey
-        run: ./install.sh
+        run: bash install.sh
 
       - name: Run P2 Forge-Anvil parity and first verified deployment fork
         env:
@@ -424,7 +424,7 @@ jobs:
           cd tests/fixtures/acceptance/p0-compatibility
           forge test -vv
       - name: Install Lowkey
-        run: ./install.sh
+        run: bash install.sh
       - name: Exercise project-aware Chisel contract preload
         run: |
           set -euo pipefail
@@ -1840,7 +1840,7 @@ jobs:
           python3 scripts/verify_foundry_toolchain.py 1.9.0
       - name: Install Lowkey
         run: |
-          ./install.sh
+          bash install.sh
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - name: Validate complete test generation on a controlled Foundry fixture
         run: |
@@ -1955,7 +1955,7 @@ jobs:
           python3 scripts/verify_foundry_toolchain.py 1.9.0
       - name: Install Lowkey
         run: |
-          ./install.sh
+          bash install.sh
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - name: Run the complete pinned real-project corpus
         id: benchmark
@@ -2047,7 +2047,7 @@ jobs:
           export PATH="$HOME/.foundry/bin:$PATH"
           python3 scripts/verify_foundry_toolchain.py 1.9.0
       - name: Install Lowkey
-        run: ./install.sh
+        run: bash install.sh
       - name: Build Vyper fixture
         run: |
           rm -rf /tmp/lowkey-vyper-fixture
@@ -2146,7 +2146,7 @@ jobs:
           python3 scripts/verify_foundry_toolchain.py 1.9.0
       - name: Install Lowkey
         run: |
-          ./install.sh
+          bash install.sh
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - name: Create minimal real Foundry fixture
         run: |
@@ -2254,7 +2254,7 @@ jobs:
           python3 scripts/verify_foundry_toolchain.py 1.9.0
       - name: Install Lowkey
         run: |
-          ./install.sh
+          bash install.sh
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - name: Install pinned external engine versions
         run: bash scripts/install-verification-engines.sh
