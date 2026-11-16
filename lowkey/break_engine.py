@@ -3250,7 +3250,7 @@ def _run_authority_write_probe(host, config, rpc: str, target: Target,
         for candidate in all_functions:
             if str(candidate.get("name") or "").lower() in {"receive", "fallback"}:
                 continue
-            if str(candidate.get("stateMutability") or "").lower() != "payable":
+            if not _is_state_changing(candidate):
                 continue
             candidate_name = str(candidate.get("name") or "")
             candidate_body = _source_function_body(project_info, candidate_name, target)
@@ -3295,6 +3295,17 @@ def _run_authority_write_probe(host, config, rpc: str, target: Target,
     try:
         before = _read_address_getter(host, rpc, target, getter, config)
         evidence["authority_before"] = before
+        attacker = next(
+            (account for account in accounts if account.lower() != before.lower()),
+            None,
+        )
+        if attacker is None:
+            return AttackResult(
+                "access", target.contract, target.address, signature,
+                "BLOCKED", "Every unlocked Anvil account currently matches the authority getter; no unprivileged actor is available.",
+                detail={"reason_code": "no_unprivileged_actor", **evidence},
+            )
+        evidence["attacker"] = attacker
         if setup is not None:
             setup_values = _make_value(host, setup, rng, "one", config)
             setup_data, setup_error = _encode_call(host, config, target, setup, setup_values)
