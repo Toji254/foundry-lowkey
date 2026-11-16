@@ -31,10 +31,15 @@ def _validate_events(
         missing = [field for field in TRACE_FIELDS if field not in event]
         if missing:
             raise ValueError(f"{label} trace event #{index} is missing canonical fields: {', '.join(missing)}")
-        if event.get("backend") != expected_backend:
+        backend = event.get("backend")
+        backend_ok = (
+            backend in {"anvil-calltracer", "anvil-structlog"}
+            if expected_backend == "anvil" else backend == expected_backend
+        )
+        if not backend_ok:
             raise ValueError(
                 f"{label} trace event #{index} must come from {expected_backend}; "
-                f"received {event.get('backend')!r}."
+                f"received {backend!r}."
             )
         normalized.append(build_trace_event(
             seq=event["seq"],
@@ -63,7 +68,7 @@ def compare_trace_events(
     surfaced as a degradation, not silently treated as a full parity match.
     """
     forge = _validate_events(forge_events, "Forge", "forge-state-diff")
-    anvil = _validate_events(anvil_events, "Anvil", "anvil-calltracer")
+    anvil = _validate_events(anvil_events, "Anvil", "anvil")
     mismatches: list[dict[str, Any]] = []
     unknowns: list[dict[str, Any]] = []
     if not forge or not anvil:
