@@ -39,8 +39,9 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "ai_harness.py").exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "experience_memory.py").exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "trace_evidence.py").exists())
+            self.assertTrue((pathlib.Path(home) / ".lowkey" / "attack_engine.py").exists())
             trace_import = subprocess.run(
-                ["python3", "-c", "import forge_state_diff, godmode; print('TRACE_IMPORT_OK')"],
+                ["python3", "-c", "import forge_state_diff, godmode, attack_engine; print('TRACE_IMPORT_OK')"],
                 cwd=ROOT,
                 env={**env, "PYTHONPATH": str(pathlib.Path(home) / ".lowkey")},
                 capture_output=True,
@@ -48,6 +49,13 @@ class InstallSmokeTests(unittest.TestCase):
             )
             self.assertEqual(trace_import.returncode, 0, trace_import.stdout + trace_import.stderr)
             self.assertIn("TRACE_IMPORT_OK", trace_import.stdout)
+
+            attack_inventory = subprocess.run(
+                [str(installed_lk), "attack", "engines", "--json"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(attack_inventory.returncode, 0, attack_inventory.stdout + attack_inventory.stderr)
+            self.assertEqual(len(json.loads(attack_inventory.stdout)["families"]), 15)
 
             version = subprocess.run(
                 [str(installed_lk), "--version"],

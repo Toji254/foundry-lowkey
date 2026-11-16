@@ -158,7 +158,7 @@ class AttackLibraryTests(unittest.TestCase):
 
     def test_installer_stages_compiles_publishes_and_hashes_both_modules(self):
         source = (ROOT / "install.sh").read_text(encoding="utf-8")
-        for filename in ("attack_library.py", "attack_catalog.py"):
+        for filename in ("attack_library.py", "attack_catalog.py", "attack_engine.py"):
             with self.subTest(filename=filename):
                 self.assertIn(filename, source)
                 self.assertIn(f'"$STAGE_DIR/{filename}"', source)

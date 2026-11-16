@@ -36,6 +36,7 @@ class AttackEngineTests(unittest.TestCase):
             "    function withdraw(uint256 amount) external {\n"
             "        amount;\n"
             "    }\n"
+            "    function borrow(uint256 amount) external { amount + totalAssets; }\n"
             "}\n",
             encoding="utf-8",
         )
