@@ -20,9 +20,11 @@ def _split_array_type(value: str) -> tuple[str, list[int | None]]:
     match = re.fullmatch(r"(?P<base>.+?)(?P<dims>(?:\[\d*\])*)", raw)
     if not match:
         raise ValueError(f"invalid ABI type '{value}'")
+    # Solidity writes array suffixes from the innermost dimension outward;
+    # the right-most suffix is the outer-most dimension at call time.
     dimensions = [
         int(item) if item else None
-        for item in re.findall(r"\[(\d*)\]", match.group("dims"))
+        for item in reversed(re.findall(r"\[(\d*)\]", match.group("dims")))
     ]
     return match.group("base"), dimensions
 
