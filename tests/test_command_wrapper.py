@@ -112,7 +112,7 @@ class CommandWrapperTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 0)
-        root.assert_not_called()
+        root.assert_called_once_with()
         resolver.assert_not_called()
         self.assertNotIn("env", run.call_args.kwargs)
 
