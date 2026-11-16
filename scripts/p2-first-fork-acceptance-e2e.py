@@ -273,7 +273,7 @@ def main() -> int:
             # rejects inconsistent target/account code-hash observations.
             ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
             (ARTIFACT_ROOT / "forge-raw.json").write_text(
-                json.dumps(raw_forge, indent=2, sort_keys=True) + "\\n",
+                json.dumps(raw_forge, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
 
