@@ -228,6 +228,32 @@ contract P2FirstYearnForkTest is LowkeyForgeStateDiffRecorder {
     ], cwd=project, env=os.environ.copy(), timeout=180)
 
 
+def build_anvil_fork_argv(
+    anvil_binary: str,
+    port: int,
+    fork_block: int,
+    fork_endpoints: list[str],
+) -> list[str]:
+    """Build a pinned multi-provider Anvil fork with bounded retry/backoff.
+
+    --fork-chain-id avoids a remote eth_chainId startup probe; the acceptance
+    has independently checked each endpoint's chain ID before launching Anvil.
+    Multiple --fork-url values enable Foundry's round-robin failover.
+    """
+    if not fork_endpoints:
+        raise ValueError("At least one preflighted fork RPC endpoint is required.")
+    argv = [
+        anvil_binary, "--silent", "--host", "127.0.0.1", "--port", str(port),
+        "--chain-id", "1", "--fork-chain-id", "1",
+        "--fork-block-number", str(fork_block),
+        "--retries", "12", "--timeout", "120000", "--fork-retry-backoff", "1000",
+        "--fork-header", "User-Agent: LowkeyCast-P2-acceptance/0.1",
+    ]
+    for endpoint in fork_endpoints:
+        argv.extend(["--fork-url", endpoint])
+    return argv
+
+
 def main() -> int:
     forge = shutil.which("forge")
     anvil = shutil.which("anvil")
@@ -300,15 +326,9 @@ def main() -> int:
         "FOUNDRY_ETH_RPC_URL": anvil_url,
         "LOWKEY_RPC_URL": anvil_url,
     })
-    anvil_argv = [
-        anvil, "--silent", "--host", "127.0.0.1", "--port", str(port),
-        "--chain-id", "1", "--fork-chain-id", "1",
-        "--fork-block-number", str(fork_block),
-        "--retries", "12", "--timeout", "120000", "--fork-retry-backoff", "1000",
-        "--fork-header", "User-Agent: LowkeyCast-P2-acceptance/0.1",
-    ]
-    for endpoint in matching_fork_upstreams:
-        anvil_argv.extend(["--fork-url", endpoint])
+    anvil_argv = build_anvil_fork_argv(
+        anvil, port, fork_block, matching_fork_upstreams
+    )
     anvil_process = subprocess.Popen(
         anvil_argv,
         cwd=ROOT, env=env, stdout=anvil_log.open("w", encoding="utf-8"),
