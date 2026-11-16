@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 TARGET = "0x0000000071727de22e5e9d8baf0edac6f37da032"
 ACTOR = "0x000000000000000000000000000000000000a11c"
 DEFAULT_FORK_UPSTREAM = "https://eth-mainnet.public.blastapi.io"
+DEFAULT_FORK_FALLBACK_RPC = "https://ethereum-rpc.publicnode.com"
 DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
 FORGE_STD_COMMIT = "15b2df92a05d4d2f76a06653872fefb287e0e01c"
@@ -308,7 +309,7 @@ def main() -> int:
                 raise
             fallback_rpc = (
                 os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
-                or DEFAULT_FORK_UPSTREAM
+                or DEFAULT_FORK_FALLBACK_RPC
             )
             fallback_key = urlparse_safe(fallback_rpc)
             if fallback_key in {urlparse_safe(fork_upstream), urlparse_safe(source_rpc)}:
