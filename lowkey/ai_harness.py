@@ -2202,23 +2202,19 @@ REVIEW & EVIDENCE
 
 AUTOMATION SETTINGS
 -------------------
-  lk ai guide                 AI gives clues; you fix it (default).
-  lk ai lazy                  AI repairs safe local tests and checks them.
+  lk ai guide                 Gives clues; you fix it (default).
+  lk ai lazy                  Repairs safe local tests.
   lk ai hint                  Show another clue.
-  lk build --guide / --lazy   Override one command.
+  lk build --guide / --lazy   One-command override.
 
   lk ai mode {manual|auto}
-      Enable automatic guidance for eligible workflows; lab can also request complexity-triggered review.
-      Example: lk ai mode auto
+      Enable guidance for eligible commands; labs may request reviews.
 
   lk ai recommendations {status|auto|manual}
-      Add/remove contextual, optional learning notes after eligible command attempts.
-      Lowkey's native next-step suggestions remain available.
-      Example: lk ai recommendations auto
+      Add optional learning notes after command attempts.
 
   lk ai errors {status|auto|manual}
-      Choose whether supported command failures trigger an AI explanation.
-      Suggested fixes are printed, never executed. Example: lk ai errors auto
+      Explain supported failures; suggested fixes are never executed.
 
 WHAT DOES "AUTO" MEAN?
 ----------------------
@@ -2256,15 +2252,12 @@ OPTIONS / MODES
 
 COMMON WORKFLOWS
 ----------------
-  Review roles and source:
-    lk ai project --contract Vault
-    lk ai preview --contract Vault --show-context
-    lk ai security-review --contract Vault
-
-  Propose tests or explain an error:
-    lk ai test-plan --contract Vault
-    lk ai explain-error --last
-    lk ai explain-error --text "error" --command "forge test"
+  Review: lk ai project --contract Vault
+          lk ai preview --contract Vault --show-context
+          lk ai security-review --contract Vault
+  Tests/errors: lk ai test-plan --contract Vault
+                lk ai explain-error --last
+                lk ai explain-error --text "error" --command "forge test"
 
 HELP FOR A SPECIFIC COMMAND
 ---------------------------
