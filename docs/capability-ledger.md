@@ -76,3 +76,12 @@ If any item fails, P1 stays pending and the PR records the actual failing comman
 P0's installed compatibility gate and receiver fixture are implemented and covered by dedicated Anvil/Foundry acceptance. P0's result remains fixture-scoped.
 
 P1 remains pending until the complete exact-head CI matrix for PR 64 passes. Its dedicated runtime, paired-control, mutation, and funded-reproof job has passed, but other CI jobs were still running when this ledger was updated. No `HUMAN_CONFIRMED` or authentic deployment claim is made by the fixture.
+
+
+## P3.1 — Deterministic protocol archetype discovery
+
+**Status: PENDING exact-head CI.** The P3 implementation branch contains ten data-driven ArchetypePack records, a bounded deterministic source classifier, a conservative import/typed-call-candidate graph, source-hash-pinned Assumption citations, and capability negotiation with a generic-mode skip list. The committed P3 acceptance fixtures cover vault4626, constant-product AMM and an unknown target.
+
+No archetype is an attack-family acceptance. The classifier's OBSERVED result means only that source signals selected a pack; it does not authenticate a deployment or promote a vulnerability. Assumptions remain unverified. Full compiler AST/Slither call-graph/data-flow extraction remains outstanding P3 work. Model-driven novel hypotheses remain P9; full attack-chain composition remains P6.
+
+The exact-head P3 acceptance job must pass the three classifications, citation re-read/tamper rejection, graph citations, package install/manifest and installed CLI checks before this ledger row can be marked accepted.
