@@ -2315,6 +2315,69 @@ def _run_slither_analysis(root: str | Path) -> tuple[dict[str, Any], list[dict[s
         }, [])
 
 
+
+
+def _run_ai_security_review(root: str | Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Run the configured AI source reviewer only after explicit operator opt-in."""
+    project = Path(root).expanduser().resolve()
+    try:
+        try:
+            from . import security_review
+        except ImportError:
+            import security_review
+        review = security_review.review_project_security(project)
+        raw_findings = review.get("candidate_findings") if isinstance(review, dict) else []
+        if not isinstance(raw_findings, list):
+            raw_findings = []
+        findings: list[dict[str, Any]] = []
+        for item in raw_findings:
+            if not isinstance(item, dict):
+                continue
+            location = item.get("location") if isinstance(item.get("location"), dict) else {}
+            findings.append({
+                "finding_id": str(item.get("finding_id") or ""),
+                "title": str(item.get("title") or "AI-assisted security candidate"),
+                "category": str(item.get("category") or "security-review"),
+                "severity": str(item.get("severity") or "info").lower(),
+                "confidence": str(item.get("confidence") or "low").lower(),
+                "location": location,
+                "file": str(location.get("path") or ""),
+                "line": item.get("line"),
+                "function": str(location.get("symbol") or ""),
+                "evidence_quote": str(item.get("evidence_quote") or ""),
+                "reasoning": str(item.get("reasoning") or ""),
+                "impact": str(item.get("impact") or ""),
+                "exploit_preconditions": str(item.get("exploit_preconditions") or ""),
+                "recommendation": str(item.get("recommendation") or ""),
+                "source_quote_status": item.get("source_quote_status"),
+                "status": "candidate",
+                "verified": False,
+                "ai_generated": True,
+                "tool": "security-review-agent",
+                "evidence_level": "ai-assisted-source-candidate",
+            })
+        meta = review.get("_lowkey_meta") if isinstance(review, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        limitations = review.get("limitations") if isinstance(review, dict) else []
+        return ({
+            "name": "ai-review",
+            "status": "completed",
+            "finding_count": len(findings),
+            "summary": str(review.get("summary") or "") if isinstance(review, dict) else "",
+            "limitations": limitations if isinstance(limitations, list) else [],
+            "report_path": str(meta.get("report_path") or ""),
+            "review_id": str(meta.get("review_id") or ""),
+            "provider": str(meta.get("provider") or ""),
+            "model": str(meta.get("model") or ""),
+        }, findings)
+    except Exception as exc:
+        return ({
+            "name": "ai-review",
+            "status": "blocked",
+            "reason": f"AI security review could not complete: {type(exc).__name__}: {exc}",
+        }, [])
+
+
 def rpc_url(v=None):
     url=v or os.environ.get("FOUNDRY_ETH_RPC_URL") or os.environ.get("ETH_RPC_URL") or os.environ.get("LOWKEY_RPC_URL")
     if not url or urlparse(url).scheme not in {"http","https"}: raise ValueError("Pass --rpc-url or set FOUNDRY_ETH_RPC_URL/ETH_RPC_URL.")
@@ -5503,6 +5566,7 @@ _GODMODE_STAGE_LABELS = {
     "source-recon": "Source map",
     "source-security": "Built-in security review",
     "slither-analysis": "Slither analysis",
+    "ai-review": "AI-assisted source review",
     "arithmetic-review": "Targeted arithmetic check",
     "cheat-fingerprints": "Harness cheatcode scan",
     "onchain-recon": "On-chain inspection",
@@ -5541,6 +5605,13 @@ def _godmode_stage_detail(stage):
         if status == "skipped":
             return "Not run: " + (reason or "Slither unavailable.")
         return f"{count} Slither detector candidate(s); JSON evidence: {stage.get('evidence', '.audit/slither/latest.json')}." + ((" " + reason) if reason else "")
+    if name == "ai-review":
+        if status == "not-run":
+            return "Not run. Pass --ai-review to send selected source excerpts to the configured AI provider; results remain unverified."
+        count = int(stage.get("finding_count") or 0)
+        path = str(stage.get("report_path") or "review metadata saved in the evidence ledger")
+        summary = str(stage.get("summary") or "").strip()
+        return f"{count} AI-assisted candidate(s); unverified. Review evidence: {path}." + ((" " + summary) if summary else "")
     if name == "arithmetic-review":
         count = int(stage.get("signals") or 0)
         wrap = int(stage.get("wraparound_candidates") or 0)
@@ -5956,6 +6027,7 @@ def godmode(args):
     p.add_argument("--rpc-url", help="RPC for read-only inspection of target. Use local Anvil if you plan to opt into --attack.")
     p.add_argument("--profile", choices=("light", "balanced", "deep"), default="balanced", help="Proxy/implementation reconnaissance depth: light or deeper balanced/deep lookup.")
     p.add_argument("--attack", action="store_true", help="Opt into lk break exploration. Requires target + local Anvil; may send transactions on that local chain.")
+    p.add_argument("--ai-review", action="store_true", help="Opt into semantic source review using the configured AI provider. Selected source excerpts leave this machine; findings remain unverified.")
     p.add_argument("--control-manifest", help="Frozen paired-control manifest used by the attack/proof workflow.")
     p.add_argument("--mutation-manifest", help="Mutation-test manifest to execute as an optional test-sensitivity check.")
     p.add_argument("--coverage-source", help="Solidity source file whose target lines should be checked with Forge coverage.")
@@ -5984,7 +6056,12 @@ def godmode(args):
     cheat=cheat_fingerprints(root)
     source_findings=_source_security_candidates(root)
     slither_stage,slither_findings=_run_slither_analysis(root)
-    findings=source_findings+slither_findings
+    if ns.ai_review:
+        ai_stage,ai_findings=_run_ai_security_review(root)
+    else:
+        ai_stage={"name":"ai-review","status":"not-run","reason":"Not requested. Pass --ai-review to send selected source excerpts to the configured AI provider."}
+        ai_findings=[]
+    findings=source_findings+slither_findings+ai_findings
     stages=[]
     raw_map_count=sum(len(v) for key,v in maps.items() if isinstance(v,list) and key != "arithmetic_review")
     source_file_count=len(files(root))
@@ -5997,6 +6074,7 @@ def godmode(args):
     })
     stages.append({"name":"source-security","status":"completed","finding_count":len(source_findings)})
     stages.append(slither_stage)
+    stages.append(ai_stage)
     arithmetic_rows=maps.get("arithmetic_review", [])
     wraparound_rows=[row for row in arithmetic_rows if row.get("status")=="WRAPAROUND_POSSIBLE"]
     stages.append({
@@ -6103,7 +6181,7 @@ def godmode(args):
                (s["status"]=="review" and s.get("name") in {"attack","mutation","target-coverage"})]
     payload={"created_at":now(),"target":target,"project_root":str(root),"git_revision":None,"chain_id":chain,"fork_block":block,
              "profile":ns.profile,"stages":stages,"signals":maps,"cheat_fingerprints":cheat,
-             "findings":findings,"source_security_findings":source_findings,"slither_findings":slither_findings,
+             "findings":findings,"source_security_findings":source_findings,"slither_findings":slither_findings,"ai_findings":ai_findings,
              "onchain":onchain,"overall_status":"REVIEW_REQUIRED",
              "proof_gate":["attack must demonstrate a measurable security-property delta","matched sequential control must pass",
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
