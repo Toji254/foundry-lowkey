@@ -1525,6 +1525,7 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("TOKEN_APPROVAL_RESET_ATTEMPTED", tokenApprovalResetAttempted);
         console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
+        console2.log("TOKEN_DECIMALS_SOURCE", assetDecimalsVerified ? "asset.decimals()" : "fallback-18");
         console2.log("ASSET_DECIMALS_FALLBACK_18", assetReadOk && !assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
