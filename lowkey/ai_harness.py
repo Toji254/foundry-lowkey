@@ -2222,33 +2222,28 @@ AUTOMATION SETTINGS
 
 WHAT DOES "AUTO" MEAN?
 ----------------------
-auto is a value after a setting command, not a standalone command. Settings are independent:
-  lk ai mode auto             Guide eligible command results and supported failures.
-  lk ai recommendations auto  Add notes after attempts, even failures.
-  lk ai errors auto           Explain supported failures without rerunning.
-  lk ai guide / lk ai lazy     Choose who handles eligible test failures.
-Use "manual" to switch off; "status" shows it. Requests may send context and incur charges.
+auto is a setting value, not a separate command. The controls are independent:
+  lk ai mode auto              Explain eligible command results and failures.
+  lk ai recommendations auto   Add notes after attempts.
+  lk ai errors auto            Explain failures without rerunning.
+  lk ai guide / lk ai lazy     Choose guidance or test repair.
+Use manual to switch off; status shows settings. Requests may send context and incur charges.
 
 UNIVERSAL --ai / TASK RUN
 -------------------------
-  lk status --ai
-      Explain the native result, risks and next step; native behavior stays unchanged.
-  lk ai run "investigate why withdrawal reverts" [--plan-only | --yes]
-      Build a source-grounded plan. Approval is required; execution is limited to validated read-only lk checks.
-      --plan-only prints the plan. --yes approves only those checks; no tests, file edits, deployments or transactions.
+  lk status --ai                 Explain a native result and its next step.
+  lk ai run "investigate withdrawal" [--plan-only | --yes]
+      Build a source-grounded plan; approval runs validated read-only lk checks only.
+      --plan-only prints the plan. No tests, file edits, deployments or transactions.
 
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
   lk lab Vault --ai-review
-      Request an unverified review. It does not choose targets, deploy or test.
-  lk ai mode manual
-      Reviews run only when requested (--ai-review).
-  lk ai mode auto
-      Complexity checks may request reviews for eligible labs.
-  lk ai recommendations auto
-      Add optional Lowkey learning notes beside native suggestions.
-  lk ai errors auto
-      Explain supported failures without rerunning commands.
+      Request an unverified review. Native target selection, deployment and tests stay unchanged.
+  lk ai mode manual / auto
+      Manual: reviews only on request. Auto: eligible labs may request a review.
+  lk ai recommendations auto / lk ai errors auto
+      Add optional notes or explain failures; neither reruns commands.
 
 OPTIONS / MODES
 ---------------
