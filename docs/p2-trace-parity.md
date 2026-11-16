@@ -33,6 +33,26 @@ Anvil's nested callTracer adapter derives this field using EVM message-sender se
 - partial: Anvil prestateTracer transaction-level changed slots. Lowkey attaches those observations only to the root event; it does not guess which nested frame touched a slot.
 - declared_only: no measured storage trace is available. Manifest-declared slots do not become trace-derived observations.
 
+## Anvil opcode-level per-frame storage evidence
+
+Anvil/Geth-compatible opcode tracing can expose the EVM execution stack, depth, program counter and storage observations for each opcode. Lowkey now has an opcode normalizer that consumes this trace together with the nested callTracer tree.
+
+The normalizer records SLOAD, SSTORE, TLOAD and TSTORE accesses with:
+- the storage-context account and code address;
+- persistent versus transient storage kind;
+- slot, read/write operation and access order;
+- call-frame path, opcode index and program counter;
+- observed read value or write before/after values when the backend exposes them; and
+- whether the frame's effects were reverted.
+
+Frame attribution is accepted only when every CALL/STATICCALL/DELEGATECALL/CALLCODE/CREATE/CREATE2 transition observed in the opcode stream matches the next corresponding callTracer child and target. DELEGATECALL and CALLCODE retain the parent storage-context account while preserving the implementation/code address separately. An unmatched target, incomplete frame stack, missing opcode stack, or step-limit hit returns an unsupported result; it is never guessed into an exact trace.
+
+\`normalize_calltracer(..., storage_support="exact", exact_storage=...)\` requires a storage array for every callTracer frame, including explicit empty arrays. The parity comparator checks per-frame access counts and ordered account/slot/read-write/storage-kind tuples. It reports storage-value parity separately because a client may expose the access while omitting a before/after value.
+
+The P2 real-fork acceptance now obtains a read-only opcode trace for the same pinned EntryPoint call, preserves the raw opcode artifact and requires exact per-frame access parity with Forge. The independent prestateTracer diff remains in the report only as a transaction-level cross-check; it does not supply frame attribution.
+
+Transient accesses are captured by the Anvil opcode parser, but cross-backend transient-storage parity is accepted only if Forge supplies matching per-access evidence too. A missing Forge observation is a mismatch/incomplete result, not an implicit pass.
+
 A trace can have exact call-tree parity while storage parity remains degraded. The two results are reported separately.
 
 ## Compare saved evidence
