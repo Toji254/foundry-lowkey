@@ -506,6 +506,8 @@ def _load_trace_events(value: Any, family: str, label: str) -> list[dict[str, An
             )})
         except (TypeError, ValueError) as exc:
             raise AttackEngineError(f"{label}.trace_events[{index}] is not valid TraceEvent v2: {exc}", "trace_invalid") from exc
+        if events and normalized["seq"] <= events[-1]["seq"]:
+            raise AttackEngineError(f"{label}.trace_events sequence numbers must increase strictly.", "trace_invalid")
         events.append(normalized)
     required_depth = FAMILIES[family]["min_depth"]
     if max((event["depth"] or 0) for event in events) < required_depth:
@@ -554,8 +556,8 @@ def _validate_evidence(
         raise AttackEngineError(f"{label} source discovery does not match the pinned source.", "source_identity_mismatch")
     preconditions = _validate_precondition_evidence(evidence["preconditions"], manifest["family"], label)
     anchor = evidence["pair_anchor"]
-    if not isinstance(anchor, dict):
-        raise AttackEngineError(f"{label}.pair_anchor must be an object.", "evidence_invalid")
+    if not isinstance(anchor, dict) or set(anchor) != {"entry_selector", "calldata_sha256", "prestate_sha256", "setup_sha256"}:
+        raise AttackEngineError(f"{label}.pair_anchor must contain exactly entry_selector, calldata_sha256, prestate_sha256 and setup_sha256.", "evidence_invalid")
     normalized_anchor = {
         "entry_selector": _hex(anchor.get("entry_selector"), r"0x[0-9a-fA-F]{8}", f"{label}.pair_anchor.entry_selector"),
         "calldata_sha256": _hex(anchor.get("calldata_sha256"), r"[0-9a-fA-F]{64}", f"{label}.pair_anchor.calldata_sha256"),
@@ -838,8 +840,8 @@ def _validate_chain_evidence(
     if _validate_target(evidence["target"]) != manifest["target"]:
         raise AttackEngineError(f"{role} chain target does not match the pinned manifest.", "identity_mismatch")
     anchor = evidence["pair_anchor"]
-    if not isinstance(anchor, dict):
-        raise AttackEngineError(f"{role} pair_anchor must be an object.")
+    if not isinstance(anchor, dict) or set(anchor) != {"entry_selector", "calldata_sha256", "prestate_sha256", "setup_sha256"}:
+        raise AttackEngineError(f"{role} pair_anchor must contain exactly entry selector, calldata, prestate and setup digests.")
     normalized_anchor = {
         "entry_selector": _hex(anchor.get("entry_selector"), r"0x[0-9a-fA-F]{8}", "entry_selector"),
         "calldata_sha256": _hex(anchor.get("calldata_sha256"), r"[0-9a-fA-F]{64}", "calldata_sha256"),
