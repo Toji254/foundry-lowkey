@@ -75,8 +75,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     chain_id=_uint(payload.get("chain_id"),"chain_id")
     block_number=_uint(payload.get("block_number"),"block_number")
     target=_address(payload.get("target_address"),"target_address")
-    code_hash=str(payload.get("target_code_hash") or "").lower()
-    if not re.fullmatch(r"0x[0-9a-f]{64}",code_hash):
+    target_code_hash=str(payload.get("target_code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}",target_code_hash):
         raise ValueError("Forge state diff must include target_code_hash (keccak256 of target runtime code).")
     fork_parent_hash=str(payload.get("fork_parent_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}",fork_parent_hash):
@@ -134,8 +134,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         new_balance=_uint(raw.get("new_balance",0),f"accesses[{index}].new_balance")
         old_nonce=_uint(raw.get("old_nonce",0),f"accesses[{index}].old_nonce")
         new_nonce=_uint(raw.get("new_nonce",0),f"accesses[{index}].new_nonce")
-        code_hash=str(raw.get("code_hash") or "").lower()
-        if code_hash and not re.fullmatch(r"0x[0-9a-f]{64}",code_hash):
+        access_code_hash=str(raw.get("code_hash") or "").lower()
+        if access_code_hash and not re.fullmatch(r"0x[0-9a-f]{64}",access_code_hash):
             raise ValueError(f"Forge account access #{index} has invalid code_hash.")
         account_state=accounts.setdefault(account,{"address":account,"balance_wei":old_balance,
             "nonce":old_nonce,"balance_after_wei":old_balance,"nonce_after":old_nonce,
@@ -143,14 +143,14 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         if code_hash:
             account_code_hash_observations.setdefault(account,[]).append({
                 "access_index":index,"kind":kind,"accessor":accessor,
-                "code_hash":code_hash,"reverted":reverted,
+                "code_hash":access_code_hash,"reverted":reverted,
             })
             if account_state.get("code_hash") is None:
-                account_state["code_hash"]=code_hash
-            elif account_state["code_hash"] != code_hash:
+                account_state["code_hash"]=access_code_hash
+            elif account_state["code_hash"] != access_code_hash:
                 raise ValueError(
                     f"Forge AccountAccess code_hash changed for account {account} "
-                    f"at access #{index}: first={account_state['code_hash']}, current={code_hash}."
+                    f"at access #{index}: first={account_state['code_hash']}, current={access_code_hash}."
                 )
         if not reverted:
             account_state["balance_after_wei"]=new_balance
@@ -193,16 +193,16 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             "Forge state-diff target account access must expose its runtime code_hash; "
             f"observations={target_code_hash_observations!r}."
         )
-    if account_access_code_hash != code_hash:
+    if account_access_code_hash != target_code_hash:
         raise ValueError(
             "Forge state-diff target_code_hash must match the target AccountAccess code_hash "
-            + f"(artifact={code_hash}, account_access={account_access_code_hash}, "
+            + f"(artifact={target_code_hash}, account_access={account_access_code_hash}, "
             + f"target_access_observations={json.dumps(target_code_hash_observations, sort_keys=True)})."
         )
     target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
     if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
         raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
-    if target_code_hash_at_start is not None and target_code_hash_at_start != code_hash:
+    if target_code_hash_at_start is not None and target_code_hash_at_start != target_code_hash:
         raise ValueError(
             "Forge state-diff target_code_hash must remain the pre-execution target runtime hash; "
             "target_code_hash and target_code_hash_at_start differ. A delegatecall implementation "
@@ -239,7 +239,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "canonical_trace_events":canonical_trace_events,
         "canonical_trace_events_error":canonical_trace_error,
         "chain_id":chain_id,"block_number":block_number,
-        "target_address":target,"target_code_hash":code_hash,
+        "target_address":target,"target_code_hash":target_code_hash,
         "target_code_hash_at_start":target_code_hash_at_start,
         "target_account_access_code_hash_observations":target_code_hash_observations,
         "target_code_hash_source":"forge_start_and_account_access",
