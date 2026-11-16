@@ -81,22 +81,22 @@ class RpcFixture:
 
 
 def manifest(*, kind="erc20"):
-    token = {
-        "kind": kind,
-        "address": VAULT if kind == "erc4626" else TOKEN,
-        "symbol": "VSHARE" if kind == "erc4626" else "USDC",
-        "asset_oracle": TOKEN_FEED,
-        "asset": UNDERLYING,
-    } if kind == "erc4626" else {
-        "kind": "erc20", "address": TOKEN, "symbol": "USDC",
-        "oracle": TOKEN_FEED, "expected_decimals": 6,
-    }
     if kind == "erc4626":
-        token["kind"] = "erc4626"
-        token["address"] = VAULT
-        token["symbol"] = "VSHARE"
+        token = {
+            "kind": "erc4626",
+            "address": VAULT,
+            "asset": UNDERLYING,
+            "symbol": "VSHARE",
+            "asset_oracle": TOKEN_FEED,
+        }
     else:
-        token["expected_decimals"] = 6
+        token = {
+            "kind": "erc20",
+            "address": TOKEN,
+            "symbol": "USDC",
+            "oracle": TOKEN_FEED,
+            "expected_decimals": 6,
+        }
     return {
         "schema_version": 1,
         "quote_currency": "USD",
@@ -111,6 +111,7 @@ class TokenEconomicsTests(unittest.TestCase):
         spec = load_portfolio_manifest(manifest())
         self.assertEqual(spec["quote_currency"], "USD")
         self.assertEqual(spec["tokens"][0]["expected_decimals"], 6)
+        self.assertEqual(spec["tokens"][0]["price_subject"], "token")
         with self.assertRaisesRegex(TokenEconomicsError, "quote_currency"):
             load_portfolio_manifest({**manifest(), "quote_currency": "ETH"})
 
@@ -138,6 +139,17 @@ class TokenEconomicsTests(unittest.TestCase):
         self.assertEqual(result["tokens"][0]["balances"][0]["balance_delta"], 1_500_000)
         self.assertFalse(result["source_state_verified"])
 
+    def test_erc4626_requires_a_distinct_underlying_asset_price_feed(self):
+        ambiguous = manifest(kind="erc4626")
+        ambiguous["tokens"][0]["oracle"] = TOKEN_FEED
+        ambiguous["tokens"][0].pop("asset_oracle")
+        with self.assertRaisesRegex(TokenEconomicsError, "asset_oracle"):
+            load_portfolio_manifest(ambiguous)
+        self.assertEqual(
+            load_portfolio_manifest(manifest(kind="erc4626"))["tokens"][0]["price_subject"],
+            "underlying_asset",
+        )
+
     def test_erc4626_preview_redeem_values_underlying_assets_not_share_units(self):
         result = measure_token_portfolio(
             RpcFixture(), local_url="local", source_url="source",
@@ -147,6 +159,7 @@ class TokenEconomicsTests(unittest.TestCase):
         vault = result["tokens"][0]
         self.assertEqual(vault["token_decimals"], 18)
         self.assertEqual(vault["asset_decimals"], 6)
+        self.assertEqual(vault["price_subject"], "underlying_asset")
         self.assertEqual(vault["share_or_token_delta"], 2 * 10**18)
         self.assertEqual(vault["underlying_asset_delta"], 3_000_000)
         self.assertEqual(vault["value_delta_usd_18"], 3 * 10**18)
