@@ -222,7 +222,6 @@ def load_portfolio_manifest(value: Any) -> dict[str, Any]:
             "kind": kind,
             "address": address,
             "symbol": symbol,
-            "oracle": _address(item.get(price_feed_field), f"{label}.{price_feed_field}"),
             "price_subject": "token" if kind == "erc20" else "underlying_asset",
             "max_price_age_seconds": _uint(
                 item.get("max_price_age_seconds", default_age),
@@ -230,6 +229,11 @@ def load_portfolio_manifest(value: Any) -> dict[str, Any]:
             ),
             "expected_decimals": None,
         }
+        # Preserve the subject-specific manifest key in normalized output so
+        # calling this loader more than once remains safe and idempotent.
+        normalized[price_feed_field] = _address(
+            item.get(price_feed_field), f"{label}.{price_feed_field}"
+        )
         if item.get("expected_decimals") is not None:
             normalized["expected_decimals"] = _uint(
                 item["expected_decimals"], f"{label}.expected_decimals", maximum=36,
@@ -357,8 +361,9 @@ def measure_token_portfolio(
             value_decimals = decimals
             value_asset = address
 
+        price_feed = token["oracle"] if token["kind"] == "erc20" else token["asset_oracle"]
         price = _price_round(
-            rpc, local_url, source_url, token["oracle"], before_block,
+            rpc, local_url, source_url, price_feed, before_block,
             block_timestamp, token["max_price_age_seconds"],
         )
         all_source_verified = all_source_verified and bool(
