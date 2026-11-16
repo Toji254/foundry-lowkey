@@ -31,8 +31,57 @@ class ProtocolGraphTests(unittest.TestCase):
                         "typeDescriptions": {"typeString": "uint256"},
                     },
                     {
+                        "nodeType": "VariableDeclaration", "id": 7,
+                        "name": "paused", "src": "25:6:0", "stateVariable": True,
+                        "visibility": "public",
+                        "typeDescriptions": {"typeString": "bool"},
+                    },
+                    {
+                        "nodeType": "StructDefinition", "id": 8,
+                        "name": "Position", "src": "2:15:0",
+                        "members": [{
+                            "nodeType": "VariableDeclaration", "id": 9,
+                            "name": "shares",
+                            "typeDescriptions": {"typeString": "uint256"},
+                        }],
+                    },
+                    {
+                        "nodeType": "EnumDefinition", "id": 10,
+                        "name": "Status", "src": "18:20:0",
+                        "members": [{"name": "Open"}, {"name": "Closed"}],
+                    },
+                    {
+                        "nodeType": "EventDefinition", "id": 11,
+                        "name": "Deposited", "src": "40:20:0",
+                        "parameters": {"parameters": [{
+                            "name": "account", "indexed": True,
+                            "typeDescriptions": {"typeString": "address"},
+                        }]},
+                    },
+                    {
+                        "nodeType": "ErrorDefinition", "id": 12,
+                        "name": "Paused", "src": "61:10:0",
+                        "parameters": {"parameters": []},
+                    },
+                    {
+                        "nodeType": "UserDefinedValueTypeDefinition", "id": 13,
+                        "name": "Shares", "src": "72:12:0",
+                        "underlyingType": {"typeDescriptions": {"typeString": "uint96"}},
+                    },
+                    {
                         "nodeType": "ModifierDefinition", "id": 6,
                         "name": "onlyOwner", "src": "5:10:0",
+                        "body": {
+                            "nodeType": "Block",
+                            "statements": [{
+                                "nodeType": "ExpressionStatement",
+                                "expression": {
+                                    "nodeType": "Identifier",
+                                    "name": "paused",
+                                    "referencedDeclaration": 7,
+                                },
+                            }],
+                        },
                     },
                     {
                         "nodeType": "FunctionDefinition", "id": 3,
@@ -117,6 +166,10 @@ class ProtocolGraphTests(unittest.TestCase):
         call_edge = next(edge for edge in graph["edges"] if edge["kind"] == "compiler_call_candidate")
         self.assertEqual(call_edge["source_span"], "50:12:0")
         self.assertTrue(any(edge["kind"] == "uses_modifier" for edge in graph["edges"]))
+        modifier = next(node for node in graph["nodes"] if node["kind"] == "modifier")
+        self.assertEqual(modifier["reads"], ["src/Vault.sol:Vault::state::paused"])
+        declaration_kinds = {node["kind"] for node in graph["nodes"]}
+        self.assertTrue({"struct", "enum", "event", "error", "user_defined_value_type"}.issubset(declaration_kinds))
         self.assertTrue(any(edge["kind"] == "state_dependency_candidate" for edge in graph["edges"]))
 
     def test_compiler_ast_rejects_stale_source_build_info(self):
