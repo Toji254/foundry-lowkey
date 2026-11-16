@@ -820,7 +820,17 @@ def _encode_call(host, config, target: Target, fn: dict[str, Any], values: list[
         _, calldata = host.encode_target_call(probe_cfg, signature, values)
     except Exception as error:
         return None, str(error)
-    return calldata, None
+    if isinstance(calldata, bytes):
+        encoded = calldata.hex()
+    elif isinstance(calldata, str):
+        encoded = calldata.strip()
+        if encoded.startswith(("0x", "0X")):
+            encoded = encoded[2:]
+    else:
+        return None, f"ABI encoder returned unsupported calldata type: {type(calldata).__name__}"
+    if not encoded or len(encoded) < 8 or len(encoded) % 2 or not re.fullmatch(r"[0-9a-fA-F]+", encoded):
+        return None, "ABI encoder returned malformed calldata; expected an even-length hex payload with a 4-byte selector"
+    return "0x" + encoded.lower(), None
 
 
 def _solidity_amount_literal(value: str) -> str:
