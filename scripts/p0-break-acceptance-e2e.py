@@ -223,7 +223,8 @@ def target_identity_diagnostic(
             artifact = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if str(artifact.get("contractName") or "").casefold() != contract.casefold():
+        artifact_name = str(artifact.get("contractName") or path.stem)
+        if artifact_name.casefold() != contract.casefold():
             continue
         deployed = artifact.get("deployedBytecode")
         deployed_object = deployed.get("object") if isinstance(deployed, dict) else deployed
