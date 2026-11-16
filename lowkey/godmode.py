@@ -5449,12 +5449,13 @@ def resolve_godmode_root(explicit_root=None, *, cwd=None, config_path=None):
     )
 
 
-def _load_godmode_project_context(root, config_path=None):
-    """Resolve the active target/RPC from project memory, with a strictly owned legacy fallback.
+def _load_godmode_project_context(root, config_path=None, *, explicit_target=None):
+    """Resolve project target/RPC/actor through Lowkey's shared context service.
 
-    Project-local .audit/context.json is authoritative. Older Lowkey installs may
-    have a valid current target only in ~/.lowkey/config.json; reuse it only when
-    target_owners proves that the target belongs to this exact project.
+    Project-local audit state is authoritative. Legacy global target/RPC values
+    are accepted only when target_owners proves that the target belongs to this
+    exact project. Environment RPC selection is left to the normal precedence
+    helper so source-only project context stays independent of process env.
     """
     root = Path(root).expanduser().resolve()
     path = root / ".audit" / "context.json"
@@ -5465,17 +5466,8 @@ def _load_godmode_project_context(root, config_path=None):
     if not isinstance(data, dict):
         data = {}
 
-    owner = data.get("project") if isinstance(data.get("project"), dict) else {}
-    stored_root = owner.get("root")
-    if stored_root:
-        try:
-            if Path(str(stored_root)).expanduser().resolve() != root:
-                data = {}
-        except (OSError, TypeError, ValueError):
-            data = {}
-
-    target = data.get("target") if isinstance(data.get("target"), dict) else {}
-    remembered_address = str(target.get("address") or "").strip()
+    # Use the shared identity check rather than reimplementing path ownership.
+    project_state = shared_context.project_state_for_root(root, data)
     config_file = (
         Path(config_path).expanduser()
         if config_path is not None
@@ -5488,45 +5480,31 @@ def _load_godmode_project_context(root, config_path=None):
     if not isinstance(legacy, dict):
         legacy = {}
 
-    legacy_address = str(legacy.get("target") or "").strip()
-    owners = legacy.get("target_owners") if isinstance(legacy.get("target_owners"), dict) else {}
-    owner_root = next(
-        (value for address, value in owners.items()
-         if str(address).lower() == legacy_address.lower()),
-        None,
+    resolved = shared_context.resolve_runtime_context(
+        root,
+        project_state,
+        legacy,
+        validated_target=project_state.get("target"),
+        explicit_target=explicit_target,
+        allow_legacy_target=True,
+        environ={},
     )
-    owns_legacy_target = False
-    if re.fullmatch(r"0x[0-9a-fA-F]{40}", legacy_address) and isinstance(owner_root, str):
-        try:
-            owns_legacy_target = Path(owner_root).expanduser().resolve() == root
-        except (OSError, TypeError, ValueError):
-            owns_legacy_target = False
 
-    # Never infer ownership from project_roots: that map can intentionally point
-    # at a sibling dependency to locate its ABI/artifact.
-    if not remembered_address and owns_legacy_target:
-        abi_paths = legacy.get("abi_paths") if isinstance(legacy.get("abi_paths"), dict) else {}
-        data["target"] = {
-            "address": legacy_address,
-            "contract": legacy.get("target_contract"),
-            "artifact": abi_paths.get(legacy_address),
-            "source": "legacy-global-config",
-        }
-        remembered_address = legacy_address
-
-    # The global RPC may be borrowed only alongside the same project-owned target.
-    # Otherwise the current project's own RPC remains the sole source of truth.
-    same_owned_target = (
-        owns_legacy_target
-        and remembered_address
-        and legacy_address.lower() == remembered_address.lower()
-    )
-    if not data.get("rpc") and same_owned_target:
-        rpc = legacy.get("rpc") or legacy.get("rpc_url")
-        if isinstance(rpc, str) and rpc.strip():
-            data["rpc"] = rpc.strip()
-
-    return data
+    # Preserve the rest of the project audit metadata for Godmode's report,
+    # while replacing context-bearing fields with the canonical resolution.
+    if not project_state and not resolved.get("target") and not resolved.get("rpc") and not resolved.get("actor"):
+        return {}
+    context = dict(project_state)
+    context.update({
+        "project": resolved.get("project"),
+        "target": resolved.get("target"),
+        "rpc": resolved.get("rpc"),
+        "rpc_source": resolved.get("rpc_source"),
+        "actor": resolved.get("actor"),
+        "actor_source": resolved.get("actor_source"),
+        "legacy_target_owned": resolved.get("legacy_target_owned"),
+    })
+    return context
 
 
 def _resolve_godmode_rpc(explicit_rpc=None, project_context=None, environ=None):
@@ -5558,7 +5536,7 @@ def godmode(args):
     if ns.control_manifest and not ns.attack:
         p.error("--control-manifest is only used by the attack workflow; add --attack or remove --control-manifest.")
     root=resolve_godmode_root(ns.root)
-    project_context=_load_godmode_project_context(root)
+    project_context=_load_godmode_project_context(root, explicit_target=ns.target)
     remembered_target=(project_context.get("target") or {}).get("address") if isinstance(project_context.get("target"),dict) else None
     selected_target=ns.target or remembered_target
     target=addr(selected_target) if selected_target else None

@@ -2088,5 +2088,53 @@ class GodmodeTests(unittest.TestCase):
 
 
 
+    def test_godmode_shared_context_resolver_applies_explicit_target_override(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            audit = root / ".audit"
+            audit.mkdir()
+            remembered = "0x" + "a" * 40
+            explicit = "0x" + "b" * 40
+            (audit / "context.json").write_text(json.dumps({
+                "project": {"root": str(root)},
+                "target": {"address": remembered, "contract": "Remembered"},
+                "rpc": "http://127.0.0.1:8545",
+                "actor": "Alice",
+                "actor_profile": "Alice",
+                "actor_scope_initialized": True,
+            }), encoding="utf-8")
+
+            context = godmode._load_godmode_project_context(root, explicit_target=explicit)
+
+            self.assertEqual(context["target"]["address"], explicit)
+            self.assertEqual(context["target"]["source"], "command-line")
+            self.assertEqual(context["rpc"], "http://127.0.0.1:8545")
+            self.assertEqual(context["actor"], "Alice")
+
+    def test_godmode_shared_context_rejects_actor_and_target_from_another_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp) / "Token"
+            other = pathlib.Path(temp) / "Escrow"
+            root.mkdir()
+            other.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            audit = root / ".audit"
+            audit.mkdir()
+            address = "0x" + "c" * 40
+            (audit / "context.json").write_text(json.dumps({
+                "project": {"root": str(other)},
+                "target": {"address": address},
+                "rpc": "http://127.0.0.1:8545",
+                "actor": "Alice",
+                "actor_profile": "Alice",
+                "actor_scope_initialized": True,
+            }), encoding="utf-8")
+
+            context = godmode._load_godmode_project_context(root)
+
+            self.assertEqual(context, {})
+
+
 if __name__ == "__main__":
     unittest.main()
