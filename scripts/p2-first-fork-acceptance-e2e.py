@@ -21,6 +21,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 TARGET = "0xbe53a109b494e5c9f97b9cd39fe969be68bf6204"
 TARGET_DEPLOYMENT_BLOCK = 19_419_991
 ACTOR = "0x000000000000000000000000000000000000a11c"
