@@ -439,5 +439,51 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertEqual(report["status"], "MATCHED")
         self.assertEqual(report["storage_parity"], "exact_comparable")
 
+    def test_storage_parity_rejects_different_slot_access_sequences(self):
+        implementation = "0x" + "9" * 40
+        call_trace = {
+            "type": "CALL", "from": A, "to": B, "input": "0x12345678",
+            "value": "0x0", "calls": [{
+                "type": "DELEGATECALL", "from": B, "to": implementation,
+                "input": "0xaabbccdd", "value": "0x0", "calls": [],
+            }],
+        }
+        opcode_trace = {"structLogs": [
+            {"depth": 1, "op": "SSTORE", "stack": [WORD2, WORD1]},
+            {"depth": 1, "op": "DELEGATECALL",
+             "stack": ["0x" + "0" * 24 + implementation[2:], "0x" + "0" * 64]},
+            {"depth": 2, "op": "STOP", "stack": []},
+            {"depth": 1, "op": "STOP", "stack": []},
+        ]}
+        observed = normalize_opcode_storage(opcode_trace, call_trace)
+        self.assertTrue(observed["supported"], observed.get("reason"))
+        anvil = normalize_calltracer(
+            call_trace, storage_support="exact",
+            exact_storage=observed["by_frame_index"],
+        )
+        report = compare_trace_events(forge_trace(), anvil)
+        self.assertEqual(report["status"], "MISMATCH")
+        self.assertEqual(report["storage_parity"], "mismatch")
+        self.assertEqual(
+            report["storage_access_mismatches"][0]["dimension"], "slot"
+        )
+
+    def test_storage_value_parity_is_separate_and_fail_closed(self):
+        forge = forge_trace()
+        anvil = anvil_trace()
+        # Give both backends exact per-frame access evidence, but disagree on
+        # the write result. A matching call tree must not hide that mismatch.
+        anvil[0]["storage_support"] = "exact"
+        anvil[0]["storage"] = [{
+            "account": B, "slot": SLOT, "previous_value": WORD1,
+            "new_value": "0x" + "3" * 64, "is_write": True, "reverted": False,
+        }]
+        anvil[1]["storage_support"] = "exact"
+        anvil[1]["storage"] = []
+        report = compare_trace_events(forge, anvil)
+        self.assertEqual(report["call_tree_matched"], True)
+        self.assertEqual(report["storage_value_parity"], "mismatch")
+        self.assertEqual(report["status"], "MISMATCH")
+
 if __name__ == "__main__":
     unittest.main()
