@@ -15,6 +15,14 @@ except ImportError:
     except ImportError:
         from trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
 
+try:
+    from .trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+except ImportError:
+    try:
+        from lowkey.trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+    except ImportError:
+        from trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+
 def _address(value, label):
     if not isinstance(value,str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}",value):
         raise ValueError(f"Forge state diff {label} must be a 20-byte address.")
@@ -67,8 +75,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     chain_id=_uint(payload.get("chain_id"),"chain_id")
     block_number=_uint(payload.get("block_number"),"block_number")
     target=_address(payload.get("target_address"),"target_address")
-    code_hash=str(payload.get("target_code_hash") or "").lower()
-    if not re.fullmatch(r"0x[0-9a-f]{64}",code_hash):
+    reported_target_code_hash=str(payload.get("target_code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}",reported_target_code_hash):
         raise ValueError("Forge state diff must include target_code_hash (keccak256 of target runtime code).")
     fork_parent_hash=str(payload.get("fork_parent_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}",fork_parent_hash):
@@ -164,6 +172,26 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
                 source_backend="forge-state-diff",error="reverted" if reverted else None,
             ))
 
+    if not any(row["to"] == target for row in calls):
+        raise ValueError("Forge state-diff trace never called the manifest target.")
+    target_account_state = accounts.get(target) or {}
+    account_access_code_hash = str(target_account_state.get("code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", account_access_code_hash):
+        raise ValueError("Forge state-diff target account access must expose its runtime code_hash.")
+    target_code_hash_at_start = str(
+        payload.get("target_code_hash_at_start") or reported_target_code_hash
+    ).lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
+        raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
+    # Vm.AccountAccess is the trace-derived observation for the actual target
+    # execution. The recorder's top-level target_code_hash is retained as a
+    # separate diagnostic because older Recorder versions populated it from
+    # a start-time snapshot and newer VM behavior can expose a different
+    # codehash at the measured AccountAccess. The canonical hash is the
+    # AccountAccess value and is independently checked against archive EIP-1186.
+    target_code_hash_disagreement = reported_target_code_hash != account_access_code_hash
+    code_hash = account_access_code_hash
+
     prestate=[]
     balance_deltas=[]
     for row in accounts.values():
@@ -181,9 +209,25 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "input":entry["input"],"value_wei":_uint(entry["value"],"entry value")}
     entry_digest=hashlib.sha256(json.dumps(entry_payload,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     prestate_digest=hashlib.sha256(json.dumps(prestate,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    canonical_trace_events = None
+    canonical_trace_error = None
+    try:
+        canonical_trace_events = normalize_forge_events(trace_events)
+    except ValueError as exc:
+        # Keep the legacy evidence intact, but never silently coerce an
+        # unsupported EVM call kind into the P2 canonical TraceEvent enum.
+        canonical_trace_error = str(exc)
     return {"backend":"forge-state-diff","trace_schema_version":TRACE_SCHEMA_VERSION,
+        "canonical_trace_schema_version":CANONICAL_TRACE_SCHEMA_VERSION,
+        "canonical_trace_events":canonical_trace_events,
+        "canonical_trace_events_error":canonical_trace_error,
         "chain_id":chain_id,"block_number":block_number,
-        "target_address":target,"target_code_hash":code_hash,"fork_parent_hash":fork_parent_hash,
+        "target_address":target,"target_code_hash":code_hash,
+        "target_code_hash_at_start":target_code_hash_at_start,
+        "target_code_hash_reported":reported_target_code_hash,
+        "target_code_hash_disagreement":target_code_hash_disagreement,
+        "target_code_hash_source":"forge_account_access",
+        "fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
         "setup_events":setup_events,"domain_events":domain_events,
         "prestate":prestate,"prestate_sha256":prestate_digest,"balance_deltas":balance_deltas,

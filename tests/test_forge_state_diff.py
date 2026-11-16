@@ -34,7 +34,8 @@ def artifact():
                 "kind": 0, "account": TARGET, "accessor": WRAPPER,
                 "depth": 1, "value": 0, "data": "0x12345678",
                 "old_balance": 1000, "new_balance": 900,
-                "old_nonce": 1, "new_nonce": 1, "reverted": False,
+                "old_nonce": 1, "new_nonce": 1, "code_hash": CODE_HASH,
+                "reverted": False,
                 "storage_accesses": [{
                     "account": TARGET, "slot": 0,
                     "previous_value": 5, "new_value": 0,
@@ -113,6 +114,24 @@ class ForgeStateDiffTests(unittest.TestCase):
         value.pop("target_code_hash")
         with self.assertRaisesRegex(ValueError, "target_code_hash"):
             normalize_forge_state_diff(value, expected_target=TARGET)
+
+    def test_account_access_hash_is_canonical_and_recorder_disagreement_is_preserved(self):
+        value = artifact()
+        value["target_code_hash"] = "0x" + "f" * 64
+        result = normalize_forge_state_diff(value, expected_target=TARGET)
+        self.assertEqual(result["target_code_hash"], CODE_HASH)
+        self.assertEqual(result["target_code_hash_reported"], "0x" + "f" * 64)
+        self.assertEqual(result["target_code_hash_at_start"], "0x" + "f" * 64)
+        self.assertTrue(result["target_code_hash_disagreement"])
+        self.assertEqual(result["target_code_hash_source"], "forge_account_access")
+
+    def test_records_start_time_hash_separately_from_measured_hash(self):
+        value = artifact()
+        value["target_code_hash_at_start"] = "0x" + "e" * 64
+        result = normalize_forge_state_diff(value, expected_target=TARGET)
+        self.assertEqual(result["target_code_hash"], CODE_HASH)
+        self.assertEqual(result["target_code_hash_at_start"], "0x" + "e" * 64)
+        self.assertEqual(result["target_code_hash_source"], "forge_account_access")
 
     def test_rejects_missing_fork_parent_hash(self):
         value = artifact()
