@@ -102,7 +102,8 @@ A minimal manifest has this shape:
 `code_sha256` is SHA-256 of the deployed runtime bytecode, not the EVM Keccak code hash. `block_number` pins the fork parent block. The source file digest is separate from deployment bytecode identity.
 
 The test runner sets:
-- `LOWKEY_EXPERIMENT_ID`
+- `LOWKEY_EXPERIMENT_ID` (stable manifest identifier)
+- `LOWKEY_EXPERIMENT_RUN_ID` (unique execution identifier)
 - `LOWKEY_EXPERIMENT_ROLE` (`attack` or `control`)
 - `LOWKEY_EVIDENCE_PATH`
 
