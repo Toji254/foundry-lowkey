@@ -487,8 +487,7 @@ class GodmodeTests(unittest.TestCase):
                  patch.object(godmode, "run") as run_mock, \
                  redirect_stdout(io.StringIO()):
                 result = godmode.run_control([
-                    "control.json", "--root", str(root),
-                    "--rpc-url", "http://127.0.0.1:8545", "--validate",
+                    "control.json", "--root", str(root), "--validate",
                 ])
 
             saved = json.loads((root / ".audit" / "godmode" / "control.json").read_text())
@@ -499,6 +498,64 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(saved["freeze"]["verified"])
             rpc_mock.assert_not_called()
             run_mock.assert_not_called()
+
+    def test_control_freeze_does_not_require_rpc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._control_manifest(root)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = godmode.control([
+                    "control.json", "--root", str(root), "--freeze",
+                ])
+
+            self.assertEqual(result, 0)
+            self.assertIn("CONTROL EXPECTATIONS FROZEN", output.getvalue())
+            self.assertIn("No attack or control command was executed.", output.getvalue())
+
+    def test_control_uses_default_project_manifest_without_rpc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, _, _, _ = self._control_manifest(root)
+            default_manifest = root / ".audit" / "control.json"
+            default_manifest.parent.mkdir(parents=True, exist_ok=True)
+            default_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = godmode.control(["--root", str(root), "--freeze"])
+
+            self.assertEqual(result, 0)
+            self.assertIn("CONTROL EXPECTATIONS FROZEN", output.getvalue())
+
+    def test_control_missing_default_manifest_explains_required_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = godmode.control(["--root", tmp])
+
+            self.assertEqual(result, 2)
+            rendered = output.getvalue()
+            self.assertIn("CONTROL NOT RUN", rendered)
+            self.assertIn(".audit/control.json", rendered)
+            self.assertIn("matched attack/control experiment", rendered)
+            self.assertNotIn("usage:", rendered.lower())
+
+    def test_trace_parity_without_artifacts_explains_required_inputs(self):
+        output = io.StringIO()
+        result = godmode.trace_parity([])
+        # Capture separately so the test remains explicit about the user-facing result.
+        self.assertEqual(result, 2)
+
+    def test_trace_parity_with_one_artifact_names_the_missing_backend(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = godmode.trace_parity(["forge.json"])
+
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertIn("Missing required Anvil evidence JSON", rendered)
+        self.assertIn("will not guess", rendered)
+        self.assertNotIn("usage:", rendered.lower())
 
     def test_control_validate_rejects_tampered_digest_without_execution(self):
         from unittest.mock import patch
