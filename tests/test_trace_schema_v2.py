@@ -6,6 +6,7 @@ from lowkey.trace_schema import (
     build_trace_event,
     from_legacy_event,
     normalize_calltracer,
+    flatten_calltracer,
     normalize_forge_events,
 )
 from lowkey.trace_parity import compare_trace_events
@@ -81,6 +82,29 @@ class TraceSchemaV2Tests(unittest.TestCase):
         event = anvil_trace()[0]
         self.assertEqual(event["storage_support"], "declared_only")
         self.assertIsNone(event["storage"])
+
+    def test_nested_calltracer_tree_flattens_preorder_with_depth(self):
+        flattened = flatten_calltracer({
+            "type": "CALL", "from": A, "to": B,
+            "value": "0x0", "input": "0x12345678",
+            "calls": [{
+                "type": "DELEGATECALL", "from": B, "to": A,
+                "input": "0xaabbccdd",
+                "calls": [{
+                    "type": "STATICCALL", "from": A, "to": B,
+                    "input": "0xdeadbeef",
+                }],
+            }],
+        })
+        self.assertEqual([row["type"] for row in flattened], ["CALL", "DELEGATECALL", "STATICCALL"])
+        self.assertEqual([row["depth"] for row in flattened], [0, 1, 2])
+        normalized = normalize_calltracer({
+            "type": "CALL", "from": A, "to": B,
+            "value": "0x0", "input": "0x12345678",
+            "calls": [{"type": "DELEGATECALL", "from": B, "to": A, "input": "0xaabbccdd"}],
+        })
+        self.assertEqual([row["seq"] for row in normalized], [0, 1])
+        self.assertEqual(normalized[1]["depth"], 1)
 
     def test_prestate_storage_is_explicitly_partial(self):
         rows = [{"account": B, "slot": SLOT, "value": WORD1, "post_value": WORD2}]
