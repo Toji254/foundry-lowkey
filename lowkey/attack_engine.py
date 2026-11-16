@@ -50,7 +50,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["sensitive state-changing entrypoint", "intended role or principal", "unauthorized and authorized actors"],
         "property": "unauthorized-state-change",
         "signals": [r"\b(?:onlyOwner|onlyRole|hasRole|_checkRole|owner|admin|guardian)\b", r"\b(?:setOwner|upgradeTo|pause|unpause|setFee|withdrawAdmin)\s*\("],
-        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": True,
+        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
     "accounting": {
         "title": "Accounting",
