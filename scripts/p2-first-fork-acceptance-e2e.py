@@ -269,6 +269,14 @@ def main() -> int:
             if not trace_path.is_file():
                 raise AssertionError("Forge harness did not write the P2 trace artifact.")
             raw_forge = json.loads(trace_path.read_text(encoding="utf-8"))
+            # Persist raw recorder output before normalization so every
+            # mismatch remains inspectable in the CI artifact.
+            ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+            raw_forge_path = ARTIFACT_ROOT / "raw-forge-state-diff.json"
+            raw_forge_path.write_text(
+                json.dumps(raw_forge, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
             from lowkey.forge_state_diff import normalize_forge_state_diff
             from lowkey.trace_schema import normalize_calltracer, normalize_prestate_diff
