@@ -101,6 +101,41 @@ class ArchetypeIndexTests(unittest.TestCase):
             self.assertEqual(failed["status"], "UNRESOLVED")
             self.assertFalse(failed["citations_all_resolved"])
 
+    def test_empty_assumption_ledger_is_not_a_successful_citation_check(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "src").mkdir()
+            (root / "src" / "Empty.sol").write_text(
+                "pragma solidity ^0.8.20; contract Empty { function ping() external pure {} }\n",
+                encoding="utf-8",
+            )
+            report = _index.classify_project(root)
+            report["assumptions"] = []
+            report["citation_fingerprints"] = {}
+            output = root / ".audit" / "godmode" / "empty.json"
+            output.parent.mkdir(parents=True)
+            output.write_text(json.dumps(report), encoding="utf-8")
+            verified = _index.verify_report(root, ".audit/godmode/empty.json")
+            self.assertEqual(verified["status"], "UNRESOLVED")
+            self.assertFalse(verified["citations_all_resolved"])
+
+    def test_malformed_assumption_ledger_is_a_controlled_refusal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault { function deposit(uint256 assets) external pure returns(uint256) { return assets; } function totalAssets() external pure returns(uint256) { return 1; } }\n",
+                encoding="utf-8",
+            )
+            report = _index.classify_project(root)
+            report["assumptions"] = {"not": "a list"}
+            report["citation_fingerprints"] = {}
+            output = root / ".audit" / "godmode" / "malformed.json"
+            output.parent.mkdir(parents=True)
+            output.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaises(_index.ArchetypeError):
+                _index.verify_report(root, ".audit/godmode/malformed.json")
+
     def test_cli_writes_a_reproducible_json_report(self):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp) / "vault"
