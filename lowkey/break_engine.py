@@ -179,6 +179,7 @@ PRIVILEGED_RE = re.compile(
     r"withdraw|claim|redeem|release|unlock|payout|collect|harvest)"
 )
 SETUP_RE = re.compile(r"(?i)^(deposit(?:For)?|seed|fund|topUp|top_up|stake(?:For)?|credit|supply(?:For)?|provide(?:Liquidity)?|addLiquidity|mint(?:Shares)?|wrap|lock|contribute|subscribe|join|openPosition|createPosition|enter)$")
+ABI_ADDRESS_SENTINEL = "0x" + "aa" * 20
 
 
 @dataclass
@@ -736,14 +737,18 @@ def _array_abi_type(ptype: str):
     return element_type, (int(length) if length else None)
 
 
-def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str, config=None) -> list[str]:
+def _make_value(
+    host, fn: dict[str, Any], rng: random.Random, mode: str, config=None,
+    fallback_address: str | None = None,
+) -> list[str]:
     """Generate deterministic recursive ABI values for the target's actual input shape."""
-    accounts = _anvil_accounts(host, config or {})
-    fallback = accounts[1] if mode == "one" and len(accounts) > 1 else (
-        accounts[0] if accounts else "0x" + "11" * 20
-    )
+    if fallback_address is None:
+        accounts = _anvil_accounts(host, config or {})
+        fallback_address = accounts[1] if mode == "one" and len(accounts) > 1 else (
+            accounts[0] if accounts else "0x" + "11" * 20
+        )
     return sample_abi_inputs(
-        fn.get("inputs") or [], mode, rng=rng, fallback_address=fallback
+        fn.get("inputs") or [], mode, rng=rng, fallback_address=fallback_address
     )
 
 
@@ -760,10 +765,13 @@ def _parse_array_samples(raw_value: str, expected_length: int | None = None) -> 
     return values
 
 
-def _setup_argument_samples(params: list[dict[str, Any]]) -> list[str]:
+def _setup_argument_samples(
+    params: list[dict[str, Any]],
+    fallback_address: str = "0x" + "11" * 20,
+) -> list[str]:
     """Generate stable setup arguments for any supported recursive ABI shape."""
     return sample_abi_inputs(
-        params, "one", rng=random.Random(1337), fallback_address="0x" + "11" * 20
+        params, "one", rng=random.Random(1337), fallback_address=fallback_address
     )
 
 
@@ -1176,6 +1184,24 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 import {console2} from "forge-std/console2.sol";
+
+library LowkeyABIPatch {
+    function replaceAddress(bytes memory data, address placeholder, address actor)
+        internal pure returns (bytes memory)
+    {
+        uint256 marker = uint256(uint160(placeholder));
+        uint256 replacement = uint256(uint160(actor));
+        // ABI argument words start four bytes after the function selector.
+        for (uint256 offset = 4; offset + 32 <= data.length; offset += 32) {
+            uint256 word;
+            assembly { word := mload(add(add(data, 32), offset)) }
+            if (word == marker) {
+                assembly { mstore(add(add(data, 32), offset), replacement) }
+            }
+        }
+        return data;
+    }
+}
 """
 
 
@@ -1237,7 +1263,10 @@ def _render_repeat_test(
         )
     setup_params = list(setup_params) if setup_params is not None else []
     if setup_calldata:
-        setup_declarations, setup_call = "", f'hex"{setup_calldata[2:]}"'
+        setup_declarations, setup_call = "", (
+            f'LowkeyABIPatch.replaceAddress(hex"{setup_calldata[2:]}", '
+            f'address({ABI_ADDRESS_SENTINEL}), ATTACKER)'
+        )
     else:
         setup_values = _setup_argument_samples(setup_params) if setup_signature else []
         setup_declarations, setup_expressions = _solidity_argument_declarations(
@@ -1249,7 +1278,8 @@ def _render_repeat_test(
     payable_setup = True if setup_payable is None else setup_payable
     setup_value = "0" if asset_signature else (_solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0"))
     payload_expr = (
-        f'hex"{payload_calldata[2:]}"' if payload_calldata else (
+        f'LowkeyABIPatch.replaceAddress(hex"{payload_calldata[2:]}", '
+        f'address({ABI_ADDRESS_SENTINEL}), ATTACKER)' if payload_calldata else (
             f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
             if expressions else f'abi.encodeWithSignature("{signature}")'
         )
@@ -1514,7 +1544,9 @@ contract LowkeyBreakAccess is Test {{
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
 
     function test_break_access() public {{
-        bytes memory data = hex"{calldata[2:]}";
+        bytes memory data = LowkeyABIPatch.replaceAddress(
+            hex"{calldata[2:]}", address({ABI_ADDRESS_SENTINEL}), ATTACKER
+        );
         vm.deal(ATTACKER, 100 ether);
 
         vm.prank(ATTACKER);
@@ -1540,7 +1572,9 @@ contract LowkeyBreakBoundary is Test {{
     function test_break_boundary() public {{
         vm.deal(ATTACKER, 100 ether);
         bytes memory zeroData = hex"{call_zero[2:]}";
-        bytes memory maxData = hex"{call_max[2:]}";
+        bytes memory maxData = LowkeyABIPatch.replaceAddress(
+            hex"{call_max[2:]}", address({ABI_ADDRESS_SENTINEL}), ATTACKER
+        );
 
         vm.prank(ATTACKER);
         (bool zeroSuccess, ) = TARGET.call{{value: {value_lit}}}(zeroData);
@@ -1570,7 +1604,9 @@ contract LowkeyBreakTime is Test {{
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
 
     function test_time_dependence() public {{
-        bytes memory data = hex"{calldata[2:]}";
+        bytes memory data = LowkeyABIPatch.replaceAddress(
+            hex"{calldata[2:]}", address({ABI_ADDRESS_SENTINEL}), ATTACKER
+        );
         vm.deal(ATTACKER, 100 ether);
 
         vm.warp(100000);
@@ -1737,7 +1773,10 @@ def _render_reentrancy_test(
         )
     setup_params = list(setup_params) if setup_params is not None else []
     if setup_calldata:
-        setup_declarations, setup_call = "", f'hex"{setup_calldata[2:]}"'
+        setup_declarations, setup_call = "", (
+            f'LowkeyABIPatch.replaceAddress(hex"{setup_calldata[2:]}", '
+            f'address({ABI_ADDRESS_SENTINEL}), address(hostile))'
+        )
     else:
         setup_values = _setup_argument_samples(setup_params) if setup_signature else []
         setup_declarations, setup_expressions = _solidity_argument_declarations(
@@ -1794,7 +1833,8 @@ def _render_reentrancy_test(
         }}
 """
     payload_expr = (
-        f'hex"{payload_calldata[2:]}"' if payload_calldata else (
+        f'LowkeyABIPatch.replaceAddress(hex"{payload_calldata[2:]}", '
+        f'address({ABI_ADDRESS_SENTINEL}), address(hostile))' if payload_calldata else (
             f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
             if encoded_args else f'abi.encodeWithSignature("{signature}")'
         )
@@ -2564,7 +2604,7 @@ def _encoded_setup_call(host, config, target: Target, setup_function, setup_para
                          str(setup_params[0].get("type") or "").lower())
     ):
         return None
-    values = _setup_argument_samples(setup_params)
+    values = _setup_argument_samples(setup_params, ABI_ADDRESS_SENTINEL)
     calldata, error = _encode_call(host, config, target, setup_function, values)
     if not calldata:
         raise ValueError("Could not ABI-encode the discovered setup function: " + str(error or "unknown encoder error"))
@@ -2580,7 +2620,10 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
 
     modes = ["normal", "one", "zero", "max"]
     mode = "one" if family in {"reentrancy", "replay", "accounting"} else modes[rng.randrange(len(modes))]
-    values = _make_value(host, fn, rng, mode, config)
+    values = _make_value(
+        host, fn, rng, mode, config,
+        fallback_address=ABI_ADDRESS_SENTINEL,
+    )
     calldata, error = _encode_call(host, config, target, fn, values)
     if not calldata:
         return AttackResult(
@@ -2648,8 +2691,12 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             break_on_success=bool(PRIVILEGED_RE.search(name)),
         )
     elif family == "boundary":
-        zero_values = _make_value(host, fn, rng, "zero")
-        max_values = _make_value(host, fn, rng, "max")
+        zero_values = _make_value(
+            host, fn, rng, "zero", fallback_address=ABI_ADDRESS_SENTINEL
+        )
+        max_values = _make_value(
+            host, fn, rng, "max", fallback_address=ABI_ADDRESS_SENTINEL
+        )
         zero_data, zero_error = _encode_call(host, config, target, fn, zero_values)
         max_data, max_error = _encode_call(host, config, target, fn, max_values)
         if not zero_data or not max_data:
