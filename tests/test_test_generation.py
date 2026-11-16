@@ -42,6 +42,94 @@ class TestGenerationTests(unittest.TestCase):
         self.assertIn("pragma solidity ^0.8.20;", rendered)
         self.assertIn("new Counter()", rendered)
 
+    def _weth_source(self):
+        return """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+import {ERC20} from "./ERC20.sol";
+contract WETH is ERC20 {
+    function deposit() public payable virtual {
+        _mint(msg.sender, msg.value);
+    }
+    function withdraw(uint256 amount) public virtual {
+        _burn(msg.sender, amount);
+        assembly {
+            if iszero(call(gas(), caller(), amount, codesize(), 0x00, codesize(), 0x00)) {
+                revert(0, 0)
+            }
+        }
+    }
+    receive() external payable virtual {
+        deposit();
+    }
+}
+"""
+
+    def test_wrapped_native_property_requires_mint_burn_and_value_return(self):
+        source = self._weth_source()
+        property_spec = generation._find_wrapped_native_round_trip_property(source, "WETH")
+        self.assertEqual(property_spec["kind"], "wrapped-native-round-trip")
+        self.assertEqual(property_spec["deposit"], "deposit")
+        self.assertEqual(property_spec["withdraw"], "withdraw")
+        self.assertIsNone(
+            generation._find_wrapped_native_round_trip_property(
+                source.replace("_mint(msg.sender, msg.value);", "_mint(msg.sender, 1);"),
+                "WETH",
+            )
+        )
+        self.assertIsNone(
+            generation._find_wrapped_native_round_trip_property(
+                source.replace("call(gas(), caller(), amount", "call(gas(), address(0), amount"),
+                "WETH",
+            )
+        )
+
+    def test_weth_generator_emits_executable_round_trip_unit_and_fuzz_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text(
+                '[profile.default]\\nsrc = "src"\\n', encoding="utf-8"
+            )
+            (root / "src" / "ERC20.sol").write_text(
+                """pragma solidity ^0.8.20;
+abstract contract ERC20 {
+    mapping(address => uint256) internal balances;
+    uint256 internal supply;
+    function balanceOf(address who) public view returns (uint256) { return balances[who]; }
+    function totalSupply() public view returns (uint256) { return supply; }
+    function _mint(address who, uint256 amount) internal { balances[who] += amount; supply += amount; }
+    function _burn(address who, uint256 amount) internal { balances[who] -= amount; supply -= amount; }
+}
+""", encoding="utf-8",
+            )
+            (root / "src" / "WETH.sol").write_text(self._weth_source(), encoding="utf-8")
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = generation.run_test_gen(
+                        {"target_contract": "WETH"},
+                        ["--types", "unit,fuzz"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0, output.getvalue())
+            folder = root / ".audit" / "test-gen" / "WETH"
+            unit = (folder / "LowkeyGeneratedUnit_WETH.t.sol").read_text(encoding="utf-8")
+            fuzz = (folder / "LowkeyGeneratedFuzz_WETH.t.sol").read_text(encoding="utf-8")
+            self.assertIn("depositThenWithdrawPreservesSupplyAndNativeBalance", unit)
+            self.assertIn("testFuzz_depositWithdrawPreservesSupplyAndNativeBalance", fuzz)
+            self.assertIn("target.totalSupply()", unit)
+            self.assertIn("target.balanceOf(address(this))", unit)
+            self.assertIn("target.withdraw(amount)", fuzz)
+            self.assertIn("receive() external payable {}", fuzz)
+            self.assertNotRegex(unit + fuzz, r"(?i)\\bTODO\\b|\\bscaffold\\b|\\bstarter\\b")
+            report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["fuzz_property"]["kind"], "wrapped-native-round-trip")
+            self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
+            self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "executable-candidate")
+
     def test_unit_deployment_assertion_is_not_marked_view(self):
         rendered = generation._render(
             "unit",
