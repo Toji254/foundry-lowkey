@@ -475,7 +475,7 @@ def validate_experiment_manifest(value: Any, root: str | Path = ".") -> dict[str
     reproof = value.get("reproof")
     if not isinstance(reproof, dict) or not isinstance(reproof.get("reproof_file"), str):
         raise AttackEngineError("reproof.reproof_file must point to a completed independent lk reproof.", "reproof_missing")
-    reproof = _validate_reproof(reproof, root=base, target=target, family=family, impact_mode=impact_mode, label="independent reproof")
+    _validate_reproof(reproof, root=base, target=target, family=family, impact_mode=impact_mode, label="independent reproof")
     attack = _validate_test(value.get("attack"), base, "attack")
     control = _validate_test(value.get("control"), base, "control")
     if attack["evidence_file"] == control["evidence_file"]:
@@ -713,7 +713,7 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
     if not isinstance(stages, list) or not stages or any(not isinstance(item, dict) or item.get("family") not in FAMILIES for item in stages):
         raise AttackEngineError("stages must be a non-empty list of supported family objects.")
     reproof_family = "economic" if impact_mode == "economic" else str(stages[0]["family"])
-    reproof = _validate_reproof(reproof, root=root, target=target, family=reproof_family, impact_mode=impact_mode, label="chain independent reproof")
+    _validate_reproof(reproof, root=root, target=target, family=reproof_family, impact_mode=impact_mode, label="chain independent reproof")
     property_id = value.get("property_id")
     if not isinstance(property_id, str) or not re.fullmatch(r"[a-zA-Z0-9_.:-]{3,120}", property_id):
         raise AttackEngineError("chain property_id is required.")
