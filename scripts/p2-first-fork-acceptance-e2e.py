@@ -27,10 +27,10 @@ TARGET = "0xbe53a109b494e5c9f97b9cd39fe969be68bf6204"
 TARGET_DEPLOYMENT_BLOCK = 19_419_991
 ACTOR = "0x000000000000000000000000000000000000a11c"
 DEFAULT_FORK_UPSTREAMS = (
-    "https://rpc.mevblocker.io/noreverts",
+    "https://eth-mainnet.public.blastapi.io",
     "https://eth.blocktailor.com",
 )
-DEFAULT_SOURCE_RPC = "https://eth-mainnet.public.blastapi.io"
+DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io/fullprivacy"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
 FORGE_STD_COMMIT = "15b2df92a05d4d2f76a06653872fefb287e0e01c"
 ARTIFACT_ROOT = ROOT / ".audit" / "p2-first-fork"
@@ -59,11 +59,36 @@ def rpc(url: str, method: str, params: list[Any], timeout: int = 25) -> Any:
         headers={"Content-Type": "application/json", "User-Agent": "LowkeyCast-P2-acceptance/0.1"},
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read(8_000_000).decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"RPC {method} failed at {urlparse_safe(url)}: {type(exc).__name__}: {exc}") from exc
+    payload = None
+    last_error = None
+    for attempt in range(4):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read(8_000_000).decode("utf-8"))
+            break
+        except HTTPError as exc:
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == 3:
+                break
+            retry_after = 0.0
+            try:
+                retry_after = float(exc.headers.get("Retry-After", "0"))
+            except (TypeError, ValueError):
+                pass
+            time.sleep(min(max(retry_after, 0.25 * (2 ** attempt)), 4.0))
+        except (URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt == 3:
+                break
+            time.sleep(0.25 * (2 ** attempt))
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            break
+    if last_error is not None and payload is None:
+        raise RuntimeError(
+            f"RPC {method} failed at {urlparse_safe(url)} after bounded retries: "
+            f"{type(last_error).__name__}: {last_error}"
+        ) from last_error
     if not isinstance(payload, dict):
         raise RuntimeError(f"RPC {method} returned a non-object payload.")
     if payload.get("error"):
