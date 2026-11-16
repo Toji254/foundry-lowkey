@@ -1053,6 +1053,26 @@ def run_multiwave_audit(
                         stopped_reason = "Hunter invocation failed: " + str(exc)[:300]
 
             for group, value in results:
+                # _groups() deliberately gives each hunter an isolated copy of
+                # its assignments. Reconcile the evidence-bearing results back
+                # into the canonical ledger before candidate attribution and
+                # before the next coverage-critic wave.
+                for assigned_unit in group["units"]:
+                    coverage_id = str(assigned_unit.get("coverage_id") or "")
+                    canonical_unit = unit_index.get(coverage_id)
+                    if canonical_unit is None:
+                        continue
+                    canonical_unit["checks"] = list(assigned_unit.get("checks", []))
+                    canonical_unit["status"] = str(assigned_unit.get("status") or "needs_validation")
+                    canonical_unit["reviewed_paths"] = sorted(
+                        set(canonical_unit.get("reviewed_paths", []))
+                        | set(assigned_unit.get("reviewed_paths", []))
+                    )
+                    if canonical_unit["status"] in {"needs_validation", "blocked"}:
+                        canonical_unit["reason"] = str(
+                            assigned_unit.get("reason") or "hunter_review_did_not_complete"
+                        )
+
                 for finding in value["findings"]:
                     identifier = str(finding["finding_id"])
                     if identifier in seen_findings:
