@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib, json
 from datetime import datetime, timezone
+from typing import Mapping
 from pathlib import Path
 
 AUTHENTICITIES = {"unknown", "fixture", "local_reimplementation", "forked_deployment"}
