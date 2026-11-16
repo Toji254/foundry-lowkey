@@ -418,14 +418,17 @@ def verify_report(root: str | Path, report_path: str | Path) -> dict[str, Any]:
         raise ArchetypeError(f"Cannot read classification report: {exc}") from exc
     if not isinstance(report, dict) or report.get("schema_version") != SCHEMA_VERSION:
         raise ArchetypeError("Unsupported classification report schema.")
-    fingerprints = report.get("citation_fingerprints", {})
-    if not isinstance(fingerprints, dict):
-        fingerprints = {}
-    results = verify_assumption_citations(
-        base, report.get("assumptions", []), fingerprints, report.get("source_hashes", {})
-    )
-    return {"status": "OBSERVED" if all(item["resolved"] for item in results) else "UNRESOLVED",
-            "citations_all_resolved": all(item["resolved"] for item in results),
+    assumptions = report.get("assumptions")
+    fingerprints = report.get("citation_fingerprints")
+    source_hashes = report.get("source_hashes")
+    if not isinstance(assumptions, list) or any(not isinstance(item, dict) for item in assumptions):
+        raise ArchetypeError("Saved classification report has a malformed assumption ledger.")
+    if not isinstance(fingerprints, dict) or not isinstance(source_hashes, dict):
+        raise ArchetypeError("Saved classification report is missing citation/source fingerprint maps.")
+    results = verify_assumption_citations(base, assumptions, fingerprints, source_hashes)
+    all_resolved = bool(assumptions) and all(item["resolved"] for item in results)
+    return {"status": "OBSERVED" if all_resolved else "UNRESOLVED",
+            "citations_all_resolved": all_resolved,
             "citation_resolution": results}
 
 
@@ -512,8 +515,8 @@ def main(args: list[str] | None = None) -> int:
                 print("  - " + item)
             print("Report: " + report.get("report_path", ns.output))
         return 0
-    except (ArchetypeError, OSError, ValueError) as exc:
-        print(f"UNCLASSIFIED: {exc}", file=sys.stderr)
+    except (ArchetypeError, OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"BLOCKED: protocol-intelligence operation could not be completed: {exc}", file=sys.stderr)
         return 2
 
 
