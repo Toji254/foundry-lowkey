@@ -277,6 +277,11 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             submitted = run("Job submitted to server")
             unclear = run("some unrecognized output")
             passed = run("Finished verification request\n[rule] supplyInvariant: PASS")
+            native_pass = run(
+                "Job submitted to server\nJob ID: 2e1c9d8a-1234\n"
+                "Finished verification request\nRule balance_never_exceeds_supply(address): PASS\n"
+                "https://prover.certora.com/output/2e1c9d8a-1234"
+            )
             failed = run("Finished verification request\nERROR: Prover found violations\n[rule] supplyInvariant: FAIL", 1)
             tool_error = run("configuration parsing failed", 1)
         self.assertEqual(submitted.status, "submitted")
@@ -285,6 +290,11 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(unclear.metadata["result_semantics"], "certora_result_not_recognized")
         self.assertEqual(passed.status, "passed")
         self.assertEqual(passed.metadata["result_semantics"], "certora_completed_pass")
+        self.assertEqual(native_pass.status, "passed")
+        self.assertEqual(native_pass.metadata["result_semantics"], "certora_completed_pass")
+        self.assertEqual(native_pass.metadata["remote_job_id"], "2e1c9d8a-1234")
+        self.assertIn("prover.certora.com/output/2e1c9d8a-1234", native_pass.metadata["remote_report_url"])
+        self.assertTrue(native_pass.metadata["remote_result_wait_requested"])
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.metadata["result_semantics"], "certora_completed_with_violations")
         self.assertEqual(tool_error.status, "error")
