@@ -3098,7 +3098,11 @@ class LowkeyCastTests(unittest.TestCase):
                 "abi_paths": {},
             }
 
-            with patch.object(lk, "auto_abi_path", return_value=None):
+            with (
+                patch.object(lk, "_run_resource_aware_foundry_build", return_value=0) as planned,
+                patch.object(lk, "_resource_aware_forge_threads", return_value=1),
+                patch.object(lk, "auto_abi_path", return_value=None),
+            ):
                 with patch.object(
                     lk,
                     "derive_default_anvil_key",
@@ -3114,6 +3118,7 @@ class LowkeyCastTests(unittest.TestCase):
                             "0x" + "4" * 64,
                         )
 
+            planned.assert_called_once_with(root, ["--target", "script/LocalAudit.s.sol"], lab_phase=True)
             self.assertEqual(result, 0)
             self.assertEqual(validate_target.call_args.args[3], canonical)
             self.assertEqual(config["lab_system"]["factory"], factory)
@@ -3169,7 +3174,12 @@ class LowkeyCastTests(unittest.TestCase):
                 "targets": {},
                 "abi_paths": {},
             }
-            with patch.object(lk.audit_context, "foundry_project_root", return_value=root),                  patch.object(lk, "auto_abi_path", return_value=None):
+            with (
+                patch.object(lk, "_run_resource_aware_foundry_build", return_value=0) as planned,
+                patch.object(lk, "_resource_aware_forge_threads", return_value=1),
+                patch.object(lk.audit_context, "foundry_project_root", return_value=root),
+                patch.object(lk, "auto_abi_path", return_value=None),
+            ):
                 result = lk.run_project_lab_script(
                     config,
                     root,
@@ -3182,6 +3192,7 @@ class LowkeyCastTests(unittest.TestCase):
                     "0x" + "1" * 64,
                 )
 
+        planned.assert_called_once_with(root, ["--target", "script/LowkeyAutoConfidencePoolLab.s.sol"], lab_phase=True)
         self.assertEqual(result, 0)
         command = run_foundry.call_args.args[0]
         self.assertEqual(command[:2], ["script", "script/LowkeyAutoConfidencePoolLab.s.sol"])
@@ -4980,14 +4991,20 @@ contract Pool {
             events.append(("bootstrap", str(project_info["root"]), kwargs.get("reason")))
             return 0
 
-        def fake_foundry(command, capture=False):
-            events.append(("native", list(command), capture))
+        def fake_build(project_root, args):
+            events.append(("resource-build", str(project_root), list(args)))
             return 0
 
-        with patch.object(lk, "detected_project_root", return_value=root), patch.object(
-            lk, "detect_project", return_value=info
-        ), patch.object(lk, "bootstrap_project", side_effect=fake_bootstrap), patch.object(
-            lk, "run_foundry", side_effect=fake_foundry
+        def fake_foundry(command, capture=False):
+            events.append(("native", list(command), capture))
+            return lk.CommandResult("", 0)
+
+        with (
+            patch.object(lk, "detected_project_root", return_value=root),
+            patch.object(lk, "detect_project", return_value=info),
+            patch.object(lk, "bootstrap_project", side_effect=fake_bootstrap),
+            patch.object(lk, "_run_resource_aware_foundry_build", side_effect=fake_build) as planner,
+            patch.object(lk, "run_foundry", side_effect=fake_foundry),
         ):
             self.assertEqual(lk.run_native_project_command({}, "build", []), 0)
             self.assertEqual(lk.run_native_project_command({}, "test", []), 0)
@@ -4996,13 +5013,14 @@ contract Pool {
             events,
             [
                 ("bootstrap", str(root), "prepare"),
-                ("native", ["build"], True),
+                ("resource-build", str(root), []),
                 ("bootstrap", str(root), "prepare"),
                 ("native", ["test"], True),
             ],
         )
+        planner.assert_called_once_with(root, [])
 
-    def test_foundry_build_retries_once_after_repairable_dependency_failure(self):
+    def test_foundry_build_uses_planner_and_does_not_retry_native_build(self):
         root = pathlib.Path("/tmp/lowkey-foundry-dependency-retry")
         info = {
             "root": str(root),
@@ -5010,43 +5028,20 @@ contract Pool {
             "kind": "foundry",
             "stacks": ["foundry"],
         }
-        events = []
-
-        def fake_bootstrap(project_info, args=(), **kwargs):
-            events.append(
-                ("bootstrap", kwargs.get("force", False), kwargs.get("reason"))
-            )
-            return 0
-
-        native_results = [
-            lk.CommandResult(
-                'Source "@openzeppelin/contracts/access/Ownable.sol" not found',
-                1,
-            ),
-            lk.CommandResult("Compilation completed successfully", 0),
-        ]
-
-        def fake_foundry(command, capture=False):
-            events.append(("native", list(command), capture))
-            return native_results.pop(0)
-
-        with patch.object(lk, "detected_project_root", return_value=root), patch.object(
-            lk, "detect_project", return_value=info
-        ), patch.object(lk, "bootstrap_project", side_effect=fake_bootstrap), patch.object(
-            lk, "run_foundry", side_effect=fake_foundry
-        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        with (
+            patch.object(lk, "detected_project_root", return_value=root),
+            patch.object(lk, "detect_project", return_value=info),
+            patch.object(lk, "bootstrap_project", return_value=0) as bootstrap,
+            patch.object(lk, "_run_resource_aware_foundry_build", return_value=2) as planner,
+            patch.object(lk, "run_foundry") as native,
+        ):
             code = lk.run_native_project_command({}, "build", [])
 
-        self.assertEqual(code, 0)
-        self.assertEqual(
-            events,
-            [
-                ("bootstrap", False, "prepare"),
-                ("native", ["build"], True),
-                ("bootstrap", True, "dependency"),
-                ("native", ["build"], True),
-            ],
-        )
+        self.assertEqual(code, 2)
+        bootstrap.assert_called_once()
+        self.assertEqual(bootstrap.call_args.kwargs.get("reason"), "prepare")
+        planner.assert_called_once_with(root, [])
+        native.assert_not_called()
 
     def test_native_command_without_plan_is_review_needed(self):
         with patch.object(lk, "detected_project_root", return_value=pathlib.Path("/tmp/demo")), \
@@ -8209,7 +8204,10 @@ def withdraw(amount: uint256):
                 }
                 cfg["actor"] = "lab-deployer"
 
-            with patch.object(lk, "_ensure_lab_deployer", side_effect=ensure_deployer), \
+            with (
+                 patch.object(lk, "_ensure_lab_deployer", side_effect=ensure_deployer),
+                 patch.object(lk, "_run_resource_aware_foundry_build", return_value=0),
+                 patch.object(lk, "_resource_aware_forge_threads", return_value=1),
                  patch.object(lk, "run_foundry", return_value=lk.CommandResult(f"LOWKEY_TARGET {target}", 0)), \
                  patch.object(lk, "_lab_script_environment", return_value=({}, [])), \
                  patch.object(lk, "_validate_project_lab_target", return_value=("Escrow", "/tmp/Escrow.json", None)), \
