@@ -62,7 +62,12 @@ class StorageTraceTests(unittest.TestCase):
         ]
         report = normalize_struct_logs(trace, logs)
         self.assertTrue(report["supported"], report)
-        self.assertEqual(report["frame_storage"]["1"][0]["account"], A)
+        row = report["frame_storage"]["1"][0]
+        self.assertEqual(row["account"], A)
+        self.assertEqual(row["code_address"], C)
+        self.assertEqual(row["frame_id"], "0.1")
+        self.assertEqual(row["access_seq"], 0)
+        self.assertEqual(row["opcode_index"], 1)
 
     def test_unmatched_storage_frame_fails_closed(self):
         trace = {"type": "CALL", "from": A, "to": A, "calls": []}
