@@ -11,7 +11,7 @@ Each event contains exactly these fields:
 | Field | Meaning |
 |---|---|
 | seq | Zero-based order in the normalized call stream |
-| backend | forge-state-diff or anvil-calltracer |
+| backend | forge-state-diff, anvil-calltracer or anvil-structlog |
 | kind | Call, DelegateCall, StaticCall, Create, or Create2 |
 | accessor | Solidity message sender for the event's call frame, or null when unavailable. For DELEGATECALL/CALLCODE this is inherited from the parent frame; callTracer.from is the opcode caller and is not always msg.sender. |
 | account | Destination/created account, or null when unavailable |
@@ -47,7 +47,7 @@ The installed Anvil structLogs adapter now feeds the P2 control/attack runner an
 
 Frame attribution is accepted only when every CALL/STATICCALL/DELEGATECALL/CALLCODE/CREATE/CREATE2 transition observed in the opcode stream matches the next corresponding callTracer child and target. DELEGATECALL and CALLCODE retain the parent storage-context account while preserving the implementation/code address separately. An unmatched target, incomplete frame stack, missing opcode stack, or step-limit hit returns an unsupported result; it is never guessed into an exact trace.
 
-\`normalize_calltracer(..., storage_support="exact", exact_storage=...)\` requires a storage array for every callTracer frame, including explicit empty arrays. The parity comparator checks per-frame access counts and ordered account/slot/read-write/storage-kind tuples. It reports storage-value parity separately because a client may expose the access while omitting a before/after value.
+\`normalize_calltracer(..., per_access_storage=...)\` requires an explicit storage array for every callTracer frame, including empty arrays after successful opcode/frame reconciliation. The older exact_storage path remains available for test fixtures and other adapters. The parity comparator checks per-frame access counts and ordered account/slot/read-write/storage-kind tuples. It reports storage-value parity separately because a client may expose the access while omitting a before/after value.
 
 The P2 real-fork acceptance obtains a read-only opcode trace for each pinned control/attack transaction, preserves trace-derived per-frame evidence and requires matching Forge/Anvil access identities before accepting exact storage parity. The independent prestateTracer diff remains a transaction-level cross-check; it does not supply frame attribution. Unmapped or ambiguous opcode frame transitions refuse exact status.
 
