@@ -159,6 +159,7 @@ def resolve_runtime_context(
     explicit_target: Any = None,
     explicit_rpc: Any = None,
     explicit_actor: Any = None,
+    allow_legacy_target: bool = True,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return the common project/target/RPC/actor snapshot for one CLI invocation."""
@@ -174,15 +175,9 @@ def resolve_runtime_context(
         address = validated_target.get("address")
         if _valid_address(address):
             target = dict(validated_target)
-    elif _valid_address((state.get("target") or {}).get("address") if isinstance(state.get("target"), Mapping) else None):
-        # Callers should normally supply a validated target from the project's
-        # artifact-aware resolver. This fallback is for adapters that already
-        # verified the context owner above.
-        target = dict(state["target"])
-
     legacy_address = _text(cfg.get("target"))
     legacy_owned = bool(target_owned_by_project(legacy_address, cfg, canonical))
-    if target is None and legacy_owned:
+    if target is None and allow_legacy_target and legacy_owned:
         abi_paths = cfg.get("abi_paths") if isinstance(cfg.get("abi_paths"), Mapping) else {}
         target = {
             "address": legacy_address,

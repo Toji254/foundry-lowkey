@@ -180,6 +180,57 @@ class SharedCommandContextTests(unittest.TestCase):
             self.assertIsNone(config["rpc"])
             self.assertIsNone(config["actor"])
 
+    def test_managed_fixture_rpc_does_not_replace_saved_global_rpc_in_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "Token"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            config = {
+                "target": None,
+                "target_contract": None,
+                "rpc": "http://127.0.0.1:8545",
+                "actor": None,
+                "wallets": {},
+                "abi_paths": {},
+            }
+            runtime_rpc = "http://127.0.0.1:9545"
+            with patch.object(lk, "project_fixture_rpc_info", return_value={"url": runtime_rpc}), \
+                 patch.object(lk, "anvil_rpc_info", return_value={}):
+                resolved = lk.activate_project_context(config, root)
+                self.assertEqual(lk.effective_rpc(config), runtime_rpc)
+            self.assertEqual(resolved["rpc_source"], "project-fixture")
+            self.assertEqual(config["rpc"], "http://127.0.0.1:8545")
+
+    def test_unvalidated_stale_project_target_is_not_resurrected_from_global_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "Token"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            address = "0x" + "d" * 40
+            state = {
+                "project": {"root": str(root)},
+                "target": {"address": address, "contract": "Token", "source": "project-lab"},
+                "actor_scope_initialized": True,
+                "actor_profile": None,
+            }
+            config = {
+                "target": address,
+                "target_contract": "Token",
+                "target_owners": {address: str(root)},
+                "wallets": {},
+                "abi_paths": {},
+                "rpc": None,
+            }
+            resolved = lk.shared_context.resolve_runtime_context(
+                root,
+                state,
+                config,
+                validated_target=None,
+                allow_legacy_target=False,
+                environ={},
+            )
+            self.assertIsNone(resolved["target"])
+
     def test_selected_actor_is_persisted_as_project_state_not_just_global_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "Token"

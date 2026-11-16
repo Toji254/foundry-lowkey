@@ -1666,6 +1666,7 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
         config,
         validated_target=validated_target,
         fixture_rpc=fixture_rpc,
+        allow_legacy_target=False,
         explicit_target=explicit_target,
         explicit_rpc=explicit_rpc,
         explicit_actor=explicit_actor,
