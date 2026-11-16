@@ -252,7 +252,7 @@ GODMODE_HELP_GUIDES = {
             "1) NORMAL USE — just run:  lk godmode",
             "   Lowkey detects the project from your current folder (including when you are inside src/ or test/). You do not need to type --root or any other flags.",
             "2) If you run it from Lowkey's own source checkout, it resumes the project attached to your currently selected target or last audit. If several previous projects are equally possible, it asks you to choose rather than guessing.",
-            "3) If you deliberately want to scan a different project, use --root as an override:  lk godmode --root \\"$HOME/path/to/project\\"",
+            "3) If you deliberately want to scan a different project, use --root as an override:  lk godmode --root \"$HOME/path/to/project\"",
             "4) If you want to inspect a different deployment, pass its address. The address must exist on the selected RPC:  lk godmode 0xYOUR_LIVE_ADDRESS --rpc-url http://127.0.0.1:8545",
             "5) Active attack testing is always a separate opt-in:  lk godmode --attack. It uses the remembered project target/RPC, or add the target address and --rpc-url explicitly."
         ],
@@ -265,7 +265,7 @@ GODMODE_HELP_GUIDES = {
             "--profile light|balanced|deep — advanced on-chain proxy/storage scan depth: light checks 40 slots; balanced/deep check up to 120. Most users can ignore this.",
             "--attack — explicitly start active attack exploration through lk break. This is the only Godmode option that starts attack execution. Requires a deployed target and local Anvil; it can send transactions on that disposable local chain. Never point it at production.",
             "--control-manifest FILE — advanced matched attack/control JSON manifest. Normally leave this alone; Lowkey's standard source scan does not need it. Use only with --attack after preparing and freezing the experiment; see lk control --h.",
-            "--mutation-manifest FILE — advanced JSON recipe for deliberate source mutations and repeated test runs. Normally leave this alone; use it after a test suite exists. It requires command (for example [\\"forge\\", \\"test\\"]) and mutants entries with id, file, before, and after.",
+            "--mutation-manifest FILE — advanced JSON recipe for deliberate source mutations and repeated test runs. Normally leave this alone; use it after a test suite exists. It requires command (for example [\"forge\", \"test\"]) and mutants entries with id, file, before, and after.",
             "--coverage-source FILE — optional Solidity file to measure (for example src/Token.sol). Use after you have relevant tests; coverage shows executed lines, not whether the tests assert the correct property.",
             "--plan-only — force a strictly local source scan. It disables RPC reads, attacks, mutation tests and coverage even when target/RPC context is remembered. Use this when you explicitly want no chain access."
         ],
