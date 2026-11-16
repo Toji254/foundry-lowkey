@@ -1,0 +1,17 @@
+{
+  "test_kind": "formal",
+  "profile": "deep",
+  "execution_mode": "serial",
+  "budget": {
+    "timeout_seconds": 900,
+    "max_output_bytes": 1048576
+  },
+  "request": {
+    "engine_config_by_engine": {
+      "certora": {
+        "config": "MiniToken.conf",
+        "wait_for_results": true
+      }
+    }
+  }
+}
