@@ -1445,6 +1445,16 @@ class LowkeyCastTests(unittest.TestCase):
             active_root = pathlib.Path(tmp) / "telephone" / "Attack"
             telephone_root = active_root.parent
             active_root.mkdir(parents=True)
+            artifact = telephone_root / "out" / "telephone.sol" / "Telephone.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Telephone",
+                    "sourceName": "src/Telephone.sol",
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
             address = "0x" + "b" * 40
             config = {
                 "_lab_system_root": str(active_root),
@@ -1463,7 +1473,7 @@ class LowkeyCastTests(unittest.TestCase):
                          "name": "Telephone",
                          "contract": "Telephone",
                          "address": address,
-                         "artifact": "/tmp/telephone/out/telephone.sol/Telephone.json",
+                         "artifact": str(artifact),
                      }],
                  ), \
                  patch.object(lk, "_target_entry_is_protocol", return_value=True), \
