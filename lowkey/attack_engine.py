@@ -609,7 +609,7 @@ def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str
         "LOWKEY_EXPERIMENT_ID": experiment_id,
         "LOWKEY_EXPERIMENT_RUN_ID": run_id,
         "LOWKEY_EXPERIMENT_ROLE": role,
-        "LOWKEY_EVIDENCE_PATH": str(evidence),
+        "LOWKEY_EVIDENCE_PATH": evidence.relative_to(root).as_posix(),
     })
     started = time.monotonic()
     try:
@@ -640,14 +640,15 @@ def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str
     if not forge:
         raise AttackEngineError("Foundry forge is unavailable for mutation reproof.", "backend_unsupported")
     argv = [forge, "test", "--match-path", test["test_file"], "--match-test", test["test_name"], "-vvvv"]
+    mutation_env = os.environ.copy()
+    mutation_env.update({
+        "LOWKEY_EXPERIMENT_ID": experiment_id,
+        "LOWKEY_EXPERIMENT_RUN_ID": run_id,
+        "LOWKEY_EXPERIMENT_ROLE": "attack",
+        "LOWKEY_EVIDENCE_PATH": ".lowkey-mutation-evidence.json",
+    })
     result = validate_mutations(
-        root, argv, mutants, timeout_seconds=timeout,
-        env={
-            "LOWKEY_EXPERIMENT_ID": experiment_id,
-            "LOWKEY_EXPERIMENT_RUN_ID": run_id,
-            "LOWKEY_EXPERIMENT_ROLE": "attack",
-            "LOWKEY_EVIDENCE_PATH": ".lowkey-mutation-evidence.json",
-        },
+        root, argv, mutants, timeout_seconds=timeout, env=mutation_env
     )
     summary = result.get("summary") or {}
     killed = int(summary.get("killed") or 0)
