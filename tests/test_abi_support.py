@@ -25,6 +25,11 @@ class RecursiveABISupportTests(unittest.TestCase):
             "(address,(uint128,bool))[][2]",
         )
 
+    def test_canonicalizes_legacy_integer_and_byte_aliases(self):
+        self.assertEqual(abi_support.canonical_abi_type({"type": "uint"}), "uint256")
+        self.assertEqual(abi_support.canonical_abi_type({"type": "int[]"}), "int256[]")
+        self.assertEqual(abi_support.canonical_abi_type({"type": "byte[4]"}), "bytes1[4]")
+
     def test_recursive_tuple_and_nested_array_samples_are_deterministic(self):
         item = {
             "type": "tuple[]",
