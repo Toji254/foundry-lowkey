@@ -185,6 +185,8 @@ def resolve_source_archive_provider(
     attempts: list[dict[str, str]] = []
     seen: set[str] = set()
     for provider in (primary_rpc, fallback_rpc, alternate_rpc):
+        if not provider:
+            continue
         key = urlparse_safe(provider)
         if key in seen:
             continue
