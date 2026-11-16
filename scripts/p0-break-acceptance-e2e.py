@@ -255,6 +255,13 @@ def target_identity_diagnostic(
             })
         if artifact_name.casefold() != contract.casefold():
             continue
+        metadata_raw = artifact.get("metadata")
+        try:
+            metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+        except json.JSONDecodeError:
+            metadata = None
+        compiler = metadata.get("compiler", {}) if isinstance(metadata, dict) else {}
+        settings = metadata.get("settings", {}) if isinstance(metadata, dict) else {}
         deployed = artifact.get("deployedBytecode")
         deployed_object = deployed.get("object") if isinstance(deployed, dict) else deployed
         expected = str(deployed_object or "").strip().lower()
@@ -281,7 +288,28 @@ def target_identity_diagnostic(
                 if actual_body and all(ch in "0123456789abcdef" for ch in actual_body) else None,
             "first_difference_byte_offset": first_difference,
             "immutable_reference_groups": len(immutable_refs) if isinstance(immutable_refs, dict) else None,
+            "compiler_version": compiler.get("version") if isinstance(compiler, dict) else None,
+            "optimizer_enabled": (
+                settings.get("optimizer", {}).get("enabled")
+                if isinstance(settings, dict) and isinstance(settings.get("optimizer"), dict)
+                else None
+            ),
+            "optimizer_runs": (
+                settings.get("optimizer", {}).get("runs")
+                if isinstance(settings, dict) and isinstance(settings.get("optimizer"), dict)
+                else None
+            ),
+            "evm_version": settings.get("evmVersion") if isinstance(settings, dict) else None,
         })
+    forge_path = shutil.which("forge") or str(Path.home() / ".foundry" / "bin" / "forge")
+    forge_config = subprocess.run(
+        [forge_path, "config", "--json"],
+        cwd=root, env=env, text=True, capture_output=True, timeout=30, check=False,
+    )
+    try:
+        forge_config_payload = json.loads(forge_config.stdout)
+    except json.JSONDecodeError:
+        forge_config_payload = {}
     asset_getter = subprocess.run(
         [cast, "call", address, "asset()", "--rpc-url", RPC],
         cwd=root, env=env, text=True, capture_output=True, timeout=30, check=False,
@@ -290,6 +318,11 @@ def target_identity_diagnostic(
         "address": address,
         "cast_code_exit": result.returncode,
         "cast_code_stderr": str(result.stderr or "")[-1200:],
+        "forge_config_exit": forge_config.returncode,
+        "forge_config": {
+            key: forge_config_payload.get(key)
+            for key in ("optimizer", "optimizer_runs", "via_ir", "solc", "evm_version", "bytecode_hash")
+        },
         "asset_getter_exit": asset_getter.returncode,
         "asset_getter_stdout": str(asset_getter.stdout or "").strip()[-500:],
         "asset_getter_stderr": str(asset_getter.stderr or "")[-800:],
