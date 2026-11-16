@@ -100,6 +100,7 @@ def _collect_sources(root: Path) -> list[dict[str, Any]]:
                     "source_sha256": _sha256(raw),
                     "line_count": len(source.splitlines()),
                     "source_excerpt": excerpt[:4800],
+                    "_excerpt": excerpt[:4800],
                     "_source": source,
                 })
                 if len(found) >= MAX_FILES:
@@ -195,13 +196,22 @@ def _validate_candidate(value: Any, sources: dict[str, dict[str, Any]], index: i
             raise AttackResearchError(f"{label}.source_refs[{ref_index}] has a stale source hash.")
         start, end = ref.get("line_start"), ref.get("line_end")
         source_lines = source["_source"].splitlines()
-        if type(start) is not int or type(end) is not int or not 1 <= start <= end <= len(source_lines):
-            raise AttackResearchError(f"{label}.source_refs[{ref_index}] has an invalid line range.")
+        excerpt_line_count = len(source.get("_excerpt", "").splitlines())
+        if (
+            type(start) is not int or type(end) is not int
+            or not 1 <= start <= end <= len(source_lines)
+            or end > excerpt_line_count
+        ):
+            raise AttackResearchError(
+                f"{label}.source_refs[{ref_index}] must cite lines inside the bounded excerpt sent to the model."
+            )
         quote = ref.get("quote")
         if not isinstance(quote, str) or not quote.strip() or len(quote) > 600:
             raise AttackResearchError(f"{label}.source_refs[{ref_index}].quote must be a non-empty source excerpt.")
         cited_lines = "\n".join(source_lines[start - 1:end])
-        if quote.strip() not in cited_lines:
+        redacted_lines = source.get("_excerpt", "").splitlines()
+        cited_redacted_lines = "\n".join(redacted_lines[start - 1:end])
+        if quote.strip() not in cited_lines or quote.strip() not in cited_redacted_lines:
             raise AttackResearchError(
                 f"{label}.source_refs[{ref_index}] quote does not appear in the cited current-source lines."
             )
