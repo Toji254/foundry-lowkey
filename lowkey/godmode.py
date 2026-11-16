@@ -669,8 +669,8 @@ def _normalize_rpc_trace_events(calls):
             from trace_evidence import normalize_rpc_trace_events
     return normalize_rpc_trace_events(calls, backend="anvil-calltracer")
 
-def _normalize_trace_events_v2(calls, storage_trace=None):
-    """Build canonical v2 events; changed slots remain transaction-level partial evidence."""
+def _normalize_trace_events_v2(calls, storage_trace=None, structlog_trace=None):
+    """Build canonical events, preferring per-frame opcode storage over partial diff rows."""
     try:
         from .trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
     except ImportError:
@@ -679,7 +679,18 @@ def _normalize_trace_events_v2(calls, storage_trace=None):
         except ImportError:
             from trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
     storage_trace = storage_trace if isinstance(storage_trace, dict) else {}
-    if storage_trace.get("supported"):
+    structlog_trace = structlog_trace if isinstance(structlog_trace, dict) else {}
+    if structlog_trace.get("supported"):
+        per_access_storage = {
+            int(index): rows
+            for index, rows in (structlog_trace.get("frame_storage") or {}).items()
+            if str(index).isdigit() and isinstance(rows, list)
+        }
+        events = normalize_calltracer(
+            calls,
+            per_access_storage=per_access_storage,
+        )
+    elif storage_trace.get("supported"):
         partial_rows = [
             {
                 "account": row.get("address"),
@@ -863,6 +874,48 @@ def _trace_storage_prestate(url, tx_hash):
 
 
 
+def _trace_storage_structlogs(url, tx_hash, call_trace):
+    """Best-effort exact per-frame SLOAD/SSTORE trace using Anvil structLogs."""
+    try:
+        payload = rpc(url, "debug_traceTransaction", [
+            tx_hash, {"disableMemory": True, "disableStorage": True}
+        ], 90)
+    except Exception as exc:
+        return {
+            "supported": False, "backend": "anvil-structlog",
+            "reason": str(exc)[:500], "frame_storage": {},
+            "step_count": 0, "access_count": 0,
+            "unmapped_storage_accesses": 0, "unmatched_frames": 0,
+        }
+    if not isinstance(payload, dict) or not isinstance(payload.get("structLogs"), list):
+        return {
+            "supported": False, "backend": "anvil-structlog",
+            "reason": "debug_traceTransaction did not return a structLogs array.",
+            "frame_storage": {}, "step_count": 0, "access_count": 0,
+            "unmapped_storage_accesses": 0, "unmatched_frames": 0,
+        }
+    try:
+        try:
+            from .storage_trace import normalize_struct_logs
+        except ImportError:
+            try:
+                from lowkey.storage_trace import normalize_struct_logs
+            except ImportError:
+                from storage_trace import normalize_struct_logs
+        result = normalize_struct_logs(call_trace, payload["structLogs"])
+        result["trace_failed"] = bool(payload.get("failed", False))
+        return result
+    except Exception as exc:
+        return {
+            "supported": False, "backend": "anvil-structlog",
+            "reason": str(exc)[:500], "frame_storage": {},
+            "step_count": len(payload.get("structLogs") or []),
+            "access_count": 0, "unmapped_storage_accesses": 0,
+            "unmatched_frames": 0,
+        }
+
+
+
 def _analyze_control_fidelity(root, entry, spec):
     candidates=[]
     harness=entry.get("harness") or spec.get("harness")
@@ -1034,8 +1087,10 @@ def _trace_control_run(root, url, name, entry, spec, env):
             if not required.issubset(set(addresses)): raise ValueError(f"{name} prestate_addresses must include the transaction sender and root recipient.")
             if target and target not in addresses: raise ValueError(f"{name} prestate_addresses must include target_address.")
             storage_trace=_trace_storage_prestate(url,tx_hash)
+            structlog_trace=_trace_storage_structlogs(url,tx_hash,trace)
+            storage_trace["structlog"]=structlog_trace
             canonical_trace_schema_version, canonical_trace_events = _normalize_trace_events_v2(
-                calls, storage_trace
+                calls, storage_trace, structlog_trace
             )
             for discovered_address in storage_trace.get("addresses",[]):
                 if discovered_address not in addresses:
@@ -1053,11 +1108,19 @@ def _trace_control_run(root, url, name, entry, spec, env):
             declared_addresses=list(addresses)
             for item in storage_trace.get("slots",[]):
                 slots.append({"address":item["address"],"slot":item["slot"]})
+            for access_rows in (structlog_trace.get("frame_storage") or {}).values():
+                for access in access_rows:
+                    if isinstance(access,dict) and access.get("account") and access.get("slot"):
+                        slots.append({"address":addr(access["account"]),"slot":storage_slot_key(access["slot"])})
             slots=list({(item["address"],item["slot"]):item for item in slots}.values())
             if not slots:
                 raise ValueError("No target/dependency storage slots were declared or discovered by prestateTracer.")
-            if spec.get("require_trace_storage") and not storage_trace.get("supported"):
-                raise ValueError("Manifest requires trace-derived storage, but the RPC does not support prestateTracer: "+str(storage_trace.get("reason")))
+            if spec.get("require_trace_storage") and not (
+                storage_trace.get("supported") or
+                (structlog_trace.get("supported") and structlog_trace.get("access_count",0)>0)
+            ):
+                reason=structlog_trace.get("reason") or storage_trace.get("reason")
+                raise ValueError("Manifest requires trace-derived storage, but neither exact Anvil structLogs nor prestateTracer evidence was available: "+str(reason))
             entry_digest,entry_call=_control_entry_digest(tx,chain_id)
             envelope_digest,envelope=_control_transaction_envelope(tx,chain_id)
             trace_entry_digest,trace_entry=_control_entry_digest(trace,chain_id)
@@ -2437,16 +2500,22 @@ def control(args):
     for scenario_name in ("control", "attack"):
         scenario_row=rows.get(scenario_name,{})
         storage_trace_row=scenario_row.get("storage_trace") or {}
+        structlog_row=storage_trace_row.get("structlog") or {}
+        use_structlog=backend!="forge-state-diff" and bool(structlog_row.get("supported"))
+        capability_backend=(
+            "forge-state-diff" if backend=="forge-state-diff"
+            else ("anvil-structlog" if use_structlog else backend)
+        )
         storage_observations=(
             len(scenario_row.get("derived_storage_accesses") or []) if backend=="forge-state-diff"
-            else len(storage_trace_row.get("slots") or [])
+            else (int(structlog_row.get("access_count",0)) if use_structlog else len(storage_trace_row.get("slots") or []))
         )
         storage_supported=(
             True if backend=="forge-state-diff" else
-            bool(storage_trace_row.get("supported"))
+            (use_structlog or bool(storage_trace_row.get("supported")))
         )
         capabilities=proof_evidence.trace_evidence_capabilities(
-            backend, storage_trace_supported=storage_supported,
+            capability_backend, storage_trace_supported=storage_supported,
             storage_observations=storage_observations,
         )
         evidence_capabilities[scenario_name]=capabilities
@@ -3178,11 +3247,14 @@ def reprove(args):
     trace=rpc(url,"debug_traceTransaction",[tx_hash,{"tracer":"callTracer"}],60)
     if not isinstance(trace,dict): raise ValueError("The node did not return a callTracer execution trace.")
     storage_trace=_trace_storage_prestate(url,tx_hash)
-    trace_storage_observed=bool(storage_trace.get("slots"))
+    structlog_trace=_trace_storage_structlogs(url,tx_hash,trace)
+    storage_trace["structlog"]=structlog_trace
+    trace_storage_observed=bool(storage_trace.get("slots")) or bool(structlog_trace.get("access_count"))
     if ns.require_trace_storage and (
-        not storage_trace.get("supported") or not trace_storage_observed
+        not trace_storage_observed or
+        not storage_trace.get("supported") and not structlog_trace.get("supported")
     ):
-        detail=storage_trace.get("reason") or "prestateTracer diff returned no changed storage slots for this transaction."
+        detail=structlog_trace.get("reason") or storage_trace.get("reason") or "No SLOAD/SSTORE access was observed."
         raise ValueError("The required derived-storage evidence is unavailable: "+str(detail))
     if ns.source_rpc_url and (
         not storage_trace.get("supported") or not trace_storage_observed
