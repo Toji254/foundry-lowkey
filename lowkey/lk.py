@@ -1935,93 +1935,249 @@ def load_abi(target,config):
         return abi if isinstance(abi,list) else []
     except (OSError,json.JSONDecodeError): return []
 
-def source_public_storage_names(root="."):
-    names=set()
-    for path in source_sol_files(root):
+def _solidity_contract_source_body(source, contract_name):
+    if not contract_name:
+        return None
+    cleaned = _source_comment_strip(str(source or ""), "solidity")
+    chars = list(cleaned)
+    state = "code"
+    quote = ""
+    escape = False
+    for index, char in enumerate(chars):
+        if state == "code":
+            if char in {"'", '"'}:
+                quote = char
+                state = "string"
+                chars[index] = " "
+            continue
+        if char != "\n":
+            chars[index] = " "
+        if escape:
+            escape = False
+        elif char == "\\":
+            escape = True
+        elif char == quote:
+            quote = ""
+            state = "code"
+    masked = "".join(chars)
+    pattern = re.compile(
+        r"\b(?:abstract\s+)?(?:contract|interface|library)\s+"
+        + re.escape(str(contract_name))
+        + r"\b"
+    )
+    matches = list(pattern.finditer(masked))
+    if len(matches) != 1:
+        return None
+    opening = masked.find("{", matches[0].end())
+    if opening < 0:
+        return None
+    closing = _matching_delimiter(masked, opening, "{", "}")
+    if closing is None:
+        return None
+    return masked[opening + 1:closing]
+
+
+def source_state_variable_visibility(root=".", contract_name=None, source_path=None):
+    """Read direct state declarations from one unambiguous contract source.
+
+    This is local source metadata only. It is never inferred from ABI entries.
+    If the source/contract cannot be selected unambiguously, return no claims.
+    """
+    if not contract_name:
+        return {}
+    root_path = Path(root or ".").expanduser().resolve()
+    if source_path:
+        candidate = Path(source_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = root_path / candidate
         try:
-            source=Path(path).read_text(encoding="utf-8")
+            candidate = candidate.resolve()
+            candidate.relative_to(root_path)
+        except (OSError, ValueError):
+            return {}
+        candidates = [candidate]
+    else:
+        candidates = []
+        for item in source_sol_files(str(root_path)):
+            candidate = Path(item).expanduser()
+            if not candidate.is_absolute():
+                candidate = root_path / candidate
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(root_path)
+            except (OSError, ValueError):
+                continue
+            candidates.append(resolved)
+
+    bodies = []
+    for candidate in candidates:
+        try:
+            source = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for statement in source.split(";"):
-            lowered=statement.lower()
-            if any(token in lowered for token in ("function ", "event ", "error ", "modifier ", "constructor(")):
-                continue
-            if re.search(r"\b(?:constant|immutable)\b", statement):
-                continue
-            match=re.search(r"\bpublic\s+([A-Za-z_]\w*)\s*(?:=|$)", statement)
-            if match:
-                names.add(match.group(1))
-    return names
+        body = _solidity_contract_source_body(source, contract_name)
+        if body is not None:
+            bodies.append(body)
+    if len(bodies) != 1:
+        return {}
+
+    body = bodies[0]
+    statements = []
+    start = 0
+    index = 0
+    while index < len(body):
+        if body[index] == "{":
+            closing = _matching_delimiter(body, index, "{", "}")
+            if closing is None:
+                return {}
+            start = closing + 1
+            index = closing + 1
+            continue
+        if body[index] == ";":
+            statement = body[start:index].strip()
+            if statement:
+                statements.append(statement)
+            start = index + 1
+        index += 1
+
+    declarations = {}
+    ignored = re.compile(
+        r"\b(?:function|event|error|modifier|constructor|receive|fallback|"
+        r"using|struct|enum|type|import|pragma)\b",
+        re.I,
+    )
+    for statement in statements:
+        if ignored.search(statement):
+            continue
+        visibility_match = re.search(r"\b(public|private|internal)\b", statement)
+        visibility = visibility_match.group(1) if visibility_match else "internal"
+        tail = statement[visibility_match.end():] if visibility_match else statement
+        tail = tail.lstrip()
+        while True:
+            qualifier = re.match(r"(constant|immutable|transient|virtual|override)\b", tail)
+            if not qualifier:
+                break
+            token = qualifier.group(1)
+            tail = tail[qualifier.end():].lstrip()
+            if token == "override" and tail.startswith("("):
+                closing = _matching_delimiter(tail, 0, "(", ")")
+                if closing is None:
+                    tail = ""
+                    break
+                tail = tail[closing + 1:].lstrip()
+        if visibility_match:
+            variable_match = re.match(r"([A-Za-z_]\w*)\b", tail)
+        else:
+            variable_match = re.search(r"\b([A-Za-z_]\w*)\s*(?:=|$)", tail)
+        if not variable_match:
+            continue
+        name = variable_match.group(1)
+        declarations[name] = {
+            "visibility": visibility,
+            "constant": bool(re.search(r"\bconstant\b", statement)),
+            "immutable": bool(re.search(r"\bimmutable\b", statement)),
+        }
+    return declarations
 
 
-def storage_getter_names(target,config,abi):
-    path=resolve_abi_path(config,target)
+def source_public_storage_names(root=".", contract_name=None, source_path=None):
+    return {
+        name
+        for name, declaration in source_state_variable_visibility(
+            root, contract_name=contract_name, source_path=source_path
+        ).items()
+        if declaration.get("visibility") == "public"
+        and not declaration.get("constant")
+        and not declaration.get("immutable")
+    }
+
+
+def storage_getter_names(target, config, abi, root=None):
+    path = resolve_abi_path(config, target)
     if not path:
-        path=auto_abi_path(target,config)
+        path = auto_abi_path(target, config)
 
-    labels=set()
-    artifact={}
+    labels = set()
+    artifact = {}
     if path and os.path.exists(path):
-        artifact=read_artifact(path) or {}
-        layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
-        storage=layout.get("storage",[]) if isinstance(layout,dict) else []
+        artifact = read_artifact(path) or {}
+        layout = artifact.get("storageLayout", {}) if isinstance(artifact, dict) else {}
+        storage = layout.get("storage", []) if isinstance(layout, dict) else []
         labels.update(
             entry.get("label")
             for entry in storage
-            if isinstance(entry,dict) and entry.get("label")
+            if isinstance(entry, dict) and entry.get("label")
         )
 
     # Foundry artifacts do not always contain storageLayout. Ask Forge for the
     # authoritative layout when we are inside a Foundry project, so public
     # mapping/struct getters are still classified correctly.
-    if not labels:
-        # The artifact we loaded is the authority for the contract name. Do not
-        # let a stale target_contract config entry point Forge at another contract.
-        contract_name = artifact.get("contractName") if isinstance(artifact,dict) else None
-        if not contract_name:
-            contract_name = config.get("target_contract")
+    contract_name = artifact.get("contractName") if isinstance(artifact, dict) else None
+    if not contract_name and str(target).lower() == str(config.get("target") or "").lower():
+        contract_name = config.get("target_contract")
+    if not labels and contract_name:
+        inspect_commands = [
+            ["forge", "inspect", str(contract_name), "storage-layout", "--json"],
+            ["forge", "inspect", str(contract_name), "storage-layout"],
+        ]
+        for command in inspect_commands:
+            # Storage-layout inspection is a local build-artifact query and
+            # never legitimately needs the network. Run it offline so a
+            # missing solc version produces an immediate error instead of a
+            # silent compiler-download stall.
+            code, out, _ = cast_output(command, timeout=30, env=_foundry_offline_env())
+            if code != 0 or not out:
+                continue
+            try:
+                payload = json.loads(out)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                layout = payload.get("storageLayout") or payload.get("storage") or payload
+            else:
+                layout = payload
+            storage = layout if isinstance(layout, list) else []
+            labels.update(
+                entry.get("label")
+                for entry in storage
+                if isinstance(entry, dict) and entry.get("label")
+            )
+            if labels:
+                break
 
-        if contract_name:
-            inspect_commands = [
-                ["forge","inspect",str(contract_name),"storage-layout","--json"],
-                ["forge","inspect",str(contract_name),"storage-layout"],
-            ]
-            for command in inspect_commands:
-                # Storage-layout inspection is a local build-artifact query and
-                # never legitimately needs the network. Run it offline so a
-                # missing solc version produces an immediate error instead of a
-                # silent compiler-download stall (observed as a permanent hang
-                # of 'lk fn'/'lk functions' in offline environments).
-                code,out,_=cast_output(command, timeout=30, env=_foundry_offline_env())
-                if code!=0 or not out:
-                    continue
-                try:
-                    payload=json.loads(out)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload,dict):
-                    layout=payload.get("storageLayout") or payload.get("storage") or payload
-                else:
-                    layout=payload
-                storage=layout if isinstance(layout,list) else []
-                labels.update(
-                    entry.get("label")
-                    for entry in storage
-                    if isinstance(entry,dict) and entry.get("label")
-                )
-                if labels:
-                    break
+    # Source fallback is deliberately scoped to the selected contract. A
+    # project-wide name scan can mislabel an unrelated contract's view function
+    # as this target's autogenerated getter.
+    if root is None:
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = None
+    root_path = Path(root or ".").expanduser().resolve()
+    source_path = None
+    source_name = artifact.get("sourceName") if isinstance(artifact, dict) else None
+    if source_name:
+        candidate = Path(str(source_name)).expanduser()
+        if not candidate.is_absolute():
+            candidate = root_path / candidate
+        try:
+            candidate = candidate.resolve()
+            candidate.relative_to(root_path)
+            if candidate.is_file():
+                source_path = candidate
+        except (OSError, ValueError):
+            source_path = None
+    labels.update(source_public_storage_names(root_path, contract_name, source_path))
 
-    if not labels:
-        labels.update(source_public_storage_names("."))
-    
     return {
         item.get("name")
         for item in abi
-        if item.get("type")=="function"
-        and item.get("stateMutability") in {"view","pure"}
+        if item.get("type") == "function"
+        and item.get("stateMutability") in {"view", "pure"}
         and item.get("name") in labels
     }
+
+
 def run_chain(config):
     rpc=effective_rpc(config)
     chain_id = run_cast(["chain-id"], config, capture=True)
@@ -2040,7 +2196,7 @@ def run_abi(config):
     abi = load_abi(target, config)
     if not abi:
         return fail("Error: No ABI loaded for the current target.")
-    getter_names=storage_getter_names(target,config,abi)
+    getter_names=storage_getter_names(target,config,abi,root=audit_context.foundry_project_root())
     groups = [
         ("WRITE", [item for item in abi if item.get("type")=="function" and item.get("stateMutability") not in {"view","pure"}]),
         ("READ", [item for item in abi if item.get("type")=="function" and item.get("stateMutability") in {"view","pure"} and item.get("name") not in getter_names]),
@@ -2087,6 +2243,7 @@ def _function_usage():
         "  SENDS ETH includes detected CALL/value, payable transfer/send, CREATE and SELFDESTRUCT patterns.\n"
         "  ETH OUT shows destination and amount expressions where source analysis can identify them.\n"
         "  Detection is best-effort source analysis, not proof that every indirect ETH flow was found.\n"
+        "  Visibility comes from the matching local source declaration, not ABI metadata; missing or ambiguous source stays unknown.\n"
         "\n"
         "Examples:\n"
         "  lk fn\n"
@@ -3030,7 +3187,7 @@ def run_functions(config, args=None):
     if not functions and not abi_entrypoints:
         return fail("Error: No ABI functions or receive/fallback entrypoints loaded for the current target.")
 
-    getter_names = storage_getter_names(target, config, functions)
+    getter_names = storage_getter_names(target, config, functions, root=root)
     artifact_path, artifact = _function_inventory_artifact(target, config)
     source_root = Path(root).resolve()
     source_contract = artifact.get("contractName") or config.get("target_contract")
@@ -5325,6 +5482,107 @@ def _read_state_change_warning(args, config):
         f"Use 'lk send {signature} <args...>' to submit a transaction, or "
         f"'lk changes {signature} <args...>' to inspect a temporary state-diff simulation."
     )
+
+
+def _read_visibility_warning(args, config):
+    """Explain source-declared state visibility when a read name is absent from the ABI."""
+    values = [str(value).strip() for value in (args or [])]
+    target = config.get("target") if isinstance(config, dict) else None
+
+    if values and is_address(values[0]):
+        target = values.pop(0)
+    elif len(values) >= 2:
+        try:
+            root = audit_context.foundry_project_root()
+            named_target = resolve_target_ref(config, values[0], root=root)
+        except Exception:
+            named_target = None
+        if named_target:
+            target = named_target
+            values.pop(0)
+
+    if not target or not values:
+        return None
+    query = values[0]
+    name = query.split("(", 1)[0].strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        return None
+
+    abi = load_abi(target, config)
+    if matching_functions(abi, query):
+        return None
+
+    artifact_path = resolve_abi_path(config, target) or auto_abi_path(target, config)
+    artifact = read_artifact(artifact_path) if artifact_path else {}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    same_target = str(target).lower() == str(config.get("target") or "").lower()
+    contract_name = artifact.get("contractName") or (
+        config.get("target_contract") if same_target else None
+    )
+    if not contract_name:
+        return None
+
+    try:
+        root = audit_context.foundry_project_root()
+    except Exception:
+        root = "."
+    root_path = Path(root or ".").expanduser().resolve()
+    source_path = None
+    source_name = artifact.get("sourceName")
+    if source_name:
+        candidate = Path(str(source_name)).expanduser()
+        if not candidate.is_absolute():
+            candidate = root_path / candidate
+        try:
+            candidate = candidate.resolve()
+            candidate.relative_to(root_path)
+            if candidate.is_file():
+                source_path = candidate
+        except (OSError, ValueError):
+            source_path = None
+
+    declaration = source_state_variable_visibility(
+        root_path, contract_name=contract_name, source_path=source_path
+    ).get(name)
+    if not isinstance(declaration, dict):
+        return None
+
+    visibility = str(declaration.get("visibility") or "unknown")
+    kind = (
+        "constant"
+        if declaration.get("constant")
+        else "immutable"
+        if declaration.get("immutable")
+        else "state variable"
+    )
+    source_note = "This local source metadata does not prove that the artifact matches deployed bytecode."
+    if visibility in {"private", "internal"}:
+        if declaration.get("constant") or declaration.get("immutable"):
+            storage_note = " This constant/immutable declaration does not occupy a normal storage slot."
+        else:
+            storage_note = (
+                " For raw storage inspection, use lk layout and lk storage/mapping only "
+                "when the selected compiler layout and exact slot/key are verified."
+            )
+        return (
+            f"'{name}' is declared {visibility} {kind} in the selected local source for "
+            f"{contract_name}. Solidity does not expose private/internal declarations in "
+            "the external ABI, so lk read cannot call it by name."
+            + storage_note
+            + " "
+            + source_note
+        )
+    if visibility == "public":
+        return (
+            f"'{name}' is declared public in the selected local source for {contract_name}, "
+            "but the loaded ABI does not contain its generated getter. The ABI/artifact may "
+            "be incomplete or may not match the selected target; Lowkey will not invent a "
+            "selector. Verify the selected target and reload the correct ABI with 'lk abi auto' "
+            "or 'lk abi'. "
+            + source_note
+        )
+    return None
 
 
 def _function_interaction_recommendations(command,args,config):
@@ -21750,7 +22008,7 @@ COMMAND_HELP = {
         related=["lk functions", "lk ask"],
     ),
     "read": _help_entry(
-        "Call a contract without intentionally changing state. Lowkey uses the selected target and understands common Solidity argument types, including addresses, numbers, and fixed-size bytes such as bytes32 IDs.",
+        "Call an ABI-exposed function or public getter without intentionally changing state. Lowkey decodes common Solidity values. Private/internal declarations are not externally callable; use lk layout/storage/mapping only when a verified compiler layout supports the read.",
         "lk read <function> [args...]",
         "lk read getValue",
         "Use it for getters and state observation. It does not intentionally change contract data.",
@@ -22766,7 +23024,7 @@ COMMAND_HELP.update({
         related=["lk functions", "lk ask"],
     ),
     "read": _help_entry(
-        "Call a contract without intentionally changing state. Lowkey uses the selected target and the ABI to interpret the function's arguments and return value.",
+        "Call an ABI-exposed function or public getter without intentionally changing state. Lowkey decodes the ABI return value. Private/internal declarations are not externally callable; use lk layout/storage/mapping only when a verified compiler layout supports the read.",
         "lk read <function> [args...]",
         "lk read EscrowID @firstEscrow",
         "Use it for getters and state observation. It does not intentionally change contract data.",
@@ -25517,6 +25775,9 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 "       lk read <target> <function> [args]\n"
                 "A bare address is a contract target, not a function call."
             )
+        visibility_warning = _read_visibility_warning(args, config)
+        if visibility_warning:
+            return fail(visibility_warning)
         warning = _read_state_change_warning(args, config)
         if warning:
             return fail(warning)

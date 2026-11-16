@@ -4698,6 +4698,173 @@ contract Pool {
 
 
 
+
+    def test_function_getter_source_fallback_is_scoped_to_selected_contract(self):
+        target = "0x" + "1" * 40
+        artifact = {
+            "contractName": "Vault",
+            "sourceName": "src/Vault.sol",
+            "abi": [{
+                "type": "function",
+                "name": "status",
+                "inputs": [],
+                "outputs": [{"type": "uint256"}],
+                "stateMutability": "view",
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                """
+                contract Vault {
+                    function status() external view returns (uint256) { return 1; }
+                }
+                contract Other {
+                    uint256 public status;
+                }
+                """,
+                encoding="utf-8",
+            )
+            artifact_path = root / "Vault.json"
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Vault",
+                "abi_paths": {target: str(artifact_path)},
+            }
+            with patch.object(lk, "cast_output", return_value=(1, "", "")):
+                getter_names = lk.storage_getter_names(
+                    target, config, artifact["abi"], root=root
+                )
+        self.assertNotIn("status", getter_names)
+
+    def test_source_visibility_tracks_constants_immutables_without_calling_them_storage(self):
+        target = "0x" + "1" * 40
+        artifact = {
+            "contractName": "Vault",
+            "sourceName": "src/Vault.sol",
+            "abi": [
+                {"type": "function", "name": "FEE", "inputs": [], "stateMutability": "view"},
+                {"type": "function", "name": "owner", "inputs": [], "stateMutability": "view"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                """
+                contract Vault {
+                    uint256 public constant FEE = 25;
+                    address public immutable owner;
+                    uint256 private secret;
+                    uint256 internal shares;
+                }
+                """,
+                encoding="utf-8",
+            )
+            artifact_path = root / "Vault.json"
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Vault",
+                "abi_paths": {target: str(artifact_path)},
+            }
+            with patch.object(lk, "cast_output", return_value=(1, "", "")):
+                getter_names = lk.storage_getter_names(
+                    target, config, artifact["abi"], root=root
+                )
+            visibility = lk.source_state_variable_visibility(
+                root, "Vault", root / "src" / "Vault.sol"
+            )
+        self.assertEqual(getter_names, set())
+        self.assertEqual(visibility["secret"]["visibility"], "private")
+        self.assertEqual(visibility["shares"]["visibility"], "internal")
+        self.assertTrue(visibility["FEE"]["constant"])
+        self.assertTrue(visibility["owner"]["immutable"])
+
+    def test_read_visibility_warning_explains_private_internal_and_public_abi_mismatch(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Vault.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                """
+                contract Vault {
+                    uint256 private secret;
+                    mapping(address => uint256) internal shares;
+                    uint256 public count;
+                }
+                """,
+                encoding="utf-8",
+            )
+            artifact_path = root / "Vault.json"
+            artifact_path.write_text(json.dumps({
+                "contractName": "Vault",
+                "sourceName": "src/Vault.sol",
+                "abi": [],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Vault",
+                "abi_paths": {target: str(artifact_path)},
+            }
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "load_abi", return_value=[]), \
+                 patch.object(lk, "resolve_abi_path", return_value=str(artifact_path)), \
+                 patch.object(lk, "auto_abi_path", return_value=None):
+                private_warning = lk._read_visibility_warning(["secret"], config)
+                internal_warning = lk._read_visibility_warning(["shares"], config)
+                public_warning = lk._read_visibility_warning(["count"], config)
+                unknown_warning = lk._read_visibility_warning(["missing"], config)
+        self.assertIn("declared private", private_warning)
+        self.assertIn("external ABI", private_warning)
+        self.assertIn("declared internal", internal_warning)
+        self.assertIn("declared public", public_warning)
+        self.assertIn("generated getter", public_warning)
+        self.assertIsNone(unknown_warning)
+
+    def test_read_visibility_warning_does_not_override_an_abi_function(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Vault.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "contract Vault { uint256 private secret; function getSecret() external view returns (uint256) { return secret; } }",
+                encoding="utf-8",
+            )
+            artifact_path = root / "Vault.json"
+            artifact_path.write_text(json.dumps({
+                "contractName": "Vault",
+                "sourceName": "src/Vault.sol",
+                "abi": [{
+                    "type": "function",
+                    "name": "getSecret",
+                    "inputs": [],
+                    "outputs": [{"type": "uint256"}],
+                    "stateMutability": "view",
+                }],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Vault",
+                "abi_paths": {target: str(artifact_path)},
+            }
+            abi = [{
+                "type": "function",
+                "name": "getSecret",
+                "inputs": [],
+                "stateMutability": "view",
+            }]
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "load_abi", return_value=abi), \
+                 patch.object(lk, "resolve_abi_path", return_value=str(artifact_path)), \
+                 patch.object(lk, "auto_abi_path", return_value=None):
+                warning = lk._read_visibility_warning(["getSecret()"], config)
+        self.assertIsNone(warning)
+
     def test_build_and_test_route_to_native_project_planners(self):
         with patch.object(lk, "detected_project_root", return_value=pathlib.Path("/tmp/demo")), \
              patch.object(lk, "detect_project", return_value={"root": "/tmp/demo", "backend": "cargo", "stacks": ["cargo"]}), \
