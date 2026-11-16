@@ -24,6 +24,32 @@ PROOF_SPEC.loader.exec_module(proof_evidence)
 
 
 class GodmodeTests(unittest.TestCase):
+    def test_run_live_forwards_child_output_and_emits_idle_heartbeat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            command = [
+                sys.executable,
+                "-c",
+                "import sys,time; print('LIVE-START'); time.sleep(0.12); "
+                "print('LIVE-STDERR', file=sys.stderr); print('LIVE-END')",
+            ]
+            with redirect_stdout(output):
+                result = godmode.run_live(
+                    command,
+                    tmp,
+                    timeout=None,
+                    heartbeat_seconds=0.03,
+                )
+
+        rendered = output.getvalue()
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("LIVE-START", rendered)
+        self.assertIn("LIVE-STDERR", rendered)
+        self.assertIn("LIVE-END", rendered)
+        self.assertIn("Attack worker is still running", rendered)
+        self.assertIn("LIVE-STDERR", result.stdout)
+        self.assertEqual(result.stderr, "")
+
     def test_godmode_auto_resolves_active_target_owner_when_run_from_lowkey_checkout(self):
         with tempfile.TemporaryDirectory() as temp:
             base = pathlib.Path(temp)
