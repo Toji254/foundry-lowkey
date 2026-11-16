@@ -130,6 +130,10 @@ class ProofEvidenceTests(unittest.TestCase):
                 any(path.endswith("/break_engine.py") for path in default_paths),
                 default_paths,
             )
+            self.assertTrue(
+                any(path.endswith("/step_harness.sol.tmpl") for path in default_paths),
+                default_paths,
+            )
             self.assertTrue(validate_control_freeze(
                 root, root / "control.json", spec, required=True
             )["verified"])
