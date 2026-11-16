@@ -28,6 +28,7 @@ ACTOR = "0x000000000000000000000000000000000000a11c"
 DEFAULT_FORK_UPSTREAM = "https://eth-mainnet.public.blastapi.io"
 DEFAULT_FORK_FALLBACK_RPC = "https://ethereum-rpc.publicnode.com"
 DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io"
+DEFAULT_SOURCE_FALLBACK_RPC = "https://eth.llamarpc.com"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
 FORGE_STD_COMMIT = "15b2df92a05d4d2f76a06653872fefb287e0e01c"
 ARTIFACT_ROOT = ROOT / ".audit" / "p2-first-fork"
@@ -171,6 +172,64 @@ def start_anvil(
         stop_anvil(process)
         raise
     return process, url
+
+
+def resolve_source_archive_provider(
+    primary_rpc: str,
+    fallback_rpc: str,
+    fork_rpc: str,
+    deployment_block: int,
+) -> tuple[str, list[dict[str, str]], dict[str, Any]]:
+    """Select an independent source/archive RPC with proven historical reads."""
+    attempts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for provider in (primary_rpc, fallback_rpc):
+        key = urlparse_safe(provider)
+        if key in seen:
+            continue
+        seen.add(key)
+        if key == urlparse_safe(fork_rpc):
+            attempts.append({
+                "provider": key,
+                "status": "skipped",
+                "reason": "Source and fork evidence must come from independent providers.",
+            })
+            continue
+        try:
+            chain_id = quantity(rpc(provider, "eth_chainId", []), "source chain ID")
+            if chain_id != 1:
+                raise AssertionError(
+                    f"Source/archive RPC must be Ethereum mainnet; received chain ID {chain_id}."
+                )
+            header = rpc(provider, "eth_getBlockByNumber", [hex(deployment_block), False])
+            if not isinstance(header, dict) or not header.get("hash"):
+                raise RuntimeError("Provider did not return the exact-match deployment block.")
+            code = rpc(provider, "eth_getCode", [TARGET, hex(deployment_block)])
+            if not isinstance(code, str) or code in {"0x", "0x0"}:
+                raise RuntimeError("Provider did not return target runtime at its deployment block.")
+            proof = rpc(provider, "eth_getProof", [TARGET, [], hex(deployment_block)])
+            if not isinstance(proof, dict) or not str(proof.get("codeHash") or "").startswith("0x"):
+                raise RuntimeError("Provider did not return a historical EIP-1186 account proof.")
+            attempts.append({"provider": key, "status": "selected"})
+            return provider, attempts, {
+                "deployment_block_header": header,
+                "deployment_code": code,
+                "deployment_proof": proof,
+            }
+        except Exception as exc:
+            attempts.append({
+                "provider": key,
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}: {exc}"[:1200],
+            })
+    details = "; ".join(
+        f"{item['provider']}: {item.get('reason') or item['status']}"
+        for item in attempts
+    )
+    raise RuntimeError(
+        "No independent source/archive RPC passed historical block, code and proof checks. "
+        + details
+    )
 
 
 def resolve_fork_upstream(
@@ -333,8 +392,10 @@ def main() -> int:
 
     fork_upstream = os.environ.get("LOWKEY_P2_FORK_UPSTREAM_RPC_URL") or DEFAULT_FORK_UPSTREAM
     source_rpc = os.environ.get("LOWKEY_P2_SOURCE_RPC_URL") or DEFAULT_SOURCE_RPC
-    if urlparse_safe(fork_upstream) == urlparse_safe(source_rpc):
-        raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
+    source_fallback_rpc = (
+        os.environ.get("LOWKEY_P2_SOURCE_FALLBACK_RPC_URL")
+        or DEFAULT_SOURCE_FALLBACK_RPC
+    )
 
     fallback_rpc = (
         os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
@@ -343,9 +404,8 @@ def main() -> int:
     fork_upstream, chain_id, fork_provider_attempts = resolve_fork_upstream(
         fork_upstream, fallback_rpc, source_rpc
     )
-    source_chain_id = quantity(rpc(source_rpc, "eth_chainId", []), "source chain ID")
-    if chain_id != 1 or source_chain_id != 1:
-        raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
+    if chain_id != 1:
+        raise AssertionError(f"P2 first target is Ethereum mainnet; fork RPC chain ID was {chain_id}.")
 
     # Resolve the source identity first and require Sourcify's strict exact
     # match before choosing the fork block. The deployment block comes from
@@ -354,19 +414,20 @@ def main() -> int:
     target_source_identity = _verify_sourcify_exact(chain_id, TARGET)
     target_deployment_block = int(target_source_identity["deployment_block"])
 
-    # Fail early when either endpoint is a latest-state-only RPC. P2 needs
-    # historical code/state and EIP-1186 proof support; a valid chainId/latest
-    # response is not enough to establish a pinned deployment identity.
-    deployment_block_header = rpc(
-        source_rpc, "eth_getBlockByNumber", [hex(target_deployment_block), False]
+    # Select a source/archive provider that is independent of the fork RPC
+    # and actually answers historical block, code and account-proof requests.
+    # A temporary timeout on the default public endpoint must not abort a valid
+    # pinned-fork test when an independent fallback is available.
+    source_rpc, source_provider_attempts, source_deployment_evidence = (
+        resolve_source_archive_provider(
+            source_rpc,
+            source_fallback_rpc,
+            fork_upstream,
+            target_deployment_block,
+        )
     )
-    if not isinstance(deployment_block_header, dict) or not deployment_block_header.get("hash"):
-        raise AssertionError("Source RPC cannot return the exact-match target deployment block; archive history is required.")
-    deployment_code = rpc(
-        source_rpc, "eth_getCode", [TARGET, hex(target_deployment_block)]
-    )
-    if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
-        raise AssertionError("Source RPC cannot return target runtime at its Sourcify deployment block; archive state is required.")
+    deployment_block_header = source_deployment_evidence["deployment_block_header"]
+    deployment_code = source_deployment_evidence["deployment_code"]
     fork_upstream, fork_snapshot, snapshot_attempts = resolve_fork_snapshot_with_fallback(
         fork_upstream, fallback_rpc, source_rpc, target_deployment_block
     )
@@ -583,6 +644,7 @@ def main() -> int:
                 "source_provider": urlparse_safe(source_rpc),
                 "fork_provider": urlparse_safe(fork_upstream),
                 "fork_provider_attempts": fork_provider_attempts,
+                "source_provider_attempts": source_provider_attempts,
                 "proof_status": proof["status"],
                 "target_authenticity": identity.get("identity", {}).get("target", {}),
                 "forge_event_count": len(forge_events),
