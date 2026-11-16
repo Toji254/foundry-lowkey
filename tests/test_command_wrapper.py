@@ -145,8 +145,8 @@ class CommandWrapperTests(unittest.TestCase):
             patch.object(command_wrapper.audit_context, "emit") as emit,
         ):
             status = command_wrapper.run_command(
-                "godmode",
-                ["python3", "godmode.py", "--root", "/tmp/Token"],
+                "ai",
+                ["python3", "finding_explainer.py", "--root", "/tmp/Token"],
             )
 
         self.assertEqual(status, 0)
