@@ -28,7 +28,7 @@ FAMILY_NAMES = {
     "upgrade", "callback", "oracle", "economic", "erc20", "proxy",
     "storage", "signature", "dos",
 }
-SLUG_RE = re.compile(r"[a-zA-Z0-9_.:-]{3,120}\\Z")
+SLUG_RE = re.compile(r"[a-zA-Z0-9_.:-]{3,120}\Z")
 
 
 class AttackResearchError(ValueError):
