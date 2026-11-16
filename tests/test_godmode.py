@@ -24,6 +24,24 @@ PROOF_SPEC.loader.exec_module(proof_evidence)
 
 
 class GodmodeTests(unittest.TestCase):
+    def test_rpc_sets_descriptive_user_agent_for_public_provider_access(self):
+        from unittest.mock import patch
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return b'{"jsonrpc":"2.0","id":1,"result":"0x1"}'
+
+        with patch.object(godmode, "urlopen", return_value=Response()) as opened:
+            result = godmode.rpc("https://rpc.example", "eth_chainId", [])
+        self.assertEqual(result, "0x1")
+        request = opened.call_args.args[0]
+        self.assertIn("LowkeyCast", request.get_header("User-agent"))
+        self.assertEqual(request.get_header("Accept"), "application/json")
+
     def test_registry_covers_all_44_numbered_capabilities(self):
         self.assertEqual(len(godmode.CAPABILITIES), 44)
         self.assertEqual([row[0] for row in godmode.CAPABILITIES], list(range(1, 45)))
