@@ -116,8 +116,10 @@ class P2ForkRPCTests(unittest.TestCase):
         argv = P2["build_anvil_fork_argv"](
             "/usr/bin/anvil", 8549, 20_000_086, [FORK_A, FORK_B]
         )
-        self.assertIn("--fork-chain-id", argv)
-        self.assertEqual(argv[argv.index("--fork-chain-id") + 1], "1")
+        # Multiple fork URLs require Anvil to validate each provider's chain ID.
+        self.assertNotIn("--fork-chain-id", argv)
+        self.assertIn("--chain-id", argv)
+        self.assertEqual(argv[argv.index("--chain-id") + 1], "1")
         self.assertEqual(argv.count("--fork-url"), 2)
         self.assertIn("--retries", argv)
         self.assertEqual(argv[argv.index("--retries") + 1], "12")
