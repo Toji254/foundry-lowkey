@@ -2212,8 +2212,10 @@ AUTOMATION SETTINGS
   lk ai errors {status|auto|manual}
   lk ai errors auto             Explain supported failures without rerunning.
 
-Each setting is independent. Use manual to disable it and status to inspect it.
-Guide offers clues; lazy repairs eligible tests. Requests may send context and incur charges.
+WHAT DOES "AUTO" MEAN?
+----------------------
+auto is a value after a setting command, not a standalone command. Mode, recommendations and errors are independent.
+Use manual to disable a setting; status shows its value. Requests may send context and incur charges.
 
 UNIVERSAL --ai / TASK RUN
 -------------------------
@@ -2226,9 +2228,11 @@ UNIVERSAL --ai / TASK RUN
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
   lk lab Vault --ai-review
-      Request unverified review; it does not select targets, deploy or test.
-  lk ai mode manual / auto
-      Manual: explicit reviews only. Auto: eligible labs may request reviews.
+      Request unverified review. It does not choose targets, deploy or test.
+  lk ai mode manual
+      Reviews run only when requested.
+  lk ai mode auto
+      Eligible labs may request reviews.
   Recommendations add notes; errors explain failures. Neither reruns commands.
 
 OPTIONS / MODES
