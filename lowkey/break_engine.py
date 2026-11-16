@@ -2880,6 +2880,29 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
         return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)
     except Exception as exc:
         signature = _format_signature(fn, host)
+        error_text = str(exc)
+        unsupported_abi = isinstance(exc, ValueError) and bool(re.search(
+            r"unsupported ABI (?:type|integer type|array)|"
+            r"ABI (?:tuple|value|sample).*(?:limit|missing|depth)|"
+            r"tuple ABI input is missing",
+            error_text,
+            flags=re.IGNORECASE,
+        ))
+        reason_code = "unsupported_abi" if unsupported_abi else "generator_error"
+        detail = {
+            "reason_code": reason_code,
+            "error_type": type(exc).__name__,
+            "error": error_text,
+        }
+        if unsupported_abi:
+            detail["refusal"] = {
+                "target": target.address,
+                "family": family,
+                "reason": reason_code,
+                "detail": error_text,
+                "minimal_cmd": None,
+                "backend": None,
+            }
         return AttackResult(
             family=family,
             contract=target.contract,
@@ -2887,11 +2910,7 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             function=signature,
             status="BLOCKED",
             summary=f"Attack generator failed safely: {exc}",
-            detail={
-                "reason_code": "generator_error",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
+            detail=detail,
         )
 
 
