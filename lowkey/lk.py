@@ -13500,7 +13500,8 @@ def _lab_target_entry_has_project_identity(owner_root, entry):
         artifact_path = Path(str(artifact)).expanduser()
         if not artifact_path.is_absolute():
             artifact_path = root / artifact_path
-        return artifact_path.resolve().is_relative_to(root)
+        resolved_artifact = artifact_path.resolve()
+        return resolved_artifact.is_relative_to(root) and resolved_artifact.is_file()
     except (OSError, RuntimeError, ValueError):
         return False
 
