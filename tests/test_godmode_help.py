@@ -244,13 +244,13 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
 
     def test_godmode_stage_explanations_never_leave_empty_counts(self):
         self.assertIn(
-            "785 static source matches",
+            "Indexed 785 first-party source file(s)",
             godmode._godmode_stage_detail({
                 "name": "source-recon", "status": "completed", "signals": 785,
             }),
         )
         self.assertIn(
-            "0 matching fingerprint hit(s)",
+            "0 harness/cheatcode fingerprint match(es)",
             godmode._godmode_stage_detail({
                 "name": "cheat-fingerprints", "status": "completed", "hits": 0, "patterns": 44,
             }),
@@ -286,8 +286,8 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
             for expected in (
                 "AUDIT STATE: REVIEW REQUIRED",
                 "did not confirm a vulnerability",
-                "785 static source matches",
-                "0 matching fingerprint hit(s)",
+                "Indexed 785 first-party source file(s)",
+                "0 harness/cheatcode fingerprint match(es)",
                 "NOT REQUESTED",
                 "No deployed address was supplied",
                 "source-only (no deployed address supplied)",
