@@ -468,7 +468,7 @@ def main() -> int:
             or any(case.get("status") not in {"OBSERVED", "BREAK"} for case in cases)
             or not cases[-1].get("snapshot_restored")
         ):
-            raise AssertionError(f"P0 acceptance did not observe all four cases: {cases}")
+            raise AssertionError(f"P0 acceptance did not observe all five cases: {cases}")
         report = {
             "gate": "P0 installed-lk break acceptance",
             "status": "PASS",
