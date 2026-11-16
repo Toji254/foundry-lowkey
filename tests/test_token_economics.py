@@ -73,7 +73,7 @@ class RpcFixture:
             if data.startswith("0x4cdad506"):
                 shares = int(data[-64:], 16)
                 # One vault share redeems for 1.5 underlying tokens.
-                return word(shares * 3 // 2)
+                return word((shares // 10**12) * 3 // 2)
             raise AssertionError(f"Unexpected eth_call: {target} {data}")
         raise AssertionError(f"Unexpected RPC method: {method}")
 
@@ -140,7 +140,7 @@ class TokenEconomicsTests(unittest.TestCase):
         self.assertEqual(vault["token_decimals"], 18)
         self.assertEqual(vault["asset_decimals"], 6)
         self.assertEqual(vault["share_or_token_delta"], 2 * 10**18)
-        self.assertEqual(vault["underlying_asset_delta"], 3 * 10**18)
+        self.assertEqual(vault["underlying_asset_delta"], 3_000_000)
         self.assertEqual(vault["value_delta_usd_18"], 3 * 10**18)
 
     def test_stale_and_incomplete_oracle_rounds_are_refused(self):
