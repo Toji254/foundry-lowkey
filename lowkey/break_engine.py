@@ -464,6 +464,30 @@ def _discover_functions(host, config, target: Target) -> list[dict[str, Any]]:
         probe_cfg["abi_paths"][target.address] = target.artifact
     abi = _abi_for(host, probe_cfg, target.address)
     functions = [fn for fn in abi if isinstance(fn, dict) and fn.get("type") == "function"]
+
+    # receive()/fallback() are real EVM entry points but are not ordinary ABI
+    # functions. Include source-identified entries so these payable surfaces
+    # are not silently omitted from local attack exploration.
+    project_info = _project_break_context(host)
+    for special in ("receive", "fallback"):
+        body = _source_function_body(project_info, special, target)
+        if not body:
+            continue
+        header = re.search(
+            r"\\b" + re.escape(special) + r"\\s*\\(\\s*\\)(?P<header>[^{};]*)\\{",
+            body,
+        )
+        if not header:
+            continue
+        mutability = "payable" if re.search(r"\\bpayable\\b", header.group("header")) else "nonpayable"
+        functions.append({
+            "type": "function",
+            "name": special,
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": mutability,
+            "_lowkey_special_entry": True,
+        })
     return functions
 
 
@@ -2662,7 +2686,14 @@ def _encoded_setup_call(host, config, target: Target, setup_function, setup_para
 def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], family: str, opts, rng, project_info: dict[str, Any] | None = None) -> AttackResult:
     signature = _format_signature(fn, host)
     name = _function_name(signature)
-    runner = _evm_runner(project_info or {}, _root(host)) if project_info is not None else "foundry"
+    project_info = project_info or _project_break_context(host)
+    if family == "access":
+        source = _source_function_body(project_info, name, target)
+        contract_source = _source_function_body(project_info, "__contract_source__", target)
+        authority = _authority_assignment(source, _authority_principal_names(contract_source))
+        if authority:
+            return _run_authority_write_probe(host, config, rpc, target, fn, opts, rng, project_info)
+    runner = _evm_runner(project_info, _root(host))
     if runner != "foundry" and family in {"replay", "accounting", "access", "boundary", "time"}:
         return _run_simple_evm_family(host, config, rpc, target, fn, family, opts, rng)
 
@@ -3034,7 +3065,15 @@ def _source_function_body(
                     matched_bodies.append("".join(lines[start_line:end_line]))
                 continue
 
-            matcher = re.compile(r"\bfunction\s+" + re.escape(function_name) + r"\s*\(")
+            if function_name == "__contract_source__":
+                matched_bodies.append(source)
+                continue
+            if function_name.lower() in {"receive", "fallback"}:
+                matcher = re.compile(
+                    r"\b" + re.escape(function_name) + r"\s*\(\s*\)[^;{}]*(?=\{)"
+                )
+            else:
+                matcher = re.compile(r"\bfunction\s+" + re.escape(function_name) + r"\s*\(")
             for match in matcher.finditer(source):
                 open_brace = source.find("{", match.end())
                 semicolon = source.find(";", match.end())
@@ -3088,6 +3127,232 @@ def _source_function_body(
     except OSError:
         return ""
 
+
+
+_AUTHORITY_VARIABLE_NAMES = {
+    "owner", "admin", "authority", "guardian", "governor", "governance",
+    "operator", "manager", "maintainer", "pauser", "upgrader", "minter",
+    "treasury", "feerecipient", "protocoladmin", "emergencyadmin",
+    "pendingowner", "controller", "issuer", "whitelistadmin",
+}
+
+
+def _authority_principal_names(source: str) -> set[str]:
+    """Derive authorization principals from caller-comparison guards in source."""
+    names = {
+        name for name in re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", source)
+        if name.lower() in _AUTHORITY_VARIABLE_NAMES
+    }
+    caller = r"(?:msg\.sender|_msgSender\s*\(\s*\))"
+    identifier = r"([A-Za-z_$][A-Za-z0-9_$]*)"
+    comparisons = (
+        re.compile(caller + r"\s*(?:==|!=)\s*" + identifier),
+        re.compile(identifier + r"\s*(?:==|!=)\s*" + caller),
+    )
+    for pattern in comparisons:
+        names.update(match.group(1) for match in pattern.finditer(source))
+    return names
+
+
+def _authority_assignment(source: str, principals: set[str]) -> str | None:
+    for name in sorted(principals):
+        match = re.search(
+            r"\b" + re.escape(name) +
+            r"\s*=\s*(?:payable\s*\(\s*)?(?:msg\.sender|_msgSender\s*\(\s*\))",
+            source,
+        )
+        if match:
+            return name
+    return None
+
+
+def _read_address_getter(host, rpc: str, target: Target, getter: dict[str, Any], config) -> str:
+    calldata, error = _encode_call(host, config, target, getter, [])
+    if not calldata:
+        raise RuntimeError(f"could not encode authority getter: {error}")
+    result = _cast_exec(
+        host,
+        ["rpc", "eth_call", json.dumps({"to": target.address, "data": calldata}), "latest"],
+        rpc,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "authority getter call failed: " + (result.stderr or result.stdout or "unknown cast error").strip()
+        )
+    raw = str(result.stdout or "").strip().lower()
+    raw = raw[2:] if raw.startswith("0x") else raw
+    if len(raw) < 40 or not re.fullmatch(r"[0-9a-f]+", raw):
+        raise RuntimeError("authority getter returned an invalid ABI-encoded address")
+    return "0x" + raw[-40:]
+
+
+def _run_authority_write_probe(host, config, rpc: str, target: Target,
+                               fn: dict[str, Any], opts, rng,
+                               project_info: dict[str, Any]) -> AttackResult:
+    """Try a source-derived authority-write path with an unprivileged Anvil account."""
+    name = str(fn.get("name") or "")
+    source = _source_function_body(project_info, name, target)
+    contract_source = _source_function_body(project_info, "__contract_source__", target)
+    principals = _authority_principal_names(contract_source)
+    principal = _authority_assignment(source, principals)
+    signature = _format_signature(fn, host)
+    if not principal:
+        return AttackResult(
+            "access", target.contract, target.address, signature,
+            "SKIPPED", "No caller-derived authority-variable assignment was found in this entry point.",
+            detail={"reason_code": "no_authority_assignment"},
+        )
+
+    accounts = _anvil_accounts(host, config)
+    if len(accounts) < 2:
+        return AttackResult(
+            "access", target.contract, target.address, signature,
+            "BLOCKED", "The authority-write probe needs at least two unlocked Anvil accounts.",
+            detail={"reason_code": "no_unprivileged_actor"},
+        )
+    attacker = accounts[1]
+    all_functions = _discover_functions(host, config, target)
+    getter = next((
+        item for item in all_functions
+        if str(item.get("name") or "").lower() == principal.lower()
+        and not item.get("inputs")
+        and len(item.get("outputs") or []) == 1
+        and str((item.get("outputs") or [{}])[0].get("type") or "").lower() == "address"
+    ), None)
+    if getter is None:
+        return AttackResult(
+            "access", target.contract, target.address, signature,
+            "BLOCKED", f"Could not find an address getter for authority variable '{principal}'.",
+            detail={"reason_code": "authority_getter_unavailable", "principal": principal},
+        )
+
+    special_entry = name.lower() in {"receive", "fallback"}
+    attack_data = "0x" if special_entry else None
+    if attack_data is None:
+        values = _make_value(host, fn, rng, "one", config)
+        attack_data, error = _encode_call(host, config, target, fn, values)
+        if not attack_data:
+            return AttackResult(
+                "access", target.contract, target.address, signature,
+                "BLOCKED", f"Could not encode authority-write entry call: {error}",
+                detail={"reason_code": "entry_encoding_failed", "error": str(error or "")},
+            )
+
+    # For a payable callback gated by a caller-indexed mapping, discover a
+    # payable setup entry point that writes to that same caller's mapping.
+    setup = None
+    gate_mappings = set(re.findall(
+        r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\[\s*(?:msg\.sender|_msgSender\s*\(\s*\))\s*\]\s*"
+        r"(?:>|>=|!=|==)\s*(?:0|1|[A-Za-z_$][A-Za-z0-9_$]*)",
+        source,
+    ))
+    if special_entry and gate_mappings:
+        for candidate in all_functions:
+            if str(candidate.get("name") or "").lower() in {"receive", "fallback"}:
+                continue
+            if str(candidate.get("stateMutability") or "").lower() != "payable":
+                continue
+            candidate_name = str(candidate.get("name") or "")
+            candidate_body = _source_function_body(project_info, candidate_name, target)
+            if not candidate_body:
+                continue
+            initializes_mapping = any(
+                re.search(
+                    r"\b" + re.escape(mapping) +
+                    r"\s*\[\s*(?:msg\.sender|_msgSender\s*\(\s*\))\s*\]\s*(?:\+\+|--|\+=|-=|=(?!=))",
+                    candidate_body,
+                )
+                for mapping in gate_mappings
+            )
+            if initializes_mapping:
+                setup = candidate
+                break
+
+    snapshot = _cast_snapshot(host, rpc)
+    if not snapshot:
+        return AttackResult(
+            "access", target.contract, target.address, signature,
+            "BLOCKED", "Local RPC does not expose evm_snapshot/anvil_snapshot.",
+            detail={"reason_code": "snapshot_unavailable"},
+        )
+
+    evidence = {
+        "backend": "anvil-cast",
+        "family": "access",
+        "target": asdict(target),
+        "function": signature,
+        "authority_variable": principal,
+        "attacker": attacker,
+        "setup_function": _format_signature(setup, host) if setup else None,
+        "setup_attempted": bool(setup),
+        "setup_succeeded": None,
+        "attack_entry": "empty-calldata" if special_entry else "abi-call",
+        "attack_succeeded": False,
+        "authority_before": None,
+        "authority_after": None,
+        "break_condition": False,
+    }
+    try:
+        before = _read_address_getter(host, rpc, target, getter, config)
+        evidence["authority_before"] = before
+        if setup is not None:
+            setup_values = _make_value(host, setup, rng, "one", config)
+            setup_data, setup_error = _encode_call(host, config, target, setup, setup_values)
+            if not setup_data:
+                return AttackResult(
+                    "access", target.contract, target.address, signature,
+                    "BLOCKED", f"Could not encode the prerequisite setup call: {setup_error}",
+                    detail={"reason_code": "setup_encoding_failed", "setup_function": _format_signature(setup, host)},
+                )
+            setup_tx = _cast_send(
+                host, rpc, target, setup_data, _payable_value(setup, opts, "small"), attacker
+            )
+            evidence["setup_succeeded"] = setup_tx.returncode == 0
+            evidence["setup_output"] = (setup_tx.stdout or setup_tx.stderr or "")[-1000:]
+            if setup_tx.returncode != 0:
+                evidence_path = _write_json(host, f"access_setup_{target.contract}_{name}", evidence)
+                return AttackResult(
+                    "access", target.contract, target.address, signature,
+                    "OBSERVED", "The derived prerequisite call reverted; the authority takeover path was not reached.",
+                    evidence_path=str(evidence_path),
+                    detail={"reason_code": "setup_call_reverted", **evidence},
+                )
+
+        attack_value = "1wei" if str(fn.get("stateMutability") or "").lower() == "payable" else "0"
+        attack_tx = _cast_send(host, rpc, target, attack_data, attack_value, attacker)
+        evidence["attack_succeeded"] = attack_tx.returncode == 0
+        evidence["attack_output"] = (attack_tx.stdout or attack_tx.stderr or "")[-1000:]
+        after = _read_address_getter(host, rpc, target, getter, config)
+        evidence["authority_after"] = after
+        is_break = attack_tx.returncode == 0 and after.lower() == attacker.lower() and before.lower() != attacker.lower()
+        evidence["break_condition"] = is_break
+        evidence_path = _write_json(host, f"access_authority_{target.contract}_{name}", evidence)
+        if is_break:
+            return AttackResult(
+                "access", target.contract, target.address, signature,
+                "BREAK", f"Unprivileged Anvil account changed '{principal}' to itself through {name}().",
+                evidence_path=str(evidence_path),
+                break_condition=True,
+                detail={"reason_code": "unauthorized_authority_change", **evidence},
+            )
+        return AttackResult(
+            "access", target.contract, target.address, signature,
+            "OBSERVED", f"{name}() executed, but the observed authority value did not change to the attacker.",
+            evidence_path=str(evidence_path),
+            detail={"reason_code": "authority_change_not_observed", **evidence},
+        )
+    except Exception as exc:
+        evidence["error"] = f"{type(exc).__name__}: {exc}"
+        evidence_path = _write_json(host, f"access_authority_{target.contract}_{name}", evidence)
+        return AttackResult(
+            "access", target.contract, target.address, signature,
+            "BLOCKED", f"Authority-write experiment could not complete: {type(exc).__name__}: {exc}",
+            evidence_path=str(evidence_path),
+            detail={"reason_code": "authority_probe_error", **evidence},
+        )
+    finally:
+        _cast_revert(host, rpc, snapshot)
+
 def _family_selection(
     fn: dict[str, Any],
     requested: str | None,
@@ -3119,6 +3384,9 @@ def _family_selection(
     inputs = list(fn.get("inputs") or [])
     outputs = list(fn.get("outputs") or [])
     source = _source_function_body(project_info, name, target)
+    contract_source = _source_function_body(project_info, "__contract_source__", target)
+    authority_principals = _authority_principal_names(contract_source)
+    authority_assignment = _authority_assignment(source, authority_principals)
     input_labels = " ".join(
         f"{item.get('name') or ''} {item.get('type') or ''}" for item in inputs
     )
@@ -3202,6 +3470,15 @@ def _family_selection(
         source,
     ):
         add("access", "function name or source exposes a privileged configuration/authorization path")
+    if authority_assignment and not re.search(
+        r"\b(?:onlyOwner|onlyAdmin|onlyRole|onlyGuardian|onlyGovernance|_checkRole)\b",
+        source,
+        flags=re.I,
+    ):
+        add(
+            "access",
+            f"externally callable entry point writes caller-authority principal '{authority_assignment}'",
+        )
 
     if re.search(
         r"\b(?:block\.timestamp|block\.number|blockhash\s*\(|block\.prevrandao|block\.difficulty|"
