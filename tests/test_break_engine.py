@@ -1464,6 +1464,12 @@ SECOND_RETURNDATA_LENGTH 0
                             family,
                             {},
                             random.Random(1),
+                            {
+                                "root": str(tmp),
+                                "stacks": ["foundry"],
+                                "native": {"forge": True},
+                                "manifests": {"foundry": True},
+                            },
                         )
                     self.assertEqual(result.status, "BLOCKED")
                     self.assertEqual(result.detail["reason_code"], "abi_discovery_failed")
