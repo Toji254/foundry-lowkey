@@ -231,7 +231,9 @@ def normalize_calltracer(
         if not isinstance(call, Mapping):
             raise ValueError(f"callTracer event #{index} must be an object.")
         error = call.get("error")
-        event_storage = partial_storage.get(index, []) if storage_support == "partial" else None
+        has_partial_observation = storage_support == "partial" and index in partial_storage
+        event_support = "partial" if has_partial_observation else "declared_only"
+        event_storage = partial_storage[index] if has_partial_observation else None
         rows.append(build_trace_event(
             seq=index,
             backend="anvil-calltracer",
@@ -243,7 +245,7 @@ def normalize_calltracer(
             calldata=call.get("input", call.get("data")),
             reverted=bool(error) if error is not None else bool(call.get("reverted", False)),
             storage=event_storage,
-            storage_support=storage_support,
+            storage_support=event_support,
         ))
     return rows
 
