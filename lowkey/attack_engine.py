@@ -630,7 +630,7 @@ def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str
     return execution
 
 
-def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str]], timeout: int) -> dict[str, Any]:
+def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str]], timeout: int, run_id: str) -> dict[str, Any]:
     try:
         from .behavioral_validation import validate_mutations
     except ImportError:
@@ -639,7 +639,14 @@ def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str
     if not forge:
         raise AttackEngineError("Foundry forge is unavailable for mutation reproof.", "backend_unsupported")
     argv = [forge, "test", "--match-path", test["test_file"], "--match-test", test["test_name"], "-vvvv"]
-    result = validate_mutations(root, argv, mutants, timeout_seconds=timeout)
+    result = validate_mutations(
+        root, argv, mutants, timeout_seconds=timeout,
+        env={
+            "LOWKEY_EXPERIMENT_ID": run_id,
+            "LOWKEY_EXPERIMENT_ROLE": "attack",
+            "LOWKEY_EVIDENCE_PATH": ".audit/lowkey/mutation-evidence.json",
+        },
+    )
     summary = result.get("summary") or {}
     killed = int(summary.get("killed") or 0)
     if result.get("status") != "completed" or killed < 1 or summary.get("survived", 0) or summary.get("invalid", 0) or summary.get("timeout", 0) or summary.get("error", 0):
@@ -660,7 +667,7 @@ def run_experiment(value: Any, root: str | Path = ".", *, output_path: str | Non
     if control_run["status"] != "passed":
         raise AttackEngineError(f"Control Forge test did not pass: {control_run['status']}.", "control_execution_failed")
     pair = validate_evidence_pair(attack_run["evidence"], control_run["evidence"], manifest)
-    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"])
+    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"], run_id)
     report = {
         "schema_version": SCHEMA_VERSION, "run_id": run_id,
         "status": "VERIFIED_LOCAL_EXPERIMENT",
@@ -956,7 +963,7 @@ def run_chain(value: Any, root: str | Path = ".", *, output_path: str | None = N
         raise AttackEngineError("Failure-injection/rollback test did not pass.", "rollback_failed")
     pair = validate_chain_evidence_pair(attack_run["evidence"], control_run["evidence"], manifest)
     rollback = validate_failure_rollback(failure_run["evidence"], manifest)
-    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"])
+    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"], run_id)
     report = {"schema_version": SCHEMA_VERSION, "run_id": run_id,
               "status": "VERIFIED_LOCAL_ATTACK_CHAIN", "scope": "local_foundry_test",
               "chain_id": manifest["id"], "mode": manifest["mode"],
