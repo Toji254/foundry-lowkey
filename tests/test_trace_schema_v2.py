@@ -94,6 +94,25 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertEqual(events[0]["storage"][0]["previous_value"], WORD1)
         self.assertEqual(events[0]["storage"][0]["new_value"], WORD2)
 
+    def test_transaction_level_prestate_is_not_assigned_to_nested_frames(self):
+        calls = [
+            {"type": "CALL", "from": A, "to": B, "depth": 0,
+             "value": "0x0", "input": "0x12345678"},
+            {"type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
+             "value": "0x0", "input": "0xaabbccdd"},
+        ]
+        events = normalize_calltracer(
+            calls,
+            storage_support="partial",
+            partial_storage={0: [{
+                "account": B, "slot": SLOT, "value": WORD1, "post_value": WORD2
+            }]},
+        )
+        self.assertEqual(events[0]["storage_support"], "partial")
+        self.assertEqual(events[0]["storage"][0]["slot"], SLOT)
+        self.assertEqual(events[1]["storage_support"], "declared_only")
+        self.assertIsNone(events[1]["storage"])
+
     def test_legacy_event_adapter_preserves_unknowns(self):
         event = from_legacy_event({
             "index": 3, "kind": "Call", "accessor": A, "account": B,
@@ -138,6 +157,17 @@ class TraceSchemaV2Tests(unittest.TestCase):
         report = compare_trace_events(forge, anvil)
         self.assertEqual(report["status"], "MISMATCH")
         self.assertEqual({x["dimension"] for x in report["mismatches"]}, {"selector", "calldata"})
+
+    def test_empty_trace_pair_never_returns_a_match(self):
+        report = compare_trace_events([], [])
+        self.assertEqual(report["status"], "INCOMPLETE")
+        self.assertEqual(report["unknowns"][0]["dimension"], "event_stream")
+
+    def test_parity_rejects_wrong_backend_labels(self):
+        forge = forge_trace()
+        forge[0]["backend"] = "anvil-calltracer"
+        with self.assertRaisesRegex(ValueError, "must come from forge-state-diff"):
+            compare_trace_events(forge, anvil_trace())
 
     def test_parity_detects_event_count_mismatch(self):
         report = compare_trace_events(forge_trace(), anvil_trace()[:1])
