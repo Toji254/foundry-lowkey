@@ -1490,23 +1490,39 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         result["reason"] = "Only source_provider='sourcify' is currently supported for independent contract identity."
         return result
 
+    target_clone_implementation = None
     try:
         target_deployment_block = int(identity_spec.get("deployment_block"))
         if target_deployment_block > block_number:
             raise ValueError("target_identity.deployment_block is after the pinned fork block.")
+        target_runtime_code = source_code_by_address.get(target)
         target_deployment = _verify_first_code_block(
-            source, target, target_deployment_block,
-            source_code_by_address.get(target),
+            source, target, target_deployment_block, target_runtime_code,
         )
-        target_source = _verify_sourcify_exact(chain_id, target)
-        if target_source["deployment_block"] != target_deployment_block:
-            raise ValueError("Sourcify deployment.blockNumber does not match target_identity.deployment_block.")
+        target_clone_implementation = _eip1167_implementation(target_runtime_code)
+        if target_clone_implementation:
+            declared_proxy = identity_spec.get("proxy") or {}
+            if declared_proxy and declared_proxy.get("type") not in {"eip1167", "eip-1167", "minimal-proxy"}:
+                raise ValueError("Canonical EIP-1167 bytecode conflicts with target_identity.proxy.type.")
+            target_source = {
+                "provider": "eip1167-runtime-bytecode",
+                "match": "canonical_eip1167",
+                "runtime_bytecode_sha256": hashlib.sha256(
+                    bytes.fromhex(str(target_runtime_code).lower().removeprefix("0x"))
+                ).hexdigest(),
+                "deployment_block": target_deployment_block,
+                "source_scope": "The clone has canonical immutable forwarding bytecode; source identity is verified on its embedded implementation.",
+            }
+        else:
+            target_source = _verify_sourcify_exact(chain_id, target)
+            if target_source["deployment_block"] != target_deployment_block:
+                raise ValueError("Sourcify deployment.blockNumber does not match target_identity.deployment_block.")
     except Exception as exc:
         result["reason"] = "Target source identity verification failed: " + str(exc)[:500]
         return result
 
     identity = {
-        "provider": "sourcify-v2",
+        "provider": "sourcify-v2+canonical-proxy-bytecode",
         "target": {
             "address": target,
             **target_deployment,
@@ -1516,95 +1532,103 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
     }
 
     try:
-        implementation_slot = EIP1967["implementation"]
-        beacon_slot = EIP1967["beacon"]
-        implementation_word = str(rpc(
-            source, "eth_getStorageAt", [target, implementation_slot, hex(block_number)]
-        ) or "0x" + "0" * 64).lower()
-        beacon_word = str(rpc(
-            source, "eth_getStorageAt", [target, beacon_slot, hex(block_number)]
-        ) or "0x" + "0" * 64).lower()
-        if not re.fullmatch(r"0x[0-9a-f]{64}", implementation_word):
-            raise ValueError("EIP-1967 implementation storage value is not a full bytes32 word.")
-        if not re.fullmatch(r"0x[0-9a-f]{64}", beacon_word):
-            raise ValueError("EIP-1967 beacon storage value is not a full bytes32 word.")
-        implementation_int = int(implementation_word, 16)
-        beacon_int = int(beacon_word, 16)
-        provider_proxy = target_source.get("proxy_resolution") or {}
-        if provider_proxy.get("proxyResolutionError"):
-            raise ValueError("Sourcify proxy resolution failed: " + str(provider_proxy["proxyResolutionError"]))
-        if beacon_int:
-            result["reason"] = (
-                "Target has a non-zero EIP-1967 beacon slot. Beacon-proxy implementation resolution "
-                "is not supported yet; refusing to infer implementation identity."
-            )
-            result["identity"] = identity
-            return result
-        if implementation_int:
-            implementation = "0x" + implementation_word[-40:]
-            if provider_proxy.get("isProxy") is not True or provider_proxy.get("proxyType") != "EIP1967Proxy":
-                raise ValueError("Sourcify did not independently resolve the target as an EIP1967Proxy.")
-            provider_implementations = {
-                addr(item.get("address"))
-                for item in (provider_proxy.get("implementations") or [])
-                if isinstance(item, dict) and item.get("address")
-            }
-            if implementation not in provider_implementations:
-                raise ValueError("Sourcify proxyResolution does not contain the on-chain EIP-1967 implementation address.")
-            if implementation not in trace_addresses:
-                raise ValueError("EIP-1967 implementation address was not observed in the recorded call tree.")
+        if target_clone_implementation:
             proxy_spec = identity_spec.get("proxy") or {}
-            if proxy_spec and proxy_spec.get("type") != "eip1967":
-                raise ValueError("Resolved EIP-1967 implementation slot conflicts with target_identity.proxy.type.")
-            declared_implementation = proxy_spec.get("implementation_address")
-            if declared_implementation and addr(declared_implementation) != implementation:
-                raise ValueError("EIP-1967 implementation slot does not match target_identity.proxy.implementation_address.")
-            implementation_code = str(
-                rpc(source, "eth_getCode", [implementation, hex(block_number)]) or "0x"
-            ).lower()
-            if implementation_code in {"0x", "0x0"}:
-                raise ValueError("EIP-1967 implementation address has no runtime code at the pinned fork block.")
-            implementation_deployment_block = int(proxy_spec.get("implementation_deployment_block"))
-            if implementation_deployment_block > block_number:
-                raise ValueError("Proxy implementation deployment block is after the pinned fork block.")
-            local_implementation_code = str(
-                rpc(fork_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
-            ).lower()
-            if local_implementation_code != implementation_code:
-                raise ValueError("Proxy implementation bytecode differs between local fork and source archive.")
-            implementation_deployment = _verify_first_code_block(
-                source, implementation,
-                implementation_deployment_block,
-                implementation_code,
+            identity["proxy"] = _verify_eip1167_implementation(
+                source, fork_url, chain_id, block_number,
+                target_clone_implementation, proxy_spec,
+                prestate_by_address, trace_addresses,
             )
-            implementation_source = _verify_sourcify_exact(chain_id, implementation)
-            if implementation_source["deployment_block"] != implementation_deployment_block:
-                raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
-            implementation_prestate = prestate_by_address.get(implementation) or {}
-            trace_implementation_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
-            if not re.fullmatch(r"0x[0-9a-f]{64}", trace_implementation_code_hash):
-                raise ValueError("Trace did not preserve a usable implementation code hash.")
-            implementation_proof = rpc(
-                source, "eth_getProof", [implementation, [], hex(block_number)]
-            )
-            archive_implementation_code_hash = str(
-                (implementation_proof or {}).get("codeHash") or ""
-            ).lower()
-            if archive_implementation_code_hash != trace_implementation_code_hash:
-                raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
-            identity["proxy"] = {
-                "type": "eip1967",
-                "sourcify_proxy_type": provider_proxy.get("proxyType"),
-                "implementation_address": implementation,
-                **implementation_deployment,
-                **implementation_source,
-                "implementation_slot": implementation_slot,
-            }
         else:
-            if provider_proxy.get("isProxy") is not False:
-                raise ValueError("EIP-1967 slots are empty but Sourcify did not confirm a non-proxy target.")
-            if identity_spec.get("proxy"):
-                raise ValueError("Manifest declares a proxy but the EIP-1967 implementation slot is zero at the pinned block.")
+            implementation_slot = EIP1967["implementation"]
+            beacon_slot = EIP1967["beacon"]
+            implementation_word = str(rpc(
+                source, "eth_getStorageAt", [target, implementation_slot, hex(block_number)]
+            ) or "0x" + "0" * 64).lower()
+            beacon_word = str(rpc(
+                source, "eth_getStorageAt", [target, beacon_slot, hex(block_number)]
+            ) or "0x" + "0" * 64).lower()
+            if not re.fullmatch(r"0x[0-9a-f]{64}", implementation_word):
+                raise ValueError("EIP-1967 implementation storage value is not a full bytes32 word.")
+            if not re.fullmatch(r"0x[0-9a-f]{64}", beacon_word):
+                raise ValueError("EIP-1967 beacon storage value is not a full bytes32 word.")
+            implementation_int = int(implementation_word, 16)
+            beacon_int = int(beacon_word, 16)
+            provider_proxy = target_source.get("proxy_resolution") or {}
+            if provider_proxy.get("proxyResolutionError"):
+                raise ValueError("Sourcify proxy resolution failed: " + str(provider_proxy["proxyResolutionError"]))
+            if beacon_int:
+                result["reason"] = (
+                    "Target has a non-zero EIP-1967 beacon slot. Beacon-proxy implementation resolution "
+                    "is not supported yet; refusing to infer implementation identity."
+                )
+                result["identity"] = identity
+                return result
+            if implementation_int:
+                implementation = "0x" + implementation_word[-40:]
+                if provider_proxy.get("isProxy") is not True or provider_proxy.get("proxyType") != "EIP1967Proxy":
+                    raise ValueError("Sourcify did not independently resolve the target as an EIP1967Proxy.")
+                provider_implementations = {
+                    addr(item.get("address"))
+                    for item in (provider_proxy.get("implementations") or [])
+                    if isinstance(item, dict) and item.get("address")
+                }
+                if implementation not in provider_implementations:
+                    raise ValueError("Sourcify proxyResolution does not contain the on-chain EIP-1967 implementation address.")
+                if implementation not in trace_addresses:
+                    raise ValueError("EIP-1967 implementation address was not observed in the recorded call tree.")
+                proxy_spec = identity_spec.get("proxy") or {}
+                if proxy_spec and proxy_spec.get("type") != "eip1967":
+                    raise ValueError("Resolved EIP-1967 implementation slot conflicts with target_identity.proxy.type.")
+                declared_implementation = proxy_spec.get("implementation_address")
+                if declared_implementation and addr(declared_implementation) != implementation:
+                    raise ValueError("EIP-1967 implementation slot does not match target_identity.proxy.implementation_address.")
+                implementation_code = str(
+                    rpc(source, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+                ).lower()
+                if implementation_code in {"0x", "0x0"}:
+                    raise ValueError("EIP-1967 implementation address has no runtime code at the pinned fork block.")
+                implementation_deployment_block = int(proxy_spec.get("implementation_deployment_block"))
+                if implementation_deployment_block > block_number:
+                    raise ValueError("Proxy implementation deployment block is after the pinned fork block.")
+                local_implementation_code = str(
+                    rpc(fork_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+                ).lower()
+                if local_implementation_code != implementation_code:
+                    raise ValueError("Proxy implementation bytecode differs between local fork and source archive.")
+                implementation_deployment = _verify_first_code_block(
+                    source, implementation,
+                    implementation_deployment_block,
+                    implementation_code,
+                )
+                implementation_source = _verify_sourcify_exact(chain_id, implementation)
+                if implementation_source["deployment_block"] != implementation_deployment_block:
+                    raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
+                implementation_prestate = prestate_by_address.get(implementation) or {}
+                trace_implementation_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
+                if not re.fullmatch(r"0x[0-9a-f]{64}", trace_implementation_code_hash):
+                    raise ValueError("Trace did not preserve a usable implementation code hash.")
+                implementation_proof = rpc(
+                    source, "eth_getProof", [implementation, [], hex(block_number)]
+                )
+                archive_implementation_code_hash = str(
+                    (implementation_proof or {}).get("codeHash") or ""
+                ).lower()
+                if archive_implementation_code_hash != trace_implementation_code_hash:
+                    raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
+                identity["proxy"] = {
+                    "type": "eip1967",
+                    "sourcify_proxy_type": provider_proxy.get("proxyType"),
+                    "implementation_address": implementation,
+                    **implementation_deployment,
+                    **implementation_source,
+                    "implementation_slot": implementation_slot,
+                }
+            else:
+                if provider_proxy.get("isProxy") is not False:
+                    raise ValueError("EIP-1967 slots are empty but Sourcify did not confirm a non-proxy target.")
+                if identity_spec.get("proxy"):
+                    raise ValueError("Manifest declares a proxy but the EIP-1967 implementation slot is zero at the pinned block.")
     except Exception as exc:
         result["reason"] = "Proxy/implementation identity verification failed: " + str(exc)[:500]
         result["identity"] = identity
