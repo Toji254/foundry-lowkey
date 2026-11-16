@@ -81,7 +81,7 @@ HELP_FLAGS = {"-h", "--h", "--help", "help"}
 # This list mirrors the first Godmode dispatch case in bin/lk. The help test
 # compares the two, so adding a shell route without adding it here fails CI.
 ROUTED_COMMANDS = (
-    "capabilities", "godmode", "control", "steps", "mutation-score",
+    "capabilities", "godmode", "control", "trace-parity", "steps", "mutation-score",
     "target-coverage", "provenance", "fidelity", "sandbox", "cheat-fingerprint", "decompile",
     "storage-infer", "proxy-resolve", "selectors-full", "cfg",
     "reentrancy-graph", "fallback-map", "calldata-mine", "attack-forge",
@@ -110,6 +110,12 @@ GODMODE_COMMAND_DETAILS = {
         "when": "Use it before promoting a candidate BREAK; freeze expectations first, validate the freeze, then execute with the matching frozen inputs.",
         "example": "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate",
         "limits": "Anvil callTracer mode accepts a local Anvil RPC only. Forge state-diff results are structural evidence, not gas-adjusted EOA profit.",
+    },
+    "trace-parity": {
+        "summary": "Compare saved canonical Forge and Anvil traces field by field, preserving unknowns and storage-evidence limits.",
+        "when": "Use it after running the same frozen experiment on both backends to check call-tree and calldata parity.",
+        "example": "lk trace-parity .audit/forge-control.json .audit/anvil-control.json --root .",
+        "limits": "The comparator cannot make transaction-level prestateTracer changes equivalent to Forge per-access storage observations; it reports that storage degradation explicitly.",
     },
     "steps": {
         "summary": "Validate a typed Step[] manifest and render a hash-addressed Foundry harness, with explicit machine-readable refusals.",
@@ -466,7 +472,15 @@ def rpc_url(v=None):
     return url
 def rpc(url,method,params,timeout=20):
     data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
-    req=Request(url,data=data,headers={"Content-Type":"application/json"})
+    req=Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type":"application/json",
+            "Accept":"application/json",
+            "User-Agent":"LowkeyCast/1.0 (+https://github.com/Toji254/foundry-lowkey)",
+        },
+    )
     with urlopen(req,timeout=timeout) as res: body=json.loads(res.read().decode())
     if body.get("error"): raise RuntimeError(f"{method}: {body['error']}")
     return body.get("result")
@@ -636,6 +650,39 @@ def _normalize_rpc_trace_events(calls):
         except ImportError:
             from trace_evidence import normalize_rpc_trace_events
     return normalize_rpc_trace_events(calls, backend="anvil-calltracer")
+
+def _normalize_trace_events_v2(calls, storage_trace=None):
+    """Build canonical v2 events; changed slots remain transaction-level partial evidence."""
+    try:
+        from .trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
+    except ImportError:
+        try:
+            from lowkey.trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
+        except ImportError:
+            from trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
+    storage_trace = storage_trace if isinstance(storage_trace, dict) else {}
+    if storage_trace.get("supported"):
+        partial_rows = [
+            {
+                "account": row.get("address"),
+                "slot": row.get("slot"),
+                "previous_value": row.get("value"),
+                "new_value": row.get("post_value"),
+                "is_write": row.get("value") != row.get("post_value"),
+                "reverted": False,
+            }
+            for row in storage_trace.get("slots", [])
+            if isinstance(row, dict)
+        ]
+        events = normalize_calltracer(
+            calls,
+            storage_support="partial",
+            partial_storage={0: partial_rows},
+        )
+    else:
+        events = normalize_calltracer(calls, storage_support="declared_only")
+    return TRACE_SCHEMA_VERSION, events
+
 
 
 def _control_transaction_envelope(tx, chain_id):
@@ -969,6 +1016,9 @@ def _trace_control_run(root, url, name, entry, spec, env):
             if not required.issubset(set(addresses)): raise ValueError(f"{name} prestate_addresses must include the transaction sender and root recipient.")
             if target and target not in addresses: raise ValueError(f"{name} prestate_addresses must include target_address.")
             storage_trace=_trace_storage_prestate(url,tx_hash)
+            canonical_trace_schema_version, canonical_trace_events = _normalize_trace_events_v2(
+                calls, storage_trace
+            )
             for discovered_address in storage_trace.get("addresses",[]):
                 if discovered_address not in addresses:
                     addresses.append(discovered_address)
@@ -1080,6 +1130,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "semantic_check":semantic_check,
                 "trace_schema_version":1,
                 "trace_events":_normalize_rpc_trace_events(calls),
+                "canonical_trace_schema_version":canonical_trace_schema_version,
+                "canonical_trace_events":canonical_trace_events,
                 "call_trace":calls,
                 "argv":entry["argv"],
                 "output_tail":combined[-2500:],
@@ -1195,6 +1247,79 @@ def _verify_first_code_block(source_url, address, deployment_block, expected_cod
     }
 
 
+def _eip1167_implementation(runtime_code):
+    """Return the implementation address from the exact canonical EIP-1167 runtime.
+
+    Non-canonical variants (vanity PUSHn, immutable-args, or custom clones) are
+    deliberately not guessed. They require a separately verified adapter.
+    """
+    raw = str(runtime_code or "").lower()
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    prefix = "363d3d373d3d3d363d73"
+    suffix = "5af43d82803e903d91602b57fd5bf3"
+    if len(raw) != 90 or not raw.startswith(prefix) or not raw.endswith(suffix):
+        return None
+    implementation_hex = raw[len(prefix):len(prefix) + 40]
+    if len(implementation_hex) != 40 or not re.fullmatch(r"[0-9a-f]{40}", implementation_hex):
+        return None
+    if int(implementation_hex, 16) == 0:
+        raise ValueError("Canonical EIP-1167 clone contains a zero implementation address.")
+    return "0x" + implementation_hex
+
+
+def _verify_eip1167_implementation(
+    source_url, fork_url, chain_id, block_number, implementation,
+    proxy_spec, prestate_by_address, trace_addresses,
+):
+    """Independently verify the immutable clone destination and its source."""
+    if implementation not in trace_addresses:
+        raise ValueError("EIP-1167 implementation address was not observed in the recorded call tree.")
+    implementation_code = str(
+        rpc(source_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+    ).lower()
+    if implementation_code in {"0x", "0x0"}:
+        raise ValueError("EIP-1167 implementation address has no runtime code at the pinned fork block.")
+    local_implementation_code = str(
+        rpc(fork_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+    ).lower()
+    if local_implementation_code != implementation_code:
+        raise ValueError("EIP-1167 implementation bytecode differs between local fork and source archive.")
+    source_identity = _verify_sourcify_exact(chain_id, implementation)
+    declared_deployment = proxy_spec.get("implementation_deployment_block")
+    deployment_block = (
+        int(declared_deployment) if declared_deployment is not None
+        else int(source_identity["deployment_block"])
+    )
+    if deployment_block > block_number:
+        raise ValueError("EIP-1167 implementation deployment block is after the pinned fork block.")
+    if source_identity["deployment_block"] != deployment_block:
+        raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
+    deployment = _verify_first_code_block(
+        source_url, implementation, deployment_block, implementation_code
+    )
+    implementation_prestate = prestate_by_address.get(implementation) or {}
+    trace_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", trace_code_hash):
+        raise ValueError("Trace did not preserve a usable EIP-1167 implementation code hash.")
+    proof = rpc(source_url, "eth_getProof", [implementation, [], hex(block_number)])
+    archive_code_hash = str((proof or {}).get("codeHash") or "").lower()
+    if archive_code_hash != trace_code_hash:
+        raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
+    declared = proxy_spec.get("implementation_address")
+    if declared and addr(declared) != implementation:
+        raise ValueError("Decoded EIP-1167 implementation does not match target_identity.proxy.implementation_address.")
+    return {
+        "type": "eip1167",
+        "implementation_address": implementation,
+        "runtime_prefix": "0x" + "363d3d373d3d3d363d73",
+        "runtime_suffix": "0x" + "5af43d82803e903d91602b57fd5bf3",
+        "implementation_code_hash": archive_code_hash,
+        **deployment,
+        **source_identity,
+    }
+
+
 def _forge_source_verification(source_url, fork_url, normalized, spec):
     result = {
         "verified": False,
@@ -1305,8 +1430,33 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
                 return result
             actual_code_hash = str((proof or {}).get("codeHash") or "").lower()
             expected_code_hash = str(normalized.get("target_code_hash") or "").lower()
+            trace_target_prestate = prestate_by_address.get(address) or {}
+            trace_account_code_hash = str(trace_target_prestate.get("code_hash") or "").lower()
             if not expected_code_hash or actual_code_hash != expected_code_hash:
-                result["reason"] = "Target EIP-1186 code hash differs from the recorder's pre-execution target code hash."
+                result["reason"] = (
+                    "Target EIP-1186 code hash differs from the recorder's pre-execution target code hash "
+                    + f"(target={address}, recorder_target_code_hash={expected_code_hash or 'missing'}, "
+                    + f"forge_account_access_code_hash={trace_account_code_hash or 'missing'}, "
+                    + f"archive_eip1186_code_hash={actual_code_hash or 'missing'})."
+                )
+                result["target_code_hash_diagnostics"] = {
+                    "target_address": address,
+                    "recorder_target_code_hash": expected_code_hash or None,
+                    "forge_account_access_code_hash": trace_account_code_hash or None,
+                    "archive_eip1186_code_hash": actual_code_hash or None,
+                }
+                return result
+            if trace_account_code_hash and trace_account_code_hash != actual_code_hash:
+                result["reason"] = (
+                    "Forge account-access code hash differs from archive EIP-1186 code hash "
+                    + f"(target={address}, forge={trace_account_code_hash}, archive={actual_code_hash})."
+                )
+                result["target_code_hash_diagnostics"] = {
+                    "target_address": address,
+                    "recorder_target_code_hash": expected_code_hash,
+                    "forge_account_access_code_hash": trace_account_code_hash,
+                    "archive_eip1186_code_hash": actual_code_hash,
+                }
                 return result
         else:
             actual_code_hash = None
@@ -1374,23 +1524,39 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
         result["reason"] = "Only source_provider='sourcify' is currently supported for independent contract identity."
         return result
 
+    target_clone_implementation = None
     try:
         target_deployment_block = int(identity_spec.get("deployment_block"))
         if target_deployment_block > block_number:
             raise ValueError("target_identity.deployment_block is after the pinned fork block.")
+        target_runtime_code = source_code_by_address.get(target)
         target_deployment = _verify_first_code_block(
-            source, target, target_deployment_block,
-            source_code_by_address.get(target),
+            source, target, target_deployment_block, target_runtime_code,
         )
-        target_source = _verify_sourcify_exact(chain_id, target)
-        if target_source["deployment_block"] != target_deployment_block:
-            raise ValueError("Sourcify deployment.blockNumber does not match target_identity.deployment_block.")
+        target_clone_implementation = _eip1167_implementation(target_runtime_code)
+        if target_clone_implementation:
+            declared_proxy = identity_spec.get("proxy") or {}
+            if declared_proxy and declared_proxy.get("type") not in {"eip1167", "eip-1167", "minimal-proxy"}:
+                raise ValueError("Canonical EIP-1167 bytecode conflicts with target_identity.proxy.type.")
+            target_source = {
+                "provider": "eip1167-runtime-bytecode",
+                "match": "canonical_eip1167",
+                "runtime_bytecode_sha256": hashlib.sha256(
+                    bytes.fromhex(str(target_runtime_code).lower().removeprefix("0x"))
+                ).hexdigest(),
+                "deployment_block": target_deployment_block,
+                "source_scope": "The clone has canonical immutable forwarding bytecode; source identity is verified on its embedded implementation.",
+            }
+        else:
+            target_source = _verify_sourcify_exact(chain_id, target)
+            if target_source["deployment_block"] != target_deployment_block:
+                raise ValueError("Sourcify deployment.blockNumber does not match target_identity.deployment_block.")
     except Exception as exc:
         result["reason"] = "Target source identity verification failed: " + str(exc)[:500]
         return result
 
     identity = {
-        "provider": "sourcify-v2",
+        "provider": "sourcify-v2+canonical-proxy-bytecode",
         "target": {
             "address": target,
             **target_deployment,
@@ -1400,95 +1566,103 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
     }
 
     try:
-        implementation_slot = EIP1967["implementation"]
-        beacon_slot = EIP1967["beacon"]
-        implementation_word = str(rpc(
-            source, "eth_getStorageAt", [target, implementation_slot, hex(block_number)]
-        ) or "0x" + "0" * 64).lower()
-        beacon_word = str(rpc(
-            source, "eth_getStorageAt", [target, beacon_slot, hex(block_number)]
-        ) or "0x" + "0" * 64).lower()
-        if not re.fullmatch(r"0x[0-9a-f]{64}", implementation_word):
-            raise ValueError("EIP-1967 implementation storage value is not a full bytes32 word.")
-        if not re.fullmatch(r"0x[0-9a-f]{64}", beacon_word):
-            raise ValueError("EIP-1967 beacon storage value is not a full bytes32 word.")
-        implementation_int = int(implementation_word, 16)
-        beacon_int = int(beacon_word, 16)
-        provider_proxy = target_source.get("proxy_resolution") or {}
-        if provider_proxy.get("proxyResolutionError"):
-            raise ValueError("Sourcify proxy resolution failed: " + str(provider_proxy["proxyResolutionError"]))
-        if beacon_int:
-            result["reason"] = (
-                "Target has a non-zero EIP-1967 beacon slot. Beacon-proxy implementation resolution "
-                "is not supported yet; refusing to infer implementation identity."
-            )
-            result["identity"] = identity
-            return result
-        if implementation_int:
-            implementation = "0x" + implementation_word[-40:]
-            if provider_proxy.get("isProxy") is not True or provider_proxy.get("proxyType") != "EIP1967Proxy":
-                raise ValueError("Sourcify did not independently resolve the target as an EIP1967Proxy.")
-            provider_implementations = {
-                addr(item.get("address"))
-                for item in (provider_proxy.get("implementations") or [])
-                if isinstance(item, dict) and item.get("address")
-            }
-            if implementation not in provider_implementations:
-                raise ValueError("Sourcify proxyResolution does not contain the on-chain EIP-1967 implementation address.")
-            if implementation not in trace_addresses:
-                raise ValueError("EIP-1967 implementation address was not observed in the recorded call tree.")
+        if target_clone_implementation:
             proxy_spec = identity_spec.get("proxy") or {}
-            if proxy_spec and proxy_spec.get("type") != "eip1967":
-                raise ValueError("Resolved EIP-1967 implementation slot conflicts with target_identity.proxy.type.")
-            declared_implementation = proxy_spec.get("implementation_address")
-            if declared_implementation and addr(declared_implementation) != implementation:
-                raise ValueError("EIP-1967 implementation slot does not match target_identity.proxy.implementation_address.")
-            implementation_code = str(
-                rpc(source, "eth_getCode", [implementation, hex(block_number)]) or "0x"
-            ).lower()
-            if implementation_code in {"0x", "0x0"}:
-                raise ValueError("EIP-1967 implementation address has no runtime code at the pinned fork block.")
-            implementation_deployment_block = int(proxy_spec.get("implementation_deployment_block"))
-            if implementation_deployment_block > block_number:
-                raise ValueError("Proxy implementation deployment block is after the pinned fork block.")
-            local_implementation_code = str(
-                rpc(fork_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
-            ).lower()
-            if local_implementation_code != implementation_code:
-                raise ValueError("Proxy implementation bytecode differs between local fork and source archive.")
-            implementation_deployment = _verify_first_code_block(
-                source, implementation,
-                implementation_deployment_block,
-                implementation_code,
+            identity["proxy"] = _verify_eip1167_implementation(
+                source, fork_url, chain_id, block_number,
+                target_clone_implementation, proxy_spec,
+                prestate_by_address, trace_addresses,
             )
-            implementation_source = _verify_sourcify_exact(chain_id, implementation)
-            if implementation_source["deployment_block"] != implementation_deployment_block:
-                raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
-            implementation_prestate = prestate_by_address.get(implementation) or {}
-            trace_implementation_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
-            if not re.fullmatch(r"0x[0-9a-f]{64}", trace_implementation_code_hash):
-                raise ValueError("Trace did not preserve a usable implementation code hash.")
-            implementation_proof = rpc(
-                source, "eth_getProof", [implementation, [], hex(block_number)]
-            )
-            archive_implementation_code_hash = str(
-                (implementation_proof or {}).get("codeHash") or ""
-            ).lower()
-            if archive_implementation_code_hash != trace_implementation_code_hash:
-                raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
-            identity["proxy"] = {
-                "type": "eip1967",
-                "sourcify_proxy_type": provider_proxy.get("proxyType"),
-                "implementation_address": implementation,
-                **implementation_deployment,
-                **implementation_source,
-                "implementation_slot": implementation_slot,
-            }
         else:
-            if provider_proxy.get("isProxy") is not False:
-                raise ValueError("EIP-1967 slots are empty but Sourcify did not confirm a non-proxy target.")
-            if identity_spec.get("proxy"):
-                raise ValueError("Manifest declares a proxy but the EIP-1967 implementation slot is zero at the pinned block.")
+            implementation_slot = EIP1967["implementation"]
+            beacon_slot = EIP1967["beacon"]
+            implementation_word = str(rpc(
+                source, "eth_getStorageAt", [target, implementation_slot, hex(block_number)]
+            ) or "0x" + "0" * 64).lower()
+            beacon_word = str(rpc(
+                source, "eth_getStorageAt", [target, beacon_slot, hex(block_number)]
+            ) or "0x" + "0" * 64).lower()
+            if not re.fullmatch(r"0x[0-9a-f]{64}", implementation_word):
+                raise ValueError("EIP-1967 implementation storage value is not a full bytes32 word.")
+            if not re.fullmatch(r"0x[0-9a-f]{64}", beacon_word):
+                raise ValueError("EIP-1967 beacon storage value is not a full bytes32 word.")
+            implementation_int = int(implementation_word, 16)
+            beacon_int = int(beacon_word, 16)
+            provider_proxy = target_source.get("proxy_resolution") or {}
+            if provider_proxy.get("proxyResolutionError"):
+                raise ValueError("Sourcify proxy resolution failed: " + str(provider_proxy["proxyResolutionError"]))
+            if beacon_int:
+                result["reason"] = (
+                    "Target has a non-zero EIP-1967 beacon slot. Beacon-proxy implementation resolution "
+                    "is not supported yet; refusing to infer implementation identity."
+                )
+                result["identity"] = identity
+                return result
+            if implementation_int:
+                implementation = "0x" + implementation_word[-40:]
+                if provider_proxy.get("isProxy") is not True or provider_proxy.get("proxyType") != "EIP1967Proxy":
+                    raise ValueError("Sourcify did not independently resolve the target as an EIP1967Proxy.")
+                provider_implementations = {
+                    addr(item.get("address"))
+                    for item in (provider_proxy.get("implementations") or [])
+                    if isinstance(item, dict) and item.get("address")
+                }
+                if implementation not in provider_implementations:
+                    raise ValueError("Sourcify proxyResolution does not contain the on-chain EIP-1967 implementation address.")
+                if implementation not in trace_addresses:
+                    raise ValueError("EIP-1967 implementation address was not observed in the recorded call tree.")
+                proxy_spec = identity_spec.get("proxy") or {}
+                if proxy_spec and proxy_spec.get("type") != "eip1967":
+                    raise ValueError("Resolved EIP-1967 implementation slot conflicts with target_identity.proxy.type.")
+                declared_implementation = proxy_spec.get("implementation_address")
+                if declared_implementation and addr(declared_implementation) != implementation:
+                    raise ValueError("EIP-1967 implementation slot does not match target_identity.proxy.implementation_address.")
+                implementation_code = str(
+                    rpc(source, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+                ).lower()
+                if implementation_code in {"0x", "0x0"}:
+                    raise ValueError("EIP-1967 implementation address has no runtime code at the pinned fork block.")
+                implementation_deployment_block = int(proxy_spec.get("implementation_deployment_block"))
+                if implementation_deployment_block > block_number:
+                    raise ValueError("Proxy implementation deployment block is after the pinned fork block.")
+                local_implementation_code = str(
+                    rpc(fork_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+                ).lower()
+                if local_implementation_code != implementation_code:
+                    raise ValueError("Proxy implementation bytecode differs between local fork and source archive.")
+                implementation_deployment = _verify_first_code_block(
+                    source, implementation,
+                    implementation_deployment_block,
+                    implementation_code,
+                )
+                implementation_source = _verify_sourcify_exact(chain_id, implementation)
+                if implementation_source["deployment_block"] != implementation_deployment_block:
+                    raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
+                implementation_prestate = prestate_by_address.get(implementation) or {}
+                trace_implementation_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
+                if not re.fullmatch(r"0x[0-9a-f]{64}", trace_implementation_code_hash):
+                    raise ValueError("Trace did not preserve a usable implementation code hash.")
+                implementation_proof = rpc(
+                    source, "eth_getProof", [implementation, [], hex(block_number)]
+                )
+                archive_implementation_code_hash = str(
+                    (implementation_proof or {}).get("codeHash") or ""
+                ).lower()
+                if archive_implementation_code_hash != trace_implementation_code_hash:
+                    raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
+                identity["proxy"] = {
+                    "type": "eip1967",
+                    "sourcify_proxy_type": provider_proxy.get("proxyType"),
+                    "implementation_address": implementation,
+                    **implementation_deployment,
+                    **implementation_source,
+                    "implementation_slot": implementation_slot,
+                }
+            else:
+                if provider_proxy.get("isProxy") is not False:
+                    raise ValueError("EIP-1967 slots are empty but Sourcify did not confirm a non-proxy target.")
+                if identity_spec.get("proxy"):
+                    raise ValueError("Manifest declares a proxy but the EIP-1967 implementation slot is zero at the pinned block.")
     except Exception as exc:
         result["reason"] = "Proxy/implementation identity verification failed: " + str(exc)[:500]
         result["identity"] = identity
@@ -1498,6 +1672,9 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
     result["identity_verified"] = True
     result["verified"] = True
     result["identity_method"] = (
+        "Canonical EIP-1167 runtime bytecode and archive first-code-present target deployment block, "
+        "plus exact Sourcify v2 implementation source/deployment/code-hash verification"
+        if target_clone_implementation else
         "Sourcify v2 exact runtime+creation match, archive first-code-present deployment block, "
         "and EIP-1967 implementation resolution where applicable"
     )
@@ -1831,6 +2008,9 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
                 "balance_deltas": normalized.get("balance_deltas", []),
                 "trace_schema_version": normalized["trace_schema_version"],
                 "trace_events": normalized["trace_events"],
+                "canonical_trace_schema_version": normalized.get("canonical_trace_schema_version"),
+                "canonical_trace_events": normalized.get("canonical_trace_events"),
+                "canonical_trace_events_error": normalized.get("canonical_trace_events_error"),
                 "setup_events": normalized.get("setup_events", []),
                 "domain_events": normalized.get("domain_events", []),
                 "call_trace": normalized["calls"], "raw_account_accesses": normalized["raw_account_accesses"],
@@ -1847,6 +2027,79 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
     finally:
         shutil.rmtree(temp, ignore_errors=True)
 
+
+
+def trace_parity(args):
+    parser = LowkeyArgumentParser(
+        prog="lk trace-parity",
+        description="Compare canonical Forge and Anvil trace evidence without treating unknown fields as matches.",
+    )
+    parser.add_argument("forge_file", help="JSON evidence containing canonical_trace_events from Forge.")
+    parser.add_argument("anvil_file", help="JSON evidence containing canonical_trace_events from Anvil.")
+    parser.add_argument("--root", default=".", help="Project root for input and output paths.")
+    parser.add_argument("--forge-scenario", choices=("control", "attack", "negative_control"), default="attack")
+    parser.add_argument("--anvil-scenario", choices=("control", "attack", "negative_control"), default="attack")
+    parser.add_argument("--output", default=".audit/godmode/trace-parity.json")
+    ns = parser.parse_args(args)
+    root = root_path(ns.root)
+
+    try:
+        from .trace_parity import compare_trace_events
+        from .trace_schema import from_legacy_event, TRACE_SCHEMA_VERSION
+    except ImportError:
+        try:
+            from lowkey.trace_parity import compare_trace_events
+            from lowkey.trace_schema import from_legacy_event, TRACE_SCHEMA_VERSION
+        except ImportError:
+            from trace_parity import compare_trace_events
+            from trace_schema import from_legacy_event, TRACE_SCHEMA_VERSION
+
+    def load_evidence(token, label):
+        path = (root / Path(token).expanduser()).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError(label + " trace evidence must be an existing file inside the project root.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(label + " trace evidence must contain a JSON object.")
+        scenario = ns.forge_scenario if label == "Forge" else ns.anvil_scenario
+        scenario_row = (payload.get("runs") or {}).get(scenario) if isinstance(payload.get("runs"), dict) else None
+        event_source = scenario_row if isinstance(scenario_row, dict) else payload
+        events = event_source.get("canonical_trace_events")
+        if events is None:
+            events = event_source.get("trace_events")
+            if not isinstance(events, list):
+                raise ValueError(
+                    label + " evidence has no canonical_trace_events or legacy trace_events array "
+                    + "for scenario " + scenario + "."
+                )
+            events = [
+                from_legacy_event(event, seq=index)
+                for index, event in enumerate(events)
+            ]
+        if not isinstance(events, list):
+            raise ValueError(label + " canonical_trace_events must be an array.")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {
+            "path": path.relative_to(root).as_posix(),
+            "sha256": digest,
+            "chain_id": event_source.get("chain_id", payload.get("chain_id")),
+            "block_number": event_source.get("block_number", payload.get("block_number")),
+            "scenario": scenario,
+            "events": events,
+        }
+
+    forge = load_evidence(ns.forge_file, "Forge")
+    anvil = load_evidence(ns.anvil_file, "Anvil")
+    report = compare_trace_events(forge["events"], anvil["events"])
+    report.update({
+        "forge_evidence": {key: forge[key] for key in ("path", "sha256", "chain_id", "block_number")},
+        "anvil_evidence": {key: anvil[key] for key in ("path", "sha256", "chain_id", "block_number")},
+        "schema_contract": "Lowkey canonical TraceEvent v2",
+    })
+    output_path = safe_out(root, ns.output)
+    write_json(output_path, report)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "MATCHED" else (2 if report["status"] == "MISMATCH" else 1)
 
 
 def control(args):
@@ -2377,7 +2630,9 @@ def control(args):
     proof_status=proof["status"]
     # Fixture/Forge evidence can establish an observed structural break, never
     # gas-adjusted profitability or proof of an authentic deployment.
-    if (non_economic and passed) or (backend=="forge-state-diff" and passed):
+    if (backend=="forge-state-diff" and passed):
+        proof_status=proof_evidence.forge_promotion_status(proof, passed=True)
+    elif non_economic and passed:
         proof_status="SIMULATED_BREAK"
     if not freeze_status.get("verified"):
         proof_status="OBSERVED"
@@ -2419,7 +2674,8 @@ def control(args):
         "legacy_status":legacy_status,"proof_axes":proof,
         "target_authenticity":authenticity,"fidelity":fidelity,
         "outcome":outcome,"family":family,"economic_policy":economics,
-        "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
+        "trace_backend":backend,"trace_schema_version":1,
+        "canonical_trace_schema_version":2,"evidence_backend":backend,
         "paired_forge_experiment":paired_forge,
         "state_diff_pair_verified":bool(backend=="forge-state-diff" and paired_forge and passed),
         "gross_attack_metric_wei":(
@@ -3868,6 +4124,7 @@ def main(argv=None):
         return 0
     if cmd=="godmode": return godmode(rest)
     if cmd=="control": return control(rest)
+    if cmd=="trace-parity": return trace_parity(rest)
     if cmd=="steps": return steps(rest)
     if cmd=="mutation-score": return mutation(rest)
     if cmd=="target-coverage": return coverage(rest)
