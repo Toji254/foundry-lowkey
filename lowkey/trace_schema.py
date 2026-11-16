@@ -261,6 +261,61 @@ def flatten_calltracer(root: Mapping[str, Any]) -> list[dict[str, Any]]:
     return flattened
 
 
+def _storage_word(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,64}", value):
+        raise ValueError(f"{label} must be a 1-32 byte 0x-prefixed storage value or null.")
+    return "0x" + value[2:].lower().zfill(64)
+
+
+def normalize_prestate_diff(diff: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Normalize prestateTracer diffMode changes as transaction-level partial storage.
+
+    The result contains only slots whose before/after values are exposed by the
+    RPC. It cannot identify which nested frame accessed the slot, nor can it
+    report read-only slots.
+    """
+    if not isinstance(diff, Mapping):
+        raise ValueError("prestateTracer diff must be an object.")
+    pre = diff.get("pre")
+    post = diff.get("post")
+    if not isinstance(pre, Mapping) or not isinstance(post, Mapping):
+        raise ValueError("prestateTracer diffMode must contain pre and post account maps.")
+
+    rows: list[dict[str, Any]] = []
+    for raw_address in sorted(set(pre) | set(post), key=str.lower):
+        address = _address(raw_address, "prestateTracer address")
+        if address is None:
+            continue
+        before_account = pre.get(raw_address) or {}
+        after_account = post.get(raw_address) or {}
+        if not isinstance(before_account, Mapping) or not isinstance(after_account, Mapping):
+            raise ValueError("prestateTracer account entries must be objects.")
+        before_storage = before_account.get("storage") or {}
+        after_storage = after_account.get("storage") or {}
+        if not isinstance(before_storage, Mapping) or not isinstance(after_storage, Mapping):
+            raise ValueError("prestateTracer storage entries must be maps.")
+        for raw_slot in sorted(set(before_storage) | set(after_storage), key=str.lower):
+            slot = str(raw_slot).lower()
+            if not _WORD_RE.fullmatch(slot):
+                raise ValueError("prestateTracer slot must be a 32-byte hex word.")
+            previous_value = _storage_word(before_storage.get(raw_slot), "prestateTracer previous value")
+            new_value = _storage_word(after_storage.get(raw_slot), "prestateTracer new value")
+            rows.append({
+                "account": address,
+                "slot": slot,
+                "previous_value": previous_value,
+                "new_value": new_value,
+                "is_write": (
+                    None if previous_value is None or new_value is None
+                    else previous_value != new_value
+                ),
+                "reverted": None,
+            })
+    return rows
+
+
 def normalize_calltracer(
     calls: Sequence[Mapping[str, Any]],
     *,
