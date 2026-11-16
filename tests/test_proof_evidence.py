@@ -38,9 +38,19 @@ class ProofEvidenceTests(unittest.TestCase):
             "forked_deployment", "simulated_caller", "observed",
             authenticity_verified=False,
         )
+        synthetic = classify_proof(
+            "forked_deployment", "synthetic_state", "observed",
+            authenticity_verified=True,
+        )
+        mocked_dependencies = classify_proof(
+            "forked_deployment", "simulated_dependencies", "observed",
+            authenticity_verified=True,
+        )
         self.assertEqual(forge_promotion_status(verified, passed=True), "FORK_OBSERVED")
         self.assertEqual(forge_promotion_status(fixture, passed=True), "SIMULATED_BREAK")
         self.assertEqual(forge_promotion_status(unverified, passed=True), "SIMULATED_BREAK")
+        self.assertEqual(forge_promotion_status(synthetic, passed=True), "SIMULATED_BREAK")
+        self.assertEqual(forge_promotion_status(mocked_dependencies, passed=True), "SIMULATED_BREAK")
         self.assertEqual(forge_promotion_status(verified, passed=False), "UNPROVEN")
 
     def test_assumed_fuzz_inputs_are_not_real_funded_profit(self):
