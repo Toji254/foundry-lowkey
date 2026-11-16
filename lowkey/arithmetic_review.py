@@ -12,7 +12,7 @@ from typing import Any
 _IGNORED_DIRS = {
     ".git", ".audit", ".venv", "venv", "__pycache__", ".pytest_cache",
     "node_modules", "out", "cache", "artifacts", "build", "dist", "target",
-    "vendor", "coverage", "test", "tests", "script", "scripts", "fixtures",
+    "vendor", "lib", "coverage", "test", "tests", "script", "scripts", "fixtures",
     "mocks", "mock",
 }
 _MAX_SOURCE_BYTES = 2_000_000
