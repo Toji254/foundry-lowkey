@@ -956,6 +956,14 @@ class BreakEngineTests(unittest.TestCase):
             retry = run.call_args_list[1].args[0]
             self.assertIn("--via-ir", retry)
             self.assertIn("--optimize", retry)
+            self.assertIn("--out", retry)
+            self.assertIn("--cache-path", retry)
+            out_path = pathlib.Path(retry[retry.index("--out") + 1])
+            cache_path = pathlib.Path(retry[retry.index("--cache-path") + 1])
+            self.assertNotEqual(out_path, root / "out")
+            self.assertNotEqual(cache_path, root / "cache")
+            self.assertTrue(out_path.is_dir())
+            self.assertTrue(cache_path.is_dir())
 
     def test_result_parser_distinguishes_target_rejection_before_callback(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)

@@ -26,6 +26,7 @@ import os
 import random
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -938,34 +939,44 @@ def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str,
     # through Foundry's IR pipeline; never alter the user's project config.
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     if completed.returncode != 0 and "Stack too deep" in output:
-        ir_cmd = [
-            forge,
-            "test",
-            "--match-path",
-            match_path,
-            "--fork-url",
-            rpc,
-            "--via-ir",
-            "--optimize",
-            "-vvv",
-        ]
-        try:
-            ir_completed = subprocess.run(
-                ir_cmd,
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                timeout=180,
-                start_new_session=(os.name == "posix"),
-            )
-        except subprocess.TimeoutExpired as exc:
-            return subprocess.CompletedProcess(
-                ir_cmd,
-                124,
-                stdout=exc.stdout or "",
-                stderr=(exc.stderr or "") + "\nLOWKEY_FORGE_TIMEOUT true\n",
-            )
-        return ir_completed
+        # The IR retry changes compiler settings. Never let that retry overwrite
+        # the project's normal out/ artifacts or cache: target identity checks
+        # and ABI resolution rely on those artifacts matching deployed bytecode.
+        # Keep only the generated harness test output in disposable directories.
+        with tempfile.TemporaryDirectory(prefix="lowkey-break-ir-out-") as ir_out, \
+             tempfile.TemporaryDirectory(prefix="lowkey-break-ir-cache-") as ir_cache:
+            ir_cmd = [
+                forge,
+                "test",
+                "--match-path",
+                match_path,
+                "--fork-url",
+                rpc,
+                "--out",
+                ir_out,
+                "--cache-path",
+                ir_cache,
+                "--via-ir",
+                "--optimize",
+                "-vvv",
+            ]
+            try:
+                ir_completed = subprocess.run(
+                    ir_cmd,
+                    cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    start_new_session=(os.name == "posix"),
+                )
+            except subprocess.TimeoutExpired as exc:
+                return subprocess.CompletedProcess(
+                    ir_cmd,
+                    124,
+                    stdout=exc.stdout or "",
+                    stderr=(exc.stderr or "") + "\nLOWKEY_FORGE_TIMEOUT true\n",
+                )
+            return ir_completed
 
     return completed
 
