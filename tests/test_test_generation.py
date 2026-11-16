@@ -82,6 +82,21 @@ contract WETH is ERC20 {
                 "WETH",
             )
         )
+        self.assertIsNone(
+            generation._find_wrapped_native_round_trip_property(
+                source.replace(
+                    "_burn(msg.sender, amount);",
+                    "assembly { if iszero(call(gas(), caller(), amount, codesize(), 0x00, codesize(), 0x00)) { revert(0, 0) } } _burn(msg.sender, amount);",
+                ),
+                "WETH",
+            )
+        )
+        self.assertIsNone(
+            generation._find_wrapped_native_round_trip_property(
+                source.replace("public payable virtual", "public payable onlyOwner"),
+                "WETH",
+            )
+        )
 
     def test_weth_generator_emits_executable_round_trip_unit_and_fuzz_tests(self):
         with tempfile.TemporaryDirectory() as tmp:
