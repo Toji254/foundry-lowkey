@@ -85,10 +85,16 @@ def manifest(*, kind="erc20"):
         "kind": kind,
         "address": VAULT if kind == "erc4626" else TOKEN,
         "symbol": "VSHARE" if kind == "erc4626" else "USDC",
-        "oracle": TOKEN_FEED,
+        "asset_oracle": TOKEN_FEED,
+        "asset": UNDERLYING,
+    } if kind == "erc4626" else {
+        "kind": "erc20", "address": TOKEN, "symbol": "USDC",
+        "oracle": TOKEN_FEED, "expected_decimals": 6,
     }
     if kind == "erc4626":
-        token["asset"] = UNDERLYING
+        token["kind"] = "erc4626"
+        token["address"] = VAULT
+        token["symbol"] = "VSHARE"
     else:
         token["expected_decimals"] = 6
     return {
