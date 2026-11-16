@@ -185,6 +185,16 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
                 source_backend="forge-state-diff",error="reverted" if reverted else None,
             ))
 
+    target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
+    if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
+        raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
+    if target_code_hash_at_start is not None and target_code_hash_at_start != target_code_hash:
+        raise ValueError(
+            "Forge state-diff target_code_hash must remain the pre-execution target runtime hash; "
+            "target_code_hash and target_code_hash_at_start differ. A delegatecall implementation "
+            "hash must never replace the target clone/proxy identity hash."
+        )
+
     target_account_state = accounts.get(target) or {}
     account_access_code_hash = str(target_account_state.get("code_hash") or "").lower()
     target_code_hash_observations = account_code_hash_observations.get(target) or []
@@ -198,15 +208,6 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             "Forge state-diff target_code_hash must match the target AccountAccess code_hash "
             + f"(artifact={target_code_hash}, account_access={account_access_code_hash}, "
             + f"target_access_observations={json.dumps(target_code_hash_observations, sort_keys=True)})."
-        )
-    target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
-    if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
-        raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
-    if target_code_hash_at_start is not None and target_code_hash_at_start != target_code_hash:
-        raise ValueError(
-            "Forge state-diff target_code_hash must remain the pre-execution target runtime hash; "
-            "target_code_hash and target_code_hash_at_start differ. A delegatecall implementation "
-            "hash must never replace the target clone/proxy identity hash."
         )
 
     prestate=[]
