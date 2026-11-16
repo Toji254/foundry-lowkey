@@ -34,7 +34,8 @@ def artifact():
                 "kind": 0, "account": TARGET, "accessor": WRAPPER,
                 "depth": 1, "value": 0, "data": "0x12345678",
                 "old_balance": 1000, "new_balance": 900,
-                "old_nonce": 1, "new_nonce": 1, "reverted": False,
+                "old_nonce": 1, "new_nonce": 1, "code_hash": CODE_HASH,
+                "reverted": False,
                 "storage_accesses": [{
                     "account": TARGET, "slot": 0,
                     "previous_value": 5, "new_value": 0,
@@ -108,10 +109,75 @@ class ForgeStateDiffTests(unittest.TestCase):
         self.assertTrue(result["calls"][0]["reverted"])
         self.assertEqual(result["calls"][0]["error"], "reverted")
 
+    def test_collects_all_target_code_hash_observations_consistently(self):
+        value = artifact()
+        duplicate = dict(value["accesses"][0])
+        duplicate["accessor"] = ATTACKER
+        value["accesses"].append(duplicate)
+        result = normalize_forge_state_diff(value, expected_target=TARGET)
+        observations = result["target_account_access_code_hash_observations"]
+        self.assertEqual(len(observations), 2)
+        self.assertEqual({item["code_hash"] for item in observations}, {CODE_HASH})
+        self.assertEqual({item["access_index"] for item in observations}, {0, 2})
+
+    def test_rejects_target_code_hash_changing_between_account_accesses(self):
+        value = artifact()
+        duplicate = dict(value["accesses"][0])
+        duplicate["code_hash"] = "0x" + "f" * 64
+        value["accesses"].append(duplicate)
+        with self.assertRaisesRegex(ValueError, "code_hash changed for account"):
+            normalize_forge_state_diff(value, expected_target=TARGET)
+
+    def test_populates_code_hash_when_target_was_first_seen_in_storage_access(self):
+        value = artifact()
+        target_access = value["accesses"][0]
+        wrapper_access = {
+            "kind": 0, "account": WRAPPER, "accessor": ATTACKER,
+            "depth": 0, "value": 0, "data": "0xabcdef01",
+            "old_balance": 50, "new_balance": 50,
+            "old_nonce": 1, "new_nonce": 1, "code_hash": "0x" + "b" * 64,
+            "reverted": False,
+            "storage_accesses": [{
+                "account": TARGET, "slot": 1,
+                "previous_value": 7, "new_value": 7,
+                "is_write": False, "reverted": False,
+            }],
+        }
+        value["accesses"] = [wrapper_access, target_access]
+        result = normalize_forge_state_diff(value, expected_target=TARGET)
+        target_state = next(row for row in result["prestate"] if row["address"] == TARGET)
+        self.assertEqual(target_state["code_hash"], CODE_HASH)
+
     def test_rejects_missing_code_hash(self):
         value = artifact()
         value.pop("target_code_hash")
         with self.assertRaisesRegex(ValueError, "target_code_hash"):
+            normalize_forge_state_diff(value, expected_target=TARGET)
+
+    def test_rejects_target_hash_that_disagrees_with_account_access(self):
+        value = artifact()
+        value["target_code_hash"] = "0x" + "f" * 64
+        with self.assertRaisesRegex(ValueError, "must match the target AccountAccess"):
+            normalize_forge_state_diff(value, expected_target=TARGET)
+
+    def test_target_identity_hash_is_the_pre_execution_target_hash(self):
+        value = artifact()
+        value["target_code_hash_at_start"] = CODE_HASH
+        # The implementation AccountAccess is allowed to expose a different
+        # code hash; it must not replace the clone/proxy target identity hash.
+        value["accesses"][1]["code_hash"] = "0x" + "e" * 64
+        result = normalize_forge_state_diff(value, expected_target=TARGET)
+        self.assertEqual(result["target_code_hash"], CODE_HASH)
+        self.assertEqual(result["target_code_hash_at_start"], CODE_HASH)
+        self.assertEqual(result["target_code_hash_source"], "forge_start_and_account_access")
+        observations = result["target_account_access_code_hash_observations"]
+        self.assertEqual({item["code_hash"] for item in observations}, {CODE_HASH})
+
+    def test_rejects_target_hash_replaced_by_delegatecall_implementation_hash(self):
+        value = artifact()
+        value["target_code_hash"] = "0x" + "e" * 64
+        value["target_code_hash_at_start"] = CODE_HASH
+        with self.assertRaisesRegex(ValueError, "delegatecall implementation hash"):
             normalize_forge_state_diff(value, expected_target=TARGET)
 
     def test_rejects_missing_fork_parent_hash(self):

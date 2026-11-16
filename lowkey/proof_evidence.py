@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib, json
 from datetime import datetime, timezone
+from typing import Mapping
 from pathlib import Path
 
 AUTHENTICITIES = {"unknown", "fixture", "local_reimplementation", "forked_deployment"}
@@ -155,6 +156,28 @@ def evaluate_economic_policy(family, net_profit_wei=None, *, non_economic=False,
     return {"accepted": True, "economic": True, "net_profit_wei": net_profit_wei,
             "reason": "Measured net profit is positive.", "promotion_cap": None}
 
+def forge_promotion_status(proof, *, passed: bool) -> str:
+    """Cap Forge structural evidence without discarding verified fork identity."""
+    if not isinstance(proof, Mapping):
+        raise ValueError("proof must be a mapping returned by classify_proof().")
+    if not passed:
+        status = str(proof.get("status") or "UNPROVEN")
+        return status if status in {"REJECTED", "UNPROVEN"} else "UNPROVEN"
+    status = str(proof.get("status") or "UNPROVEN")
+    if status in {"REJECTED", "UNPROVEN", "SIMULATED_BREAK"}:
+        return status
+    authentic_fork = (
+        proof.get("target_authenticity_verified") is True
+        and proof.get("target_authenticity") == "forked_deployment"
+    )
+    acceptable_fidelity = proof.get("fidelity") in {"simulated_caller", "constrained_inputs"}
+    if authentic_fork and acceptable_fidelity and proof.get("outcome") == "observed":
+        return "FORK_OBSERVED"
+    # Forge state-diff has no mined EOA envelope/gas evidence. It may not
+    # promote itself to FORK_REPRODUCED, PROFITABLE, or HUMAN_CONFIRMED.
+    return "SIMULATED_BREAK"
+
+
 def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="observed",
                    *, authenticity_verified=False, human_confirmed=False):
     authenticity = str(target_authenticity or "unknown").strip().lower()
@@ -219,6 +242,7 @@ def _generator_fingerprints(root, spec):
     paths = {Path(__file__).resolve()}
     for module_name in (
         "godmode.py", "forge_state_diff.py", "trace_evidence.py",
+        "trace_schema.py", "trace_parity.py",
         "break_engine.py", "generator.py", "test_generation.py",
         "test_generation_analysis.py", "generation_plugins.py",
     ):

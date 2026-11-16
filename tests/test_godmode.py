@@ -24,6 +24,64 @@ PROOF_SPEC.loader.exec_module(proof_evidence)
 
 
 class GodmodeTests(unittest.TestCase):
+    def test_rpc_sets_descriptive_user_agent_for_public_provider_access(self):
+        from unittest.mock import patch
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return b'{"jsonrpc":"2.0","id":1,"result":"0x1"}'
+
+        with patch.object(godmode, "urlopen", return_value=Response()) as opened:
+            result = godmode.rpc("https://rpc.example", "eth_chainId", [])
+        self.assertEqual(result, "0x1")
+        request = opened.call_args.args[0]
+        self.assertIn("LowkeyCast", request.get_header("User-agent"))
+        self.assertEqual(request.get_header("Accept"), "application/json")
+
+    def test_sourcify_v2_lookup_requests_match_fields_and_source_identity_fields(self):
+        from urllib.parse import parse_qs, urlparse
+        from unittest.mock import patch
+
+        address = "0x" + "4" * 40
+        cache_key = (1, address)
+        godmode._SOURCIFY_IDENTITY_CACHE.pop(cache_key, None)
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps({
+                    "chainId": "1",
+                    "address": address,
+                    "match": "exact_match",
+                    "runtimeMatch": "exact_match",
+                    "creationMatch": "exact_match",
+                    "sources": {"Vault.sol": {"content": "contract Vault {}"}},
+                    "proxyResolution": {"isProxy": False},
+                    "deployment": {"blockNumber": 123},
+                    "verifiedAt": "2026-11-16T00:00:00Z",
+                    "matchId": "42",
+                }).encode("utf-8")
+
+        with patch.object(godmode, "urlopen", return_value=Response()) as opened:
+            payload = godmode._sourcify_contract_identity(1, address)
+
+        parsed = urlparse(opened.call_args.args[0].full_url)
+        fields = set(parse_qs(parsed.query)["fields"][0].split(","))
+        self.assertTrue({
+            "match", "runtimeMatch", "creationMatch", "sources",
+            "proxyResolution", "deployment.blockNumber",
+        }.issubset(fields))
+        self.assertEqual(payload["match"], "exact_match")
+        self.assertEqual(payload["runtimeMatch"], "exact_match")
+        self.assertEqual(payload["creationMatch"], "exact_match")
+
     def test_registry_covers_all_44_numbered_capabilities(self):
         self.assertEqual(len(godmode.CAPABILITIES), 44)
         self.assertEqual([row[0] for row in godmode.CAPABILITIES], list(range(1, 45)))
@@ -1365,6 +1423,159 @@ class GodmodeTests(unittest.TestCase):
         self.assertFalse(rejected["verified"])
         self.assertFalse(rejected["archive_state_verified"])
         self.assertIn("stateRoot differs", rejected["reason"])
+
+    def test_eip1167_runtime_decoder_accepts_only_canonical_45_byte_proxy(self):
+        implementation = "0x" + "4" * 40
+        runtime = "0x363d3d373d3d3d363d73" + implementation[2:] + "5af43d82803e903d91602b57fd5bf3"
+        self.assertEqual(godmode._eip1167_implementation(runtime), implementation)
+        self.assertIsNone(godmode._eip1167_implementation("0x6000"))
+        self.assertIsNone(godmode._eip1167_implementation(runtime + "1234"))
+        zero_impl = "0x363d3d373d3d3d363d73" + "0" * 40 + "5af43d82803e903d91602b57fd5bf3"
+        with self.assertRaisesRegex(ValueError, "zero implementation"):
+            godmode._eip1167_implementation(zero_impl)
+
+    def test_eip1167_identity_requires_observed_source_verified_implementation(self):
+        from unittest.mock import patch
+        from lowkey.forge_state_diff import normalize_forge_state_diff
+
+        target = "0x" + "1" * 40
+        implementation = "0x" + "4" * 40
+        runtime = "0x363d3d373d3d3d363d73" + implementation[2:] + "5af43d82803e903d91602b57fd5bf3"
+        implementation_hash = "0x" + "e" * 64
+        raw = self._forge_artifact()
+        raw["target_code_hash"] = "0x" + "a" * 64
+        raw["accesses"].append({
+            "kind": 1, "account": implementation, "accessor": target,
+            "depth": 2, "value": 0, "data": "0x12345678",
+            "old_balance": 0, "new_balance": 0,
+            "old_nonce": 1, "new_nonce": 1, "code_hash": implementation_hash,
+            "reverted": False, "storage_accesses": [],
+        })
+        normalized = normalize_forge_state_diff(raw, expected_target=target)
+        parent_hash = "0x" + "b" * 64
+        block = {
+            "hash": "0x" + "c" * 64, "parentHash": parent_hash,
+            "stateRoot": "0x" + "d" * 64, "timestamp": "0x1234",
+        }
+        storage_value = "0x" + "0" * 63 + "5"
+
+        def fake_rpc(url, method, params, timeout=20):
+            if method == "eth_chainId":
+                return "0x1"
+            if method == "eth_getBlockByNumber":
+                return {"hash": parent_hash} if params[0] == hex(19_999_999) else block
+            if method == "eth_getCode":
+                address, tag = params
+                block_no = int(tag, 16)
+                if address == target and block_no == 19_999_999:
+                    return "0x"
+                if address == implementation and block_no == 18_999_999:
+                    return "0x"
+                if address == target:
+                    return runtime
+                if address == implementation:
+                    return "0x6000"
+                return "0x"
+            if method == "eth_getBalance":
+                return hex(1000)
+            if method == "eth_getTransactionCount":
+                return "0x1"
+            if method == "eth_getProof":
+                address = params[0]
+                return {"codeHash": implementation_hash if address == implementation else normalized["target_code_hash"]}
+            if method == "eth_getStorageAt":
+                return storage_value
+            raise AssertionError("Unexpected RPC method: " + method)
+
+        def exact_sourcify(chain_id, address):
+            self.assertEqual(address, implementation)
+            return {
+                "chainId": str(chain_id), "address": address,
+                "match": "exact_match", "runtimeMatch": "exact_match",
+                "creationMatch": "exact_match",
+                "deployment": {"blockNumber": "19000000"},
+                "sources": {"src/Logic.sol": {"content": "contract Logic {}"}},
+                "proxyResolution": {"isProxy": False, "proxyType": None, "implementations": []},
+            }
+
+        spec = {
+            "source_addresses": [target],
+            "target_authenticity": "forked_deployment",
+            "target_identity": {
+                "source_provider": "sourcify",
+                "deployment_block": 20_000_000,
+                "proxy": {
+                    "type": "eip1167",
+                    "implementation_address": implementation,
+                    "implementation_deployment_block": 19_000_000,
+                },
+            },
+        }
+        with patch.object(godmode, "rpc", side_effect=fake_rpc), \
+             patch.object(godmode, "_sourcify_contract_identity", side_effect=exact_sourcify):
+            verified = godmode._forge_source_verification(
+                "https://archive.example", "http://127.0.0.1:8545", normalized, spec
+            )
+        self.assertTrue(verified["archive_state_verified"], verified)
+        self.assertTrue(verified["identity_verified"], verified)
+        self.assertTrue(verified["verified"], verified)
+        self.assertEqual(verified["identity"]["proxy"]["type"], "eip1167")
+        self.assertEqual(verified["identity"]["proxy"]["implementation_address"], implementation)
+        self.assertEqual(verified["identity"]["proxy"]["runtime_match"], "exact_match")
+        self.assertEqual(verified["identity"]["target"]["match"], "canonical_eip1167")
+
+    def test_eip1167_identity_rejects_unobserved_implementation(self):
+        from unittest.mock import patch
+        from lowkey.forge_state_diff import normalize_forge_state_diff
+
+        target = "0x" + "1" * 40
+        implementation = "0x" + "4" * 40
+        runtime = "0x363d3d373d3d3d363d73" + implementation[2:] + "5af43d82803e903d91602b57fd5bf3"
+        raw = self._forge_artifact()
+        raw["target_code_hash"] = "0x" + "a" * 64
+        normalized = normalize_forge_state_diff(raw, expected_target=target)
+        parent_hash = "0x" + "b" * 64
+        block = {
+            "hash": "0x" + "c" * 64, "parentHash": parent_hash,
+            "stateRoot": "0x" + "d" * 64, "timestamp": "0x1234",
+        }
+        def fake_rpc(url, method, params, timeout=20):
+            if method == "eth_chainId":
+                return "0x1"
+            if method == "eth_getBlockByNumber":
+                return {"hash": parent_hash} if params[0] == hex(19_999_999) else block
+            if method == "eth_getCode":
+                address, tag = params
+                block_no = int(tag, 16)
+                if address == target and block_no == 19_999_999:
+                    return "0x"
+                if address == target:
+                    return runtime
+                return "0x6000"
+            if method == "eth_getBalance":
+                return hex(1000)
+            if method == "eth_getTransactionCount":
+                return "0x1"
+            if method == "eth_getProof":
+                return {"codeHash": normalized["target_code_hash"]}
+            if method == "eth_getStorageAt":
+                return "0x" + "0" * 64
+            raise AssertionError("Unexpected RPC method: " + method)
+        spec = {
+            "source_addresses": [target],
+            "target_authenticity": "forked_deployment",
+            "target_identity": {
+                "source_provider": "sourcify", "deployment_block": 20_000_000,
+                "proxy": {"type": "eip1167", "implementation_deployment_block": 19_000_000},
+            },
+        }
+        with patch.object(godmode, "rpc", side_effect=fake_rpc):
+            rejected = godmode._forge_source_verification(
+                "https://archive.example", "http://127.0.0.1:8545", normalized, spec
+            )
+        self.assertTrue(rejected["archive_state_verified"], rejected)
+        self.assertFalse(rejected["identity_verified"])
+        self.assertIn("not observed", rejected["reason"].lower())
 
     def test_fork_identity_requires_exact_sourcify_and_resolves_eip1967_implementation(self):
         from unittest.mock import patch

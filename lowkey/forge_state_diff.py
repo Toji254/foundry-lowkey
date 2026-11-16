@@ -15,6 +15,14 @@ except ImportError:
     except ImportError:
         from trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
 
+try:
+    from .trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+except ImportError:
+    try:
+        from lowkey.trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+    except ImportError:
+        from trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+
 def _address(value, label):
     if not isinstance(value,str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}",value):
         raise ValueError(f"Forge state diff {label} must be a 20-byte address.")
@@ -67,8 +75,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     chain_id=_uint(payload.get("chain_id"),"chain_id")
     block_number=_uint(payload.get("block_number"),"block_number")
     target=_address(payload.get("target_address"),"target_address")
-    code_hash=str(payload.get("target_code_hash") or "").lower()
-    if not re.fullmatch(r"0x[0-9a-f]{64}",code_hash):
+    target_code_hash=str(payload.get("target_code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}",target_code_hash):
         raise ValueError("Forge state diff must include target_code_hash (keccak256 of target runtime code).")
     fork_parent_hash=str(payload.get("fork_parent_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}",fork_parent_hash):
@@ -108,6 +116,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     if not isinstance(raw_accesses,list) or not raw_accesses:
         raise ValueError("Forge state-diff artifact contains no account accesses.")
     calls=[]; trace_events=[]; storage_accesses=[]; accounts={}
+    account_code_hash_observations={}
     for index,raw in enumerate(raw_accesses):
         raw=_unwrap_named_json_object(raw,f"accesses[{index}]")
         if not isinstance(raw,dict): raise ValueError(f"Forge account access #{index} must be an object.")
@@ -125,12 +134,24 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         new_balance=_uint(raw.get("new_balance",0),f"accesses[{index}].new_balance")
         old_nonce=_uint(raw.get("old_nonce",0),f"accesses[{index}].old_nonce")
         new_nonce=_uint(raw.get("new_nonce",0),f"accesses[{index}].new_nonce")
-        code_hash=str(raw.get("code_hash") or "").lower()
-        if code_hash and not re.fullmatch(r"0x[0-9a-f]{64}",code_hash):
+        access_code_hash=str(raw.get("code_hash") or "").lower()
+        if access_code_hash and not re.fullmatch(r"0x[0-9a-f]{64}",access_code_hash):
             raise ValueError(f"Forge account access #{index} has invalid code_hash.")
         account_state=accounts.setdefault(account,{"address":account,"balance_wei":old_balance,
             "nonce":old_nonce,"balance_after_wei":old_balance,"nonce_after":old_nonce,
-            "code_hash":code_hash or None,"storage":{}})
+            "code_hash":None,"storage":{}})
+        if access_code_hash:
+            account_code_hash_observations.setdefault(account,[]).append({
+                "access_index":index,"kind":kind,"accessor":accessor,
+                "code_hash":access_code_hash,"reverted":reverted,
+            })
+            if account_state.get("code_hash") is None:
+                account_state["code_hash"]=access_code_hash
+            elif account_state["code_hash"] != access_code_hash:
+                raise ValueError(
+                    f"Forge AccountAccess code_hash changed for account {account} "
+                    f"at access #{index}: first={account_state['code_hash']}, current={access_code_hash}."
+                )
         if not reverted:
             account_state["balance_after_wei"]=new_balance
             account_state["nonce_after"]=new_nonce
@@ -164,6 +185,31 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
                 source_backend="forge-state-diff",error="reverted" if reverted else None,
             ))
 
+    target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
+    if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
+        raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
+    if target_code_hash_at_start is not None and target_code_hash_at_start != target_code_hash:
+        raise ValueError(
+            "Forge state-diff target_code_hash must remain the pre-execution target runtime hash; "
+            "target_code_hash and target_code_hash_at_start differ. A delegatecall implementation "
+            "hash must never replace the target clone/proxy identity hash."
+        )
+
+    target_account_state = accounts.get(target) or {}
+    account_access_code_hash = str(target_account_state.get("code_hash") or "").lower()
+    target_code_hash_observations = account_code_hash_observations.get(target) or []
+    if not re.fullmatch(r"0x[0-9a-f]{64}", account_access_code_hash):
+        raise ValueError(
+            "Forge state-diff target account access must expose its runtime code_hash; "
+            f"observations={target_code_hash_observations!r}."
+        )
+    if account_access_code_hash != target_code_hash:
+        raise ValueError(
+            "Forge state-diff target_code_hash must match the target AccountAccess code_hash "
+            + f"(artifact={target_code_hash}, account_access={account_access_code_hash}, "
+            + f"target_access_observations={json.dumps(target_code_hash_observations, sort_keys=True)})."
+        )
+
     prestate=[]
     balance_deltas=[]
     for row in accounts.values():
@@ -181,9 +227,24 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "input":entry["input"],"value_wei":_uint(entry["value"],"entry value")}
     entry_digest=hashlib.sha256(json.dumps(entry_payload,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     prestate_digest=hashlib.sha256(json.dumps(prestate,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    canonical_trace_events = None
+    canonical_trace_error = None
+    try:
+        canonical_trace_events = normalize_forge_events(trace_events)
+    except ValueError as exc:
+        # Keep the legacy evidence intact, but never silently coerce an
+        # unsupported EVM call kind into the P2 canonical TraceEvent enum.
+        canonical_trace_error = str(exc)
     return {"backend":"forge-state-diff","trace_schema_version":TRACE_SCHEMA_VERSION,
+        "canonical_trace_schema_version":CANONICAL_TRACE_SCHEMA_VERSION,
+        "canonical_trace_events":canonical_trace_events,
+        "canonical_trace_events_error":canonical_trace_error,
         "chain_id":chain_id,"block_number":block_number,
-        "target_address":target,"target_code_hash":code_hash,"fork_parent_hash":fork_parent_hash,
+        "target_address":target,"target_code_hash":target_code_hash,
+        "target_code_hash_at_start":target_code_hash_at_start,
+        "target_account_access_code_hash_observations":target_code_hash_observations,
+        "target_code_hash_source":"forge_start_and_account_access",
+        "fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
         "setup_events":setup_events,"domain_events":domain_events,
         "prestate":prestate,"prestate_sha256":prestate_digest,"balance_deltas":balance_deltas,
