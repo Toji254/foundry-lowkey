@@ -56,8 +56,12 @@ class SetupReasonerTests(unittest.TestCase):
         call = provider.request_structured.call_args.kwargs
         self.assertEqual(call["purpose"], "setup_reasoning")
         self.assertEqual(call["required_fields"], ("selected_signature", "rationale"))
-        self.assertNotIn("rpc", repr(call["context"]).lower())
-        self.assertNotIn("private_key", repr(call["context"]).lower())
+        constraints = call["context"]["selection_constraints"]
+        self.assertFalse(constraints["target_address_included"])
+        self.assertFalse(constraints["rpc_url_included"])
+        self.assertFalse(constraints["credentials_included"])
+        self.assertNotIn("http://", repr(call["context"]).lower())
+        self.assertNotIn("https://", repr(call["context"]).lower())
 
     def test_model_cannot_invent_a_function(self):
         provider = Mock()
