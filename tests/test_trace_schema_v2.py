@@ -114,6 +114,9 @@ class TraceSchemaV2Tests(unittest.TestCase):
         })
         self.assertEqual([row["seq"] for row in normalized], [0, 1])
         self.assertEqual(normalized[1]["depth"], 1)
+        # callTracer.from is the proxy issuing DELEGATECALL, while the
+        # implementation's Solidity msg.sender remains the root actor.
+        self.assertEqual(normalized[1]["accessor"], A)
 
     def test_prestate_storage_is_explicitly_partial(self):
         rows = [{"account": B, "slot": SLOT, "value": WORD1, "post_value": WORD2}]
