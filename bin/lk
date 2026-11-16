@@ -5,6 +5,10 @@ set -euo pipefail
 # rendered by the dedicated module and never use the active RPC or wallet.
 if [[ "${1:-}" == "attack" || "${1:-}" == "attacks" ]]; then
     case "${2:-}" in
+        research)
+            shift 2
+            exec python3 "$HOME/.lowkey/attack_research.py" "$@"
+            ;;
         engines|discover|verify|chain)
             shift
             exec python3 "$HOME/.lowkey/attack_engine.py" "$@"
