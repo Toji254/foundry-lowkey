@@ -178,10 +178,12 @@ def sample_abi_inputs(
     if not isinstance(inputs, (list, tuple)):
         raise ValueError("ABI function inputs must be an array")
     generator = rng or random.Random(1337)
+    budget = [0]
     values = []
     for item in inputs:
         canonical_abi_type(item)
         values.append(sample_abi_value(
-            item, mode, rng=generator, fallback_address=fallback_address
+            item, mode, rng=generator, fallback_address=fallback_address,
+            _budget=budget,
         ))
     return values
