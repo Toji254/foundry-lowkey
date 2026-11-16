@@ -1904,6 +1904,8 @@ def trace_parity(args):
     parser.add_argument("forge_file", help="JSON evidence containing canonical_trace_events from Forge.")
     parser.add_argument("anvil_file", help="JSON evidence containing canonical_trace_events from Anvil.")
     parser.add_argument("--root", default=".", help="Project root for input and output paths.")
+    parser.add_argument("--forge-scenario", choices=("control", "attack", "negative_control"), default="attack")
+    parser.add_argument("--anvil-scenario", choices=("control", "attack", "negative_control"), default="attack")
     parser.add_argument("--output", default=".audit/godmode/trace-parity.json")
     ns = parser.parse_args(args)
     root = root_path(ns.root)
@@ -1926,11 +1928,17 @@ def trace_parity(args):
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError(label + " trace evidence must contain a JSON object.")
-        events = payload.get("canonical_trace_events")
+        scenario = ns.forge_scenario if label == "Forge" else ns.anvil_scenario
+        scenario_row = (payload.get("runs") or {}).get(scenario) if isinstance(payload.get("runs"), dict) else None
+        event_source = scenario_row if isinstance(scenario_row, dict) else payload
+        events = event_source.get("canonical_trace_events")
         if events is None:
-            events = payload.get("trace_events")
+            events = event_source.get("trace_events")
             if not isinstance(events, list):
-                raise ValueError(label + " evidence has no canonical_trace_events or legacy trace_events array.")
+                raise ValueError(
+                    label + " evidence has no canonical_trace_events or legacy trace_events array "
+                    + "for scenario " + scenario + "."
+                )
             events = [
                 from_legacy_event(event, seq=index)
                 for index, event in enumerate(events)
@@ -1941,8 +1949,9 @@ def trace_parity(args):
         return {
             "path": path.relative_to(root).as_posix(),
             "sha256": digest,
-            "chain_id": payload.get("chain_id"),
-            "block_number": payload.get("block_number"),
+            "chain_id": event_source.get("chain_id", payload.get("chain_id")),
+            "block_number": event_source.get("block_number", payload.get("block_number")),
+            "scenario": scenario,
             "events": events,
         }
 
