@@ -444,7 +444,8 @@ jobs:
           GRAPH_ROOT="$GITHUB_WORKSPACE/tests/fixtures/acceptance/p3-genericity/vault"
           # This disposable fixture can already have cached outputs from earlier steps.
           # Force a clean compile so --build-info actually emits fresh compiler AST.
-          (cd "$GRAPH_ROOT" && forge clean && forge build --build-info --ast)
+          forge clean --root "$GRAPH_ROOT"
+          forge build --root "$GRAPH_ROOT" --build-info --ast
           "$HOME/.foundry/bin/lk" archetype classify --root "$GRAPH_ROOT" --json > /tmp/p3-compiler-graph.json
           python - <<'PY'
           import json
