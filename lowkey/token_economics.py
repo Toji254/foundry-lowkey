@@ -269,6 +269,20 @@ def measure_token_portfolio(
         )
         if decimals > 36:
             raise TokenEconomicsError(f"{token['symbol']} decimals above 36 are unsupported.")
+        after_code = _code(rpc, local_url, address, after_block, token["symbol"] + " post-state")
+        if hashlib.sha256(bytes.fromhex(after_code[2:])).hexdigest() != code_hash:
+            raise TokenEconomicsError(
+                f"{token['symbol']} runtime bytecode changed during the measured transaction; token valuation is refused."
+            )
+        decimals_after = _word(
+            _call(rpc, local_url, address, _DECIMALS, after_block,
+                  token["symbol"] + " post-state decimals"),
+            token["symbol"] + " post-state decimals",
+        )
+        if decimals_after != decimals:
+            raise TokenEconomicsError(
+                f"{token['symbol']} decimals changed during the measured transaction."
+            )
         if token["expected_decimals"] is not None and decimals != token["expected_decimals"]:
             raise TokenEconomicsError(
                 f"{token['symbol']} decimals mismatch: expected {token['expected_decimals']}, observed {decimals}."
@@ -287,6 +301,23 @@ def measure_token_portfolio(
             )
             if asset_decimals > 36:
                 raise TokenEconomicsError(f"{token['symbol']} underlying decimals above 36 are unsupported.")
+            asset_after_code = _code(
+                rpc, local_url, asset, after_block,
+                token["symbol"] + " post-state underlying asset",
+            )
+            if hashlib.sha256(bytes.fromhex(asset_after_code[2:])).hexdigest() != asset_code_hash:
+                raise TokenEconomicsError(
+                    f"{token['symbol']} underlying asset runtime bytecode changed during the measured transaction."
+                )
+            asset_decimals_after = _word(
+                _call(rpc, local_url, asset, _DECIMALS, after_block,
+                      token["symbol"] + " post-state underlying decimals"),
+                token["symbol"] + " post-state underlying decimals",
+            )
+            if asset_decimals_after != asset_decimals:
+                raise TokenEconomicsError(
+                    f"{token['symbol']} underlying decimals changed during the measured transaction."
+                )
             asset_call, asset_call_verified = _read_uint_call(
                 rpc, local_url, source_url, address, _ERC4626_ASSET,
                 before_block, token["symbol"] + " asset()",
@@ -294,6 +325,15 @@ def measure_token_portfolio(
             # ABI address return occupies the low 160 bits of one word.
             if "0x" + format(asset_call & ((1 << 160) - 1), "040x") != asset:
                 raise TokenEconomicsError(f"{token['symbol']} ERC-4626 asset() does not match the declared underlying asset.")
+            vault_asset_after = _word(
+                _call(rpc, local_url, address, _ERC4626_ASSET, after_block,
+                      token["symbol"] + " post-state asset()"),
+                token["symbol"] + " post-state asset()",
+            ) & ((1 << 160) - 1)
+            if "0x" + format(vault_asset_after, "040x") != asset:
+                raise TokenEconomicsError(
+                    f"{token['symbol']} ERC-4626 asset() changed during the measured transaction."
+                )
             if not asset_code_verified:
                 all_source_verified = False
             if not asset_decimals_verified or not asset_call_verified:
