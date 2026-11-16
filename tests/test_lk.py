@@ -8229,7 +8229,9 @@ def withdraw(amount: uint256):
         self.assertEqual(
             lk.actor_display(config),
             "lab-deployer (0x"+"1"*40+") [Anvil #0]",
-        )    def test_internal_lab_deployer_is_still_used_for_address_labels(self):
+        )
+
+    def test_internal_lab_deployer_is_still_used_for_address_labels(self):
         address = "0x" + "1" * 40
         config = {
             "actor": "lab-deployer",
