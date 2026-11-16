@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from .trace_schema import TRACE_SCHEMA_VERSION, TRACE_FIELDS, STORAGE_SUPPORT, build_trace_event
+try:
+    from .trace_schema import TRACE_SCHEMA_VERSION, TRACE_FIELDS, STORAGE_SUPPORT, build_trace_event
+except ImportError:
+    try:
+        from lowkey.trace_schema import TRACE_SCHEMA_VERSION, TRACE_FIELDS, STORAGE_SUPPORT, build_trace_event
+    except ImportError:
+        # The installer places sibling modules directly in ~/.lowkey rather
+        # than creating an importable lowkey package.
+        from trace_schema import TRACE_SCHEMA_VERSION, TRACE_FIELDS, STORAGE_SUPPORT, build_trace_event
 
 _COMPARE_FIELDS = (
     "kind", "accessor", "account", "depth", "value", "selector",
