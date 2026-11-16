@@ -151,7 +151,7 @@ if ! "$TARGET_BIN_DIR/lk" build --help >/dev/null; then
   exit 1
 fi
 if ! "$TARGET_BIN_DIR/lk" steps --help >/dev/null; then
-  echo "Error: installed lk launcher could not load the typed Step renderer." >&2
+  echo "Error: installed lk launcher could not load the active Godmode Step renderer." >&2
   exit 1
 fi
 
