@@ -102,17 +102,20 @@ class ArchetypeIndexTests(unittest.TestCase):
             self.assertFalse(failed["citations_all_resolved"])
 
     def test_cli_writes_a_reproducible_json_report(self):
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            code = _index.main([
-                "--root", str(FIXTURES / "vault"),
-                "--output", ".audit/godmode/archetype-classification.json",
-                "--json",
-            ])
-        self.assertEqual(code, 0)
-        report = json.loads(output.getvalue())
-        self.assertEqual(report["archetype"], "vault4626")
-        self.assertTrue((FIXTURES / "vault" / report["report_path"]).is_file())
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "vault"
+            shutil.copytree(FIXTURES / "vault", project)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = _index.main([
+                    "--root", str(project),
+                    "--output", ".audit/godmode/archetype-classification.json",
+                    "--json",
+                ])
+            self.assertEqual(code, 0)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["archetype"], "vault4626")
+            self.assertTrue((project / report["report_path"]).is_file())
 
 
 if __name__ == "__main__":
