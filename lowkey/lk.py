@@ -7100,6 +7100,24 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
         raw_data = str(command[3]).strip() if len(command) > 3 else ""
         if re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", raw_data):
             tx["data"] = raw_data
+        elif raw_data and not raw_data.startswith("-"):
+            # A full function signature is sufficient for Cast to encode a
+            # call even when the selected artifact/ABI is unavailable.
+            try:
+                code, output, error = cast_output([
+                    "cast", "calldata", raw_data, *[str(value) for value in raw_values or []],
+                ])
+            except Exception as error:
+                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(error))}"}
+            calldata = str(output or "").strip()
+            if code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
+                detail = error or output or "Cast could not encode the supplied function signature"
+                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(detail))}"}
+            tx["data"] = calldata
+        elif raw_values:
+            return {"available": False, "reason": "function calldata is ambiguous without an ABI or full function signature"}
+        else:
+            tx["data"] = "0x"
 
     response = _rpc_json_response(rpc, "eth_estimateGas", [tx], timeout=2.0)
     if not isinstance(response, dict):
