@@ -247,45 +247,41 @@ GODMODE_HELP_GUIDES = {
     },
     "godmode": {
         "usage": "lk godmode [<target-address>] [--root DIR] [options]",
-        "when": "Use this as the first audit command. It scans the project source without needing a deployed contract. Add an address and RPC only when you also want to inspect a live deployment.",
+        "when": "Use this as the first audit command. Normally just type lk godmode. Lowkey detects the current project automatically. When you have a remembered target and project RPC, it can also inspect that deployment read-only. It never starts an attack unless you explicitly request --attack.",
         "variations": [
-            "START HERE — source scan with no target address. Run this from the folder that contains foundry.toml:  lk godmode",
-            "This is a source with no target address; no deployment or RPC is needed for the first scan.",
-            "   The same command written explicitly:  lk godmode --root .",
-            "2) Run it from another folder:  lk godmode --root \"$HOME/path/to/your/project\"",
-            "3) Read-only check of a deployed local target:  lk godmode 0xYOUR_LIVE_ADDRESS --root . --rpc-url http://127.0.0.1:8545",
-            "   Get the real address from lk targets. Replace 0xYOUR_LIVE_ADDRESS; do not type the placeholder literally.",
-            "4) Explicitly disable chain access and optional test runs:  lk godmode 0xYOUR_LIVE_ADDRESS --root . --rpc-url http://127.0.0.1:8545 --plan-only",
-            "   You do not need --plan-only for the normal first source scan. Without a target or optional test flags, Godmode already stays source-only.",
-            "5) Actively test a deployed target on LOCAL Anvil:  lk godmode 0xYOUR_LIVE_ADDRESS --root . --rpc-url http://127.0.0.1:8545 --attack",
-            "   Add --control-manifest only when you already have a project-local matched attack/control JSON manifest."
+            "1) NORMAL USE — just run:  lk godmode",
+            "   Lowkey detects the project from your current folder (including when you are inside src/ or test/). You do not need to type --root or any other flags.",
+            "2) If you run it from Lowkey's own source checkout, it resumes the project attached to your currently selected target or last audit. If several previous projects are equally possible, it asks you to choose rather than guessing.",
+            "3) If you deliberately want to scan a different project, use --root as an override:  lk godmode --root \\"$HOME/path/to/project\\"",
+            "4) If you want to inspect a different deployment, pass its address. The address must exist on the selected RPC:  lk godmode 0xYOUR_LIVE_ADDRESS --rpc-url http://127.0.0.1:8545",
+            "5) Active attack testing is always a separate opt-in:  lk godmode --attack. It uses the remembered project target/RPC, or add the target address and --rpc-url explicitly."
         ],
         "arguments": [
-            "DEPLOYED_ADDRESS — optional 0x-prefixed address of a contract already deployed on the chain served by --rpc-url. It is not a Solidity filename or contract name. Copy a [LIVE] address from lk targets. Omit it for a source-only scan."
+            "target-address — optional deployed contract address override. Normally Lowkey reuses the target already remembered for this project. You only need to supply an address when inspecting a different deployment; copy it from lk targets."
         ],
         "options": [
-            "--root DIR — the folder containing the code being reviewed (normally the folder with foundry.toml and src/). . means your current terminal folder. It is not a .sol file and it is not a contract address.",
-            "--rpc-url URL — the blockchain node to read. Use the same network where DEPLOYED_ADDRESS exists. For your local Anvil lab the usual URL is http://127.0.0.1:8545. Chain inspection is read-only unless you separately add --attack.",
-            "--profile light|balanced|deep — controls how many storage slots the on-chain proxy scan checks: light checks 40; balanced/deep check up to 120. It has no effect on a source-only scan.",
-            "--attack — opt in to lk break after reconnaissance. Requires a deployed address and local Anvil. This runs active experiments on the local lab; do not use a production RPC. Without a passing matched control, an observed result is not a confirmed BREAK.",
-            "--control-manifest FILE — advanced JSON file describing a matched attack and control experiment for lk break. It must already exist in your project. It needs matching target/function/attack-family identity and a same_calls_id. Use this only with --attack; see lk control --h for the manifest/freeze workflow. Without a passing control, a candidate BREAK remains OBSERVED.",
-            "--mutation-manifest FILE — optional JSON recipe for changing source code in isolated temporary copies and rerunning a test command. It has a command array (for example [\"forge\", \"test\"]) and a mutants array; each mutant has id, file, before, and after. The unmodified tests must pass first, and each before text must match exactly once. Use after you have a working test suite; this can run the test command many times.",
-            "--coverage-source FILE — Solidity file to measure, relative to --root (for example src/Token.sol). Godmode runs Forge coverage and reports whether tests reached that source. Use after you have relevant tests; line coverage alone does not prove the tests assert the right security property.",
-            "--plan-only — force a source-only report: do not contact the RPC, run attacks, run mutation tests, or run coverage. Useful when an address/RPC is present in the command but you deliberately want no chain/test execution. Do not combine it with --attack, --control-manifest, --mutation-manifest, or --coverage-source."
+            "--root DIR — optional project-folder override. Lowkey normally detects the project containing your current directory. Use this only when you intentionally want to audit a different folder.",
+            "--rpc-url URL — optional RPC override. If the current project's Lowkey context already remembers an RPC, Godmode uses it for read-only inspection. Otherwise omit it for a source-only scan.",
+            "--profile light|balanced|deep — advanced on-chain proxy/storage scan depth: light checks 40 slots; balanced/deep check up to 120. Most users can ignore this.",
+            "--attack — explicitly start active attack exploration through lk break. This is the only Godmode option that starts attack execution. Requires a deployed target and local Anvil; it can send transactions on that disposable local chain. Never point it at production.",
+            "--control-manifest FILE — advanced matched attack/control JSON manifest. Normally leave this alone; Lowkey's standard source scan does not need it. Use only with --attack after preparing and freezing the experiment; see lk control --h.",
+            "--mutation-manifest FILE — advanced JSON recipe for deliberate source mutations and repeated test runs. Normally leave this alone; use it after a test suite exists. It requires command (for example [\\"forge\\", \\"test\\"]) and mutants entries with id, file, before, and after.",
+            "--coverage-source FILE — optional Solidity file to measure (for example src/Token.sol). Use after you have relevant tests; coverage shows executed lines, not whether the tests assert the correct property.",
+            "--plan-only — force a strictly local source scan. It disables RPC reads, attacks, mutation tests and coverage even when target/RPC context is remembered. Use this when you explicitly want no chain access."
         ],
         "workflow": [
-            "1. Open a terminal in your Foundry project folder — the one containing foundry.toml — then run lk godmode. If you are elsewhere, give the folder with --root.",
-            "2. Read the POTENTIAL SOURCE LEADS section. Counts such as 785 are static code matches across scanners, not 785 vulnerabilities.",
-            "3. For a readable saved report, run lk report --root .; it writes .audit/godmode/report.md. The JSON report is for detailed evidence and tooling.",
-            "4. If you have deployed the contract locally, run lk targets, copy the address marked LIVE, and use the read-only address/RPC example above.",
-            "5. Only when you are ready for active testing on local Anvil, add --attack. Add --control-manifest only if you have already prepared the matched-control JSON. Mutation and coverage are separate optional checks."
+            "1. Run lk godmode. Lowkey finds the project root automatically and scans its source.",
+            "2. If the project has a remembered target and RPC, Godmode adds read-only chain inspection. If not, it stays source-only. Neither mode sends transactions.",
+            "3. Review the potential source leads. Counts are code matches, not vulnerability totals.",
+            "4. Run lk report to create a readable Markdown report. You do not need to pass --root for the detected project.",
+            "5. Only when you deliberately want active testing, run lk godmode --attack on local Anvil. The target/RPC can be taken from the current project's saved context."
         ],
         "output": [
-            ".audit/godmode/latest.json — detailed machine-readable scan, stage statuses, source matches and any chain results.",
-            ".audit/godmode/provenance.json — hash of the saved report and basic run context.",
-            "lk report --root . — creates the easier-to-read Markdown report at .audit/godmode/report.md."
+            ".audit/godmode/latest.json — detailed source and optional chain results.",
+            ".audit/godmode/provenance.json — hash of the saved report and run context.",
+            "lk report — creates .audit/godmode/report.md, the readable version."
         ],
-        "limits": "Source matches are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED means this run has not completed the evidence needed for a security verdict; it does not mean the command crashed. --attack runs active testing through lk break and is restricted to local Anvil. A passing attack without a matched control is still not a confirmed BREAK.",
+        "limits": "Source matches are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED means this run has not completed all proof gates; it does not mean the command crashed. Read-only inspection is safe to run automatically when the project has a remembered target/RPC. Active attack execution remains opt-in and local-Anvil-only.",
         "related": [
             "lk targets",
             "lk break --h",
@@ -5259,12 +5255,222 @@ def _print_godmode_result(payload, arithmetic_rows, wraparound_rows, report_path
         print("  For chain details, run lk targets, copy an address marked LIVE, then use --rpc-url.")
     print("  Keep --attack for a disposable local Anvil lab; do not point it at production.")
 
+def _is_lowkey_checkout(path):
+    """Return True when path is Lowkey's own source checkout, not an audit target."""
+    path = Path(path).expanduser().resolve()
+    return (
+        (path / "lowkey" / "lk.py").is_file()
+        and (path / "lowkey" / "project_detection.py").is_file()
+        and (path / "install.sh").is_file()
+    )
+
+
+def _is_godmode_project(path):
+    """Accept recognizable project roots while explicitly rejecting Lowkey itself."""
+    path = Path(path).expanduser().resolve()
+    if not path.is_dir() or _is_lowkey_checkout(path):
+        return False
+    markers = (
+        "foundry.toml", "hardhat.config.js", "hardhat.config.cjs",
+        "hardhat.config.mjs", "hardhat.config.ts", "Scarb.toml",
+        "Anchor.toml", "Move.toml", "ape-config.yaml", "ape-config.yml",
+        "brownie-config.yaml", "brownie-config.yml", "Cargo.toml",
+    )
+    if any((path / marker).is_file() for marker in markers):
+        return True
+    for dirname in ("src", "contracts", "programs"):
+        folder = path / dirname
+        if folder.is_dir():
+            try:
+                if any(item.is_file() and item.suffix.lower() in EXTS for item in folder.rglob("*")):
+                    return True
+            except OSError:
+                pass
+    return False
+
+
+def _preferred_godmode_project_root(config_path=None):
+    """Resolve the current target owner or last explicit audit project, if still valid."""
+    path = Path(config_path).expanduser() if config_path else Path(os.path.expanduser("~/.lowkey/config.json"))
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    target = str(config.get("target") or "")
+    owners = config.get("target_owners") if isinstance(config.get("target_owners"), dict) else {}
+    roots = config.get("project_roots") if isinstance(config.get("project_roots"), dict) else {}
+    for value in (
+        owners.get(target) if target else None,
+        config.get("audit_project"),
+        config.get("last_tx_project_root"),
+        roots.get(target) if target else None,
+    ):
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            candidate = Path(value).expanduser().resolve()
+        except OSError:
+            continue
+        if _is_godmode_project(candidate):
+            return candidate
+    return None
+
+
+def _saved_godmode_project_roots(config_path=None):
+    """Return validated remembered project roots when there is no single active project."""
+    path = Path(config_path).expanduser() if config_path else Path(os.path.expanduser("~/.lowkey/config.json"))
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(config, dict):
+        return []
+    owners = config.get("target_owners") if isinstance(config.get("target_owners"), dict) else {}
+    roots = config.get("project_roots") if isinstance(config.get("project_roots"), dict) else {}
+    values = list(owners.values()) + list(roots.values())
+    unique = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            candidate = Path(value).expanduser().resolve()
+        except OSError:
+            continue
+        key = str(candidate)
+        if key in seen or not _is_godmode_project(candidate):
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _select_godmode_project(candidates):
+    """Choose one discovered project, prompting only when there is real ambiguity."""
+    candidates = list(dict.fromkeys(Path(item).expanduser().resolve() for item in candidates))
+    if not candidates:
+        raise ValueError("No remembered project was available.")
+    if len(candidates) == 1:
+        selected = candidates[0]
+        print("INFO  Automatically selected audit project: " + str(selected))
+        return selected
+    print("LOWKEY FOUND MULTIPLE POSSIBLE AUDIT PROJECTS")
+    print("=" * 72)
+    for index, candidate in enumerate(candidates, 1):
+        print(f"  {index}. {candidate}")
+    if not sys.stdin.isatty():
+        raise ValueError(
+            "More than one project could be audited. Run lk godmode from inside the project "
+            "you want, or pass --root only when you need to override automatic detection."
+        )
+    while True:
+        try:
+            answer = input(f"Which project should Godmode audit? [1-{len(candidates)}] or q: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise ValueError("Project selection cancelled.")
+        if answer == "q":
+            raise ValueError("Project selection cancelled.")
+        if answer.isdigit() and 1 <= int(answer) <= len(candidates):
+            selected = candidates[int(answer) - 1]
+            print("INFO  Selected audit project: " + str(selected))
+            return selected
+        print(f"Enter a number from 1 to {len(candidates)}, or q to cancel.")
+
+
+def resolve_godmode_root(explicit_root=None, *, cwd=None, config_path=None):
+    """Resolve audit scope automatically; --root is an override, not a requirement."""
+    if explicit_root:
+        return root_path(explicit_root)
+
+    current = Path(cwd or Path.cwd()).expanduser().resolve()
+    if current.is_file():
+        current = current.parent
+    lowkey_checkout = next((parent for parent in (current, *current.parents) if _is_lowkey_checkout(parent)), None)
+
+    if not lowkey_checkout:
+        # Check workspace membership before accepting the aggregate root. A
+        # Cargo/npm workspace can itself have a manifest but is not necessarily
+        # the project whose contracts should be audited.
+        try:
+            from project_detection import workspace_context
+            scope = workspace_context(current)
+            active = scope.get("active")
+            inside = scope.get("current")
+            if active and _is_godmode_project(active):
+                return Path(active).resolve()
+            if inside and _is_godmode_project(inside):
+                return Path(inside).resolve()
+            projects = [
+                Path(item["root"]).resolve()
+                for item in (scope.get("projects") or [])
+                if isinstance(item, dict) and item.get("root") and _is_godmode_project(item["root"])
+            ]
+            if len(projects) == 1:
+                return projects[0]
+            if len(projects) > 1:
+                return _select_godmode_project(projects)
+        except (ImportError, OSError, ValueError, TypeError):
+            pass
+
+        try:
+            from project_detection import project_root as detected_project_root
+            detected = Path(detected_project_root(current)).expanduser().resolve()
+        except Exception:
+            detected = current
+        if _is_godmode_project(detected):
+            return detected
+
+    preferred = _preferred_godmode_project_root(config_path)
+    if preferred:
+        print("INFO  Resuming the project associated with Lowkey's current target/audit context: " + str(preferred))
+        return preferred
+
+    remembered = _saved_godmode_project_roots(config_path)
+    if remembered:
+        return _select_godmode_project(remembered)
+
+    if lowkey_checkout:
+        raise ValueError(
+            "You're running inside Lowkey's own source repository, not a contract project. "
+            "Lowkey could not find a previously selected audit project. Open a terminal in "
+            "your Solidity project's folder and run lk godmode; Lowkey will detect the "
+            "project automatically. You only need --root when intentionally auditing a different folder."
+        )
+    raise ValueError(
+        f"Lowkey could not identify a contract/source project from {current}. "
+        "Move into the project folder and run lk godmode, or use --root only to override detection."
+    )
+
+
+def _load_godmode_project_context(root):
+    """Read this project's own remembered target/RPC; never borrow another project's state."""
+    path = Path(root).expanduser().resolve() / ".audit" / "context.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    owner = data.get("project") if isinstance(data.get("project"), dict) else {}
+    stored_root = owner.get("root")
+    if stored_root:
+        try:
+            if Path(str(stored_root)).expanduser().resolve() != Path(root).expanduser().resolve():
+                return {}
+        except OSError:
+            return {}
+    return data
+
+
 def godmode(args):
     if _is_godmode_help_request(args):
         return print_godmode_command_help("godmode")
     p=LowkeyArgumentParser(prog="lk godmode")
-    p.add_argument("target", nargs="?", help="Optional deployed contract address. Omit it for a source-only audit of --root.")
-    p.add_argument("--root", default=".", help="Project folder containing the Solidity source (default: current directory).")
+    p.add_argument("target", nargs="?", help="Optional deployed contract address override. Omit it to reuse the target remembered for this project, if one exists.")
+    p.add_argument("--root", default=None, help="Optional override. Godmode normally detects the current/remembered audit project automatically.")
     p.add_argument("--rpc-url", help="RPC for read-only inspection of target. Use local Anvil if you plan to opt into --attack.")
     p.add_argument("--profile", choices=("light", "balanced", "deep"), default="balanced", help="Proxy/implementation reconnaissance depth: light or deeper balanced/deep lookup.")
     p.add_argument("--attack", action="store_true", help="Opt into lk break exploration. Requires target + local Anvil; may send transactions on that local chain.")
@@ -5277,8 +5483,20 @@ def godmode(args):
         p.error("--plan-only cannot be combined with --attack, --control-manifest, --mutation-manifest or --coverage-source; remove --plan-only or the execution option.")
     if ns.control_manifest and not ns.attack:
         p.error("--control-manifest is only used by the attack workflow; add --attack or remove --control-manifest.")
-    root=root_path(ns.root)
-    target=addr(ns.target) if ns.target else None
+    root=resolve_godmode_root(ns.root)
+    project_context=_load_godmode_project_context(root)
+    remembered_target=(project_context.get("target") or {}).get("address") if isinstance(project_context.get("target"),dict) else None
+    selected_target=ns.target or remembered_target
+    target=addr(selected_target) if selected_target else None
+    selected_rpc=ns.rpc_url
+    if selected_rpc is None and (not ns.target or (remembered_target and str(ns.target).lower()==str(remembered_target).lower())):
+        selected_rpc=project_context.get("rpc")
+    if selected_rpc is None:
+        selected_rpc=os.environ.get("FOUNDRY_ETH_RPC_URL") or os.environ.get("ETH_RPC_URL") or os.environ.get("LOWKEY_RPC_URL")
+    if not ns.target and remembered_target:
+        print("INFO  Using the deployed target remembered for this project: " + str(remembered_target))
+    if selected_rpc and target and not ns.plan_only:
+        print("INFO  Using configured RPC for read-only inspection: " + str(selected_rpc))
     maps=source_maps(root)
     cheat=cheat_fingerprints(root)
     stages=[]
@@ -5296,15 +5514,17 @@ def godmode(args):
     onchain={}
     if ns.plan_only:
         stages.append({"name":"onchain-recon","status":"skipped","reason":"--plan-only: RPC access is disabled."})
-    elif target:
+    elif target and selected_rpc:
         try:
-            url=rpc_url(ns.rpc_url)
+            url=rpc_url(selected_rpc)
             chain=rpc(url,"eth_chainId",[])
             block=rpc(url,"eth_blockNumber",[])
             onchain={"proxy":proxy(target,url,40 if ns.profile=="light" else 120),"selectors":selectors(target,url)}
             stages.append({"name":"onchain-recon","status":"completed","selectors":onchain["selectors"]["count"],"chain_id":chain,"block_number":block})
         except Exception as exc:
             stages.append({"name":"onchain-recon","status":"blocked","reason":str(exc)})
+    elif target:
+        stages.append({"name":"onchain-recon","status":"skipped","reason":"A target is selected, but no project RPC is configured; source review still completed. Set an RPC only when you want chain inspection."})
     else:
         stages.append({"name":"onchain-recon","status":"skipped","reason":"No address supplied; source-only mode."})
     if ns.plan_only:
@@ -5312,7 +5532,7 @@ def godmode(args):
     elif ns.attack:
         if not target:
             stages.append({"name":"attack","status":"blocked","reason":"Target address required."})
-        elif not ns.rpc_url or not local_rpc(rpc_url(ns.rpc_url)):
+        elif not selected_rpc or not local_rpc(rpc_url(selected_rpc)):
             stages.append({"name":"attack","status":"blocked","reason":"Attack requires local Anvil RPC; non-local RPC is rejected."})
         elif not shutil.which("lk"):
             stages.append({"name":"attack","status":"blocked","reason":"lk command not found."})

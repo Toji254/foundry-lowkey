@@ -193,7 +193,7 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         result, output = _capture_help("godmode", "--h")
         self.assertEqual(result, 0, output)
         for expected in (
-            "USAGE", "COMMAND VARIATIONS", "START HERE", "source with no target",
+            "USAGE", "COMMAND VARIATIONS", "NORMAL USE", "Lowkey detects the project",
             "--plan-only", "--attack", "local Anvil",
             "--control-manifest", "--mutation-manifest", "--coverage-source",
             ".audit/godmode/latest.json", "provenance.json",
@@ -207,18 +207,15 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         result, output = _capture_help("godmode", "--h")
         self.assertEqual(result, 0, output)
         for expected in (
-            "source scan with no target address",
-            "folder that contains foundry.toml",
+            "NORMAL USE",
+            "Lowkey detects the project",
+            "You do not need to type --root",
+            "optional project-folder override",
             "<target-address>",
-            "Copy a [LIVE] address from lk targets",
-            "same network where DEPLOYED_ADDRESS exists",
+            "copy it from lk targets",
+            "remembered target and project RPC",
             "local Anvil",
-            "same_calls_id",
-            "command array",
-            "mutants array",
             "src/Token.sol",
-            "You do not need --plan-only",
-            "this can run the test command many times",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, output)

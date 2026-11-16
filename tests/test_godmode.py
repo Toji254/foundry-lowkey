@@ -24,6 +24,85 @@ PROOF_SPEC.loader.exec_module(proof_evidence)
 
 
 class GodmodeTests(unittest.TestCase):
+    def test_godmode_auto_resolves_active_target_owner_when_run_from_lowkey_checkout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = pathlib.Path(temp)
+            checkout = base / "foundry-lowkey"
+            project = base / "Token"
+            (checkout / "lowkey").mkdir(parents=True)
+            (checkout / "lowkey" / "lk.py").write_text("", encoding="utf-8")
+            (checkout / "lowkey" / "project_detection.py").write_text("", encoding="utf-8")
+            (checkout / "install.sh").write_text("", encoding="utf-8")
+            project.mkdir()
+            (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            address = "0x" + "a" * 40
+            config = base / "home" / ".lowkey" / "config.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({
+                "target": address,
+                "target_owners": {address: str(project)},
+                "project_roots": {address: str(project)},
+            }), encoding="utf-8")
+            selected = godmode.resolve_godmode_root(cwd=checkout, config_path=config)
+            self.assertEqual(selected, project.resolve())
+
+    def test_godmode_current_project_wins_over_a_different_saved_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = pathlib.Path(temp)
+            current = base / "current"
+            remembered = base / "remembered"
+            current.mkdir()
+            remembered.mkdir()
+            (current / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (remembered / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            config = base / "home" / ".lowkey" / "config.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({"audit_project": str(remembered)}), encoding="utf-8")
+            selected = godmode.resolve_godmode_root(cwd=current, config_path=config)
+            self.assertEqual(selected, current.resolve())
+
+    def test_godmode_refuses_to_audit_its_own_checkout_when_no_project_is_remembered(self):
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = pathlib.Path(temp) / "foundry-lowkey"
+            (checkout / "lowkey").mkdir(parents=True)
+            (checkout / "lowkey" / "lk.py").write_text("", encoding="utf-8")
+            (checkout / "lowkey" / "project_detection.py").write_text("", encoding="utf-8")
+            (checkout / "install.sh").write_text("", encoding="utf-8")
+            missing_config = pathlib.Path(temp) / "no-config.json"
+            with self.assertRaisesRegex(ValueError, "Lowkey's own source repository"):
+                godmode.resolve_godmode_root(cwd=checkout, config_path=missing_config)
+
+    def test_godmode_loads_only_project_owned_remembered_target_and_rpc(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            audit = root / ".audit"
+            audit.mkdir()
+            address = "0x" + "b" * 40
+            (audit / "context.json").write_text(json.dumps({
+                "project": {"root": str(root)},
+                "target": {"address": address, "contract": "Token"},
+                "rpc": "http://127.0.0.1:8545",
+            }), encoding="utf-8")
+            context = godmode._load_godmode_project_context(root)
+            self.assertEqual(context["target"]["address"], address)
+            self.assertEqual(context["rpc"], "http://127.0.0.1:8545")
+
+    def test_godmode_ignores_project_context_copied_from_another_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            audit = root / ".audit"
+            audit.mkdir()
+            (audit / "context.json").write_text(json.dumps({
+                "project": {"root": str(root / "different-project")},
+                "target": {"address": "0x" + "c" * 40},
+                "rpc": "http://127.0.0.1:8545",
+            }), encoding="utf-8")
+            self.assertEqual(godmode._load_godmode_project_context(root), {})
+
+
+
     def test_rpc_sets_descriptive_user_agent_for_public_provider_access(self):
         from unittest.mock import patch
 
