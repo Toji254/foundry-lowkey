@@ -88,6 +88,113 @@ class SharedCommandContextTests(unittest.TestCase):
             self.assertIn("Unnamed return variable", build_event["diagnostic_excerpt"])
             self.assertTrue(any("Compiler warning" in signal for signal in build_event["signals"]))
 
+    def test_project_context_activation_restores_target_rpc_and_actor_per_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            project_a = base / "Token"
+            project_b = base / "Escrow"
+            for root in (project_a, project_b):
+                root.mkdir()
+                (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+
+            token = "0x" + "a" * 40
+            escrow = "0x" + "b" * 40
+            for root, target, actor, rpc in (
+                (project_a, token, "Alice", "http://127.0.0.1:8545"),
+                (project_b, escrow, "Bob", "http://127.0.0.1:9545"),
+            ):
+                lk.audit_context.update(
+                    root,
+                    target={
+                        "address": target,
+                        "contract": root.name,
+                        "artifact": None,
+                        "source": "manual",
+                    },
+                    actor=actor,
+                    actor_profile=actor,
+                    actor_scope_initialized=True,
+                    rpc=rpc,
+                )
+
+            config = {
+                "target": token,
+                "target_contract": "Token",
+                "target_owners": {token: str(project_a)},
+                "project_roots": {token: str(project_a)},
+                "rpc": "http://127.0.0.1:8545",
+                "actor": "Alice",
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}, "Bob": {"address": "0x" + "2" * 40}},
+                "abi_paths": {},
+            }
+
+            with patch.object(lk, "project_fixture_rpc_info", return_value=None), \
+                 patch.object(lk, "anvil_rpc_info", return_value={}):
+                first = lk.activate_project_context(config, project_a)
+                self.assertEqual(first["target"]["address"], token)
+                self.assertEqual(config["target"], token)
+                self.assertEqual(config["rpc"], "http://127.0.0.1:8545")
+                self.assertEqual(config["actor"], "Alice")
+
+                second = lk.activate_project_context(config, project_b)
+                self.assertEqual(second["target"]["address"], escrow)
+                self.assertEqual(config["target"], escrow)
+                self.assertEqual(config["rpc"], "http://127.0.0.1:9545")
+                self.assertEqual(config["actor"], "Bob")
+
+    def test_project_switch_does_not_inherit_global_target_rpc_or_actor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            project_a = base / "Token"
+            project_b = base / "Escrow"
+            for root in (project_a, project_b):
+                root.mkdir()
+                (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+
+            token = "0x" + "c" * 40
+            lk.audit_context.update(
+                project_b,
+                target={"address": None, "contract": None, "artifact": None, "source": "project"},
+                actor=None,
+                actor_profile=None,
+                actor_scope_initialized=True,
+                rpc=None,
+            )
+            config = {
+                "target": token,
+                "target_contract": "Token",
+                "target_owners": {token: str(project_a)},
+                "project_roots": {token: str(project_a)},
+                "rpc": "http://127.0.0.1:8545",
+                "actor": "Alice",
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+                "abi_paths": {},
+            }
+
+            with patch.object(lk, "project_fixture_rpc_info", return_value=None), \
+                 patch.object(lk, "anvil_rpc_info", return_value={}):
+                resolved = lk.activate_project_context(config, project_b)
+
+            self.assertIsNone(resolved["target"])
+            self.assertIsNone(config["target"])
+            self.assertIsNone(config["rpc"])
+            self.assertIsNone(config["actor"])
+
+    def test_selected_actor_is_persisted_as_project_state_not_just_global_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "Token"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            config = {
+                "actor": "Alice",
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            }
+            saved = lk.persist_project_actor(config, root)
+            state = lk.audit_context.load(root)
+            self.assertEqual(saved, "Alice")
+            self.assertEqual(state["actor_profile"], "Alice")
+            self.assertTrue(state["actor_scope_initialized"])
+
     def test_lk_context_displays_the_unified_project_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "project"

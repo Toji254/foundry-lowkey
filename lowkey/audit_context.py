@@ -191,6 +191,8 @@ def _default_context(root: Path) -> dict[str, Any]:
             "artifact": None,
         },
         "actor": None,
+        "actor_profile": None,
+        "actor_scope_initialized": False,
         "rpc": None,
         "focus": None,
         "latest": {

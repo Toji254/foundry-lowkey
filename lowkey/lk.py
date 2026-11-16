@@ -30,6 +30,10 @@ try:
 except ImportError:
     _verification_test_safety_issue = None
 import audit_context
+try:
+    import shared_context
+except ImportError:
+    from lowkey import shared_context
 import walkthrough
 try:
     import fixture_context
@@ -699,13 +703,28 @@ def anvil_rpc_info(config):
 
 def effective_rpc(config):
     project_info = project_fixture_rpc_info(config)
-    if project_info:
-        return project_info.get("url")
-    # "rpc" is the current key; keep reading older saved configs that used "rpc_url".
-    if config.get("rpc"):
-        return config["rpc"]
-    if config.get("rpc_url"):
-        return config["rpc_url"]
+    fixture_rpc = project_info.get("url") if isinstance(project_info, dict) else None
+    try:
+        root = audit_context.foundry_project_root()
+        state = audit_context.load(root)
+        current_target = active_project_target(config, root)
+        legacy_matches = (
+            bool(current_target)
+            and str(config.get("target") or "").lower() == str(current_target).lower()
+            and shared_context.target_owned_by_project(config.get("target"), config, root)
+        )
+        legacy_rpc = (config.get("rpc") or config.get("rpc_url")) if legacy_matches else None
+        selected, _source = shared_context.choose_rpc(
+            project_rpc=state.get("rpc"),
+            fixture_rpc=fixture_rpc,
+            legacy_rpc=legacy_rpc,
+        )
+        if selected:
+            return selected
+    except Exception:
+        # RPC discovery remains best-effort; never break a command just because
+        # optional project metadata could not be read.
+        pass
     info=anvil_rpc_info(config)
     return info.get("url") if isinstance(info,dict) else None
 
@@ -1622,6 +1641,73 @@ def active_project_target(config, root=None):
                     if not contract or str(contract).lower() == str(artifact_contract).lower():
                         return global_target
     return None
+
+def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit_rpc=None, explicit_actor=None):
+    """Return the single resolved project/target/RPC/actor snapshot for commands."""
+    project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
+    state = audit_context.load(project_root)
+    fixture_info = project_fixture_rpc_info(config)
+    fixture_rpc = fixture_info.get("url") if isinstance(fixture_info, dict) else None
+
+    validated_target = project_context_target(project_root)
+    if validated_target is None:
+        current = active_project_target(config, project_root)
+        if current and str(config.get("target") or "").lower() == str(current).lower():
+            validated_target = {
+                "address": current,
+                "contract": config.get("target_contract"),
+                "artifact": (config.get("abi_paths") or {}).get(current),
+                "source": "legacy-global",
+            }
+
+    return shared_context.resolve_runtime_context(
+        project_root,
+        state,
+        config,
+        validated_target=validated_target,
+        fixture_rpc=fixture_rpc,
+        explicit_target=explicit_target,
+        explicit_rpc=explicit_rpc,
+        explicit_actor=explicit_actor,
+    )
+
+
+def activate_project_context(config, root=None):
+    """Hydrate target, RPC and active actor from the current project's context."""
+    resolved = resolve_runtime_context(config, root)
+    target = resolved.get("target") or {}
+    address = target.get("address") if isinstance(target, dict) else None
+
+    config["target"] = address
+    config["target_contract"] = target.get("contract") if isinstance(target, dict) else None
+    if address and target.get("artifact"):
+        config.setdefault("abi_paths", {})[address] = target["artifact"]
+
+    # Legacy handlers still read these fields directly. Hydrate them per
+    # invocation, but the project context—not the global values—is authoritative
+    # on the next command.
+    config["rpc"] = resolved.get("rpc")
+    config["actor"] = resolved.get("actor")
+    config["_resolved_project_context"] = resolved
+    return resolved
+
+
+def persist_project_actor(config, root=None):
+    """Persist active actor selection in the project, not only global config."""
+    project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
+    wallets = config.get("wallets") if isinstance(config, dict) else {}
+    if not isinstance(wallets, dict):
+        wallets = {}
+    actor = config.get("actor") if isinstance(config, dict) else None
+    actor_profile = actor if isinstance(actor, str) and actor in wallets else None
+    audit_context.update(
+        project_root,
+        actor_profile=actor_profile,
+        actor_scope_initialized=True,
+        actor=actor_display(config),
+    )
+    return actor_profile
+
 
 def activate_project_target(config, root=None):
     """Hydrate legacy command config from the current project's target memory."""
@@ -20211,6 +20297,7 @@ def _sync_audit_context(config, root=None):
             }
 
     actor = actor_display(config)
+    actor_profile = config.get("actor") if config.get("actor") in (config.get("wallets") or {}) else None
     if actor == "none":
         actor = existing.get("actor")
 
@@ -20224,6 +20311,8 @@ def _sync_audit_context(config, root=None):
         root,
         target=target,
         actor=actor,
+        actor_profile=actor_profile,
+        actor_scope_initialized=True,
         rpc=rpc,
         latest=latest,
     )
@@ -25232,7 +25321,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
 
     # Resolve documented short forms before runtime dispatch as well as help lookup.
     cmd = HELP_ALIASES.get(lowered_cmd, lowered_cmd)
-    activate_project_target(config)
+    activate_project_context(config)
     if cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
         root=audit_context.foundry_project_root()
@@ -25387,15 +25476,25 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="rpc":
         if not args:
             rpc=effective_rpc(config)
-            mode="manual" if config.get("rpc") else "auto Anvil"
+            project_rpc = audit_context.load(audit_context.foundry_project_root()).get("rpc")
+            mode = "project" if project_rpc else ("configured" if config.get("rpc") else "auto Anvil")
             print(f"RPC: {rpc_display(rpc) or 'none'} ({mode})" if rpc else "RPC: none (no local Anvil detected)")
             return
         sub=args[0]
-        if sub=="reset": config["rpc"]=None
-        elif sub=="set" and len(args)==3: config["rpc_profiles"][args[1]]=args[2]; config["rpc"]=args[2]
-        elif sub=="use" and len(args)==2 and args[1] in config["rpc_profiles"]: config["rpc"]=config["rpc_profiles"][args[1]]
+        if sub=="reset":
+            config["rpc"]=None
+            audit_context.update(audit_context.foundry_project_root(), rpc=None)
+        elif sub=="set" and len(args)==3:
+            config["rpc_profiles"][args[1]]=args[2]
+            config["rpc"]=args[2]
+            audit_context.update(audit_context.foundry_project_root(), rpc=args[2])
+        elif sub=="use" and len(args)==2 and args[1] in config["rpc_profiles"]:
+            config["rpc"]=config["rpc_profiles"][args[1]]
+            audit_context.update(audit_context.foundry_project_root(), rpc=config["rpc"])
         elif sub=="use": return fail(f"Error: unknown RPC profile: {args[1] if len(args)>1 else ''}")
-        elif len(args)==1: config["rpc"]=args[0]
+        elif len(args)==1:
+            config["rpc"]=args[0]
+            audit_context.update(audit_context.foundry_project_root(), rpc=args[0])
         else: return fail("Usage: lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset")
         save_config(config)
     elif cmd=="wallet":
@@ -26122,6 +26221,7 @@ def main():
         return
 
     root = audit_context.foundry_project_root()
+    activate_project_context(config, root)
     _sync_audit_context(config, root)
     _attach_shared_command_context(config, root)
 
@@ -26359,6 +26459,10 @@ def dispatch_command(cmd, args, config, from_batch=False):
         current_output = captured_stdout.getvalue() + ("\n" + diagnostic if diagnostic else "")
         if isinstance(config, dict):
             config["_last_command_output"] = current_output[-24000:]
+        try:
+            persist_project_actor(config, root)
+        except Exception:
+            pass
         _record_shared_command_event(
             root, cmd, args, code,
             current_output,
@@ -26413,6 +26517,10 @@ def dispatch_command(cmd, args, config, from_batch=False):
     # save_config excludes this transient underscore-prefixed field.
     if isinstance(config, dict):
         config["_last_command_output"] = event_output[-24000:]
+    try:
+        persist_project_actor(config, root)
+    except Exception:
+        pass
     _record_shared_command_event(root, cmd, args, event_code, event_output)
     _attach_shared_command_context(config, root)
 

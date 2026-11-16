@@ -20,6 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+try:
+    import shared_context
+except ImportError:
+    from lowkey import shared_context
 
 try:
     from .arithmetic_review import scan_project as scan_unsigned_arithmetic
@@ -5526,25 +5530,13 @@ def _load_godmode_project_context(root, config_path=None):
 
 
 def _resolve_godmode_rpc(explicit_rpc=None, project_context=None, environ=None):
-    """Resolve RPC by explicit override, project memory, then environment.
-
-    A target-address override does not change project ownership: the project's
-    configured RPC remains valid for other targets in the same audit project.
-    """
-    if isinstance(explicit_rpc, str) and explicit_rpc.strip():
-        return explicit_rpc.strip(), "command-line"
-
+    """Use the same RPC precedence rules as every other Lowkey command."""
     context = project_context if isinstance(project_context, dict) else {}
-    project_rpc = context.get("rpc")
-    if isinstance(project_rpc, str) and project_rpc.strip():
-        return project_rpc.strip(), "project"
-
-    env = os.environ if environ is None else environ
-    for name in ("FOUNDRY_ETH_RPC_URL", "ETH_RPC_URL", "LOWKEY_RPC_URL"):
-        value = env.get(name)
-        if isinstance(value, str) and value.strip():
-            return value.strip(), "environment"
-    return None, None
+    return shared_context.choose_rpc(
+        explicit_rpc,
+        project_rpc=context.get("rpc"),
+        environ=environ,
+    )
 
 
 def godmode(args):
