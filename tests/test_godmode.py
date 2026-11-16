@@ -2136,5 +2136,19 @@ class GodmodeTests(unittest.TestCase):
             self.assertEqual(context, {})
 
 
+    def test_godmode_returns_empty_context_when_no_project_memory_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp) / "Token"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\\n", encoding="utf-8")
+
+            context = godmode._load_godmode_project_context(
+                root,
+                config_path=root / "missing-config.json",
+            )
+
+            self.assertEqual(context, {})
+
+
 if __name__ == "__main__":
     unittest.main()

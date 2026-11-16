@@ -5468,6 +5468,7 @@ def _load_godmode_project_context(root, config_path=None, *, explicit_target=Non
 
     # Use the shared identity check rather than reimplementing path ownership.
     project_state = shared_context.project_state_for_root(root, data)
+    has_owned_project_state = bool(data) and bool(project_state)
     config_file = (
         Path(config_path).expanduser()
         if config_path is not None
@@ -5492,7 +5493,7 @@ def _load_godmode_project_context(root, config_path=None, *, explicit_target=Non
 
     # Preserve the rest of the project audit metadata for Godmode's report,
     # while replacing context-bearing fields with the canonical resolution.
-    if not project_state and not resolved.get("target") and not resolved.get("rpc") and not resolved.get("actor"):
+    if not has_owned_project_state and not resolved.get("target") and not resolved.get("rpc") and not resolved.get("actor"):
         return {}
     context = dict(project_state)
     context.update({
