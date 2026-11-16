@@ -163,7 +163,7 @@ def deployed_address(output: str) -> str:
 def deploy(forge: str, project: Path, url: str, contract: str, args: list[str]) -> str:
     command = [
         forge, "create", f"src/PortfolioFixtures.sol:{contract}",
-        "--rpc-url", url, "--private-key", PRIVATE_KEY, "--broadcast", "--json",
+        "--rpc-url", url, "--private-key", PRIVATE_KEY, "--broadcast",
     ]
     if args:
         command.extend(["--constructor-args", *args])
@@ -199,16 +199,15 @@ command = [
     "cast", "send", target,
     "capture(address,address,uint256,uint256)", token, vault,
     str(1000 * 10**6), str(10**18),
-    "--rpc-url", url, "--private-key", private_key, "--json",
+    "--rpc-url", url, "--private-key", private_key, "--async",
 ]
 completed = subprocess.run(command, text=True, capture_output=True, check=False)
 if completed.returncode:
     raise SystemExit(completed.stderr[-3000:])
-payload = json.loads(completed.stdout)
-tx_hash = payload.get("transactionHash") or payload.get("transaction_hash") or payload.get("txHash")
-if not isinstance(tx_hash, str) or len(tx_hash) != 66:
-    raise SystemExit("cast send JSON omitted transactionHash: " + completed.stdout[-3000:])
-print("LOWKEY_TRACE_TX_HASH " + tx_hash)
+match = re.search(r"0x[0-9a-fA-F]{64}", completed.stdout)
+if not match:
+    raise SystemExit("cast send output omitted the transaction hash: " + completed.stdout[-3000:])
+print("LOWKEY_TRACE_TX_HASH " + match.group(0))
 """,
             encoding="utf-8",
         )
