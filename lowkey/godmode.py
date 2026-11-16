@@ -396,7 +396,7 @@ GODMODE_HELP_GUIDES = {
             "Generated harness plus SHA-256 digest on success.",
             "A structured refusal in stdout and --refusal-output when a plan is invalid or unsupported."
         ],
-        "limits": "This is a typed harness renderer, not an exploit generator. A generated PROPOSED harness still needs protocol-specific actors, setup and meaningful assertions. flash_borrow/reenter require a protocol-specific callback actor and are refused rather than fabricated.",
+        "limits": "This is a typed harness renderer, not an exploit generator. A generated PROPOSED harness still needs protocol-specific actors, setup and meaningful assertions. flash_borrow/reenter require a protocol-specific callback actor and are refused rather than fabricated. The machine-readable refusal reason for those unsupported generic callback steps is `backend_unsupported`.",
         "related": [
             "lk attack-forge --h",
             "lk control --h",
