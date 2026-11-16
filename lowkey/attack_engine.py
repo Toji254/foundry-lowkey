@@ -954,10 +954,10 @@ def run_chain(value: Any, root: str | Path = ".", *, output_path: str | None = N
     base = project_root(root)
     manifest = validate_chain_manifest(value, base)
     run_id = hashlib.sha256((manifest["id"] + str(time.time_ns())).encode()).hexdigest()[:20]
-    attack_run = _run_forge_test(base, manifest["attack"], manifest["timeout_seconds"], role="attack", run_id=run_id)
+    attack_run = _run_forge_test(base, manifest["attack"], manifest["timeout_seconds"], role="attack", run_id=run_id, experiment_id=manifest["id"])
     if attack_run["status"] != "passed":
         raise AttackEngineError("Attack chain test did not pass.", "attack_execution_failed")
-    control_run = _run_forge_test(base, manifest["control"], manifest["timeout_seconds"], role="control", run_id=run_id)
+    control_run = _run_forge_test(base, manifest["control"], manifest["timeout_seconds"], role="control", run_id=run_id, experiment_id=manifest["id"])
     if control_run["status"] != "passed":
         raise AttackEngineError("Control chain test did not pass.", "control_execution_failed")
     failure_run = _run_forge_test(base, manifest["failure"], manifest["timeout_seconds"], role="failure", run_id=run_id, experiment_id=manifest["id"])
@@ -965,7 +965,7 @@ def run_chain(value: Any, root: str | Path = ".", *, output_path: str | None = N
         raise AttackEngineError("Failure-injection/rollback test did not pass.", "rollback_failed")
     pair = validate_chain_evidence_pair(attack_run["evidence"], control_run["evidence"], manifest)
     rollback = validate_failure_rollback(failure_run["evidence"], manifest)
-    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"], run_id)
+    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"], run_id, manifest["id"])
     report = {"schema_version": SCHEMA_VERSION, "run_id": run_id,
               "status": "VERIFIED_LOCAL_ATTACK_CHAIN", "scope": "local_foundry_test",
               "chain_id": manifest["id"], "mode": manifest["mode"],
