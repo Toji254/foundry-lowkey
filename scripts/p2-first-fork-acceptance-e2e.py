@@ -273,15 +273,15 @@ def build_anvil_fork_argv(
 ) -> list[str]:
     """Build a pinned multi-provider Anvil fork with bounded retry/backoff.
 
-    --fork-chain-id avoids a remote eth_chainId startup probe; the acceptance
-    has independently checked each endpoint's chain ID before launching Anvil.
-    Multiple --fork-url values enable Foundry's round-robin failover.
+    Multiple --fork-url values enable Foundry's round-robin failover. Anvil
+    validates each endpoint's chain ID at startup; the acceptance independently
+    preflights those same endpoints first and keeps retries bounded.
     """
     if not fork_endpoints:
         raise ValueError("At least one preflighted fork RPC endpoint is required.")
     argv = [
         anvil_binary, "--silent", "--host", "127.0.0.1", "--port", str(port),
-        "--chain-id", "1", "--fork-chain-id", "1",
+        "--chain-id", "1",
         "--fork-block-number", str(fork_block),
         "--retries", "12", "--timeout", "120000", "--fork-retry-backoff", "1000",
         "--fork-header", "User-Agent: LowkeyCast-P2-acceptance/0.1",
