@@ -1493,6 +1493,10 @@ class GodmodeTests(unittest.TestCase):
         runtime = "0x363d3d373d3d3d363d73" + implementation[2:] + "5af43d82803e903d91602b57fd5bf3"
         raw = self._forge_artifact()
         raw["target_code_hash"] = "0x" + "a" * 64
+        # This case is about rejecting an implementation absent from the
+        # call tree. Keep the fixture free of unrelated storage-prestate
+        # observations so it reaches that identity gate.
+        raw["accesses"][0]["storage_accesses"] = []
         normalized = normalize_forge_state_diff(raw, expected_target=target)
         parent_hash = "0x" + "b" * 64
         block = {
