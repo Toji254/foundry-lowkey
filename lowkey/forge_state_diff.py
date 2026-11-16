@@ -172,6 +172,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
                 source_backend="forge-state-diff",error="reverted" if reverted else None,
             ))
 
+    if not any(row["to"] == target for row in calls):
+        raise ValueError("Forge state-diff trace never called the manifest target.")
     target_account_state = accounts.get(target) or {}
     account_access_code_hash = str(target_account_state.get("code_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}", account_access_code_hash):
