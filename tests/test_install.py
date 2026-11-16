@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -39,6 +40,35 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "ai_harness.py").exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "experience_memory.py").exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "trace_evidence.py").exists())
+            archetype_dir = pathlib.Path(home) / ".lowkey" / "archetypes"
+            self.assertTrue((archetype_dir / "__init__.py").is_file())
+            self.assertTrue((archetype_dir / "_index.py").is_file())
+            pack_paths = sorted(archetype_dir.glob("*.json"))
+            self.assertEqual(len(pack_paths), 10)
+            install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+            for installed_path in [archetype_dir / "__init__.py", archetype_dir / "_index.py", *pack_paths]:
+                self.assertIn(str(installed_path), install_manifest["files"])
+            fixture_source = ROOT / "tests" / "fixtures" / "acceptance" / "p3-genericity" / "vault"
+            fixture_project = pathlib.Path(home) / "p3-vault"
+            shutil.copytree(fixture_source, fixture_project)
+            p3_classification = subprocess.run(
+                [str(installed_lk), "archetype", "classify", "--root", str(fixture_project), "--json"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(p3_classification.returncode, 0, p3_classification.stdout + p3_classification.stderr)
+            self.assertEqual(json.loads(p3_classification.stdout)["archetype"], "vault4626")
+            assumption_check = subprocess.run(
+                [str(installed_lk), "assumptions", "--root", str(fixture_project)],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(assumption_check.returncode, 0, assumption_check.stdout + assumption_check.stderr)
+            self.assertIn("Citation verification: OBSERVED", assumption_check.stdout)
+            capability_view = subprocess.run(
+                [str(installed_lk), "capability", "--root", str(fixture_project)],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(capability_view.returncode, 0, capability_view.stdout + capability_view.stderr)
+            self.assertIn("Capability negotiation:", capability_view.stdout)
             trace_import = subprocess.run(
                 ["python3", "-c", "import forge_state_diff, godmode; print('TRACE_IMPORT_OK')"],
                 cwd=ROOT,
