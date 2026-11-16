@@ -1111,12 +1111,15 @@ def _trace_control_run(root, url, name, entry, spec, env):
             for access_rows in (structlog_trace.get("frame_storage") or {}).values():
                 for access in access_rows:
                     if isinstance(access,dict) and access.get("account") and access.get("slot"):
-                        slots.append({"address":addr(access["account"]),"slot":storage_slot_key(access["slot"])})
+                        access_address=addr(access["account"])
+                        if access_address not in addresses:
+                            addresses.append(access_address)
+                        slots.append({"address":access_address,"slot":storage_slot_key(access["slot"])})
             slots=list({(item["address"],item["slot"]):item for item in slots}.values())
             if not slots:
                 raise ValueError("No target/dependency storage slots were declared or discovered by prestateTracer.")
             if spec.get("require_trace_storage") and not (
-                storage_trace.get("supported") or
+                (storage_trace.get("supported") and bool(storage_trace.get("slots"))) or
                 (structlog_trace.get("supported") and structlog_trace.get("access_count",0)>0)
             ):
                 reason=structlog_trace.get("reason") or storage_trace.get("reason")
@@ -1136,6 +1139,23 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 equivalence_addresses=declared_addresses,
                 equivalence_slots=declared_slots,
             )
+            prestate_values={
+                (item["address"],item["slot"]):str(item["value"]).lower()
+                for item in prestate.get("storage",[])
+            }
+            accessed_slots={}
+            for access_rows in (structlog_trace.get("frame_storage") or {}).values():
+                for access in access_rows:
+                    if not isinstance(access,dict) or not access.get("account") or not access.get("slot"):
+                        continue
+                    key=(addr(access["account"]),storage_slot_key(access["slot"]))
+                    if key in prestate_values:
+                        accessed_slots[key]={
+                            "address":key[0],"slot":key[1],"value":prestate_values[key],
+                        }
+            storage_trace["accessed_slots"]=[
+                accessed_slots[key] for key in sorted(accessed_slots)
+            ]
             parent_storage={(item["address"],item["slot"]):str(item["value"]).lower()
                             for item in prestate.get("storage",[])}
             for observed_slot in storage_trace.get("slots",[]):
@@ -2397,11 +2417,15 @@ def control(args):
         for item in (spec.get("scenario_parameters") or []) if isinstance(item,dict)
     }
     def _trace_slot_values(run_row):
-        return {
-            addr(item.get("address"))+":"+storage_slot_key(item.get("slot")):
-            str(item.get("value","")).lower()
-            for item in ((run_row.get("storage_trace") or {}).get("slots") or [])
-        }
+        trace_row=run_row.get("storage_trace") or {}
+        rows=list(trace_row.get("slots") or [])+list(trace_row.get("accessed_slots") or [])
+        values={}
+        for item in rows:
+            key=addr(item.get("address"))+":"+storage_slot_key(item.get("slot"))
+            value=item.get("value")
+            if value is not None:
+                values[key]=str(value).lower()
+        return values
     control_trace_slots=_trace_slot_values(rows.get("control",{}))
     attack_trace_slots=_trace_slot_values(rows.get("attack",{}))
     shared_trace_slot_keys=(set(control_trace_slots)&set(attack_trace_slots))-scenario_excluded_keys
@@ -2501,7 +2525,10 @@ def control(args):
         scenario_row=rows.get(scenario_name,{})
         storage_trace_row=scenario_row.get("storage_trace") or {}
         structlog_row=storage_trace_row.get("structlog") or {}
-        use_structlog=backend!="forge-state-diff" and bool(structlog_row.get("supported"))
+        use_structlog=(
+            backend!="forge-state-diff" and bool(structlog_row.get("supported"))
+            and int(structlog_row.get("access_count",0))>0
+        )
         capability_backend=(
             "forge-state-diff" if backend=="forge-state-diff"
             else ("anvil-structlog" if use_structlog else backend)
@@ -2512,7 +2539,7 @@ def control(args):
         )
         storage_supported=(
             True if backend=="forge-state-diff" else
-            (use_structlog or bool(storage_trace_row.get("supported")))
+            (use_structlog or (bool(storage_trace_row.get("supported")) and bool(storage_trace_row.get("slots"))))
         )
         capabilities=proof_evidence.trace_evidence_capabilities(
             capability_backend, storage_trace_supported=storage_supported,
@@ -2806,7 +2833,14 @@ def control(args):
         "storage_slots_derived_from_trace":sorted({
             (item.get("address") or item.get("account","")).lower()+":"+str(item.get("slot","")).lower()
             for name in ("control","attack","negative_control")
-            for item in rows.get(name,{}).get("derived_storage_accesses",[])
+            for item in (
+                list(rows.get(name,{}).get("derived_storage_accesses",[]) or []) +
+                [
+                    {"address":access.get("account"),"slot":access.get("slot")}
+                    for frame_rows in ((rows.get(name,{}).get("storage_trace") or {}).get("structlog",{}).get("frame_storage") or {}).values()
+                    for access in frame_rows if isinstance(access,dict)
+                ]
+            )
         }),
         "runs":rows,"reasons":rejection_reasons,"rejection_codes":sorted(set(rejection_codes)),
         "reason_code":rejection_codes[0] if rejection_codes else None,
