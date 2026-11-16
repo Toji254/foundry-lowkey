@@ -3006,6 +3006,62 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             },
         )
 
+def _solidity_contract_source(source: str, contract_name: str) -> str:
+    """Return exactly one named Solidity contract/interface/library block."""
+    name = str(contract_name or "").strip()
+    if not source or not name or name.lower() in {"target", "unknown"}:
+        return ""
+    matcher = re.compile(
+        r"\b(?:abstract\s+)?(?:contract|interface|library)\s+"
+        + re.escape(name)
+        + r"\b[^{};]*\{"
+    )
+    matches = list(matcher.finditer(source))
+    if len(matches) != 1:
+        return ""
+    match = matches[0]
+    open_brace = match.end() - 1
+    depth = 0
+    quote = None
+    escaped = False
+    line_comment = False
+    block_comment = False
+    index = open_brace
+    while index < len(source):
+        char = source[index]
+        following = source[index + 1] if index + 1 < len(source) else ""
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+        elif block_comment:
+            if char == "*" and following == "/":
+                block_comment = False
+                index += 1
+        elif quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char == "/" and following == "/":
+            line_comment = True
+            index += 1
+        elif char == "/" and following == "*":
+            block_comment = True
+            index += 1
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[match.start():index + 1]
+        index += 1
+    return ""
+
+
 def _source_function_body(
     project_info: dict[str, Any] | None,
     function_name: str,
@@ -3117,6 +3173,11 @@ def _source_function_body(
                         end_line += 1
                     matched_bodies.append("".join(lines[start_line:end_line]))
                 continue
+
+            if target and target.contract:
+                scoped_source = _solidity_contract_source(source, target.contract)
+                if scoped_source:
+                    source = scoped_source
 
             if function_name == "__contract_source__":
                 matched_bodies.append(source)
