@@ -474,7 +474,7 @@ def _discover_functions(host, config, target: Target) -> list[dict[str, Any]]:
         if not body:
             continue
         header = re.search(
-            r"\b" + re.escape(special) + r"\s*\(\s*\)(?P<header>[^{};]*)\{",
+            r"\b" + re.escape(special) + r"\s*\([^{};]*\)(?P<header>[^{};]*)\{",
             body,
         )
         if not header:
@@ -3070,7 +3070,7 @@ def _source_function_body(
                 continue
             if function_name.lower() in {"receive", "fallback"}:
                 matcher = re.compile(
-                    r"\b" + re.escape(function_name) + r"\s*\(\s*\)[^;{}]*(?=\{)"
+                    r"\b" + re.escape(function_name) + r"\s*\([^{};]*\)[^;{}]*(?=\{)"
                 )
             else:
                 matcher = re.compile(r"\bfunction\s+" + re.escape(function_name) + r"\s*\(")
