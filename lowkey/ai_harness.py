@@ -2202,44 +2202,32 @@ REVIEW & EVIDENCE
 
 AUTOMATION SETTINGS
 -------------------
-  lk ai guide                 Gives clues; you fix it (default).
+  lk ai guide                 AI gives clues; you fix it (default).
   lk ai lazy                  Repairs safe local tests.
   lk ai hint                  Show another clue.
   lk build --guide / --lazy   One-command override.
-
-  lk ai mode {manual|auto}
-      Enable guidance for eligible commands; labs may request reviews.
-
+  lk ai mode {manual|auto}    Guide eligible commands; labs may request reviews.
   lk ai recommendations {status|auto|manual}
-      Add optional learning notes after command attempts.
-
   lk ai errors {status|auto|manual}
-      Explain supported failures; suggested fixes are never executed.
 
-WHAT DOES "AUTO" MEAN?
-----------------------
-auto is a setting value, not a separate command. The controls are independent:
-  lk ai mode auto              Explain eligible command results and failures.
-  lk ai recommendations auto   Add notes after attempts.
-  lk ai errors auto            Explain failures without rerunning.
-  lk ai guide / lk ai lazy     Choose guidance or test repair.
-Use manual to switch off; status shows settings. Requests may send context and incur charges.
+Each setting is independent. Use manual to disable it and status to inspect it.
+Guide offers clues; lazy repairs eligible tests. Requests may send context and incur charges.
 
 UNIVERSAL --ai / TASK RUN
 -------------------------
-  lk status --ai                 Explain a native result and its next step.
+  lk status --ai
+      Explain a native result and its next step.
   lk ai run "investigate withdrawal" [--plan-only | --yes]
-      Build a source-grounded plan; approval runs validated read-only lk checks only.
-      --plan-only prints the plan. No tests, file edits, deployments or transactions.
+      Plan source-grounded, validated read-only checks. --yes approves only those checks;
+      no tests, edits, deployments or transactions are run.
 
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
   lk lab Vault --ai-review
-      Request an unverified review. Native target selection, deployment and tests stay unchanged.
+      Request unverified review; it does not select targets, deploy or test.
   lk ai mode manual / auto
-      Manual: reviews only on request. Auto: eligible labs may request a review.
-  lk ai recommendations auto / lk ai errors auto
-      Add optional notes or explain failures; neither reruns commands.
+      Manual: explicit reviews only. Auto: eligible labs may request reviews.
+  Recommendations add notes; errors explain failures. Neither reruns commands.
 
 OPTIONS / MODES
 ---------------
