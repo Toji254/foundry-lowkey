@@ -11,7 +11,9 @@ _COMPARE_FIELDS = (
 )
 
 
-def _validate_events(events: Sequence[Mapping[str, Any]], label: str) -> list[dict[str, Any]]:
+def _validate_events(
+    events: Sequence[Mapping[str, Any]], label: str, expected_backend: str
+) -> list[dict[str, Any]]:
     if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
         raise ValueError(f"{label} trace must be an array.")
     normalized = []
@@ -21,6 +23,11 @@ def _validate_events(events: Sequence[Mapping[str, Any]], label: str) -> list[di
         missing = [field for field in TRACE_FIELDS if field not in event]
         if missing:
             raise ValueError(f"{label} trace event #{index} is missing canonical fields: {', '.join(missing)}")
+        if event.get("backend") != expected_backend:
+            raise ValueError(
+                f"{label} trace event #{index} must come from {expected_backend}; "
+                f"received {event.get('backend')!r}."
+            )
         normalized.append(build_trace_event(
             seq=event["seq"],
             backend=event["backend"],
@@ -47,8 +54,8 @@ def compare_trace_events(
     Null is unknown, never equal evidence. Different storage capability is
     surfaced as a degradation, not silently treated as a full parity match.
     """
-    forge = _validate_events(forge_events, "Forge")
-    anvil = _validate_events(anvil_events, "Anvil")
+    forge = _validate_events(forge_events, "Forge", "forge-state-diff")
+    anvil = _validate_events(anvil_events, "Anvil", "anvil-calltracer")
     mismatches: list[dict[str, Any]] = []
     unknowns: list[dict[str, Any]] = []
     if not forge or not anvil:
