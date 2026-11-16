@@ -202,6 +202,12 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
     if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
         raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
+    if target_code_hash_at_start is not None and target_code_hash_at_start != code_hash:
+        raise ValueError(
+            "Forge state-diff target_code_hash must remain the pre-execution target runtime hash; "
+            "target_code_hash and target_code_hash_at_start differ. A delegatecall implementation "
+            "hash must never replace the target clone/proxy identity hash."
+        )
 
     prestate=[]
     balance_deltas=[]
@@ -236,7 +242,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "target_address":target,"target_code_hash":code_hash,
         "target_code_hash_at_start":target_code_hash_at_start,
         "target_account_access_code_hash_observations":target_code_hash_observations,
-        "target_code_hash_source":"forge_account_access",
+        "target_code_hash_source":"forge_start_and_account_access",
         "fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
         "setup_events":setup_events,"domain_events":domain_events,
