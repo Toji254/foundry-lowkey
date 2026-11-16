@@ -185,6 +185,9 @@ class ProofEvidenceTests(unittest.TestCase):
         anvil_with_tracer = trace_evidence_capabilities(
             "anvil-calltracer", storage_trace_supported=True, storage_observations=1
         )
+        anvil_exact = trace_evidence_capabilities(
+            "anvil-structlog", storage_trace_supported=True, storage_observations=2
+        )
         forge = trace_evidence_capabilities(
             "forge-state-diff", storage_observations=1
         )
@@ -193,6 +196,14 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertEqual(anvil_without_tracer["calldata"], "exact")
         self.assertEqual(anvil_without_tracer["storage"], "declared_only")
         self.assertEqual(anvil_with_tracer["storage"], "partial")
+        self.assertEqual(anvil_exact["storage"], "derived_per_access")
+        self.assertEqual(anvil_exact["storage_source"], "Anvil structLogs SLOAD/SSTORE")
+        self.assertTrue(evaluate_evidence_requirements(
+            "reentrancy", anvil_exact
+        )["accepted"])
+        self.assertTrue(evaluate_evidence_requirements(
+            "storage_corruption", anvil_exact, {"storage": "per_access"}
+        )["accepted"])
         self.assertEqual(forge["storage"], "derived_per_access")
         self.assertTrue(evaluate_evidence_requirements(
             "reentrancy", anvil_with_tracer
