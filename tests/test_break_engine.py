@@ -1976,10 +1976,24 @@ SECOND_RETURNDATA_LENGTH 0
                 "FallbackAccessTarget",
                 "0x" + "a" * 40,
             )
+            original_source_reader = break_engine._source_function_body
+
+            def source_file_only(project_info, function_name, selected_target=None):
+                # Force the new source-file fallback path: the usual special
+                # function extractor is unavailable, but the exact target
+                # compilation source is still available.
+                if str(function_name).lower() in {"receive", "fallback"}:
+                    return ""
+                return original_source_reader(project_info, function_name, selected_target)
+
             with mock.patch.object(
                 break_engine,
                 "_project_break_context",
                 return_value={"root": str(root)},
+            ), mock.patch.object(
+                break_engine,
+                "_source_function_body",
+                side_effect=source_file_only,
             ):
                 functions = break_engine._discover_functions(host, {}, target)
 
