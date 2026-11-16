@@ -105,6 +105,32 @@ contract Vault {
             self.assertFalse(sequences)
 
 
+class Tier0OrchestratorTests(unittest.TestCase):
+    def test_godmode_writes_schema_valid_artifact_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "src" / "Vault.sol"
+            source.parent.mkdir()
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Vault { uint256 public value; }",
+                encoding="utf-8",
+            )
+
+            code = godmode.godmode(["--root", str(root), "--plan-only"])
+            self.assertEqual(code, 2)  # Required execution/control stages were intentionally skipped.
+            latest = root / ".audit" / "godmode" / "latest.json"
+            provenance = root / ".audit" / "godmode" / "provenance.json"
+            report = json.loads(provenance.read_text(encoding="utf-8"))
+
+            self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(report["signature"]["status"], "unsigned")
+            self.assertEqual(len(report["artifacts"]), 1)
+            artifact = report["artifacts"][0]
+            self.assertEqual(artifact["path"], ".audit/godmode/latest.json")
+            self.assertEqual(artifact["sha256"], godmode.sha(latest))
+            self.assertEqual(artifact["bytes"], latest.stat().st_size)
+
+
 class Tier0MutationTests(unittest.TestCase):
     def _run(self, report):
         temporary = tempfile.TemporaryDirectory()
