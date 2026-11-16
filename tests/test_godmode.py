@@ -42,6 +42,46 @@ class GodmodeTests(unittest.TestCase):
         self.assertIn("LowkeyCast", request.get_header("User-agent"))
         self.assertEqual(request.get_header("Accept"), "application/json")
 
+    def test_sourcify_v2_lookup_requests_match_fields_and_source_identity_fields(self):
+        from urllib.parse import parse_qs, urlparse
+        from unittest.mock import patch
+
+        address = "0x" + "4" * 40
+        cache_key = (1, address)
+        godmode._SOURCIFY_IDENTITY_CACHE.pop(cache_key, None)
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps({
+                    "chainId": "1",
+                    "address": address,
+                    "match": "exact_match",
+                    "runtimeMatch": "exact_match",
+                    "creationMatch": "exact_match",
+                    "sources": {"Vault.sol": {"content": "contract Vault {}"}},
+                    "proxyResolution": {"isProxy": False},
+                    "deployment": {"blockNumber": 123},
+                    "verifiedAt": "2026-11-16T00:00:00Z",
+                    "matchId": "42",
+                }).encode("utf-8")
+
+        with patch.object(godmode, "urlopen", return_value=Response()) as opened:
+            payload = godmode._sourcify_contract_identity(1, address)
+
+        parsed = urlparse(opened.call_args.args[0].full_url)
+        fields = set(parse_qs(parsed.query)["fields"][0].split(","))
+        self.assertTrue({
+            "match", "runtimeMatch", "creationMatch", "sources",
+            "proxyResolution", "deployment.blockNumber",
+        }.issubset(fields))
+        self.assertEqual(payload["match"], "exact_match")
+        self.assertEqual(payload["runtimeMatch"], "exact_match")
+        self.assertEqual(payload["creationMatch"], "exact_match")
+
     def test_registry_covers_all_44_numbered_capabilities(self):
         self.assertEqual(len(godmode.CAPABILITIES), 44)
         self.assertEqual([row[0] for row in godmode.CAPABILITIES], list(range(1, 45)))
