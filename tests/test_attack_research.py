@@ -73,6 +73,23 @@ class AttackResearchTests(unittest.TestCase):
             self.assertEqual(stored["candidate_count"], 1)
             self.assertEqual(stored["source_revision"], "a" * 40)
 
+    def test_selected_contract_and_function_are_prioritized_in_bounded_context(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src").mkdir()
+            (root / "src/AFirst.sol").write_text(
+                "pragma solidity ^0.8.20; contract AFirst { function alpha() external {} }",
+                encoding="utf-8",
+            )
+            (root / "src/ZTarget.sol").write_text(
+                "pragma solidity ^0.8.20; contract ZTarget { function withdraw() external {} }",
+                encoding="utf-8",
+            )
+            selected = attack_research._collect_sources(
+                root, contract_name="ZTarget", function_name="withdraw"
+            )
+            self.assertEqual(selected[0]["path"], "src/ZTarget.sol")
+
     def test_research_rejects_hallucinated_source_quotes(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
