@@ -155,6 +155,17 @@ def evaluate_economic_policy(family, net_profit_wei=None, *, non_economic=False,
     return {"accepted": True, "economic": True, "net_profit_wei": net_profit_wei,
             "reason": "Measured net profit is positive.", "promotion_cap": None}
 
+def forge_promotion_status(proof, *, passed: bool) -> str:
+    """Cap Forge structural evidence without discarding verified fork identity."""
+    if not isinstance(proof, Mapping):
+        raise ValueError("proof must be a mapping returned by classify_proof().")
+    if not passed:
+        return str(proof.get("status") or "UNPROVEN")
+    if proof.get("target_authenticity_verified") and proof.get("target_authenticity") == "forked_deployment":
+        return "FORK_OBSERVED"
+    return "SIMULATED_BREAK"
+
+
 def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="observed",
                    *, authenticity_verified=False, human_confirmed=False):
     authenticity = str(target_authenticity or "unknown").strip().lower()
