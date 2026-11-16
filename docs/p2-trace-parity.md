@@ -50,10 +50,27 @@ The command writes .audit/godmode/trace-parity.json by default and returns:
 
 Null never counts as a match. The output records both input artifact paths and SHA-256 digests.
 
+## First real-fork candidate
+
+The P2 end-to-end acceptance uses Yearn's Ethereum USDC-1 / yvUSDC-1 V3 vault:
+
+- Target: \`0xbe53a109b494e5c9f97b9cd39fe969be68bf6204\`
+- Chain: Ethereum mainnet (chain ID 1)
+- Contract creation block: \`19,419,991\`
+- Read-only call: \`totalAssets()\`
+- Proxy family: canonical EIP-1167 minimal clone
+- Forge Std: pinned commit \`15b2df92a05d4d2f76a06653872fefb287e0e01c\`
+
+The Yearn factory source describes deployment of a minimal proxy clone of the original vault; the EIP-1167 runtime embeds the fixed implementation address. Lowkey verifies the exact 45-byte runtime form, extracts that address, then independently verifies implementation runtime, first-code block, Sourcify exact source, and trace-derived implementation code hash.
+
+The harness makes no live transaction and moves no user funds. It runs a \`totalAssets()\` view call at a pinned common block on an Anvil fork, captures Forge state-diff, obtains an Anvil \`debug_traceCall\` callTracer tree for the same actor/target/calldata, and checks canonical call-tree parity. Storage parity is expected to remain degraded because Anvil callTracer does not expose per-access storage slots.
+
+Default CI RPC endpoints are an independent fork upstream and source/archive endpoint. The script preflights historical block, code, and EIP-1186 proof support before it starts the fork. Both endpoints can be overridden with \`LOWKEY_P2_FORK_UPSTREAM_RPC_URL\` and \`LOWKEY_P2_SOURCE_RPC_URL\`; a latest-state-only endpoint is rejected.
+
 ## P2 acceptance boundary
 
 The unit suite checks canonical schema validation, legacy adaptation, Forge/Anvil normalization, storage capability labelling, empty-stream refusal, missing-field handling, and positive/negative parity cases.
 
-This is not yet the complete P2 gate. P2 still requires the same deterministic harness to be exercised through both backends on a pinned fork, plus a real deployed target whose chain identity, source hash, deployment block and proxy-to-implementation chain are independently verified. A matched synthetic test fixture is necessary test coverage, not the first-real-fork proof.
+The complete P2 gate additionally requires the same deterministic view-call harness to run against the pinned real deployment through both backends, a \`MATCHED\` canonical call tree, independently verified chain/source/deployment/proxy identity, and a truthful \`FORK_OBSERVED\` result. A matched synthetic fixture is necessary test coverage, not the first-real-fork proof.
 
 No P2 capability is accepted until the exact-head installed-CLI/Foundry acceptance and verified real-fork run pass.
