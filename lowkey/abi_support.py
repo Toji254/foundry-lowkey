@@ -39,17 +39,22 @@ def canonical_abi_type(item: dict[str, Any], *, depth: int = 0) -> str:
     raw = item.get("type")
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("ABI input is missing its type")
-    base, _ = _split_array_type(raw)
+    raw_lower = raw.lower()
+    base, _ = _split_array_type(raw_lower)
     if base == "tuple":
         components = item.get("components")
         if not isinstance(components, list) or not components:
             raise ValueError("tuple ABI input is missing component definitions")
-        suffix = raw[len("tuple"):]
+        suffix = raw_lower[len("tuple"):]
         return "(" + ",".join(
             canonical_abi_type(component, depth=depth + 1)
             for component in components
         ) + ")" + suffix
-    return raw.lower()
+    if base in {"uint", "int"}:
+        return base + "256" + raw_lower[len(base):]
+    if base == "byte":
+        return "bytes1" + raw_lower[len(base):]
+    return raw_lower
 
 
 def _sample_scalar(base: str, mode: str, rng: random.Random, fallback: str) -> str:
