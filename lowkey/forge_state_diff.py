@@ -140,7 +140,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         account_state=accounts.setdefault(account,{"address":account,"balance_wei":old_balance,
             "nonce":old_nonce,"balance_after_wei":old_balance,"nonce_after":old_nonce,
             "code_hash":None,"storage":{}})
-        if code_hash:
+        if access_code_hash:
             account_code_hash_observations.setdefault(account,[]).append({
                 "access_index":index,"kind":kind,"accessor":accessor,
                 "code_hash":access_code_hash,"reverted":reverted,
