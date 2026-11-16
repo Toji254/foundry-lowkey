@@ -211,11 +211,19 @@ def load_portfolio_manifest(value: Any) -> dict[str, Any]:
         symbol = item.get("symbol")
         if not isinstance(symbol, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,24}", symbol):
             raise TokenEconomicsError(f"{label}.symbol must be 1-24 simple identifier characters.")
+        price_feed_field = "oracle" if kind == "erc20" else "asset_oracle"
+        if kind == "erc4626" and item.get("oracle") is not None:
+            raise TokenEconomicsError(
+                f"{label}.oracle is ambiguous for an ERC-4626 share; use asset_oracle to price the declared underlying asset."
+            )
+        if kind == "erc20" and item.get("asset_oracle") is not None:
+            raise TokenEconomicsError(f"{label}.asset_oracle is only valid for ERC-4626 vault shares.")
         normalized = {
             "kind": kind,
             "address": address,
             "symbol": symbol,
-            "oracle": _address(item.get("oracle"), f"{label}.oracle"),
+            "oracle": _address(item.get(price_feed_field), f"{label}.{price_feed_field}"),
+            "price_subject": "token" if kind == "erc20" else "underlying_asset",
             "max_price_age_seconds": _uint(
                 item.get("max_price_age_seconds", default_age),
                 f"{label}.max_price_age_seconds", minimum=1, maximum=31_536_000,
@@ -228,6 +236,8 @@ def load_portfolio_manifest(value: Any) -> dict[str, Any]:
             )
         if kind == "erc4626":
             normalized["asset"] = _address(item.get("asset"), f"{label}.asset")
+            if normalized["asset"] == address:
+                raise TokenEconomicsError(f"{label}.asset must differ from the vault share address.")
         normalized_tokens.append(normalized)
     return {
         "schema_version": 1,
@@ -429,6 +439,7 @@ def measure_token_portfolio(
             "token_decimals": decimals,
             "asset_decimals": asset_decimals,
             "oracle": price,
+            "price_subject": token["price_subject"],
             "balances": balance_rows,
             "share_or_token_delta": gross_raw_delta,
             "underlying_asset_delta": gross_underlying_delta if token["kind"] == "erc4626" else None,
