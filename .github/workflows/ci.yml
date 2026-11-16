@@ -439,6 +439,8 @@ jobs:
           grep -q '/attack_research.py":' "$HOME/.lowkey/install-manifest.json"
           "$HOME/.foundry/bin/lk" attack research --help > /tmp/lowkey-attack-research-help.txt
           grep -q -- "--max-candidates" /tmp/lowkey-attack-research-help.txt
+          grep -q -- "--contract" /tmp/lowkey-attack-research-help.txt
+          grep -q -- "--function" /tmp/lowkey-attack-research-help.txt
       - name: Verify installed token economics module
         run: |
           test -f "$HOME/.lowkey/token_economics.py"
