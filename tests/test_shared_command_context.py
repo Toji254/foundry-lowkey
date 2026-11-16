@@ -180,6 +180,41 @@ class SharedCommandContextTests(unittest.TestCase):
             self.assertIsNone(config["rpc"])
             self.assertIsNone(config["actor"])
 
+    def test_legacy_project_rpc_survives_a_different_current_target_in_same_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "TokenLab"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            previously_selected = "0x" + "e" * 40
+            current_target = "0x" + "f" * 40
+            (root / ".audit").mkdir()
+            (root / ".audit" / "context.json").write_text(json.dumps({
+                "project": {"root": str(root)},
+                "target": {
+                    "address": current_target,
+                    "contract": "TokenV2",
+                    "source": "manual",
+                },
+                "actor_scope_initialized": False,
+            }), encoding="utf-8")
+            config = {
+                "target": previously_selected,
+                "target_contract": "TokenV1",
+                "target_owners": {previously_selected: str(root)},
+                "rpc": "http://127.0.0.1:8545",
+                "actor": "Alice",
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+                "abi_paths": {},
+            }
+            with patch.object(lk, "project_fixture_rpc_info", return_value=None), \
+                 patch.object(lk, "anvil_rpc_info", return_value={}):
+                resolved = lk.activate_project_context(config, root)
+                self.assertEqual(config["target"], current_target)
+                self.assertEqual(config["rpc"], "http://127.0.0.1:8545")
+                self.assertEqual(config["actor"], "Alice")
+                self.assertEqual(lk.effective_rpc(config), "http://127.0.0.1:8545")
+            self.assertEqual(resolved["rpc_source"], "legacy-project-owned")
+
     def test_managed_fixture_rpc_does_not_replace_saved_global_rpc_in_memory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "Token"

@@ -704,19 +704,27 @@ def anvil_rpc_info(config):
 def effective_rpc(config):
     project_info = project_fixture_rpc_info(config)
     fixture_rpc = project_info.get("url") if isinstance(project_info, dict) else None
+    if fixture_rpc:
+        return fixture_rpc
     try:
-        root = audit_context.foundry_project_root()
+        root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+        cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
+        if (
+            isinstance(cached, dict)
+            and cached.get("project_root") == str(root)
+            and cached.get("rpc")
+            and cached.get("rpc_source") != "project-fixture"
+        ):
+            return cached["rpc"]
+
         state = audit_context.load(root)
-        current_target = active_project_target(config, root)
-        legacy_matches = (
-            bool(current_target)
-            and str(config.get("target") or "").lower() == str(current_target).lower()
-            and shared_context.target_owned_by_project(config.get("target"), config, root)
+        legacy_rpc = (
+            config.get("rpc") or config.get("rpc_url")
+            if shared_context.target_owned_by_project(config.get("target"), config, root)
+            else None
         )
-        legacy_rpc = (config.get("rpc") or config.get("rpc_url")) if legacy_matches else None
         selected, _source = shared_context.choose_rpc(
             project_rpc=state.get("rpc"),
-            fixture_rpc=fixture_rpc,
             legacy_rpc=legacy_rpc,
         )
         if selected:
@@ -25488,6 +25496,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             print(f"RPC: {rpc_display(rpc) or 'none'} ({mode})" if rpc else "RPC: none (no local Anvil detected)")
             return
         sub=args[0]
+        config.pop("_resolved_project_context", None)
         if sub=="reset":
             config["rpc"]=None
             audit_context.update(audit_context.foundry_project_root(), rpc=None)

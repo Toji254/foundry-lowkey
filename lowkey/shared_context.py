@@ -186,15 +186,10 @@ def resolve_runtime_context(
             "source": "legacy-global-config",
         }
 
-    # A global RPC/actor is only project-owned when its associated selected
-    # target is explicitly registered to this same project. A target override
-    # does not erase a project RPC already stored in .audit/context.json.
-    global_target_matches = (
-        target is not None
-        and _valid_address(legacy_address)
-        and str(target.get("address")).lower() == legacy_address.lower()
-    )
-    legacy_rpc_allowed = legacy_owned and global_target_matches
+    # The global RPC and actor are project-scoped by ownership of the
+    # globally remembered target. A different active target within this same
+    # project must not force the operator to re-enter the project's RPC.
+    legacy_rpc_allowed = legacy_owned
     project_rpc = _text(state.get("rpc"))
     legacy_rpc = None
     if legacy_rpc_allowed:
