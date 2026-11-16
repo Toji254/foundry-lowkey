@@ -84,6 +84,14 @@ def rank_setup_candidates(
                     if isinstance(arg, Mapping)
                 ],
             })
+        allowed = {
+            str(item.get("signature") or "")
+            for item in compact
+            if item.get("signature")
+        }
+        if len(allowed) < 2:
+            return {"selected_signature": None, "mode": "deterministic", "reason": "candidate_context_too_small"}
+        result = module.request_structured(
         result = module.request_structured(
             purpose="setup_reasoning",
             task=(
