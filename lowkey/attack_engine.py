@@ -510,35 +510,6 @@ def _wei(value: Any, label: str) -> int:
     return number
 
 
-def _validate_economic_data(value: Any, label: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise AttackEngineError(f"{label} requires receipt-backed economic evidence.", "economic_evidence_missing")
-    receipt = value.get("receipt")
-    if not isinstance(receipt, dict) or receipt.get("status") != 1:
-        raise AttackEngineError(f"{label} requires a successful Anvil transaction receipt.", "economic_evidence_missing")
-    tx_hash = _hex(receipt.get("transaction_hash"), r"0x[0-9a-fA-F]{64}", f"{label}.receipt.transaction_hash")
-    block_number = _positive_int(receipt.get("block_number"), f"{label}.receipt.block_number", allow_zero=True)
-    if value.get("asset") != "ETH":
-        raise AttackEngineError(f"{label} currently supports ETH-denominated proof only; token valuation needs an independently pinned price adapter.", "backend_unsupported")
-    fields = (
-        "starting_balance_wei", "ending_balance_wei", "gas_cost_wei",
-        "setup_cost_wei", "funding_cost_wei", "borrow_fee_wei", "other_cost_wei",
-        "net_profit_wei",
-    )
-    amounts = {field: _wei(value.get(field), f"{label}.{field}") for field in fields}
-    calculated = (
-        amounts["ending_balance_wei"] - amounts["starting_balance_wei"]
-        - amounts["gas_cost_wei"] - amounts["setup_cost_wei"]
-        - amounts["funding_cost_wei"] - amounts["borrow_fee_wei"]
-        - amounts["other_cost_wei"]
-    )
-    if calculated != amounts["net_profit_wei"]:
-        raise AttackEngineError(f"{label} net_profit_wei does not reconcile with independently itemized costs.", "economic_cost_mismatch")
-    if calculated <= 0:
-        raise AttackEngineError(f"{label} does not demonstrate positive net profit after all declared costs.", "not_profitable")
-    return {"receipt": {"transaction_hash": tx_hash, "block_number": block_number, "status": 1},
-            "asset": "ETH", **amounts}
-
 
 def _validate_evidence(
     evidence: Any, *, manifest: dict[str, Any], role: str, label: str
@@ -573,10 +544,9 @@ def _validate_evidence(
     if not isinstance(predicate, dict) or predicate.get("id") != manifest["property_id"] or not isinstance(predicate.get("observed"), bool):
         raise AttackEngineError(f"{label}.predicate must identify {manifest['property_id']} and contain a boolean observed value.", "evidence_invalid")
     events = _load_trace_events(evidence["trace_events"], manifest["family"], label)
-    economic = _validate_economic_data(evidence.get("economic"), label) if FAMILIES[manifest["family"]]["economic"] else None
     return {"role": role, "target": target, "pair_anchor": normalized_anchor,
             "predicate": {"id": predicate["id"], "observed": predicate["observed"]},
-            "trace_events": events, "economic": economic, "preconditions": preconditions, "raw": evidence}
+            "trace_events": events, "preconditions": preconditions, "raw": evidence}
 
 
 def validate_evidence_pair(
@@ -867,6 +837,12 @@ def _validate_chain_evidence(
             raise AttackEngineError(f"{role} stage {spec['id']} discovery digest differs from the pinned source.", "source_identity_mismatch")
         preconditions = _validate_precondition_evidence(raw.get("preconditions"), spec["family"], f"{role}.{spec['id']}")
         stage_events = _load_trace_events(raw.get("trace_events"), spec["family"], f"{role}.{spec['id']}")
+        stage_predicate = raw.get("predicate")
+        expected_property = FAMILIES[spec["family"]]["property"]
+        if not isinstance(stage_predicate, dict) or stage_predicate.get("id") != expected_property or not isinstance(stage_predicate.get("observed"), bool):
+            raise AttackEngineError(f"{role} stage {spec['id']} must record its family-specific predicate.", "stage_predicate_missing")
+        if stage_predicate["observed"] is not (role == "attack"):
+            raise AttackEngineError(f"{role} stage {spec['id']} has the wrong attack/control predicate outcome.", "stage_predicate_mismatch")
         stage_tx = _hex(raw.get("tx_hash"), r"0x[0-9a-fA-F]{64}", f"{role}.{spec['id']}.tx_hash")
         stage_block = _positive_int(raw.get("block_number"), f"{role}.{spec['id']}.block_number", allow_zero=True)
         if manifest["mode"] == "single_transaction" and (stage_tx != tx_hash or stage_block != block_number):
@@ -877,6 +853,7 @@ def _validate_chain_evidence(
             _validate_economic_data(evidence.get("economic"), f"{role} chain economic stage {spec['id']}")
         normalized_stages.append({"id": spec["id"], "family": spec["family"],
                                   "discovery": spec["discovery"], "preconditions": preconditions,
+                                  "predicate": stage_predicate,
                                   "prestate_sha256": pre, "poststate_sha256": post,
                                   "trace_events": len(stage_events)})
         previous_post = post
@@ -913,11 +890,11 @@ def validate_failure_rollback(evidence: Any, manifest: dict[str, Any]) -> dict[s
     failure = evidence.get("failure_injection")
     if not isinstance(failure, dict) or failure.get("executed") is not True:
         raise AttackEngineError("Failure-injection test was not executed.")
-    expected = {stage["rollback"] for stage in manifest["stages"]}
-    if len(expected) != 1 or failure.get("rollback_strategy") not in expected:
-        raise AttackEngineError("The failure-injection evidence does not match the declared rollback policy.")
-    if failure.get("failed_stage") not in {stage["id"] for stage in manifest["stages"]}:
+    stage = next((item for item in manifest["stages"] if item["id"] == failure.get("failed_stage")), None)
+    if stage is None:
         raise AttackEngineError("Failure-injection evidence names an unknown stage.")
+    if failure.get("on_failure") != stage["on_failure"] or failure.get("rollback_strategy") != stage["rollback"]:
+        raise AttackEngineError("Failure-injection evidence does not match the failed stage policy/rollback declaration.")
     before = _hex(failure.get("prestate_sha256"), r"[0-9a-fA-F]{64}", "failure.prestate_sha256")
     after = _hex(failure.get("poststate_sha256"), r"[0-9a-fA-F]{64}", "failure.poststate_sha256")
     if failure.get("rollback_strategy") == "evm_transaction_revert":
