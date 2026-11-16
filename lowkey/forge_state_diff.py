@@ -15,6 +15,14 @@ except ImportError:
     except ImportError:
         from trace_evidence import TRACE_SCHEMA_VERSION, build_trace_event
 
+try:
+    from .trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+except ImportError:
+    try:
+        from lowkey.trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+    except ImportError:
+        from trace_schema import TRACE_SCHEMA_VERSION as CANONICAL_TRACE_SCHEMA_VERSION, normalize_forge_events
+
 def _address(value, label):
     if not isinstance(value,str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}",value):
         raise ValueError(f"Forge state diff {label} must be a 20-byte address.")
@@ -181,7 +189,18 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "input":entry["input"],"value_wei":_uint(entry["value"],"entry value")}
     entry_digest=hashlib.sha256(json.dumps(entry_payload,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     prestate_digest=hashlib.sha256(json.dumps(prestate,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    canonical_trace_events = None
+    canonical_trace_error = None
+    try:
+        canonical_trace_events = normalize_forge_events(trace_events)
+    except ValueError as exc:
+        # Keep the legacy evidence intact, but never silently coerce an
+        # unsupported EVM call kind into the P2 canonical TraceEvent enum.
+        canonical_trace_error = str(exc)
     return {"backend":"forge-state-diff","trace_schema_version":TRACE_SCHEMA_VERSION,
+        "canonical_trace_schema_version":CANONICAL_TRACE_SCHEMA_VERSION,
+        "canonical_trace_events":canonical_trace_events,
+        "canonical_trace_events_error":canonical_trace_error,
         "chain_id":chain_id,"block_number":block_number,
         "target_address":target,"target_code_hash":code_hash,"fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
