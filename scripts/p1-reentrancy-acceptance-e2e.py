@@ -418,13 +418,32 @@ def main() -> int:
         if valid_report.get("execution_attempted") is not False:
             raise AssertionError("Standalone --validate unexpectedly claims experiment execution.")
 
-        paired = run(
-            common + [
-                "--require-frozen",
-                "--output", ".audit/p1-reentrancy-acceptance/paired-control.json",
-            ],
-            root, env, timeout=900,
-        )
+        paired_output = root / ".audit" / "p1-reentrancy-acceptance" / "paired-control.json"
+        try:
+            paired = run(
+                common + [
+                    "--require-frozen",
+                    "--output", ".audit/p1-reentrancy-acceptance/paired-control.json",
+                ],
+                root, env, timeout=900,
+            )
+        except AssertionError:
+            # Retain the exact per-scenario recorder artifacts and failed
+            # machine-readable verdict in the uploaded CI bundle. This is
+            # diagnostic-only; it does not change the verdict or relax checks.
+            debug_root = evidence_root / "paired-debug"
+            debug_root.mkdir(parents=True, exist_ok=True)
+            debug_files = [
+                root / ".audit" / "godmode" / "control-state-diff.json",
+                root / ".audit" / "godmode" / "attack-state-diff.json",
+                root / ".audit" / "godmode" / "control.freeze.json",
+                root / "control.json",
+                paired_output,
+            ]
+            for debug_file in debug_files:
+                if debug_file.is_file():
+                    shutil.copy2(debug_file, debug_root / debug_file.name)
+            raise
         paired_report = read_json(root / ".audit" / "p1-reentrancy-acceptance" / "paired-control.json")
         if paired.returncode != 0:
             raise AssertionError(f"Paired control did not pass: {paired_report}")
