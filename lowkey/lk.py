@@ -13545,6 +13545,7 @@ def _lab_address_choices(config, accounts, rpc=None):
                 matching_entries = [
                     entry for entry in owner_entries
                     if str(entry.get("address") or "").lower() == address_key
+                    and str(entry.get("source") or "") in {"project-context", "broadcast"}
                     and _target_entry_is_protocol(owner_root, entry)
                 ]
                 canonical_names = {
