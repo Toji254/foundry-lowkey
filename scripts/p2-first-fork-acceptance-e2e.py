@@ -27,10 +27,10 @@ TARGET = "0xbe53a109b494e5c9f97b9cd39fe969be68bf6204"
 TARGET_DEPLOYMENT_BLOCK = 19_419_991
 ACTOR = "0x000000000000000000000000000000000000a11c"
 DEFAULT_FORK_UPSTREAMS = (
-    "https://eth-mainnet.public.blastapi.io",
     "https://rpc.mevblocker.io/noreverts",
+    "https://eth.blocktailor.com",
 )
-DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io/fullprivacy"
+DEFAULT_SOURCE_RPC = "https://eth-mainnet.public.blastapi.io"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
 FORGE_STD_COMMIT = "15b2df92a05d4d2f76a06653872fefb287e0e01c"
 ARTIFACT_ROOT = ROOT / ".audit" / "p2-first-fork"
