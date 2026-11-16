@@ -202,6 +202,8 @@ def normalize_struct_logs(
         "depth": root_depth,
         "trace_seq": 0,
         "address": root_address,
+        "code_address": _address(root_node.get("to") or root_node.get("createdAddress") or root_node.get("created_address")) or root_address,
+        "frame_id": "0",
         "ancestor_reverted": bool(root_node.get("error")),
     }]
     unmapped_storage = 0
@@ -260,10 +262,16 @@ def normalize_struct_logs(
                 )
             )
             child_reverted = bool(parent["ancestor_reverted"] or child_node.get("error"))
+            child_code_address = (
+                _address(child_node.get("to") or child_node.get("createdAddress") or child_node.get("created_address"))
+                if child_seq is not None else _target_from_step(previous, previous_op)
+            )
             active.append({
                 "depth": depth,
                 "trace_seq": child_seq,
                 "address": child_address,
+                "code_address": child_code_address,
+                "frame_id": parent["frame_id"] + "." + (str(child_seq) if child_seq is not None else "unmapped"),
                 "ancestor_reverted": child_reverted,
             })
             if child_seq is not None:
@@ -279,6 +287,7 @@ def normalize_struct_logs(
         op = str(raw_step.get("op") or "").upper()
         if op not in {"SLOAD", "SSTORE", "TLOAD", "TSTORE"}:
             continue
+        access_seq = access_count
         access_count += 1
         stack = raw_step.get("stack")
         is_write = op in {"SSTORE", "TSTORE"}
@@ -328,15 +337,28 @@ def normalize_struct_logs(
             if is_transient:
                 transient_write_count += 1
 
+        pc = raw_step.get("pc")
+        if pc is not None:
+            try:
+                pc = _quantity(pc, f"structLogs[{index}].pc")
+            except ValueError:
+                unmapped_storage += 1
+                continue
         frame_storage[frame_seq].append({
             "account": active[-1]["address"],
+            "code_address": active[-1]["code_address"],
+            "frame_id": active[-1]["frame_id"],
             "slot": slot,
             "previous_value": previous_value,
             "new_value": new_value,
+            "read_value": previous_value if not is_write else None,
             "is_write": is_write,
             "access_type": "write" if is_write else "read",
             "storage_kind": "transient" if is_transient else "persistent",
             "opcode": op,
+            "access_seq": access_seq,
+            "opcode_index": index,
+            "pc": pc,
             "reverted": bool(active[-1]["ancestor_reverted"]),
         })
 
