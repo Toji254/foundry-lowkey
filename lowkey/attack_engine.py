@@ -596,7 +596,7 @@ def validate_evidence_pair(
     }
 
 
-def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str, run_id: str) -> dict[str, Any]:
+def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str, run_id: str, experiment_id: str) -> dict[str, Any]:
     forge = shutil.which("forge")
     if not forge:
         raise AttackEngineError("Foundry forge is unavailable; refusing to substitute another backend.", "backend_unsupported")
@@ -606,7 +606,8 @@ def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str
     argv = [forge, "test", "--match-path", test["test_file"], "--match-test", test["test_name"], "-vvvv"]
     environment = os.environ.copy()
     environment.update({
-        "LOWKEY_EXPERIMENT_ID": run_id,
+        "LOWKEY_EXPERIMENT_ID": experiment_id,
+        "LOWKEY_EXPERIMENT_RUN_ID": run_id,
         "LOWKEY_EXPERIMENT_ROLE": role,
         "LOWKEY_EVIDENCE_PATH": str(evidence),
     })
@@ -630,7 +631,7 @@ def _run_forge_test(root: Path, test: dict[str, str], timeout: int, *, role: str
     return execution
 
 
-def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str]], timeout: int, run_id: str) -> dict[str, Any]:
+def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str]], timeout: int, run_id: str, experiment_id: str) -> dict[str, Any]:
     try:
         from .behavioral_validation import validate_mutations
     except ImportError:
@@ -642,9 +643,10 @@ def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str
     result = validate_mutations(
         root, argv, mutants, timeout_seconds=timeout,
         env={
-            "LOWKEY_EXPERIMENT_ID": run_id,
+            "LOWKEY_EXPERIMENT_ID": experiment_id,
+            "LOWKEY_EXPERIMENT_RUN_ID": run_id,
             "LOWKEY_EXPERIMENT_ROLE": "attack",
-            "LOWKEY_EVIDENCE_PATH": ".audit/lowkey/mutation-evidence.json",
+            "LOWKEY_EVIDENCE_PATH": ".lowkey-mutation-evidence.json",
         },
     )
     summary = result.get("summary") or {}
@@ -660,14 +662,14 @@ def run_experiment(value: Any, root: str | Path = ".", *, output_path: str | Non
     manifest = validate_experiment_manifest(value, base)
     run_id = hashlib.sha256((manifest["id"] + str(time.time_ns())).encode()).hexdigest()[:20]
     started = time.monotonic()
-    attack_run = _run_forge_test(base, manifest["attack"], manifest["timeout_seconds"], role="attack", run_id=run_id)
+    attack_run = _run_forge_test(base, manifest["attack"], manifest["timeout_seconds"], role="attack", run_id=run_id, experiment_id=manifest["id"])
     if attack_run["status"] != "passed":
         raise AttackEngineError(f"Attack Forge test did not pass: {attack_run['status']}.", "attack_execution_failed")
-    control_run = _run_forge_test(base, manifest["control"], manifest["timeout_seconds"], role="control", run_id=run_id)
+    control_run = _run_forge_test(base, manifest["control"], manifest["timeout_seconds"], role="control", run_id=run_id, experiment_id=manifest["id"])
     if control_run["status"] != "passed":
         raise AttackEngineError(f"Control Forge test did not pass: {control_run['status']}.", "control_execution_failed")
     pair = validate_evidence_pair(attack_run["evidence"], control_run["evidence"], manifest)
-    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"], run_id)
+    mutation = _mutation_gate(base, manifest["attack"], manifest["mutants"], manifest["timeout_seconds"], run_id, manifest["id"])
     report = {
         "schema_version": SCHEMA_VERSION, "run_id": run_id,
         "status": "VERIFIED_LOCAL_EXPERIMENT",
@@ -958,7 +960,7 @@ def run_chain(value: Any, root: str | Path = ".", *, output_path: str | None = N
     control_run = _run_forge_test(base, manifest["control"], manifest["timeout_seconds"], role="control", run_id=run_id)
     if control_run["status"] != "passed":
         raise AttackEngineError("Control chain test did not pass.", "control_execution_failed")
-    failure_run = _run_forge_test(base, manifest["failure"], manifest["timeout_seconds"], role="failure", run_id=run_id)
+    failure_run = _run_forge_test(base, manifest["failure"], manifest["timeout_seconds"], role="failure", run_id=run_id, experiment_id=manifest["id"])
     if failure_run["status"] != "passed":
         raise AttackEngineError("Failure-injection/rollback test did not pass.", "rollback_failed")
     pair = validate_chain_evidence_pair(attack_run["evidence"], control_run["evidence"], manifest)
