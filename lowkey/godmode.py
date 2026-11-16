@@ -246,7 +246,7 @@ GODMODE_HELP_GUIDES = {
         ]
     },
     "godmode": {
-        "usage": "lk godmode [<target-address>] [--root PROJECT_FOLDER] [options]",
+        "usage": "lk godmode [<target-address>] [--root DIR] [options]",
         "when": "Use this as the first audit command. It scans the project source without needing a deployed contract. Add an address and RPC only when you also want to inspect a live deployment.",
         "variations": [
             "START HERE — source scan with no target address. Run this from the folder that contains foundry.toml:  lk godmode",
@@ -264,7 +264,7 @@ GODMODE_HELP_GUIDES = {
             "DEPLOYED_ADDRESS — optional 0x-prefixed address of a contract already deployed on the chain served by --rpc-url. It is not a Solidity filename or contract name. Copy a [LIVE] address from lk targets. Omit it for a source-only scan."
         ],
         "options": [
-            "--root PROJECT_FOLDER — the folder containing the code being reviewed (normally the folder with foundry.toml and src/). . means your current terminal folder. It is not a .sol file and it is not a contract address.",
+            "--root DIR — the folder containing the code being reviewed (normally the folder with foundry.toml and src/). . means your current terminal folder. It is not a .sol file and it is not a contract address.",
             "--rpc-url URL — the blockchain node to read. Use the same network where DEPLOYED_ADDRESS exists. For your local Anvil lab the usual URL is http://127.0.0.1:8545. Chain inspection is read-only unless you separately add --attack.",
             "--profile light|balanced|deep — controls how many storage slots the on-chain proxy scan checks: light checks 40; balanced/deep check up to 120. It has no effect on a source-only scan.",
             "--attack — opt in to lk break after reconnaissance. Requires a deployed address and local Anvil. This runs active experiments on the local lab; do not use a production RPC. Without a passing matched control, an observed result is not a confirmed BREAK.",
