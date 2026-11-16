@@ -192,6 +192,54 @@ def resolve_fork_snapshot(
     return fork_block, common_header, source_proof, fork_code
 
 
+def resolve_fork_snapshot_with_fallback(
+    primary_rpc: str, source_rpc: str, deployment_block: int
+) -> tuple[str, int, dict[str, Any], dict[str, Any], str, list[dict[str, str]]]:
+    """Resolve a common pinned block, falling back before any fork use on HTTP 429."""
+    attempts: list[dict[str, str]] = []
+    candidates = [
+        primary_rpc,
+        os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL") or DEFAULT_FORK_FALLBACK_RPC,
+    ]
+    seen: set[str] = set()
+    last_rate_limit: Exception | None = None
+    for index, candidate in enumerate(candidates):
+        key = urlparse_safe(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if key == urlparse_safe(source_rpc):
+            attempts.append({
+                "provider": key,
+                "status": "refused_not_independent",
+            })
+            continue
+        try:
+            fork_block, common_header, source_proof, fork_code = resolve_fork_snapshot(
+                candidate, source_rpc, deployment_block
+            )
+            attempts.append({
+                "provider": key,
+                "status": "selected" if index == 0 else "selected_fallback",
+            })
+            return candidate, fork_block, common_header, source_proof, fork_code, attempts
+        except Exception as exc:
+            if not is_rate_limit_failure(str(exc)):
+                raise
+            last_rate_limit = exc
+            attempts.append({
+                "provider": key,
+                "status": "rate_limited",
+                "reason": f"{type(exc).__name__}: {exc}"[:500],
+            })
+    if last_rate_limit is not None:
+        raise RuntimeError(
+            "All independent P2 fork RPC providers were rate-limited before the pinned block could be resolved: "
+            + "; ".join(f"{item['provider']}={item['status']}" for item in attempts)
+        ) from last_rate_limit
+    raise RuntimeError("No independent P2 fork RPC provider was available after applying provider exclusions.")
+
+
 def prepare_forge_project(project: Path) -> None:
     (project / "src").mkdir(parents=True)
     (project / "test").mkdir()
@@ -262,16 +310,15 @@ def main() -> int:
     if urlparse_safe(fork_upstream) == urlparse_safe(source_rpc):
         raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
 
-    chain_id = quantity(rpc(fork_upstream, "eth_chainId", []), "fork upstream chain ID")
     source_chain_id = quantity(rpc(source_rpc, "eth_chainId", []), "source chain ID")
-    if chain_id != 1 or source_chain_id != 1:
-        raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
+    if source_chain_id != 1:
+        raise AssertionError(f"P2 source/archive RPC must be Ethereum mainnet; received chain ID {source_chain_id}.")
 
     # Resolve the source identity first and require Sourcify's strict exact
     # match before choosing the fork block. The deployment block comes from
     # Sourcify metadata, not a hand-maintained fixture constant.
     from lowkey.godmode import _eip1167_implementation, _verify_sourcify_exact
-    target_source_identity = _verify_sourcify_exact(chain_id, TARGET)
+    target_source_identity = _verify_sourcify_exact(source_chain_id, TARGET)
     target_deployment_block = int(target_source_identity["deployment_block"])
 
     # Fail early when either endpoint is a latest-state-only RPC. P2 needs
@@ -287,16 +334,16 @@ def main() -> int:
     )
     if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
         raise AssertionError("Source RPC cannot return target runtime at its Sourcify deployment block; archive state is required.")
-    fork_block, common_header, source_proof, fork_code = resolve_fork_snapshot(
+    (
+        fork_upstream, fork_block, common_header, source_proof, fork_code,
+        fork_provider_attempts,
+    ) = resolve_fork_snapshot_with_fallback(
         fork_upstream, source_rpc, target_deployment_block
     )
 
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     anvil_log = ARTIFACT_ROOT / "anvil.log"
     env = os.environ.copy()
-    fork_provider_attempts = [{
-        "provider": urlparse_safe(fork_upstream), "status": "selected",
-    }]
     anvil_process: subprocess.Popen | None = None
     try:
         try:
