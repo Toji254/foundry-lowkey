@@ -96,9 +96,16 @@ class LauncherRoutingTests(unittest.TestCase):
         launcher = (Path(__file__).resolve().parents[1] / "bin" / "lk").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("build|test|", launcher)
-        self.assertNotIn("|build|", launcher)
-        self.assertNotIn("|test|", launcher)
+        # The top-level AI repair shim recognizes build/test only to strip
+        # invocation-local --guide/--lazy flags. It must then fall through to
+        # the native project router rather than execute Forge itself.
+        repair_shim, remainder = launcher.split("# Native attack encyclopedia", 1)
+        self.assertIn("build|test|", repair_shim)
+        self.assertIn('set -- "${repair_args[@]}"', repair_shim)
+        self.assertNotIn("exec forge", repair_shim)
+        self.assertNotIn("forge_tools.py\" test", remainder)
+        self.assertIn('exec python3 "$HOME/.lowkey/foundry_build.py" "$@"', remainder)
+        self.assertIn('exec python3 "$HOME/.lowkey/lk.py" "$@"', remainder)
 
 
 
