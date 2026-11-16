@@ -4050,7 +4050,15 @@ def godmode(args):
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
                "reproof must not depend on state-fabricating cheatcodes"]}
     out=safe_out(root,".audit/godmode/latest.json"); write_json(out,payload)
-    prov=safe_out(root,".audit/godmode/provenance.json"); write_json(prov,{"created_at":now(),"sha256":hashlib.sha256(out.read_bytes()).hexdigest(),"chain_id":chain,"fork_block":block,"artifacts":["latest.json"]})
+    provenance_args=[".audit/godmode/latest.json","--root",str(root),
+                     "--output",".audit/godmode/provenance.json"]
+    if chain is not None:
+        provenance_args += ["--chain-id",str(chain)]
+    if block is not None:
+        provenance_args += ["--fork-block",str(block)]
+    provenance_status=provenance(provenance_args)
+    if provenance_status != 0:
+        raise RuntimeError("Godmode could not create its schema-valid provenance manifest.")
     print("GODMODE: "+payload["overall_status"])
     for s in stages: print("  ["+s["status"].upper()+"] "+s["name"]+": "+str(s.get("reason",s.get("signals",s.get("output",""))))[:190])
     print("Report: "+str(out.relative_to(root))); return 2 if blockers else 0
