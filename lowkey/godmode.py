@@ -22,8 +22,9 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 try:
     import shared_context
+    import capability_registry
 except ImportError:
-    from lowkey import shared_context
+    from lowkey import shared_context, capability_registry
 
 try:
     from .arithmetic_review import scan_project as scan_unsigned_arithmetic
@@ -38,68 +39,13 @@ EIP1967 = {
     "admin": "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103",
     "beacon": "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
 }
-CAPABILITIES = [
-(1,"cheat-fingerprint","Fingerprint dangerous source sequences","partial"),
-(2,"control","Sequential control gate","implemented"),
-(3,"mutation-score","Harness mutation score","implemented"),
-(4,"target-coverage","Coverage restricted to target lines","implemented"),
-(5,"provenance","Artifact hash and run provenance","partial"),
-(6,"sandbox","Isolated untrusted build/test execution","partial"),
-(7,"decompile","Unverified bytecode decompilation","adapter-required"),
-(8,"storage-infer","Probabilistic storage-layout inference","partial"),
-(9,"proxy-resolve","Generic proxy and implementation resolution","partial"),
-(10,"selectors-full","Runtime selector extraction and resolution","partial"),
-(11,"cfg","Control-flow outline","partial"),
-(12,"reentrancy-graph","Storage read/call/write graph","partial"),
-(13,"fallback-map","Fallback and callback map","implemented"),
-(14,"calldata-mine","Historical calldata corpus","partial"),
-(15,"attack-forge","Executable attack-library harness starter","partial"),
-(16,"invariant-forge","Invariant candidate generator","partial"),
-(17,"archetype","Protocol-shaped attack suites","partial"),
-(18,"token-weird","Adversarial token fixtures","partial"),
-(19,"oracle-map","Oracle dependency and skew map","partial"),
-(20,"flashmax","Flash-loan venue integration","adapter-required"),
-(21,"time","Timestamp/block-boundary campaign","partial"),
-(22,"sig-matrix","Signature replay matrix","partial"),
-(23,"init-frontrun","Initializer exposure analysis","partial"),
-(24,"path","Symbolic path enumeration","adapter-required"),
-(25,"compose","Cross-contract attack-chain planner","partial"),
-(26,"fidelity","Evidence fidelity ledger","implemented"),
-(27,"reprove","Cheatcode-free local-fork reproof","partial"),
-(28,"economic","Net-profit calculation","implemented"),
-(29,"gas-ladder","Measured gas/DoS threshold search","partial"),
-(30,"state-diff","Predicted/observed storage diff","partial"),
-(31,"watch","Deployment/code-change watcher","partial"),
-(32,"godmode","End-to-end audit orchestrator","partial"),
-(33,"custody","Asset custody and authority map","partial"),
-(34,"questions","Question-driven audit loop","implemented"),
-(35,"agent-split","Planner/attacker/verifier/critic roles","partial"),
-(36,"verify-hack","Historical exploit replay","adapter-required"),
-(37,"unravel","Transaction call-tree decoder","partial"),
-(38,"bundle","Private bundle simulation","adapter-required"),
-(39,"sandwich","Sandwich/JIT ordering simulation","adapter-required"),
-(40,"fork-cache","Local Anvil snapshot cache","partial"),
-(41,"upgrade-diff","Implementation upgrade diff","partial"),
-(42,"cross-vm","Cross-VM static/native detector routing","partial"),
-(43,"learn","Evidence-backed experience learning","implemented"),
-(44,"report","Reproducible audit report","implemented"),
-]
+CAPABILITIES = capability_registry.CAPABILITIES
 
 HELP_FLAGS = {"-h", "--h", "--help", "help"}
 
 # This list mirrors the first Godmode dispatch case in bin/lk. The help test
 # compares the two, so adding a shell route without adding it here fails CI.
-ROUTED_COMMANDS = (
-    "capabilities", "godmode", "control", "trace-parity", "steps", "mutation-score",
-    "target-coverage", "provenance", "fidelity", "sandbox", "cheat-fingerprint", "decompile",
-    "storage-infer", "proxy-resolve", "selectors-full", "cfg",
-    "reentrancy-graph", "fallback-map", "calldata-mine", "attack-forge",
-    "invariant-forge", "archetype", "assumptions", "capability", "token-weird", "oracle-map", "skew",
-    "flashmax", "time", "sig-matrix", "init-frontrun", "path", "compose",
-    "reprove", "economic", "gas-ladder", "watch", "custody", "agent-split",
-    "verify-hack", "unravel", "bundle", "sandwich", "jit", "fork-cache",
-    "upgrade-diff", "cross-vm", "learn", "report", "questions",
-)
+ROUTED_COMMANDS = capability_registry.ROUTED_COMMANDS
 
 GODMODE_COMMAND_DETAILS = {
     "capabilities": {
@@ -6309,14 +6255,27 @@ def main(argv=None):
     if cmd in ROUTED_COMMANDS and _is_godmode_help_request(rest):
         return print_godmode_command_help(cmd)
     if cmd=="capabilities":
-        if any(str(token).strip().lower() in HELP_FLAGS for token in rest):
-            help_parser = LowkeyArgumentParser(
-                prog="lk capabilities",
-                description="Show the registered Godmode capability inventory and implementation state.",
-            )
-            help_parser.parse_args(rest)
-        for n,name,title,status in CAPABILITIES: print(f"{n:02d} {name:20} [{status:16}] {title}")
+        parser = LowkeyArgumentParser(
+            prog="lk capabilities",
+            description="Show the central capability registry, including declared inputs, dependencies, outputs and safety requirements.",
+        )
+        parser.add_argument("--json", action="store_true", help="Print all 44 capability contracts as JSON.")
+        parser.add_argument("--detail", help="Print one capability contract and its dependency plan.")
+        ns = parser.parse_args(rest)
+        if ns.detail:
+            plan = capability_registry.dependency_plan(ns.detail)
+            if plan is None:
+                print(f"Unknown capability: {ns.detail}", file=sys.stderr)
+                return 2
+            print(json.dumps(plan, indent=2, sort_keys=True))
+            return 0
+        if ns.json:
+            print(json.dumps(capability_registry.list_capabilities(), indent=2, sort_keys=True))
+            return 0
+        for n,name,title,status in CAPABILITIES:
+            print(f"{n:02d} {name:20} [{status:16}] {title}")
         print("All 44 capabilities are registered. Partial and adapter-required are explicit.")
+        print("Use --json for contracts or --detail NAME for one dependency plan.")
         return 0
     if cmd=="godmode": return godmode(rest)
     if cmd=="control": return control(rest)

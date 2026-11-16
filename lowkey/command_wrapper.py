@@ -17,20 +17,13 @@ from typing import Iterable
 try:
     import audit_context
     import shared_context
+    import capability_registry
 except ImportError:
-    from lowkey import audit_context, shared_context
+    from lowkey import audit_context, shared_context, capability_registry
 
 
 HELP_FLAGS = {"-h", "--h", "--help", "help"}
-RPC_CONTEXT_COMMANDS = {
-    "attack", "block", "coverage", "forge", "godmode", "control", "trace-parity",
-    "decompile", "storage-infer", "proxy-resolve", "selectors-full",
-    "reentrancy-graph", "fallback-map", "calldata-mine", "oracle-map", "skew",
-    "flashmax", "time", "sig-matrix", "init-frontrun", "path", "compose",
-    "reprove", "economic", "gas-ladder", "watch", "custody", "verify-hack",
-    "unravel", "bundle", "sandwich", "jit", "fork-cache", "upgrade-diff",
-    "cross-vm", "state-diff",
-}
+RPC_CONTEXT_COMMANDS = capability_registry.RPC_CONTEXT_COMMANDS
 
 
 def _load_global_config() -> dict:
