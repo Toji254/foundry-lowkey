@@ -3098,7 +3098,9 @@ class LowkeyCastTests(unittest.TestCase):
                 "abi_paths": {},
             }
 
-            with patch.object(lk, "auto_abi_path", return_value=None):
+            with patch.object(lk, "_run_resource_aware_foundry_build", return_value=0), patch.object(
+                lk, "_resource_aware_forge_threads", return_value=1
+            ), patch.object(lk, "auto_abi_path", return_value=None):
                 with patch.object(
                     lk,
                     "derive_default_anvil_key",
@@ -3169,7 +3171,10 @@ class LowkeyCastTests(unittest.TestCase):
                 "targets": {},
                 "abi_paths": {},
             }
-            with patch.object(lk.audit_context, "foundry_project_root", return_value=root),                  patch.object(lk, "auto_abi_path", return_value=None):
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "auto_abi_path", return_value=None), \
+                 patch.object(lk, "_run_resource_aware_foundry_build", return_value=0), \
+                 patch.object(lk, "_resource_aware_forge_threads", return_value=1):
                 result = lk.run_project_lab_script(
                     config,
                     root,
@@ -4980,6 +4985,10 @@ contract Pool {
             events.append(("bootstrap", str(project_info["root"]), kwargs.get("reason")))
             return 0
 
+        def fake_resource_build(build_root, args, *, lab_phase=False):
+            events.append(("resource-build", str(build_root), list(args), lab_phase))
+            return 0
+
         def fake_foundry(command, capture=False):
             events.append(("native", list(command), capture))
             return 0
@@ -4987,8 +4996,8 @@ contract Pool {
         with patch.object(lk, "detected_project_root", return_value=root), patch.object(
             lk, "detect_project", return_value=info
         ), patch.object(lk, "bootstrap_project", side_effect=fake_bootstrap), patch.object(
-            lk, "run_foundry", side_effect=fake_foundry
-        ):
+            lk, "_run_resource_aware_foundry_build", side_effect=fake_resource_build
+        ), patch.object(lk, "run_foundry", side_effect=fake_foundry):
             self.assertEqual(lk.run_native_project_command({}, "build", []), 0)
             self.assertEqual(lk.run_native_project_command({}, "test", []), 0)
 
@@ -4996,13 +5005,13 @@ contract Pool {
             events,
             [
                 ("bootstrap", str(root), "prepare"),
-                ("native", ["build"], True),
+                ("resource-build", str(root), [], False),
                 ("bootstrap", str(root), "prepare"),
                 ("native", ["test"], True),
             ],
         )
 
-    def test_foundry_build_retries_once_after_repairable_dependency_failure(self):
+    def test_foundry_build_uses_resource_aware_planner_after_preflight(self):
         root = pathlib.Path("/tmp/lowkey-foundry-dependency-retry")
         info = {
             "root": str(root),
@@ -5013,27 +5022,19 @@ contract Pool {
         events = []
 
         def fake_bootstrap(project_info, args=(), **kwargs):
-            events.append(
-                ("bootstrap", kwargs.get("force", False), kwargs.get("reason"))
-            )
+            events.append(("bootstrap", kwargs.get("force", False), kwargs.get("reason")))
             return 0
 
-        native_results = [
-            lk.CommandResult(
-                'Source "@openzeppelin/contracts/access/Ownable.sol" not found',
-                1,
-            ),
-            lk.CommandResult("Compilation completed successfully", 0),
-        ]
-
-        def fake_foundry(command, capture=False):
-            events.append(("native", list(command), capture))
-            return native_results.pop(0)
+        def fake_resource_build(build_root, args, *, lab_phase=False):
+            events.append(("resource-build", str(build_root), list(args), lab_phase))
+            return 0
 
         with patch.object(lk, "detected_project_root", return_value=root), patch.object(
             lk, "detect_project", return_value=info
         ), patch.object(lk, "bootstrap_project", side_effect=fake_bootstrap), patch.object(
-            lk, "run_foundry", side_effect=fake_foundry
+            lk, "_run_resource_aware_foundry_build", side_effect=fake_resource_build
+        ), patch.object(
+            lk, "run_foundry", side_effect=AssertionError("build must use the resource-aware planner")
         ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             code = lk.run_native_project_command({}, "build", [])
 
@@ -5042,9 +5043,7 @@ contract Pool {
             events,
             [
                 ("bootstrap", False, "prepare"),
-                ("native", ["build"], True),
-                ("bootstrap", True, "dependency"),
-                ("native", ["build"], True),
+                ("resource-build", str(root), [], False),
             ],
         )
 
@@ -8218,7 +8217,9 @@ def withdraw(amount: uint256):
                  patch.object(lk, "audit_context"), \
                  patch.object(lk, "_project_source_mutations", return_value=[]), \
                  patch.object(lk, "discover_deployments", return_value=[]), \
-                 patch.object(lk, "derive_default_anvil_key", return_value="0x"+"3"*64):
+                 patch.object(lk, "derive_default_anvil_key", return_value="0x"+"3"*64), \
+                 patch.object(lk, "_run_resource_aware_foundry_build", return_value=0), \
+                 patch.object(lk, "_resource_aware_forge_threads", return_value=1):
                 result = lk.run_project_lab_script(
                     config, root, str(script), "http://127.0.0.1:8545",
                     [address], "0x"+"3"*64,
