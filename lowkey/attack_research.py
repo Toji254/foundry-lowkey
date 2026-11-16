@@ -53,13 +53,19 @@ def _git_revision(root: Path) -> str | None:
     return None
 
 
-def _collect_sources(root: Path) -> list[dict[str, Any]]:
+def _collect_sources(
+    root: Path,
+    *,
+    contract_name: str | None = None,
+    function_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """Collect a small source set, prioritizing the explicitly selected target."""
     excluded = {
         ".git", ".audit", ".venv", "venv", "__pycache__", "node_modules",
         "out", "cache", "artifacts", "broadcast", "vendor", "vendors",
         "lib", "test", "tests", "mocks", "mock", "fixtures", "fixture",
     }
-    found: list[dict[str, Any]] = []
+    paths: list[Path] = []
     for folder in ("src", "contracts", "sources"):
         source_root = root / folder
         if not source_root.is_dir() or source_root.is_symlink():
@@ -76,36 +82,75 @@ def _collect_sources(root: Path) -> list[dict[str, Any]]:
                 path = current_path / name
                 if path.is_symlink() or path.suffix.lower() not in {".sol", ".vy"}:
                     continue
-                try:
-                    if path.stat().st_size <= 0 or path.stat().st_size > MAX_FILE_BYTES:
-                        continue
-                    raw = path.read_bytes()
-                    source = raw.decode("utf-8")
-                except (OSError, UnicodeError):
-                    continue
-                try:
-                    relative = path.relative_to(root).as_posix()
-                except ValueError:
-                    continue
-                try:
-                    try:
-                        from . import ai_harness
-                    except ImportError:
-                        import ai_harness
-                    excerpt = ai_harness._redact_sensitive_source(source)
-                except Exception:
-                    excerpt = source
-                found.append({
-                    "path": relative,
-                    "source_sha256": _sha256(raw),
-                    "line_count": len(source.splitlines()),
-                    "source_excerpt": excerpt[:4800],
-                    "_excerpt": excerpt[:4800],
-                    "_source": source,
-                })
-                if len(found) >= MAX_FILES:
-                    return found
-    return found
+                paths.append(path)
+                if len(paths) >= 500:
+                    break
+            if len(paths) >= 500:
+                break
+        if len(paths) >= 500:
+            break
+
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
+    for path in paths:
+        try:
+            size = path.stat().st_size
+            if size <= 0 or size > MAX_FILE_BYTES:
+                continue
+            raw = path.read_bytes()
+            source = raw.decode("utf-8")
+        except (OSError, UnicodeError):
+            continue
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        try:
+            try:
+                from . import ai_harness
+            except ImportError:
+                import ai_harness
+            excerpt = ai_harness._redact_sensitive_source(source)
+        except Exception:
+            excerpt = source
+        excerpt = excerpt[:4800]
+        score = 0
+        searchable = source
+        try:
+            try:
+                from .test_generation_analysis import mask_solidity
+            except ImportError:
+                from test_generation_analysis import mask_solidity
+            searchable = mask_solidity(source)
+        except Exception:
+            pass
+        if contract_name:
+            if re.search(
+                r"\b(?:abstract\s+)?contract\s+" + re.escape(contract_name) + r"\b",
+                searchable,
+            ):
+                score += 100
+            elif path.stem.lower() == contract_name.lower():
+                score += 35
+            elif contract_name.lower() in path.stem.lower():
+                score += 15
+        if function_name and re.search(
+            r"\bfunction\s+" + re.escape(function_name) + r"\s*\(",
+            searchable,
+        ):
+            score += 25
+        row = {
+            "path": relative,
+            "source_sha256": _sha256(raw),
+            "line_count": len(source.splitlines()),
+            "source_excerpt": excerpt,
+            "_source": source,
+            "_excerpt": excerpt,
+        }
+        ranked.append((score, relative, row))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    chosen = [row for _, _, row in ranked[:MAX_FILES]]
+    return chosen
 
 
 def _graph_context(root: Path) -> dict[str, Any]:
@@ -255,13 +300,23 @@ def research_attack_hypotheses(
     *,
     max_candidates: int = 5,
     output_path: str | None = None,
+    contract_name: str | None = None,
+    function_name: str | None = None,
 ) -> dict[str, Any]:
     base = Path(root).expanduser().resolve()
     if not base.is_dir():
         raise AttackResearchError(f"Project root is not a directory: {base}")
     if type(max_candidates) is not int or not 1 <= max_candidates <= MAX_CANDIDATES:
         raise AttackResearchError(f"max_candidates must be 1-{MAX_CANDIDATES}.")
-    source_rows = _collect_sources(base)
+    for label, value in (("contract", contract_name), ("function", function_name)):
+        if value is not None and (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,119}", value)
+        ):
+            raise AttackResearchError(f"Selected {label} must be a simple Solidity identifier.")
+    source_rows = _collect_sources(
+        base, contract_name=contract_name, function_name=function_name,
+    )
     if not source_rows:
         raise AttackResearchError("No bounded first-party Solidity/Vyper source files were available.")
     sources = {row["path"]: row for row in source_rows}
@@ -271,6 +326,8 @@ def research_attack_hypotheses(
     ]
     context = {
         "project_root_label": base.name,
+        "selected_contract": contract_name,
+        "selected_function": function_name,
         "source_revision": _git_revision(base),
         "source_files": source_context,
         "protocol_graph": _graph_context(base),
@@ -330,6 +387,8 @@ def research_attack_hypotheses(
         "status": "CANDIDATES_ONLY",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "project_root_label": base.name,
+        "selected_contract": contract_name,
+        "selected_function": function_name,
         "source_revision": context["source_revision"],
         "provider": config.get("provider"),
         "model": config.get("model"),
@@ -372,12 +431,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lk attack research")
     parser.add_argument("--root", default=".")
     parser.add_argument("--max-candidates", type=int, default=5)
+    parser.add_argument("--contract", help="Prioritize this exact Solidity contract in the bounded source context.")
+    parser.add_argument("--function", dest="function_name", help="Prioritize this exact function within the selected contract.")
     parser.add_argument("--output")
     parser.add_argument("--json", action="store_true")
     ns = parser.parse_args(argv)
     try:
         report = research_attack_hypotheses(
             ns.root, max_candidates=ns.max_candidates, output_path=ns.output,
+            contract_name=ns.contract, function_name=ns.function_name,
         )
     except (AttackResearchError, OSError, ValueError) as exc:
         print(f"lk attack research: {exc}", file=sys.stderr)
