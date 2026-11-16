@@ -117,10 +117,9 @@ def _parser_arguments_from_source():
         "init-frontrun", "custody", "cross-vm", "cfg",
     ):
         discovered.setdefault(command, set()).add("--root")
-    for command in ("proxy-resolve", "storage-infer", "selectors-full"):
-        discovered.setdefault(command, set()).update({
-            "--rpc-url", "--slots", "--no-resolve", "--key",
-        })
+    discovered.setdefault("proxy-resolve", set()).update({"--rpc-url", "--slots"})
+    discovered.setdefault("storage-infer", set()).update({"--rpc-url", "--slots", "--no-resolve", "--key"})
+    discovered.setdefault("selectors-full", set()).add("--rpc-url")
     for command in ("invariant-forge", "archetype"):
         discovered.setdefault(command, set()).add("--root")
 
@@ -175,6 +174,21 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
 
 
 
+    def test_every_godmode_help_page_uses_the_comprehensive_layout(self):
+        required_sections = (
+            "What it does:", "When to use:", "USAGE", "COMMAND VARIATIONS",
+            "ARGUMENTS", "OPTIONS / MODES", "RECOMMENDED WORKFLOW",
+            "OUTPUT / EVIDENCE", "SAFETY / LIMITATIONS", "RELATED COMMANDS",
+            "HELP TIP",
+        )
+        self.assertEqual(set(godmode.GODMODE_HELP_GUIDES), set(godmode.ROUTED_COMMANDS))
+        for command in godmode.ROUTED_COMMANDS:
+            result, rendered = _capture_help(command)
+            self.assertEqual(result, 0, rendered)
+            for section in required_sections:
+                with self.subTest(command=command, section=section):
+                    self.assertIn(section, rendered)
+
     def test_godmode_help_is_a_real_quickstart_not_just_flag_inventory(self):
         result, output = _capture_help("godmode", "--h")
         self.assertEqual(result, 0, output)
@@ -189,6 +203,21 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, output)
+
+    def test_fidelity_help_explains_inspection_recording_and_strength(self):
+        result, rendered = _capture_help("fidelity")
+        self.assertEqual(result, 0, rendered)
+        for token in ("--inspect", "--record", "--cheatcode", "--strength",
+                      "heuristic", "simulated-funds", "reproduced-fork",
+                      ".audit", "evidence ledger"):
+            self.assertIn(token, rendered)
+
+    def test_bundle_help_discloses_relay_data_sharing(self):
+        result, rendered = _capture_help("bundle")
+        self.assertEqual(result, 0, rendered)
+        for token in ("--tx", "--target-block", "--relay-url", "--auth-signature",
+                      "raw signed transactions", "relay URL", "simulation"):
+            self.assertIn(token.lower(), rendered.lower())
 
     def test_root_help_in_launcher_appends_godmode_catalog(self):
         with tempfile.TemporaryDirectory() as temp_home:

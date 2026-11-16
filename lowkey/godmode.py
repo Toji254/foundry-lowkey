@@ -220,6 +220,1503 @@ _CAPABILITY_BY_NAME = {
 }
 
 
+GODMODE_HELP_GUIDES = {
+    "capabilities": {
+        "usage": "lk capabilities",
+        "when": "Use this before choosing an advanced command. It shows what is registered and whether Lowkey considers each capability implemented, partial, or adapter-required.",
+        "variations": [
+            "lk capabilities — print the full capability table; no files or chain state are changed."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "None."
+        ],
+        "workflow": [
+            "Read the status column first. Prefer implemented capabilities for a workflow; treat partial as an investigative aid and adapter-required as unavailable until its adapter exists."
+        ],
+        "output": [
+            "A numbered capability inventory with status and a short description."
+        ],
+        "limits": "A registered command name is not proof that its full workflow is implemented. Partial and adapter-required are intentional, meaningful states.",
+        "related": [
+            "lk godmode --h",
+            "lk report --h"
+        ]
+    },
+    "godmode": {
+        "usage": "lk godmode [target-address] [--root DIR] [options]",
+        "when": "Use this as the audit entry point. Omit the target for source-only reconnaissance; supply a target and RPC when you also need chain/proxy/selector information.",
+        "variations": [
+            "lk godmode --root . — source reconnaissance; no target or RPC is needed.",
+            "lk godmode --root . --plan-only — static-only run; disables RPC and all optional execution stages.",
+            "lk godmode <address> --root . --rpc-url http://127.0.0.1:8545 — source scan plus read-only chain reconnaissance.",
+            "lk godmode <address> --root . --rpc-url http://127.0.0.1:8545 --attack — opt into local-Anvil attack exploration."
+        ],
+        "arguments": [
+            "target-address — optional deployed contract address. It is not the project source path; use --root for that."
+        ],
+        "options": [
+            "--root DIR — project/source directory; default: current directory.",
+            "--rpc-url URL — RPC for read-only chain reconnaissance. Required for on-chain work.",
+            "--profile light|balanced|deep — proxy/storage reconnaissance depth; default: balanced.",
+            "--attack — explicitly invoke lk break. Requires a target and a local Anvil endpoint.",
+            "--control-manifest FILE — paired-control manifest to pass into the attack workflow.",
+            "--mutation-manifest FILE — run a configured mutation campaign.",
+            "--coverage-source FILE — run Forge coverage for a source file.",
+            "--plan-only — static-only; skips RPC, attack, mutation and coverage. Still writes the local report. Cannot be combined with --attack."
+        ],
+        "workflow": [
+            "Start with `lk godmode --root .`.",
+            "Inspect the arithmetic/source signals in `.audit/godmode/latest.json`.",
+            "Use a focused command (for example `lk reentrancy-graph --root .` or `lk oracle-map --root .`) to investigate a lead.",
+            "Only after reviewing the target and disposable chain, consider `--attack` with matched controls."
+        ],
+        "output": [
+            ".audit/godmode/latest.json — machine-readable stages and source signals.",
+            ".audit/godmode/provenance.json — report hash and run context.",
+            "Use `lk report --root .` to render the saved run as Markdown."
+        ],
+        "limits": "Static signals are candidates, not confirmed vulnerabilities. --attack can send transactions on local Anvil; never point it at a production RPC. REVIEW_REQUIRED means proof gates remain incomplete.",
+        "related": [
+            "lk capabilities",
+            "lk break --h",
+            "lk control --h",
+            "lk report --h"
+        ]
+    },
+    "control": {
+        "usage": "lk control MANIFEST --root DIR --rpc-url URL [options]",
+        "when": "Use this to compare a candidate attack with a matched sequential control before promoting a BREAK. Freeze the experiment first, validate the freeze, then execute against those frozen inputs.",
+        "variations": [
+            "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --freeze — freeze inputs and expectations without running the attack/control.",
+            "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate — validate the frozen spec without executing it.",
+            "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --require-frozen — execute only when a matching frozen spec exists.",
+            "Add --source-rpc-url <archive-url> when independent source-chain verification is required."
+        ],
+        "arguments": [
+            "MANIFEST — JSON experiment manifest describing target, attack, sequential control and expected evidence."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--rpc-url URL — required. Local Anvil for callTracer mode or pinned fork RPC for Forge state-diff mode.",
+            "--source-rpc-url URL — optional independent read-only archive RPC.",
+            "--output FILE — verdict JSON; default: .audit/godmode/control.json.",
+            "--freeze — hash/freeze manifest, commands, harnesses and expectations; does not execute them.",
+            "--validate — validate the frozen specification only.",
+            "--freeze-file FILE — integrity-bound freeze file; default: .audit/godmode/control.freeze.json.",
+            "--require-frozen — refuse execution without a matching freeze.",
+            "--non-economic — require a passing semantic invariant instead of positive profit."
+        ],
+        "workflow": [
+            "Create the manifest with an attack and a sequential control that differ only in the suspected exploit condition.",
+            "Run --freeze and keep the resulting freeze file with the audit evidence.",
+            "Run --validate after any manifest or harness change.",
+            "Execute with --require-frozen only when the frozen inputs match the test you intend to run."
+        ],
+        "output": [
+            "Machine-readable verdict at --output.",
+            "Frozen expectation file at --freeze-file when --freeze is used."
+        ],
+        "limits": "The control is meaningful only when attack and control are matched. Anvil callTracer mode is local-Anvil-only. Forge state-diff evidence is structural; it is not automatically gas-adjusted EOA profit.",
+        "related": [
+            "lk godmode --h",
+            "lk trace-parity --h",
+            "lk fidelity --h",
+            "lk reprove --h"
+        ]
+    },
+    "trace-parity": {
+        "usage": "lk trace-parity FORGE.json ANVIL.json [options]",
+        "when": "Use it after the same frozen experiment has been recorded on Forge and Anvil. It compares canonical trace fields and reports mismatches or evidence loss.",
+        "variations": [
+            "lk trace-parity .audit/forge-control.json .audit/anvil-control.json --root .",
+            "Use --forge-scenario control --anvil-scenario control when comparing controls instead of the default attack scenario."
+        ],
+        "arguments": [
+            "FORGE.json — saved Forge evidence containing canonical_trace_events.",
+            "ANVIL.json — saved Anvil evidence containing canonical_trace_events."
+        ],
+        "options": [
+            "--root DIR — project root for input/output paths; default: .",
+            "--forge-scenario control|attack|negative_control — scenario selected from Forge evidence; default: attack.",
+            "--anvil-scenario control|attack|negative_control — scenario selected from Anvil evidence; default: attack.",
+            "--output FILE — parity report; default: .audit/godmode/trace-parity.json."
+        ],
+        "workflow": [
+            "Run the same experiment on each backend with the same target, actors and inputs.",
+            "Save both canonical trace evidence files.",
+            "Run the comparator with the matching scenario names.",
+            "Review every UNKNOWN or degraded field instead of treating it as equal."
+        ],
+        "output": [
+            "JSON parity report; default: .audit/godmode/trace-parity.json."
+        ],
+        "limits": "Trace parity does not make Anvil prestateTracer storage deltas equivalent to Forge per-access storage observations. It preserves and reports those limitations.",
+        "related": [
+            "lk control --h",
+            "lk provenance --h",
+            "lk fidelity --h"
+        ]
+    },
+    "steps": {
+        "usage": "lk steps MANIFEST.json [--root DIR] [options]",
+        "when": "Use this to validate a typed Step[] execution plan and render a reviewable Foundry harness before running Forge.",
+        "variations": [
+            "lk steps .audit/steps.json --root .",
+            "Choose a custom harness path with --output test/GeneratedSteps.t.sol.",
+            "Choose a custom machine-readable refusal path with --refusal-output .audit/refusal.json."
+        ],
+        "arguments": [
+            "MANIFEST.json — JSON file describing the ordered Step[] sequence, target and typed call data."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--output FILE — generated Solidity harness; default: .audit/godmode/steps/step-harness.t.sol.",
+            "--refusal-output FILE — machine-readable refusal JSON; default: .audit/godmode/steps-refusal.json."
+        ],
+        "workflow": [
+            "Prepare the manifest from supported typed steps.",
+            "Run `lk steps ...` to validate it and render the harness.",
+            "Read the JSON status and any refusal reason before compiling.",
+            "Review the generated Solidity, then run Forge tests yourself."
+        ],
+        "output": [
+            "Generated harness plus SHA-256 digest on success.",
+            "A structured refusal in stdout and --refusal-output when a plan is invalid or unsupported."
+        ],
+        "limits": "The family labels share a generic executable sequence; they are not separate protocol-specific exploit generators. Unsupported generic flash_borrow/reenter callback steps are refused rather than silently approximated.",
+        "related": [
+            "lk attack-forge --h",
+            "lk control --h",
+            "lk target-coverage --h"
+        ]
+    },
+    "mutation-score": {
+        "usage": "lk mutation-score MANIFEST.json [options]",
+        "when": "Use after creating a security test suite to check whether it catches deliberate, representative code changes.",
+        "variations": [
+            "lk mutation-score .audit/mutations.json",
+            "Set a stricter threshold with --min-score 0.95.",
+            "Increase the per-mutant timeout with --timeout 600."
+        ],
+        "arguments": [
+            "MANIFEST.json — mutation campaign manifest describing mutations and the tests/commands used to detect them."
+        ],
+        "options": [
+            "--min-score FLOAT — minimum accepted score from 0.0 to 1.0; default: 0.90.",
+            "--timeout SECONDS — per-command timeout; default: 300.",
+            "--output FILE — report path; default: .audit/verification/mutation-score-report.json."
+        ],
+        "workflow": [
+            "Write a mutation manifest that changes security-relevant conditions (for example, removing a balance guard).",
+            "Run the command and inspect killed, survived, skipped and failed mutants.",
+            "Improve tests when a meaningful mutation survives."
+        ],
+        "output": [
+            "JSON mutation report at --output."
+        ],
+        "limits": "A mutation score measures test sensitivity. It does not independently establish exploitability, deployment authenticity or impact.",
+        "related": [
+            "lk steps --h",
+            "lk target-coverage --h",
+            "lk report --h"
+        ]
+    },
+    "target-coverage": {
+        "usage": "lk target-coverage SOURCE.sol [options]",
+        "when": "Use to verify that a generated test reaches the exact source lines involved in a suspected issue.",
+        "variations": [
+            "lk target-coverage src/Token.sol",
+            "Restrict the measured lines with --start-line 30 --end-line 55."
+        ],
+        "arguments": [
+            "SOURCE.sol — source file inside the project being audited."
+        ],
+        "options": [
+            "--start-line N — first line included; default: 1.",
+            "--end-line N — optional inclusive last line.",
+            "--root DIR — Foundry project root; default: .",
+            "--output FILE — report path; default: .audit/godmode/target-coverage.json."
+        ],
+        "workflow": [
+            "Run the relevant Forge tests first or let the coverage command run Forge coverage.",
+            "Inspect which target lines were hit and which were not.",
+            "Add assertions for the security invariant; do not stop at line reachability."
+        ],
+        "output": [
+            "JSON report with line hits, uncovered lines and percentage."
+        ],
+        "limits": "Coverage is reachability evidence, not assertion quality or security proof. Requires Forge and an LCOV report.",
+        "related": [
+            "lk steps --h",
+            "lk mutation-score --h",
+            "lk control --h"
+        ]
+    },
+    "provenance": {
+        "usage": "lk provenance [ARTIFACT ...] [options]",
+        "when": "Use when you need to preserve exactly which artifacts, project revision and tool versions support an audit result.",
+        "variations": [
+            "lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 19000000",
+            "Sign the resulting provenance record with --signing-key ./keys/audit-signing-key.pem."
+        ],
+        "arguments": [
+            "ARTIFACT ... — zero or more files relative to --root. Every supplied file must exist inside the project root."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--chain-id ID — chain identifier to record.",
+            "--fork-block N — block number anchoring the evidence.",
+            "--signing-key FILE — optional PEM signing key for a detached signature; requires OpenSSL.",
+            "--output FILE — provenance JSON path; default: .audit/godmode/provenance.json."
+        ],
+        "workflow": [
+            "Run the audit and collect reports, harnesses and trace artifacts.",
+            "Pass the relevant artifact paths and chain/fork metadata.",
+            "Keep the JSON, detached signature (if requested) and original files together."
+        ],
+        "output": [
+            "JSON provenance record containing SHA-256 hashes, Git revision and detected tool versions.",
+            "Optional detached .sig file."
+        ],
+        "limits": "A hash or signature proves artifact identity/integrity, not that the experiment was correct or the finding is valid. Protect the signing key; never commit it.",
+        "related": [
+            "lk report --h",
+            "lk fidelity --h",
+            "lk trace-parity --h"
+        ]
+    },
+    "fidelity": {
+        "usage": "lk fidelity [options]",
+        "when": "Use before trusting a PoC. Inspect its harness for synthetic setup/state changes, or record the declared evidence strength in the local evidence ledger.",
+        "variations": [
+            "lk fidelity --inspect test/Exploit.t.sol — inspect one harness; read-only.",
+            "lk fidelity --record --strength simulated-funds --cheatcode vm.deal — append a declared fidelity record.",
+            "lk fidelity --root . — list previously recorded fidelity events."
+        ],
+        "arguments": [
+            "None. The harness path is supplied to --inspect."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--inspect FILE — inspect an existing harness inside the project root.",
+            "--record — append a fidelity_record event to the evidence ledger.",
+            "--cheatcode NAME — repeat to record declared cheatcodes used by the experiment.",
+            "--strength heuristic|simulated-funds|reproduced-fork — declared evidence strength; default: heuristic."
+        ],
+        "workflow": [
+            "Run --inspect on generated tests before accepting their result.",
+            "Review flags such as vm.deal, vm.store, vm.etch, impersonation and time overrides.",
+            "Record the declared evidence level only when the description matches what was actually done.",
+            "Use cheatcode-free fork reproof for stronger evidence."
+        ],
+        "output": [
+            "--inspect prints a JSON fidelity inventory.",
+            "--record appends an event to the local evidence ledger.",
+            "Without --inspect/--record, prints existing fidelity records."
+        ],
+        "limits": "The scanner is static and may miss aliases, wrappers or custom state mutation. A record is an operator declaration, not an independently verified claim.",
+        "related": [
+            "lk cheat-fingerprint --h",
+            "lk reprove --h",
+            "lk control --h"
+        ]
+    },
+    "sandbox": {
+        "usage": "lk sandbox [--root DIR] [--timeout SECONDS] -- COMMAND [ARG ...]",
+        "when": "Use before running an untrusted build/test command. Lowkey copies the project while excluding sensitive files and runs the command with bubblewrap in a network-disabled sandbox.",
+        "variations": [
+            "lk sandbox --root . --timeout 300 -- forge test",
+            "lk sandbox --root . --timeout 120 -- python3 scripts/check.py"
+        ],
+        "arguments": [
+            "COMMAND [ARG ...] — exact executable and arguments after the mandatory `--` separator. Shell expansion is not performed."
+        ],
+        "options": [
+            "--root DIR — project to copy into the sandbox; default: .",
+            "--timeout SECONDS — command timeout; default: 300."
+        ],
+        "workflow": [
+            "Choose a project root that does not need network access.",
+            "Place `--` before the command to execute.",
+            "Inspect the command output and exit code; the temporary copy is removed afterwards."
+        ],
+        "output": [
+            "The child command's stdout, stderr and exit code."
+        ],
+        "limits": "Requires bubblewrap (`bwrap`). Lowkey refuses to run unsandboxed when it is unavailable. Network is disabled; .git, .audit, node_modules, build caches, environment files and credential-like files are excluded from the copied project.",
+        "related": [
+            "lk godmode --h",
+            "lk fidelity --h"
+        ]
+    },
+    "cheat-fingerprint": {
+        "usage": "lk cheat-fingerprint [--root DIR]",
+        "when": "Use to scan source and test files for cheatcode patterns that can fabricate balances, storage, code, time or caller identity and weaken exploit evidence.",
+        "variations": [
+            "lk cheat-fingerprint --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Run after generating a harness or importing a PoC.",
+            "Inspect each hit in context; decide whether it is setup-only, required for a unit test, or invalidates the claimed reproduction.",
+            "For production-fidelity evidence, replace synthetic setup with real transactions and a pinned fork."
+        ],
+        "output": [
+            "JSON list of matched source locations and pattern categories."
+        ],
+        "limits": "Static pattern matching. A hit does not automatically make a test invalid; a clean scan does not prove that no state fabrication exists.",
+        "related": [
+            "lk fidelity --h",
+            "lk reprove --h"
+        ]
+    },
+    "decompile": {
+        "usage": "lk decompile --h",
+        "when": "Use only when verified source is unavailable and a supported Heimdall decompiler adapter has been installed and configured.",
+        "variations": [
+            "lk decompile --h — review the current adapter requirements."
+        ],
+        "arguments": [
+            "No executable target arguments are exposed by this adapter-required placeholder yet."
+        ],
+        "options": [
+            "No executable options are exposed yet."
+        ],
+        "workflow": [
+            "Resolve the chain and deployed bytecode first.",
+            "Install and configure a supported Heimdall adapter through the project toolchain.",
+            "Do not treat decompiler output as verified source; compare selectors, runtime bytecode and behaviour."
+        ],
+        "output": [
+            "No decompilation output is currently produced by this command."
+        ],
+        "limits": "Adapter-required. The command fails closed rather than guessing a decompiler invocation.",
+        "related": [
+            "lk selectors-full --h",
+            "lk proxy-resolve --h",
+            "lk storage-infer --h"
+        ]
+    },
+    "storage-infer": {
+        "usage": "lk storage-infer TARGET [options]",
+        "when": "Use when source/verified storage layout is unavailable and you need candidate storage slots to investigate on-chain.",
+        "variations": [
+            "lk storage-infer 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545",
+            "Add --key <value> for repeated key-derived slot probes when you have a specific mapping key."
+        ],
+        "arguments": [
+            "TARGET — deployed contract address."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is the configured Lowkey RPC.",
+            "--slots N — number of sequential slots to inspect, capped at 120; default: 120.",
+            "--no-resolve — skip optional key-slot derivation/resolution.",
+            "--key VALUE — repeat for candidate mapping keys used in derived-slot probes."
+        ],
+        "workflow": [
+            "Start with verified source or compiler storageLayout if available.",
+            "Use storage-infer only to generate candidate slots when layout is missing.",
+            "Cross-check candidate slots against known getters, state changes and transaction traces."
+        ],
+        "output": [
+            "JSON candidate non-zero slots and any key-derived probes/derivation status."
+        ],
+        "limits": "Probabilistic inference, not a decoded storage layout. Slot collisions, packed fields, mapping hashing and proxy indirection can mislead.",
+        "related": [
+            "lk proxy-resolve --h",
+            "lk state-diff --h",
+            "lk trace --h"
+        ]
+    },
+    "proxy-resolve": {
+        "usage": "lk proxy-resolve TARGET [--rpc-url URL] [--slots N]",
+        "when": "Use before reviewing a deployed contract when it may be a proxy. It inspects standard proxy slots and bounded storage candidates for implementation-like addresses.",
+        "variations": [
+            "lk proxy-resolve 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545",
+            "Reduce the sequential slot scan with --slots 40."
+        ],
+        "arguments": [
+            "TARGET — deployed contract address."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is the configured Lowkey RPC.",
+            "--slots N — sequential storage slots to inspect, capped at 120; default: 120."
+        ],
+        "workflow": [
+            "Resolve the implementation candidate.",
+            "Check whether the candidate has code and identify the proxy standard.",
+            "Verify the actual implementation and admin semantics against runtime bytecode and deployment history."
+        ],
+        "output": [
+            "JSON proxy slot candidates with code-presence and confidence hints."
+        ],
+        "limits": "Candidate slots only. A non-zero slot containing an address is not proof of a proxy; custom proxies and beacon patterns need separate review.",
+        "related": [
+            "lk upgrade-diff --h",
+            "lk selectors-full --h",
+            "lk storage-infer --h"
+        ]
+    },
+    "selectors-full": {
+        "usage": "lk selectors-full TARGET [--rpc-url URL]",
+        "when": "Use to extract PUSH4-like values from deployed runtime bytecode and try to resolve them to known function signatures.",
+        "variations": [
+            "lk selectors-full 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545"
+        ],
+        "arguments": [
+            "TARGET — deployed contract address."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is the configured Lowkey RPC."
+        ],
+        "workflow": [
+            "Fetch runtime bytecode.",
+            "Review resolved and unresolved selector candidates.",
+            "Confirm candidates against actual dispatch logic and ABI/source when available."
+        ],
+        "output": [
+            "JSON rows of selector candidates, possible signatures and resolution status."
+        ],
+        "limits": "PUSH4 constants can be mistaken for function selectors. A resolved signature is a candidate, not proof that the contract exposes or routes to it.",
+        "related": [
+            "lk proxy-resolve --h",
+            "lk decompile --h",
+            "lk unravel --h"
+        ]
+    },
+    "cfg": {
+        "usage": "lk cfg [--root DIR]",
+        "when": "Use for a quick static control-flow outline of functions containing external-call patterns.",
+        "variations": [
+            "lk cfg --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Run the outline to identify entry, external-call, state-write and exit points.",
+            "Open the listed function in source and reconstruct branch/require conditions manually.",
+            "Use a targeted test or symbolic tool for path feasibility."
+        ],
+        "output": [
+            "JSON outline with source file, function and heuristic nodes."
+        ],
+        "limits": "This is not a compiler CFG or complete path graph. It is a source heuristic and may omit branches, modifiers, inherited functions and indirect calls.",
+        "related": [
+            "lk reentrancy-graph --h",
+            "lk fallback-map --h",
+            "lk path --h"
+        ]
+    },
+    "reentrancy-graph": {
+        "usage": "lk reentrancy-graph [--root DIR]",
+        "when": "Use to identify possible storage variables read before and written after external calls—the source shape worth checking for reentrancy.",
+        "variations": [
+            "lk reentrancy-graph --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Inspect each call/read/write relationship.",
+            "Confirm that the same storage location is involved, including aliases and internal helpers.",
+            "Build a malicious callback and matched sequential control before claiming a vulnerability."
+        ],
+        "output": [
+            "JSON graph-like rows with function, candidate variables, call location and source excerpt."
+        ],
+        "limits": "Heuristic only. Shared variable names do not prove storage identity or an exploitable callback; modifiers, inheritance and proxy flows can be missed.",
+        "related": [
+            "lk cfg --h",
+            "lk fallback-map --h",
+            "lk control --h"
+        ]
+    },
+    "fallback-map": {
+        "usage": "lk fallback-map [--root DIR]",
+        "when": "Use to inventory fallback, receive and callback/receiver surfaces that may be externally reachable.",
+        "variations": [
+            "lk fallback-map --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Review each fallback/receive/hook match.",
+            "Trace what state and assets it can access.",
+            "Check caller expectations, reentrancy guards and token/NFT receiver semantics."
+        ],
+        "output": [
+            "JSON source matches for fallback, receive and generic hook patterns."
+        ],
+        "limits": "Pattern map only; it does not prove reachability, callback ordering or impact.",
+        "related": [
+            "lk reentrancy-graph --h",
+            "lk cfg --h",
+            "lk token-weird --h"
+        ]
+    },
+    "calldata-mine": {
+        "usage": "lk calldata-mine TARGET HASH_FILE [--rpc-url URL]",
+        "when": "Use to examine a supplied corpus of transaction hashes against a target and group repeated calldata/function-selector patterns.",
+        "variations": [
+            "lk calldata-mine 0x1111111111111111111111111111111111111111 .audit/tx-hashes.txt --rpc-url http://127.0.0.1:8545"
+        ],
+        "arguments": [
+            "TARGET — contract address to compare against transaction destinations.",
+            "HASH_FILE — text file containing one transaction hash per line; invalid lines are ignored."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is the configured Lowkey RPC."
+        ],
+        "workflow": [
+            "Prepare a file of relevant transaction hashes.",
+            "Run the command against the target address.",
+            "Review grouped selectors and repeated calldata; decode important calls with the ABI and trace."
+        ],
+        "output": [
+            "JSON groups of observed transaction/calldata patterns."
+        ],
+        "limits": "Only examines the supplied hashes; it does not search the whole chain or prove that repeated calldata is suspicious.",
+        "related": [
+            "lk unravel --h",
+            "lk selectors-full --h",
+            "lk trace --h"
+        ]
+    },
+    "attack-forge": {
+        "usage": "lk attack forge ATTACK_ID --target TARGET [--root DIR]",
+        "when": "Use to render a Foundry harness starter for a known entry in Lowkey's attack library.",
+        "variations": [
+            "lk attack forge <attack-id-or-slug> --target 0x1111111111111111111111111111111111111111 --root ."
+        ],
+        "arguments": [
+            "ATTACK_ID — attack catalogue ID or slug.",
+            "--target TARGET — required contract address to place in the generated harness."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Find a relevant attack ID/slug in the attack catalogue.",
+            "Generate the harness starter.",
+            "Read the harness and fixture carefully; add protocol-specific setup, actors and assertions before running Forge."
+        ],
+        "output": [
+            ".audit/attack-forge/<ID>/AttackHarness.template.t.sol and, when an available library snippet exists, a vulnerable fixture."
+        ],
+        "limits": "A harness starter is not an exploit proof. It may contain placeholder logic and requires protocol-specific assertions and a matched control.",
+        "related": [
+            "lk capabilities",
+            "lk steps --h",
+            "lk control --h"
+        ]
+    },
+    "invariant-forge": {
+        "usage": "lk invariant-forge [PROFILE] [--root DIR]",
+        "when": "Use to create a protocol-shaped invariant checklist/starter before writing a Foundry invariant handler.",
+        "variations": [
+            "lk invariant-forge vault --root .",
+            "lk invariant-forge lending --root .",
+            "lk invariant-forge amm --root .",
+            "lk invariant-forge staking --root .",
+            "lk invariant-forge bridge --root .",
+            "lk invariant-forge governance --root ."
+        ],
+        "arguments": [
+            "PROFILE — vault, lending, amm, staking, bridge or governance; defaults to general, which currently is not a generated profile."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Choose the closest protocol profile.",
+            "Inspect the generated invariants and bind them to the real protocol's accounting units and fees.",
+            "Implement handlers/ghost state and assert each invariant in Forge."
+        ],
+        "output": [
+            ".audit/godmode/invariant-forge-<profile>.md"
+        ],
+        "limits": "Starter checklist only. It does not generate a complete executable handler or prove that an invariant is correct for the protocol.",
+        "related": [
+            "lk archetype --h",
+            "lk steps --h",
+            "lk mutation-score --h"
+        ]
+    },
+    "archetype": {
+        "usage": "lk archetype [PROFILE] [--root DIR]  OR  lk archetype classify --root DIR --json",
+        "when": "Use to classify a project into a known protocol shape or generate an invariant-oriented starter checklist.",
+        "variations": [
+            "lk archetype classify --root . --json — classify source using deterministic archetype packs.",
+            "lk archetype vault --root . — write a vault starter checklist.",
+            "lk archetype lending --root . — write a lending starter checklist."
+        ],
+        "arguments": [
+            "PROFILE — vault, lending, amm, staking, bridge or governance for starter generation.",
+            "classify — nested action that performs source-backed classification; it is not a profile name."
+        ],
+        "options": [
+            "--root DIR — source/project root; default: .",
+            "--json — classification output format for the classify subcommand.",
+            "Additional classify options are shown by `lk archetype classify --help`."
+        ],
+        "workflow": [
+            "Run `lk archetype classify --root . --json`.",
+            "Check whether the result is OBSERVED or UNCLASSIFIED and inspect its source citations.",
+            "Then use `lk assumptions` and `lk capability` to review extracted trust assumptions and skipped protocol-specific capabilities."
+        ],
+        "output": [
+            "Classification JSON and, for a profile starter, .audit/godmode/archetype-<profile>.md."
+        ],
+        "limits": "Classification is source-level and confidence-bounded. It is not deployment authentication or vulnerability proof. Ambiguous targets should remain UNCLASSIFIED.",
+        "related": [
+            "lk assumptions --h",
+            "lk capability --h",
+            "lk invariant-forge --h"
+        ]
+    },
+    "assumptions": {
+        "usage": "lk assumptions [--root DIR] [--report FILE]",
+        "when": "Use after archetype classification to re-read the source citations in the saved assumption ledger and verify their hashes and cited lines.",
+        "variations": [
+            "lk assumptions --root .",
+            "Use --report .audit/archetype/report.json when reviewing a particular saved classification report."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--report FILE — optional saved classification report to inspect."
+        ],
+        "workflow": [
+            "Run `lk archetype classify --root . --json` first.",
+            "Run assumptions to validate that extracted source citations still resolve.",
+            "Manually decide whether each trust assumption is valid or violated."
+        ],
+        "output": [
+            "JSON assumption rows and citation-integrity status."
+        ],
+        "limits": "A source citation proves where an assumption was extracted, not whether the assumption is true or exploitable.",
+        "related": [
+            "lk archetype --h",
+            "lk capability --h",
+            "lk report --h"
+        ]
+    },
+    "capability": {
+        "usage": "lk capability [--root DIR] [--report FILE]",
+        "when": "Use after archetype classification to see which protocol-specific checks are supported and which are explicitly skipped in generic mode.",
+        "variations": [
+            "lk capability --root .",
+            "Pass --report <classification-report> to bind the review to a saved report."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--report FILE — optional saved classification report."
+        ],
+        "workflow": [
+            "Classify the project first.",
+            "Run capability to inspect negotiation results and skip reasons.",
+            "Do not interpret skipped/partial functionality as a passing security check."
+        ],
+        "output": [
+            "JSON capability negotiation and generic-mode skip list."
+        ],
+        "limits": "Only capabilities marked implemented are considered available. Partial and adapter-required entries remain skipped.",
+        "related": [
+            "lk archetype --h",
+            "lk assumptions --h",
+            "lk capabilities"
+        ]
+    },
+    "token-weird": {
+        "usage": "lk token-weird [--root DIR]",
+        "when": "Use to generate adversarial ERC-20 mock contracts for testing integrations against non-standard token behaviour.",
+        "variations": [
+            "lk token-weird --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Generate the fixture source.",
+            "Inspect the behaviours exposed by each mock (fees, false returns, pauses, rebasing/callback-like behaviour).",
+            "Write focused tests proving the protocol handles each behaviour safely."
+        ],
+        "output": [
+            ".audit/godmode/token-weird/WeirdTokens.sol"
+        ],
+        "limits": "Generates local test fixtures only. It does not deploy tokens, test your protocol automatically or imply every token has every behaviour.",
+        "related": [
+            "lk fallback-map --h",
+            "lk invariant-forge --h",
+            "lk steps --h"
+        ]
+    },
+    "oracle-map": {
+        "usage": "lk oracle-map [--root DIR]",
+        "when": "Use to map source-level price-feed, pool spot-price and TWAP references before tracing their consumers.",
+        "variations": [
+            "lk oracle-map --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Review feed/pool read locations and any visible freshness checks.",
+            "Trace every consumer into collateral, share, liquidation or swap calculations.",
+            "Test stale/invalid rounds and manipulation resistance at the consumer; measure a downstream asset delta."
+        ],
+        "output": [
+            "JSON oracle dependency/source matches and next-step guidance."
+        ],
+        "limits": "A read match does not prove price manipulation, stale data or exploitable impact. No pool manipulation is inferred from a source match.",
+        "related": [
+            "lk skew --h",
+            "lk compose --h",
+            "lk economic --h"
+        ]
+    },
+    "skew": {
+        "usage": "lk skew MANIFEST.json [--root DIR]",
+        "when": "Use to prepare an oracle/pool skew investigation plan from explicit pool, asset, oracle-read, consumer-call and amount inputs.",
+        "variations": [
+            "lk skew .audit/skew.json --root ."
+        ],
+        "arguments": [
+            "MANIFEST.json — JSON requiring pool, asset, oracle_read, consumer_call and amounts fields."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Create a manifest with the target pool/asset and the precise oracle/consumer call data.",
+            "Run skew to generate the plan.",
+            "Validate the pool and consumer semantics, then build a controlled fork test."
+        ],
+        "output": [
+            "A JSON plan including the manifest hash and supplied experiment dimensions."
+        ],
+        "limits": "This command constructs a plan from supplied data; it does not by itself move a market, manipulate an oracle or prove economic impact.",
+        "related": [
+            "lk oracle-map --h",
+            "lk compose --h",
+            "lk economic --h"
+        ]
+    },
+    "flashmax": {
+        "usage": "lk flashmax VENUE ASSET --adapter FILE [--rpc-url URL]",
+        "when": "Use only when you have an explicit venue-specific adapter for Aave, Balancer or Uniswap V3 and want to inspect the configured pool liquidity call.",
+        "variations": [
+            "lk flashmax aave 0x1111111111111111111111111111111111111111 --adapter .audit/adapters/aave.json --rpc-url http://127.0.0.1:8545",
+            "Supported venue labels: aave, balancer, uniswap-v3."
+        ],
+        "arguments": [
+            "VENUE — aave, balancer or uniswap-v3.",
+            "ASSET — token contract address.",
+            "--adapter FILE — required JSON adapter matching the venue and asset; includes pool and explicit liquidity_call calldata."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is the configured Lowkey RPC."
+        ],
+        "workflow": [
+            "Prepare and validate a venue adapter from trusted ABI/source information.",
+            "Run the command to read the configured pool's liquidity response.",
+            "Design and implement a real callback/repayment harness separately."
+        ],
+        "output": [
+            "JSON adapter and pool/liquidity observations."
+        ],
+        "limits": "An adapter-backed liquidity read is not a flash-loan execution. Lowkey does not borrow funds or claim profitability here.",
+        "related": [
+            "lk invariant-forge --h",
+            "lk economic --h",
+            "lk compose --h"
+        ]
+    },
+    "time": {
+        "usage": "lk time [--root DIR] [--output FILE]",
+        "when": "Use to generate a starter Foundry time/block boundary test template for a protocol that uses timestamps or block numbers.",
+        "variations": [
+            "lk time --root .",
+            "Choose a custom file with --output test/TimeLadder.t.sol."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--output FILE — generated Solidity template; default: .audit/godmode/TimeLadder.template.t.sol."
+        ],
+        "workflow": [
+            "Generate the template.",
+            "Replace placeholder comments with real target calls and invariant assertions.",
+            "Test expiry, lock, vesting, epoch and boundary values against a pinned state."
+        ],
+        "output": [
+            "A Solidity Foundry template with relative time/block offsets."
+        ],
+        "limits": "The generated functions are scaffolding with placeholder target calls. They do not execute a protocol-specific attack or prove timestamp dependence is exploitable.",
+        "related": [
+            "lk sig-matrix --h",
+            "lk invariant-forge --h",
+            "lk steps --h"
+        ]
+    },
+    "sig-matrix": {
+        "usage": "lk sig-matrix [--root DIR]",
+        "when": "Use to locate signatures, permit/ECDSA usage and nonce/domain patterns, then plan replay and domain-separation tests.",
+        "variations": [
+            "lk sig-matrix --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Inspect signature and nonce matches.",
+            "Test same signature twice, nonce consumption, wrong chain ID/verifying contract, deadline, signer and encoding collisions.",
+            "Confirm the exact signed domain and state transition."
+        ],
+        "output": [
+            "JSON signature-source map plus candidate replay cases."
+        ],
+        "limits": "Static mapping only. A signature match does not prove replayability or missing domain validation.",
+        "related": [
+            "lk init-frontrun --h",
+            "lk control --h",
+            "lk reprove --h"
+        ]
+    },
+    "init-frontrun": {
+        "usage": "lk init-frontrun [--root DIR]",
+        "when": "Use to statically identify initializer/reinitializer functions and visible initializer-disable patterns in a proxy-oriented codebase.",
+        "variations": [
+            "lk init-frontrun --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Review initialize/reinitialize entry points and inherited initializers.",
+            "Check constructor/implementation initializer disabling and deployment order.",
+            "Verify access control and actual proxy initialization state on the target."
+        ],
+        "output": [
+            "JSON initializer exposure map."
+        ],
+        "limits": "Read-only static map. Lowkey does not seize, front-run or initialize a live contract.",
+        "related": [
+            "lk proxy-resolve --h",
+            "lk upgrade-diff --h",
+            "lk custody --h"
+        ]
+    },
+    "path": {
+        "usage": "lk path MANIFEST.json [--root DIR]",
+        "when": "Use to execute an explicitly declared symbolic/path-analysis engine command stored in a JSON manifest.",
+        "variations": [
+            "lk path .audit/path.json --root . — the manifest contains an argv array such as [\"halmos\", \"--function\", \"check_withdraw\"]."
+        ],
+        "arguments": [
+            "MANIFEST.json — JSON containing a non-empty argv string array; optional timeout_seconds defaults to 600."
+        ],
+        "options": [
+            "--root DIR — project root/working directory; default: ."
+        ],
+        "workflow": [
+            "Write the exact engine executable and arguments into manifest.argv.",
+            "Review the manifest carefully; the command runs exactly that argv with shell=False.",
+            "Run the engine and interpret its native output and exit code."
+        ],
+        "output": [
+            "Engine stdout/stderr and exit code."
+        ],
+        "limits": "Executes the command in the project context; shell expansion is not performed, but the executable itself can perform arbitrary actions. Only use a trusted manifest and engine.",
+        "related": [
+            "lk sandbox --h",
+            "lk cfg --h",
+            "lk steps --h"
+        ]
+    },
+    "compose": {
+        "usage": "lk compose [--root DIR]",
+        "when": "Use to combine static reentrancy, oracle, signature, custody and initializer signals into a high-level cross-contract lead graph.",
+        "variations": [
+            "lk compose --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Run compose and inspect each signal node/edge.",
+            "Resolve real contract-to-contract links and caller/asset identities.",
+            "Turn a plausible chain into concrete steps and a measurable invariant."
+        ],
+        "output": [
+            "JSON graph-like actor, signal and impact nodes/edges."
+        ],
+        "limits": "Heuristic composition of source signals. The asset-impact node is not measured, and a connected graph is not an executable exploit path.",
+        "related": [
+            "lk oracle-map --h",
+            "lk reentrancy-graph --h",
+            "lk sig-matrix --h",
+            "lk control --h"
+        ]
+    },
+    "reprove": {
+        "usage": "lk reprove HARNESS [required options]",
+        "when": "Use after a candidate PoC is reproducible and you need a cheatcode-free local-fork replay with trace, storage, deployment identity and portfolio-cost evidence.",
+        "variations": [
+            "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222",
+            "Use --tx-hash <hash> to inspect an already-mined transaction instead of passing --argv-json.",
+            "Repeat --profit-address for every relevant portfolio account (attacker, gas payer, payout recipient).",
+            "Use --non-economic with --semantic-check-argv-json and --semantic-test when the invariant is not profit-based."
+        ],
+        "arguments": [
+            "HARNESS — existing Foundry harness/source file inside --root.",
+            "--rpc-url URL — required local Anvil fork endpoint.",
+            "--fork-block N — required pinned fork block.",
+            "--target-address ADDRESS — required deployed target identity.",
+            "--profit-address ADDRESS — required; repeat for relevant portfolio addresses."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--tx-hash HASH — inspect a mined tx instead of executing --argv-json.",
+            "--prior-cost-wei N — verified prior setup/deployment/funding cost in wei; default: 0.",
+            "--source-rpc-url URL — independent read-only archive RPC for source-anchor/funding checks.",
+            "--prestate-slot ADDRESS:SLOT — repeat to include extra storage slots in source/fork comparisons.",
+            "--argv-json JSON — JSON string array for the replay command; never shell-evaluated.",
+            "--support-file FILE — repeat for imported support files.",
+            "--semantic-check-argv-json JSON — separate command whose assertion demonstrates the non-economic invariant.",
+            "--semantic-test NAME — exact Foundry test expected to emit [PASS].",
+            "--family NAME — attack family label; default: unknown.",
+            "--non-economic — require a passing semantic invariant instead of positive net profit.",
+            "--require-trace-storage — reject replay if trace-derived storage observations are absent."
+        ],
+        "workflow": [
+            "Start with a reproducible harness and pinned fork block.",
+            "Run against local Anvil using verified target and profit addresses.",
+            "Supply prior costs when they exist; otherwise reported net profit may subtract replay gas only.",
+            "Inspect source identity, prestate, trace, storage evidence and semantic/economic policy before promotion."
+        ],
+        "output": [
+            "JSON replay evidence at .audit/godmode/reprove.json and stdout."
+        ],
+        "limits": "A local fixture is not production deployment proof. The workflow rejects direct state/balance/code/time overrides and caller impersonation as fork-reproduction setup. Include all relevant accounts and costs.",
+        "related": [
+            "lk control --h",
+            "lk fidelity --h",
+            "lk provenance --h",
+            "lk economic --h"
+        ]
+    },
+    "economic": {
+        "usage": "lk economic --gross-wei N --gas-used N --max-fee-wei N [options]",
+        "when": "Use to calculate a rough net-profit estimate after replay gas, pool fee, slippage and prior capital/setup cost.",
+        "variations": [
+            "lk economic --gross-wei 1000000000000000000 --gas-used 250000 --max-fee-wei 30000000000",
+            "Add --pool-fee-bps 30 --slippage-bps 50 --capital-cost-wei 10000000000000000."
+        ],
+        "arguments": [
+            "--gross-wei N — required gross portfolio gain in wei.",
+            "--gas-used N — required measured gas used.",
+            "--max-fee-wei N — required gas-price ceiling or selected fee in wei."
+        ],
+        "options": [
+            "--pool-fee-bps N — fee deducted from gross; default: 0; range: 0–10000.",
+            "--slippage-bps N — estimated slippage deducted from gross; default: 0; range: 0–10000.",
+            "--capital-cost-wei N — additional cost; default: 0."
+        ],
+        "workflow": [
+            "Use observed gross gain and receipt gas, not guessed values.",
+            "Include the maximum fee, pool fee, slippage and prior capital costs.",
+            "Treat a positive output as a candidate and account for omitted market/MEV factors."
+        ],
+        "output": [
+            "JSON gross, gas, pool-fee, slippage, capital cost and net-profit values; status positive-candidate or OBSERVED."
+        ],
+        "limits": "Calculation only. MEV competition and unmodeled price impact are excluded. Output is only as reliable as the supplied inputs.",
+        "related": [
+            "lk reprove --h",
+            "lk bundle --h"
+        ]
+    },
+    "gas-ladder": {
+        "usage": "lk gas-ladder MANIFEST.json [--root DIR]",
+        "when": "Use to search for a gas/work threshold by running an explicit command repeatedly with a variable substituted into `{n}`.",
+        "variations": [
+            "lk gas-ladder .audit/gas-ladder.json --root ."
+        ],
+        "arguments": [
+            "MANIFEST.json — JSON containing argv (string array with at least one `{n}` token), and optional min/max search bounds."
+        ],
+        "options": [
+            "--root DIR — project root/working directory; default: .",
+            "Manifest min defaults to 1; max defaults to 10000. The command implementation determines the search behaviour."
+        ],
+        "workflow": [
+            "Create a manifest with the exact benchmark/test argv and a `{n}` placeholder.",
+            "Set sensible min/max bounds for the protocol.",
+            "Review every executed command and the observed threshold."
+        ],
+        "output": [
+            "JSON measurements and the selected threshold."
+        ],
+        "limits": "Executes the manifest command repeatedly. Use only trusted commands and bounded search ranges; gas thresholds depend on compiler, chain and environment.",
+        "related": [
+            "lk sandbox --h",
+            "lk target-coverage --h",
+            "lk mutation-score --h"
+        ]
+    },
+    "watch": {
+        "usage": "lk watch TARGET [--rpc-url URL] [options]",
+        "when": "Use for a bounded poll of a target's runtime bytecode and block height to detect code changes during an observation window.",
+        "variations": [
+            "lk watch 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545 --count 10 --interval 3"
+        ],
+        "arguments": [
+            "TARGET — contract address to poll."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is configured Lowkey RPC.",
+            "--count N — number of polls, 1–100; default: 1.",
+            "--interval SECONDS — delay between polls, 0–60; default: 3."
+        ],
+        "workflow": [
+            "Choose the deployment address and authorised RPC.",
+            "Set a bounded poll count and interval.",
+            "Compare reported code hashes and block numbers; investigate any code change."
+        ],
+        "output": [
+            "JSON/check rows containing block, runtime code hash and change observations."
+        ],
+        "limits": "Polling is observational and bounded. It is not a continuous background watcher or notification service.",
+        "related": [
+            "lk upgrade-diff --h",
+            "lk provenance --h",
+            "lk proxy-resolve --h"
+        ]
+    },
+    "custody": {
+        "usage": "lk custody [--root DIR]",
+        "when": "Use to inventory source-level owner/admin/guardian/pause/timelock/rescue/upgrade patterns and identify who may control protocol assets.",
+        "variations": [
+            "lk custody --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Review the authority map and source locations.",
+            "Trace modifiers and internal role checks to the protected state transitions.",
+            "Confirm actual on-chain roles and ownership for the deployment."
+        ],
+        "output": [
+            "JSON custody/authority source map."
+        ],
+        "limits": "Pattern map only. It cannot establish the actual deployed role holders or prove that a control path is exploitable.",
+        "related": [
+            "lk init-frontrun --h",
+            "lk proxy-resolve --h",
+            "lk upgrade-diff --h"
+        ]
+    },
+    "agent-split": {
+        "usage": "lk agent-split [--root DIR] [--harness FILE]",
+        "when": "Use to split a candidate audit into planner, attacker, verifier and critic review roles, with optional cheatcode scanning of a harness.",
+        "variations": [
+            "lk agent-split --root .",
+            "lk agent-split --root . --harness test/Exploit.t.sol"
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--harness FILE — optional harness inside the project root to scan for synthetic state/caller/time cheatcodes."
+        ],
+        "workflow": [
+            "Run once without a harness to get the project/source role split.",
+            "Supply a generated harness to inspect its trust assumptions.",
+            "Have the verifier independently check assertions and the critic challenge the exploit hypothesis."
+        ],
+        "output": [
+            "JSON planner/attacker/verifier/critic work split and optional harness cheatcode matches."
+        ],
+        "limits": "Role separation is an audit organisation aid, not four independent agents or independent exploit proof. Harness pattern matching is static.",
+        "related": [
+            "lk godmode --h",
+            "lk fidelity --h",
+            "lk control --h"
+        ]
+    },
+    "verify-hack": {
+        "usage": "lk verify-hack TX_HASH --rpc-url URL --block N",
+        "when": "Use to verify that a supplied exploit transaction was mined in the declared attacked block and to derive the required preceding fork anchor.",
+        "variations": [
+            "lk verify-hack 0x<64-hex-tx-hash> --rpc-url https://<archive-rpc> --block 19000000"
+        ],
+        "arguments": [
+            "TX_HASH — 32-byte transaction hash.",
+            "--rpc-url URL — required RPC that can retrieve the transaction.",
+            "--block N — required positive attacked block number."
+        ],
+        "options": [
+            "--rpc-url URL — required.",
+            "--block N — required."
+        ],
+        "workflow": [
+            "Get the transaction hash and the block it was mined in from reliable chain data.",
+            "Run the verifier against an archive-capable RPC.",
+            "Use the returned attacked block and required fork-block guidance when preparing a reproducible historical test."
+        ],
+        "output": [
+            "JSON transaction identity and attacked-block/fork-anchor evidence."
+        ],
+        "limits": "Read-only transaction lookup. It verifies the declared block placement; it does not prove the transaction was a successful exploit or caused a loss.",
+        "related": [
+            "lk unravel --h",
+            "lk reprove --h",
+            "lk provenance --h"
+        ]
+    },
+    "unravel": {
+        "usage": "lk unravel TX_HASH [--rpc-url URL]",
+        "when": "Use to decode a mined transaction's nested call tree using the RPC debug_traceTransaction callTracer.",
+        "variations": [
+            "lk unravel 0x<64-hex-tx-hash> --rpc-url http://127.0.0.1:8545"
+        ],
+        "arguments": [
+            "TX_HASH — 32-byte transaction hash."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is configured Lowkey RPC."
+        ],
+        "workflow": [
+            "Find the transaction hash.",
+            "Run against an RPC that supports debug_traceTransaction/callTracer.",
+            "Inspect call depth, caller/callee, value, gas, calldata and revert/error fields."
+        ],
+        "output": [
+            "JSON flattened call tree with depth, call type, from/to, value, gas, input prefix and errors."
+        ],
+        "limits": "Requires a tracing-capable RPC and retained transaction state. Flattened call data is truncated for readability; it is not a full source-level explanation.",
+        "related": [
+            "lk trace --h",
+            "lk verify-hack --h",
+            "lk calldata-mine --h"
+        ]
+    },
+    "bundle": {
+        "usage": "lk bundle --tx RAW_TX [--tx RAW_TX ...] --target-block N --relay-url URL --auth-signature SIGNATURE",
+        "when": "Use to request a private-bundle simulation from a compatible relay, not to broadcast a bundle.",
+        "variations": [
+            "lk bundle --tx 0x<raw-signed-transaction> --target-block 19000000 --relay-url https://relay.example --auth-signature <address:signature>",
+            "Repeat --tx once for each transaction in the ordered bundle."
+        ],
+        "arguments": [
+            "--tx RAW_TX — required and repeatable; raw signed transaction hex.",
+            "--target-block N — required positive block number to simulate against.",
+            "--relay-url URL — required compatible relay endpoint.",
+            "--auth-signature VALUE — required relay authentication signature/header."
+        ],
+        "options": [
+            "No optional flags are currently exposed. All four argument types above are required; --tx is repeatable."
+        ],
+        "workflow": [
+            "Prepare raw signed transactions offline and verify their order.",
+            "Choose a relay that supports eth_callBundle and understand its privacy/retention policy.",
+            "Run simulation and inspect per-transaction result, gas and revert status.",
+            "Do not interpret simulation acceptance as inclusion or profitability."
+        ],
+        "output": [
+            "Relay JSON-RPC eth_callBundle response."
+        ],
+        "limits": "This sends the raw signed transactions and authentication signature to the supplied relay URL for simulation. It does not broadcast them as a bundle, but the relay receives the payload. Never submit private transactions to an untrusted endpoint.",
+        "related": [
+            "lk economic --h",
+            "lk reprove --h"
+        ]
+    },
+    "sandwich": {
+        "usage": "lk sandwich --h",
+        "when": "Use only when a pending-transaction feed and a pool-specific simulator adapter have been configured.",
+        "variations": [
+            "lk sandwich --h — review adapter requirements; execution is currently blocked without them."
+        ],
+        "arguments": [
+            "No executable arguments are exposed while the required feed/adapter integration is unavailable."
+        ],
+        "options": [
+            "No executable options are exposed yet."
+        ],
+        "workflow": [
+            "Configure a supported mempool/pending-transaction feed.",
+            "Provide a pool-specific simulator and a reproducible fork environment.",
+            "Review legal, ethical and protocol constraints before running any ordering simulation."
+        ],
+        "output": [
+            "No simulation output is currently produced by this adapter-required placeholder."
+        ],
+        "limits": "Adapter-required. Current command fails closed and does not submit or broadcast a transaction.",
+        "related": [
+            "lk jit --h",
+            "lk bundle --h",
+            "lk economic --h"
+        ]
+    },
+    "jit": {
+        "usage": "lk jit --h",
+        "when": "Use only after a pool-specific just-in-time liquidity simulator is installed and configured.",
+        "variations": [
+            "lk jit --h — review current adapter requirements."
+        ],
+        "arguments": [
+            "No executable arguments are exposed while the required pool adapter is unavailable."
+        ],
+        "options": [
+            "No executable options are exposed yet."
+        ],
+        "workflow": [
+            "Configure a supported concentrated-liquidity pool simulator.",
+            "Model mint/swap/burn ordering against a pinned state.",
+            "Measure fees, inventory exposure and net outcome separately."
+        ],
+        "output": [
+            "No simulation output is currently produced by this adapter-required placeholder."
+        ],
+        "limits": "Adapter-required. Current command fails closed; it does not submit or broadcast a transaction.",
+        "related": [
+            "lk sandwich --h",
+            "lk bundle --h",
+            "lk economic --h"
+        ]
+    },
+    "fork-cache": {
+        "usage": "lk fork-cache ACTION [options]",
+        "when": "Use to save and restore local Anvil snapshots during a controlled experiment.",
+        "variations": [
+            "lk fork-cache list --root . — list recorded snapshot IDs; no RPC call required.",
+            "lk fork-cache snapshot --rpc-url http://127.0.0.1:8545 --root . — create and record a local snapshot.",
+            "lk fork-cache revert --id 0x1 --rpc-url http://127.0.0.1:8545 --root . — revert to a recorded snapshot."
+        ],
+        "arguments": [
+            "ACTION — snapshot, revert or list.",
+            "--id ID — required for revert; a snapshot ID recorded by a previous snapshot action."
+        ],
+        "options": [
+            "--rpc-url URL — local Anvil RPC for snapshot/revert; default is configured Lowkey RPC.",
+            "--root DIR — where .audit/godmode/fork-cache.json is stored; default: ."
+        ],
+        "workflow": [
+            "Create a snapshot before a destructive test.",
+            "Record the returned snapshot ID.",
+            "Run the experiment.",
+            "Revert to the recorded snapshot or list saved IDs."
+        ],
+        "output": [
+            "Snapshot metadata in .audit/godmode/fork-cache.json and action confirmation."
+        ],
+        "limits": "Local Anvil only. Revert mutates the local chain state and consumes the snapshot. Do not use a production RPC.",
+        "related": [
+            "lk control --h",
+            "lk godmode --h"
+        ]
+    },
+    "upgrade-diff": {
+        "usage": "lk upgrade-diff OLD_ADDRESS NEW_ADDRESS [options]",
+        "when": "Use to compare old/new deployed runtime bytecode selectors and, when supplied, compiler storage-layout JSON.",
+        "variations": [
+            "lk upgrade-diff 0x<old-address> 0x<new-address> --rpc-url http://127.0.0.1:8545",
+            "Add --old-layout old-layout.json --new-layout new-layout.json to compare storage layout entries."
+        ],
+        "arguments": [
+            "OLD_ADDRESS — prior implementation or contract address.",
+            "NEW_ADDRESS — candidate implementation or contract address."
+        ],
+        "options": [
+            "--rpc-url URL — RPC endpoint; default is configured Lowkey RPC.",
+            "--old-layout FILE — optional prior compiler storage-layout JSON.",
+            "--new-layout FILE — optional new compiler storage-layout JSON; supply both layout files for storage comparison."
+        ],
+        "workflow": [
+            "Resolve the actual old/new implementation addresses.",
+            "Compare runtime selectors and source/compiler storage layouts.",
+            "Review removed/added selectors, slot movement, type/packing changes and upgrade authorization."
+        ],
+        "output": [
+            "JSON bytecode/selector and optional storage-layout comparison."
+        ],
+        "limits": "Selector and layout diff only. It does not prove proxy routing, initializer safety or runtime semantic compatibility.",
+        "related": [
+            "lk proxy-resolve --h",
+            "lk storage-infer --h",
+            "lk custody --h"
+        ]
+    },
+    "cross-vm": {
+        "usage": "lk cross-vm [--root DIR]",
+        "when": "Use to locate cross-VM source markers for Solana, Move, Cairo and Soroban authorization/account models.",
+        "variations": [
+            "lk cross-vm --root ."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Review language-specific signals and source locations.",
+            "Trace signer/owner/capability/auth checks in the native language.",
+            "Use the language's native framework and proof tooling to verify behaviour."
+        ],
+        "output": [
+            "JSON cross-VM static marker map."
+        ],
+        "limits": "Marker scan only. It does not execute native-chain tests or prove authorization correctness.",
+        "related": [
+            "lk capabilities",
+            "lk archetype --h",
+            "lk cfg --h"
+        ]
+    },
+    "learn": {
+        "usage": "lk learn --title TEXT --lesson TEXT --evidence TEXT [options]",
+        "when": "Use to store an evidence-backed project/audit lesson in Lowkey's local experience memory.",
+        "variations": [
+            "lk learn --title \"Token subtraction guard\" --lesson \"Compare balance before subtraction\" --evidence \"src/Token.sol:18\"",
+            "Choose a category with --kind false-positive-rule or protocol-pattern.",
+            "Add --when and --rationale to record the trigger and why it matters."
+        ],
+        "arguments": [
+            "--title TEXT — required short lesson title.",
+            "--lesson TEXT — required rule/lesson to remember.",
+            "--evidence TEXT — required evidence pointer; cite a file/line, test or report."
+        ],
+        "options": [
+            "--kind KIND — protocol-pattern, test-procedure, tool-configuration, project-fact or false-positive-rule; default: protocol-pattern.",
+            "--when TEXT — optional condition for applying the lesson.",
+            "--rationale TEXT — optional explanation.",
+            "--root DIR — project root/memory scope; default: ."
+        ],
+        "workflow": [
+            "Write a specific lesson, not a vague conclusion.",
+            "Attach a source/test/report citation.",
+            "Select a kind that matches the content and provide when/rationale if useful."
+        ],
+        "output": [
+            "Local experience-memory record and confirmation."
+        ],
+        "limits": "This writes local project memory. Evidence text is operator-supplied; Lowkey does not independently validate its truth.",
+        "related": [
+            "lk questions --h",
+            "lk godmode --h"
+        ]
+    },
+    "report": {
+        "usage": "lk report [options]",
+        "when": "Use after Godmode has saved .audit/godmode/latest.json and you want a readable Markdown report.",
+        "variations": [
+            "lk report --root .",
+            "Choose --input .audit/godmode/latest.json and --output .audit/godmode/review.md."
+        ],
+        "arguments": [
+            "None."
+        ],
+        "options": [
+            "--root DIR — project root; default: .",
+            "--input FILE — saved Godmode JSON; default: .audit/godmode/latest.json.",
+            "--output FILE — Markdown report path; default: .audit/godmode/report.md."
+        ],
+        "workflow": [
+            "Run Godmode or another workflow that writes the expected JSON report.",
+            "Run `lk report --root .`.",
+            "Read stage statuses, findings and source maps; do not promote unverified signals."
+        ],
+        "output": [
+            "Markdown report, default .audit/godmode/report.md."
+        ],
+        "limits": "Renders saved evidence. It does not run a new audit or turn source signals into validated findings.",
+        "related": [
+            "lk godmode --h",
+            "lk provenance --h",
+            "lk capabilities"
+        ]
+    },
+    "questions": {
+        "usage": "lk questions [ACTION] [NOTE ...] [--root DIR]",
+        "when": "Use to continue Lowkey's question-driven audit loop, inspect the current question or record an answer/note.",
+        "variations": [
+            "lk questions --root . — show the current audit question (default action: current).",
+            "lk questions next --root . — request the next question if supported by the question engine.",
+            "lk questions answer \"The transfer check subtracts before comparing\" --root . — submit a note/answer through the question engine."
+        ],
+        "arguments": [
+            "ACTION — question-engine action; default: current.",
+            "NOTE ... — optional free-text tokens passed to that action."
+        ],
+        "options": [
+            "--root DIR — project root; default: ."
+        ],
+        "workflow": [
+            "Start with the default current action.",
+            "Use the question engine's returned prompt to inspect the relevant source or test.",
+            "Pass your evidence-backed observation as a note using the supported action."
+        ],
+        "output": [
+            "Question-engine output and any saved question-loop context."
+        ],
+        "limits": "Accepted actions and state transitions are defined by the question engine; review its response rather than assuming every free-form action is accepted.",
+        "related": [
+            "lk learn --h",
+            "lk godmode --h",
+            "lk report --h"
+        ]
+    }
+}
+
 def _godmode_help_details(command):
     command = str(command or "").strip().lower()
     if command in GODMODE_COMMAND_DETAILS:
@@ -2834,7 +4331,12 @@ def economic(args):
     net=ns.gross_wei-gas-pool-slip-ns.capital_cost_wei
     return output({"gross_wei":ns.gross_wei,"gas_cost_wei":gas,"pool_fee_wei":pool,"slippage_wei":slip,"capital_cost_wei":ns.capital_cost_wei,"net_profit_wei":net,"status":"positive-candidate" if net>0 else "OBSERVED","limitations":["MEV competition and unmodeled price impact are excluded."]})
 def rpc_command(kind,args):
-    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--slots",type=int,default=120); p.add_argument("--no-resolve",action="store_true"); p.add_argument("--key",action="append",default=[]); ns=p.parse_args(args); url=rpc_url(ns.rpc_url); target=addr(ns.target)
+    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("target"); p.add_argument("--rpc-url")
+    if kind in {"proxy-resolve", "storage-infer"}:
+        p.add_argument("--slots",type=int,default=120)
+    if kind == "storage-infer":
+        p.add_argument("--no-resolve",action="store_true"); p.add_argument("--key",action="append",default=[])
+    ns=p.parse_args(args); url=rpc_url(ns.rpc_url); target=addr(ns.target)
     if kind=="selectors-full": return output(selectors(target,url))
     if kind=="proxy-resolve": return output(proxy(target,url,ns.slots))
     count=max(1,min(ns.slots,120))
@@ -3443,6 +4945,80 @@ def learn(args):
             return experience_memory.main(["propose","--kind",ns.kind,"--title",ns.title,"--lesson",ns.lesson,"--evidence",ns.evidence,"--when",ns.when,"--rationale",ns.rationale])
         finally: os.chdir(old)
     except ImportError as exc: raise RuntimeError(str(exc))
+def _is_godmode_help_request(tokens):
+    """Help after '--' belongs to the child command, not to Lowkey."""
+    before_separator = []
+    for token in tokens:
+        if token == "--":
+            break
+        before_separator.append(str(token).strip().lower())
+    return any(token in HELP_FLAGS for token in before_separator)
+
+
+def print_godmode_command_help(command):
+    """Render the same task-oriented help layout for every routed Godmode command."""
+    command = str(command or "").strip().lower()
+    details = _godmode_help_details(command) or {}
+    guide = GODMODE_HELP_GUIDES.get(command)
+    if not guide:
+        print("No curated help page is registered for: " + command)
+        return 2
+
+    summary = details.get("summary") or guide.get("summary") or (command + " Godmode workflow.")
+    when = guide.get("when") or details.get("when") or "Use it when this review surface is relevant to your current investigation."
+    limitations = guide.get("limits") or details.get("limits") or "Review the returned evidence and limitations before treating an observation as a finding."
+    print("LOWKEY HELP  •  lk " + ("attack forge" if command == "attack-forge" else command))
+    print("=" * 72)
+    print("What it does: " + summary)
+    print()
+    print("When to use:")
+    print("  " + when)
+    print()
+
+    print("USAGE")
+    print("------")
+    print("  " + guide["usage"])
+    print()
+
+    sections = (
+        ("COMMAND VARIATIONS", "variations"),
+        ("ARGUMENTS", "arguments"),
+        ("OPTIONS / MODES", "options"),
+        ("RECOMMENDED WORKFLOW", "workflow"),
+        ("OUTPUT / EVIDENCE", "output"),
+    )
+    for heading, key in sections:
+        rows = guide.get(key) or []
+        if not rows:
+            continue
+        print(heading)
+        print("-" * len(heading))
+        for row in rows:
+            print("  " + str(row))
+        print()
+
+    print("SAFETY / LIMITATIONS")
+    print("--------------------")
+    print("  " + limitations)
+    capability = _CAPABILITY_BY_NAME.get(command)
+    if capability:
+        print("  Capability status: " + capability["status"] + ".")
+    related = guide.get("related") or []
+    if related:
+        print()
+        print("RELATED COMMANDS")
+        print("----------------")
+        for row in related:
+            print("  " + str(row))
+    print()
+    print("HELP TIP")
+    print("--------")
+    print("  Help is read-only: it does not run the command or change project/chain state.")
+    print("  Accepted forms: --h, --help, -h, help.")
+    print("  Run the source-only/read-only variation first when available.")
+    return 0
+
+
 def _print_godmode_help():
     """Human-first quick start; the user should not need to reverse-engineer the flags."""
     print("LOWKEY HELP  •  lk godmode")
@@ -3516,9 +5092,8 @@ def _print_godmode_help():
 
 
 def godmode(args):
-    if any(str(value).strip().lower() in HELP_FLAGS for value in args):
-        _print_godmode_help()
-        return 0
+    if _is_godmode_help_request(args):
+        return print_godmode_command_help("godmode")
     p=LowkeyArgumentParser(prog="lk godmode")
     p.add_argument("target", nargs="?", help="Optional deployed contract address. Omit it for a source-only audit of --root.")
     p.add_argument("--root", default=".", help="Project folder containing the Solidity source (default: current directory).")
@@ -4295,6 +5870,8 @@ def main(argv=None):
         print_command_catalog()
         return 0
     cmd,rest=a[0],a[1:]
+    if cmd in ROUTED_COMMANDS and _is_godmode_help_request(rest):
+        return print_godmode_command_help(cmd)
     if cmd=="capabilities":
         if any(str(token).strip().lower() in HELP_FLAGS for token in rest):
             help_parser = LowkeyArgumentParser(
