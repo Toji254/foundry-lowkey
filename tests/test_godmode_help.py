@@ -173,6 +173,21 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
                     self.assertIn(expected_usage, output)
 
 
+
+    def test_godmode_help_is_a_real_quickstart_not_just_flag_inventory(self):
+        result, output = _capture_help("godmode", "--h")
+        self.assertEqual(result, 0, output)
+        for expected in (
+            "START HERE", "source-only scan", "no address or RPC",
+            "--plan-only", "--attack", "local Anvil",
+            "--control-manifest", "mutation", "coverage",
+            "still writes .audit/godmode/latest.json",
+            "Optional deployed contract address",
+            "Project folder containing the Solidity source",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, output)
+
     def test_root_help_in_launcher_appends_godmode_catalog(self):
         with tempfile.TemporaryDirectory() as temp_home:
             home = pathlib.Path(temp_home)

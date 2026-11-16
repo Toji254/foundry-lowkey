@@ -21,6 +21,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+try:
+    from .arithmetic_review import scan_project as scan_unsigned_arithmetic
+except ImportError:
+    from arithmetic_review import scan_project as scan_unsigned_arithmetic
+
 VERSION = "0.2.0"
 EXTS = {".sol", ".vy", ".yul", ".huff", ".rs", ".move", ".cairo"}
 SKIP = {".git", ".audit", ".venv", "venv", "__pycache__", ".pytest_cache", "node_modules", "out", "cache", "artifacts", "build", "dist", "target", "vendor", "coverage"}
@@ -118,10 +123,10 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "Only capabilities marked implemented are considered available; partial and adapter-required entries remain skipped.",
     },
     "godmode": {
-        "summary": "Run the evidence-first audit orchestrator: source recon, on-chain recon, optional local attack, control, mutation, and coverage stages.",
-        "when": "Use it to produce one staged audit report and see which evidence gates are still missing.",
-        "example": "lk godmode 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545 --plan-only",
-        "limits": "Attack execution is local-Anvil-only. The orchestrator does not turn static signals or skipped stages into a BREAK.",
+        "summary": "Audit the Solidity source under --root, report source-level security leads, and optionally inspect a deployed target. It does not send a transaction by default.",
+        "when": "Start here when you do not know which Godmode subcommand to use. Run it on the project folder first; add a target address and RPC only when you also want read-only on-chain reconnaissance.",
+        "example": "START HERE — source-only scan (no address or RPC needed):\n  lk godmode --root .\n\nExplicit static-only plan (no RPC, attack, mutation or coverage execution):\n  lk godmode --root . --plan-only\n\nAdd read-only on-chain reconnaissance:\n  lk godmode 0xYourTargetAddress --root . --rpc-url http://127.0.0.1:8545\n\nOpt into local-Anvil attack exploration only after reviewing the target and controls:\n  lk godmode 0xYourTargetAddress --root . --rpc-url http://127.0.0.1:8545 --attack --control-manifest .audit/control.json",
+        "limits": "Static matches are review leads, not confirmed vulnerabilities. --attack invokes lk break and is restricted to a local Anvil RPC; it can execute transactions on that disposable chain. --plan-only skips RPC, attack, mutation and coverage execution but still writes .audit/godmode/latest.json and provenance.json. A BREAK still requires matched control and independent evidence.",
     },
     "control": {
         "summary": "Compare an attack against a sequential control using matched execution evidence and a frozen experiment specification.",
@@ -409,6 +414,7 @@ def source_maps(root):
       "token_map":patterns(root,{"erc20_transfer":r"\b(?:transfer|transferFrom|safeTransfer|safeTransferFrom)\s*\(",
           "unchecked_balance":r"\bbalanceOf\s*\(","decimals_assumption":r"\bdecimals\s*\(",
           "permit":r"\bpermit\s*\(","approval":r"\b(?:approve|allowance)\s*\("}),
+      "arithmetic_review":scan_unsigned_arithmetic(root),
       "signature_map":patterns(root,{"signature":PATTERNS["signature"],"nonce_domain":PATTERNS["nonce_domain"]}),
       "initializer_map":patterns(root,{"initializer":r"\binitializer\b","reinitializer":r"\breinitializer\s*\(",
           "initialize_function":r"\bfunction\s+initialize[A-Za-z0-9_]*\s*\(","disable_initializers":r"\b_disableInitializers\s*\("}),
@@ -3438,41 +3444,96 @@ def learn(args):
         finally: os.chdir(old)
     except ImportError as exc: raise RuntimeError(str(exc))
 def godmode(args):
-    p=LowkeyArgumentParser(prog="lk godmode"); p.add_argument("target",nargs="?"); p.add_argument("--root",default="."); p.add_argument("--rpc-url"); p.add_argument("--profile",choices=("light","balanced","deep"),default="balanced"); p.add_argument("--attack",action="store_true"); p.add_argument("--control-manifest"); p.add_argument("--mutation-manifest"); p.add_argument("--coverage-source"); p.add_argument("--plan-only",action="store_true"); ns=p.parse_args(args)
-    root=root_path(ns.root); target=addr(ns.target) if ns.target else None; maps=source_maps(root); cheat=cheat_fingerprints(root); stages=[]
+    p=LowkeyArgumentParser(prog="lk godmode")
+    p.add_argument("target", nargs="?", help="Optional deployed contract address. Omit it for a source-only audit of --root.")
+    p.add_argument("--root", default=".", help="Project folder containing the Solidity source (default: current directory).")
+    p.add_argument("--rpc-url", help="RPC for read-only inspection of target. Use local Anvil if you plan to opt into --attack.")
+    p.add_argument("--profile", choices=("light", "balanced", "deep"), default="balanced", help="Proxy/implementation reconnaissance depth: light or deeper balanced/deep lookup.")
+    p.add_argument("--attack", action="store_true", help="Opt into lk break exploration. Requires target + local Anvil; may send transactions on that local chain.")
+    p.add_argument("--control-manifest", help="Frozen paired-control manifest used by the attack/proof workflow.")
+    p.add_argument("--mutation-manifest", help="Mutation-test manifest to execute as an optional test-sensitivity check.")
+    p.add_argument("--coverage-source", help="Solidity source file whose target lines should be checked with Forge coverage.")
+    p.add_argument("--plan-only", action="store_true", help="Static source scan only: skip RPC, attack, mutation and coverage execution; still save a local report.")
+    ns=p.parse_args(args)
+    if ns.plan_only and ns.attack:
+        p.error("--plan-only cannot be combined with --attack; remove one of the flags.")
+    root=root_path(ns.root)
+    target=addr(ns.target) if ns.target else None
+    maps=source_maps(root)
+    cheat=cheat_fingerprints(root)
+    stages=[]
     stages.append({"name":"source-recon","status":"completed","signals":sum(len(v) for v in maps.values() if isinstance(v,list))})
+    arithmetic_rows=maps.get("arithmetic_review", [])
+    wraparound_rows=[row for row in arithmetic_rows if row.get("status")=="WRAPAROUND_POSSIBLE"]
+    stages.append({
+        "name":"arithmetic-review",
+        "status":"completed",
+        "signals":len(arithmetic_rows),
+        "wraparound_candidates":len(wraparound_rows),
+    })
     stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"])})
-    chain=block=None; onchain={}
-    if target:
+    chain=block=None
+    onchain={}
+    if ns.plan_only:
+        stages.append({"name":"onchain-recon","status":"skipped","reason":"--plan-only: RPC access is disabled."})
+    elif target:
         try:
-            url=rpc_url(ns.rpc_url); chain=rpc(url,"eth_chainId",[]); block=rpc(url,"eth_blockNumber",[])
+            url=rpc_url(ns.rpc_url)
+            chain=rpc(url,"eth_chainId",[])
+            block=rpc(url,"eth_blockNumber",[])
             onchain={"proxy":proxy(target,url,40 if ns.profile=="light" else 120),"selectors":selectors(target,url)}
             stages.append({"name":"onchain-recon","status":"completed","selectors":onchain["selectors"]["count"]})
-        except Exception as exc: stages.append({"name":"onchain-recon","status":"blocked","reason":str(exc)})
-    else: stages.append({"name":"onchain-recon","status":"skipped","reason":"No address supplied."})
-    if ns.attack:
-        if not target: stages.append({"name":"attack","status":"blocked","reason":"Target address required."})
-        elif not ns.rpc_url or not local_rpc(rpc_url(ns.rpc_url)): stages.append({"name":"attack","status":"blocked","reason":"Attack requires local Anvil fork RPC; production RPC is rejected."})
-        elif not shutil.which("lk"): stages.append({"name":"attack","status":"blocked","reason":"lk command not found."})
+        except Exception as exc:
+            stages.append({"name":"onchain-recon","status":"blocked","reason":str(exc)})
+    else:
+        stages.append({"name":"onchain-recon","status":"skipped","reason":"No address supplied; source-only mode."})
+    if ns.plan_only:
+        stages.append({"name":"attack","status":"skipped","reason":"--plan-only: attack execution is disabled."})
+    elif ns.attack:
+        if not target:
+            stages.append({"name":"attack","status":"blocked","reason":"Target address required."})
+        elif not ns.rpc_url or not local_rpc(rpc_url(ns.rpc_url)):
+            stages.append({"name":"attack","status":"blocked","reason":"Attack requires local Anvil RPC; non-local RPC is rejected."})
+        elif not shutil.which("lk"):
+            stages.append({"name":"attack","status":"blocked","reason":"lk command not found."})
         else:
             argv=["lk","break","--system","--until-found"]
-            if ns.control_manifest: argv += ["--control-manifest",ns.control_manifest]
-            proc=run(argv,root,1800); stages.append({"name":"attack","status":"review","exit_code":proc.returncode,"output":(proc.stdout+proc.stderr)[-3000:]})
-    else: stages.append({"name":"attack","status":"not-run","reason":"Pass --attack to execute only on local Anvil."})
-    if ns.control_manifest: stages.append({"name":"control","status":"provided","manifest":ns.control_manifest})
-    else: stages.append({"name":"control","status":"not-run","reason":"No sequential-control manifest; BREAK remains ineligible."})
-    if ns.mutation_manifest:
+            if ns.control_manifest:
+                argv += ["--control-manifest",ns.control_manifest]
+            proc=run(argv,root,1800)
+            stages.append({"name":"attack","status":"review","exit_code":proc.returncode,"output":(proc.stdout+proc.stderr)[-3000:]})
+    else:
+        stages.append({"name":"attack","status":"not-run","reason":"No attack was run. Add --attack only for an explicitly reviewed local-Anvil experiment."})
+    if ns.plan_only:
+        stages.append({"name":"control","status":"skipped","reason":"--plan-only: no attack/control execution."})
+    elif ns.control_manifest:
+        stages.append({"name":"control","status":"provided","manifest":ns.control_manifest})
+    else:
+        stages.append({"name":"control","status":"not-run","reason":"No sequential-control manifest; BREAK remains ineligible."})
+    if ns.plan_only:
+        stages.append({"name":"mutation","status":"skipped","reason":"--plan-only: mutation tests were not executed."})
+    elif ns.mutation_manifest:
         old=Path.cwd()
-        try: os.chdir(root); rc=mutation([ns.mutation_manifest])
-        finally: os.chdir(old)
+        try:
+            os.chdir(root)
+            rc=mutation([ns.mutation_manifest])
+        finally:
+            os.chdir(old)
         stages.append({"name":"mutation","status":"completed" if rc==0 else "review","exit_code":rc})
-    else: stages.append({"name":"mutation","status":"not-run","reason":"No mutation manifest."})
-    if ns.coverage_source:
+    else:
+        stages.append({"name":"mutation","status":"not-run","reason":"No mutation manifest was supplied."})
+    if ns.plan_only:
+        stages.append({"name":"target-coverage","status":"skipped","reason":"--plan-only: Forge coverage was not executed."})
+    elif ns.coverage_source:
         old=Path.cwd()
-        try: os.chdir(root); rc=coverage([ns.coverage_source,"--root",str(root)])
-        finally: os.chdir(old)
+        try:
+            os.chdir(root)
+            rc=coverage([ns.coverage_source,"--root",str(root)])
+        finally:
+            os.chdir(old)
         stages.append({"name":"target-coverage","status":"completed" if rc==0 else "review","exit_code":rc})
-    else: stages.append({"name":"target-coverage","status":"not-run","reason":"No target source line scope."})
+    else:
+        stages.append({"name":"target-coverage","status":"not-run","reason":"No target source line scope was supplied."})
     blockers=[s for s in stages if s["status"] in {"blocked","review","not-run","skipped"}]
     payload={"created_at":now(),"target":target,"project_root":str(root),"git_revision":None,"chain_id":chain,"fork_block":block,
              "profile":ns.profile,"stages":stages,"signals":maps,"cheat_fingerprints":cheat,
@@ -3480,11 +3541,22 @@ def godmode(args):
              "proof_gate":["attack must demonstrate a measurable security-property delta","matched sequential control must pass",
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
                "reproof must not depend on state-fabricating cheatcodes"]}
-    out=safe_out(root,".audit/godmode/latest.json"); write_json(out,payload)
-    prov=safe_out(root,".audit/godmode/provenance.json"); write_json(prov,{"created_at":now(),"sha256":hashlib.sha256(out.read_bytes()).hexdigest(),"chain_id":chain,"fork_block":block,"artifacts":["latest.json"]})
+    out=safe_out(root,".audit/godmode/latest.json")
+    write_json(out,payload)
+    prov=safe_out(root,".audit/godmode/provenance.json")
+    write_json(prov,{"created_at":now(),"sha256":hashlib.sha256(out.read_bytes()).hexdigest(),"chain_id":chain,"fork_block":block,"artifacts":["latest.json"]})
     print("GODMODE: "+payload["overall_status"])
-    for s in stages: print("  ["+s["status"].upper()+"] "+s["name"]+": "+str(s.get("reason",s.get("signals",s.get("output",""))))[:190])
-    print("Report: "+str(out.relative_to(root))); return 2 if blockers else 0
+    for stage in stages:
+        print("  ["+stage["status"].upper()+"] "+stage["name"]+": "+str(stage.get("reason",stage.get("signals",stage.get("output",""))))[:190])
+    if arithmetic_rows:
+        print("ARITHMETIC REVIEW — source candidates only; none are confirmed:")
+        for row in arithmetic_rows[:20]:
+            location=f'{row.get("file")}:{row.get("line")}'
+            function=f' in {row.get("function")}' if row.get("function") else ""
+            print(f'  [{row.get("status")}] {location}{function}: {row.get("expression")}')
+    print("Report: "+str(out.relative_to(root)))
+    print("Next: inspect .audit/godmode/latest.json, then use lk findings / lk ai preview for source context; build a focused PoC before claiming exploitability.")
+    return 2 if blockers else 0
 def report(args):
     p=LowkeyArgumentParser(prog="lk report")
     p.add_argument("--root",default="."); p.add_argument("--input",default=".audit/godmode/latest.json")
