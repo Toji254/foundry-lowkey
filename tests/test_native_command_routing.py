@@ -104,7 +104,10 @@ class LauncherRoutingTests(unittest.TestCase):
         self.assertIn('set -- "${repair_args[@]}"', repair_shim)
         self.assertNotIn("exec forge", repair_shim)
         self.assertNotIn("forge_tools.py\" test", remainder)
-        self.assertIn('exec python3 "$HOME/.lowkey/foundry_build.py" "$@"', remainder)
+        self.assertIn(
+            'exec python3 "$HOME/.lowkey/command_wrapper.py" "build" -- python3 "$HOME/.lowkey/foundry_build.py" "$@"',
+            remainder,
+        )
         self.assertIn('exec python3 "$HOME/.lowkey/lk.py" "$@"', remainder)
 
 
