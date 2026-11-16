@@ -159,6 +159,25 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
 
+    def test_effective_rpc_checks_the_exact_invocation_target(self):
+        active_target = "0x" + "4" * 40
+        invocation_target = "0x" + "3" * 40
+        rpc = "http://127.0.0.1:8545"
+        config = {"target": active_target, "rpc": rpc}
+
+        def owned(address, _config, _root):
+            return str(address or "").lower() == invocation_target.lower()
+
+        with patch.object(lk, "project_fixture_rpc_info", return_value={}), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path.cwd()), \
+             patch.object(lk.audit_context, "load", return_value={}), \
+             patch.object(lk.shared_context, "target_owned_by_project", side_effect=owned) as owner_check:
+            selected = lk.effective_rpc(config, target=invocation_target)
+
+        self.assertEqual(selected, rpc)
+        owner_check.assert_called_once()
+        self.assertEqual(owner_check.call_args.args[0], invocation_target)
+
     def test_balance_labels_active_project_target_from_context(self):
         target = "0x" + "3" * 40
         config = {
