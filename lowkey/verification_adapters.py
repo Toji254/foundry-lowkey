@@ -769,6 +769,18 @@ class HalmosAdapter(NativeConfiguredAdapter):
 
 
 class CertoraAdapter(NativeConfiguredAdapter):
+    def request_ready(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[bool, str]:
+        argv, reason = self.request_configuration(project, request)
+        if argv is None:
+            return False, reason
+        if not os.environ.get("CERTORAKEY", "").strip():
+            return False, (
+                "Certora CLI is installed but authenticated remote verification is unavailable: "
+                "CERTORAKEY is not present in the environment. Add it as a secret/environment variable; "
+                "the key value is never included in Lowkey reports."
+            )
+        return True, "Certora config is valid and CERTORAKEY is present; proof execution will wait for remote results"
+
     def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
         explicit, reason = super().request_configuration(project, request)
         if explicit is not None or request.get("argv") is not None:
@@ -795,6 +807,14 @@ class CertoraAdapter(NativeConfiguredAdapter):
         self, project: dict[str, Any], request: dict[str, Any], *,
         budget: dict[str, Any],
     ) -> EngineResult:
+        if not os.environ.get("CERTORAKEY", "").strip():
+            return EngineResult(
+                engine=self.capability.name,
+                status="unsupported",
+                summary="Authenticated Certora remote proof refused: CERTORAKEY is missing.",
+                raw_evidence={"credential_state": "missing", "secret_value_recorded": False},
+                metadata={"result_semantics": "certora_credentials_missing"},
+            )
         result = super().run(project, request, budget=budget)
         output = result.raw_stdout + "\n" + result.raw_stderr
         completed = bool(re.search(
