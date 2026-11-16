@@ -368,6 +368,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('LowkeyABIPatch.replaceAddress(hex"12345678"', body)
         self.assertIn('address(0x' + "aa" * 20 + "), ATTACKER)", body)
         self.assertIn("offset = 4; offset + 32 <= data.length; offset += 32", body)
+        self.assertIn('assembly ("memory-safe")', body)
         self.assertNotIn("setupArg0", body)
         self.assertNotIn("targetArg0", body)
 
@@ -389,6 +390,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn('LowkeyABIPatch.replaceAddress(hex"12345678"', body)
         self.assertIn('address(0x' + "aa" * 20 + "), address(hostile))", body)
         self.assertIn("offset = 4; offset + 32 <= data.length; offset += 32", body)
+        self.assertIn('assembly ("memory-safe")', body)
         self.assertNotIn("setupArg0", body)
         self.assertNotIn("targetArg0", body)
 
