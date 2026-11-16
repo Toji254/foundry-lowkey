@@ -103,6 +103,83 @@ class GodmodeTests(unittest.TestCase):
 
 
 
+    def test_godmode_recovers_current_target_and_rpc_from_project_owned_legacy_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp) / "Token"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            address = "0x" + "d" * 40
+            config = pathlib.Path(temp) / "home" / ".lowkey" / "config.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({
+                "target": address,
+                "target_contract": "Token",
+                "target_owners": {address: str(root)},
+                "project_roots": {address: str(root)},
+                "abi_paths": {address: "out/Token.sol/Token.json"},
+                "rpc": "http://127.0.0.1:8545",
+            }), encoding="utf-8")
+
+            context = godmode._load_godmode_project_context(root, config_path=config)
+
+            self.assertEqual(context["target"]["address"], address)
+            self.assertEqual(context["target"]["contract"], "Token")
+            self.assertEqual(context["target"]["source"], "legacy-global-config")
+            self.assertEqual(context["rpc"], "http://127.0.0.1:8545")
+
+    def test_godmode_does_not_borrow_global_target_from_another_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = pathlib.Path(temp)
+            root = base / "Token"
+            other = base / "Escrow"
+            root.mkdir()
+            other.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            address = "0x" + "e" * 40
+            config = base / "home" / ".lowkey" / "config.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({
+                "target": address,
+                "target_owners": {address: str(other)},
+                "rpc": "http://127.0.0.1:8545",
+            }), encoding="utf-8")
+
+            context = godmode._load_godmode_project_context(root, config_path=config)
+
+            self.assertNotIn("target", context)
+            self.assertNotIn("rpc", context)
+
+    def test_godmode_project_context_wins_over_a_different_global_target(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = pathlib.Path(temp)
+            root = base / "Token"
+            other = base / "Escrow"
+            root.mkdir()
+            other.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            own_address = "0x" + "f" * 40
+            other_address = "0x" + "1" * 40
+            audit = root / ".audit"
+            audit.mkdir()
+            (audit / "context.json").write_text(json.dumps({
+                "project": {"root": str(root)},
+                "target": {"address": own_address, "contract": "Token"},
+                "rpc": "http://127.0.0.1:8546",
+            }), encoding="utf-8")
+            config = base / "home" / ".lowkey" / "config.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({
+                "target": other_address,
+                "target_owners": {other_address: str(other)},
+                "rpc": "http://127.0.0.1:8545",
+            }), encoding="utf-8")
+
+            context = godmode._load_godmode_project_context(root, config_path=config)
+
+            self.assertEqual(context["target"]["address"], own_address)
+            self.assertEqual(context["rpc"], "http://127.0.0.1:8546")
+
+
     def test_rpc_sets_descriptive_user_agent_for_public_provider_access(self):
         from unittest.mock import patch
 

@@ -5445,23 +5445,83 @@ def resolve_godmode_root(explicit_root=None, *, cwd=None, config_path=None):
     )
 
 
-def _load_godmode_project_context(root):
-    """Read this project's own remembered target/RPC; never borrow another project's state."""
-    path = Path(root).expanduser().resolve() / ".audit" / "context.json"
+def _load_godmode_project_context(root, config_path=None):
+    """Resolve the active target/RPC from project memory, with a strictly owned legacy fallback.
+
+    Project-local .audit/context.json is authoritative. Older Lowkey installs may
+    have a valid current target only in ~/.lowkey/config.json; reuse it only when
+    target_owners proves that the target belongs to this exact project.
+    """
+    root = Path(root).expanduser().resolve()
+    path = root / ".audit" / "context.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        data = {}
     if not isinstance(data, dict):
-        return {}
+        data = {}
+
     owner = data.get("project") if isinstance(data.get("project"), dict) else {}
     stored_root = owner.get("root")
     if stored_root:
         try:
-            if Path(str(stored_root)).expanduser().resolve() != Path(root).expanduser().resolve():
-                return {}
-        except OSError:
-            return {}
+            if Path(str(stored_root)).expanduser().resolve() != root:
+                data = {}
+        except (OSError, TypeError, ValueError):
+            data = {}
+
+    target = data.get("target") if isinstance(data.get("target"), dict) else {}
+    remembered_address = str(target.get("address") or "").strip()
+    config_file = (
+        Path(config_path).expanduser()
+        if config_path is not None
+        else Path(os.path.expanduser("~/.lowkey/config.json"))
+    )
+    try:
+        legacy = json.loads(config_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        legacy = {}
+    if not isinstance(legacy, dict):
+        legacy = {}
+
+    legacy_address = str(legacy.get("target") or "").strip()
+    owners = legacy.get("target_owners") if isinstance(legacy.get("target_owners"), dict) else {}
+    owner_root = next(
+        (value for address, value in owners.items()
+         if str(address).lower() == legacy_address.lower()),
+        None,
+    )
+    owns_legacy_target = False
+    if re.fullmatch(r"0x[0-9a-fA-F]{40}", legacy_address) and isinstance(owner_root, str):
+        try:
+            owns_legacy_target = Path(owner_root).expanduser().resolve() == root
+        except (OSError, TypeError, ValueError):
+            owns_legacy_target = False
+
+    # Never infer ownership from project_roots: that map can intentionally point
+    # at a sibling dependency to locate its ABI/artifact.
+    if not remembered_address and owns_legacy_target:
+        abi_paths = legacy.get("abi_paths") if isinstance(legacy.get("abi_paths"), dict) else {}
+        data["target"] = {
+            "address": legacy_address,
+            "contract": legacy.get("target_contract"),
+            "artifact": abi_paths.get(legacy_address),
+            "source": "legacy-global-config",
+        }
+        remembered_address = legacy_address
+
+    # The global RPC may be borrowed only alongside the same project-owned target.
+    # Otherwise the current project's own RPC remains the sole source of truth.
+    same_owned_target = (
+        owns_legacy_target
+        and remembered_address
+        and legacy_address.lower() == remembered_address.lower()
+    )
+    if not data.get("rpc") and same_owned_target:
+        rpc = legacy.get("rpc") or legacy.get("rpc_url")
+        if isinstance(rpc, str) and rpc.strip():
+            data["rpc"] = rpc.strip()
+
     return data
 
 
