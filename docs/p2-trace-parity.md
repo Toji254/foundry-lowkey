@@ -13,7 +13,7 @@ Each event contains exactly these fields:
 | seq | Zero-based order in the normalized call stream |
 | backend | forge-state-diff or anvil-calltracer |
 | kind | Call, DelegateCall, StaticCall, Create, or Create2 |
-| accessor | Caller address, or null when unavailable |
+| accessor | Solidity message sender for the event's call frame, or null when unavailable. For DELEGATECALL/CALLCODE this is inherited from the parent frame; callTracer.from is the opcode caller and is not always msg.sender. |
 | account | Destination/created account, or null when unavailable |
 | depth | Call depth, or null when unavailable |
 | value | Native value in wei, or null when unavailable |
@@ -24,6 +24,8 @@ Each event contains exactly these fields:
 | storage_support | exact, partial, or declared_only |
 
 Unsupported call kinds are refused by the canonical adapter. They are not silently rewritten into a different EVM operation.
+
+Anvil's nested callTracer adapter derives this field using EVM message-sender semantics: ordinary CALL/STATICCALL frames use the opcode caller; DELEGATECALL/CALLCODE frames inherit the parent frame's `msg.sender`. This makes the canonical field comparable to Forge's `AccountAccess.accessor` without confusing it with the opcode's `from` address.
 
 ## Storage evidence levels
 
