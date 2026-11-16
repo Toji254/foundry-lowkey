@@ -163,8 +163,18 @@ def forge_promotion_status(proof, *, passed: bool) -> str:
     if not passed:
         status = str(proof.get("status") or "UNPROVEN")
         return status if status in {"REJECTED", "UNPROVEN"} else "UNPROVEN"
-    if proof.get("target_authenticity_verified") and proof.get("target_authenticity") == "forked_deployment":
+    status = str(proof.get("status") or "UNPROVEN")
+    if status in {"REJECTED", "UNPROVEN", "SIMULATED_BREAK"}:
+        return status
+    authentic_fork = (
+        proof.get("target_authenticity_verified") is True
+        and proof.get("target_authenticity") == "forked_deployment"
+    )
+    acceptable_fidelity = proof.get("fidelity") in {"simulated_caller", "constrained_inputs"}
+    if authentic_fork and acceptable_fidelity and proof.get("outcome") == "observed":
         return "FORK_OBSERVED"
+    # Forge state-diff has no mined EOA envelope/gas evidence. It may not
+    # promote itself to FORK_REPRODUCED, PROFITABLE, or HUMAN_CONFIRMED.
     return "SIMULATED_BREAK"
 
 
