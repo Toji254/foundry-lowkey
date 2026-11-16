@@ -172,6 +172,22 @@ lk ai test-plan --contract ConfidencePool --json
 ~~~
 
 The result is a saved proposal at `.audit/ai-review/test-plans/TP-<id>.json` and a `test_plan_created` ledger event. This command does not write Solidity tests, execute tests, or mark any proposed test as passing. Review the source quote, assertion, test setup, and existing coverage before implementing a case. Use the native `lk ai verify` flow only for a test that already exists and has been manually inspected.
+## Guide and lazy repair modes
+
+Choose how Lowkey helps when a supported command fails:
+
+~~~bash
+lk ai guide     # Default: AI gives clues; you make the change
+lk ai lazy      # AI may fix a safe test file and verify it
+lk ai status    # Show the selected mode
+lk ai hint      # Show the next clue
+
+lk build --guide
+lk build --lazy
+~~~
+
+Both mode commands switch the AI feature on. A configured provider and key are still needed; check with `lk ai status`. This setting is separate from `lk ai mode manual/auto`. Guide mode never edits files. Lazy mode may edit only eligible local Solidity tests under `test/` or `tests/`; it never edits production contracts or Foundry settings. It makes one small patch, saves a backup, runs `forge build` and the selected test, and restores the original file if either check fails. Fork tests and tests using FFI, environment secrets, host file access or broadcast are not eligible. AI requests may incur provider charges.
+
 ## Error diagnosis and key failover
 
 Lowkey can retain the most recent routed CLI failure in a private, redacted state file and diagnose it on demand. The model provides proposed causes and copy-pasteable checks/fixes; it does not run any suggested command.

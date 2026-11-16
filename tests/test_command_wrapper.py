@@ -41,6 +41,26 @@ class CommandWrapperTests(unittest.TestCase):
         self.assertEqual(emit.call_args.kwargs["status"], "failed")
         self.assertEqual(emit.call_args.kwargs["data"], {"command": "proxy-resolve", "exit_code": 5})
 
+    def test_supported_build_failure_is_captured_and_sent_to_repair_engine(self):
+        fake_result = type("Result", (), {
+            "returncode": 1,
+            "stdout": "Compiling failed",
+            "stderr": "Compiler error",
+        })()
+        with (
+            patch.object(command_wrapper.subprocess, "run", return_value=fake_result) as run,
+            patch.object(command_wrapper.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/project")),
+            patch.object(command_wrapper.audit_context, "emit"),
+            patch("test_repair.should_capture", return_value=True),
+            patch("test_repair.handle_failure", return_value=(1, True)) as repair,
+        ):
+            result = command_wrapper.run_command("build", ["python3", "foundry_build.py"])
+        self.assertEqual(result, 1)
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertTrue(run.call_args.kwargs["text"])
+        repair.assert_called_once()
+        self.assertIn("Compiler error", repair.call_args.args[2])
+
     def test_help_and_shell_probe_statuses_are_not_recorded(self):
         help_result = type("Result", (), {"returncode": 0})()
         probe_result = type("Result", (), {"returncode": 3})()

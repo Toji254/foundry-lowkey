@@ -34,7 +34,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("lk ai security-review", help_text)
         self.assertNotIn("usage: lk ai", help_text)
         for command in (
-            "status", "preview", "mode", "setup", "switch", "profile", "delete", "prune", "enable", "disable", "test", "run",
+            "status", "preview", "mode", "guide", "lazy", "hint", "setup", "switch", "profile", "delete", "prune", "enable", "disable", "test", "run",
             "keys", "list", "add", "remove", "clear", "explain-error",
             "errors", "project", "test-plan", "security-review", "ledger", "verify",
             "disposition", "runtime", "recommendations",
@@ -738,6 +738,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_mode_is_manual_by_default_and_can_be_switched(self):
         self.assertEqual(ai.status()["mode"], "manual")
         self.assertFalse(ai.status()["auto_assist"])
+        self.assertEqual(ai.status()["repair_mode"], "guide")
         with patch("builtins.print"):
             self.assertEqual(ai.main(["mode", "auto"]), 0)
         self.assertEqual(ai.status()["mode"], "auto")
@@ -745,6 +746,18 @@ class AIHarnessTests(unittest.TestCase):
         with patch("builtins.print"):
             self.assertEqual(ai.main(["mode", "manual"]), 0)
         self.assertEqual(ai.status()["mode"], "manual")
+
+    def test_repair_modes_turn_ai_on_without_changing_auto_assist(self):
+        with patch("builtins.print"):
+            self.assertEqual(ai.main(["lazy"]), 0)
+        self.assertEqual(ai.status()["repair_mode"], "lazy")
+        self.assertTrue(ai.status()["enabled"])
+        self.assertFalse(ai.status()["auto_assist"])
+        with patch("builtins.print"):
+            self.assertEqual(ai.main(["guide"]), 0)
+        self.assertEqual(ai.status()["repair_mode"], "guide")
+        self.assertTrue(ai.status()["enabled"])
+        self.assertFalse(ai.status()["auto_assist"])
 
     def test_automatic_review_decision_requires_auto_mode_and_usable_provider(self):
         with patch.object(ai, "auto_review_reason", return_value="proxy/factory composition") as complexity:

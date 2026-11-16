@@ -116,14 +116,41 @@ def run_command(
         return 127
     help_only = any(str(value).strip().lower() in HELP_FLAGS for value in command[1:])
     child_env = _project_rpc_environment(name, command)
+    repair_capture = False
     try:
-        if child_env is None:
-            result = subprocess.run(command, check=False)
-        else:
-            result = subprocess.run(command, check=False, env=child_env)
+        import test_repair
+        repair_capture = (not help_only and test_repair.should_capture(name, command[1:]))
+    except Exception:
+        repair_capture = False
+    try:
+        kwargs = {"check": False}
+        if child_env is not None:
+            kwargs["env"] = child_env
+        if repair_capture:
+            kwargs.update({"capture_output": True, "text": True})
+        result = subprocess.run(command, **kwargs)
         status = result.returncode if isinstance(result.returncode, int) else 1
         if status < 0:
             status = 128 + abs(status)
+        if repair_capture:
+            captured_out = str(getattr(result, "stdout", "") or "")
+            captured_err = str(getattr(result, "stderr", "") or "")
+            if captured_out:
+                sys.stdout.write(captured_out)
+                sys.stdout.flush()
+            if captured_err:
+                sys.stderr.write(captured_err)
+                sys.stderr.flush()
+            if status != 0 and status not in set(skip_exit_codes):
+                try:
+                    root_hint = _explicit_root(command)
+                    project_root = audit_context.foundry_project_root(root_hint) if root_hint else audit_context.foundry_project_root()
+                    status, _ = test_repair.handle_failure(
+                        name, command[1:], captured_out + "\n" + captured_err,
+                        status, project_root,
+                    )
+                except Exception:
+                    pass
     except KeyboardInterrupt:
         status = 130
     except FileNotFoundError as exc:

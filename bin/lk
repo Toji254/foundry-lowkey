@@ -1,6 +1,31 @@
 #!/bin/bash
 set -euo pipefail
 
+# One-command AI repair choice. The persistent choice is unchanged.
+case "${1:-}" in
+    build|test|walkthrough|walk|break|godmode|forge|report|deploy|test-gen)
+        repair_override=""
+        saw_guide=0
+        saw_lazy=0
+        repair_args=()
+        for arg in "$@"; do
+            case "$arg" in
+                --guide) repair_override="guide"; saw_guide=1 ;;
+                --lazy) repair_override="lazy"; saw_lazy=1 ;;
+                *) repair_args+=("$arg") ;;
+            esac
+        done
+        if [[ "$saw_guide" -eq 1 && "$saw_lazy" -eq 1 ]]; then
+            echo "Choose either --guide or --lazy, not both." >&2
+            exit 2
+        fi
+        if [[ -n "$repair_override" ]]; then
+            export LOWKEY_REPAIR_MODE_OVERRIDE="$repair_override"
+            set -- "${repair_args[@]}"
+        fi
+        ;;
+esac
+
 # Native attack encyclopedia. Lookup is read-only; local lab instructions are
 # rendered by the dedicated module and never use the active RPC or wallet.
 if [[ "${1:-}" == "attack" || "${1:-}" == "attacks" ]]; then

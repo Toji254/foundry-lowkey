@@ -26551,6 +26551,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
     command output remain visible. Every command contributes bounded evidence
     to a private project-scoped history before an optional AI diagnosis runs.
     """
+    global _COMMAND_STATUS
     status_before = _COMMAND_STATUS
     # Reuse prior evidence before this command runs; the final dispatcher wrapper
     # is the single execution path used by native CLI commands.
@@ -26599,7 +26600,20 @@ def dispatch_command(cmd, args, config, from_batch=False):
                 print(_ensure_error_context(rendered, cmd, code), file=sys.stderr)
                 record_status(code)
                 record = _record_last_error(rendered, code=code, source="dispatcher")
-                _maybe_explain_error(record)
+                repair_handled = False
+                repair_code = code
+                try:
+                    import test_repair
+                    repair_code, repair_handled = test_repair.handle_failure(
+                        cmd, args, current_output, code, root,
+                    )
+                except Exception:
+                    pass
+                if repair_handled and repair_code == 0:
+                    _COMMAND_STATUS = status_before
+                    raise SystemExit(0)
+                if not repair_handled:
+                    _maybe_explain_error(record)
             else:
                 sys.stderr.write(diagnostic)
         raise
@@ -26672,8 +26686,23 @@ def dispatch_command(cmd, args, config, from_batch=False):
         )
         print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
 
-    # Keep the primary failure first in the terminal output. Optional AI
-    # explanations are secondary context and must never obscure the Error line.
+    # Keep the primary failure first. The shared AI helper guides the learner
+    # or verifies one tightly limited test-file repair.
+    repair_handled = False
+    repair_code = error_code
+    try:
+        import test_repair
+        repair_code, repair_handled = test_repair.handle_failure(
+            cmd, args, event_output or recorded_text, error_code, root,
+        )
+    except Exception:
+        pass
+    if repair_handled:
+        if repair_code == 0:
+            _COMMAND_STATUS = status_before
+            return 0
+        record_status(repair_code)
+        return repair_code
     _maybe_explain_error(record)
     record_status(error_code)
     if isinstance(returned_code, int) and returned_code != 0:

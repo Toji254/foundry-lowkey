@@ -74,7 +74,7 @@ def credentials_path() -> Path:
 
 def _default_config() -> dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "enabled": False, "auto_assist": False,
-            "auto_explain_errors": False, "auto_recommendations": False,
+            "repair_mode": "guide", "auto_explain_errors": False, "auto_recommendations": False,
             "jev_autonomous": False, "jev_use_text_ai": False, "jev_free_tier_mode": False,
             "jev_daily_call_limit": JEV_DEFAULT_DAILY_LIMIT,
             "jev_context_limit_bytes": JEV_DEFAULT_CONTEXT_LIMIT_BYTES,
@@ -108,6 +108,8 @@ def load_config() -> dict[str, Any]:
         raise AIHarnessError("AI configuration 'enabled' must be true or false.")
     if not isinstance(cfg.get("auto_assist"), bool):
         raise AIHarnessError("AI configuration 'auto_assist' must be true or false.")
+    if cfg.get("repair_mode") not in {"guide", "lazy"}:
+        raise AIHarnessError("AI configuration 'repair_mode' must be guide or lazy.")
     if not isinstance(cfg.get("auto_explain_errors"), bool):
         raise AIHarnessError("AI configuration 'auto_explain_errors' must be true or false.")
     for key in ("auto_recommendations", "jev_autonomous", "jev_use_text_ai", "jev_free_tier_mode"):
@@ -497,6 +499,7 @@ def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
             "jev_context_limit_bytes": budget["context_limit_bytes"],
             "jev_max_output_tokens": budget["max_output_tokens"],
             "mode": "auto" if auto_assist else "manual",
+            "repair_mode": str(cfg.get("repair_mode") or "guide"),
             "provider": provider, "model": cfg.get("model"), "base_url": cfg.get("base_url"),
             "reason": reason, "timeout_seconds": cfg.get("timeout_seconds"),
             "max_output_tokens": cfg.get("max_output_tokens"), "key_slots_configured": key_count}
@@ -533,6 +536,7 @@ def render_status(value: Mapping[str, Any]) -> str:
         "LOWKEY AI STATUS",
         "================",
         f"AI feature: {'ON' if value.get('enabled') else 'OFF'}",
+        f"Repair help: {str(value.get('repair_mode') or 'guide').upper()}",
         f"Provider: {_friendly_provider_name(provider, value.get('base_url'))}",
         f"Model: {value.get('model') or 'Not selected'}",
     ]
@@ -2198,6 +2202,20 @@ REVIEW & EVIDENCE
 
 AUTOMATION SETTINGS
 -------------------
+  lk ai guide
+      Default: AI gives clues and you make the change. AI is switched on.
+      Example: lk ai guide
+
+  lk ai lazy
+      Let AI repair an eligible test and check that it passes. AI is switched on.
+      Example: lk ai lazy
+
+  lk ai hint
+      Show the next clue for the last guided problem.
+
+  lk build --guide / --lazy
+      Choose guide or lazy for one build only.
+
   lk ai mode {manual|auto}
       Enable automatic guidance for eligible workflows; lab can also request complexity-triggered review.
       Example: lk ai mode auto
@@ -2217,6 +2235,7 @@ auto is a value after a setting command, not a standalone command. Settings are 
   lk ai mode auto             Guide eligible command results and supported failures.
   lk ai recommendations auto  Add notes after attempts, even failures.
   lk ai errors auto           Explain supported failures without rerunning.
+  lk ai guide / lk ai lazy     Choose who handles eligible test failures.
 Use "manual" to switch off; "status" shows it. Requests may send context and incur charges.
 
 UNIVERSAL --ai / TASK RUN
@@ -3109,6 +3128,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="action")
     status_cmd = sub.add_parser("status", help="show whether AI is set up and what to do next")
     status_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
+    sub.add_parser("guide", help="AI gives clues; you fix the code")
+    sub.add_parser("lazy", help="AI fixes eligible tests and checks the result")
+    sub.add_parser("hint", help="show the next clue for the last guided problem")
     run_cmd = sub.add_parser("run", help="investigate a goal with a checked plan and approved read-only commands")
     run_cmd.add_argument("goal", nargs="+", help="task to investigate, for example: investigate why withdrawal reverts")
     run_cmd.add_argument("--root", default=".", help="project directory (default: current directory)")
@@ -3332,6 +3354,28 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         parsed = parser.parse_args(args)
+        if parsed.action in {"guide", "lazy"}:
+            cfg = load_config()
+            cfg["repair_mode"] = parsed.action
+            cfg["enabled"] = True
+            save_config(cfg)
+            current = status(cfg)
+            print("LK AI: " + parsed.action.upper() + " mode is on.")
+            if current.get("usable"):
+                print("AI is ready. Failed supported commands will use this mode.")
+            else:
+                print("AI is on but not ready yet. Run 'lk ai status' to see what is missing.")
+            if parsed.action == "guide":
+                print("Your code stays untouched. Run 'lk ai hint' for another clue.")
+            else:
+                print("Automatic edits are limited to eligible Solidity test files. Failed checks undo the edit.")
+            return 0
+        if parsed.action == "hint":
+            try:
+                import test_repair
+            except ImportError:
+                from lowkey import test_repair
+            return test_repair.show_next_hint(Path.cwd())
         if parsed.action == "run":
             try:
                 import ai_workflow
