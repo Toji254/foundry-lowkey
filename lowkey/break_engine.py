@@ -32,6 +32,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .abi_support import canonical_abi_type, sample_abi_inputs
+except ImportError:
+    from abi_support import canonical_abi_type, sample_abi_inputs
+
+try:
     from break_playbook import (
         FINDING_PATTERNS,
         backend_for_project,
@@ -362,13 +367,16 @@ def _function_matches(fn: dict[str, Any], query: str) -> bool:
 
 
 def _format_signature(fn: dict[str, Any], host=None) -> str:
-    if host is not None:
-        try:
-            return host.format_signature(fn)
-        except Exception:
-            pass
     inputs = fn.get("inputs") or []
-    types = ",".join(str(item.get("type") or "") for item in inputs)
+    try:
+        types = ",".join(canonical_abi_type(item) for item in inputs)
+    except Exception:
+        if host is not None:
+            try:
+                return host.format_signature(fn)
+            except Exception:
+                pass
+        types = ",".join(str(item.get("type") or "") for item in inputs)
     return f"{fn.get('name') or 'unknown'}({types})"
 
 
@@ -722,22 +730,14 @@ def _array_abi_type(ptype: str):
 
 
 def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str, config=None) -> list[str]:
-    """Generate deterministic scalar and one-dimensional primitive-array ABI values."""
-    args = []
+    """Generate deterministic recursive ABI values for the target's actual input shape."""
     accounts = _anvil_accounts(host, config or {})
-    fallback = accounts[1] if mode == "one" and len(accounts) > 1 else (accounts[0] if accounts else "0x" + "11" * 20)
-    for item in fn.get("inputs") or []:
-        ptype = str(item.get("type") or "").lower().strip()
-        array = _array_abi_type(ptype)
-        if array:
-            element_type, fixed_length = array
-            count = fixed_length if fixed_length is not None else (0 if mode == "zero" else 1)
-            args.append("[" + ",".join(_sample_abi_value(element_type, mode, rng, fallback) for _ in range(count)) + "]")
-            continue
-        if ptype.startswith(("tuple", "(")):
-            raise ValueError(f"tuple/struct argument '{ptype}' requires a protocol-specific generator")
-        args.append(_sample_abi_value(ptype, mode, rng, fallback))
-    return args
+    fallback = accounts[1] if mode == "one" and len(accounts) > 1 else (
+        accounts[0] if accounts else "0x" + "11" * 20
+    )
+    return sample_abi_inputs(
+        fn.get("inputs") or [], mode, rng=rng, fallback_address=fallback
+    )
 
 
 def _parse_array_samples(raw_value: str, expected_length: int | None = None) -> list[str]:
@@ -754,19 +754,10 @@ def _parse_array_samples(raw_value: str, expected_length: int | None = None) -> 
 
 
 def _setup_argument_samples(params: list[dict[str, Any]]) -> list[str]:
-    rng = random.Random(1337)
-    fallback = "0x" + "11" * 20
-    values = []
-    for item in params:
-        ptype = str(item.get("type") or "").lower().strip()
-        array = _array_abi_type(ptype)
-        if array:
-            base, fixed = array
-            count = fixed if fixed is not None else 1
-            values.append("[" + ",".join(_sample_abi_value(base, "one", rng, fallback) for _ in range(count)) + "]")
-        else:
-            values.append(_sample_abi_value(ptype, "one", rng, fallback))
-    return values
+    """Generate stable setup arguments for any supported recursive ABI shape."""
+    return sample_abi_inputs(
+        params, "one", rng=random.Random(1337), fallback_address="0x" + "11" * 20
+    )
 
 
 def _solidity_argument_declarations(params, values, prefix, address_expression="address(ATTACKER)", uint_expression="1"):
@@ -1226,25 +1217,35 @@ def _render_repeat_test(
     asset_signature: str | None = None,
     setup_params: list[dict[str, Any]] | None = None,
     setup_payable: bool | None = None,
+    payload_calldata: str | None = None,
+    setup_calldata: str | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
-    argument_declarations, expressions = _solidity_argument_declarations(
-        params, values, "target", address_expression="ATTACKER"
-    )
+    if payload_calldata:
+        argument_declarations, expressions = "", []
+    else:
+        argument_declarations, expressions = _solidity_argument_declarations(
+            params, values, "target", address_expression="ATTACKER"
+        )
     setup_params = list(setup_params) if setup_params is not None else []
-    setup_values = _setup_argument_samples(setup_params) if setup_signature else []
-    setup_declarations, setup_expressions = _solidity_argument_declarations(
-        setup_params, setup_values, "setup", address_expression="ATTACKER",
-        uint_expression="tokenFundingAmount" if asset_signature else "1",
-    ) if setup_signature else ("", [])
-    setup_suffix = ", " + ", ".join(setup_expressions) if setup_expressions else ""
-    setup_call = f'abi.encodeWithSignature("{setup_signature}"{setup_suffix})' if setup_signature else ""
+    if setup_calldata:
+        setup_declarations, setup_call = "", f'hex"{setup_calldata[2:]}"'
+    else:
+        setup_values = _setup_argument_samples(setup_params) if setup_signature else []
+        setup_declarations, setup_expressions = _solidity_argument_declarations(
+            setup_params, setup_values, "setup", address_expression="ATTACKER",
+            uint_expression="tokenFundingAmount" if asset_signature else "1",
+        ) if setup_signature else ("", [])
+        setup_suffix = ", " + ", ".join(setup_expressions) if setup_expressions else ""
+        setup_call = f'abi.encodeWithSignature("{setup_signature}"{setup_suffix})' if setup_signature else ""
     payable_setup = True if setup_payable is None else setup_payable
     setup_value = "0" if asset_signature else (_solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0"))
     payload_expr = (
-        f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
-        if expressions else f'abi.encodeWithSignature("{signature}")'
+        f'hex"{payload_calldata[2:]}"' if payload_calldata else (
+            f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
+            if expressions else f'abi.encodeWithSignature("{signature}")'
+        )
     )
 
     setup_block = ""
@@ -1696,20 +1697,28 @@ def _render_reentrancy_test(
     setup_params: list[dict[str, Any]] | None = None,
     setup_payable: bool | None = None,
     asset_signature: str | None = None,
+    payload_calldata: str | None = None,
+    setup_calldata: str | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
-    argument_declarations, encoded_args = _solidity_argument_declarations(
-        params, values, "target", address_expression="address(hostile)"
-    )
+    if payload_calldata:
+        argument_declarations, encoded_args = "", []
+    else:
+        argument_declarations, encoded_args = _solidity_argument_declarations(
+            params, values, "target", address_expression="address(hostile)"
+        )
     setup_params = list(setup_params) if setup_params is not None else []
-    setup_values = _setup_argument_samples(setup_params) if setup_signature else []
-    setup_declarations, setup_expressions = _solidity_argument_declarations(
-        setup_params, setup_values, "setup", address_expression="address(hostile)",
-        uint_expression="tokenFundingAmount" if asset_signature else "1",
-    ) if setup_signature else ("", [])
-    setup_suffix = ", " + ", ".join(setup_expressions) if setup_expressions else ""
-    setup_call = f'abi.encodeWithSignature("{setup_signature}"{setup_suffix})' if setup_signature else ""
+    if setup_calldata:
+        setup_declarations, setup_call = "", f'hex"{setup_calldata[2:]}"'
+    else:
+        setup_values = _setup_argument_samples(setup_params) if setup_signature else []
+        setup_declarations, setup_expressions = _solidity_argument_declarations(
+            setup_params, setup_values, "setup", address_expression="address(hostile)",
+            uint_expression="tokenFundingAmount" if asset_signature else "1",
+        ) if setup_signature else ("", [])
+        setup_suffix = ", " + ", ".join(setup_expressions) if setup_expressions else ""
+        setup_call = f'abi.encodeWithSignature("{setup_signature}"{setup_suffix})' if setup_signature else ""
     payable_setup = True if setup_payable is None else setup_payable
     setup_value = "0" if asset_signature else (_solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0"))
     asset_discovery = """
@@ -1758,8 +1767,10 @@ def _render_reentrancy_test(
         }}
 """
     payload_expr = (
-        f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
-        if encoded_args else f'abi.encodeWithSignature("{signature}")'
+        f'hex"{payload_calldata[2:]}"' if payload_calldata else (
+            f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
+            if encoded_args else f'abi.encodeWithSignature("{signature}")'
+        )
     )
     setup_block = """        uint256 targetBalanceBeforeFunding = TARGET.balance;
 """
@@ -2510,6 +2521,29 @@ def _record_break(host, result: AttackResult):
     return str(path)
 
 
+def _encoded_setup_call(host, config, target: Target, setup_function, setup_params, asset_signature):
+    """Pre-encode setup calldata for recursive ABI types.
+
+    A simple single-uint token deposit remains runtime-encoded so its amount can
+    use verified token decimals. All other setup shapes use the same Cast-backed
+    ABI encoder as ordinary target calls.
+    """
+    if not setup_function:
+        return None
+    if (
+        asset_signature
+        and len(setup_params) == 1
+        and re.fullmatch(r"uint(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?",
+                         str(setup_params[0].get("type") or "").lower())
+    ):
+        return None
+    values = _setup_argument_samples(setup_params)
+    calldata, error = _encode_call(host, config, target, setup_function, values)
+    if not calldata:
+        raise ValueError("Could not ABI-encode the discovered setup function: " + str(error or "unknown encoder error"))
+    return calldata
+
+
 def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], family: str, opts, rng, project_info: dict[str, Any] | None = None) -> AttackResult:
     signature = _format_signature(fn, host)
     name = _function_name(signature)
@@ -2544,6 +2578,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             setup_payable = bool(setup_function and str(setup_function.get("stateMutability") or "").lower() == "payable")
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
             asset_signature = _find_asset_getter_signature(all_functions)
+            setup_calldata = _encoded_setup_call(
+                host, config, target, setup_function, setup_params, asset_signature
+            )
         except ValueError as error:
             return AttackResult(family, target.contract, target.address, signature, "BLOCKED", str(error),
                                 detail={"reason_code": "unsupported_abi"})
@@ -2570,6 +2607,8 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             asset_signature=asset_signature,
             setup_params=setup_params,
             setup_payable=setup_payable,
+            payload_calldata=calldata,
+            setup_calldata=setup_calldata,
         )
     elif family == "access":
         body = _render_access_test(
@@ -2594,16 +2633,6 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     elif family == "time":
         body = _render_time_test(target, signature, calldata, value)
     elif family == "reentrancy":
-        if any(
-            str(item.get("type") or "").lower().startswith(("tuple", "("))
-            or ("[" in str(item.get("type") or "") and _array_abi_type(str(item.get("type") or "")) is None)
-            for item in (fn.get("inputs") or [])
-        ):
-            return AttackResult(
-                family, target.contract, target.address, signature, "BLOCKED",
-                "Nested tuple/array ABI types require a protocol-specific generator.",
-                detail={"reason_code": "unsupported_abi"},
-            )
         try:
             all_functions = _discover_functions(host, config, target)
             setup_function = _find_setup_function(all_functions)
@@ -2612,6 +2641,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             setup_payable = bool(setup_function and str(setup_function.get("stateMutability") or "").lower() == "payable")
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
             asset_signature = _find_asset_getter_signature(all_functions)
+            setup_calldata = _encoded_setup_call(
+                host, config, target, setup_function, setup_params, asset_signature
+            )
             body = _render_reentrancy_test(
                 target,
                 fn,
@@ -2624,6 +2656,8 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 setup_params=setup_params,
                 setup_payable=setup_payable,
                 asset_signature=asset_signature,
+                payload_calldata=calldata,
+                setup_calldata=setup_calldata,
             )
         except ValueError as error:
             return AttackResult(
