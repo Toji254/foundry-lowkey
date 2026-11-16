@@ -122,6 +122,7 @@ cp "$STAGE_DIR/forge_state_diff.py" "$TARGET_LOWKEY_DIR/forge_state_diff.py"
 cp "$STAGE_DIR/trace_evidence.py" "$TARGET_LOWKEY_DIR/trace_evidence.py"
 cp "$STAGE_DIR/trace_schema.py" "$TARGET_LOWKEY_DIR/trace_schema.py"
 cp "$STAGE_DIR/trace_parity.py" "$TARGET_LOWKEY_DIR/trace_parity.py"
+cp "$STAGE_DIR/storage_trace.py" "$TARGET_LOWKEY_DIR/storage_trace.py"
 cp "$STAGE_DIR/abi_support.py" "$TARGET_LOWKEY_DIR/abi_support.py"
 cp "$STAGE_DIR/setup_reasoner.py" "$TARGET_LOWKEY_DIR/setup_reasoner.py"
 cp "$STAGE_DIR/foundry_build.py" "$TARGET_LOWKEY_DIR/foundry_build.py"
@@ -227,6 +228,7 @@ installed = {
     str(lowkey_dir / "trace_evidence.py"): sha256(lowkey_dir / "trace_evidence.py"),
     str(lowkey_dir / "trace_schema.py"): sha256(lowkey_dir / "trace_schema.py"),
     str(lowkey_dir / "trace_parity.py"): sha256(lowkey_dir / "trace_parity.py"),
+    str(lowkey_dir / "storage_trace.py"): sha256(lowkey_dir / "storage_trace.py"),
     str(lowkey_dir / "abi_support.py"): sha256(lowkey_dir / "abi_support.py"),
     str(lowkey_dir / "setup_reasoner.py"): sha256(lowkey_dir / "setup_reasoner.py"),
     str(lowkey_dir / "foundry_build.py"): sha256(lowkey_dir / "foundry_build.py"),
@@ -314,6 +316,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/trace_evidence.py
   - $TARGET_LOWKEY_DIR/trace_schema.py
   - $TARGET_LOWKEY_DIR/trace_parity.py
+  - $TARGET_LOWKEY_DIR/storage_trace.py
   - $TARGET_LOWKEY_DIR/abi_support.py
   - $TARGET_LOWKEY_DIR/setup_reasoner.py
   - $TARGET_LOWKEY_DIR/foundry_build.py
