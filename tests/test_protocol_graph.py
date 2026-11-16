@@ -26,15 +26,20 @@ class ProtocolGraphTests(unittest.TestCase):
                 "nodes": [
                     {
                         "nodeType": "VariableDeclaration", "id": 2,
-                        "name": "total", "stateVariable": True,
+                        "name": "total", "src": "20:5:0", "stateVariable": True,
                         "visibility": "internal",
                         "typeDescriptions": {"typeString": "uint256"},
                     },
                     {
+                        "nodeType": "ModifierDefinition", "id": 6,
+                        "name": "onlyOwner", "src": "5:10:0",
+                    },
+                    {
                         "nodeType": "FunctionDefinition", "id": 3,
-                        "name": "deposit", "kind": "function",
+                        "name": "deposit", "src": "30:90:0", "kind": "function",
                         "visibility": "external", "stateMutability": "nonpayable",
                         "implemented": True,
+                        "modifiers": [{"src": "35:9:0", "modifierName": {"referencedDeclaration": 6}}],
                         "parameters": {"parameters": []},
                         "body": {
                             "nodeType": "Block",
@@ -63,7 +68,7 @@ class ProtocolGraphTests(unittest.TestCase):
                     },
                     {
                         "nodeType": "FunctionDefinition", "id": 4,
-                        "name": "balance", "kind": "function",
+                        "name": "balance", "src": "130:30:0", "kind": "function",
                         "visibility": "external", "stateMutability": "view",
                         "implemented": True,
                         "parameters": {"parameters": []},
@@ -81,7 +86,7 @@ class ProtocolGraphTests(unittest.TestCase):
                     },
                     {
                         "nodeType": "FunctionDefinition", "id": 5,
-                        "name": "helper", "kind": "function",
+                        "name": "helper", "src": "170:20:0", "kind": "function",
                         "visibility": "internal", "stateMutability": "pure",
                         "implemented": True,
                         "parameters": {"parameters": []},
@@ -109,7 +114,9 @@ class ProtocolGraphTests(unittest.TestCase):
         functions = {node["name"]: node for node in graph["nodes"] if node["kind"] == "function"}
         self.assertEqual(functions["deposit"]["writes"], ["src/Vault.sol:Vault::state::total"])
         self.assertEqual(functions["balance"]["reads"], ["src/Vault.sol:Vault::state::total"])
-        self.assertTrue(any(edge["kind"] == "compiler_call_candidate" for edge in graph["edges"]))
+        call_edge = next(edge for edge in graph["edges"] if edge["kind"] == "compiler_call_candidate")
+        self.assertEqual(call_edge["source_span"], "50:12:0")
+        self.assertTrue(any(edge["kind"] == "uses_modifier" for edge in graph["edges"]))
         self.assertTrue(any(edge["kind"] == "state_dependency_candidate" for edge in graph["edges"]))
 
     def test_compiler_ast_rejects_stale_source_build_info(self):
