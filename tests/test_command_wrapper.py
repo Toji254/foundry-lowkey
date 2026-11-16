@@ -96,7 +96,7 @@ class CommandWrapperTests(unittest.TestCase):
             self.assertEqual(child_env["LOWKEY_RPC_URL"], project_rpc)
             self.assertEqual(command_wrapper.os.environ["FOUNDRY_ETH_RPC_URL"], "http://global-rpc")
 
-    def test_explicit_rpc_and_explicit_project_root_are_respected(self):
+    def test_explicit_rpc_prevents_project_default_injection(self):
         explicit_rpc = "http://127.0.0.1:8547"
         fake_result = type("Result", (), {"returncode": 0})()
         with (
@@ -108,13 +108,33 @@ class CommandWrapperTests(unittest.TestCase):
         ):
             status = command_wrapper.run_command(
                 "godmode",
-                ["python3", "godmode.py", "--root", "/tmp/Token", "--rpc-url", explicit_rpc],
+                ["python3", "godmode.py", "--rpc-url", explicit_rpc],
             )
 
         self.assertEqual(status, 0)
         root.assert_not_called()
         resolver.assert_not_called()
         self.assertNotIn("env", run.call_args.kwargs)
+
+    def test_explicit_root_controls_project_rpc_resolution(self):
+        project_rpc = "http://127.0.0.1:9545"
+        fake_result = type("Result", (), {"returncode": 0})()
+        with (
+            patch.object(command_wrapper.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/Token")) as root,
+            patch.object(command_wrapper.audit_context, "load", return_value={"project": {"root": "/tmp/Token"}}),
+            patch.object(command_wrapper, "_load_global_config", return_value={}),
+            patch.object(command_wrapper.shared_context, "resolve_runtime_context", return_value={"rpc": project_rpc}),
+            patch.object(command_wrapper.subprocess, "run", return_value=fake_result) as run,
+            patch.object(command_wrapper.audit_context, "emit"),
+        ):
+            status = command_wrapper.run_command(
+                "godmode",
+                ["python3", "godmode.py", "--root", "/tmp/Token"],
+            )
+
+        self.assertEqual(status, 0)
+        root.assert_called_once_with("/tmp/Token")
+        self.assertEqual(run.call_args.kwargs["env"]["FOUNDRY_ETH_RPC_URL"], project_rpc)
 
 
 if __name__ == "__main__":
