@@ -820,6 +820,68 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("without talking down", system_message)
         self.assertIn("never override evidence", system_message)
 
+    def test_setup_reasoning_is_latency_bounded_and_does_not_rotate_keys(self):
+        from lowkey import provider_adapters
+
+        ai.configure(
+            provider="openai-compatible", model="fixture-model",
+            base_url="https://provider.example/v1", api_key="first-secret-key",
+        )
+        ai.set_api_key_slot("openai-compatible", 2, "second-secret-key")
+        ai.set_api_key_slot("openai-compatible", 3, "third-secret-key")
+        adapter = provider_adapters.get_provider_adapter("openai-compatible")
+        attempts = []
+
+        def fail_quota(**kwargs):
+            attempts.append(kwargs)
+            raise provider_adapters.ProviderAdapterError("quota", "quota")
+
+        with patch.object(adapter, "send", side_effect=fail_quota):
+            with self.assertRaises(ai.AIUnavailable):
+                ai.request_structured(
+                    purpose="setup_reasoning", task="rank setup candidates",
+                    context={"abi_candidates": [{"signature": "deposit(uint256)"}]},
+                    required_fields=("selected_signature", "rationale"),
+                )
+
+        self.assertEqual(len(attempts), 1)
+        self.assertLessEqual(attempts[0]["config"]["timeout_seconds"], 3)
+        self.assertLessEqual(attempts[0]["payload"]["max_tokens"], 128)
+
+    def test_setup_reasoning_caches_exact_candidate_decisions_for_regular_providers(self):
+        from lowkey import provider_adapters
+
+        ai.configure(
+            provider="openai-compatible", model="fixture-model",
+            base_url="https://provider.example/v1", api_key="setup-cache-key",
+        )
+        adapter = provider_adapters.get_provider_adapter("openai-compatible")
+        response = json.dumps({
+            "choices": [{"message": {"content": json.dumps({
+                "selected_signature": "deposit(uint256)",
+                "rationale": "Creates the actor's initial position.",
+            })}}]
+        }).encode("utf-8")
+        calls = []
+
+        def send(**kwargs):
+            calls.append(kwargs)
+            return response
+
+        context = {"abi_candidates": [{"signature": "deposit(uint256)"}]}
+        with patch.object(adapter, "send", side_effect=send):
+            first = ai.request_structured(
+                purpose="setup_reasoning", task="rank setup candidates",
+                context=context, required_fields=("selected_signature", "rationale"),
+            )
+            second = ai.request_structured(
+                purpose="setup_reasoning", task="rank setup candidates",
+                context=context, required_fields=("selected_signature", "rationale"),
+            )
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 1)
+
     def test_three_key_slots_fail_over_after_quota_and_never_log_key_values(self):
         from lowkey import provider_adapters
 
