@@ -278,6 +278,9 @@ def _generator_fingerprints(root, spec):
         module_path = Path(__file__).with_name(module_name)
         if module_path.is_file():
             paths.add(module_path.resolve())
+    step_template = Path(__file__).resolve().parent / "templates" / "step_harness.sol.tmpl"
+    if step_template.is_file():
+        paths.add(step_template.resolve())
     declared = spec.get("generator_files") or []
     if not isinstance(declared, list) or not all(isinstance(item, str) and item.strip() for item in declared):
         raise ValueError("generator_files must be an array of project-relative file paths.")
