@@ -933,6 +933,8 @@ def _normalize_trace_events_v2(calls, storage_trace=None, structlog_trace=None):
             for index, rows in (structlog_trace.get("frame_storage") or {}).items()
             if str(index).isdigit() and isinstance(rows, list)
         }
+        for frame_index in range(len(calls)):
+            per_access_storage.setdefault(frame_index, [])
         events = normalize_calltracer(
             calls,
             per_access_storage=per_access_storage,
