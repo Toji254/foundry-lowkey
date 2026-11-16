@@ -2024,9 +2024,8 @@ SECOND_RETURNDATA_LENGTH 0
             def fake_cast(_host, args, rpc):
                 if args[:2] == ["rpc", "evm_snapshot"]:
                     return subprocess.CompletedProcess(args, 0, "0x1", "")
-                if args[:2] == ["rpc", "eth_call"]:
-                    encoded = "0x" + "0" * 24 + host.owner[2:]
-                    return subprocess.CompletedProcess(args, 0, encoded, "")
+                if args[:2] == ["call", address] and args[2] == "owner()(address)":
+                    return subprocess.CompletedProcess(args, 0, host.owner, "")
                 if args[0] == "send":
                     calldata = args[args.index("--data") + 1]
                     if calldata == "0x":
@@ -2051,6 +2050,48 @@ SECOND_RETURNDATA_LENGTH 0
             self.assertEqual(result.detail["authority_after"], accounts[1])
             self.assertEqual(host.owner, accounts[0], "the Anvil snapshot must be reverted after the probe")
 
+
+    def test_authority_getter_uses_typed_cast_call_and_accepts_address(self):
+        target = break_engine.Target("Vault", "0x" + "a" * 40)
+        owner = "0x" + "1" * 40
+        getter = {
+            "name": "owner",
+            "inputs": [],
+            "outputs": [{"type": "address"}],
+        }
+        expected_args = ["call", target.address, "owner()(address)"]
+        with mock.patch.object(
+            break_engine,
+            "_cast_exec",
+            return_value=__import__("subprocess").CompletedProcess([], 0, owner, ""),
+        ) as cast_exec:
+            result = break_engine._read_address_getter(
+                object(), "http://127.0.0.1:8545", target, getter, {}
+            )
+        self.assertEqual(result, owner)
+        cast_exec.assert_called_once()
+        self.assertEqual(cast_exec.call_args.args[1], expected_args)
+
+    def test_authority_getter_accepts_raw_abi_word_as_fallback(self):
+        target = break_engine.Target("Vault", "0x" + "a" * 40)
+        owner = "0x" + "1" * 40
+        word = "0x" + "0" * 24 + owner[2:]
+        getter = {"name": "owner", "inputs": [], "outputs": [{"type": "address"}]}
+        with mock.patch.object(
+            break_engine,
+            "_cast_exec",
+            return_value=__import__("subprocess").CompletedProcess([], 0, word, ""),
+        ):
+            result = break_engine._read_address_getter(
+                object(), "http://127.0.0.1:8545", target, getter, {}
+            )
+        self.assertEqual(result, owner)
+
+    def test_payable_value_uses_valid_solidity_unit_spacing(self):
+        fn = {"stateMutability": "payable"}
+        self.assertEqual(break_engine._payable_value(fn, {}, "small"), "1 wei")
+        self.assertEqual(break_engine._payable_value(fn, {}), "1 wei")
+        self.assertEqual(break_engine._payable_value({"stateMutability": "nonpayable"}, {}), "0")
 
 if __name__ == "__main__":
     unittest.main()
