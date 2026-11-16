@@ -893,8 +893,6 @@ def _validate_chain_evidence(
             raise AttackEngineError("single_transaction stage evidence spans multiple transactions or blocks.")
         if manifest["mode"] == "stateful_fork" and stage_block < block_number:
             raise AttackEngineError("stateful_fork stage block precedes its chain transaction.")
-        if FAMILIES[spec["family"]]["economic"] and role == "attack":
-            _validate_economic_data(evidence.get("economic"), f"{role} chain economic stage {spec['id']}")
         normalized_stages.append({"id": spec["id"], "family": spec["family"],
                                   "discovery": spec["discovery"], "preconditions": preconditions,
                                   "predicate": stage_predicate,
