@@ -18,6 +18,10 @@ class _Host:
     def is_address(value):
         return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", str(value)))
 
+    def encode_target_call(self, config, signature, values):
+        self.encoded = (config, signature, list(values))
+        return "0x12345678", "0x12345678" + ("00" * 32)
+
 
 class P0SetupCompatibilityTests(unittest.TestCase):
     def setUp(self):
@@ -93,6 +97,63 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         ])
         self.assertIsNotNone(setup)
         self.assertEqual(setup["signature"], "deposit(address[])")
+
+
+    def test_tuple_values_and_recursive_tuple_array_signatures_are_preserved(self):
+        fn = {
+            "name": "claimMany",
+            "inputs": [{
+                "name": "claims",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "recipient", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+            }],
+        }
+        values = break_engine._make_value(self.host, fn, random.Random(7), "one")
+        self.assertEqual(values, ["[(0x2222222222222222222222222222222222222222,1)]"])
+        calldata, error = break_engine._encode_call(
+            self.host, {"rpc": "http://127.0.0.1:8545"}, self.target, fn, values
+        )
+        self.assertIsNone(error)
+        self.assertEqual(calldata, "0x12345678" + ("00" * 32))
+        self.assertEqual(self.host.encoded[1], "claimMany((address,uint256)[])")
+        self.assertEqual(self.host.encoded[2], values)
+        self.assertEqual(self.host.encoded[0]["target"], self.target.address)
+
+    def test_setup_discovery_accepts_nested_array_abi(self):
+        setup = break_engine._find_setup_function([
+            {
+                "type": "function",
+                "name": "deposit",
+                "stateMutability": "nonpayable",
+                "inputs": [{"name": "recipients", "type": "address[][]"}],
+                "outputs": [],
+            }
+        ])
+        self.assertIsNotNone(setup)
+        self.assertEqual(break_engine._format_signature(setup), "deposit(address[][])")
+
+    def test_complete_tuple_setup_arguments_are_sampled_without_guessing(self):
+        setup = break_engine._find_setup_function([
+            {
+                "type": "function",
+                "name": "claim",
+                "stateMutability": "nonpayable",
+                "inputs": [{
+                    "name": "claim",
+                    "type": "tuple",
+                    "components": [
+                        {"name": "recipient", "type": "address"},
+                        {"name": "amount", "type": "uint256"},
+                    ],
+                }],
+                "outputs": [],
+            }
+        ])
+        self.assertIsNotNone(setup)
+        self.assertEqual(break_engine._format_signature(setup), "claim((address,uint256))")
 
     def test_unsupported_setup_type_is_not_guessed(self):
         with self.assertRaisesRegex(ValueError, "supported ABI"):
