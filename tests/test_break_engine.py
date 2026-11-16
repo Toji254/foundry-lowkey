@@ -2093,5 +2093,69 @@ SECOND_RETURNDATA_LENGTH 0
         self.assertEqual(break_engine._payable_value(fn, {}), "1 wei")
         self.assertEqual(break_engine._payable_value({"stateMutability": "nonpayable"}, {}), "0")
 
+    def test_cast_send_normalizes_unit_spacing_for_cli_value(self):
+        import subprocess
+
+        target = break_engine.Target("Fallback", "0x" + "a" * 40)
+        actor = "0x" + "b" * 40
+        with mock.patch.object(
+            break_engine,
+            "_cast_exec",
+            return_value=subprocess.CompletedProcess([], 0, "ok", ""),
+        ) as cast_exec:
+            result = break_engine._cast_send(
+                object(), "http://127.0.0.1:8545", target, "0x", "1 wei", actor
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(cast_exec.call_args.args[1][-1], "1wei")
+
+    def test_receive_callback_probe_uses_empty_calldata_without_abi_encoding(self):
+        import tempfile
+        import subprocess
+        import random
+
+        class AuditContext:
+            def __init__(self, root):
+                self.root = root
+            def foundry_project_root(self):
+                return self.root
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = AuditContext(root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            host = Host(root)
+            target = break_engine.Target("Fallback", "0x" + "a" * 40)
+            receive_fn = {
+                "type": "function", "name": "receive", "inputs": [],
+                "outputs": [], "stateMutability": "payable", "_lowkey_special_entry": True,
+            }
+            with (
+                mock.patch.object(break_engine, "_encode_call", side_effect=AssertionError("receive must not use ABI encoding")),
+                mock.patch.object(break_engine, "_render_access_test", return_value="// generated receive test") as render,
+                mock.patch.object(break_engine, "_forge_run", return_value=subprocess.CompletedProcess([], 0, "LOWKEY_BREAK_FAMILY callback\\nLOWKEY_BREAK false", "")),
+            ):
+                result = break_engine._run_family(
+                    host,
+                    {},
+                    "http://127.0.0.1:8545",
+                    target,
+                    receive_fn,
+                    "callback",
+                    {},
+                    random.Random(1337),
+                    {
+                        "root": str(root),
+                        "stacks": ["foundry"],
+                        "native": {"forge": True},
+                        "manifests": {"foundry": True},
+                    },
+                )
+            self.assertEqual(result.status, "OBSERVED")
+            self.assertEqual(render.call_args.args[2], "0x")
+            self.assertEqual(render.call_args.args[3], "1 wei")
+
 if __name__ == "__main__":
     unittest.main()
