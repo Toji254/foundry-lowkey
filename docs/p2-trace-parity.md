@@ -52,22 +52,21 @@ The command writes .audit/godmode/trace-parity.json by default and returns:
 
 Null never counts as a match. The output records both input artifact paths and SHA-256 digests.
 
-## First real-fork candidate
+## First exact-identity mainnet fork
 
-The P2 end-to-end acceptance uses Yearn's Ethereum USDC-1 / yvUSDC-1 V3 vault:
+The P2 end-to-end acceptance uses Ethereum's canonical EntryPoint v0.7 deployment, which Sourcify currently lists as **Exact**:
 
-- Target: \`0xbe53a109b494e5c9f97b9cd39fe969be68bf6204\`
+- Target: 0x0000000071727De22E5E9D8bAF0eDaC6f37Da032
 - Chain: Ethereum mainnet (chain ID 1)
-- Contract creation block: \`19,419,991\`
-- Read-only call: \`totalAssets()\`
-- Proxy family: canonical EIP-1167 minimal clone
-- Forge Std: pinned commit \`15b2df92a05d4d2f76a06653872fefb287e0e01c\`
+- Read-only call: getNonce(address,uint192)
+- Identity: direct contract; no proxy implementation is inferred
+- Source identity: Sourcify v2 must return exact_match for match, runtimeMatch and creationMatch
+- Deployment block: loaded from Sourcify's verified deployment metadata and independently checked against archive code immediately before and at that block
+- Forge Std: pinned commit 15b2df92a05d4d2f76a06653872fefb287e0e01c
 
-The Yearn factory source describes deployment of a minimal proxy clone of the original vault; the EIP-1167 runtime embeds the fixed implementation address. Lowkey verifies the exact 45-byte runtime form, extracts that address, then independently verifies implementation runtime, first-code block, Sourcify exact source, and trace-derived implementation code hash.
+The previous Yearn yvUSDC candidate was deliberately rejected: its embedded implementation returned a Sourcify **Similar Match**, not an exact match. The acceptance does not relax that rule. EIP-1167 parsing and implementation verification remain supported and covered by dedicated unit tests; this first live fixture is a direct target with an exact Sourcify identity so the overall P2 proof can pass without misrepresenting the Yearn source.
 
-The harness makes no live transaction and moves no user funds. It runs a \`totalAssets()\` view call at a pinned common block on an Anvil fork, captures Forge state-diff, obtains an Anvil \`debug_traceCall\` callTracer tree for the same actor/target/calldata, and checks canonical call-tree parity. Storage parity is expected to remain degraded because Anvil callTracer does not expose per-access storage slots.
-
-Default CI RPC endpoints are an independent fork upstream and source/archive endpoint. The script preflights historical block, code, and EIP-1186 proof support before it starts the fork. Both endpoints can be overridden with \`LOWKEY_P2_FORK_UPSTREAM_RPC_URL\` and \`LOWKEY_P2_SOURCE_RPC_URL\`; a latest-state-only endpoint is rejected.
+The harness makes no live transaction and moves no user funds. It runs a getNonce() view call at a pinned common block on an Anvil fork, captures Forge state-diff, obtains an Anvil debug_traceCall callTracer tree for the same actor/target/calldata, and checks canonical call-tree parity. Storage parity is reported separately because Anvil callTracer does not expose per-access storage slots.
 
 ## P2 acceptance boundary
 
