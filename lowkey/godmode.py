@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import queue
+import signal
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2096,6 +2099,147 @@ def selectors(target,url):
 def run(argv,cwd,timeout=300,env=None):
     if not argv or not all(isinstance(x,str) for x in argv): raise ValueError("Supply a non-empty argv array.")
     return subprocess.run(argv,cwd=str(cwd),capture_output=True,text=True,timeout=max(1,min(timeout,3600)),shell=False,env=env)
+
+
+def run_live(argv, cwd, timeout=None, env=None, heartbeat_seconds=20, tail_limit=3000):
+    """Run a child command with live combined output and a bounded evidence tail.
+
+    The child is placed in its own process group so Ctrl-C can be forwarded
+    cleanly and the attack engine can persist its interrupted-run evidence.
+    """
+    if not argv or not all(isinstance(item, str) for item in argv):
+        raise ValueError("Supply a non-empty argv array.")
+
+    child_env = os.environ.copy()
+    if env:
+        child_env.update(env)
+    # Python children otherwise switch to block buffering when stdout is piped.
+    child_env["PYTHONUNBUFFERED"] = "1"
+
+    process = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        shell=False,
+        env=child_env,
+        start_new_session=(os.name == "posix"),
+    )
+    output_queue = queue.Queue()
+
+    def _read_output():
+        try:
+            if process.stdout is not None:
+                for line in process.stdout:
+                    output_queue.put(line)
+        finally:
+            output_queue.put(None)
+
+    reader = threading.Thread(target=_read_output, name="lowkey-live-command-output", daemon=True)
+    reader.start()
+    output_tail = ""
+    started = time.monotonic()
+    last_output = started
+    reader_done = False
+    timed_out = False
+    terminate_at = None
+
+    def _signal_child(signum):
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signum)
+            elif signum == signal.SIGKILL:
+                process.kill()
+            else:
+                process.terminate()
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def _forward(line):
+        nonlocal output_tail, last_output
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        output_tail = (output_tail + line)[-max(1, int(tail_limit)):]
+        last_output = time.monotonic()
+
+    try:
+        while not reader_done:
+            now = time.monotonic()
+            elapsed = now - started
+            if timeout is not None and not timed_out and elapsed >= timeout:
+                timed_out = True
+                print(
+                    f"[LOWKEY] Child command exceeded its {int(timeout)} second limit; stopping it.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _signal_child(signal.SIGTERM)
+                terminate_at = now + 3
+            elif timed_out and terminate_at is not None and now >= terminate_at and process.poll() is None:
+                _signal_child(signal.SIGKILL)
+                terminate_at = None
+
+            try:
+                line = output_queue.get(timeout=0.5)
+            except queue.Empty:
+                now = time.monotonic()
+                if (
+                    heartbeat_seconds
+                    and process.poll() is None
+                    and now - last_output >= heartbeat_seconds
+                ):
+                    quiet_for = int(now - last_output)
+                    total_for = int(now - started)
+                    print(
+                        f"[LOWKEY] Attack worker is still running ({total_for}s elapsed); "
+                        f"no new output for {quiet_for}s. A probe may be executing. "
+                        "Ctrl+C requests a clean stop.",
+                        flush=True,
+                    )
+                    last_output = now
+                continue
+
+            if line is None:
+                reader_done = True
+            else:
+                _forward(line)
+    except KeyboardInterrupt:
+        print(
+            "[LOWKEY] Interrupt received; asking the attack worker to stop cleanly...",
+            file=sys.stderr,
+            flush=True,
+        )
+        _signal_child(signal.SIGINT)
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            _signal_child(signal.SIGTERM)
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                _signal_child(signal.SIGKILL)
+                process.wait()
+        while not reader_done:
+            try:
+                line = output_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if line is None:
+                reader_done = True
+            else:
+                _forward(line)
+
+    returncode = process.wait()
+    reader.join(timeout=1)
+    if timed_out:
+        output_tail = (output_tail + "\nLOWKEY_CHILD_TIMEOUT true\n")[-max(1, int(tail_limit)):]
+        returncode = 124
+    return subprocess.CompletedProcess(list(argv), returncode, output_tail, "")
 def analyze_harness_fidelity(source_text, path="<memory>"):
     """Static fidelity inventory for a generated test harness; never a proof verdict."""
     source_text=str(source_text or "")
@@ -5540,8 +5684,13 @@ def godmode(args):
             argv=["lk","break","--system","--until-found"]
             if ns.control_manifest:
                 argv += ["--control-manifest",ns.control_manifest]
-            proc=run(argv,root,1800)
-            stages.append({"name":"attack","status":"review","exit_code":proc.returncode,"output":(proc.stdout+proc.stderr)[-3000:]})
+            print()
+            print("LOWKEY GODMODE // LIVE ATTACK MONITOR")
+            print("=====================================")
+            print("Attack output is streamed as it arrives. --until-found has no fixed runtime limit; press Ctrl+C to stop cleanly.")
+            proc=run_live(argv,root,timeout=None,heartbeat_seconds=20)
+            attack_status="interrupted" if proc.returncode==130 else "review"
+            stages.append({"name":"attack","status":attack_status,"exit_code":proc.returncode,"output":proc.stdout[-3000:]})
     else:
         stages.append({"name":"attack","status":"not-run","reason":"No attack was run. Add --attack only for an explicitly reviewed local-Anvil experiment."})
     if ns.plan_only:
@@ -5586,6 +5735,8 @@ def godmode(args):
     prov=safe_out(root,".audit/godmode/provenance.json")
     write_json(prov,{"created_at":now(),"sha256":hashlib.sha256(out.read_bytes()).hexdigest(),"chain_id":chain,"fork_block":block,"artifacts":["latest.json"]})
     _print_godmode_result(payload, arithmetic_rows, wraparound_rows, out, prov, root)
+    if any(stage.get("name") == "attack" and stage.get("status") == "interrupted" for stage in stages):
+        return 130
     # Source reconnaissance is a successful task by itself. Missing optional
     # proof stages keep the saved audit REVIEW_REQUIRED, but must not look like
     # a crashed/failed command when the operator never requested those stages.
