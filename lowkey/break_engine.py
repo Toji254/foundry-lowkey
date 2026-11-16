@@ -1265,7 +1265,7 @@ def _render_repeat_test(
     if setup_calldata:
         setup_declarations, setup_call = "", (
             f'LowkeyABIPatch.replaceAddress(hex"{setup_calldata[2:]}", '
-            f'address({ABI_ADDRESS_SENTINEL}), ATTACKER)'
+            f'address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})), ATTACKER)'
         )
     else:
         setup_values = _setup_argument_samples(setup_params) if setup_signature else []
@@ -1279,7 +1279,7 @@ def _render_repeat_test(
     setup_value = "0" if asset_signature else (_solidity_amount_literal(seed_fund) if seed_fund and payable_setup else ("2 wei" if setup_signature and payable_setup else "0"))
     payload_expr = (
         f'LowkeyABIPatch.replaceAddress(hex"{payload_calldata[2:]}", '
-        f'address({ABI_ADDRESS_SENTINEL}), ATTACKER)' if payload_calldata else (
+        f'address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})), ATTACKER)' if payload_calldata else (
             f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
             if expressions else f'abi.encodeWithSignature("{signature}")'
         )
@@ -1545,7 +1545,7 @@ contract LowkeyBreakAccess is Test {{
 
     function test_break_access() public {{
         bytes memory data = LowkeyABIPatch.replaceAddress(
-            hex"{calldata[2:]}", address({ABI_ADDRESS_SENTINEL}), ATTACKER
+            hex"{calldata[2:]}", address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})), ATTACKER
         );
         vm.deal(ATTACKER, 100 ether);
 
@@ -1573,7 +1573,7 @@ contract LowkeyBreakBoundary is Test {{
         vm.deal(ATTACKER, 100 ether);
         bytes memory zeroData = hex"{call_zero[2:]}";
         bytes memory maxData = LowkeyABIPatch.replaceAddress(
-            hex"{call_max[2:]}", address({ABI_ADDRESS_SENTINEL}), ATTACKER
+            hex"{call_max[2:]}", address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})), ATTACKER
         );
 
         vm.prank(ATTACKER);
@@ -1605,7 +1605,7 @@ contract LowkeyBreakTime is Test {{
 
     function test_time_dependence() public {{
         bytes memory data = LowkeyABIPatch.replaceAddress(
-            hex"{calldata[2:]}", address({ABI_ADDRESS_SENTINEL}), ATTACKER
+            hex"{calldata[2:]}", address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})), ATTACKER
         );
         vm.deal(ATTACKER, 100 ether);
 
@@ -1775,7 +1775,7 @@ def _render_reentrancy_test(
     if setup_calldata:
         setup_declarations, setup_call = "", (
             f'LowkeyABIPatch.replaceAddress(hex"{setup_calldata[2:]}", '
-            f'address({ABI_ADDRESS_SENTINEL}), address(hostile))'
+            f'address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})), address(hostile))'
         )
     else:
         setup_values = _setup_argument_samples(setup_params) if setup_signature else []
@@ -1834,7 +1834,7 @@ def _render_reentrancy_test(
 """
     payload_expr = (
         f'LowkeyABIPatch.replaceAddress(hex"{payload_calldata[2:]}", '
-        f'address({ABI_ADDRESS_SENTINEL}), address(hostile))' if payload_calldata else (
+        f'address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})), address(hostile))' if payload_calldata else (
             f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
             if encoded_args else f'abi.encodeWithSignature("{signature}")'
         )
