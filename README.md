@@ -44,6 +44,76 @@ lk report
 
 The capability inventory uses three honest states: `implemented` means the command has a working local workflow; `partial` means it produces a useful lead, starter, bounded measurement, or needs protocol-specific input; `adapter-required` means an external runtime/provider integration is not available and Lowkey will stop rather than fake a result. A registered capability is not automatically an automated exploit.
 
+### Tier 0: trust and execution gates
+
+These six capabilities are available as working local workflows. Their status means the documented workflow is implemented; it does not mean a fingerprint is a finding or that a high coverage/mutation number is a security verdict.
+
+```bash
+# Hash the cheat-topic signatures, scan the project and correlate ordered
+# mapping-read -> external-call -> mapping-write source sequences.
+lk cheat-fingerprint --root . --output .audit/godmode/cheat-fingerprints.json
+
+# Freeze and validate a matched control experiment before executing it.
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --freeze
+lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate
+lk break --family reentrancy --control-manifest .audit/control.json
+
+# Enforce at least 90% mutation score for one family.
+# The manifest must contain a passing baseline command and explicit mutants.
+lk mutation-score .audit/reentrancy-mutations.json --root . --family reentrancy --min-score 0.90 --timeout 300
+
+# Measure only the selected target source lines, optionally filtering tests.
+# The command fails when the threshold is not met or no executable lines exist.
+lk target-coverage src/Vault.sol --root . --start-line 40 --end-line 95 --match-path test/Vault.t.sol --min-percent 85
+
+# Hash artifacts and record repo/chain/fork/tool provenance, then sign.
+# Keep the private key outside the project root.
+lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 100 --signing-key ~/.config/lowkey/provenance.pem
+
+# Before verification, pin the signer's public key outside this project
+# through an independent trusted channel; do not trust the co-located sidecar.
+install -d -m 700 ~/.config/lowkey
+install -m 644 .audit/godmode/provenance.json.pub.pem ~/.config/lowkey/trusted-provenance.pub.pem
+lk provenance --root . --verify .audit/godmode/provenance.json --public-key ~/.config/lowkey/trusted-provenance.pub.pem
+
+# Run untrusted tests in a disposable, network-disabled sandbox.
+lk sandbox --root . --timeout 300 --cpu-seconds 180 --memory-mb 2048 --processes 512 -- forge test
+```
+
+#### Sandbox network policy
+
+Network is disabled by default. When a sandboxed build genuinely needs one RPC destination, opt into a resolved IP allowlist:
+
+```bash
+lk sandbox --root . --network allowlist --allow-host rpc.example.net --timeout 300 --memory-mb 2048 -- forge test --fork-url "$FOUNDRY_ETH_RPC_URL"
+```
+
+Sandbox execution requires `bwrap` and `systemd-run` with cgroup resource controls. Network allowlisting additionally requires `sudo` and cgroup v2. Lowkey uses a transient system service with `IPAddressDeny=any` and `IPAddressAllow` for the resolved allowlist and configured DNS resolvers; it also applies cgroup `MemoryMax` and `TasksMax`. It refuses rather than silently falling back to unrestricted networking. Filtering is by destination IP, not port: all ports to an allowed IP are available. Review the hostname's resolved IPs and only allow hosts you trust.
+
+The sandbox copies the project into a disposable workspace, drops common repository/credential paths, mounts system/tool inputs read-only, applies an architecture-checked seccomp filter and terminates the launched process group on timeout. Both network modes run under a transient systemd cgroup with `MemoryMax`, `TasksMax`, `RuntimeMaxSec`, CPU-time, address-space, file-size and file-descriptor limits. Network-disabled mode uses the user systemd manager plus a fresh network namespace; allowlist mode uses the system manager plus `IPAddressDeny=any` and resolved `IPAddressAllow` entries. If the required systemd/bubblewrap controls are unavailable, Lowkey refuses to run instead of silently dropping a limit. Allowlisting is IP-based and permits all ports to an allowed IP.
+
+#### Mutation manifest shape
+
+`lk mutation-score` requires a per-family JSON manifest. Each mutant must identify one exact source fragment that occurs exactly once and its replacement. The baseline command must pass before mutants are run:
+
+```json
+{
+  "family": "reentrancy",
+  "command": ["forge", "test", "--match-path", "test/Vault.t.sol"],
+  "mutants": [
+    {
+      "id": "remove-withdraw-state-consumption",
+      "family": "reentrancy",
+      "file": "src/Vault.sol",
+      "before": "balances[msg.sender] = 0;",
+      "after": "balances[msg.sender] = balances[msg.sender];"
+    }
+  ]
+}
+```
+
+Invalid, timed-out, errored or unscored mutants fail the gate; they are not excluded to inflate the score. A mutation score measures whether tests react to selected code changes, not whether a vulnerability exists.
+
 ### P1 command reference and help
 
 The Godmode commands are included in the root lk --help catalog. Every Godmode command accepts the help spellings --h, --help, -h, and help. Use a command's help page for its complete positional arguments, options, defaults, and examples:

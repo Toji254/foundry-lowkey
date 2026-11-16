@@ -7,11 +7,18 @@ measurements and reproofs are separate evidence stages.
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
+import ipaddress
 import json
 import os
+import platform
+import pwd
 import re
+import socket
+import struct
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -30,12 +37,12 @@ EIP1967 = {
     "beacon": "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
 }
 CAPABILITIES = [
-(1,"cheat-fingerprint","Fingerprint dangerous source sequences","partial"),
+(1,"cheat-fingerprint","Fingerprint dangerous source sequences","implemented"),
 (2,"control","Sequential control gate","implemented"),
 (3,"mutation-score","Harness mutation score","implemented"),
 (4,"target-coverage","Coverage restricted to target lines","implemented"),
-(5,"provenance","Artifact hash and run provenance","partial"),
-(6,"sandbox","Isolated untrusted build/test execution","partial"),
+(5,"provenance","Signed, verifiable artifact provenance","implemented"),
+(6,"sandbox","Seccomp, resource-limited sandbox with network isolation/allowlisting","implemented"),
 (7,"decompile","Unverified bytecode decompilation","adapter-required"),
 (8,"storage-infer","Probabilistic storage-layout inference","partial"),
 (9,"proxy-resolve","Generic proxy and implementation resolution","partial"),
@@ -118,10 +125,10 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "Only capabilities marked implemented are considered available; partial and adapter-required entries remain skipped.",
     },
     "godmode": {
-        "summary": "Run the evidence-first audit orchestrator: source recon, on-chain recon, optional local attack, control, mutation, and coverage stages.",
-        "when": "Use it to produce one staged audit report and see which evidence gates are still missing.",
-        "example": "lk godmode 0x1111111111111111111111111111111111111111 --rpc-url http://127.0.0.1:8545 --plan-only",
-        "limits": "Attack execution is local-Anvil-only. The orchestrator does not turn static signals or skipped stages into a BREAK.",
+        "summary": "Run evidence-first reconnaissance and proof stages, with optional multi-agent Solidity hunting across repeated coverage-critic waves.",
+        "when": "Use --multi-agent for separate EVM hunters, a fresh coverage critic after each wave, a distinct final-clean review, and independent candidate challenges.",
+        "example": "lk godmode --root . --multi-agent --profile standard",
+        "limits": "Multi-agent review is source-only and does not confirm a vulnerability; native LK proof and human disposition remain required.",
     },
     "control": {
         "summary": "Compare an attack against a sequential control using matched execution evidence and a frozen experiment specification.",
@@ -148,22 +155,22 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "Pass verified prior deployment/funding/setup expenditure through --prior-cost-wei. Without it, net profit subtracts replay gas only. A local fixture is not production-deployment proof.",
     },
     "mutation-score": {
-        "summary": "Run the configured mutation campaign against a manifest and enforce a minimum mutation score.",
+        "summary": "Run a per-family mutation campaign and fail closed on surviving, invalid, timed-out, errored, or unscored mutants.",
         "when": "Use it to check whether the test suite detects representative security-relevant code changes.",
-        "example": "lk mutation-score .audit/mutations.json --min-score 0.90 --timeout 300",
-        "limits": "A mutation score measures test sensitivity; it does not establish exploitability or impact by itself.",
+        "example": "lk mutation-score .audit/reentrancy-mutations.json --root . --family reentrancy --min-score 0.90 --timeout 300",
+        "limits": "Each manifest must identify one family and every mutant must be scored. Invalid/setup-failed/time-out mutants fail the gate; a high score still measures test sensitivity, not exploitability.",
     },
     "target-coverage": {
-        "summary": "Report Forge LCOV reachability for a selected source file and optional line interval.",
+        "summary": "Run a fresh Forge LCOV campaign, filter tests, report reachability on a selected target file/line range, and enforce a minimum percentage.",
         "when": "Use it to see whether a harness reaches the target lines being discussed.",
-        "example": "lk target-coverage src/Vault.sol --start-line 40 --end-line 95",
-        "limits": "Coverage is reachability evidence, not assertion quality or proof of security impact.",
+        "example": "lk target-coverage src/Vault.sol --root . --start-line 40 --end-line 95 --match-path test/Vault.t.sol --min-percent 85",
+        "limits": "Only executable lines reported by fresh LCOV are counted. Coverage is reachability evidence, not assertion quality or proof of security impact.",
     },
     "provenance": {
-        "summary": "Hash selected evidence artifacts and record the project revision, chain, fork, and tool versions; optionally sign the report.",
+        "summary": "Hash selected evidence artifacts and record revision, branch, dirty state, chain, fork and tool versions; optionally sign the manifest and verify its signature plus current artifact hashes.",
         "when": "Use it when saving a reproducible audit run or preparing evidence for review.",
-        "example": "lk provenance .audit/godmode/latest.json --chain-id 31337 --fork-block 100",
-        "limits": "A hash proves artifact identity, not correctness of the experiment or its conclusion.",
+        "example": "lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 100 --signing-key ~/.config/lowkey/provenance.pem; then lk provenance --root . --verify .audit/godmode/provenance.json",
+        "limits": "The detached signature authenticates the manifest against its public-key sidecar, and the verifier re-hashes listed artifacts. Keep the private key outside the project; provenance still does not prove the experiment is correct.",
     },
     "fidelity": {
         "summary": "Inspect harness fidelity or append a declared evidence-strength record to the evidence ledger.",
@@ -172,16 +179,16 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "The scanner is static and can miss aliases, wrappers, or custom state manipulation.",
     },
     "sandbox": {
-        "summary": "Run an untrusted command in an isolated, network-disabled bubblewrap copy of the project.",
-        "when": "Use it before executing untrusted build/test steps when bubblewrap is installed.",
-        "example": "lk sandbox --root . --timeout 300 -- forge test",
-        "limits": "If bubblewrap is unavailable, Lowkey refuses to run the command unsandboxed.",
+        "summary": "Run a command in a disposable bubblewrap project copy with seccomp syscall filtering, CPU/memory/file/FD limits, read-only system/tool mounts, and network isolation or an IP allowlist.",
+        "when": "Use it before executing untrusted build/test steps. Default networking is disabled; opt into a narrow hostname/IP allowlist only when required.",
+        "example": "lk sandbox --root . --timeout 300 --cpu-seconds 180 --memory-mb 2048 -- forge test",
+        "limits": "Requires bubblewrap. Network allowlisting additionally requires sudo, systemd system services and cgroup v2; it filters destination IPs, allows all ports to an allowed IP, and refuses if the policy cannot be applied. Network-disabled mode is the safer default.",
     },
     "cheat-fingerprint": {
-        "summary": "Scan source for dangerous cheatcode and state-fabrication sequences that can weaken exploit evidence.",
-        "when": "Use it to review generated harnesses or replay scripts for synthetic state changes before trusting a reproduction.",
-        "example": "lk cheat-fingerprint --root .",
-        "limits": "This is a static source-pattern scan. A hit is a review lead, not proof that a test is invalid or an exploit is real.",
+        "summary": "Hash the Solidity cheat-topic signatures, scan normalized source tokens with Aho-Corasick, and correlate mapping read -> external call -> mapping write sequences in source order.",
+        "when": "Use it during reconnaissance and before trusting a harness: scan source for risky patterns and identify ordered reentrancy-shaped mapping/call/write paths for follow-up testing.",
+        "example": "lk cheat-fingerprint --root . --output .audit/godmode/cheat-fingerprints.json",
+        "limits": "The sequence detector is conservative source-token analysis; inheritance, aliases, modifiers and dynamic dispatch can hide or distort relationships. Hits are leads, never proof of exploitability.",
     },
     "decompile": {
         "summary": "Decompile unverified bytecode through a configured Heimdall adapter.",
@@ -455,35 +462,275 @@ class AhoCorasick:
             state=self.next[state].get(token,0)
             hits.extend((i-size+1,label,size) for label,size in self.out[state])
         return hits
-def cheat_fingerprints(root):
+def _solidity_token_records(source):
+    """Tokenize Solidity-like source while excluding comments from fingerprints."""
+    token_re = re.compile(
+        r"//[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|"
+        r"0x[0-9a-fA-F]+|[A-Za-z_$][\w$]*|\d+|==|!=|<=|>=|=>|&&|\|\||"
+        r"\+\+|--|\+=|-=|\*=|/=|%=|<<|>>|[^\s]",
+        re.S,
+    )
+    line_starts = [0] + [match.end() for match in re.finditer(r"\n", source)]
+    rows = []
+    for match in token_re.finditer(source):
+        raw = match.group(0)
+        if raw.startswith("//") or raw.startswith("/*"):
+            continue
+        if raw.startswith('"') or raw.startswith("'"):
+            value = "__string__"
+        else:
+            value = raw.lower()
+        rows.append({
+            "value": value,
+            "offset": match.start(),
+            "end": match.end(),
+            "line": bisect.bisect_right(line_starts, match.start()),
+        })
+    return rows
+
+
+def _cheat_catalog_patterns():
     try:
-        try: from .solidity_cheat_topics import register_topics
-        except ImportError: from solidity_cheat_topics import register_topics
-        entries=[]
-        def collect(*args,**kwargs):
-            label=str(args[0]) if args else "cheat-topic"
-            for item in args[1:]:
-                if not isinstance(item,str): continue
-                for line in item.splitlines():
-                    if not re.search(r"(?:mapping|call|delegatecall|keccak|sload|sstore|fallback|receive|signature|nonce|vm\.)",line,re.I): continue
-                    toks=tuple(re.findall(r"[A-Za-z_$][\w$]*|0x[0-9a-fA-F]+|\d+|==|!=|<=|>=|=>|&&|\|\||[^\s]",line))
-                    if 3<=len(toks)<=30: entries.append((label,toks))
-        register_topics(collect)
-    except Exception: entries=[]
-    unique={}
-    for label,toks in entries: unique.setdefault(toks,label)
-    if not unique: unique={("delegatecall",):"delegatecall",("mapping",):"mapping",("sstore",):"storage-write",("call",):"external-call"}
-    ac=AhoCorasick([(v,k) for k,v in unique.items()])
-    result=[]
-    for p in files(root):
-        text=p.read_text(encoding="utf-8",errors="replace")
-        matches=list(re.finditer(r"[A-Za-z_$][\w$]*|0x[0-9a-fA-F]+|\d+|==|!=|<=|>=|=>|&&|\|\||[^\s]",text))
-        tokens=[m.group(0) for m in matches]
-        for idx,label,size in ac.scan(tokens):
-            line=text.count("\n",0,matches[idx].start())+1
-            result.append({"topic":label,"file":p.relative_to(root).as_posix(),"line":line,
-                           "fingerprint":hashlib.sha256(" ".join(tokens[idx:idx+size]).encode()).hexdigest()[:16]})
-    return {"patterns":len(unique),"hits":result,"meaning":"Fingerprint matches are leads, never vulnerability verdicts."}
+        try:
+            from .solidity_cheat_topics import register_topics
+        except ImportError:
+            from solidity_cheat_topics import register_topics
+    except ImportError as exc:
+        raise RuntimeError("Solidity cheat-topic catalogue is unavailable: " + str(exc)) from exc
+
+    entries = []
+
+    def collect(*args, **kwargs):
+        label = str(args[0]) if args else "cheat-topic"
+        for item in args[1:]:
+            if not isinstance(item, str):
+                continue
+            for line in item.splitlines():
+                if not re.search(
+                    r"(?:mapping|call|delegatecall|keccak|sload|sstore|fallback|receive|signature|nonce|vm\.)",
+                    line,
+                    re.I,
+                ):
+                    continue
+                values = tuple(row["value"] for row in _solidity_token_records(line))
+                if 3 <= len(values) <= 30:
+                    entries.append((label, values))
+
+    register_topics(collect)
+    unique = {}
+    for label, values in entries:
+        canonical = label.lower() + "\0" + "\0".join(values)
+        pattern_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:20]
+        unique.setdefault(pattern_id, {"topic": label, "tokens": values})
+    if not unique:
+        raise RuntimeError("The cheat-topic catalogue produced no usable fingerprint signatures.")
+    return unique
+
+
+def _function_token_ranges(tokens):
+    """Return conservative function-body token ranges for sequence correlation."""
+    ranges = []
+    keywords = {"function", "constructor", "fallback", "receive"}
+    for index, token in enumerate(tokens):
+        if token not in keywords:
+            continue
+        name = token
+        if token == "function" and index + 1 < len(tokens):
+            name = tokens[index + 1] if tokens[index + 1] not in {"(", "{"} else "fallback"
+        opening = None
+        for cursor in range(index + 1, min(len(tokens), index + 1000)):
+            if tokens[cursor] == "{":
+                opening = cursor
+                break
+            if tokens[cursor] == ";":
+                break
+        if opening is None:
+            continue
+        depth = 0
+        closing = None
+        for cursor in range(opening, len(tokens)):
+            if tokens[cursor] == "{":
+                depth += 1
+            elif tokens[cursor] == "}":
+                depth -= 1
+                if depth == 0:
+                    closing = cursor
+                    break
+        if closing is not None:
+            ranges.append((opening + 1, closing, str(name)))
+    return ranges
+
+
+def _mapping_call_write_sequences(token_rows, file_name):
+    tokens = [row["value"] for row in token_rows]
+    results = []
+    assignment_ops = {"=", "+=", "-=", "*=", "/=", "%=", "++", "--"}
+    external_methods = {
+        "call", "delegatecall", "staticcall", "callcode", "send", "transfer",
+        "safeTransfer", "safeTransferFrom", "transferFrom", "approve",
+        "balanceOf", "mint", "burn", "execute", "tokensReceived",
+        "onTokenTransfer", "flashLoan", "flashLoanSimple", "swap",
+    }
+    external_methods = {value.lower() for value in external_methods}
+
+    for body_start, body_end, function_name in _function_token_ranges(tokens):
+        mappings = []
+        calls = []
+
+        index = body_start
+        while index + 2 < body_end:
+            if re.fullmatch(r"[a-z_$][a-z0-9_$]*", tokens[index]) and tokens[index + 1] == "[":
+                depth = 1
+                close = index + 2
+                while close < body_end and depth:
+                    if tokens[close] == "[":
+                        depth += 1
+                    elif tokens[close] == "]":
+                        depth -= 1
+                    close += 1
+                if depth == 0:
+                    closing_index = close - 1
+                    key_tokens = tokens[index + 2:closing_index]
+                    following_index = closing_index + 1
+                    # Mapping values can be structs or nested mappings/arrays.
+                    # Walk postfix member and index selectors before checking the
+                    # assignment operator so balances[user].amount and
+                    # balances[user][asset] count as writes.
+                    while following_index < body_end:
+                        if (
+                            following_index + 1 < body_end
+                            and tokens[following_index] == "."
+                            and re.fullmatch(r"[a-z_$][a-z0-9_$]*", tokens[following_index + 1])
+                        ):
+                            following_index += 2
+                            continue
+                        if tokens[following_index] == "[":
+                            nested_depth = 1
+                            nested_close = following_index + 1
+                            while nested_close < body_end and nested_depth:
+                                if tokens[nested_close] == "[":
+                                    nested_depth += 1
+                                elif tokens[nested_close] == "]":
+                                    nested_depth -= 1
+                                nested_close += 1
+                            if nested_depth == 0:
+                                following_index = nested_close
+                                continue
+                        break
+                    following = tokens[following_index] if following_index < body_end else None
+                    is_delete = index > body_start and tokens[index - 1] == "delete"
+                    is_prefix_update = index > body_start and tokens[index - 1] in {"++", "--"}
+                    is_write = bool(
+                        is_delete or is_prefix_update or following in assignment_ops
+                    )
+                    key_expression = " ".join(key_tokens).strip()
+                    if key_expression:
+                        mappings.append({
+                            "kind": "write" if is_write else "read",
+                            "mapping": tokens[index],
+                            "key_expression": key_expression,
+                            "token_index": index,
+                            "line": token_rows[index]["line"],
+                            "offset": token_rows[index]["offset"],
+                        })
+                    index = closing_index
+            if tokens[index] == "." and index + 2 < body_end:
+                method = tokens[index + 1]
+                after = index + 2
+                if method.lower() in external_methods and tokens[after] in {"(", "{"}:
+                    calls.append({
+                        "method": method,
+                        "token_index": index,
+                        "line": token_rows[index]["line"],
+                        "offset": token_rows[index]["offset"],
+                    })
+            index += 1
+
+        reads = [item for item in mappings if item["kind"] == "read"]
+        writes = [item for item in mappings if item["kind"] == "write"]
+        for read in reads:
+            for call in calls:
+                if call["token_index"] <= read["token_index"]:
+                    continue
+                for write in writes:
+                    if write["token_index"] <= call["token_index"]:
+                        continue
+                    if read["mapping"] != write["mapping"]:
+                        continue
+                    if read["key_expression"] != write["key_expression"]:
+                        continue
+                    results.append({
+                        "kind": "mapping-read -> external-call -> mapping-write",
+                        "file": file_name,
+                        "function": function_name,
+                        "mapping": read["mapping"],
+                        "key_expression": read["key_expression"],
+                        "external_method": call["method"],
+                        "read_line": read["line"],
+                        "call_line": call["line"],
+                        "write_line": write["line"],
+                        "confidence": "high" if call["method"] in {"call", "delegatecall", "send", "transfer"} else "candidate",
+                        "meaning": "Ordered source pattern only; execution and exploitability are unproven.",
+                    })
+                    if len(results) >= 500:
+                        return sorted(results, key=lambda item: (item["file"], item["read_line"], item["call_line"], item["write_line"]))
+    return sorted(results, key=lambda item: (item["file"], item["read_line"], item["call_line"], item["write_line"]))
+
+
+def cheat_fingerprints(root):
+    """Scan source once per file with hashed Aho-Corasick signatures and sequence correlation."""
+    root = Path(root).resolve()
+    unique = _cheat_catalog_patterns()
+    automaton = AhoCorasick([(pattern_id, row["tokens"]) for pattern_id, row in unique.items()])
+    hits = []
+    sequences = []
+
+    for path in files(root):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        rows = _solidity_token_records(source)
+        tokens = [row["value"] for row in rows]
+        relative = path.relative_to(root).as_posix()
+        for start, pattern_id, size in automaton.scan(tokens):
+            if start < 0 or start >= len(rows):
+                continue
+            first = rows[start]
+            last = rows[min(len(rows) - 1, start + size - 1)]
+            pattern = unique[pattern_id]
+            line_text = source.splitlines()[first["line"] - 1].strip() if source.splitlines() else ""
+            matched = " ".join(tokens[start:start + size])
+            hits.append({
+                "topic": pattern["topic"],
+                "pattern_id": pattern_id,
+                "file": relative,
+                "line": first["line"],
+                "end_line": last["line"],
+                "start_offset": first["offset"],
+                "end_offset": last["end"],
+                "fingerprint": hashlib.sha256(matched.encode("utf-8")).hexdigest()[:20],
+                "snippet": line_text[:240],
+            })
+        sequences.extend(_mapping_call_write_sequences(rows, relative))
+
+    hits.sort(key=lambda item: (item["file"], item["start_offset"], item["pattern_id"]))
+    return {
+        "schema_version": 2,
+        "algorithm": "Aho-Corasick over normalized Solidity tokens",
+        "patterns": len(unique),
+        "pattern_hashes": [
+            {"pattern_id": pattern_id, "topic": row["topic"]}
+            for pattern_id, row in sorted(unique.items())
+        ],
+        "hits": hits,
+        "ordered_sequences": sequences,
+        "meaning": "Fingerprint and ordered source matches are investigation leads, never vulnerability verdicts.",
+        "limitations": [
+            "Source-level token analysis is heuristic and does not resolve inheritance, aliasing, modifiers, or dynamic dispatch.",
+            "An ordered mapping-read/call/write sequence is not proof that the call reaches attacker-controlled code.",
+            "Use a generated harness, execution trace, sequential control, mutation test, and reproof before claiming a break.",
+        ],
+    }
+
+
 def rpc_url(v=None):
     url=v or os.environ.get("FOUNDRY_ETH_RPC_URL") or os.environ.get("ETH_RPC_URL") or os.environ.get("LOWKEY_RPC_URL")
     if not url or urlparse(url).scheme not in {"http","https"}: raise ValueError("Pass --rpc-url or set FOUNDRY_ETH_RPC_URL/ETH_RPC_URL.")
@@ -2751,61 +2998,427 @@ def control(args):
 
 
 
+def mutation(args):
+    p = LowkeyArgumentParser(prog="lk mutation-score")
+    p.add_argument("manifest", help="JSON mutation manifest for one vulnerability family.")
+    p.add_argument("--root", default=".", help="Project root containing the manifest and harness.")
+    p.add_argument("--family", help="Family name; otherwise read family from the manifest.")
+    p.add_argument("--min-score", type=float, default=0.90)
+    p.add_argument("--timeout", type=int, default=300)
+    p.add_argument("--output", default=".audit/verification/mutation-score-report.json")
+    ns = p.parse_args(args)
+
+    if not 0.0 <= ns.min_score <= 1.0:
+        raise ValueError("--min-score must be between 0 and 1.")
+    if ns.timeout < 1:
+        raise ValueError("--timeout must be positive.")
+
+    root = root_path(ns.root)
+    manifest_path = (root / ns.manifest).resolve()
+    if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
+        raise ValueError("Mutation manifest must be an existing file inside --root.")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("mutants"), list):
+        raise ValueError("Mutation manifest must contain a mutants array.")
+    family = str(ns.family or manifest.get("family") or "").strip().lower()
+    mutant_families = {
+        str(item.get("family")).strip().lower()
+        for item in manifest["mutants"] if isinstance(item, dict) and item.get("family")
+    }
+    if not family and len(mutant_families) == 1:
+        family = next(iter(mutant_families))
+    if not family:
+        raise ValueError("Declare one family in the manifest or pass --family; score gates are per family.")
+    if ns.family and manifest.get("family") and str(manifest["family"]).strip().lower() != family:
+        raise ValueError("--family does not match manifest.family.")
+    if mutant_families and mutant_families != {family}:
+        raise ValueError("A mutation-score manifest must contain mutants from exactly one family.")
+
+    out = safe_out(root, ns.output)
+    try:
+        try:
+            from . import behavioral_validation
+        except ImportError:
+            import behavioral_validation
+    except ImportError as exc:
+        raise RuntimeError("Existing mutation runner unavailable: " + str(exc)) from exc
+
+    previous = Path.cwd()
+    try:
+        os.chdir(root)
+        runner_status = behavioral_validation.run_cli([
+            str(manifest_path), "--output", str(out), "--timeout", str(ns.timeout),
+        ])
+    finally:
+        os.chdir(previous)
+
+    if not out.is_file():
+        raise RuntimeError("Mutation runner did not create its report: " + str(out))
+
+    report = json.loads(out.read_text(encoding="utf-8"))
+    if not isinstance(report, dict):
+        raise RuntimeError("Mutation runner report must be a JSON object.")
+    summary = report.get("summary")
+    mutants = report.get("mutants")
+    if not isinstance(summary, dict) or not isinstance(mutants, list):
+        raise RuntimeError("Mutation runner report must contain summary and mutants objects.")
+
+    statuses = ("killed", "survived", "invalid", "timeout", "error")
+    observed_counts = {status: 0 for status in statuses}
+    rows_valid = True
+    seen_ids = set()
+    for item in mutants:
+        if not isinstance(item, dict):
+            rows_valid = False
+            continue
+        mutant_id = item.get("id")
+        status = item.get("status")
+        if not isinstance(mutant_id, str) or not mutant_id.strip() or mutant_id in seen_ids:
+            rows_valid = False
+        else:
+            seen_ids.add(mutant_id)
+        if status not in observed_counts:
+            rows_valid = False
+        else:
+            observed_counts[status] += 1
+
+    summary_consistent = True
+    for status in statuses:
+        value = summary.get(status)
+        if type(value) is not int or value < 0 or value != observed_counts[status]:
+            summary_consistent = False
+
+    killed = observed_counts["killed"]
+    survived = observed_counts["survived"]
+    invalid = observed_counts["invalid"]
+    timed_out = observed_counts["timeout"]
+    errors = observed_counts["error"]
+    scored = killed + survived
+    total = len(mutants)
+    score = report.get("mutation_score")
+    expected_score = (killed / scored) if scored else None
+    score_consistent = (
+        isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and expected_score is not None
+        and abs(float(score) - expected_score) <= 1e-9
+    )
+    baseline_passed = (report.get("baseline") or {}).get("status") == "passed"
+    campaign_complete = (
+        runner_status == 0
+        and report.get("status") == "completed"
+        and baseline_passed
+        and total > 0
+        and rows_valid
+        and summary_consistent
+        and scored == total
+        and invalid == 0
+        and timed_out == 0
+        and errors == 0
+        and score_consistent
+    )
+    passed = campaign_complete and float(score) >= ns.min_score
+    report["family"] = family
+    report["gate"] = {
+        "passed": bool(passed),
+        "minimum_score": ns.min_score,
+        "observed_score": score,
+        "killed": killed,
+        "survived": survived,
+        "invalid": invalid,
+        "timed_out": timed_out,
+        "errors": errors,
+        "all_mutants_scored": bool(campaign_complete),
+        "mutant_rows_valid": bool(rows_valid),
+        "summary_matches_mutants": bool(summary_consistent),
+        "score_matches_killed_survived": bool(score_consistent),
+        "runner_exit_code": runner_status,
+        "policy": "Invalid, timed-out, errored, missing, duplicate, mismatched, or unscored mutants fail the gate; report totals and score must match individual mutant rows.",
+    }
+    write_json(out, report)
+    print("MUTATION GATE: " + ("PASS" if passed else "FAIL"))
+    print("  Family: " + family)
+    print("  Required: " + format(ns.min_score, ".1%"))
+    print("  Observed: " + (format(float(score), ".1%") if isinstance(score, (int, float)) and not isinstance(score, bool) else "not available"))
+    print("  Mutants: " + str(total) + " total; " + str(killed) + " killed; " + str(survived) + " survived")
+    print("  Unscored: " + str(invalid) + " invalid; " + str(timed_out) + " timed out; " + str(errors) + " errored")
+    print("  Report: " + str(out.relative_to(root)))
+    return 0 if passed else 1
+
+
 def coverage(args):
-    p=LowkeyArgumentParser(prog="lk target-coverage"); p.add_argument("source_file"); p.add_argument("--start-line",type=int,default=1); p.add_argument("--end-line",type=int); p.add_argument("--root",default="."); p.add_argument("--output",default=".audit/godmode/target-coverage.json"); ns=p.parse_args(args)
-    root=root_path(ns.root); src=(root/ns.source_file).resolve()
-    if not src.is_relative_to(root) or not src.is_file(): raise ValueError("Target source must be inside the project.")
-    if not shutil.which("forge"): raise RuntimeError("Forge not installed.")
-    proc=run(["forge","coverage","--report","lcov"],root,900)
-    lcov=next((x for x in (root/"lcov.info",root/"coverage"/"lcov.info") if x.is_file()),None)
-    if proc.returncode or not lcov: raise RuntimeError("Forge did not produce lcov.info; inspect coverage output.")
-    current=None; rows=[]
-    for line in lcov.read_text(errors="replace").splitlines():
+    p = LowkeyArgumentParser(prog="lk target-coverage")
+    p.add_argument("source_file", help="Target source file, relative to --root.")
+    p.add_argument("--start-line", type=int, default=1)
+    p.add_argument("--end-line", type=int)
+    p.add_argument("--root", default=".")
+    p.add_argument("--match-test", help="Foundry test-name regex used to scope the execution run.")
+    p.add_argument("--match-path", help="Foundry test path/glob used to scope the execution run.")
+    p.add_argument("--min-percent", type=float, default=0.0, help="Fail unless the selected target lines reach this percentage.")
+    p.add_argument("--output", default=".audit/godmode/target-coverage.json")
+    ns = p.parse_args(args)
+
+    if ns.start_line < 1 or (ns.end_line is not None and ns.end_line < ns.start_line):
+        raise ValueError("Coverage line range must be positive and end-line must not precede start-line.")
+    if not 0.0 <= ns.min_percent <= 100.0:
+        raise ValueError("--min-percent must be between 0 and 100.")
+
+    root = root_path(ns.root)
+    source = (root / ns.source_file).resolve()
+    if not source.is_relative_to(root) or not source.is_file():
+        raise ValueError("Target source must be an existing file inside --root.")
+    if not shutil.which("forge"):
+        raise RuntimeError("Forge is not installed; target coverage cannot run.")
+
+    command = ["forge", "coverage", "--report", "lcov"]
+    if ns.match_test:
+        command.extend(["--match-test", ns.match_test])
+    if ns.match_path:
+        command.extend(["--match-path", ns.match_path])
+
+    lcov_candidates = [root / "lcov.info", root / "coverage" / "lcov.info"]
+    for candidate in lcov_candidates:
+        if candidate.is_file():
+            candidate.unlink()
+
+    proc = run(command, root, 900)
+    lcov = next((item for item in lcov_candidates if item.is_file()), None)
+    if proc.returncode or lcov is None:
+        raise RuntimeError(
+            "Forge did not produce fresh lcov.info; inspect coverage output. "
+            + (proc.stderr[-1500:] if proc.stderr else proc.stdout[-1500:])
+        )
+
+    current = None
+    rows = []
+    for line in lcov.read_text(encoding="utf-8", errors="replace").splitlines():
         if line.startswith("SF:"):
-            candidate=Path(line[3:])
-            current=(candidate if candidate.is_absolute() else root/candidate).resolve()
-        elif line.startswith("DA:") and current==src:
-            n,count=map(int,line[3:].split(",")[:2])
-            if n>=ns.start_line and (ns.end_line is None or n<=ns.end_line): rows.append({"line":n,"hits":count,"covered":count>0})
-    total=len(rows); covered=sum(r["covered"] for r in rows)
-    payload={"source":src.relative_to(root).as_posix(),"start_line":ns.start_line,"end_line":ns.end_line,
-             "lines":total,"covered":covered,"uncovered":[x["line"] for x in rows if not x["covered"]],
-             "percent":round(covered*100/total,2) if total else None,"warning":"Execution reachability is not assertion quality or security proof."}
-    write_json(safe_out(root,ns.output),payload); print(json.dumps(payload,indent=2)); return 0 if total else 1
+            candidate = Path(line[3:])
+            current = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        elif line.startswith("DA:") and current == source:
+            try:
+                number, count = map(int, line[3:].split(",")[:2])
+            except (ValueError, TypeError):
+                continue
+            if number >= ns.start_line and (ns.end_line is None or number <= ns.end_line):
+                rows.append({"line": number, "hits": count, "covered": count > 0})
+
+    total = len(rows)
+    covered = sum(1 for item in rows if item["covered"])
+    percent = round(covered * 100 / total, 2) if total else None
+    passed = bool(total and percent is not None and percent >= ns.min_percent)
+    payload = {
+        "schema_version": 2,
+        "status": "passed" if passed else "below_threshold_or_no_executable_lines",
+        "source": source.relative_to(root).as_posix(),
+        "source_sha256": sha(source),
+        "start_line": ns.start_line,
+        "end_line": ns.end_line,
+        "test_filter": {"match_test": ns.match_test, "match_path": ns.match_path},
+        "command": command,
+        "lines": total,
+        "covered": covered,
+        "uncovered": [item["line"] for item in rows if not item["covered"]],
+        "percent": percent,
+        "minimum_percent": ns.min_percent,
+        "gate_passed": passed,
+        "warning": "Execution reachability is not assertion quality, exploitability, or security proof.",
+    }
+    out = safe_out(root, ns.output)
+    write_json(out, payload)
+    print(json.dumps(payload, indent=2))
+    return 0 if passed else 1
+
+
 def provenance(args):
-    p=LowkeyArgumentParser(prog="lk provenance")
-    p.add_argument("artifacts",nargs="*"); p.add_argument("--root",default="."); p.add_argument("--chain-id")
-    p.add_argument("--fork-block"); p.add_argument("--signing-key")
-    p.add_argument("--output",default=".audit/godmode/provenance.json"); ns=p.parse_args(args)
-    root=root_path(ns.root); rows=[]
+    p = LowkeyArgumentParser(prog="lk provenance")
+    p.add_argument("artifacts", nargs="*")
+    p.add_argument("--root", default=".")
+    p.add_argument("--chain-id")
+    p.add_argument("--fork-block")
+    p.add_argument("--signing-key")
+    p.add_argument("--verify", help="Verify an existing signed provenance JSON file and its artifact hashes.")
+    p.add_argument("--public-key", help="Trusted public PEM to pin for --verify; required because a co-located key sidecar is not a trust anchor.")
+    p.add_argument("--signature-file", help="Detached signature file used with --verify; defaults to the recorded sidecar.")
+    p.add_argument("--output", default=".audit/godmode/provenance.json")
+    ns = p.parse_args(args)
+    root = root_path(ns.root)
+
+    if ns.verify:
+        if ns.artifacts or ns.signing_key:
+            raise ValueError("--verify cannot be combined with artifact creation or --signing-key.")
+        manifest_path = (root / ns.verify).resolve()
+        if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
+            raise ValueError("Provenance manifest must be an existing file inside --root.")
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print("PROVENANCE VERIFY: FAIL (manifest cannot be read: " + str(exc) + ")")
+            return 1
+        if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+            print("PROVENANCE VERIFY: FAIL (unsupported or malformed manifest)")
+            return 1
+        signature_info = payload.get("signature")
+        if not isinstance(signature_info, dict) or signature_info.get("status") != "signed":
+            print("PROVENANCE VERIFY: FAIL (manifest is unsigned or malformed)")
+            return 1
+        if not ns.public_key:
+            print("PROVENANCE VERIFY: FAIL (pass --public-key with a separately trusted/pinned public key)")
+            return 1
+        signature_path = Path(ns.signature_file or signature_info.get("signature_file") or "").expanduser()
+        public_path = Path(ns.public_key).expanduser()
+        if not signature_path.is_absolute():
+            signature_path = (root / signature_path).resolve()
+        else:
+            signature_path = signature_path.resolve()
+        public_path = public_path.resolve()
+        if not signature_path.is_relative_to(root) or not signature_path.is_file():
+            raise ValueError("Detached signature must be an existing file inside --root.")
+        if not public_path.is_file():
+            raise ValueError("Trusted public key must be an existing readable file.")
+        if not shutil.which("openssl"):
+            raise RuntimeError("OpenSSL is required to verify provenance signatures.")
+        public_hash = sha(public_path)
+        expected_public_hash = signature_info.get("public_key_sha256")
+        signature_ok = public_hash == expected_public_hash
+        verify_proc = run([
+            "openssl", "dgst", "-sha256", "-verify", str(public_path),
+            "-signature", str(signature_path), str(manifest_path),
+        ], root, 20)
+        signature_ok = signature_ok and verify_proc.returncode == 0
+
+        artifact_rows = payload.get("artifacts")
+        artifact_results = []
+        if isinstance(artifact_rows, list):
+            for row in artifact_rows:
+                if not isinstance(row, dict):
+                    artifact_results.append({
+                        "path": None, "exists": False, "expected_sha256": None,
+                        "actual_sha256": None, "verified": False,
+                    })
+                    continue
+                relative = str(row.get("path") or "")
+                expected_hash = row.get("sha256")
+                candidate = (root / relative).resolve() if relative else root
+                exists = bool(
+                    relative
+                    and not Path(relative).is_absolute()
+                    and candidate.is_relative_to(root)
+                    and candidate.is_file()
+                )
+                actual_hash = sha(candidate) if exists else None
+                expected_hash_valid = isinstance(expected_hash, str) and bool(
+                    re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+                )
+                artifact_results.append({
+                    "path": relative,
+                    "exists": exists,
+                    "expected_sha256": expected_hash,
+                    "actual_sha256": actual_hash,
+                    "verified": bool(exists and expected_hash_valid and actual_hash == expected_hash),
+                })
+        artifact_rows_valid = isinstance(artifact_rows, list) and bool(artifact_rows)
+        artifacts_ok = bool(
+            artifact_rows_valid
+            and len(artifact_results) == len(artifact_rows)
+            and all(item["verified"] for item in artifact_results)
+        )
+        passed = bool(signature_ok and artifacts_ok)
+        print("PROVENANCE VERIFY: " + ("PASS" if passed else "FAIL"))
+        print("  Signature: " + ("valid" if signature_ok else "invalid"))
+        print("  Artifacts: " + str(sum(item["verified"] for item in artifact_results)) + "/" + str(len(artifact_results)) + " verified")
+        if not passed:
+            print(json.dumps(artifact_results, indent=2))
+        return 0 if passed else 1
+
+    if not ns.artifacts:
+        raise ValueError("Provide at least one artifact to hash, or use --verify.")
+    rows = []
     for raw in ns.artifacts:
-        f=(root/raw).resolve()
-        if not f.is_relative_to(root) or not f.is_file(): raise ValueError(f"Artifact must exist inside project: {raw}")
-        rows.append({"path":f.relative_to(root).as_posix(),"sha256":sha(f),"bytes":f.stat().st_size})
-    rev=None
+        file_path = (root / raw).resolve()
+        if not file_path.is_relative_to(root) or not file_path.is_file():
+            raise ValueError("Artifact must exist inside --root: " + str(raw))
+        rows.append({
+            "path": file_path.relative_to(root).as_posix(),
+            "sha256": sha(file_path),
+            "bytes": file_path.stat().st_size,
+        })
+
+    revision = None
+    branch = None
+    dirty = None
     if shutil.which("git"):
-        x=run(["git","rev-parse","HEAD"],root,5); rev=x.stdout.strip() if x.returncode==0 else None
-    versions={}
-    for tool in ("forge","cast","anvil","slither","halmos","heimdall","bwrap"):
+        result = run(["git", "rev-parse", "HEAD"], root, 5)
+        revision = result.stdout.strip() if result.returncode == 0 else None
+        result = run(["git", "branch", "--show-current"], root, 5)
+        branch = result.stdout.strip() if result.returncode == 0 else None
+        result = run(["git", "status", "--porcelain"], root, 5)
+        dirty = bool(result.stdout.strip()) if result.returncode == 0 else None
+
+    versions = {}
+    for tool in ("forge", "cast", "anvil", "slither", "halmos", "heimdall", "bwrap", "firejail"):
         if shutil.which(tool):
-            x=run([tool,"--version"],root,4); versions[tool]=(x.stdout or x.stderr).strip().splitlines()[0][:160]
-    payload={"created_at":now(),"project":str(root),"git_revision":rev,"chain_id":ns.chain_id,
-             "fork_block":ns.fork_block,"artifacts":rows,"tool_versions":versions,
-             "signature":"detached .sig file when --signing-key is provided"}
-    out=safe_out(root,ns.output); write_json(out,payload)
-    signature=None
+            result = run([tool, "--version"], root, 4)
+            versions[tool] = (result.stdout or result.stderr).strip().splitlines()[0][:160]
+
+    out = safe_out(root, ns.output)
+    signature_info = {"status": "unsigned"}
+    public_path = None
+    signature_path = None
+    signing_key = None
     if ns.signing_key:
-        key=Path(ns.signing_key).expanduser().resolve()
-        if not key.is_file(): raise ValueError("Signing key file does not exist.")
-        if not shutil.which("openssl"): raise RuntimeError("OpenSSL is required for detached provenance signing.")
-        sig=out.with_suffix(out.suffix+".sig")
-        proc=run(["openssl","dgst","-sha256","-sign",str(key),"-out",str(sig),str(out)],root,20)
-        if proc.returncode: raise RuntimeError("OpenSSL signing failed: "+proc.stderr[-1000:])
-        signature=str(sig.relative_to(root))
-    print("Provenance: "+str(out.relative_to(root)))
-    print("SHA-256: "+sha(out))
-    print("Detached signature: "+(signature or "not requested"))
+        signing_key = Path(ns.signing_key).expanduser().resolve()
+        if not signing_key.is_file():
+            raise ValueError("Signing key file does not exist.")
+        if signing_key.is_relative_to(root):
+            raise ValueError("Keep the private signing key outside --root; use a protected path such as ~/.config/lowkey/provenance.pem.")
+        if not shutil.which("openssl"):
+            raise RuntimeError("OpenSSL is required for provenance signing.")
+        public_path = Path(str(out) + ".pub.pem")
+        signature_path = Path(str(out) + ".sig")
+        public_proc = run([
+            "openssl", "pkey", "-in", str(signing_key), "-pubout", "-out", str(public_path),
+        ], root, 20)
+        if public_proc.returncode:
+            raise RuntimeError("Could not derive provenance public key: " + public_proc.stderr[-1000:])
+        signature_info = {
+            "status": "signed",
+            "algorithm": "SHA256 (OpenSSL dgst)",
+            "signature_file": signature_path.relative_to(root).as_posix(),
+            "public_key_file": public_path.relative_to(root).as_posix(),
+            "public_key_sha256": sha(public_path),
+        }
+
+    payload = {
+        "schema_version": 2,
+        "created_at": now(),
+        "project": str(root),
+        "git_revision": revision,
+        "git_branch": branch,
+        "working_tree_dirty": dirty,
+        "chain_id": ns.chain_id,
+        "fork_block": ns.fork_block,
+        "artifacts": rows,
+        "tool_versions": versions,
+        "signature": signature_info,
+    }
+    write_json(out, payload)
+
+    if signing_key is not None and signature_path is not None:
+        sign_proc = run([
+            "openssl", "dgst", "-sha256", "-sign", str(signing_key),
+            "-out", str(signature_path), str(out),
+        ], root, 20)
+        if sign_proc.returncode:
+            raise RuntimeError("OpenSSL signing failed: " + sign_proc.stderr[-1000:])
+
+    print("Provenance: " + str(out.relative_to(root)))
+    print("SHA-256: " + sha(out))
+    print("Detached signature: " + (str(signature_path.relative_to(root)) if signature_path else "not requested"))
+    print("Verify with: lk provenance --root " + str(root) + " --verify " + str(out.relative_to(root)))
     return 0
+
+
 
 def output(payload):
     print(json.dumps(payload,indent=2,sort_keys=True)); return 0
@@ -2818,8 +3431,278 @@ def source_cmd(command,args):
     if command=="init-frontrun": payload["safety"]="Read-only static map only; Lowkey does not seize or initialize a live contract."
     if command=="reentrancy-graph": payload["confidence"]="heuristic; check exact storage identity and run a callback plus sequential control."
     return output(payload)
+def _sandbox_seccomp_filter():
+    """Build a small architecture-checked seccomp-BPF denylist for dangerous syscalls."""
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        audit_arch = 0xC000003E
+        denied = {
+            "ptrace": 101, "mount": 165, "umount2": 166, "pivot_root": 155,
+            "setns": 308, "unshare": 272, "bpf": 321, "perf_event_open": 298,
+            "keyctl": 250, "add_key": 248, "request_key": 249, "userfaultfd": 323,
+            "kexec_load": 246, "reboot": 169, "init_module": 175, "finit_module": 313,
+            "delete_module": 176, "open_by_handle_at": 304, "name_to_handle_at": 303,
+            "process_vm_readv": 310, "process_vm_writev": 311,
+            "io_uring_setup": 425, "io_uring_enter": 426, "io_uring_register": 427,
+        }
+    elif machine in {"aarch64", "arm64"}:
+        audit_arch = 0xC00000B7
+        denied = {
+            "ptrace": 117, "mount": 40, "umount2": 39, "pivot_root": 41,
+            "setns": 268, "unshare": 97, "bpf": 280, "perf_event_open": 241,
+            "keyctl": 219, "add_key": 217, "request_key": 218, "userfaultfd": 282,
+            "kexec_load": 104, "reboot": 142, "init_module": 105, "finit_module": 273,
+            "delete_module": 106, "open_by_handle_at": 265, "name_to_handle_at": 264,
+            "process_vm_readv": 270, "process_vm_writev": 271,
+            "io_uring_setup": 425, "io_uring_enter": 426, "io_uring_register": 427,
+        }
+    else:
+        raise RuntimeError("No audited seccomp syscall table for architecture: " + machine)
+
+    instructions = []
+    pack = lambda code, jt, jf, value: struct.pack("=HBBI", code, jt, jf, value)
+    instructions.append(pack(0x20, 0, 0, 4))               # load seccomp_data.arch
+    instructions.append(pack(0x15, 1, 0, audit_arch))      # expected architecture?
+    instructions.append(pack(0x06, 0, 0, 0x80000000))       # kill on ABI mismatch
+    instructions.append(pack(0x20, 0, 0, 0))               # load syscall number
+    for syscall_number in sorted(set(denied.values())):
+        instructions.append(pack(0x15, 0, 1, syscall_number))
+        instructions.append(pack(0x06, 0, 0, 0x00050000 | 1))  # EPERM
+    instructions.append(pack(0x06, 0, 0, 0x7FFF0000))      # allow remaining syscalls
+    return b"".join(instructions), sorted(denied)
+
+
+def _sandbox_resolve_allowlist(hosts):
+    addresses = set()
+    unresolved = []
+    for host in hosts:
+        value = str(host).strip()
+        if not value or any(char in value for char in "/?#@"):
+            raise ValueError("Allowlisted hosts must be plain hostnames or IP addresses: " + repr(host))
+        try:
+            addresses.add(str(ipaddress.ip_address(value)))
+            continue
+        except ValueError:
+            pass
+        try:
+            for item in socket.getaddrinfo(value, None, type=socket.SOCK_STREAM):
+                addresses.add(str(ipaddress.ip_address(item[4][0])))
+        except OSError:
+            unresolved.append(value)
+    if unresolved:
+        raise ValueError("Could not resolve allowlisted host(s); refusing a partial network policy: " + ", ".join(unresolved))
+    if not addresses:
+        raise ValueError("Network allowlist is empty.")
+    return sorted(addresses)
+
+
+def sandbox(args):
+    p = LowkeyArgumentParser(prog="lk sandbox")
+    p.add_argument("--root", default=".")
+    p.add_argument("--timeout", type=int, default=300)
+    p.add_argument("--cpu-seconds", type=int, default=300)
+    p.add_argument("--memory-mb", type=int, default=4096)
+    p.add_argument("--file-size-mb", type=int, default=512)
+    p.add_argument("--nofile", type=int, default=256)
+    p.add_argument("--processes", type=int, default=512, help="Maximum processes/threads in this sandbox's systemd cgroup TasksMax.")
+    p.add_argument("--readonly-workspace", action="store_true", help="Mount the disposable project copy read-only.")
+    p.add_argument("--network", choices=("none", "allowlist"), default="none")
+    p.add_argument("--allow-host", action="append", default=[], help="Allow this hostname/IP when --network allowlist is selected. All ports to resolved IPs are allowed.")
+    p.add_argument("command", nargs=argparse.REMAINDER)
+    ns = p.parse_args(args)
+
+    if not ns.command or ns.command[0] != "--":
+        raise ValueError("Usage: lk sandbox [options] -- <command> [args]")
+    if min(ns.timeout, ns.cpu_seconds, ns.memory_mb, ns.file_size_mb, ns.nofile, ns.processes) < 1:
+        raise ValueError("Sandbox time, CPU, memory, file-size, nofile, and process limits must all be positive.")
+    if ns.network == "none" and ns.allow_host:
+        raise ValueError("--allow-host requires --network allowlist.")
+    if ns.network == "allowlist" and not ns.allow_host:
+        raise ValueError("--network allowlist requires at least one --allow-host.")
+
+    root = root_path(ns.root)
+    if not shutil.which("bwrap"):
+        raise RuntimeError("bubblewrap is unavailable; refusing unsandboxed execution.")
+    if not shutil.which("systemd-run"):
+        raise RuntimeError("Sandbox resource isolation requires systemd-run cgroup controls; refusing a weaker fallback.")
+    if ns.network == "allowlist":
+        if not shutil.which("sudo"):
+            raise RuntimeError("Network allowlisting requires sudo; refusing an unrestricted network fallback.")
+        if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
+            raise RuntimeError("Network allowlisting requires cgroup v2; refusing an unrestricted network fallback.")
+        allow_ips = _sandbox_resolve_allowlist(ns.allow_host)
+        resolver_ips = []
+        resolv_conf = Path("/etc/resolv.conf")
+        if resolv_conf.is_file():
+            for line in resolv_conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "nameserver":
+                    try:
+                        resolver_ips.append(str(ipaddress.ip_address(parts[1])))
+                    except ValueError:
+                        pass
+        allow_ips = sorted(set(allow_ips + resolver_ips))
+    else:
+        allow_ips = []
+
+    temporary = Path(tempfile.mkdtemp(prefix="lk-sandbox-"))
+    work = temporary / "project"
+    try:
+        def ignore_sensitive(directory, names):
+            ignored = []
+            for name in names:
+                lower = name.lower()
+                if name in {".git", ".audit", "node_modules", "out", "cache", "__pycache__", ".venv", "venv"}:
+                    ignored.append(name)
+                elif lower.startswith(".env") or any(
+                    token in lower for token in ("credential", "keystore", "private_key", "wallet.json", "id_rsa", "id_ed25519", ".npmrc")
+                ):
+                    ignored.append(name)
+            return ignored
+
+        shutil.copytree(root, work, ignore=ignore_sensitive, symlinks=True)
+        home = Path.home()
+        home_args = []
+        if str(home).startswith("/home/"):
+            home_args += ["--dir", "/home"]
+        if str(home) != "/":
+            home_args += ["--dir", str(home)]
+        foundry_bin = home / ".foundry" / "bin"
+        if foundry_bin.is_dir():
+            home_args += ["--dir", str(home / ".foundry"), "--ro-bind", str(foundry_bin), str(foundry_bin)]
+        svm = home / ".svm"
+        if svm.is_dir():
+            home_args += ["--dir", str(home / ".svm"), "--ro-bind", str(svm), str(svm)]
+
+        seccomp_bytes, denied_names = _sandbox_seccomp_filter()
+        # systemd-run creates a new service process: an FD passed to its client
+        # is not inherited by the transient service. Open the filter in a small
+        # trusted wrapper before exec'ing bubblewrap in that service.
+        seccomp_file = temporary / "seccomp.filter"
+        seccomp_file.write_bytes(seccomp_bytes)
+        seccomp_argument = "3"
+
+        path_value = str(foundry_bin) + ":/usr/local/bin:/usr/bin:/bin"
+        workspace_mount = "--ro-bind" if ns.readonly_workspace else "--bind"
+        runtime_mount_args = []
+        # A minimal bwrap root does not inherit host /bin, /sbin or ELF loader
+        # directories just because those paths exist on the host. Bind the
+        # existing runtime paths read-only into the disposable namespace.
+        for runtime_path in ("/bin", "/sbin", "/lib", "/lib64"):
+            if Path(runtime_path).exists():
+                runtime_mount_args.extend(["--ro-bind", runtime_path, runtime_path])
+
+        bwrap_argv = [
+            "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+            "--seccomp", seccomp_argument, "--clearenv", "--setenv", "HOME", str(home),
+            "--setenv", "PATH", path_value, "--ro-bind", "/usr", "/usr",
+            "--ro-bind", "/etc", "/etc", *runtime_mount_args,
+            "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", *home_args, "--dir", "/workspace",
+            workspace_mount, str(work), "/workspace", "--chdir", "/workspace",
+            "--", *ns.command[1:],
+        ]
+        if ns.network == "none":
+            bwrap_argv.insert(2, "--unshare-net")
+
+        # Per-sandbox cgroup controls apply in both network modes. Network-none
+        # additionally uses a fresh network namespace; allowlist mode relies on
+        # systemd's cgroup IP filter and therefore needs the system manager.
+        resource_properties = [
+            "--property=Type=exec",
+            "--property=LimitCPU=" + str(ns.cpu_seconds) + "s",
+            "--property=LimitAS=" + str(ns.memory_mb * 1024 * 1024),
+            "--property=MemoryMax=" + str(ns.memory_mb * 1024 * 1024),
+            "--property=LimitFSIZE=" + str(ns.file_size_mb * 1024 * 1024),
+            "--property=LimitNOFILE=" + str(ns.nofile),
+            "--property=TasksMax=" + str(ns.processes),
+            "--property=RuntimeMaxSec=" + str(ns.timeout) + "s",
+        ]
+        seccomp_wrapper = [
+            "/bin/bash", "-c", 'exec 3< "$1"; shift; exec "$@"',
+            "lowkey-sandbox-seccomp", str(seccomp_file), *bwrap_argv,
+        ]
+        if ns.network == "allowlist":
+            current_user = pwd.getpwuid(os.getuid()).pw_name
+            outer_argv = [
+                "sudo", "systemd-run", "--system", "--wait", "--pipe", "--collect",
+                "--property=User=" + current_user,
+                "--property=IPAddressDeny=any",
+                *resource_properties,
+            ]
+            outer_argv.extend("--property=IPAddressAllow=" + address for address in allow_ips)
+        else:
+            outer_argv = [
+                "systemd-run", "--user", "--wait", "--pipe", "--collect",
+                *resource_properties,
+            ]
+        outer_argv.extend(["--", *seccomp_wrapper])
+
+        proc = subprocess.Popen(
+            outer_argv,
+            cwd=str(root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            pass_fds=(),
+            start_new_session=True,
+        )
+        # RuntimeMaxSec is the authoritative service timeout; give the
+        # systemd-run client a short grace period to receive the unit result.
+        client_timeout = ns.timeout + 5
+        try:
+            stdout_text, stderr_text = proc.communicate(timeout=client_timeout)
+        except subprocess.TimeoutExpired:
+            print("SANDBOX: TIMEOUT after " + str(ns.timeout) + " seconds; terminating process group", file=sys.stderr)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                proc.terminate()
+            try:
+                stdout_text, stderr_text = proc.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    proc.kill()
+                stdout_text, stderr_text = proc.communicate()
+            if stdout_text:
+                print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+            if stderr_text:
+                print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
+            return 124
+        print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
+        print("SANDBOX SECCOMP: active; denied syscalls: " + ", ".join(denied_names))
+        print("SANDBOX LIMITS: cgroup MemoryMax=" + str(ns.memory_mb) + "MiB TasksMax=" + str(ns.processes) + " LimitCPU=" + str(ns.cpu_seconds) + "s file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile))
+        if stdout_text:
+            print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+        if stderr_text:
+            print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
+        return proc.returncode
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def fingerprint(args):
-    p=LowkeyArgumentParser(prog="lk cheat-fingerprint"); p.add_argument("--root",default="."); ns=p.parse_args(args); data=cheat_fingerprints(root_path(ns.root)); print(json.dumps(data,indent=2)); return 0
+    p = LowkeyArgumentParser(prog="lk cheat-fingerprint")
+    p.add_argument("--root", default=".", help="Project root to scan.")
+    p.add_argument("--output", help="Write the machine-readable fingerprint report to this path inside --root.")
+    ns = p.parse_args(args)
+
+    root = root_path(ns.root)
+    data = cheat_fingerprints(root)
+    if ns.output:
+        out = safe_out(root, ns.output)
+        write_json(out, data)
+        print("Fingerprint report: " + str(out.relative_to(root)))
+        print("Ordered mapping/call/write sequences: " + str(len(data.get("ordered_sequences") or [])))
+    else:
+        print(json.dumps(data, indent=2))
+    return 0
 def economic(args):
     p=LowkeyArgumentParser(prog="lk economic"); p.add_argument("--gross-wei",type=int,required=True); p.add_argument("--gas-used",type=int,required=True); p.add_argument("--max-fee-wei",type=int,required=True); p.add_argument("--pool-fee-bps",type=int,default=0); p.add_argument("--slippage-bps",type=int,default=0); p.add_argument("--capital-cost-wei",type=int,default=0); ns=p.parse_args(args)
     vals=[ns.gross_wei,ns.gas_used,ns.max_fee_wei,ns.pool_fee_bps,ns.slippage_bps,ns.capital_cost_wei]
@@ -2969,34 +3852,6 @@ def run_control(args):
     """Entry point used by break_engine for the mandatory control gate."""
     return control(args)
 
-
-def mutation(args):
-    p=LowkeyArgumentParser(prog="lk mutation-score")
-    p.add_argument("manifest")
-    p.add_argument("--min-score",type=float,default=0.90)
-    p.add_argument("--timeout",type=int,default=300)
-    p.add_argument("--output",default=".audit/verification/mutation-score-report.json")
-    ns=p.parse_args(args)
-    if not 0.0<=ns.min_score<=1.0: raise ValueError("--min-score must be between 0 and 1.")
-    try:
-        try: from . import behavioral_validation
-        except ImportError: import behavioral_validation
-    except ImportError as exc: raise RuntimeError("Existing mutation runner unavailable: "+str(exc))
-    rc=behavioral_validation.run_cli([ns.manifest,"--output",ns.output,"--timeout",str(ns.timeout)])
-    if rc!=0:
-        print("MUTATION GATE: FAIL (baseline or mutation campaign did not complete)")
-        return rc
-    report_path=Path(ns.output).expanduser()
-    if not report_path.is_absolute(): report_path=Path.cwd()/report_path
-    if not report_path.is_file(): raise RuntimeError("Mutation runner did not create its report: "+str(report_path))
-    report=json.loads(report_path.read_text(encoding="utf-8"))
-    score=report.get("mutation_score")
-    passed=isinstance(score,(float,int)) and score>=ns.min_score
-    print("MUTATION GATE: "+("PASS" if passed else "FAIL"))
-    print("  Required: "+format(ns.min_score,".1%"))
-    print("  Observed: "+(format(score,".1%") if isinstance(score,(int,float)) else "not available"))
-    print("  Invalid/timeouts are excluded from the score and must be reviewed separately.")
-    return 0 if passed else 1
 
 def inspect_reproduction_command(root, argv):
     """Inspect the replay argv and referenced local scripts for state-fabricating RPCs."""
@@ -3438,7 +4293,7 @@ def learn(args):
         finally: os.chdir(old)
     except ImportError as exc: raise RuntimeError(str(exc))
 def godmode(args):
-    p=LowkeyArgumentParser(prog="lk godmode"); p.add_argument("target",nargs="?"); p.add_argument("--root",default="."); p.add_argument("--rpc-url"); p.add_argument("--profile",choices=("light","balanced","deep"),default="balanced"); p.add_argument("--attack",action="store_true"); p.add_argument("--control-manifest"); p.add_argument("--mutation-manifest"); p.add_argument("--coverage-source"); p.add_argument("--plan-only",action="store_true"); ns=p.parse_args(args)
+    p=LowkeyArgumentParser(prog="lk godmode"); p.add_argument("target",nargs="?"); p.add_argument("--root",default="."); p.add_argument("--rpc-url"); p.add_argument("--profile",choices=("light","balanced","quick","standard","deep"),default="balanced"); p.add_argument("--attack",action="store_true"); p.add_argument("--control-manifest"); p.add_argument("--mutation-manifest"); p.add_argument("--coverage-source"); p.add_argument("--plan-only",action="store_true"); p.add_argument("--multi-agent",action="store_true",help="Run the source-only multi-wave Solidity audit with independent hunters and critics."); p.add_argument("--agent-budget",type=int,help="Maximum independent AI invocations for the multi-agent audit (4..64)."); ns=p.parse_args(args)
     root=root_path(ns.root); target=addr(ns.target) if ns.target else None; maps=source_maps(root); cheat=cheat_fingerprints(root); stages=[]
     stages.append({"name":"source-recon","status":"completed","signals":sum(len(v) for v in maps.values() if isinstance(v,list))})
     stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"])})
@@ -3473,15 +4328,43 @@ def godmode(args):
         finally: os.chdir(old)
         stages.append({"name":"target-coverage","status":"completed" if rc==0 else "review","exit_code":rc})
     else: stages.append({"name":"target-coverage","status":"not-run","reason":"No target source line scope."})
+    multiwave_result=None
+    if ns.multi_agent:
+        try:
+            try: from . import multiwave_audit
+            except ImportError: import multiwave_audit
+            audit_profile={"light":"quick","quick":"quick","balanced":"standard","standard":"standard","deep":"deep"}[ns.profile]
+            multiwave_result=multiwave_audit.run_multiwave_audit(root,profile=audit_profile,max_agent_calls=ns.agent_budget)
+            audit_state=multiwave_result.get("status")
+            stage_state="completed" if audit_state=="coverage_complete" else ("blocked" if audit_state=="blocked" else "review")
+            stages.append({"name":"multiwave-smart-contract-audit","status":stage_state,
+                           "reason":multiwave_result.get("stopped_reason"),
+                           "run_id":multiwave_result.get("run_id"),
+                           "report":multiwave_result.get("report"),
+                           "coverage_units":multiwave_result.get("coverage_units"),
+                           "candidate_findings":multiwave_result.get("candidate_findings"),
+                           "waves_completed":multiwave_result.get("waves_completed")})
+        except Exception as exc:
+            multiwave_result={"status":"blocked","stopped_reason":str(exc)[:500]}
+            stages.append({"name":"multiwave-smart-contract-audit","status":"blocked","reason":str(exc)[:500]})
     blockers=[s for s in stages if s["status"] in {"blocked","review","not-run","skipped"}]
     payload={"created_at":now(),"target":target,"project_root":str(root),"git_revision":None,"chain_id":chain,"fork_block":block,
              "profile":ns.profile,"stages":stages,"signals":maps,"cheat_fingerprints":cheat,
+             "multiwave_audit":multiwave_result,
              "onchain":onchain,"overall_status":"REVIEW_REQUIRED",
              "proof_gate":["attack must demonstrate a measurable security-property delta","matched sequential control must pass",
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
                "reproof must not depend on state-fabricating cheatcodes"]}
     out=safe_out(root,".audit/godmode/latest.json"); write_json(out,payload)
-    prov=safe_out(root,".audit/godmode/provenance.json"); write_json(prov,{"created_at":now(),"sha256":hashlib.sha256(out.read_bytes()).hexdigest(),"chain_id":chain,"fork_block":block,"artifacts":["latest.json"]})
+    provenance_args=[".audit/godmode/latest.json","--root",str(root),
+                     "--output",".audit/godmode/provenance.json"]
+    if chain is not None:
+        provenance_args += ["--chain-id",str(chain)]
+    if block is not None:
+        provenance_args += ["--fork-block",str(block)]
+    provenance_status=provenance(provenance_args)
+    if provenance_status != 0:
+        raise RuntimeError("Godmode could not create its schema-valid provenance manifest.")
     print("GODMODE: "+payload["overall_status"])
     for s in stages: print("  ["+s["status"].upper()+"] "+s["name"]+": "+str(s.get("reason",s.get("signals",s.get("output",""))))[:190])
     print("Report: "+str(out.relative_to(root))); return 2 if blockers else 0
@@ -4172,46 +5055,7 @@ def main(argv=None):
                 ev=evidence_ledger.append_event(root,"fidelity_record",{"strength":ns.strength,"cheatcodes":ns.cheatcode,"created_at":now()}); print("Recorded "+ev["event_id"]); return 0
             rows=[e for e in evidence_ledger.read_events(root) if e.get("event_type")=="fidelity_record"]; return output(rows)
         except ImportError as exc: raise RuntimeError(str(exc))
-    if cmd=="sandbox":
-        p=LowkeyArgumentParser(prog="lk sandbox"); p.add_argument("--root",default="."); p.add_argument("--timeout",type=int,default=300); p.add_argument("command",nargs=argparse.REMAINDER); ns=p.parse_args(rest)
-        root=root_path(ns.root)
-        if not shutil.which("bwrap"): raise RuntimeError("bubblewrap unavailable; refusing unsandboxed execution.")
-        if not ns.command or ns.command[0]!="--": raise ValueError("Usage: lk sandbox -- <command> [args]")
-        temp=Path(tempfile.mkdtemp(prefix="lk-sandbox-")); work=temp/"project"
-        try:
-            def ignore_sensitive(directory,names):
-                ignored=[]
-                for name in names:
-                    lower=name.lower()
-                    if name in {".git",".audit","node_modules","out","cache","__pycache__",".venv","venv"}:
-                        ignored.append(name)
-                    elif lower.startswith(".env") or any(token in lower for token in ("credential","keystore","private_key","wallet.json","id_rsa","id_ed25519",".npmrc")):
-                        ignored.append(name)
-                return ignored
-            shutil.copytree(root,work,ignore=ignore_sensitive)
-            home=Path.home()
-            home_args=[]
-            # Build an isolated home path inside the sandbox; do not expose the
-            # host home directory. Only Foundry executables and solc versions
-            # are selectively mounted read-only.
-            if str(home).startswith("/home/"):
-                home_args += ["--dir","/home"]
-            if str(home)!="/":
-                home_args += ["--dir",str(home)]
-            foundry_bin=home/".foundry"/"bin"
-            if foundry_bin.is_dir():
-                home_args += ["--dir",str(home/".foundry"),"--ro-bind",str(foundry_bin),str(foundry_bin)]
-            svm=home/".svm"
-            if svm.is_dir():
-                home_args += ["--dir",str(home/".svm"),"--ro-bind",str(svm),str(svm)]
-            path_value=str(foundry_bin)+":/usr/local/bin:/usr/bin:/bin"
-            argv=["bwrap","--die-with-parent","--unshare-net","--unshare-pid","--unshare-ipc","--unshare-uts",
-                  "--clearenv","--setenv","HOME",str(home), "--setenv","PATH",path_value,
-                  "--ro-bind","/usr","/usr","--ro-bind","/etc","/etc","--dev","/dev","--proc","/proc",
-                  "--tmpfs","/tmp",*home_args,"--bind",str(work),"/workspace","--chdir","/workspace","--",*ns.command[1:]]
-            proc=run(argv,root,ns.timeout)
-            print(proc.stdout,end=""); print(proc.stderr,file=sys.stderr,end=""); return proc.returncode
-        finally: shutil.rmtree(temp,ignore_errors=True)
+    if cmd=="sandbox": return sandbox(rest)
     if cmd=="cheat-fingerprint": return fingerprint(rest)
     if cmd in {"fallback-map","oracle-map","reentrancy-graph","sig-matrix","init-frontrun","custody","cross-vm","cfg"}: return source_cmd(cmd,rest)
     if cmd in {"proxy-resolve","storage-infer","selectors-full"}: return rpc_command(cmd,rest)
