@@ -377,6 +377,85 @@ class AttackEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(engine.AttackEngineError, "preconditions"):
             engine.validate_chain_manifest(value, self.root)
 
+
+    def _chain_evidence(self, role):
+        manifest = engine.validate_chain_manifest(self._chain_manifest(), self.root)
+        anchor = {
+            "entry_selector": "0x12345678",
+            "calldata_sha256": HASH,
+            "prestate_sha256": "b" * 64,
+            "setup_sha256": "c" * 64,
+        }
+        observed = role == "attack"
+        stage_results = [
+            {
+                "id": "borrow",
+                "family": "reentrancy",
+                "status": "completed",
+                "prestate_sha256": "b" * 64,
+                "poststate_sha256": "c" * 64,
+                "consumed": [],
+                "produced": ["borrowed-liquidity"],
+                "discovery_sha256": self.source_hash,
+                "preconditions": {item: True for item in engine.FAMILIES["reentrancy"]["preconditions"]},
+                "predicate": {"id": engine.FAMILIES["reentrancy"]["property"], "observed": observed},
+                "trace_events": [self._trace_event(seq=0), self._trace_event(seq=1)],
+                "tx_hash": TX_HASH,
+                "block_number": 101,
+            },
+            {
+                "id": "repay",
+                "family": "accounting",
+                "status": "completed",
+                "prestate_sha256": "c" * 64,
+                "poststate_sha256": "d" * 64,
+                "consumed": ["borrowed-liquidity"],
+                "produced": ["repaid-position"],
+                "discovery_sha256": self.source_hash,
+                "preconditions": {item: True for item in engine.FAMILIES["accounting"]["preconditions"]},
+                "predicate": {"id": engine.FAMILIES["accounting"]["property"], "observed": observed},
+                "trace_events": [self._trace_event(seq=0)],
+                "tx_hash": TX_HASH,
+                "block_number": 101,
+            },
+        ]
+        return {
+            "schema_version": 1,
+            "experiment_id": manifest["id"],
+            "role": role,
+            "target": dict(self.target),
+            "pair_anchor": anchor,
+            "predicate": {"id": manifest["property_id"], "observed": observed},
+            "execution": {
+                "mode": "single_transaction",
+                "status": "passed",
+                "atomic": True,
+                "tx_hash": TX_HASH,
+                "receipt_status": 1,
+                "block_number": 101,
+            },
+            "stage_results": stage_results,
+        }
+
+    def test_chain_attack_control_evidence_requires_stage_predicates_and_continuity(self):
+        manifest = engine.validate_chain_manifest(self._chain_manifest(), self.root)
+        attack = self._chain_evidence("attack")
+        control = self._chain_evidence("control")
+        result = engine.validate_chain_evidence_pair(attack, control, manifest)
+        self.assertEqual(result["status"], "CHAIN_PAIRED")
+        self.assertEqual(result["stage_count"], 2)
+        self.assertEqual(result["attack_stages"][1]["prestate_sha256"], "c" * 64)
+
+        broken = self._chain_evidence("attack")
+        broken["stage_results"][1]["prestate_sha256"] = "f" * 64
+        with self.assertRaisesRegex(engine.AttackEngineError, "state continuity"):
+            engine.validate_chain_evidence_pair(broken, control, manifest)
+
+        wrong_stage_property = self._chain_evidence("attack")
+        wrong_stage_property["stage_results"][0]["predicate"]["observed"] = False
+        with self.assertRaisesRegex(engine.AttackEngineError, "wrong attack/control predicate"):
+            engine.validate_chain_evidence_pair(wrong_stage_property, control, manifest)
+
     def test_failure_rollback_must_restore_the_exact_prestate(self):
         manifest = engine.validate_chain_manifest(self._chain_manifest(), self.root)
         evidence = {
