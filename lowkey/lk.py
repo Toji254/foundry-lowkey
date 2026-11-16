@@ -2167,7 +2167,8 @@ def storage_getter_names(target, config, abi, root=None):
                 source_path = candidate
         except (OSError, ValueError):
             source_path = None
-    labels.update(source_public_storage_names(root_path, contract_name, source_path))
+    if not source_name or source_path is not None:
+        labels.update(source_public_storage_names(root_path, contract_name, source_path))
 
     return {
         item.get("name")
@@ -5542,6 +5543,8 @@ def _read_visibility_warning(args, config):
         except (OSError, ValueError):
             source_path = None
 
+    if source_name and source_path is None:
+        return None
     declaration = source_state_variable_visibility(
         root_path, contract_name=contract_name, source_path=source_path
     ).get(name)

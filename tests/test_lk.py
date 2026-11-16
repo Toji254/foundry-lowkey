@@ -4759,6 +4759,8 @@ contract Pool {
                     address public immutable owner;
                     uint256 private secret;
                     uint256 internal shares;
+                    string private note = "contract Other { uint256 public fake; }";
+                    // uint256 public commentedOut;
                 }
                 """,
                 encoding="utf-8",
@@ -4782,6 +4784,9 @@ contract Pool {
         self.assertEqual(visibility["shares"]["visibility"], "internal")
         self.assertTrue(visibility["FEE"]["constant"])
         self.assertTrue(visibility["owner"]["immutable"])
+        self.assertEqual(visibility["note"]["visibility"], "private")
+        self.assertNotIn("fake", visibility)
+        self.assertNotIn("commentedOut", visibility)
 
     def test_read_visibility_warning_explains_private_internal_and_public_abi_mismatch(self):
         target = "0x" + "1" * 40
@@ -4824,6 +4829,17 @@ contract Pool {
         self.assertIn("declared public", public_warning)
         self.assertIn("generated getter", public_warning)
         self.assertIsNone(unknown_warning)
+
+
+    def test_read_dispatch_returns_visibility_hint_before_cast(self):
+        config = {"target": "0x" + "1" * 40}
+        with patch.object(lk, "_read_visibility_warning", return_value="private state hint") as warning, \
+             patch.object(lk, "fail", return_value=2) as fail, \
+             patch.object(lk, "run_cast", side_effect=AssertionError("read must stop before cast")):
+            result = lk._dispatch_command_impl("read", ["secret"], config)
+        self.assertEqual(result, 2)
+        warning.assert_called_once_with(["secret"], config)
+        fail.assert_called_once_with("private state hint")
 
     def test_read_visibility_warning_does_not_override_an_abi_function(self):
         target = "0x" + "1" * 40
