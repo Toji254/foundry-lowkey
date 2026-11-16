@@ -413,7 +413,7 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertIn("step limit", truncated["reason"])
 
     def test_opcode_storage_can_match_forge_per_access_evidence(self):
-        implementation = "0x" + "9" * 40
+        implementation = A
         call_trace = {
             "type": "CALL", "from": A, "to": B, "input": "0x12345678",
             "value": "0x0", "calls": [{
