@@ -1722,6 +1722,17 @@ def activate_project_context(config, root=None):
 def persist_project_actor(config, root=None):
     """Persist active actor selection in the project, not only global config."""
     project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
+    resolved = config.get("_resolved_project_context") if isinstance(config, dict) else None
+    if not isinstance(resolved, dict):
+        # Help-only and non-native paths must not copy a global actor into a
+        # project merely because they pass through the common command logger.
+        return None
+    try:
+        resolved_root = Path(str(resolved.get("project_root") or "")).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        return None
+    if resolved_root != project_root:
+        return None
     wallets = config.get("wallets") if isinstance(config, dict) else {}
     if not isinstance(wallets, dict):
         wallets = {}

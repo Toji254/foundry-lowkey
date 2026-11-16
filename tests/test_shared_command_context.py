@@ -305,6 +305,37 @@ class SharedCommandContextTests(unittest.TestCase):
             self.assertEqual(config["target"], address)
             self.assertNotIn(address, config["abi_paths"])
 
+    def test_help_path_does_not_persist_unscoped_global_actor_into_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "Token"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            config = {
+                "actor": "Alice",
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            }
+            self.assertIsNone(lk.persist_project_actor(config, root))
+            state = lk.audit_context.load(root)
+            self.assertFalse(state["actor_scope_initialized"])
+            self.assertIsNone(state["actor_profile"])
+
+    def test_actor_persistence_rejects_a_context_for_another_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            root_a = base / "Token"
+            root_b = base / "Escrow"
+            for root in (root_a, root_b):
+                root.mkdir()
+                (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            config = {
+                "actor": "Alice",
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+                "_resolved_project_context": {"project_root": str(root_a)},
+            }
+            self.assertIsNone(lk.persist_project_actor(config, root_b))
+            state = lk.audit_context.load(root_b)
+            self.assertFalse(state["actor_scope_initialized"])
+
     def test_selected_actor_is_persisted_as_project_state_not_just_global_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "Token"
