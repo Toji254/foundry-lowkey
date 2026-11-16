@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -316,6 +317,40 @@ def emit(
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def read_events(root: Path | None = None, *, limit: int = 100) -> list[dict[str, Any]]:
+    """Read the newest structured events for this project, preserving order."""
+    try:
+        count = min(500, int(limit))
+    except (TypeError, ValueError):
+        return []
+    if count <= 0:
+        return []
+
+    project_root = foundry_project_root(root)
+    if not _is_audit_project(project_root):
+        return []
+    path = events_path(project_root)
+    if not path.is_file():
+        return []
+
+    lines: deque[str] = deque(maxlen=count)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            lines.extend(handle)
+    except OSError:
+        return []
+
+    records: list[dict[str, Any]] = []
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and isinstance(record.get("type"), str):
+            records.append(record)
+    return records
 
 
 def record_tool(

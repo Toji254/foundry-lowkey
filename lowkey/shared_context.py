@@ -119,18 +119,13 @@ def resolve_actor(
     explicit_actor: Any = None,
 ) -> tuple[str | None, str | None]:
     """Resolve the active actor profile without leaking it between projects."""
-    cfg = config if isinstance(config, Mapping) else {}
-    wallets = cfg.get("wallets", {})
+    wallets = config.get("wallets") if isinstance(config, Mapping) else {}
     if not isinstance(wallets, Mapping):
         wallets = {}
 
-    # "lk as <actor> ..." marks the signer as an explicit invocation-local
-    # override. It wins over project memory but is never persisted by callers.
-    if explicit_actor is None and cfg.get("_ephemeral") is True:
-        explicit_actor = cfg.get("actor")
     explicit = _text(explicit_actor)
     if explicit:
-        return (explicit, "command-line") if explicit in wallets else (None, "command-line-invalid")
+        return (explicit, "command-line") if explicit in wallets else (None, None)
 
     state = project_state if isinstance(project_state, Mapping) else {}
     if state.get("actor_scope_initialized") is True:
@@ -148,15 +143,9 @@ def resolve_actor(
 
     # Only migrate the old global actor when its selected target is explicitly
     # registered as belonging to this same project.
-    legacy_actor = _text(cfg.get("actor"))
+    legacy_actor = _text(config.get("actor")) if isinstance(config, Mapping) else None
     if legacy_target_is_project_owned and legacy_actor in wallets:
         return legacy_actor, "legacy-project-owned"
-
-    # A fresh project gets the reserved local deployer only when that profile
-    # actually exists. Once actor scope is initialized, an explicit cleared or
-    # removed profile stays cleared instead of falling back to a global signer.
-    if "lab-deployer" in wallets:
-        return "lab-deployer", "project-default"
     return None, None
 
 

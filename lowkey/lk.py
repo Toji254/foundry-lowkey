@@ -25957,6 +25957,15 @@ def _attach_shared_command_context(config, project_root=None, max_events=8):
             context = loaded
     except Exception:
         pass
+    try:
+        # Give handlers one view of command history plus structured tool/audit
+        # events. The journal reader is bounded and project-scoped.
+        context["audit_events"] = audit_context.read_events(
+            root,
+            limit=max(8, min(int(max_events or 8), 50)),
+        )
+    except Exception:
+        context["audit_events"] = []
     if isinstance(config, dict):
         config["_shared_command_context"] = context
     return context
@@ -25972,7 +25981,26 @@ def shared_command_context(config=None, project_root=None, max_events=8):
 
 
 def _record_shared_command_event(project_root, cmd, args, exit_code, output):
-    """Feed the per-project evidence channel used by every Lowkey command."""
+    """Publish a safe completion event to the shared project evidence bus."""
+    command_name = str(cmd or "").strip().lower() or "unknown"
+    arguments = [str(value).strip().lower() for value in (args or [])]
+    help_only = command_name in HELP_FLAGS or any(value in HELP_FLAGS for value in arguments)
+    if not help_only:
+        code = exit_code if isinstance(exit_code, int) else None
+        status = "completed" if code == 0 else ("failed" if code is not None else "unknown")
+        try:
+            # Never copy raw arguments or command output into the shared audit
+            # journal: either can contain credentials, calldata or user data.
+            audit_context.emit(
+                "command-completed",
+                project_root,
+                tool="cli",
+                status=status,
+                summary=f"{command_name} {status}",
+                data={"command": command_name, "exit_code": code},
+            )
+        except Exception:
+            pass
     try:
         try:
             import error_context
@@ -25987,7 +26015,7 @@ def _record_shared_command_event(project_root, cmd, args, exit_code, output):
         )
     except Exception:
         # Shared memory is advisory; never break the native command path.
-        return None
+        pass
     return None
 
 
