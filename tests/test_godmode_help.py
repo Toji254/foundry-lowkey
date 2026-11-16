@@ -357,6 +357,14 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
                 with self.subTest(command=command, flag=flag):
                     self.assertIn(flag, output)
 
+    def test_control_help_shows_default_manifest_and_rpc_only_for_execution(self):
+        result, output = _capture_help("control")
+        self.assertEqual(result, 0, output)
+        self.assertIn("[MANIFEST]", output)
+        self.assertIn(".audit/control.json", output)
+        self.assertIn("no RPC is needed", output)
+        self.assertIn("needed only when executing", output)
+
     def test_new_p1_help_pages_explain_usage_examples_and_limitations(self):
         for command in ("control", "steps", "reprove", "godmode"):
             result, output = _capture_help(command)
