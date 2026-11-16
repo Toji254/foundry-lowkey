@@ -707,11 +707,14 @@ def _validate_chain(value: Any, root: Path) -> dict[str, Any]:
     reproof = value.get("reproof")
     if not isinstance(reproof, dict) or not isinstance(reproof.get("reproof_file"), str):
         raise AttackEngineError("chain reproof.reproof_file must reference an independent fork reproof.", "reproof_missing")
-    impact_mode = value.get("impact_mode", "economic" if any(FAMILIES[item.get("family")]["economic"] for item in value.get("stages", []) if isinstance(item, dict) and item.get("family") in FAMILIES) else "semantic")
+    stages = value.get("stages")
+    if not isinstance(stages, list) or not stages or len(stages) > 32 or any(
+        not isinstance(item, dict) or item.get("family") not in FAMILIES for item in stages
+    ):
+        raise AttackEngineError("stages must be a non-empty list of 1-32 supported family objects.")
+    impact_mode = value.get("impact_mode", "economic" if any(FAMILIES[item["family"]]["economic"] for item in stages) else "semantic")
     if impact_mode not in {"economic", "semantic"}:
         raise AttackEngineError("chain impact_mode must be economic or semantic.")
-    if not isinstance(stages, list) or not stages or any(not isinstance(item, dict) or item.get("family") not in FAMILIES for item in stages):
-        raise AttackEngineError("stages must be a non-empty list of supported family objects.")
     reproof_family = "economic" if impact_mode == "economic" else str(stages[0]["family"])
     _validate_reproof(reproof, root=root, target=target, family=reproof_family, impact_mode=impact_mode, label="chain independent reproof")
     property_id = value.get("property_id")
