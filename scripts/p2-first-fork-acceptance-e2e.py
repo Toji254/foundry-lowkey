@@ -295,13 +295,15 @@ def main() -> int:
                     + str(normalized.get("canonical_trace_events_error"))
                 )
 
-            signature = run([cast, "sig", "getNonce(address,uint192)"], cwd=ROOT, env=test_env, timeout=20).stdout.strip()
-            if not signature.startswith("0x") or len(signature) != 10:
-                raise AssertionError(f"cast could not derive totalAssets selector: {signature!r}")
+            calldata = run([
+                cast, "calldata", "getNonce(address,uint192)", ACTOR, "0"
+            ], cwd=ROOT, env=test_env, timeout=20).stdout.strip()
+            if not calldata.startswith("0x") or len(calldata) != 138:
+                raise AssertionError(f"cast could not ABI-encode getNonce calldata: {calldata!r}")
             call_request = {
                 "from": ACTOR,
                 "to": TARGET,
-                "data": signature,
+                "data": calldata,
                 "value": "0x0",
                 "gas": hex(30_000_000),
             }
