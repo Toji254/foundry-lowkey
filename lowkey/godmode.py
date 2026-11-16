@@ -6221,6 +6221,27 @@ def _report_cell(value, fallback="Not recorded", limit=None):
     return _report_clean(value, fallback, limit).replace("|", chr(92) + "|")
 
 
+def _report_source_ref(path, line_no, root, report_path):
+    raw = str(path or "").strip()
+    if not raw:
+        return "Source location not recorded"
+    source_path = Path(raw).expanduser()
+    if not source_path.is_absolute():
+        source_path = root / source_path
+    try:
+        source_path = source_path.resolve()
+        if not source_path.is_relative_to(root):
+            return _report_code(raw)
+        destination = Path(os.path.relpath(source_path, report_path.parent)).as_posix()
+        destination = destination.replace(" ", "%20")
+        if line_no:
+            destination += "#L" + str(line_no)
+        label = raw + (":" + str(line_no) if line_no else "")
+        return f"[{_report_code(label)}]({destination})"
+    except (OSError, ValueError):
+        return _report_code(raw + (":" + str(line_no) if line_no else ""))
+
+
 def _report_quote(lines, label, value):
     quote = str(value or "").strip()
     if not quote:
@@ -6259,6 +6280,7 @@ def report(args):
     src = (root / ns.input).resolve()
     if not src.is_relative_to(root) or not src.is_file():
         raise ValueError("Report input not found inside project.")
+    out = safe_out(root, ns.output)
     data = json.loads(src.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Report input must contain a JSON object.")
@@ -6426,7 +6448,7 @@ def report(args):
             symbol = str(location.get("symbol") or finding.get("function") or "")
             location_parts = []
             if path:
-                location_parts.append(_report_code(path + (":" + str(line_no) if line_no else "")))
+                location_parts.append(_report_source_ref(path, line_no, root, out))
             if symbol:
                 location_parts.append(_report_code(symbol))
             location_text = " — ".join(location_parts) if location_parts else "Source location not recorded"
@@ -6541,7 +6563,6 @@ def report(args):
         "",
     ])
 
-    out = safe_out(root, ns.output)
     out.write_text("\n".join(lines), encoding="utf-8")
     digest = sha(out)
     sidecar = out.with_suffix(out.suffix + ".sha256")
