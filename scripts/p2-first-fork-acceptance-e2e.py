@@ -26,8 +26,8 @@ if str(ROOT) not in sys.path:
 TARGET = "0xbe53a109b494e5c9f97b9cd39fe969be68bf6204"
 TARGET_DEPLOYMENT_BLOCK = 19_419_991
 ACTOR = "0x000000000000000000000000000000000000a11c"
-DEFAULT_FORK_UPSTREAM = "https://ethereum-rpc.publicnode.com"
-DEFAULT_SOURCE_RPC = "https://cloudflare-eth.com"
+DEFAULT_FORK_UPSTREAM = "https://eth-mainnet.public.blastapi.io"
+DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
 ARTIFACT_ROOT = ROOT / ".audit" / "p2-first-fork"
 
@@ -193,7 +193,25 @@ def main() -> int:
     if chain_id != 1 or source_chain_id != 1:
         raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
 
+    # Fail early when either endpoint is a latest-state-only RPC. P2 needs
+    # historical code/state and EIP-1186 proof support; a valid chainId/latest
+    # response is not enough to establish a pinned deployment identity.
+    deployment_block_header = rpc(
+        source_rpc, "eth_getBlockByNumber", [hex(TARGET_DEPLOYMENT_BLOCK), False]
+    )
+    if not isinstance(deployment_block_header, dict) or not deployment_block_header.get("hash"):
+        raise AssertionError("Source RPC cannot return the Yearn deployment block; archive history is required.")
+    deployment_code = rpc(
+        source_rpc, "eth_getCode", [TARGET, hex(TARGET_DEPLOYMENT_BLOCK)]
+    )
+    if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
+        raise AssertionError("Source RPC cannot return Yearn clone runtime at its deployment block; archive state is required.")
     fork_block, common_header = pick_common_block(fork_upstream, source_rpc)
+    source_proof = rpc(
+        source_rpc, "eth_getProof", [TARGET, [], hex(fork_block)]
+    )
+    if not isinstance(source_proof, dict) or not str(source_proof.get("codeHash") or "").startswith("0x"):
+        raise AssertionError("Source RPC must support historical EIP-1186 eth_getProof for the pinned fork block.")
     fork_code = rpc(fork_upstream, "eth_getCode", [TARGET, hex(fork_block)])
     if not isinstance(fork_code, str) or fork_code in {"0x", "0x0"}:
         raise AssertionError("Yearn yvUSDC clone has no runtime code at the selected pinned block.")
