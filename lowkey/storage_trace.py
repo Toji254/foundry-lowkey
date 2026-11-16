@@ -9,8 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
-_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}\\Z")
-_HEX_WORD_RE = re.compile(r"(?:0x)?[0-9a-fA-F]{1,64}\\Z")
+_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}\Z")
+_HEX_WORD_RE = re.compile(r"(?:0x)?[0-9a-fA-F]{1,64}\Z")
 _CALL_OPS = {
     "CALL": "CALL",
     "STATICCALL": "STATICCALL",
