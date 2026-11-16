@@ -201,6 +201,72 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
     return None
 
 
+def _find_wrapped_native_round_trip_property(source: str, name: str) -> dict[str, str] | None:
+    """Recognize a concrete ERC20-wrapped-native deposit/withdraw round trip.
+
+    This accepts only the narrow source pattern where deposit forwards msg.value
+    into _mint(msg.sender, msg.value), and withdraw burns the caller's requested
+    amount before making a value-bearing call to the caller. It does not infer
+    this property from the WETH name or ABI alone.
+    """
+    body = _contract_body(source, name)
+    if body is None:
+        return None
+    searchable = mask_solidity(body) if mask_solidity else body
+    contract_header = re.search(
+        r"\\b(?:abstract\\s+)?contract\\s+" + re.escape(name) + r"\\b([^\\{]*)\\{",
+        mask_solidity(source) if mask_solidity else source,
+    )
+    if not contract_header or not re.search(r"\\bis\\s+[^\\n]*\\bERC20\\b", contract_header.group(1)):
+        return None
+
+    deposit = re.search(
+        r"\\bfunction\\s+deposit\\s*\\(\\s*\\)\\s*public\\s+payable\\b[^\\{]*\\{",
+        searchable,
+    )
+    if not deposit:
+        return None
+    deposit_end = _matching_brace(searchable, deposit.end() - 1)
+    if deposit_end is None:
+        return None
+    deposit_body = searchable[deposit.end():deposit_end]
+    if not re.search(r"\\b_mint\\s*\\(\\s*msg\\.sender\\s*,\\s*msg\\.value\\s*\\)\\s*;", deposit_body):
+        return None
+
+    withdraw = re.search(
+        r"\\bfunction\\s+withdraw\\s*\\(\\s*uint256\\s+([A-Za-z_]\\w*)\\s*\\)\\s*public\\b[^\\{]*\\{",
+        searchable,
+    )
+    if not withdraw:
+        return None
+    withdraw_end = _matching_brace(searchable, withdraw.end() - 1)
+    if withdraw_end is None:
+        return None
+    withdraw_body = searchable[withdraw.end():withdraw_end]
+    amount_name = withdraw.group(1)
+    if not re.search(
+        rf"\\b_burn\\s*\\(\\s*msg\\.sender\\s*,\\s*{re.escape(amount_name)}\\s*\\)\\s*;",
+        withdraw_body,
+    ):
+        return None
+    # Support only an explicit ETH call to msg.sender using the same burned amount.
+    if not re.search(
+        rf"call\\s*\\([^;]*\\bcaller\\s*\\(\\s*\\)[^;]*\\b{re.escape(amount_name)}\\b",
+        withdraw_body,
+        re.S,
+    ):
+        return None
+    return {
+        "kind": "wrapped-native-round-trip",
+        "deposit": "deposit",
+        "withdraw": "withdraw",
+        "amount_type": "uint96",
+        "balance_getter": "balanceOf",
+        "supply_getter": "totalSupply",
+        "source_property": "deposit-mints-msg-value-and-withdraw-burns-before-caller-payment",
+    }
+
+
 def _split_parameters(raw: str) -> list[str]:
     """Split a Solidity parameter list on top-level commas."""
     parts: list[str] = []
@@ -504,7 +570,30 @@ import {{ {name} }} from "{import_path}";
 
 '''
     setter_unit_test = ""
-    if fuzz_property:
+    wrapped_native_property = bool(
+        fuzz_property and fuzz_property.get("kind") == "wrapped-native-round-trip"
+    )
+    if wrapped_native_property:
+        setter_unit_test = """
+    function test_depositThenWithdrawPreservesSupplyAndNativeBalance() public {
+        uint256 amount = 1 ether;
+        vm.deal(address(this), amount);
+        uint256 nativeBefore = address(this).balance;
+        uint256 supplyBefore = target.totalSupply();
+
+        target.deposit{value: amount}();
+        assertEq(target.balanceOf(address(this)), amount, "deposit must mint the ETH amount");
+        assertEq(target.totalSupply(), supplyBefore + amount, "supply must increase by the deposited ETH");
+
+        target.withdraw(amount);
+        assertEq(target.balanceOf(address(this)), 0, "withdraw must burn the caller shares");
+        assertEq(target.totalSupply(), supplyBefore, "withdraw must restore total supply");
+        assertEq(address(this).balance, nativeBefore, "withdraw must return the deposited ETH");
+    }
+
+    receive() external payable {}
+"""
+    elif fuzz_property:
         setter = fuzz_property["setter"]
         parameter_type = fuzz_property["type"]
         state = fuzz_property["state"]
@@ -536,7 +625,35 @@ import {{ {name} }} from "{import_path}";
 {setter_unit_test}{extra_access_tests}}}
 '''
     elif kind == "fuzz":
-        if fuzz_property:
+        if wrapped_native_property:
+            body = f'''contract {generated} is Test {{
+    {name} internal target;
+
+    function setUp() public {{
+        target = {deploy_expression};
+    }}
+
+    function testFuzz_depositWithdrawPreservesSupplyAndNativeBalance(uint96 rawAmount) public {{
+        uint256 amount = uint256(rawAmount);
+        vm.assume(amount > 0);
+        vm.deal(address(this), amount);
+        uint256 nativeBefore = address(this).balance;
+        uint256 supplyBefore = target.totalSupply();
+
+        target.deposit{{value: amount}}();
+        assertEq(target.balanceOf(address(this)), amount);
+        assertEq(target.totalSupply(), supplyBefore + amount);
+
+        target.withdraw(amount);
+        assertEq(target.balanceOf(address(this)), 0);
+        assertEq(target.totalSupply(), supplyBefore);
+        assertEq(address(this).balance, nativeBefore);
+    }}
+
+    receive() external payable {{}}
+}}
+'''
+        elif fuzz_property:
             setter = fuzz_property["setter"]
             parameter_type = fuzz_property["type"]
             state = fuzz_property["state"]
@@ -570,7 +687,7 @@ import {{ {name} }} from "{import_path}";
 }}
 '''
     elif kind == "invariant":
-        if fuzz_property:
+        if fuzz_property and not wrapped_native_property:
             setter = fuzz_property["setter"]
             parameter_type = fuzz_property["type"]
             state = fuzz_property["state"]
@@ -650,7 +767,7 @@ contract {generated} is Test {{
 
 def _formal_template(name: str, fuzz_property: dict[str, str] | None) -> tuple[str, str]:
     """Return a Certora CVL rule for a narrow recognized property or a worksheet."""
-    if fuzz_property:
+    if fuzz_property and fuzz_property.get("kind") != "wrapped-native-round-trip":
         setter = fuzz_property["setter"]
         parameter_type = fuzz_property["type"]
         state = fuzz_property["state"]
@@ -947,7 +1064,9 @@ def _generation_assessment(
     for kind in selected:
         if kind == "unit":
             if local_deploy and not is_abstract and fuzz_property:
-                if constructor_values:
+                if fuzz_property.get("kind") == "wrapped-native-round-trip":
+                    level, note = "executable-candidate", "A source-recognized wrapped-native deposit/withdraw round-trip; target-specific, not a general ERC20 proof."
+                elif constructor_values:
                     level, note = "requires-setup-review", "A narrow setter/getter assertion is generated, but constructor placeholders must be checked before execution."
                 else:
                     level, note = "executable-candidate", "Deployment smoke test and a narrow setter/getter assertion; not broad unit coverage."
@@ -960,7 +1079,10 @@ def _generation_assessment(
                 level, note = "blocked", "No safe automatic local deployment was inferred."
         elif kind == "fuzz":
             if local_deploy and not is_abstract and fuzz_property and not constructor_values:
-                level, note = "executable-candidate", "Fuzzes only the recognized direct setter/getter relation."
+                if fuzz_property.get("kind") == "wrapped-native-round-trip":
+                    level, note = "executable-candidate", "Fuzzes bounded wrap/unwrap amounts against source-recognized WETH mint/burn behavior."
+                else:
+                    level, note = "executable-candidate", "Fuzzes only the recognized direct setter/getter relation."
             else:
                 level, note = "not-generated", "No complete executable fuzz property and valid setup were established."
         elif kind == "invariant":
@@ -1116,7 +1238,7 @@ Foundry's test directory by default. Review them and run --validate before relyi
         return _error(f"Contract {name} has no constructor arguments; remove --constructor-args.")
     is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
     local_deploy = constructor_values is not None and not is_abstract
-    fuzz_property = _find_simple_fuzz_property(source, name)
+    fuzz_property = _find_simple_fuzz_property(source, name) or _find_wrapped_native_round_trip_property(source, name)
     analysis = analyse_contract(root, name, source_path, source, _foundry_test_dir(root)) if analyse_contract else {
         "contract": name, "source": str(source_path), "functions": [], "state_variables": [],
         "security_surfaces": {}, "profiles": [], "imports": [], "existing_tests": {},
