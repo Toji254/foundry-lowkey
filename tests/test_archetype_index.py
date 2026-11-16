@@ -38,6 +38,8 @@ class ArchetypeIndexTests(unittest.TestCase):
         self.assertTrue(report["citations_all_resolved"])
         self.assertTrue(all(item["verification_status"] == "unverified" for item in report["assumptions"]))
         self.assertIn("protocol-specific attack adapters", report["generic_mode"]["skip_list"])
+        self.assertIn("archetype-specific invariant handlers", report["generic_mode"]["skip_list"])
+        self.assertIn("asset-specific economic valuation", report["generic_mode"]["skip_list"])
 
     def test_amm_fixture_classifies_without_vault_false_positive(self):
         report = _index.classify_project(FIXTURES / "amm")
