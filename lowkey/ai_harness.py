@@ -2202,19 +2202,10 @@ REVIEW & EVIDENCE
 
 AUTOMATION SETTINGS
 -------------------
-  lk ai guide
-      Default: AI gives clues and you make the change. AI is switched on.
-      Example: lk ai guide
-
-  lk ai lazy
-      Let AI repair an eligible test and check that it passes. AI is switched on.
-      Example: lk ai lazy
-
-  lk ai hint
-      Show the next clue for the last guided problem.
-
-  lk build --guide / --lazy
-      Choose guide or lazy for one build only.
+  lk ai guide                 AI gives clues; you fix it (default).
+  lk ai lazy                  AI repairs safe local tests and checks them.
+  lk ai hint                  Show another clue.
+  lk build --guide / --lazy   Override one command.
 
   lk ai mode {manual|auto}
       Enable automatic guidance for eligible workflows; lab can also request complexity-triggered review.
@@ -3363,6 +3354,7 @@ def main(argv: list[str] | None = None) -> int:
             print("LK AI: " + parsed.action.upper() + " mode is on.")
             if current.get("usable"):
                 print("AI is ready. Failed supported commands will use this mode.")
+                print("The error and a small nearby code excerpt may be sent to your configured provider.")
             else:
                 print("AI is on but not ready yet. Run 'lk ai status' to see what is missing.")
             if parsed.action == "guide":

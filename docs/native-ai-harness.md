@@ -186,7 +186,7 @@ lk build --guide
 lk build --lazy
 ~~~
 
-Both mode commands switch the AI feature on. A configured provider and key are still needed; check with `lk ai status`. This setting is separate from `lk ai mode manual/auto`. Guide mode never edits files. Lazy mode may edit only eligible local Solidity tests under `test/` or `tests/`; it never edits production contracts or Foundry settings. It makes one small patch, saves a backup, runs `forge build` and the selected test, and restores the original file if either check fails. Fork tests and tests using FFI, environment secrets, host file access or broadcast are not eligible. AI requests may incur provider charges.
+Both mode commands switch the AI feature on. A configured provider and key are still needed; check with `lk ai status`. This setting is separate from `lk ai mode manual/auto`. Guide mode never edits files. Lazy mode may edit only eligible local Solidity tests under `test/` or `tests/`; it never edits production contracts or Foundry settings. It makes one small patch, saves a backup, runs `forge build` and the selected test, and restores the original file if either check fails. Fork tests and tests using FFI, environment secrets, host file access or broadcast are not eligible. To diagnose a failure, Lowkey sends the error and a small nearby source excerpt to your configured provider. Redaction is best-effort; review your provider's data terms. AI requests may incur provider charges.
 
 ## Error diagnosis and key failover
 
