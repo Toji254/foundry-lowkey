@@ -234,7 +234,7 @@ def normalize_calltracer(
         event_storage = partial_storage.get(index, []) if storage_support == "partial" else None
         rows.append(build_trace_event(
             seq=index,
-            backend="anvil-prestate-diff" if storage_support == "partial" else "anvil-calltracer",
+            backend="anvil-calltracer",
             kind=call.get("type"),
             accessor=call.get("from"),
             account=call.get("to") or call.get("created_address") or call.get("createdAddress"),
