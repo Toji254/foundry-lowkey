@@ -637,6 +637,39 @@ def _normalize_rpc_trace_events(calls):
             from trace_evidence import normalize_rpc_trace_events
     return normalize_rpc_trace_events(calls, backend="anvil-calltracer")
 
+def _normalize_trace_events_v2(calls, storage_trace=None):
+    """Build canonical v2 events; changed slots remain transaction-level partial evidence."""
+    try:
+        from .trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
+    except ImportError:
+        try:
+            from lowkey.trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
+        except ImportError:
+            from trace_schema import TRACE_SCHEMA_VERSION, normalize_calltracer
+    storage_trace = storage_trace if isinstance(storage_trace, dict) else {}
+    if storage_trace.get("supported"):
+        partial_rows = [
+            {
+                "account": row.get("address"),
+                "slot": row.get("slot"),
+                "previous_value": row.get("value"),
+                "new_value": row.get("post_value"),
+                "is_write": row.get("value") != row.get("post_value"),
+                "reverted": False,
+            }
+            for row in storage_trace.get("slots", [])
+            if isinstance(row, dict)
+        ]
+        events = normalize_calltracer(
+            calls,
+            storage_support="partial",
+            partial_storage={0: partial_rows},
+        )
+    else:
+        events = normalize_calltracer(calls, storage_support="declared_only")
+    return TRACE_SCHEMA_VERSION, events
+
+
 
 def _control_transaction_envelope(tx, chain_id):
     """Canonical transaction fields that can affect call context or gas accounting."""
@@ -969,6 +1002,9 @@ def _trace_control_run(root, url, name, entry, spec, env):
             if not required.issubset(set(addresses)): raise ValueError(f"{name} prestate_addresses must include the transaction sender and root recipient.")
             if target and target not in addresses: raise ValueError(f"{name} prestate_addresses must include target_address.")
             storage_trace=_trace_storage_prestate(url,tx_hash)
+            canonical_trace_schema_version, canonical_trace_events = _normalize_trace_events_v2(
+                calls, storage_trace
+            )
             for discovered_address in storage_trace.get("addresses",[]):
                 if discovered_address not in addresses:
                     addresses.append(discovered_address)
@@ -1080,6 +1116,8 @@ def _trace_control_run(root, url, name, entry, spec, env):
                 "semantic_check":semantic_check,
                 "trace_schema_version":1,
                 "trace_events":_normalize_rpc_trace_events(calls),
+                "canonical_trace_schema_version":canonical_trace_schema_version,
+                "canonical_trace_events":canonical_trace_events,
                 "call_trace":calls,
                 "argv":entry["argv"],
                 "output_tail":combined[-2500:],
@@ -1831,6 +1869,9 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
                 "balance_deltas": normalized.get("balance_deltas", []),
                 "trace_schema_version": normalized["trace_schema_version"],
                 "trace_events": normalized["trace_events"],
+                "canonical_trace_schema_version": normalized.get("canonical_trace_schema_version"),
+                "canonical_trace_events": normalized.get("canonical_trace_events"),
+                "canonical_trace_events_error": normalized.get("canonical_trace_events_error"),
                 "setup_events": normalized.get("setup_events", []),
                 "domain_events": normalized.get("domain_events", []),
                 "call_trace": normalized["calls"], "raw_account_accesses": normalized["raw_account_accesses"],
@@ -2419,7 +2460,8 @@ def control(args):
         "legacy_status":legacy_status,"proof_axes":proof,
         "target_authenticity":authenticity,"fidelity":fidelity,
         "outcome":outcome,"family":family,"economic_policy":economics,
-        "trace_backend":backend,"trace_schema_version":1,"evidence_backend":backend,
+        "trace_backend":backend,"trace_schema_version":1,
+        "canonical_trace_schema_version":2,"evidence_backend":backend,
         "paired_forge_experiment":paired_forge,
         "state_diff_pair_verified":bool(backend=="forge-state-diff" and paired_forge and passed),
         "gross_attack_metric_wei":(
