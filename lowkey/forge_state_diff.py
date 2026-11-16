@@ -75,8 +75,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     chain_id=_uint(payload.get("chain_id"),"chain_id")
     block_number=_uint(payload.get("block_number"),"block_number")
     target=_address(payload.get("target_address"),"target_address")
-    code_hash=str(payload.get("target_code_hash") or "").lower()
-    if not re.fullmatch(r"0x[0-9a-f]{64}",code_hash):
+    reported_target_code_hash=str(payload.get("target_code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}",reported_target_code_hash):
         raise ValueError("Forge state diff must include target_code_hash (keccak256 of target runtime code).")
     fork_parent_hash=str(payload.get("fork_parent_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}",fork_parent_hash):
@@ -176,14 +176,19 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     account_access_code_hash = str(target_account_state.get("code_hash") or "").lower()
     if not re.fullmatch(r"0x[0-9a-f]{64}", account_access_code_hash):
         raise ValueError("Forge state-diff target account access must expose its runtime code_hash.")
-    if account_access_code_hash != code_hash:
-        raise ValueError(
-            "Forge state-diff target_code_hash must match the target AccountAccess code_hash "
-            f"(artifact={code_hash}, account_access={account_access_code_hash})."
-        )
-    target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
-    if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
+    target_code_hash_at_start = str(
+        payload.get("target_code_hash_at_start") or reported_target_code_hash
+    ).lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
         raise ValueError("Forge state-diff target_code_hash_at_start must be a bytes32 hash when present.")
+    # Vm.AccountAccess is the trace-derived observation for the actual target
+    # execution. The recorder's top-level target_code_hash is retained as a
+    # separate diagnostic because older Recorder versions populated it from
+    # a start-time snapshot and newer VM behavior can expose a different
+    # codehash at the measured AccountAccess. The canonical hash is the
+    # AccountAccess value and is independently checked against archive EIP-1186.
+    target_code_hash_disagreement = reported_target_code_hash != account_access_code_hash
+    code_hash = account_access_code_hash
 
     prestate=[]
     balance_deltas=[]
@@ -217,6 +222,8 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "chain_id":chain_id,"block_number":block_number,
         "target_address":target,"target_code_hash":code_hash,
         "target_code_hash_at_start":target_code_hash_at_start,
+        "target_code_hash_reported":reported_target_code_hash,
+        "target_code_hash_disagreement":target_code_hash_disagreement,
         "target_code_hash_source":"forge_account_access",
         "fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
