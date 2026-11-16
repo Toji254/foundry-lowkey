@@ -210,6 +210,37 @@ def from_legacy_event(event: Mapping[str, Any], *, seq: int | None = None) -> di
     )
 
 
+def flatten_calltracer(root: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Flatten a nested debug_trace* callTracer tree into ordered pre-order rows."""
+    if not isinstance(root, Mapping):
+        raise ValueError("callTracer root must be an object.")
+    flattened: list[dict[str, Any]] = []
+
+    def visit(node: Mapping[str, Any], depth: int) -> None:
+        if not isinstance(node, Mapping):
+            raise ValueError("callTracer child must be an object.")
+        row = {
+            "type": node.get("type") or node.get("callType") or "CALL",
+            "from": node.get("from"),
+            "to": node.get("to"),
+            "created_address": node.get("created_address", node.get("createdAddress")),
+            "depth": depth,
+            "value": node.get("value"),
+            "input": node.get("input", node.get("data")),
+            "error": node.get("error"),
+            "reverted": bool(node.get("error")) if node.get("error") is not None else bool(node.get("reverted", False)),
+        }
+        flattened.append(row)
+        children = node.get("calls") or []
+        if not isinstance(children, list):
+            raise ValueError("callTracer nested calls must be an array.")
+        for child in children:
+            visit(child, depth + 1)
+
+    visit(root, 0)
+    return flattened
+
+
 def normalize_calltracer(
     calls: Sequence[Mapping[str, Any]],
     *,
@@ -221,8 +252,10 @@ def normalize_calltracer(
     prestateTracer has no call-frame attribution. A slot may be attached only
     to the root transaction event and is explicitly marked partial.
     """
+    if isinstance(calls, Mapping):
+        calls = flatten_calltracer(calls)
     if not isinstance(calls, Sequence) or isinstance(calls, (str, bytes)):
-        raise ValueError("callTracer calls must be a sequence.")
+        raise ValueError("callTracer calls must be a sequence or a nested callTracer root object.")
     if storage_support not in {"declared_only", "partial"}:
         raise ValueError("callTracer storage_support must be declared_only or partial.")
     rows = []
