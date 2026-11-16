@@ -116,6 +116,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
     if not isinstance(raw_accesses,list) or not raw_accesses:
         raise ValueError("Forge state-diff artifact contains no account accesses.")
     calls=[]; trace_events=[]; storage_accesses=[]; accounts={}
+    account_code_hash_observations={}
     for index,raw in enumerate(raw_accesses):
         raw=_unwrap_named_json_object(raw,f"accesses[{index}]")
         if not isinstance(raw,dict): raise ValueError(f"Forge account access #{index} must be an object.")
@@ -138,7 +139,19 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
             raise ValueError(f"Forge account access #{index} has invalid code_hash.")
         account_state=accounts.setdefault(account,{"address":account,"balance_wei":old_balance,
             "nonce":old_nonce,"balance_after_wei":old_balance,"nonce_after":old_nonce,
-            "code_hash":code_hash or None,"storage":{}})
+            "code_hash":None,"storage":{}})
+        if code_hash:
+            account_code_hash_observations.setdefault(account,[]).append({
+                "access_index":index,"kind":kind,"accessor":accessor,
+                "code_hash":code_hash,"reverted":reverted,
+            })
+            if account_state.get("code_hash") is None:
+                account_state["code_hash"]=code_hash
+            elif account_state["code_hash"] != code_hash:
+                raise ValueError(
+                    f"Forge AccountAccess code_hash changed for account {account} "
+                    f"at access #{index}: first={account_state['code_hash']}, current={code_hash}."
+                )
         if not reverted:
             account_state["balance_after_wei"]=new_balance
             account_state["nonce_after"]=new_nonce
@@ -174,12 +187,17 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
 
     target_account_state = accounts.get(target) or {}
     account_access_code_hash = str(target_account_state.get("code_hash") or "").lower()
+    target_code_hash_observations = account_code_hash_observations.get(target) or []
     if not re.fullmatch(r"0x[0-9a-f]{64}", account_access_code_hash):
-        raise ValueError("Forge state-diff target account access must expose its runtime code_hash.")
+        raise ValueError(
+            "Forge state-diff target account access must expose its runtime code_hash; "
+            f"observations={target_code_hash_observations!r}."
+        )
     if account_access_code_hash != code_hash:
         raise ValueError(
             "Forge state-diff target_code_hash must match the target AccountAccess code_hash "
-            f"(artifact={code_hash}, account_access={account_access_code_hash})."
+            + f"(artifact={code_hash}, account_access={account_access_code_hash}, "
+            + f"target_access_observations={json.dumps(target_code_hash_observations, sort_keys=True)})."
         )
     target_code_hash_at_start = str(payload.get("target_code_hash_at_start") or "").lower() or None
     if target_code_hash_at_start is not None and not re.fullmatch(r"0x[0-9a-f]{64}", target_code_hash_at_start):
@@ -217,6 +235,7 @@ def normalize_forge_state_diff(payload, *, expected_target=None):
         "chain_id":chain_id,"block_number":block_number,
         "target_address":target,"target_code_hash":code_hash,
         "target_code_hash_at_start":target_code_hash_at_start,
+        "target_account_access_code_hash_observations":target_code_hash_observations,
         "target_code_hash_source":"forge_account_access",
         "fork_parent_hash":fork_parent_hash,
         "calls":calls,"trace_events":trace_events,"storage_accesses":storage_accesses,
