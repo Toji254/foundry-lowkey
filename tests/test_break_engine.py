@@ -2157,5 +2157,23 @@ SECOND_RETURNDATA_LENGTH 0
             self.assertEqual(render.call_args.args[2], "0x")
             self.assertEqual(render.call_args.args[3], "1 wei")
 
+    def test_terminal_probe_classifier_stops_unchanged_blocked_paths(self):
+        blocked = break_engine.AttackResult(
+            "access", "Fallback", "0x" + "a" * 40, "receive()", "BLOCKED",
+            "Authority getter could not be decoded.",
+            detail={"reason_code": "authority_probe_error"},
+        )
+        rejected = break_engine.AttackResult(
+            "replay", "Fallback", "0x" + "a" * 40, "withdraw()", "OBSERVED",
+            "Target rejected the first withdraw attempt before value movement.",
+        )
+        exploratory = break_engine.AttackResult(
+            "boundary", "Vault", "0x" + "b" * 40, "setLimit(uint256)", "OBSERVED",
+            "The value was accepted; additional boundary inputs remain to be explored.",
+        )
+        self.assertTrue(break_engine._probe_is_terminal(blocked))
+        self.assertTrue(break_engine._probe_is_terminal(rejected))
+        self.assertFalse(break_engine._probe_is_terminal(exploratory))
+
 if __name__ == "__main__":
     unittest.main()
