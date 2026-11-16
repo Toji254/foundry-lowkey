@@ -542,9 +542,15 @@ class GodmodeTests(unittest.TestCase):
 
     def test_trace_parity_without_artifacts_explains_required_inputs(self):
         output = io.StringIO()
-        result = godmode.trace_parity([])
-        # Capture separately so the test remains explicit about the user-facing result.
+        with redirect_stdout(output):
+            result = godmode.trace_parity([])
+
         self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertIn("Missing required Forge evidence JSON", rendered)
+        self.assertIn("Missing required Anvil evidence JSON", rendered)
+        self.assertIn("will not guess", rendered)
+        self.assertNotIn("usage:", rendered.lower())
 
     def test_trace_parity_with_one_artifact_names_the_missing_backend(self):
         output = io.StringIO()
