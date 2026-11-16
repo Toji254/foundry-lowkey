@@ -319,6 +319,11 @@ class GodmodeTests(unittest.TestCase):
                 owner = payable(msg.sender);
             }
 
+            function invertedGuard() external {
+                require(msg.sender != owner);
+                owner = payable(msg.sender);
+            }
+
             function withdraw() external onlyOwner {
                 owner.transfer(address(this).balance);
             }
@@ -339,6 +344,7 @@ class GodmodeTests(unittest.TestCase):
         }
         self.assertIn(("receive", "owner"), vulnerable_entries)
         self.assertIn(("contribute", "owner"), vulnerable_entries)
+        self.assertIn(("invertedGuard", "owner"), vulnerable_entries)
         self.assertNotIn(("withdraw", "owner"), vulnerable_entries)
         self.assertTrue(all(item["verified"] is False for item in findings))
 
