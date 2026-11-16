@@ -30,6 +30,11 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
+import sys
+
+_MODULE_DIR = Path(__file__).resolve().parent
+if str(_MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODULE_DIR))
 
 try:
     from .abi_support import canonical_abi_type, sample_abi_inputs
