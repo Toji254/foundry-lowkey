@@ -797,13 +797,34 @@ class CertoraAdapter(NativeConfiguredAdapter):
     ) -> EngineResult:
         result = super().run(project, request, budget=budget)
         output = result.raw_stdout + "\n" + result.raw_stderr
-        completed = "Finished verification request" in output
+        completed = bool(re.search(
+            r"(?i)Finished verification request|Verification (?:request|run) completed|All rule results are final",
+            output,
+        ))
+        bracketed_rule_result = r"(?im)^\s*\[[^]]+\]\s*[^\n]*?:\s*"
+        native_rule_result = r"(?im)^\s*(?:Rule|rule)\s+[A-Za-z0-9_.()\[\], ]+?:\s*"
         has_violation = bool(
             re.search(r"(?im)^\s*ERROR:\s*Prover found violations", output)
-            or re.search(r"(?im)^\s*\[[^]]+\]\s*[^\n]*?:\s*FAIL\b", output)
+            or re.search(bracketed_rule_result + r"FAIL\b", output)
+            or re.search(native_rule_result + r"FAIL\b", output)
         )
-        has_pass = bool(re.search(r"(?im)^\s*\[[^]]+\]\s*[^\n]*?:\s*PASS\b", output))
+        has_pass = bool(
+            re.search(bracketed_rule_result + r"PASS\b", output)
+            or re.search(native_rule_result + r"PASS\b", output)
+        )
         submitted = bool(re.search(r"(?i)job submitted to server|job submitted", output))
+        report_url = re.search(r"https?://prover\.certora\.com/[^\s<>\"']+", output)
+        remote_job = re.search(
+            r"(?im)^\s*(?:job\s*id|request\s*id)\s*[:#=]\s*([A-Za-z0-9._-]{4,160})",
+            output,
+        )
+        if report_url:
+            result.metadata["remote_report_url"] = report_url.group(0).rstrip(".,;)")
+        if remote_job:
+            result.metadata["remote_job_id"] = remote_job.group(1)
+        result.metadata["remote_result_wait_requested"] = bool(
+            request.get("wait_for_results", True)
+        )
 
         if result.status in {"passed", "failed"} and has_violation:
             result.status = "failed"
