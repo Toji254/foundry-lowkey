@@ -1156,7 +1156,8 @@ def _sourcify_contract_identity(chain_id, address):
         return dict(_SOURCIFY_IDENTITY_CACHE[cache_key])
     endpoint = (
         "https://sourcify.dev/server/v2/contract/"
-        + str(chain_id) + "/" + address + "?fields=sources,proxyResolution,deployment.blockNumber"
+        + str(chain_id) + "/" + address
+        + "?fields=match,runtimeMatch,creationMatch,sources,proxyResolution,deployment.blockNumber,verifiedAt,matchId"
     )
     request = Request(
         endpoint,
