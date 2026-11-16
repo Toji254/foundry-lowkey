@@ -51,6 +51,13 @@ def compare_trace_events(
     anvil = _validate_events(anvil_events, "Anvil")
     mismatches: list[dict[str, Any]] = []
     unknowns: list[dict[str, Any]] = []
+    if not forge or not anvil:
+        unknowns.append({
+            "dimension": "event_stream",
+            "forge_count": len(forge),
+            "anvil_count": len(anvil),
+            "reason": "Parity cannot be accepted when either normalized trace is empty.",
+        })
     if len(forge) != len(anvil):
         mismatches.append({
             "dimension": "event_count",
