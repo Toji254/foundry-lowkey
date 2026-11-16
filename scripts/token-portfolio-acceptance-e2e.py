@@ -193,7 +193,7 @@ def main() -> int:
         )
         (project / "src/PortfolioFixtures.sol").write_text(SOLIDITY, encoding="utf-8")
         (project / "scripts/run_attack.py").write_text(
-            """import json, subprocess, sys
+            """import json, re, subprocess, sys
 url, target, token, vault, private_key = sys.argv[1:]
 command = [
     "cast", "send", target,
