@@ -75,11 +75,13 @@ A minimal manifest has this shape:
   "attack": {
     "test_file": "test/AttackAdapter.t.sol",
     "test_name": "testAttack",
+    "test_sha256": "<64 lowercase hex characters for test/AttackAdapter.t.sol>",
     "evidence_file": ".audit/lowkey/attack.json"
   },
   "control": {
     "test_file": "test/AttackAdapter.t.sol",
     "test_name": "testControl",
+    "test_sha256": "<same adapter file digest when both tests share the file>",
     "evidence_file": ".audit/lowkey/control.json"
   },
   "reproof": {
