@@ -166,6 +166,7 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
                     self.assertTrue(
                         "usage:" in output.lower()
                         or "LOWKEY GODMODE HELP" in output
+                        or "LOWKEY HELP" in output
                         or command == "capabilities",
                         output,
                     )
@@ -182,8 +183,9 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
             "--plan-only", "--attack", "local Anvil",
             "--control-manifest", "mutation", "coverage",
             ".audit/godmode/latest.json", "provenance.json",
-            "Optional deployed contract address",
-            "Project folder containing the Solidity source",
+            "<target-address>",
+            "--root <folder>",
+            "REVIEW_REQUIRED",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, output)
