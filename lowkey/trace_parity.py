@@ -191,7 +191,7 @@ def compare_trace_events(
                                 "dimension": field, "forge": left_value, "anvil": right_value,
                             })
 
-        storage_parity = "mismatch" if storage_access_mismatches else "exact_comparable"
+        storage_parity = "mismatch" if (storage_access_mismatches or storage_value_mismatches) else "exact_comparable"
         storage_value_parity = (
             "mismatch" if storage_value_mismatches
             else "incomplete" if storage_value_unknowns
@@ -201,7 +201,7 @@ def compare_trace_events(
         storage_parity = "degraded"
         storage_value_parity = "not_comparable"
 
-    status = "MISMATCH" if mismatches or storage_access_mismatches else ("INCOMPLETE" if unknowns else "MATCHED")
+    status = "MISMATCH" if (mismatches or storage_access_mismatches or storage_value_mismatches) else ("INCOMPLETE" if (unknowns or (forge_exact and anvil_exact and storage_value_unknowns)) else "MATCHED")
     return {
         "schema_version": TRACE_SCHEMA_VERSION,
         "status": status,
