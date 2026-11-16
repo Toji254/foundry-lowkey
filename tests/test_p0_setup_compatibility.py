@@ -142,7 +142,7 @@ class P0SetupCompatibilityTests(unittest.TestCase):
                 "name": "claim",
                 "stateMutability": "nonpayable",
                 "inputs": [{
-                    "name": "claim",
+                    "name": "deposit",
                     "type": "tuple",
                     "components": [
                         {"name": "recipient", "type": "address"},
@@ -153,7 +153,7 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             }
         ])
         self.assertIsNotNone(setup)
-        self.assertEqual(break_engine._format_signature(setup), "claim((address,uint256))")
+        self.assertEqual(break_engine._format_signature(setup), "deposit((address,uint256))")
 
     def test_unsupported_setup_type_is_not_guessed(self):
         with self.assertRaisesRegex(ValueError, "supported ABI"):
@@ -186,10 +186,10 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         self.assertIn("reportedDecimals <= 77", body)
         self.assertIn('TOKEN_DECIMALS_SOURCE', body)
         self.assertIn('fallback-18', body)
-        self.assertIn("deal(assetToken, ATTACKER, tokenSeedAmount)", body)
-        self.assertIn("returndata.length == 0", body)
-        self.assertIn("LOWKEY_APPROVE_RESET_FAILED", body)
-        self.assertIn('abi.encodeWithSignature("deposit(uint256)", 1)', body)
+        self.assertIn("deal(assetToken, ATTACKER, tokenFundingAmount)", body)
+        self.assertIn("data.length == 0", body)
+        self.assertIn("TOKEN_APPROVAL_RESET_ATTEMPTED", body)
+        self.assertIn('abi.encodeWithSignature("deposit(uint256)", tokenFundingAmount)', body)
         self.assertNotIn("IERC20Lowkey(assetToken).approve", body)
 
     def test_unsupported_abi_exception_emits_machine_readable_refusal(self):
