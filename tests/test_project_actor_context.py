@@ -14,7 +14,7 @@ class ProjectActorContextTests(unittest.TestCase):
     def _root(self, parent, name):
         root = pathlib.Path(parent) / name
         root.mkdir()
-        (root / "foundry.toml").write_text("[profile.default]\\n", encoding="utf-8")
+        (root / "foundry.toml").write_text("[profile.default]" + chr(10), encoding="utf-8")
         return root
 
     def _config(self, active="Alice"):
@@ -30,8 +30,10 @@ class ProjectActorContextTests(unittest.TestCase):
         }
 
     def _activate(self, config, root):
-        with patch.object(lk, "project_fixture_rpc_info", return_value=None), \\
-             patch.object(lk, "anvil_rpc_info", return_value={}):
+        with (
+            patch.object(lk, "project_fixture_rpc_info", return_value=None),
+            patch.object(lk, "anvil_rpc_info", return_value={}),
+        ):
             return lk.activate_project_context(config, root)
 
     def test_fresh_project_uses_reserved_lab_deployer_not_previous_global_actor(self):
