@@ -532,7 +532,7 @@ def main() -> int:
             )
             opcode_trace_path = ARTIFACT_ROOT / "raw-anvil-opcode-trace.json"
             opcode_trace_path.write_text(
-                json.dumps(opcode_trace, indent=2, sort_keys=True) + "\\n",
+                json.dumps(opcode_trace, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             opcode_storage = normalize_opcode_storage(
@@ -540,7 +540,7 @@ def main() -> int:
             )
             if not opcode_storage.get("supported"):
                 raise AssertionError(
-                    "Anvil opcode storage trace could not be attributed safely:\\n"
+                    "Anvil opcode storage trace could not be attributed safely:\n"
                     + json.dumps(opcode_storage, indent=2)
                 )
             anvil_events = normalize_calltracer(
@@ -551,7 +551,7 @@ def main() -> int:
             parity = compare_trace_events(forge_events, anvil_events)
             if parity["status"] != "MATCHED" or parity["storage_parity"] != "exact_comparable":
                 raise AssertionError(
-                    "Forge/Anvil call-tree and per-frame storage parity did not match:\\n"
+                    "Forge/Anvil call-tree and per-frame storage parity did not match:\n"
                     + json.dumps(parity, indent=2)
                 )
 
