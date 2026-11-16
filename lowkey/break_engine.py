@@ -1098,7 +1098,9 @@ def _cast_send(
     value: str,
     actor: str,
 ):
-    value_arg = value if value not in {"0", "0wei"} else "0"
+    value_arg = re.sub(r"\\s+", "", str(value or "0"))
+    if value_arg in {"", "0", "0wei"}:
+        value_arg = "0"
     args = [
         "send",
         target.address,
@@ -4129,6 +4131,7 @@ def run(config, args=None, host=None):
                                 "forge_execution_error",
                                 "forge_no_lowkey_telemetry",
                                 "setup_call_reverted",
+                                "authority_change_not_observed",
                                 "unsupported_abi",
                             }
                             or (
