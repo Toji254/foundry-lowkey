@@ -1239,6 +1239,78 @@ def _verify_first_code_block(source_url, address, deployment_block, expected_cod
     }
 
 
+def _eip1167_implementation(runtime_code):
+    """Return the implementation address from the exact canonical EIP-1167 runtime.
+
+    Non-canonical variants (vanity PUSHn, immutable-args, or custom clones) are
+    deliberately not guessed. They require a separately verified adapter.
+    """
+    raw = str(runtime_code or "").lower()
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    prefix = "363d3d373d3d3d363d73"
+    suffix = "5af43d82803e903d91602b57fd5bf3"
+    if len(raw) != 90 or not raw.startswith(prefix) or not raw.endswith(suffix):
+        return None
+    implementation_hex = raw[len(prefix):len(prefix) + 40]
+    if len(implementation_hex) != 40 or not re.fullmatch(r"[0-9a-f]{40}", implementation_hex):
+        return None
+    if int(implementation_hex, 16) == 0:
+        raise ValueError("Canonical EIP-1167 clone contains a zero implementation address.")
+    return "0x" + implementation_hex
+
+
+def _verify_eip1167_implementation(
+    source_url, fork_url, chain_id, block_number, implementation,
+    proxy_spec, prestate_by_address, trace_addresses,
+):
+    """Independently verify the immutable clone destination and its source."""
+    if implementation not in trace_addresses:
+        raise ValueError("EIP-1167 implementation address was not observed in the recorded call tree.")
+    implementation_code = str(
+        rpc(source_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+    ).lower()
+    if implementation_code in {"0x", "0x0"}:
+        raise ValueError("EIP-1167 implementation address has no runtime code at the pinned fork block.")
+    local_implementation_code = str(
+        rpc(fork_url, "eth_getCode", [implementation, hex(block_number)]) or "0x"
+    ).lower()
+    if local_implementation_code != implementation_code:
+        raise ValueError("EIP-1167 implementation bytecode differs between local fork and source archive.")
+    try:
+        deployment_block = int(proxy_spec.get("implementation_deployment_block"))
+    except (TypeError, ValueError):
+        raise ValueError("EIP-1167 target_identity.proxy requires implementation_deployment_block.")
+    if deployment_block > block_number:
+        raise ValueError("EIP-1167 implementation deployment block is after the pinned fork block.")
+    deployment = _verify_first_code_block(
+        source_url, implementation, deployment_block, implementation_code
+    )
+    source_identity = _verify_sourcify_exact(chain_id, implementation)
+    if source_identity["deployment_block"] != deployment_block:
+        raise ValueError("Sourcify implementation deployment block does not match target_identity.proxy.implementation_deployment_block.")
+    implementation_prestate = prestate_by_address.get(implementation) or {}
+    trace_code_hash = str(implementation_prestate.get("code_hash") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", trace_code_hash):
+        raise ValueError("Trace did not preserve a usable EIP-1167 implementation code hash.")
+    proof = rpc(source_url, "eth_getProof", [implementation, [], hex(block_number)])
+    archive_code_hash = str((proof or {}).get("codeHash") or "").lower()
+    if archive_code_hash != trace_code_hash:
+        raise ValueError("EIP-1186 implementation code hash differs from the call-trace implementation code hash.")
+    declared = proxy_spec.get("implementation_address")
+    if declared and addr(declared) != implementation:
+        raise ValueError("Decoded EIP-1167 implementation does not match target_identity.proxy.implementation_address.")
+    return {
+        "type": "eip1167",
+        "implementation_address": implementation,
+        "runtime_prefix": "0x" + "363d3d373d3d3d363d73",
+        "runtime_suffix": "0x" + "5af43d82803e903d91602b57fd5bf3",
+        "implementation_code_hash": archive_code_hash,
+        **deployment,
+        **source_identity,
+    }
+
+
 def _forge_source_verification(source_url, fork_url, normalized, spec):
     result = {
         "verified": False,
