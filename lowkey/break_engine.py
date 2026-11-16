@@ -3710,6 +3710,11 @@ def run(config, args=None, host=None):
 
                     for family, basis in selection.items():
                         made_progress = True
+                        print(
+                            f"[PROBING] {target.contract}::{_format_signature(fn, host)} "
+                            f"| {family} | preparing and executing an isolated local experiment",
+                            flush=True,
+                        )
                         result = _safe_run_family(
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
