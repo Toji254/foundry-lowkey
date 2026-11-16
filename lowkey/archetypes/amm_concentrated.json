@@ -1,0 +1,55 @@
+{
+  "name": "amm_concentrated",
+  "detect_signals": [
+    {
+      "kind": "single_block_price",
+      "value": "\\b(?:slot0|sqrtPriceX96)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "precision",
+      "value": "\\b(?:tickSpacing|liquidity|ticks|feeGrowthGlobal)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "oracle_trust",
+      "value": "\\b(?:observe|consult|secondsPerLiquidity)\\b",
+      "weight": 2
+    },
+    {
+      "kind": "external_call_safety",
+      "value": "\\b(?:swap|mint|collect|burn)\\s*\\(",
+      "weight": 1
+    }
+  ],
+  "invariants": [
+    "Tick and square-root-price calculations must preserve bounded rounding and range assumptions.",
+    "Liquidity and fee-growth accounting must reconcile across position updates.",
+    "A single-block spot price must not silently substitute for a robust TWAP."
+  ],
+  "required_capabilities": [
+    "control",
+    "invariant-forge",
+    "oracle-map",
+    "economic",
+    "reprove",
+    "trace-parity",
+    "flashmax",
+    "compose"
+  ],
+  "forbidden_capabilities": [],
+  "attack_families": [
+    "accounting",
+    "oracle",
+    "economic",
+    "boundary",
+    "callback",
+    "storage"
+  ],
+  "assumption_classes": [
+    "single_block_price",
+    "precision",
+    "oracle_trust",
+    "external_call_safety"
+  ]
+}
