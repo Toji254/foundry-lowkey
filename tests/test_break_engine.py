@@ -364,8 +364,8 @@ class BreakEngineTests(unittest.TestCase):
             payload_calldata="0x12345678",
             setup_calldata="0xabcdef01",
         )
-        self.assertIn('bytes memory setupData = hex"abcdef01";', body)
-        self.assertIn('bytes memory data = hex"12345678";', body)
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"abcdef01"', body)
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"12345678"', body)
         self.assertNotIn("setupArg0", body)
         self.assertNotIn("targetArg0", body)
 
@@ -383,8 +383,8 @@ class BreakEngineTests(unittest.TestCase):
             payload_calldata="0x12345678",
             setup_calldata="0xabcdef01",
         )
-        self.assertIn('bytes memory setupData = hex"abcdef01";', body)
-        self.assertIn('bytes memory payload = hex"12345678";', body)
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"abcdef01"', body)
+        self.assertIn('LowkeyABIPatch.replaceAddress(hex"12345678"', body)
         self.assertNotIn("setupArg0", body)
         self.assertNotIn("targetArg0", body)
 
