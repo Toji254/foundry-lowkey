@@ -145,10 +145,11 @@ class TokenEconomicsTests(unittest.TestCase):
         ambiguous["tokens"][0].pop("asset_oracle")
         with self.assertRaisesRegex(TokenEconomicsError, "asset_oracle"):
             load_portfolio_manifest(ambiguous)
-        self.assertEqual(
-            load_portfolio_manifest(manifest(kind="erc4626"))["tokens"][0]["price_subject"],
-            "underlying_asset",
-        )
+        normalized = load_portfolio_manifest(manifest(kind="erc4626"))
+        self.assertEqual(normalized["tokens"][0]["price_subject"], "underlying_asset")
+        self.assertIn("asset_oracle", normalized["tokens"][0])
+        self.assertNotIn("oracle", normalized["tokens"][0])
+        self.assertEqual(load_portfolio_manifest(normalized), normalized)
 
     def test_erc4626_preview_redeem_values_underlying_assets_not_share_units(self):
         result = measure_token_portfolio(
