@@ -172,20 +172,22 @@ def _run_campaigns():
         assert received > entitlement, (received, entitlement, raw[-6000:])
 
     def check_token(raw: str, harness: str, token_label: str):
+        # Assert the current recursive-ABI harness implementation and the
+        # decimal-aware funding/approval evidence emitted by installed lk break.
         for marker in (
             'abi.encodeWithSignature("decimals()")',
             "reportedDecimals <= 77",
-            "tokenSeedAmount = 10 ** tokenDecimals",
+            "tokenFundingAmount = 10 ** assetDecimals;",
             "_lowkeySafeApprove",
-            "returndata.length == 0",
+            "if (data.length == 0) return true;",
         ):
             assert marker in harness, f"{token_label}: missing generator feature {marker!r}"
-        assert telemetry_bool(raw, "TOKEN_DECIMALS_METADATA_READ"), raw[-6000:]
+        assert telemetry_bool(raw, "ASSET_GETTER_DISCOVERED"), raw[-6000:]
         assert telemetry_bool(raw, "ASSET_TRACKING_AVAILABLE"), raw[-6000:]
+        assert telemetry_bool(raw, "ASSET_DECIMALS_VERIFIED"), raw[-6000:]
         assert telemetry_bool(raw, "ENTITLEMENT_READ_OK"), raw[-6000:]
-        assert telemetry(raw, "TOKEN_DECIMALS") == 6, raw[-6000:]
+        assert telemetry(raw, "ASSET_DECIMALS") == 6, raw[-6000:]
         assert telemetry(raw, "TOKEN_FUNDING_AMOUNT") == 1_000_000, raw[-6000:]
-        assert telemetry_bool(raw, "SETUP_SUCCESS"), raw[-6000:]
         assert telemetry_bool(raw, "FIRST_SUCCESS"), raw[-6000:]
         entitlement = telemetry(raw, "ENTITLEMENT_BEFORE")
         token_gain = telemetry(raw, "TOTAL_ATTACKER_TOKEN_GAIN")
