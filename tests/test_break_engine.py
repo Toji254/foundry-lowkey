@@ -1924,6 +1924,10 @@ SECOND_RETURNDATA_LENGTH 0
 
         source = """
         pragma solidity ^0.8.20;
+        contract OtherReceiver {
+            address payable public owner;
+            receive() external payable { owner = payable(msg.sender); }
+        }
         contract FallbackAccessTarget {
             mapping(address => uint256) public contributions;
             address payable public owner;
@@ -2005,6 +2009,11 @@ SECOND_RETURNDATA_LENGTH 0
                 functions, {"function": "receive"}
             )
             self.assertEqual([item["name"] for item in selected], ["receive"])
+            receive_body = break_engine._source_function_body(
+                {"root": str(root)}, "receive", target
+            )
+            self.assertIn("contributions[msg.sender]", receive_body)
+            self.assertNotIn("OtherReceiver", receive_body)
 
     def test_source_derived_receive_entry_selects_access_family(self):
         import tempfile
