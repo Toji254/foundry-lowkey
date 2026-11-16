@@ -169,17 +169,25 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
         require(accesses.length != 0, "Lowkey: empty state-diff window");
         string memory accessesJson = "[";
+        bytes32 measuredTargetCodeHash;
+        bool targetAccessFound;
         for (uint256 i; i < accesses.length; ++i) {
+            if (accesses[i].account == target) {
+                measuredTargetCodeHash = accesses[i].account.codehash;
+                targetAccessFound = true;
+            }
             if (i != 0) accessesJson = string.concat(accessesJson, ",");
             accessesJson = string.concat(accessesJson, _serializeAccountAccess(accesses[i]));
         }
         accessesJson = string.concat(accessesJson, "]");
+        require(targetAccessFound, "Lowkey: target missing from measured account accesses");
 
         string memory finalJson = '{"backend":"forge-state-diff","schema_version":1,"trace_schema_version":1';
         finalJson = string.concat(finalJson, ',"chain_id":', _uintString(_lowkeyChainId));
         finalJson = string.concat(finalJson, ',"block_number":', _uintString(_lowkeyBlockNumber));
         finalJson = string.concat(finalJson, ',"target_address":', _quoted(_hex(abi.encodePacked(target))));
-        finalJson = string.concat(finalJson, ',"target_code_hash":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))));
+        finalJson = string.concat(finalJson, ',"target_code_hash":', _quoted(_hex(abi.encodePacked(measuredTargetCodeHash))));
+        finalJson = string.concat(finalJson, ',"target_code_hash_at_start":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))));
         finalJson = string.concat(finalJson, ',"fork_parent_hash":', _quoted(_hex(abi.encodePacked(_lowkeyParentHash))));
         finalJson = string.concat(finalJson, ',"setup_events":', _serializeDomainLogs(setupEvents));
         finalJson = string.concat(finalJson, ',"domain_events":', _serializeDomainLogs(domainEvents));
