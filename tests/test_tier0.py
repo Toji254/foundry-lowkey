@@ -382,7 +382,7 @@ class Tier0SandboxTests(unittest.TestCase):
             self.assertIn("pass_fds", popen_mock.call_args.kwargs)
             self.assertIsNone(popen_mock.call_args.kwargs.get("preexec_fn"))
             self.assertTrue(popen_mock.call_args.kwargs["start_new_session"])
-            self.assertIn('exec 3< "$1"', argv)
+            self.assertIn('exec 3< "$1"', " ".join(argv))
 
     def test_sandbox_refuses_weaker_resource_limits_without_systemd(self):
         with tempfile.TemporaryDirectory() as temporary:
