@@ -480,6 +480,98 @@ jobs:
           }, indent=2))
           PY
           grep -q '/token_economics.py":' "$HOME/.lowkey/install-manifest.json"
+      - name: Execute installed graph-backed attack-chain synthesis
+        run: |
+          set -euo pipefail
+          CHAIN_ROOT="$GITHUB_WORKSPACE/tests/fixtures/acceptance/attack-synthesis"
+          forge clean --root "$CHAIN_ROOT"
+          forge build --root "$CHAIN_ROOT" --build-info --ast
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("tests/fixtures/acceptance/attack-synthesis")
+          source_path = root / "src/ChainVault.sol"
+          source = source_path.read_text(encoding="utf-8")
+          digest = hashlib.sha256(source.encode()).hexdigest()
+          lines = source.splitlines()
+          def candidate(candidate_id, fragment, title):
+              line = next(i for i, value in enumerate(lines, 1) if fragment in value)
+              return {
+                  "candidate_id": candidate_id,
+                  "status": "CANDIDATE_ONLY",
+                  "family": "accounting",
+                  "title": title,
+                  "hypothesis": "A vault stage may fail to preserve an asset accounting invariant.",
+                  "security_property": "vault-accounting-conservation",
+                  "source_refs": [{
+                      "path": "src/ChainVault.sol",
+                      "line_start": line,
+                      "line_end": line,
+                      "source_sha256": digest,
+                      "quote": lines[line - 1],
+                  }],
+                  "preconditions": ["The vault has measurable assets."],
+                  "attack_steps": ["Execute the first accounting transition.", "Execute the dependent accounting transition."],
+                  "control_steps": ["Repeat the same transitions with valid accounting."],
+                  "test_plan": ["Compare totalAssets before and after both transitions."],
+                  "mutation_ideas": ["Restore the accounting update and require the chain to disappear."],
+                  "execution_authorized": False,
+                  "vulnerability_confirmed": False,
+              }
+          report = {
+              "schema_version": 1,
+              "status": "CANDIDATES_ONLY",
+              "source_revision": None,
+              "context_sha256": "c" * 64,
+              "source_files": [{"path": "src/ChainVault.sol", "source_sha256": digest}],
+              "candidates": [
+                  candidate("a" * 20, "function deposit", "Deposit accounting stage"),
+                  candidate("b" * 20, "function withdraw", "Withdrawal accounting stage"),
+              ],
+          }
+          destination = root / ".audit/lowkey/attack-research/synthesis-fixture.json"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          PY
+          "$HOME/.foundry/bin/lk" attack synthesize \
+            --root "$CHAIN_ROOT" \
+            --research-report .audit/lowkey/attack-research/synthesis-fixture.json \
+            --output .audit/lowkey/attack-chains/synthesis.json \
+            --json > /tmp/lowkey-attack-synthesis.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("/tmp/lowkey-attack-synthesis.json").read_text())
+          assert result["status"] == "CANDIDATE_CHAINS_ONLY", result
+          assert result["chain_count"] >= 1, result
+          chain = result["chains"][0]
+          assert chain["status"] == "BLOCKED_ADAPTER_REQUIRED", chain
+          assert len(chain["stages"]) == 2, chain
+          assert chain["transitions"][0]["kind"] == "state_dependency_candidate", chain
+          assert chain["execution_performed"] is False, chain
+          assert chain["transaction_signed_or_sent"] is False, chain
+          assert chain["vulnerability_confirmed"] is False, chain
+          print(json.dumps({
+              "status": result["status"],
+              "chain_count": result["chain_count"],
+              "chain_status": chain["status"],
+              "edge": chain["transitions"][0]["kind"],
+              "adapter_gaps": chain["adapter_gaps"],
+          }, indent=2))
+          PY
+          mkdir -p .audit/attack-chain-synthesis-acceptance
+          cp "$CHAIN_ROOT/.audit/lowkey/attack-chains/synthesis.json" .audit/attack-chain-synthesis-acceptance/
+      - name: Upload attack-chain synthesis evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attack-chain-synthesis-acceptance-${{ github.run_number }}
+          path: .audit/attack-chain-synthesis-acceptance/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 14
       - name: ERC20 and ERC4626 portfolio reproof acceptance
         run: python3 scripts/token-portfolio-acceptance-e2e.py
       - name: Upload token portfolio acceptance evidence
