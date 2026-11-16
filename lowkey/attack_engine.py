@@ -32,7 +32,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Reentrancy",
         "strategy": "Re-enter a state transition while its prior entitlement or invariant is still live.",
         "preconditions": ["reachable external call", "attacker-controlled callback", "shared state or entitlement"],
-        "property": "reentrancy-invariant-broken",
+        "property": "reentrancy-invariant-violation",
         "signals": [r"\.call\s*(?:\{|\()", r"\b(?:receive|fallback|tokensReceived|onERC721Received)\b", r"\b(?:withdraw|claim|redeem|borrow)\s*\("],
         "min_events": 2, "min_depth": 2, "exact_storage": True, "economic": False,
     },
@@ -40,7 +40,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Replay",
         "strategy": "Repeat a signed, bridged, or claim action and prove a one-time entitlement is consumed exactly once.",
         "preconditions": ["replayable identifier or signed payload", "repeatable entrypoint", "observable consumed-state or duplicate effect"],
-        "property": "one-time-action-consumed",
+        "property": "replayed-action-applied",
         "signals": [r"\b(?:nonce|used|consumed|messageId|digest|claimId)\b", r"\b(?:claim|execute|complete|redeem|fulfill)\s*\(", r"\becrecover\b|\bECDSA\b"],
         "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
@@ -48,7 +48,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Access control",
         "strategy": "Compare a privileged action from an unauthorized actor with the same action from an authorized actor.",
         "preconditions": ["sensitive state-changing entrypoint", "intended role or principal", "unauthorized and authorized actors"],
-        "property": "unauthorized-state-transition-blocked",
+        "property": "unauthorized-state-change",
         "signals": [r"\b(?:onlyOwner|onlyRole|hasRole|_checkRole|owner|admin|guardian)\b", r"\b(?:setOwner|upgradeTo|pause|unpause|setFee|withdrawAdmin)\s*\("],
         "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
@@ -56,7 +56,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Accounting",
         "strategy": "Exercise deposits, withdrawals, shares, debt, and fees against a stated conservation or solvency invariant.",
         "preconditions": ["explicit accounting invariant", "measurable pre/post balances or liabilities", "attacker-controlled state transition"],
-        "property": "accounting-invariant-preserved",
+        "property": "accounting-invariant-violation",
         "signals": [r"\b(?:totalAssets|totalSupply|totalDebt|totalShares|borrowed|collateral|reserve|liabilit)\w*\b", r"\b(?:deposit|withdraw|redeem|borrow|repay|liquidate)\s*\("],
         "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
@@ -64,7 +64,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Boundary conditions",
         "strategy": "Probe exact lower, upper, zero, maximum, rounding, and transition boundaries; require a concrete invariant break.",
         "preconditions": ["declared input or state boundary", "boundary-adjacent values", "observable expected/actual transition"],
-        "property": "boundary-condition-enforced",
+        "property": "boundary-invariant-violation",
         "signals": [r"\b(?:min|max|limit|cap|threshold|decimals|amount|deadline|expiry)\b", r"(?:<=|>=|<|>)\s*(?:0|1|type\(|[A-Z_]+)"],
         "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
@@ -72,7 +72,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Time and block dependence",
         "strategy": "Test timestamp, block-number, expiry, vesting, and sequencer assumptions at exact transition points.",
         "preconditions": ["time or block dependent decision", "pinned initial timestamp/block", "before/at/after boundary assertions"],
-        "property": "time-boundary-enforced",
+        "property": "time-boundary-bypass",
         "signals": [r"\b(?:block\.timestamp|block\.number|deadline|expiry|vesting|unlock|cooldown|epoch)\b", r"\b(?:warp|roll|timeLock|timelock)\b"],
         "min_events": 1, "min_depth": 0, "exact_storage": False, "economic": False,
     },
@@ -80,7 +80,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Upgrade authorization and initialization",
         "strategy": "Exercise implementation changes and initialization transitions under authorized and unauthorized principals.",
         "preconditions": ["upgrade or initializer entrypoint", "implementation identity", "upgrade authority and storage invariants"],
-        "property": "upgrade-authority-and-layout-preserved",
+        "property": "unauthorized-upgrade-or-initializer",
         "signals": [r"\b(?:upgradeTo|upgradeToAndCall|_authorizeUpgrade|implementation|beacon|proxiableUUID)\b", r"\b(?:initialize|reinitializer|_disableInitializers)\b"],
         "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
@@ -88,7 +88,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Callback and hook behavior",
         "strategy": "Drive the protocol through an adversarial callback/hook and prove callback ordering, caller, selector, and state constraints.",
         "preconditions": ["callback or hook entrypoint", "registered or accepted receiver", "adversarial callback actor"],
-        "property": "callback-state-machine-enforced",
+        "property": "callback-invariant-violation",
         "signals": [r"\b(?:callback|hook|tokensReceived|onERC721Received|onERC1155Received|uniswapV2Call|executeOperation)\b", r"\b(?:receiver|implementer|registry)\b"],
         "min_events": 2, "min_depth": 2, "exact_storage": True, "economic": False,
     },
@@ -96,7 +96,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Oracle and price integrity",
         "strategy": "Compare manipulated, stale, invalid, and valid price inputs against collateral and settlement invariants.",
         "preconditions": ["identified price source", "freshness/round/decimal assumptions", "independent reference or bounded price range"],
-        "property": "oracle-validity-and-price-bound-enforced",
+        "property": "oracle-integrity-violation",
         "signals": [r"\b(?:latestRoundData|latestAnswer|priceFeed|oracle|TWAP|twap|consult)\b", r"\b(?:price|exchangeRate|quote|healthFactor|collateralRatio)\b"],
         "min_events": 2, "min_depth": 0, "exact_storage": False, "economic": False,
     },
@@ -104,7 +104,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Economic and compositional",
         "strategy": "Compose protocol actions and calculate realized net value after gas, setup, borrow fees, and unwind costs.",
         "preconditions": ["complete action sequence", "same-unit balance measurement", "all costs and repayment obligations measured"],
-        "property": "net-economic-impact-measured",
+        "property": "positive-net-economic-impact",
         "signals": [r"\b(?:swap|borrow|repay|liquidate|flashLoan|flashBorrow|fee|interest|exchangeRate)\b", r"\b(?:profit|balance|reserve|collateral|debt)\b"],
         "min_events": 2, "min_depth": 0, "exact_storage": False, "economic": True,
     },
@@ -112,7 +112,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "ERC-20 and token behavior",
         "strategy": "Compare requested amounts with actual token balance deltas across return-value, fee, rebase, and approval behavior.",
         "preconditions": ["token implementation and decimals identified", "before/after balances", "transfer or approval path"],
-        "property": "token-transfer-accounting-matches-observed-delta",
+        "property": "token-delta-accounting-mismatch",
         "signals": [r"\b(?:transferFrom|safeTransferFrom|transfer|approve|allowance|balanceOf|decimals)\s*\(", r"\b(?:feeOnTransfer|rebasing|permit|nonces)\b"],
         "min_events": 1, "min_depth": 0, "exact_storage": False, "economic": False,
     },
@@ -120,7 +120,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Proxy and delegatecall routing",
         "strategy": "Resolve the actual implementation and verify delegatecall routing, admin separation, and storage-context assumptions.",
         "preconditions": ["proxy type identified", "implementation/admin/beacon resolution", "runtime code hashes pinned"],
-        "property": "proxy-implementation-and-admin-boundary-enforced",
+        "property": "proxy-routing-or-admin-boundary-violation",
         "signals": [r"\bdelegatecall\b", r"\b(?:implementation|admin|beacon|diamondCut|facet|EIP1967|ERC1967)\b"],
         "min_events": 1, "min_depth": 1, "exact_storage": True, "economic": False,
     },
@@ -128,7 +128,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Storage layout and slot integrity",
         "strategy": "Bind source variables to measured slots and verify unauthorized or colliding writes cannot alter protected state.",
         "preconditions": ["compiler storage layout", "slot/offset mapping", "before/after slot evidence"],
-        "property": "protected-storage-slot-integrity",
+        "property": "protected-slot-corruption",
         "signals": [r"\b(?:sload|sstore|assembly|storage\s+\w+|bytes32\s+constant)\b", r"\b(?:slot|layout|mapping|owner|implementation)\b"],
         "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
@@ -136,7 +136,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Signature and typed-data validation",
         "strategy": "Test signer, domain, nonce, expiry, chain, contract, and ERC-1271 semantics with replay controls.",
         "preconditions": ["signature-producing domain", "signer identity", "nonce/deadline/chain binding rules"],
-        "property": "signature-domain-and-replay-protection-enforced",
+        "property": "signature-domain-or-replay-bypass",
         "signals": [r"\b(?:ecrecover|ECDSA|SignatureChecker|isValidSignature|DOMAIN_SEPARATOR|domainSeparator|permit)\b", r"\b(?:nonce|deadline|chainId|vrs|signature)\b"],
         "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
@@ -144,7 +144,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "title": "Denial of service and liveness",
         "strategy": "Test progress under hostile recipients, bounded/unbounded loops, gas griefing, and failure recovery.",
         "preconditions": ["explicit liveness property", "bounded resource budget", "recovery or isolation path"],
-        "property": "liveness-and-failure-isolation-preserved",
+        "property": "liveness-failure-under-bounded-input",
         "signals": [r"\b(?:for|while)\s*\(", r"\.transfer\s*\(|\.send\s*\(|\.call\s*\{", r"\b(?:payAll|withdrawAll|processAll|claimAll|distribute)\b"],
         "min_events": 1, "min_depth": 0, "exact_storage": False, "economic": False,
     },
@@ -231,7 +231,7 @@ def family_inventory() -> list[dict[str, Any]]:
         "min_trace_depth": spec["min_depth"],
         "requires_exact_storage": spec["exact_storage"],
         "requires_economic_reproof": spec["economic"],
-        "status": "accepted_existing" if name == "reentrancy" else "adapter_required",
+        "status": "fixture_accepted" if name == "reentrancy" else "adapter_required",
     } for name, spec in FAMILIES.items()]
 
 
@@ -401,6 +401,50 @@ def _load_trace_events(value: Any, family: str, label: str) -> list[dict[str, An
     return events
 
 
+def _wei(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise AttackEngineError(f"{label} must be a nonnegative integer wei amount.")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"(?:0x[0-9a-fA-F]+|[0-9]+)", value):
+        number = int(value, 16 if value.lower().startswith("0x") else 10)
+    else:
+        raise AttackEngineError(f"{label} must be a decimal or 0x-prefixed integer wei amount.")
+    if number < 0:
+        raise AttackEngineError(f"{label} cannot be negative.")
+    return number
+
+
+def _validate_economic_data(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise AttackEngineError(f"{label} requires receipt-backed economic evidence.", "economic_evidence_missing")
+    receipt = value.get("receipt")
+    if not isinstance(receipt, dict) or receipt.get("status") != 1:
+        raise AttackEngineError(f"{label} requires a successful Anvil transaction receipt.", "economic_evidence_missing")
+    tx_hash = _hex(receipt.get("transaction_hash"), r"0x[0-9a-fA-F]{64}", f"{label}.receipt.transaction_hash")
+    block_number = _positive_int(receipt.get("block_number"), f"{label}.receipt.block_number", allow_zero=True)
+    if value.get("asset") != "ETH":
+        raise AttackEngineError(f"{label} currently supports ETH-denominated proof only; token valuation needs an independently pinned price adapter.", "backend_unsupported")
+    fields = (
+        "starting_balance_wei", "ending_balance_wei", "gas_cost_wei",
+        "setup_cost_wei", "funding_cost_wei", "borrow_fee_wei", "other_cost_wei",
+        "net_profit_wei",
+    )
+    amounts = {field: _wei(value.get(field), f"{label}.{field}") for field in fields}
+    calculated = (
+        amounts["ending_balance_wei"] - amounts["starting_balance_wei"]
+        - amounts["gas_cost_wei"] - amounts["setup_cost_wei"]
+        - amounts["funding_cost_wei"] - amounts["borrow_fee_wei"]
+        - amounts["other_cost_wei"]
+    )
+    if calculated != amounts["net_profit_wei"]:
+        raise AttackEngineError(f"{label} net_profit_wei does not reconcile with independently itemized costs.", "economic_cost_mismatch")
+    if calculated <= 0:
+        raise AttackEngineError(f"{label} does not demonstrate positive net profit after all declared costs.", "not_profitable")
+    return {"receipt": {"transaction_hash": tx_hash, "block_number": block_number, "status": 1},
+            "asset": "ETH", **amounts}
+
+
 def _validate_evidence(
     evidence: Any, *, manifest: dict[str, Any], role: str, label: str
 ) -> dict[str, Any]:
@@ -431,9 +475,10 @@ def _validate_evidence(
     if not isinstance(predicate, dict) or predicate.get("id") != manifest["property_id"] or not isinstance(predicate.get("observed"), bool):
         raise AttackEngineError(f"{label}.predicate must identify {manifest['property_id']} and contain a boolean observed value.", "evidence_invalid")
     events = _load_trace_events(evidence["trace_events"], manifest["family"], label)
+    economic = _validate_economic_data(evidence.get("economic"), label) if FAMILIES[manifest["family"]]["economic"] else None
     return {"role": role, "target": target, "pair_anchor": normalized_anchor,
             "predicate": {"id": predicate["id"], "observed": predicate["observed"]},
-            "trace_events": events, "raw": evidence}
+            "trace_events": events, "economic": economic, "raw": evidence}
 
 
 def validate_evidence_pair(
@@ -506,7 +551,7 @@ def _mutation_gate(root: Path, test: dict[str, str], mutants: list[dict[str, str
     result = validate_mutations(root, argv, mutants, timeout_seconds=timeout)
     summary = result.get("summary") or {}
     killed = int(summary.get("killed") or 0)
-    if result.get("status") != "complete" or killed < 1 or summary.get("survived", 0) or summary.get("invalid", 0) or summary.get("timeout", 0) or summary.get("error", 0):
+    if result.get("status") != "completed" or killed < 1 or summary.get("survived", 0) or summary.get("invalid", 0) or summary.get("timeout", 0) or summary.get("error", 0):
         raise AttackEngineError("Mutation gate did not kill every declared mutant after a passing baseline.", "mutation_not_killed")
     return {"status": "MUTATION_KILLED", "summary": summary, "mutation_score": result.get("mutation_score"),
             "run_id": result.get("run_id")}
@@ -714,6 +759,8 @@ def _validate_chain_evidence(
             raise AttackEngineError("single_transaction stage evidence spans multiple transactions or blocks.")
         if manifest["mode"] == "stateful_fork" and stage_block < block_number:
             raise AttackEngineError("stateful_fork stage block precedes its chain transaction.")
+        if FAMILIES[spec["family"]]["economic"] and role == "attack":
+            _validate_economic_data(evidence.get("economic"), f"{role} chain economic stage {spec['id']}")
         normalized_stages.append({"id": spec["id"], "family": spec["family"], "prestate_sha256": pre,
                                   "poststate_sha256": post, "trace_events": len(stage_events)})
         previous_post = post
