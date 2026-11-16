@@ -1430,8 +1430,33 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
                 return result
             actual_code_hash = str((proof or {}).get("codeHash") or "").lower()
             expected_code_hash = str(normalized.get("target_code_hash") or "").lower()
+            trace_target_prestate = prestate_by_address.get(address) or {}
+            trace_account_code_hash = str(trace_target_prestate.get("code_hash") or "").lower()
             if not expected_code_hash or actual_code_hash != expected_code_hash:
-                result["reason"] = "Target EIP-1186 code hash differs from the recorder's pre-execution target code hash."
+                result["reason"] = (
+                    "Target EIP-1186 code hash differs from the recorder's pre-execution target code hash "
+                    + f"(target={address}, recorder_target_code_hash={expected_code_hash or 'missing'}, "
+                    + f"forge_account_access_code_hash={trace_account_code_hash or 'missing'}, "
+                    + f"archive_eip1186_code_hash={actual_code_hash or 'missing'})."
+                )
+                result["target_code_hash_diagnostics"] = {
+                    "target_address": address,
+                    "recorder_target_code_hash": expected_code_hash or None,
+                    "forge_account_access_code_hash": trace_account_code_hash or None,
+                    "archive_eip1186_code_hash": actual_code_hash or None,
+                }
+                return result
+            if trace_account_code_hash and trace_account_code_hash != actual_code_hash:
+                result["reason"] = (
+                    "Forge account-access code hash differs from archive EIP-1186 code hash "
+                    + f"(target={address}, forge={trace_account_code_hash}, archive={actual_code_hash})."
+                )
+                result["target_code_hash_diagnostics"] = {
+                    "target_address": address,
+                    "recorder_target_code_hash": expected_code_hash,
+                    "forge_account_access_code_hash": trace_account_code_hash,
+                    "archive_eip1186_code_hash": actual_code_hash,
+                }
                 return result
         else:
             actual_code_hash = None
