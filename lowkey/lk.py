@@ -15583,6 +15583,13 @@ def run_multi_actor_send(config, args):
         )
 
     raw_args = list(args or [])
+    signer_overrides = {"--from", "--private-key", "--keystore", "--mnemonic", "--mnemonic-derivation-path", "--ledger", "--trezor"}
+    for token in raw_args:
+        option = str(token).split("=", 1)[0]
+        if option in signer_overrides:
+            return fail(
+                f"Error: --actors selects each Anvil sender itself; remove {option} so one signer cannot override the per-account identity."
+            )
     preview_only = any(token in raw_args for token in {"--preview", "--dry-run"})
     bypass_confirmation = "--yes" in raw_args
     send_args = [
@@ -22226,7 +22233,7 @@ COMMAND_HELP = {
         "Send a transaction that can change contract data or move ETH or tokens.",
         "lk send <function> [args...] [options]",
         "lk send setValue 10 --confirm",
-        "Use it after you understand the function and are ready to actually run it. Use --preview first when you only want to check what will be sent.",
+        "Every send shows a non-broadcast preview and asks for approval by default. Use --preview for review only; --yes is the explicit automation bypass.",
         forms=[
             ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send release 0xd9c5..."),
             ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send contribute --value 1ether"),
@@ -22245,10 +22252,10 @@ COMMAND_HELP = {
             ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
             ("--verbose", "Show the redacted Cast command alongside Lowkey's readable transaction preview.", "lk send release 0xd9c5... --preview --verbose"),
             ("--dry-run", "Another spelling of --preview.", "lk send release 0xd9c5... --dry-run"),
-            ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send release 0xd9c5... --confirm"),
+            ("--confirm", "Explicitly request the preview + approval flow (already the default); retained for compatibility.", "lk send release 0xd9c5... --confirm"),
             ("--repeat <N>", "Send the same call N times as the same selected actor, using N separate sequential transactions. Each send waits for its receipt before the next; N must be 1–100.", "lk send AttackTarget --repeat 10 --as attacker"),
             ("--times <N>", "Alias for --repeat; sends N separate transactions from the same selected actor (maximum 100).", "lk send AttackTarget --times 10 --as attacker"),
-            ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send release 0xd9c5... --yes"),
+            ("--yes", "Explicitly bypass the preview and approval prompt. Use only when you intend to broadcast without an interactive review.", "lk send release 0xd9c5... --yes"),
         ],
         argument_types=[
             ("address / address payable / contract", "Pass a 0x-prefixed 20-byte address. Solidity address payable and contract-typed parameters use the same ABI address representation.", "lk send transfer 0x1111111111111111111111111111111111111111 100"),
