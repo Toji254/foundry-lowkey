@@ -30,13 +30,13 @@ except ImportError:
     from lowkey import shared_context, capability_registry
 
 try:
-    from .arithmetic_review import scan_project as scan_unsigned_arithmetic
+    from .arithmetic_review import scan_project as scan_unsigned_arithmetic, _mask_comments_and_strings
 except ImportError:
-    from arithmetic_review import scan_project as scan_unsigned_arithmetic
+    from arithmetic_review import scan_project as scan_unsigned_arithmetic, _mask_comments_and_strings
 
 VERSION = "0.2.0"
 EXTS = {".sol", ".vy", ".yul", ".huff", ".rs", ".move", ".cairo"}
-SKIP = {".git", ".audit", ".venv", "venv", "__pycache__", ".pytest_cache", "node_modules", "out", "cache", "artifacts", "build", "dist", "target", "vendor", "coverage"}
+SKIP = {".git", ".audit", ".venv", "venv", "__pycache__", ".pytest_cache", "node_modules", "lib", "out", "cache", "artifacts", "build", "dist", "target", "vendor", "coverage"}
 EIP1967 = {
     "implementation": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
     "admin": "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103",
@@ -2020,6 +2020,299 @@ def cheat_fingerprints(root):
             result.append({"topic":label,"file":p.relative_to(root).as_posix(),"line":line,
                            "fingerprint":hashlib.sha256(" ".join(tokens[idx:idx+size]).encode()).hexdigest()[:16]})
     return {"patterns":len(unique),"hits":result,"meaning":"Fingerprint matches are leads, never vulnerability verdicts."}
+
+_PRIVILEGED_STATE_NAMES = {
+    "owner", "admin", "authority", "guardian", "governor", "governance",
+    "operator", "manager", "maintainer", "pauser", "upgrader", "minter",
+    "treasury", "feerecipient", "protocoladmin", "emergencyadmin",
+    "pendingowner", "controller", "issuer", "whitelistadmin",
+}
+
+
+def _balanced_block_end(masked: str, opening: int) -> int | None:
+    if opening < 0 or opening >= len(masked) or masked[opening] != "{":
+        return None
+    depth = 0
+    for index in range(opening, len(masked)):
+        if masked[index] == "{":
+            depth += 1
+        elif masked[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _solidity_entry_blocks(masked: str) -> list[dict[str, Any]]:
+    """Extract externally callable Solidity function/receive/fallback bodies."""
+    pattern = re.compile(
+        r"\bfunction\s+(?P<function_name>[A-Za-z_$][\w$]*)\s*"
+        r"\([^;{}]*\)(?P<function_header>[^{};]*)\{"
+        r"|\b(?P<special_name>receive|fallback)\s*\(\s*\)"
+        r"(?P<special_header>[^{};]*)\{"
+    )
+    blocks = []
+    for match in pattern.finditer(masked):
+        opening = match.end() - 1
+        closing = _balanced_block_end(masked, opening)
+        if closing is None:
+            continue
+        kind = "function" if match.group("function_name") else str(match.group("special_name"))
+        name = str(match.group("function_name") or kind)
+        header = str(match.group("function_header") or match.group("special_header") or "")
+        externally_callable = kind in {"receive", "fallback"} or bool(
+            re.search(r"\b(?:external|public)\b", header)
+        )
+        if not externally_callable:
+            continue
+        blocks.append({
+            "kind": kind,
+            "name": name,
+            "header": header,
+            "body": masked[opening + 1:closing],
+            "start": match.start(),
+            "body_start": opening + 1,
+        })
+    return blocks
+
+
+def _authorization_guard(expression: str, privileged_names: set[str]) -> bool:
+    if not re.search(r"\b(?:msg\.sender|_msgSender\s*\(\s*\))", expression):
+        return False
+    if not re.search(r"==|!=", expression):
+        return False
+    return any(re.search(r"\b" + re.escape(name) + r"\b", expression) for name in privileged_names)
+
+
+def _source_security_candidates(root: str | Path) -> list[dict[str, Any]]:
+    """Find generic unguarded writes to state used as an authorization principal.
+
+    This is a conservative source-level rule: it derives custom authority variable
+    names from the project's own caller-comparison guards, then checks every public,
+    external, receive and fallback entry point for writes to those variables.
+    """
+    project = Path(root).expanduser().resolve()
+    findings: list[dict[str, Any]] = []
+    guard_call = re.compile(r"\b(?:require|assert|if)\s*\(([^{};]*)\)")
+    modifier_pattern = re.compile(
+        r"\bmodifier\s+(?P<name>[A-Za-z_$][\w$]*)\s*(?:\([^{};]*\))?[^{};]*\{"
+    )
+    assignment_pattern = re.compile(
+        r"\b(?P<name>[A-Za-z_$][\w$]*)\s*(?:\[[^\]\n]+\]\s*)?"
+        r"(?P<operator>=(?!=)|\+=|-=|\+\+|--)"
+    )
+
+    for path in files(project):
+        if path.suffix.lower() != ".sol":
+            continue
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        masked = _mask_comments_and_strings(source)
+        blocks = _solidity_entry_blocks(masked)
+
+        privileged_names = {
+            name for name in re.findall(r"[A-Za-z_$][\w$]*", masked)
+            if name.lower() in _PRIVILEGED_STATE_NAMES
+        }
+        # Derive non-standard authority names (e.g. chief, controller, steward)
+        # from actual msg.sender/_msgSender comparisons in guards.
+        for guard in guard_call.finditer(masked):
+            expression = guard.group(1)
+            if not re.search(r"\b(?:msg\.sender|_msgSender\s*\(\s*\))", expression):
+                continue
+            if not re.search(r"==|!=", expression):
+                continue
+            identifiers = re.findall(r"\b[A-Za-z_$][\w$]*\b", expression)
+            privileged_names.update(
+                item for item in identifiers
+                if item.lower() not in {"msg", "sender", "_msgsender", "require", "assert"}
+            )
+        if not privileged_names or not blocks:
+            continue
+
+        auth_modifiers: set[str] = set()
+        for modifier in modifier_pattern.finditer(masked):
+            opening = modifier.end() - 1
+            closing = _balanced_block_end(masked, opening)
+            if closing is None:
+                continue
+            body = masked[opening + 1:closing]
+            if (
+                re.search(r"\b(?:msg\.sender|_msgSender\s*\(\s*\))", body)
+                and (
+                    bool(guard_call.search(body))
+                    or bool(re.search(r"\b(?:_checkRole|hasRole|requireRole)\s*\(", body))
+                )
+            ):
+                auth_modifiers.add(modifier.group("name"))
+
+        for block in blocks:
+            header = block["header"]
+            body = block["body"]
+            modifier_names = set(re.findall(r"\b([A-Za-z_$][\w$]*)\b", header))
+            protected = bool(modifier_names & auth_modifiers)
+            protected = protected or bool(
+                modifier_names & {
+                    "onlyOwner", "onlyAdmin", "onlyRole", "onlyGuardian",
+                    "onlyGovernance", "onlyOperator", "onlyMinter", "onlyPauser",
+                    "onlyUpgrader", "requiresAuth",
+                }
+            )
+            if not protected:
+                protected = any(
+                    _authorization_guard(match.group(1), privileged_names)
+                    for match in guard_call.finditer(body)
+                )
+            if not protected and re.search(r"\b(?:_checkRole|requireRole)\s*\(", body):
+                protected = True
+            if protected:
+                continue
+
+            for assignment in assignment_pattern.finditer(body):
+                variable = assignment.group("name")
+                if variable not in privileged_names:
+                    continue
+                absolute_offset = block["body_start"] + assignment.start()
+                line = source.count("\n", 0, absolute_offset) + 1
+                source_lines = source.splitlines()
+                excerpt = source_lines[line - 1].strip() if line <= len(source_lines) else ""
+                title = f"Unprotected write to privileged state '{variable}'"
+                fingerprint = hashlib.sha256(
+                    f"{path.relative_to(project).as_posix()}:{line}:{variable}:{block['name']}".encode()
+                ).hexdigest()[:16]
+                findings.append({
+                    "finding_id": "SRC-" + fingerprint,
+                    "title": title,
+                    "category": "access-control",
+                    "severity": "high",
+                    "confidence": "medium",
+                    "location": {
+                        "path": path.relative_to(project).as_posix(),
+                        "symbol": block["name"] + ("()" if block["kind"] != "function" else ""),
+                    },
+                    "file": path.relative_to(project).as_posix(),
+                    "line": line,
+                    "function": block["name"],
+                    "privileged_variable": variable,
+                    "evidence_quote": excerpt[:500],
+                    "reasoning": (
+                        f"The externally callable {block['kind']} entry point writes '{variable}', "
+                        "a state variable used as an authorization principal elsewhere in this source file, "
+                        "without an authorization modifier or a caller-to-authority guard in this entry point."
+                    ),
+                    "impact": (
+                        "An untrusted caller may be able to change the contract's authority and then use "
+                        "privileged functions. Reachability and the surrounding state machine still require testing."
+                    ),
+                    "exploit_preconditions": (
+                        "The entry point must be reachable by an untrusted caller and the authority write must "
+                        "not be constrained by another inherited or external authorization check."
+                    ),
+                    "recommendation": (
+                        "Restrict authority changes to the current authorized principal; consider a two-step "
+                        "ownership transfer and add a test proving an ordinary account cannot change this state."
+                    ),
+                    "status": "candidate",
+                    "verified": False,
+                    "tool": "lowkey-source-review",
+                    "evidence_level": "static-source-candidate",
+                })
+    return findings
+
+
+def _run_slither_analysis(root: str | Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Run Slither's full detector suite when installed; retain explicit skip/error states."""
+    project = Path(root).expanduser().resolve()
+    solidity_files = [path for path in files(project) if path.suffix.lower() == ".sol"]
+    if not solidity_files:
+        return ({
+            "name": "slither-analysis",
+            "status": "skipped",
+            "reason": "No first-party Solidity source files were found.",
+        }, [])
+    try:
+        try:
+            from . import slither_tools
+        except ImportError:
+            import slither_tools
+        if not slither_tools.slither_path():
+            return ({
+                "name": "slither-analysis",
+                "status": "skipped",
+                "reason": "Slither is not installed or not available on PATH; built-in source review still ran.",
+            }, [])
+        exit_code = int(slither_tools.run_default(project, quiet=True))
+        evidence_path = project / ".audit" / "slither" / "latest.json"
+        raw = json.loads(evidence_path.read_text(encoding="utf-8")) if evidence_path.is_file() else {}
+        detectors = ((raw.get("results") or {}).get("detectors") or []) if isinstance(raw, dict) else []
+        if not isinstance(detectors, list):
+            detectors = []
+        findings = []
+        for item in detectors:
+            if not isinstance(item, dict):
+                continue
+            elements = item.get("elements") if isinstance(item.get("elements"), list) else []
+            location = {}
+            function = None
+            for element in elements:
+                if not isinstance(element, dict):
+                    continue
+                mapping = element.get("source_mapping") if isinstance(element.get("source_mapping"), dict) else {}
+                file_name = mapping.get("filename_relative") or mapping.get("filename_short") or mapping.get("filename_used")
+                lines = mapping.get("lines") if isinstance(mapping.get("lines"), list) else []
+                if file_name:
+                    location = {"path": str(file_name), "line": lines[0] if lines else None}
+                if str(element.get("type") or "").lower() == "function":
+                    function = str(element.get("name") or "")
+                if location:
+                    break
+            check = str(item.get("check") or "slither-detector")
+            description = str(item.get("description") or item.get("markdown") or "").strip()
+            findings.append({
+                "finding_id": "SL-" + hashlib.sha256(
+                    (check + "|" + json.dumps(location, sort_keys=True) + "|" + description).encode()
+                ).hexdigest()[:16],
+                "title": check.replace("-", " ").replace("_", " ").title(),
+                "category": "static-analysis",
+                "severity": str(item.get("impact") or "info").lower(),
+                "confidence": str(item.get("confidence") or "low").lower(),
+                "location": location,
+                "function": function,
+                "evidence_quote": description[:1200],
+                "reasoning": description[:2400],
+                "impact": "Slither reported this detector. Confirm reachability and concrete impact before treating it as a vulnerability.",
+                "recommendation": "Inspect the detector explanation and surrounding control flow, then write a focused Foundry regression test.",
+                "status": "candidate",
+                "verified": False,
+                "tool": "slither",
+                "check": check,
+                "evidence_level": "static-analysis-candidate",
+            })
+        status = "completed" if evidence_path.is_file() and exit_code == 0 else (
+            "review" if evidence_path.is_file() else "blocked"
+        )
+        return ({
+            "name": "slither-analysis",
+            "status": status,
+            "exit_code": exit_code,
+            "finding_count": len(findings),
+            "evidence": ".audit/slither/latest.json",
+            "reason": "" if status == "completed" else (
+                "Slither produced evidence but exited non-zero; inspect its compiler/tool diagnostics."
+                if status == "review" else
+                "Slither did not produce its JSON evidence file; inspect the tool or compiler error."
+            ),
+        }, findings)
+    except Exception as exc:
+        return ({
+            "name": "slither-analysis",
+            "status": "blocked",
+            "reason": f"Slither execution failed: {type(exc).__name__}: {exc}",
+        }, [])
+
+
 def rpc_url(v=None):
     url=v or os.environ.get("FOUNDRY_ETH_RPC_URL") or os.environ.get("ETH_RPC_URL") or os.environ.get("LOWKEY_RPC_URL")
     if not url or urlparse(url).scheme not in {"http","https"}: raise ValueError("Pass --rpc-url or set FOUNDRY_ETH_RPC_URL/ETH_RPC_URL.")
@@ -5205,9 +5498,11 @@ def _print_godmode_help():
 
 
 _GODMODE_STAGE_LABELS = {
-    "source-recon": "Source scan",
-    "arithmetic-review": "Arithmetic check",
-    "cheat-fingerprints": "Cheat-pattern scan",
+    "source-recon": "Source map",
+    "source-security": "Built-in security review",
+    "slither-analysis": "Slither analysis",
+    "arithmetic-review": "Targeted arithmetic check",
+    "cheat-fingerprints": "Harness cheatcode scan",
     "onchain-recon": "On-chain inspection",
     "attack": "Attack campaign",
     "control": "Matched control",
@@ -5233,7 +5528,15 @@ def _godmode_stage_detail(stage):
 
     if name == "source-recon":
         count = int(stage.get("signals") or 0)
-        return f"{count} static source matches across the scanners; these are not vulnerability findings."
+        return f"{count} source-map markers for navigation/context; not vulnerability findings."
+    if name == "source-security":
+        count = int(stage.get("finding_count") or 0)
+        return f"{count} unverified access-control candidate(s) from source-level state/guard analysis."
+    if name == "slither-analysis":
+        count = int(stage.get("finding_count") or 0)
+        if status == "skipped":
+            return "Not run: " + (reason or "Slither unavailable.")
+        return f"{count} Slither detector candidate(s); JSON evidence: {stage.get('evidence', '.audit/slither/latest.json')}." + ((" " + reason) if reason else "")
     if name == "arithmetic-review":
         count = int(stage.get("signals") or 0)
         wrap = int(stage.get("wraparound_candidates") or 0)
@@ -5241,7 +5544,7 @@ def _godmode_stage_detail(stage):
     if name == "cheat-fingerprints":
         hits = int(stage.get("hits") or 0)
         patterns = int(stage.get("patterns") or 0)
-        return f"{hits} matching fingerprint hit(s) across {patterns} registered pattern(s)."
+        return f"{hits} harness/cheatcode fingerprint match(es) against {patterns} registered patterns; these are not vulnerability findings."
     if name == "onchain-recon" and status == "completed":
         selectors_count = int(stage.get("selectors") or 0)
         chain = stage.get("chain_id")
@@ -5321,9 +5624,33 @@ def _print_godmode_result(payload, arithmetic_rows, wraparound_rows, report_path
         detail = _godmode_stage_detail(stage)
         print(f"  {label:<22} [{status:<13}] {detail}")
 
+    static_findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    print()
+    print("STATIC ANALYSIS CANDIDATES — UNVERIFIED")
+    print("-" * 72)
+    if static_findings:
+        for index, finding in enumerate(static_findings[:15], 1):
+            location = finding.get("location") if isinstance(finding.get("location"), dict) else {}
+            where = str(location.get("path") or finding.get("file") or "source location unavailable")
+            line = location.get("line") or finding.get("line")
+            if line:
+                where += ":" + str(line)
+            symbol = str(location.get("symbol") or finding.get("function") or "")
+            if symbol:
+                where += " (" + symbol + ")"
+            print(f"  {index}. [{str(finding.get('severity') or 'review').upper()}] {finding.get('title', 'Untitled candidate')} — {where}")
+            quote = str(finding.get("evidence_quote") or "").strip()
+            if quote:
+                print("     " + " ".join(quote.split())[:220])
+        if len(static_findings) > 15:
+            print(f"  ... {len(static_findings) - 15} additional candidate(s) in the JSON report.")
+        print("  These are static leads, not confirmed vulnerabilities; prove reachability and impact.")
+    else:
+        print("  No candidate was emitted by the built-in rule or Slither pass. This is not proof of safety.")
+
     if arithmetic_rows:
         print()
-        print("POTENTIAL SOURCE LEADS — NOT CONFIRMED")
+        print("TARGETED ARITHMETIC IDIOM CHECK — NOT A GENERAL VULNERABILITY SCAN")
         print("-" * 72)
         for index, row in enumerate(arithmetic_rows[:20], 1):
             location = f"{row.get('file')}:{row.get('line')}"
@@ -5336,8 +5663,8 @@ def _print_godmode_result(payload, arithmetic_rows, wraparound_rows, report_path
             print("  Next check: verify compiler semantics and reachability, then write a focused Foundry test.")
     else:
         print()
-        print("POTENTIAL SOURCE LEADS")
-        print("  No arithmetic candidates were detected by this check. This is not a proof that the contract is safe.")
+        print("TARGETED ARITHMETIC IDIOM CHECK")
+        print("  No subtraction-before-zero-guard idiom was detected. Other vulnerability classes are analyzed separately.")
 
     print()
     print("SAVED EVIDENCE")
@@ -5639,7 +5966,7 @@ def godmode(args):
     target=addr(selected_target) if selected_target else None
     selected_rpc,rpc_source=_resolve_godmode_rpc(ns.rpc_url, project_context)
     if not ns.target and remembered_target:
-        print("INFO  Using the deployed target remembered for this project: " + str(remembered_target))
+        print("INFO  Using the target address remembered for this project: " + str(remembered_target))
     if selected_rpc and target and not ns.plan_only:
         rpc_label = {
             "command-line": "the explicitly supplied",
@@ -5649,8 +5976,14 @@ def godmode(args):
         print(f"INFO  Using {rpc_label} RPC for read-only inspection.")
     maps=source_maps(root)
     cheat=cheat_fingerprints(root)
+    source_findings=_source_security_candidates(root)
+    slither_stage,slither_findings=_run_slither_analysis(root)
+    findings=source_findings+slither_findings
     stages=[]
-    stages.append({"name":"source-recon","status":"completed","signals":sum(len(v) for v in maps.values() if isinstance(v,list))})
+    raw_map_count=sum(len(v) for key,v in maps.items() if isinstance(v,list) and key != "arithmetic_review")
+    stages.append({"name":"source-recon","status":"completed","signals":raw_map_count})
+    stages.append({"name":"source-security","status":"completed","finding_count":len(source_findings)})
+    stages.append(slither_stage)
     arithmetic_rows=maps.get("arithmetic_review", [])
     wraparound_rows=[row for row in arithmetic_rows if row.get("status")=="WRAPAROUND_POSSIBLE"]
     stages.append({
@@ -5662,6 +5995,7 @@ def godmode(args):
     stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"]),"patterns":int(cheat.get("patterns",0))})
     chain=block=None
     onchain={}
+    target_has_code=None
     if ns.plan_only:
         stages.append({"name":"onchain-recon","status":"skipped","reason":"--plan-only: RPC access is disabled."})
     elif target and selected_rpc:
@@ -5669,8 +6003,24 @@ def godmode(args):
             url=rpc_url(selected_rpc)
             chain=rpc(url,"eth_chainId",[])
             block=rpc(url,"eth_blockNumber",[])
-            onchain={"proxy":proxy(target,url,40 if ns.profile=="light" else 120),"selectors":selectors(target,url)}
-            stages.append({"name":"onchain-recon","status":"completed","selectors":onchain["selectors"]["count"],"chain_id":chain,"block_number":block})
+            runtime_code=rpc(url,"eth_getCode",[target,"latest"])
+            runtime_hex=str(runtime_code or "").strip().lower()
+            runtime_payload=runtime_hex[2:] if runtime_hex.startswith("0x") else runtime_hex
+            runtime_bytes=0 if not runtime_payload or int(runtime_payload or "0",16)==0 else (len(runtime_payload)+1)//2
+            target_has_code=runtime_bytes>0
+            onchain={"runtime_code_bytes":runtime_bytes}
+            if not target_has_code:
+                stages.append({
+                    "name":"onchain-recon",
+                    "status":"blocked",
+                    "chain_id":chain,
+                    "block_number":block,
+                    "runtime_code_bytes":0,
+                    "reason":"The remembered address has no runtime bytecode on this RPC. This target is stale or was not deployed to the current Anvil instance; redeploy it or select the live address before any attack.",
+                })
+            else:
+                onchain.update({"proxy":proxy(target,url,40 if ns.profile=="light" else 120),"selectors":selectors(target,url)})
+                stages.append({"name":"onchain-recon","status":"completed","selectors":onchain["selectors"]["count"],"runtime_code_bytes":runtime_bytes,"chain_id":chain,"block_number":block})
         except Exception as exc:
             stages.append({"name":"onchain-recon","status":"blocked","reason":str(exc)})
     elif target:
@@ -5684,6 +6034,8 @@ def godmode(args):
             stages.append({"name":"attack","status":"blocked","reason":"Target address required."})
         elif not selected_rpc or not local_rpc(rpc_url(selected_rpc)):
             stages.append({"name":"attack","status":"blocked","reason":"Attack requires local Anvil RPC; non-local RPC is rejected."})
+        elif target_has_code is not True:
+            stages.append({"name":"attack","status":"blocked","reason":"Attack refused because runtime bytecode at the remembered target address was not verified on the selected Anvil chain. Redeploy the target or update the project target first."})
         elif not shutil.which("lk"):
             stages.append({"name":"attack","status":"blocked","reason":"lk command not found."})
         else:
@@ -5695,8 +6047,13 @@ def godmode(args):
             print("=====================================")
             print("Attack output is streamed as it arrives. --until-found has no fixed runtime limit; press Ctrl+C to stop cleanly.")
             proc=run_live(argv,root,timeout=None,heartbeat_seconds=20)
-            attack_status="interrupted" if proc.returncode==130 else "review"
-            stages.append({"name":"attack","status":attack_status,"exit_code":proc.returncode,"output":proc.stdout[-3000:]})
+            attack_status=("completed" if proc.returncode==0 else
+                           ("interrupted" if proc.returncode==130 else "blocked"))
+            attack_reason="" if proc.returncode in {0,130} else (
+                f"lk break exited with code {proc.returncode}; inspect the streamed error and .audit/break evidence."
+            )
+            stages.append({"name":"attack","status":attack_status,"exit_code":proc.returncode,
+                           "reason":attack_reason,"output":proc.stdout[-6000:]})
     else:
         stages.append({"name":"attack","status":"not-run","reason":"No attack was run. Add --attack only for an explicitly reviewed local-Anvil experiment."})
     if ns.plan_only:
@@ -5729,9 +6086,11 @@ def godmode(args):
         stages.append({"name":"target-coverage","status":"completed" if rc==0 else "review","exit_code":rc})
     else:
         stages.append({"name":"target-coverage","status":"not-run","reason":"No target source line scope was supplied."})
-    blockers=[s for s in stages if s["status"] in {"blocked","review","not-run","skipped"}]
+    blockers=[s for s in stages if s["status"] in {"blocked","failed"} or
+               (s["status"]=="review" and s.get("name") in {"attack","mutation","target-coverage"})]
     payload={"created_at":now(),"target":target,"project_root":str(root),"git_revision":None,"chain_id":chain,"fork_block":block,
              "profile":ns.profile,"stages":stages,"signals":maps,"cheat_fingerprints":cheat,
+             "findings":findings,"source_security_findings":source_findings,"slither_findings":slither_findings,
              "onchain":onchain,"overall_status":"REVIEW_REQUIRED",
              "proof_gate":["attack must demonstrate a measurable security-property delta","matched sequential control must pass",
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
@@ -5743,12 +6102,9 @@ def godmode(args):
     _print_godmode_result(payload, arithmetic_rows, wraparound_rows, out, prov, root)
     if any(stage.get("name") == "attack" and stage.get("status") == "interrupted" for stage in stages):
         return 130
-    # Source reconnaissance is a successful task by itself. Missing optional
-    # proof stages keep the saved audit REVIEW_REQUIRED, but must not look like
-    # a crashed/failed command when the operator never requested those stages.
-    if ns.plan_only or not (ns.attack or ns.mutation_manifest or ns.coverage_source):
-        hard_failures=[stage for stage in stages if stage["status"] in {"blocked","review"}]
-        return 2 if hard_failures else 0
+    # Not-requested control, mutation and coverage stages keep the audit
+    # REVIEW_REQUIRED, but they are not process failures. Return non-zero only
+    # when a requested operation was blocked or failed.
     return 2 if blockers else 0
 def report(args):
     p=LowkeyArgumentParser(prog="lk report")
