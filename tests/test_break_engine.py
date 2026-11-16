@@ -1887,5 +1887,170 @@ SECOND_RETURNDATA_LENGTH 0
         self.assertEqual(list(selected), ["reentrancy", "replay", "accounting", "boundary"])
         self.assertTrue(any("external interaction" in reason for reason in selected["reentrancy"]))
 
+    def test_runtime_bytecode_guard_accepts_only_nonzero_hex_code(self):
+        self.assertTrue(break_engine._has_runtime_bytecode("0x6000"))
+        self.assertTrue(break_engine._has_runtime_bytecode("6000600055"))
+        self.assertFalse(break_engine._has_runtime_bytecode("0x"))
+        self.assertFalse(break_engine._has_runtime_bytecode("0x000000"))
+        self.assertFalse(break_engine._has_runtime_bytecode("not-bytecode"))
+
+    def test_runtime_target_filter_skips_stale_or_unverifiable_addresses(self):
+        targets = [
+            break_engine.Target("Live", "0x" + "1" * 40),
+            break_engine.Target("Stale", "0x" + "2" * 40),
+            break_engine.Target("Unknown", "0x" + "3" * 40),
+        ]
+        responses = [
+            __import__("subprocess").CompletedProcess([], 0, "0x6000", ""),
+            __import__("subprocess").CompletedProcess([], 0, "0x", ""),
+            __import__("subprocess").CompletedProcess([], 1, "", "rpc unavailable"),
+        ]
+        with mock.patch.object(break_engine, "_cast_exec", side_effect=responses):
+            live, rejected = break_engine._filter_runtime_targets(object(), targets, "http://127.0.0.1:8545")
+        self.assertEqual([item.contract for item in live], ["Live"])
+        self.assertEqual(len(rejected), 2)
+        self.assertIn("no runtime bytecode", rejected[0]["reason"])
+        self.assertIn("could not be verified", rejected[1]["reason"])
+
+    def test_source_derived_receive_entry_selects_access_family(self):
+        import tempfile
+
+        source = """
+        pragma solidity ^0.8.20;
+        contract Fallback {
+            mapping(address => uint256) public contributions;
+            address payable public owner;
+            modifier onlyOwner() { require(msg.sender == owner); _; }
+            function contribute() public payable {
+                contributions[msg.sender] += msg.value;
+                if (contributions[msg.sender] > contributions[owner]) owner = payable(msg.sender);
+            }
+            receive() external payable {
+                require(msg.value > 0 && contributions[msg.sender] > 0);
+                owner = payable(msg.sender);
+            }
+            function withdraw() external onlyOwner { owner.transfer(address(this).balance); }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "Fallback.sol").write_text(source, encoding="utf-8")
+            target = break_engine.Target("Fallback", "0x" + "1" * 40)
+            project = {"root": str(root)}
+            receive_source = break_engine._source_function_body(project, "receive", target)
+            selected = break_engine._family_selection(
+                {
+                    "name": "receive",
+                    "inputs": [],
+                    "outputs": [],
+                    "stateMutability": "payable",
+                },
+                None,
+                project_info=project,
+                target=target,
+            )
+        self.assertIn("owner = payable(msg.sender)", receive_source)
+        self.assertIn("access", selected)
+        self.assertIn("callback", selected)
+
+    def test_source_derived_receive_authority_probe_proves_takeover_and_reverts_snapshot(self):
+        import tempfile
+        import subprocess
+        from types import SimpleNamespace
+
+        source = """
+        pragma solidity ^0.8.20;
+        contract Fallback {
+            mapping(address => uint256) public contributions;
+            address payable public owner;
+            modifier onlyOwner() { require(msg.sender == owner); _; }
+            constructor() payable {
+                owner = payable(msg.sender);
+                contributions[msg.sender] = 1000 ether;
+            }
+            function contribute() public payable {
+                require(msg.value < 0.001 ether);
+                contributions[msg.sender] += msg.value;
+            }
+            receive() external payable {
+                require(msg.value > 0 && contributions[msg.sender] > 0);
+                owner = payable(msg.sender);
+            }
+            function withdraw() external onlyOwner { owner.transfer(address(this).balance); }
+        }
+        """
+        accounts = ["0x" + "1" * 40, "0x" + "2" * 40]
+        address = "0x" + "a" * 40
+
+        class AuditContext:
+            def __init__(self, root):
+                self.root = root
+            def foundry_project_root(self):
+                return self.root
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = AuditContext(root)
+                self.owner = accounts[0]
+            def anvil_rpc_info(self, config):
+                return {"accounts": accounts}
+            def is_address(self, value):
+                return isinstance(value, str) and value.startswith("0x") and len(value) == 42
+            def load_abi(self, address, config):
+                return [
+                    {"type": "function", "name": "owner", "inputs": [],
+                     "outputs": [{"type": "address"}], "stateMutability": "view"},
+                    {"type": "function", "name": "contribute", "inputs": [],
+                     "outputs": [], "stateMutability": "payable"},
+                    {"type": "function", "name": "withdraw", "inputs": [],
+                     "outputs": [], "stateMutability": "nonpayable"},
+                ]
+            def encode_target_call(self, config, signature, values):
+                return signature, "0x12345678"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "Fallback.sol").write_text(source, encoding="utf-8")
+            host = Host(root)
+            target = break_engine.Target("Fallback", address)
+            receive_fn = {
+                "type": "function", "name": "receive", "inputs": [],
+                "outputs": [], "stateMutability": "payable", "_lowkey_special_entry": True,
+            }
+            def fake_cast(_host, args, rpc):
+                if args[:2] == ["rpc", "evm_snapshot"]:
+                    return subprocess.CompletedProcess(args, 0, "0x1", "")
+                if args[:2] == ["rpc", "eth_call"]:
+                    encoded = "0x" + "0" * 24 + host.owner[2:]
+                    return subprocess.CompletedProcess(args, 0, encoded, "")
+                if args[0] == "send":
+                    calldata = args[args.index("--data") + 1]
+                    if calldata == "0x":
+                        host.owner = accounts[1]
+                    return subprocess.CompletedProcess(args, 0, "0xdeadbeef", "")
+                if args[:2] == ["rpc", "evm_revert"]:
+                    host.owner = accounts[0]
+                    return subprocess.CompletedProcess(args, 0, "true", "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with mock.patch.object(break_engine, "_cast_exec", side_effect=fake_cast):
+                result = break_engine._run_authority_write_probe(
+                    host, {"target": address}, "http://127.0.0.1:8545",
+                    target, receive_fn, {}, __import__("random").Random(1337),
+                    {"root": str(root)},
+                )
+
+            self.assertEqual(result.status, "BREAK")
+            self.assertTrue(result.break_condition)
+            self.assertEqual(result.detail["setup_function"], "contribute()")
+            self.assertEqual(result.detail["authority_before"], accounts[0])
+            self.assertEqual(result.detail["authority_after"], accounts[1])
+            self.assertEqual(host.owner, accounts[0], "the Anvil snapshot must be reverted after the probe")
+
+
 if __name__ == "__main__":
     unittest.main()
