@@ -39,7 +39,7 @@ DEFAULT_BEHAVIORAL_FAILURE_MARKERS = (
     "[fail. reason:", "test result: failed", "failing tests:",
     "assertionerror", "assertion failed", "assertionfailure",
     "panic: assertion", "unittest.case.failure", "failed: test_",
-    "failed test", "tests failed", "failures=", "fail: test_", "failed in ", " failing",
+    "fail: test_",
 )
 
 
