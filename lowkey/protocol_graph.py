@@ -179,6 +179,7 @@ def compiler_ast_graph(
 
         contract_by_id: dict[int, dict[str, Any]] = {}
         function_by_id: dict[int, dict[str, Any]] = {}
+        modifier_by_id: dict[int, dict[str, Any]] = {}
         state_variable_by_id: dict[int, dict[str, Any]] = {}
 
         for source_name, source_data in current_sources.items():
@@ -197,6 +198,7 @@ def compiler_ast_graph(
                         "name": name,
                         "source": source_name,
                         "source_sha256": source_data["source_sha256"],
+                        "source_span": child.get("src"),
                         "contract_kind": child.get("contractKind"),
                         "abstract": bool(child.get("abstract", False)),
                         "linearized_base_ids": child.get("linearizedBaseContracts", []),
@@ -217,6 +219,7 @@ def compiler_ast_graph(
                                 "contract": key,
                                 "source": source_name,
                                 "source_sha256": source_data["source_sha256"],
+                                "source_span": member.get("src"),
                                 "type": _safe_type(member),
                                 "visibility": member.get("visibility"),
                                 "storage_location": member.get("storageLocation"),
@@ -224,6 +227,22 @@ def compiler_ast_graph(
                             nodes[variable["id"]] = variable
                             if isinstance(variable_id, int):
                                 state_variable_by_id[variable_id] = variable
+                        elif member_kind == "ModifierDefinition":
+                            modifier_id = member.get("id")
+                            modifier_name = str(member.get("name") or "<anonymous>")
+                            modifier_key = f"{key}::modifier::{modifier_name}"
+                            modifier_node = {
+                                "id": modifier_key,
+                                "kind": "modifier",
+                                "name": modifier_name,
+                                "contract": key,
+                                "source": source_name,
+                                "source_sha256": source_data["source_sha256"],
+                                "source_span": member.get("src"),
+                            }
+                            nodes[modifier_key] = modifier_node
+                            if isinstance(modifier_id, int):
+                                modifier_by_id[modifier_id] = modifier_node
                         elif member_kind == "FunctionDefinition":
                             parameters = member.get("parameters", {}).get("parameters", [])
                             signature = str(member.get("name") or member.get("kind") or "function") + "(" + ",".join(
@@ -239,6 +258,7 @@ def compiler_ast_graph(
                                 "contract": key,
                                 "source": source_name,
                                 "source_sha256": source_data["source_sha256"],
+                                "source_span": member.get("src"),
                                 "visibility": member.get("visibility"),
                                 "state_mutability": member.get("stateMutability"),
                                 "implemented": member.get("implemented") is True,
@@ -304,15 +324,30 @@ def compiler_ast_graph(
                                     "target": target_fn["id"],
                                     "evidence": "compiler_ast",
                                     "source_sha256": function_node["source_sha256"],
+                                    "source_span": ast_child.get("src"),
                                 })
                     function_node["reads"] = sorted(reads)
                     function_node["writes"] = sorted(writes)
+                    for modifier_ref in member.get("modifiers", []):
+                        modifier_name = modifier_ref.get("modifierName") if isinstance(modifier_ref, dict) else None
+                        reference = modifier_name.get("referencedDeclaration") if isinstance(modifier_name, dict) else None
+                        modifier_node = modifier_by_id.get(reference) if isinstance(reference, int) else None
+                        if modifier_node:
+                            edges.append({
+                                "kind": "uses_modifier",
+                                "source": function_node["id"],
+                                "target": modifier_node["id"],
+                                "evidence": "compiler_ast",
+                                "source_sha256": function_node["source_sha256"],
+                                "source_span": modifier_ref.get("src"),
+                            })
                     for variable_id in function_node["reads"]:
                         edges.append({
                             "kind": "reads_state_variable",
                             "source": function_node["id"],
                             "target": variable_id,
                             "evidence": "compiler_ast",
+                            "source_span": function_node.get("source_span"),
                         })
                     for variable_id in function_node["writes"]:
                         edges.append({
@@ -320,6 +355,7 @@ def compiler_ast_graph(
                             "source": function_node["id"],
                             "target": variable_id,
                             "evidence": "compiler_ast",
+                            "source_span": function_node.get("source_span"),
                         })
 
     # A write-to-read pair is an AST-derived dependency candidate, not proof of
@@ -344,6 +380,7 @@ def compiler_ast_graph(
                         "via": variable_id,
                         "evidence": "compiler_ast_state_access",
                         "certainty": "candidate_only",
+                        "source_span": nodes[source].get("source_span"),
                     })
 
     edges.sort(key=lambda row: (
