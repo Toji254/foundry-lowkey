@@ -424,7 +424,7 @@ def verify_report(root: str | Path, report_path: str | Path) -> dict[str, Any]:
     results = verify_assumption_citations(
         base, report.get("assumptions", []), fingerprints, report.get("source_hashes", {})
     )
-    return {"status": "OBSERVED" if all(item["resolved"] for item in results) else "REJECTED",
+    return {"status": "OBSERVED" if all(item["resolved"] for item in results) else "UNRESOLVED",
             "citations_all_resolved": all(item["resolved"] for item in results),
             "citation_resolution": results}
 
