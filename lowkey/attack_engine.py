@@ -292,6 +292,96 @@ def discover_candidates(root: str | Path = ".", family: str | None = None, *, ma
     }
 
 
+def _validate_discovery(value: Any, root: Path, family: str, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise AttackEngineError(f"{label} must declare target-specific source discovery.")
+    allowed = {"source_file", "source_sha256", "source_line", "entrypoint"}
+    if set(value) != allowed:
+        raise AttackEngineError(f"{label} must contain exactly: " + ", ".join(sorted(allowed)))
+    source_path = safe_relative_file(root, value.get("source_file"), f"{label}.source_file")
+    source_hash = _hex(value.get("source_sha256"), r"[0-9a-fA-F]{64}", f"{label}.source_sha256")
+    observed_hash = _sha256_file(source_path)
+    if source_hash != observed_hash:
+        raise AttackEngineError(f"{label} source hash no longer matches the checked-out target.", "source_identity_mismatch")
+    source_line = _positive_int(value.get("source_line"), f"{label}.source_line")
+    lines = source_path.read_text(encoding="utf-8").splitlines()
+    if source_line > len(lines):
+        raise AttackEngineError(f"{label}.source_line is outside the source file.")
+    entrypoint = value.get("entrypoint")
+    if not isinstance(entrypoint, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\s*\([^;\n{}]*\)", entrypoint.strip()):
+        raise AttackEngineError(f"{label}.entrypoint must be an explicit function signature.")
+    function_name = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", entrypoint.strip()).group(1)
+    source = "\n".join(lines)
+    if not re.search(r"\b(?:function|def)\s+" + re.escape(function_name) + r"\s*\(", source):
+        raise AttackEngineError(f"{label}.entrypoint was not found in the pinned source file.", "entrypoint_not_found")
+    context = "\n".join(lines[max(0, source_line - 3):min(len(lines), source_line + 2)])
+    if not re.search(r"\b" + re.escape(function_name) + r"\s*\(", context):
+        raise AttackEngineError(f"{label}.source_line does not point to the declared entrypoint.", "entrypoint_line_mismatch")
+    return {"source_file": source_path.relative_to(root).as_posix(),
+            "source_sha256": source_hash, "source_line": source_line,
+            "entrypoint": " ".join(entrypoint.split()), "family": family}
+
+
+def _validate_precondition_evidence(value: Any, family: str, label: str) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        raise AttackEngineError(f"{label} must record every family precondition.")
+    expected = set(FAMILIES[family]["preconditions"])
+    if set(value) != expected:
+        missing, extra = sorted(expected - set(value)), sorted(set(value) - expected)
+        raise AttackEngineError(
+            f"{label} precondition evidence mismatch; missing={missing}, extra={extra}.",
+            "precondition_evidence_incomplete",
+        )
+    if any(item is not True for item in value.values()):
+        raise AttackEngineError(f"{label} did not establish every required precondition.", "preconditions_not_met")
+    return {str(key): True for key in sorted(value)}
+
+
+def _validate_reproof(
+    value: Any, *, root: Path, target: dict[str, Any], family: str, label: str
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"reproof_file"}:
+        raise AttackEngineError(f"{label} must reference the independent lk reproof artifact.", "reproof_missing")
+    path = safe_relative_file(root, value.get("reproof_file"), f"{label}.reproof_file")
+    payload = _json_file(path, f"{label} reproof")
+    source = payload.get("source_fork_verification")
+    if not isinstance(source, dict) or source.get("verified") is not True:
+        raise AttackEngineError(f"{label} has no independently source-verified fork evidence.", "reproof_not_independent")
+    if str(payload.get("target_address") or "").lower() != target["address"]:
+        raise AttackEngineError(f"{label} reproof target address differs from the pinned experiment.", "identity_mismatch")
+    raw_chain = payload.get("chain_id")
+    try:
+        same_chain = int(str(raw_chain), 0) == target["chain_id"]
+    except (TypeError, ValueError):
+        same_chain = str(raw_chain).lower() == hex(target["chain_id"]).lower()
+    if not same_chain:
+        raise AttackEngineError(f"{label} reproof chain id differs from the pinned experiment.", "identity_mismatch")
+    if payload.get("fork_parent_block") != target["block_number"]:
+        raise AttackEngineError(f"{label} reproof fork block differs from the pinned experiment.", "identity_mismatch")
+    if payload.get("command_run") is not True or str(payload.get("receipt_status")).lower() not in {"0x1", "1"}:
+        raise AttackEngineError(f"{label} reproof did not execute a mined successful transaction.", "reproof_execution_missing")
+    tx_hash = _hex(payload.get("tx_hash"), r"0x[0-9a-fA-F]{64}", f"{label}.tx_hash")
+    if FAMILIES[family]["economic"]:
+        if payload.get("status") != "PROFITABLE" or payload.get("legacy_status") != "PROFITABLE":
+            raise AttackEngineError(f"{label} economic reproof is not independently classified PROFITABLE.", "not_profitable")
+        net_profit = _wei(payload.get("net_profit_wei"), f"{label}.net_profit_wei")
+        gas_cost = _wei(payload.get("gas_cost_wei"), f"{label}.gas_cost_wei")
+        prior_cost = _wei(payload.get("prior_cost_wei"), f"{label}.prior_cost_wei")
+        total_cost = _wei(payload.get("total_cost_wei"), f"{label}.total_cost_wei")
+        if net_profit <= 0 or total_cost != gas_cost + prior_cost:
+            raise AttackEngineError(f"{label} reproof costs do not reconcile to positive net profit.", "economic_cost_mismatch")
+    else:
+        if payload.get("semantic_invariant_verified") is not True:
+            raise AttackEngineError(f"{label} non-economic reproof lacks a passing semantic invariant.", "semantic_reproof_missing")
+        if payload.get("status") not in {"SIMULATED_BREAK", "FORK_OBSERVED", "FORK_REPRODUCED", "PROFITABLE"}:
+            raise AttackEngineError(f"{label} non-economic reproof status is not an accepted observed state.", "reproof_unproven")
+    return {"status": payload.get("status"), "tx_hash": tx_hash,
+            "fork_parent_block": target["block_number"],
+            "source_verified": True, "reproof_file": path.relative_to(root).as_posix(),
+            "reproof_sha256": _sha256_file(path),
+            "net_profit_wei": payload.get("net_profit_wei")}
+
+
 def _validate_target(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise AttackEngineError("target must be an object.")
@@ -344,7 +434,7 @@ def validate_experiment_manifest(value: Any, root: str | Path = ".") -> dict[str
     base = project_root(root)
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise AttackEngineError(f"Experiment manifest schema_version must be {SCHEMA_VERSION}.")
-    allowed = {"schema_version", "id", "family", "target", "property_id", "attack", "control", "mutation", "timeout_seconds"}
+    allowed = {"schema_version", "id", "family", "target", "discovery", "property_id", "attack", "control", "reproof", "mutation", "timeout_seconds"}
     if set(value) - allowed:
         raise AttackEngineError("Unexpected experiment manifest fields: " + ", ".join(sorted(set(value) - allowed)))
     experiment_id = value.get("id")
@@ -360,6 +450,10 @@ def validate_experiment_manifest(value: Any, root: str | Path = ".") -> dict[str
     if timeout > 3600:
         raise AttackEngineError("timeout_seconds may not exceed 3600.", "resource_limit")
     target = _validate_target(value.get("target"))
+    discovery = _validate_discovery(value.get("discovery"), base, family, "discovery")
+    reproof = value.get("reproof")
+    if not isinstance(reproof, dict) or not isinstance(reproof.get("reproof_file"), str):
+        raise AttackEngineError("reproof.reproof_file must point to a completed independent lk reproof.", "reproof_missing")
     attack = _validate_test(value.get("attack"), base, "attack")
     control = _validate_test(value.get("control"), base, "control")
     if attack["evidence_file"] == control["evidence_file"]:
@@ -370,7 +464,8 @@ def validate_experiment_manifest(value: Any, root: str | Path = ".") -> dict[str
     mutants = _validate_mutants(mutation_value.get("mutants"), base)
     return {
         "schema_version": SCHEMA_VERSION, "id": experiment_id, "family": family,
-        "target": target, "property_id": property_id, "attack": attack, "control": control,
+        "target": target, "discovery": discovery, "reproof": reproof,
+        "property_id": property_id, "attack": attack, "control": control,
         "mutants": mutants, "timeout_seconds": timeout, "project_root": str(base),
     }
 
@@ -451,7 +546,7 @@ def _validate_evidence(
     if not isinstance(evidence, dict):
         raise AttackEngineError(f"{label} must be an object.", "evidence_invalid")
     required = {"schema_version", "experiment_id", "family", "role", "target",
-                "pair_anchor", "predicate", "trace_events"}
+                "discovery_sha256", "preconditions", "pair_anchor", "predicate", "trace_events"}
     missing = required - set(evidence)
     if missing:
         raise AttackEngineError(f"{label} is missing: " + ", ".join(sorted(missing)), "evidence_invalid")
@@ -462,6 +557,9 @@ def _validate_evidence(
     target = _validate_target(evidence["target"])
     if target != manifest["target"]:
         raise AttackEngineError(f"{label} target identity/chain/block does not match the pinned manifest.", "identity_mismatch")
+    if _hex(evidence["discovery_sha256"], r"[0-9a-fA-F]{64}", f"{label}.discovery_sha256") != manifest["discovery"]["source_sha256"]:
+        raise AttackEngineError(f"{label} source discovery does not match the pinned source.", "source_identity_mismatch")
+    preconditions = _validate_precondition_evidence(evidence["preconditions"], manifest["family"], label)
     anchor = evidence["pair_anchor"]
     if not isinstance(anchor, dict):
         raise AttackEngineError(f"{label}.pair_anchor must be an object.", "evidence_invalid")
@@ -478,7 +576,7 @@ def _validate_evidence(
     economic = _validate_economic_data(evidence.get("economic"), label) if FAMILIES[manifest["family"]]["economic"] else None
     return {"role": role, "target": target, "pair_anchor": normalized_anchor,
             "predicate": {"id": predicate["id"], "observed": predicate["observed"]},
-            "trace_events": events, "economic": economic, "raw": evidence}
+            "trace_events": events, "economic": economic, "preconditions": preconditions, "raw": evidence}
 
 
 def validate_evidence_pair(
@@ -486,6 +584,7 @@ def validate_evidence_pair(
 ) -> dict[str, Any]:
     left = _validate_evidence(attack, manifest=manifest, role="attack", label="attack evidence")
     right = _validate_evidence(control, manifest=manifest, role="control", label="control evidence")
+    reproof = _validate_reproof(manifest["reproof"], root=Path(manifest["project_root"]), target=manifest["target"], family=manifest["family"], label="independent reproof")
     if left["target"] != right["target"]:
         raise AttackEngineError("Attack and control targets differ.", "control_mismatch")
     if left["pair_anchor"] != right["pair_anchor"]:
@@ -501,7 +600,7 @@ def validate_evidence_pair(
         "attack_trace_events": len(left["trace_events"]),
         "control_trace_events": len(right["trace_events"]),
         "pair_anchor": left["pair_anchor"],
-        "target": left["target"],
+        "target": left["target"], "independent_reproof": reproof,
     }
 
 
