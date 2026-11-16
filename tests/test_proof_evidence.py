@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from lowkey.proof_evidence import (
-    classify_proof, evaluate_economic_policy, freeze_control_manifest,
+    classify_proof, forge_promotion_status, evaluate_economic_policy, freeze_control_manifest,
     validate_control_freeze, trace_evidence_capabilities,
     evaluate_evidence_requirements,
 )
@@ -27,6 +27,21 @@ class ProofEvidenceTests(unittest.TestCase):
         result = classify_proof("forked_deployment", "simulated_caller", "profitable",
                                 authenticity_verified=True)
         self.assertEqual(result["status"], "FORK_OBSERVED")
+
+    def test_forge_structural_evidence_promotes_verified_target_to_fork_observed_only(self):
+        verified = classify_proof(
+            "forked_deployment", "simulated_caller", "observed",
+            authenticity_verified=True,
+        )
+        fixture = classify_proof("fixture", "simulated_caller", "observed")
+        unverified = classify_proof(
+            "forked_deployment", "simulated_caller", "observed",
+            authenticity_verified=False,
+        )
+        self.assertEqual(forge_promotion_status(verified, passed=True), "FORK_OBSERVED")
+        self.assertEqual(forge_promotion_status(fixture, passed=True), "SIMULATED_BREAK")
+        self.assertEqual(forge_promotion_status(unverified, passed=True), "SIMULATED_BREAK")
+        self.assertEqual(forge_promotion_status(verified, passed=False), "FORK_OBSERVED")
 
     def test_assumed_fuzz_inputs_are_not_real_funded_profit(self):
         result = classify_proof(
