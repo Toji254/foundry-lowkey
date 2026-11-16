@@ -2943,7 +2943,44 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     return result
 
 
+_TERMINAL_PROBE_REASON_CODES = {
+    "no_authority_assignment",
+    "authority_getter_unavailable",
+    "authority_probe_error",
+    "authority_change_not_observed",
+    "no_unprivileged_actor",
+    "call_encoding_failed",
+    "edge_call_encoding_failed",
+    "forge_execution_error",
+    "forge_no_lowkey_telemetry",
+    "setup_call_reverted",
+    "unsupported_abi",
+}
+
+
+def _probe_is_terminal(result: AttackResult) -> bool:
+    """Return true when another identical probe cannot make useful progress."""
+    if result.status in {"BLOCKED", "LAB_ISSUE", "TIMEOUT", "SKIPPED"}:
+        return True
+    reason_code = str((result.detail or {}).get("reason_code") or "")
+    if reason_code in _TERMINAL_PROBE_REASON_CODES:
+        return True
+    if result.status == "OBSERVED":
+        return any(
+            phrase in result.summary
+            for phrase in (
+                "Target rejected the first",
+                "Target rejected the attack before the callback boundary",
+                "no concrete break condition reached",
+            )
+        )
+    return False
+
+
 def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_info=None) -> AttackResult:
+    """Run one attack family without allowing a generator failure to abort the campaign."""
+    try:
+        return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_info=None) -> AttackResult:
     """Run one attack family without allowing a generator failure to abort the campaign."""
     try:
         return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)
@@ -4118,32 +4155,7 @@ def run(config, args=None, host=None):
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
                         result = _apply_sequential_control(host, result, opts, rpc)
-                        reason_code = str((result.detail or {}).get("reason_code") or "")
-                        terminal_observation = (
-                            result.status in {"BLOCKED", "LAB_ISSUE", "TIMEOUT", "SKIPPED"}
-                            or reason_code in {
-                                "no_authority_assignment",
-                                "authority_getter_unavailable",
-                                "authority_probe_error",
-                                "no_unprivileged_actor",
-                                "call_encoding_failed",
-                                "edge_call_encoding_failed",
-                                "forge_execution_error",
-                                "forge_no_lowkey_telemetry",
-                                "setup_call_reverted",
-                                "authority_change_not_observed",
-                                "unsupported_abi",
-                            }
-                            or (
-                                result.status == "OBSERVED"
-                                and (
-                                    "Target rejected the first" in result.summary
-                                    or "Target rejected the attack before the callback boundary" in result.summary
-                                    or "no concrete break condition reached" in result.summary.lower()
-                                )
-                            )
-                        )
-                        if terminal_observation:
+                        if _probe_is_terminal(result):
                             terminal_probes.add(probe_key)
                         result.detail = result.detail or {}
                         result.detail["selection_evidence"] = basis
