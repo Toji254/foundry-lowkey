@@ -487,14 +487,14 @@ class TraceSchemaV2Tests(unittest.TestCase):
 
 
     def test_structlogs_per_access_storage_becomes_exact_anvil_trace_events(self):
-        calls = [{
+        calls = {
             "type": "CALL", "from": A, "to": B, "depth": 1,
             "value": "0x0", "input": "0x12345678",
             "calls": [{
                 "type": "DELEGATECALL", "from": B, "to": A, "depth": 2,
                 "value": "0x0", "input": "0xaabbccdd", "calls": [],
             }],
-        }]
+        }
         access = {
             "account": B, "slot": SLOT, "previous_value": WORD1,
             "new_value": WORD2, "is_write": True, "reverted": False,
@@ -516,23 +516,23 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertEqual(events[1]["storage"], [])
 
     def test_structlogs_exact_storage_requires_an_explicit_array_for_every_frame(self):
-        calls = [
-            {"type": "CALL", "from": A, "to": B, "input": "0x12345678", "calls": [
+        calls = {
+            "type": "CALL", "from": A, "to": B, "input": "0x12345678", "calls": [
                 {"type": "DELEGATECALL", "from": B, "to": A, "input": "0xaabbccdd", "calls": []}
             ]}
-        ]
+        }
         with self.assertRaisesRegex(ValueError, "every call frame"):
             normalize_calltracer(calls, per_access_storage={0: []})
 
     def test_exact_structlogs_storage_matches_forge_access_sequences(self):
-        calls = [{
+        calls = {
             "type": "CALL", "from": A, "to": B, "depth": 0,
             "value": "0x0", "input": "0x12345678",
             "calls": [{
                 "type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
                 "value": "0x0", "input": "0xaabbccdd", "calls": [],
             }],
-        }]
+        }
         access = {
             "account": B, "slot": SLOT, "previous_value": WORD1,
             "new_value": WORD2, "is_write": True, "reverted": False,
@@ -545,14 +545,14 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertEqual(report["storage_access_mismatches"], [])
 
     def test_exact_structlogs_storage_rejects_a_different_slot(self):
-        calls = [{
+        calls = {
             "type": "CALL", "from": A, "to": B, "depth": 0,
             "value": "0x0", "input": "0x12345678",
             "calls": [{
                 "type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
                 "value": "0x0", "input": "0xaabbccdd", "calls": [],
             }],
-        }]
+        }
         access = {
             "account": B, "slot": WORD2, "previous_value": WORD1,
             "new_value": WORD2, "is_write": True, "reverted": False,
@@ -564,14 +564,14 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertEqual(report["storage_access_mismatches"][0]["dimension"], "slot")
 
     def test_exact_storage_access_match_does_not_invent_missing_write_values(self):
-        calls = [{
+        calls = {
             "type": "CALL", "from": A, "to": B, "depth": 0,
             "value": "0x0", "input": "0x12345678",
             "calls": [{
                 "type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
                 "value": "0x0", "input": "0xaabbccdd", "calls": [],
             }],
-        }]
+        }
         access = {
             "account": B, "slot": SLOT, "previous_value": None,
             "new_value": None, "is_write": True, "reverted": False,
