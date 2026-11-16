@@ -112,7 +112,7 @@ class P2ForkFailoverTests(unittest.TestCase):
             "0x1", fallback_error,
             "0x1", header, "0x6000", proof,
         ]
-        alternate = "https://ethereum-rpc.publicnode.com"
+        alternate = "https://eth.llamarpc.com"
         with mock.patch.object(p2, "rpc", side_effect=responses) as request:
             active, attempts, evidence = p2.resolve_source_archive_provider(
                 self.source,
