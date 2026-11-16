@@ -5528,8 +5528,9 @@ def _godmode_stage_detail(stage):
     reason = str(stage.get("reason") or "").strip()
 
     if name == "source-recon":
-        count = int(stage.get("signals") or 0)
-        return f"{count} source-map markers for navigation/context; not vulnerability findings."
+        count = int(stage.get("files_scanned") or stage.get("signals") or 0)
+        markers = int(stage.get("markers") or 0)
+        return f"Indexed {count} first-party source file(s); {markers} source-map markers are navigation/context, not findings."
     if name == "source-security":
         count = int(stage.get("finding_count") or 0)
         return f"{count} unverified access-control candidate(s) from source-level state/guard analysis."
@@ -5555,7 +5556,7 @@ def _godmode_stage_detail(stage):
     if name == "attack":
         if status == "not-run":
             return "Not requested. No attack campaign or attack transactions were run."
-        if status == "review":
+        if status in {"review", "completed"}:
             raw = str(stage.get("output") or "")
             highlights = []
             for line in raw.splitlines():
@@ -5563,8 +5564,8 @@ def _godmode_stage_detail(stage):
                     highlights.append(line.strip())
             summary = "; ".join(highlights[-4:])
             code = stage.get("exit_code")
-            base = f"lk break ran (exit code {code})." if code is not None else "lk break ran."
-            return base + (" " + summary if summary else " Open the break evidence under .audit/break/ to see the probes and verdict.")
+            base = f"lk break exited with code {code}." if code is not None else "lk break completed."
+            return base + (" " + summary if summary else " Open .audit/break/ for per-probe results.")
     if name == "control":
         if status == "provided":
             return f"Manifest supplied: {stage.get('manifest')}. The attack engine must still report a passing matched control."
@@ -5982,7 +5983,14 @@ def godmode(args):
     findings=source_findings+slither_findings
     stages=[]
     raw_map_count=sum(len(v) for key,v in maps.items() if isinstance(v,list) and key != "arithmetic_review")
-    stages.append({"name":"source-recon","status":"completed","signals":raw_map_count})
+    source_file_count=len(files(root))
+    stages.append({
+        "name":"source-recon",
+        "status":"completed",
+        "signals":source_file_count,
+        "files_scanned":source_file_count,
+        "markers":raw_map_count,
+    })
     stages.append({"name":"source-security","status":"completed","finding_count":len(source_findings)})
     stages.append(slither_stage)
     arithmetic_rows=maps.get("arithmetic_review", [])
