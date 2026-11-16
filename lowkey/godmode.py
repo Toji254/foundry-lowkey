@@ -249,7 +249,7 @@ GODMODE_HELP_GUIDES = {
         "usage": "lk godmode [target-address] [--root DIR] [options]",
         "when": "Use this as the audit entry point. Omit the target for source-only reconnaissance; supply a target and RPC when you also need chain/proxy/selector information.",
         "variations": [
-            "lk godmode --root . — source reconnaissance; no target or RPC is needed.",
+            "START HERE — lk godmode --root . scans the source with no target or RPC.",
             "lk godmode --root . --plan-only — static-only run; disables RPC and all optional execution stages.",
             "lk godmode <address> --root . --rpc-url http://127.0.0.1:8545 — source scan plus read-only chain reconnaissance.",
             "lk godmode <address> --root . --rpc-url http://127.0.0.1:8545 --attack — opt into local-Anvil attack exploration."
@@ -841,7 +841,7 @@ GODMODE_HELP_GUIDES = {
             "lk invariant-forge governance --root ."
         ],
         "arguments": [
-            "PROFILE — vault, lending, amm, staking, bridge or governance; defaults to general, which currently is not a generated profile."
+            "PROFILE — vault, lending, amm, staking, bridge or governance; default: vault."
         ],
         "options": [
             "--root DIR — project root; default: ."
@@ -1690,8 +1690,9 @@ GODMODE_HELP_GUIDES = {
         "when": "Use to continue Lowkey's question-driven audit loop, inspect the current question or record an answer/note.",
         "variations": [
             "lk questions --root . — show the current audit question (default action: current).",
-            "lk questions next --root . — request the next question if supported by the question engine.",
-            "lk questions answer \"The transfer check subtracts before comparing\" --root . — submit a note/answer through the question engine."
+            "lk questions next --root . — request the next active question.",
+            "lk questions note \"The transfer check subtracts before comparing\" --root . — save your conclusion/evidence and advance the question frontier.",
+            "lk questions done --root . — mark the current question answered without a note."
         ],
         "arguments": [
             "ACTION — question-engine action; default: current.",
@@ -1716,6 +1717,44 @@ GODMODE_HELP_GUIDES = {
         ]
     }
 }
+
+GODMODE_SUBCOMMAND_HELP_GUIDES = {
+    "archetype classify": {
+        "summary": "Classify source into a supported protocol archetype and emit source-cited assumptions/capability negotiation.",
+        "when": "Use this when you want a protocol classification rather than a generic starter checklist.",
+        "usage": "lk archetype classify [options]",
+        "variations": [
+            "lk archetype classify --root . --json — classify the current project and print JSON.",
+            "lk archetype classify --root . --output .audit/godmode/classification.json — choose the report path.",
+            "lk archetype classify --verify .audit/godmode/classification.json --root . — re-read and verify saved source citations.",
+            "lk archetype classify --assumptions --root . — print and re-verify the assumption ledger.",
+            "lk archetype classify --capability --root . — print capability negotiation from the saved report."
+        ],
+        "arguments": ["None. This subcommand uses flags only."],
+        "options": [
+            "--root DIR — source/project root; default: .",
+            "--output FILE — classification output path; default: .audit/godmode/archetype-classification.json.",
+            "--json — print machine-readable JSON.",
+            "--verify REPORT — re-read and verify citations in an existing report.",
+            "--report FILE — saved report used by --verify/assumption/capability actions; default: .audit/godmode/archetype-classification.json.",
+            "--assumptions — print and re-verify the assumption ledger.",
+            "--capability — print capability negotiation from a saved report."
+        ],
+        "workflow": [
+            "Run classification with --json and inspect the archetype plus status.",
+            "If the result is UNCLASSIFIED, do not force a category; inspect the missing evidence.",
+            "Run --verify on a saved report after source changes.",
+            "Use --assumptions and --capability to review trust assumptions and generic-mode skips."
+        ],
+        "output": [
+            "Classification JSON/report at --output or the configured --report path.",
+            "Source citations and explicit OBSERVED/UNCLASSIFIED status."
+        ],
+        "limits": "Classification is source-level evidence. It does not authenticate the deployed bytecode or establish a vulnerability.",
+        "related": ["lk archetype --h", "lk assumptions --h", "lk capability --h"]
+    }
+}
+
 
 def _godmode_help_details(command):
     command = str(command or "").strip().lower()
@@ -4440,7 +4479,7 @@ def _archetype_index_main(args):
 
 
 def generate(args,kind):
-    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",default="general"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
+    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",choices=("vault","lending","amm","staking","bridge","governance"),default="vault"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
     templates={
       "invariant-forge":{"vault":["totalAssets >= totalSupply after matching units/fees","sum(user shares) == totalSupply"],"lending":["total debt reconciles with account debt","collateral and debt valuation obey liquidation rules"],"amm":["fee-adjusted invariant is preserved","pool balances reconcile with reserves"],"staking":["sum(user stake) == totalStaked","claimed rewards never exceed earned rewards"],"bridge":["message nonce consumed at most once","minted representation never exceeds finalized deposits"],"governance":["proposal executes at most once","vote weight counted once at declared snapshot"]},
       "archetype":{"vault":["deposit/withdraw/preview/share-inflation handlers","donation and rounding ghost state"],"lending":["borrow/repay/liquidate handlers","health-factor and bad-debt ghosts"],"amm":["swap/mint/burn/flash handlers","reserve and invariant ghosts"],"staking":["stake/unstake/claim handlers","reward-index and lockup ghosts"],"bridge":["send/relay/claim handlers","message nonce and finality ghosts"],"governance":["propose/vote/queue/execute handlers","snapshot and timelock ghosts"]}
@@ -4959,7 +4998,7 @@ def print_godmode_command_help(command):
     """Render the same task-oriented help layout for every routed Godmode command."""
     command = str(command or "").strip().lower()
     details = _godmode_help_details(command) or {}
-    guide = GODMODE_HELP_GUIDES.get(command)
+    guide = GODMODE_HELP_GUIDES.get(command) or GODMODE_SUBCOMMAND_HELP_GUIDES.get(command)
     if not guide:
         print("No curated help page is registered for: " + command)
         return 2
@@ -5870,6 +5909,8 @@ def main(argv=None):
         print_command_catalog()
         return 0
     cmd,rest=a[0],a[1:]
+    if cmd == "archetype" and rest and rest[0] == "classify" and _is_godmode_help_request(rest[1:]):
+        return print_godmode_command_help("archetype classify")
     if cmd in ROUTED_COMMANDS and _is_godmode_help_request(rest):
         return print_godmode_command_help(cmd)
     if cmd=="capabilities":

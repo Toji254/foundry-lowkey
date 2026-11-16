@@ -193,23 +193,33 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         result, output = _capture_help("godmode", "--h")
         self.assertEqual(result, 0, output)
         for expected in (
-            "START HERE", "Source-only scan", "address or RPC URL",
+            "USAGE", "COMMAND VARIATIONS", "START HERE", "source with no target",
             "--plan-only", "--attack", "local Anvil",
-            "--control-manifest", "mutation", "coverage",
+            "--control-manifest", "--mutation-manifest", "--coverage-source",
             ".audit/godmode/latest.json", "provenance.json",
-            "<target-address>",
-            "--root <folder>",
-            "REVIEW_REQUIRED",
+            "<target-address>", "--root DIR", "REVIEW_REQUIRED",
+            "SAFETY / LIMITATIONS",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, output)
+
+    def test_archetype_classify_has_its_own_help_page(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = godmode.main(["archetype", "classify", "--help"])
+        rendered = output.getvalue()
+        self.assertEqual(result, 0, rendered)
+        for token in ("lk archetype classify", "--root", "--output", "--json",
+                      "--verify", "--report", "--assumptions", "--capability",
+                      "UNCLASSIFIED"):
+            self.assertIn(token, rendered)
 
     def test_fidelity_help_explains_inspection_recording_and_strength(self):
         result, rendered = _capture_help("fidelity")
         self.assertEqual(result, 0, rendered)
         for token in ("--inspect", "--record", "--cheatcode", "--strength",
                       "heuristic", "simulated-funds", "reproduced-fork",
-                      ".audit", "evidence ledger"):
+                      "evidence ledger"):
             self.assertIn(token, rendered)
 
     def test_bundle_help_discloses_relay_data_sharing(self):
@@ -258,7 +268,7 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         for command in ("control", "steps", "reprove", "godmode"):
             result, output = _capture_help(command)
             self.assertEqual(result, 0, output)
-            for label in ("What it does:", "When to use:", "Example:", "Limitations:"):
+            for label in ("What it does:", "When to use:", "USAGE", "COMMAND VARIATIONS", "SAFETY / LIMITATIONS"):
                 with self.subTest(command=command, label=label):
                     self.assertIn(label, output)
         for command, required in {
