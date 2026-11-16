@@ -38,8 +38,10 @@ if str(_MODULE_DIR) not in sys.path:
 
 try:
     from .abi_support import canonical_abi_type, sample_abi_inputs
+    from .setup_reasoner import rank_setup_candidates
 except ImportError:
     from abi_support import canonical_abi_type, sample_abi_inputs
+    from setup_reasoner import rank_setup_candidates
 
 try:
     from break_playbook import (
@@ -176,7 +178,7 @@ PRIVILEGED_RE = re.compile(
     r"emergency|configure|set[A-Za-z]+|upgradeToAndCall|proxiable|"
     r"withdraw|claim|redeem|release|unlock|payout|collect|harvest)"
 )
-SETUP_RE = re.compile(r"(?i)^(deposit|seed|fund|topUp|top_up|stake|credit)$")
+SETUP_RE = re.compile(r"(?i)^(deposit(?:For)?|seed|fund|topUp|top_up|stake(?:For)?|credit|supply(?:For)?|provide(?:Liquidity)?|addLiquidity|mint(?:Shares)?|wrap|lock|contribute|subscribe|join|openPosition|createPosition|enter)$")
 
 
 @dataclass
@@ -1631,7 +1633,7 @@ def _basic_solidity_expr(ptype: str, value: str) -> str:
 
 
 def _find_setup_function(functions: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Find a conventional setup method whose ABI can be sampled without fabrication."""
+    """Find a setup candidate; optional AI can rank only ABI-proven candidates."""
     candidates = []
     rejected = []
     for item in functions:
@@ -1644,14 +1646,34 @@ def _find_setup_function(functions: list[dict[str, Any]]) -> dict[str, Any] | No
         except ValueError as exc:
             rejected.append(f"{_format_signature(item)}: {exc}")
             continue
-        candidates.append(item)
+        candidate = dict(item)
+        candidate["signature"] = _format_signature(item)
+        candidates.append(candidate)
     if not candidates:
         if rejected:
             raise ValueError("No generic setup candidate has a supported ABI: " + "; ".join(rejected[:3]))
         return None
     candidates.sort(key=lambda item: (len(item.get("inputs") or []), _format_signature(item)))
-    return candidates[0]
 
+    # AI can rank only functions already present in the ABI. It cannot add a
+    # function, infer a selector, invent argument values, execute a call, or
+    # change the verdict. Disabled/unavailable AI keeps deterministic ordering.
+    decision = rank_setup_candidates(candidates)
+    selected_signature = decision.get("selected_signature")
+    selected = next(
+        (item for item in candidates if item.get("signature") == selected_signature),
+        None,
+    )
+    chosen = dict(selected or candidates[0])
+    chosen["_lowkey_setup_reasoning"] = {
+        "mode": decision.get("mode", "deterministic"),
+        "reason": decision.get("reason", "deterministic candidate ordering"),
+        "candidate_count": len(candidates),
+        **({"provider": decision["provider"]} if decision.get("provider") else {}),
+        **({"model": decision["model"]} if decision.get("model") else {}),
+        **({"candidate_sha256": decision["candidate_sha256"]} if decision.get("candidate_sha256") else {}),
+    }
+    return chosen
 
 def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
     item = _find_setup_function(functions)
@@ -2573,11 +2595,13 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
 
     value = _payable_value(fn, opts, "small")
     seed_fund = opts.get("fund_target")
+    setup_reasoning = None
 
     if family in {"replay", "accounting"}:
         try:
             all_functions = _discover_functions(host, config, target)
             setup_function = _find_setup_function(all_functions)
+            setup_reasoning = (setup_function or {}).get("_lowkey_setup_reasoning")
             setup_signature = _format_signature(setup_function) if setup_function else None
             setup_params = list(setup_function.get("inputs") or []) if setup_function else []
             setup_payable = bool(setup_function and str(setup_function.get("stateMutability") or "").lower() == "payable")
@@ -2747,6 +2771,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         "output_tail": "\n".join(output.splitlines()[-160:]),
         "generated_at": time.time(),
         "research_basis": ATTACK_FAMILIES.get(family, {}),
+        "setup_reasoning": setup_reasoning,
         "project_detection": {
             "kind": (project_info or {}).get("kind"),
             "break_backend": (project_info or {}).get("break_backend"),
