@@ -142,8 +142,25 @@ def _run_campaigns():
     usdt_vault = deploy("P0USDTStyleVault", sender)
 
     def check_array(raw: str, harness: str):
-        assert "new address[](1)" in harness, "dynamic address[] not rendered as memory array"
-        assert "withdraw(address[])" in harness, "array attack selector missing"
+        # Recursive ABI values now use Cast-encoded calldata with an explicit
+        # sentinel-to-attacker substitution; the source harness need not rebuild
+        # dynamic arrays as Solidity memory expressions.
+        assert harness.count("LowkeyABIPatch.replaceAddress(") >= 2, (
+            "expected Cast-backed calldata replacement for both setup and attack calls"
+        )
+        for signature in ("deposit(address[])", "withdraw(address[])"):
+            selector = subprocess.run(
+                ["cast", "sig", signature],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert selector.returncode == 0, selector.stderr
+            selector_hex = selector.stdout.strip().lower().removeprefix("0x")
+            assert selector_hex and selector_hex in harness.lower(), (
+                f"missing exact {signature} selector in Cast-encoded harness"
+            )
         assert telemetry_bool(raw, "TARGET_SETUP_SUCCESS"), raw[-6000:]
         assert telemetry_bool(raw, "HOSTILE_WRAPPER_SUCCESS"), raw[-6000:]
         assert telemetry_bool(raw, "TARGET_OUTER_SUCCESS"), raw[-6000:]
