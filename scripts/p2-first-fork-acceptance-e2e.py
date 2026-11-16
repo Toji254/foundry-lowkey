@@ -530,6 +530,11 @@ def main() -> int:
                 }],
                 timeout=60,
             )
+            opcode_trace_path = ARTIFACT_ROOT / "raw-anvil-opcode-trace.json"
+            opcode_trace_path.write_text(
+                json.dumps(opcode_trace, indent=2, sort_keys=True) + "\\n",
+                encoding="utf-8",
+            )
             opcode_storage = normalize_opcode_storage(
                 opcode_trace, call_trace, max_steps=50000,
             )
@@ -593,11 +598,6 @@ def main() -> int:
                 "runs": {"attack": {"chain_id": 1, "block_number": fork_block,
                                     "canonical_trace_events": forge_events}},
             }
-            opcode_trace_path = ARTIFACT_ROOT / "raw-anvil-opcode-trace.json"
-            opcode_trace_path.write_text(
-                json.dumps(opcode_trace, indent=2, sort_keys=True) + "\\n",
-                encoding="utf-8",
-            )
             anvil_report = {
                 "chain_id": 1, "block_number": fork_block,
                 "runs": {"attack": {"chain_id": 1, "block_number": fork_block,
@@ -629,8 +629,12 @@ def main() -> int:
             ]
             parity_cli = run(parity_command, cwd=ROOT, env=env, timeout=60)
             parity_cli_payload = json.loads(parity_file.read_text(encoding="utf-8"))
-            if parity_cli_payload.get("status") != "MATCHED":
-                raise AssertionError("Installed lk trace-parity did not accept the same forked call tree.")
+            if (parity_cli_payload.get("status") != "MATCHED"
+                    or parity_cli_payload.get("storage_parity") != "exact_comparable"):
+                raise AssertionError(
+                    "Installed lk trace-parity did not accept call-tree and per-frame storage parity: "
+                    + json.dumps(parity_cli_payload, indent=2)
+                )
 
             normalized_file = ARTIFACT_ROOT / "forge-state-diff-normalized.json"
             normalized_file.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
