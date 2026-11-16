@@ -393,10 +393,21 @@ def _validate_reproof(
             token_portfolio = payload.get("token_portfolio")
             if not isinstance(valuation, dict) or not isinstance(token_portfolio, dict):
                 raise AttackEngineError(f"{label} USD portfolio proof is missing its valuation evidence.", "portfolio_evidence_missing")
-            if token_portfolio.get("quote_currency") != "USD" or token_portfolio.get("source_state_verified") is not True:
+            token_assets = token_portfolio.get("tokens")
+            if (
+                token_portfolio.get("quote_currency") != "USD"
+                or token_portfolio.get("source_state_verified") is not True
+                or not isinstance(token_assets, list)
+                or not token_assets
+            ):
                 raise AttackEngineError(f"{label} USD portfolio proof lacks independently source-verified asset/feed prestate.", "portfolio_source_unverified")
-            if payload.get("source_fork_verification", {}).get("portfolio_assets_verified") is not True:
-                raise AttackEngineError(f"{label} source verification did not include declared portfolio assets.", "portfolio_source_unverified")
+            source_assets = payload.get("source_fork_verification", {})
+            if (
+                not isinstance(source_assets, dict)
+                or source_assets.get("portfolio_assets_verified") is not True
+                or source_assets.get("portfolio_asset_count") != len(token_assets)
+            ):
+                raise AttackEngineError(f"{label} source verification did not include every declared portfolio asset.", "portfolio_source_unverified")
             def signed_metric(metric: Any, metric_label: str) -> int:
                 if type(metric) is not int:
                     raise AttackEngineError(f"{metric_label} must be a signed integer USD 1e-18 value.")
