@@ -347,14 +347,17 @@ class AttackEngineTests(unittest.TestCase):
             "stages": stages,
             "attack": {
                 "test_file": "test/Attack.t.sol", "test_name": "testChainAttack",
+                "test_sha256": self.test_hash,
                 "evidence_file": ".audit/lowkey/chain-attack.json",
             },
             "control": {
                 "test_file": "test/Attack.t.sol", "test_name": "testChainControl",
+                "test_sha256": self.test_hash,
                 "evidence_file": ".audit/lowkey/chain-control.json",
             },
             "failure": {
                 "test_file": "test/Attack.t.sol", "test_name": "testChainFailure",
+                "test_sha256": self.test_hash,
                 "evidence_file": ".audit/lowkey/chain-failure.json",
             },
             "reproof": dict(self.reproof),
