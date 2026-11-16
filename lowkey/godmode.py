@@ -218,6 +218,7 @@ GODMODE_HELP_GUIDES = {
             "--rpc-url URL — optional RPC override. If the current project's Lowkey context already remembers an RPC, Godmode uses it for read-only inspection. Otherwise omit it for a source-only scan.",
             "--profile light|balanced|deep — advanced on-chain proxy/storage scan depth: light checks 40 slots; balanced/deep check up to 120. Most users can ignore this.",
             "--attack — explicitly start active attack exploration through lk break. This is the only Godmode option that starts attack execution. Requires a deployed target and local Anvil; it can send transactions on that disposable local chain. Never point it at production.",
+            "--ai-review — opt into semantic source review using the configured AI provider. Selected source excerpts leave this machine; all returned findings are unverified candidates. Without this flag, Godmode does not send source excerpts to an AI provider.",
             "--control-manifest FILE — advanced matched attack/control JSON manifest. Normally leave this alone; Lowkey's standard source scan does not need it. Use only with --attack after preparing and freezing the experiment; see lk control --h.",
             "--mutation-manifest FILE — advanced JSON recipe for deliberate source mutations and repeated test runs. Normally leave this alone; use it after a test suite exists. It requires command (for example [\"forge\", \"test\"]) and mutants entries with id, file, before, and after.",
             "--coverage-source FILE — optional Solidity file to measure (for example src/Token.sol). Use after you have relevant tests; coverage shows executed lines, not whether the tests assert the correct property.",
@@ -226,8 +227,8 @@ GODMODE_HELP_GUIDES = {
         "workflow": [
             "1. Run lk godmode. Lowkey finds the project root automatically and scans its source.",
             "2. If the project has a remembered target and RPC, Godmode adds read-only chain inspection. If not, it stays source-only. Neither mode sends transactions.",
-            "3. Review the potential source leads. Counts are code matches, not vulnerability totals.",
-            "4. Run lk report to create a readable Markdown report. You do not need to pass --root for the detected project.",
+            "3. Review the potential source leads. Counts are code matches, not vulnerability totals. Use --ai-review only when you explicitly want selected source excerpts reviewed by the configured AI provider.",
+            "4. Run lk report to create a readable Markdown report. It separates candidate findings, attack outcomes, proof gaps and navigation markers. You do not need to pass --root for the detected project.",
             "5. Only when you deliberately want active testing, run lk godmode --attack on local Anvil. The target/RPC can be taken from the current project's saved context."
         ],
         "output": [
@@ -235,7 +236,7 @@ GODMODE_HELP_GUIDES = {
             ".audit/godmode/provenance.json — hash of the saved report and run context.",
             "lk report — creates .audit/godmode/report.md, the readable version."
         ],
-        "limits": "Source matches are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED means this run has not completed all proof gates; it does not mean the command crashed. Read-only inspection is safe to run automatically when the project has a remembered target/RPC. Active attack execution remains opt-in and local-Anvil-only.",
+        "limits": "Source matches are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED means this run has not completed all proof gates; it does not mean the command crashed. Read-only inspection is safe to run automatically when the project has a remembered target/RPC. Active attack execution remains opt-in and local-Anvil-only. AI-assisted source review is separately opt-in with --ai-review; selected source excerpts are sent to the configured provider and its findings remain unverified.",
         "related": [
             "lk targets",
             "lk break --h",
