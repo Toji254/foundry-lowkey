@@ -111,7 +111,8 @@ class TestRepairTests(unittest.TestCase):
             code, handled = test_repair.handle_failure("build", [], output, 1, self.root)
         self.assertEqual((code, handled), (1, True))
         self.assertEqual(contract.read_text(encoding="utf-8"), original)
-        self.assertIn("never your contracts", stream.getvalue().lower())
+        self.assertIn("never edit your contracts", stream.getvalue().lower())
+        self.assertIn("foundry settings", stream.getvalue().lower())
 
     def test_lazy_mode_refuses_to_remove_a_security_assertion(self):
         patch_old = "        uint256 second = first + 1;\n        assertEq(second, 2);"
