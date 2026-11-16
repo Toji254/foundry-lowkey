@@ -56,7 +56,7 @@ Null never counts as a match. The output records both input artifact paths and S
 
 The P2 end-to-end acceptance uses Ethereum's canonical EntryPoint v0.7 deployment, which Sourcify currently lists as **Exact**:
 
-- Target: 0x0000000071727De22E5E9D8bAF0eDaC6f37Da032
+- Target: 0x0000000071727De22E5E9d8BAf0edAc6f37da032
 - Chain: Ethereum mainnet (chain ID 1)
 - Read-only call: getNonce(address,uint192)
 - Identity: direct contract; no proxy implementation is inferred
