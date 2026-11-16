@@ -1441,6 +1441,66 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue((root / ".audit/godmode/report.md.sha256").is_file())
 
 
+    def test_report_includes_structured_attack_campaign_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            latest = root / ".audit/godmode/latest.json"
+            latest.parent.mkdir(parents=True)
+            runs = root / ".audit/break/runs"
+            runs.mkdir(parents=True)
+            campaign = runs / "20261117_campaign_test.json"
+            campaign.write_text(json.dumps({
+                "mode": "round-limited",
+                "rounds": 1,
+                "results": [{
+                    "family": "access",
+                    "contract": "Fallback",
+                    "address": "0x" + "a" * 40,
+                    "function": "receive()",
+                    "status": "BREAK",
+                    "summary": "An unprivileged account changed owner to itself.",
+                    "break_condition": True,
+                    "detail": {"reason_code": "unauthorized_authority_change"},
+                    "evidence_path": ".audit/break/runs/experiment.json",
+                }, {
+                    "family": "accounting",
+                    "contract": "Fallback",
+                    "address": "0x" + "a" * 40,
+                    "function": "contribute()",
+                    "status": "BLOCKED",
+                    "summary": "Forge harness failed to compile.",
+                    "break_condition": False,
+                    "detail": {"reason_code": "forge_compile_error"},
+                }]
+            }), encoding="utf-8")
+            latest.write_text(json.dumps({
+                "overall_status": "REVIEW_REQUIRED",
+                "target": "0x" + "a" * 40,
+                "project_root": str(root),
+                "stages": [{
+                    "name": "attack",
+                    "status": "completed",
+                    "output": f"Report   : {campaign.relative_to(root)}",
+                }],
+                "findings": [],
+                "signals": {},
+                "proof_gate": [],
+            }), encoding="utf-8")
+
+            with redirect_stdout(io.StringIO()):
+                result = godmode.report(["--root", str(root)])
+            rendered = (root / ".audit/godmode/report.md").read_text(encoding="utf-8")
+
+            self.assertEqual(result, 0)
+            self.assertIn("Attack probe results", rendered)
+            self.assertIn("receive()", rendered)
+            self.assertIn("BREAK", rendered)
+            self.assertIn("An unprivileged account changed owner to itself.", rendered)
+            self.assertIn("BLOCKED", rendered)
+            self.assertIn("forge_compile_error", rendered)
+            self.assertIn("A local break condition was observed", rendered)
+
+
     def _forge_artifact(self):
         target = "0x" + "1" * 40
         attacker = "0x" + "2" * 40
