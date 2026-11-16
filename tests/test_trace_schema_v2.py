@@ -32,7 +32,7 @@ def forge_trace():
             }],
         },
         {
-            "kind": "DelegateCall", "accessor": B, "account": A, "depth": 1,
+            "kind": "DelegateCall", "accessor": A, "account": A, "depth": 1,
             "value": 0, "input": "0xaabbccdd", "reverted": False,
             "storage": [],
         },
