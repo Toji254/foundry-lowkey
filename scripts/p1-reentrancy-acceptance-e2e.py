@@ -15,16 +15,60 @@ RPC = os.environ.get("LOWKEY_RPC_URL", "http://127.0.0.1:8545")
 ANVIL_KEY0 = None
 
 
+def _persist_failed_control_evidence(argv: list[str], cwd: Path) -> dict[str, Any] | None:
+    """Keep the paired report and both raw Forge artifacts when a control gate fails."""
+    try:
+        output_arg = argv[argv.index("--output") + 1]
+    except (ValueError, IndexError):
+        return None
+    report_path = (cwd / output_arg).resolve()
+    if not report_path.is_relative_to(cwd.resolve()) or not report_path.is_file():
+        return None
+    repository_root = Path(__file__).resolve().parents[1]
+    evidence_root = repository_root / ".audit" / "p1-reentrancy-acceptance"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    persisted = evidence_root / "paired-control-debug.json"
+    shutil.copy2(report_path, persisted)
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"report": str(persisted), "raw_state_diffs": []}
+    raw_state_diffs = []
+    for scenario in ("control", "attack"):
+        row = (payload.get("runs") or {}).get(scenario) or {}
+        token = row.get("state_diff_file")
+        if not isinstance(token, str) or not token:
+            continue
+        source = (cwd / token).resolve()
+        if not source.is_relative_to(cwd.resolve()) or not source.is_file():
+            continue
+        destination = evidence_root / f"paired-{scenario}-state-diff-debug.json"
+        shutil.copy2(source, destination)
+        raw_state_diffs.append(str(destination))
+    return {
+        "report": str(persisted),
+        "raw_state_diffs": raw_state_diffs,
+        "same_entry_call_verified": payload.get("same_entry_call_verified"),
+        "same_prestate_verified": payload.get("same_prestate_verified"),
+        "control_entry_call": (payload.get("runs") or {}).get("control", {}).get("entry_call"),
+        "attack_entry_call": (payload.get("runs") or {}).get("attack", {}).get("entry_call"),
+        "control_prestate_sha256": (payload.get("runs") or {}).get("control", {}).get("prestate_sha256"),
+        "attack_prestate_sha256": (payload.get("runs") or {}).get("attack", {}).get("prestate_sha256"),
+    }
+
+
 def run(argv: list[str], cwd: Path, env: dict[str, str], timeout: int = 360) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         argv, cwd=cwd, env=env, text=True, capture_output=True,
         timeout=timeout, check=False,
     )
     if result.returncode != 0:
+        debug = _persist_failed_control_evidence(argv, cwd)
         raise AssertionError(
             f"Command exited {result.returncode}: {argv!r}\n"
             f"--- stdout ---\n{result.stdout[-12000:]}\n"
-            f"--- stderr ---\n{result.stderr[-12000:]}"
+            f"--- stderr ---\n{result.stderr[-12000:]}\n"
+            f"--- paired evidence diagnostics ---\n{json.dumps(debug, indent=2, sort_keys=True)}"
         )
     return result
 
