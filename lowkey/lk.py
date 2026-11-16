@@ -1683,7 +1683,11 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
 
 def activate_project_context(config, root=None):
     """Hydrate target, RPC and active actor from the current project's context."""
-    resolved = resolve_runtime_context(config, root)
+    resolved = resolve_runtime_context(
+        config,
+        root,
+        explicit_actor=(config.get("actor") if config.get("_ephemeral") is True else None),
+    )
     project_root = Path(resolved["project_root"]).expanduser().resolve()
     target = resolved.get("target") or {}
     address = target.get("address") if isinstance(target, dict) else None
@@ -1721,6 +1725,10 @@ def activate_project_context(config, root=None):
 
 def persist_project_actor(config, root=None):
     """Persist active actor selection in the project, not only global config."""
+    # A temporary "lk as <actor> ..." signer must never become the
+    # project's remembered actor, even though nested dispatch uses this logger.
+    if isinstance(config, dict) and config.get("_ephemeral") is True:
+        return None
     project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
     resolved = config.get("_resolved_project_context") if isinstance(config, dict) else None
     if not isinstance(resolved, dict):
@@ -20334,10 +20342,18 @@ def _sync_audit_context(config, root=None):
                 "source": "project-auto",
             }
 
-    actor = actor_display(config)
-    actor_profile = config.get("actor") if config.get("actor") in (config.get("wallets") or {}) else None
-    if actor == "none" and existing.get("actor_scope_initialized") is not True:
+    if isinstance(config, dict) and config.get("_ephemeral") is True:
+        # Nested actor overrides may update command-local state, but must not
+        # rewrite the project's durable actor selection or initialization bit.
         actor = existing.get("actor")
+        actor_profile = existing.get("actor_profile")
+        actor_scope_initialized = existing.get("actor_scope_initialized") is True
+    else:
+        actor = actor_display(config)
+        actor_profile = config.get("actor") if config.get("actor") in (config.get("wallets") or {}) else None
+        if actor == "none" and existing.get("actor_scope_initialized") is not True:
+            actor = existing.get("actor")
+        actor_scope_initialized = True
 
     resolved_context = resolve_runtime_context(config, root)
     rpc = resolved_context.get("rpc")
@@ -20355,7 +20371,7 @@ def _sync_audit_context(config, root=None):
         target=target,
         actor=actor,
         actor_profile=actor_profile,
-        actor_scope_initialized=True,
+        actor_scope_initialized=actor_scope_initialized,
         rpc=rpc,
         latest=latest,
     )
