@@ -30,7 +30,7 @@ JEV_MAX_DAILY_LIMIT = 24
 JEV_RESPONSE_CACHE_TTL_SECONDS = 1_800
 JEV_RESPONSE_CACHE_MAX_ENTRIES = 40
 PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama", "orcarouter", "openrouter", "nvidia"}
-PURPOSES = {"provider_test", "lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan"}
+PURPOSES = {"provider_test", "lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis", "next_step_recommendations", "command_guidance", "task_plan", "setup_reasoning"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1", "orcarouter": "https://api.orcarouter.ai/v1", "openrouter": "https://openrouter.ai/api/v1", "nvidia": "https://integrate.api.nvidia.com/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
