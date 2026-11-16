@@ -2981,9 +2981,6 @@ def _probe_is_terminal(result: AttackResult, fn: dict[str, Any] | None = None) -
 def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_info=None) -> AttackResult:
     """Run one attack family without allowing a generator failure to abort the campaign."""
     try:
-        return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_info=None) -> AttackResult:
-    """Run one attack family without allowing a generator failure to abort the campaign."""
-    try:
         return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)
     except Exception as exc:
         signature = _format_signature(fn, host)
@@ -3000,7 +2997,6 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
                 "error": str(exc),
             },
         )
-
 
 def _source_function_body(
     project_info: dict[str, Any] | None,
