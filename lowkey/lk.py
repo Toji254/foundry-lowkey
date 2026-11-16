@@ -1684,6 +1684,7 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
 def activate_project_context(config, root=None):
     """Hydrate target, RPC and active actor from the current project's context."""
     resolved = resolve_runtime_context(config, root)
+    project_root = Path(resolved["project_root"]).expanduser().resolve()
     target = resolved.get("target") or {}
     address = target.get("address") if isinstance(target, dict) else None
 
