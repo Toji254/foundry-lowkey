@@ -82,3 +82,5 @@ The committed fixture set covers a vault, a constant-product AMM and an unknown 
 - the installed CLI routes the new commands and the installer fingerprints every new runtime/data file.
 
 This is classification acceptance only. The archetype packs are not entered as attack-family evaluation successes, and no P4–P11 capability is promoted.
+
+The integration candidate is based on `integration-test-drive`; its combined P0/P1/P2/attack-engine/P3 tree is validated by the exact-head CI attached to PR #72.
