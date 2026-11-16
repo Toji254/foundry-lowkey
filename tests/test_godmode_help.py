@@ -179,7 +179,7 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
         result, output = _capture_help("godmode", "--h")
         self.assertEqual(result, 0, output)
         for expected in (
-            "START HERE", "source-only scan", "no address or RPC",
+            "START HERE", "Source-only scan", "address or RPC URL",
             "--plan-only", "--attack", "local Anvil",
             "--control-manifest", "mutation", "coverage",
             ".audit/godmode/latest.json", "provenance.json",
