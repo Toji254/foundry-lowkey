@@ -170,7 +170,8 @@ class CliConsistencyTests(unittest.TestCase):
             lk,
             "project_context_target",
             return_value={"address": target, "contract": "Fallback", "source": "manual"},
-        ),              patch.object(lk, "rpc_json", return_value="0x0"):
+        ),              patch.object(lk, "rpc_json", return_value="0x0"), \
+             patch.object(lk.shared_context, "target_owned_by_project", return_value=True):
             output = io.StringIO()
             with redirect_stdout(output):
                 result = lk.run_balance(config)
@@ -187,7 +188,9 @@ class CliConsistencyTests(unittest.TestCase):
             "rpc": "http://127.0.0.1:8545",
             "targets": {"Fallback": target},
         }
-        with patch.object(lk, "target_aliases", return_value={"Fallback": target}),              patch.object(lk, "rpc_json", return_value="0x16345785d8a0000"):
+        with patch.object(lk, "target_aliases", return_value={"Fallback": target}), \
+             patch.object(lk, "rpc_json", return_value="0x16345785d8a0000"), \
+             patch.object(lk.shared_context, "target_owned_by_project", return_value=True):
             output = io.StringIO()
             with redirect_stdout(output):
                 result = lk.run_balance(config)
@@ -204,7 +207,10 @@ class CliConsistencyTests(unittest.TestCase):
             "rpc": "http://127.0.0.1:8545",
             "targets": {"Fallback": target},
         }
-        with patch.object(lk, "resolve_target_ref", return_value=target),              patch.object(lk, "apply_labels", side_effect=lambda value, _config: f"Fallback ({value})"),              patch.object(lk, "rpc_json", return_value="0x0"):
+        with patch.object(lk, "resolve_target_ref", return_value=target), \
+             patch.object(lk, "apply_labels", side_effect=lambda value, _config: f"Fallback ({value})"), \
+             patch.object(lk, "rpc_json", return_value="0x0"), \
+             patch.object(lk.shared_context, "target_owned_by_project", return_value=True):
             result_output = io.StringIO()
             with redirect_stdout(result_output):
                 result = lk.run_balance(config, ["Fallback"])
@@ -316,7 +322,10 @@ class CliConsistencyTests(unittest.TestCase):
             "target": target,
             "rpc": "http://127.0.0.1:0",
         }
-        with patch.object(lk, "activate_project_target", return_value=target),              patch.object(lk, "storage_layout_details", return_value=({}, [])),              patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
+        with patch.object(lk, "activate_project_target", return_value=target), \
+             patch.object(lk, "storage_layout_details", return_value=({}, [])), \
+             patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output, \
+             patch.object(lk.shared_context, "target_owned_by_project", return_value=True):
             result = lk.dispatch_command("storage", ["1"], config)
 
         self.assertEqual(result, 0)
@@ -338,7 +347,8 @@ class CliConsistencyTests(unittest.TestCase):
         with patch.object(lk, "activate_project_context"), \
              patch.object(lk, "activate_project_target", return_value=target), \
              patch.object(lk, "storage_layout_details", return_value=({}, [])), \
-             patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
+             patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output, \
+             patch.object(lk.shared_context, "target_owned_by_project", return_value=True):
             result = lk.dispatch_command("slots", ["1"], config)
 
         self.assertEqual(result, 0)
@@ -363,7 +373,8 @@ class CliConsistencyTests(unittest.TestCase):
              patch.object(lk, "resolve_target_ref", return_value=target) as resolve_target, \
              patch.object(lk, "resolve_function", return_value="getContribution()"), \
              patch.object(lk, "load_abi", return_value=[abi_item]), \
-             patch.object(lk, "cast_output", return_value=(0, "0x", "")) as cast_output:
+             patch.object(lk, "cast_output", return_value=(0, "0x", "")) as cast_output, \
+             patch.object(lk.shared_context, "target_owned_by_project", return_value=True):
             result = lk.run_cast(["call", "Fallback", "getContribution"], config, capture=True)
 
         self.assertEqual(result.code, 0)
@@ -696,7 +707,7 @@ class CliConsistencyTests(unittest.TestCase):
         with patch.object(lk, "load_config", return_value=config), \
              patch.object(lk, "dispatch_command", return_value=2), \
              patch.object(lk, "runtime_sync_status", return_value={"status": "ok"}), \
-             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/Fallback")), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path.cwd()), \
              patch.object(lk, "_sync_audit_context"), \
              patch.object(lk, "refresh_generated_poc") as refresh_poc, \
              patch.object(lk, "_print_recommended_next_commands"), \
