@@ -83,6 +83,10 @@ class RecursiveABISupportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "64-element"):
             abi_support.sample_abi_value({"type": "uint256[65]"})
 
+    def test_total_recursive_element_budget_prevents_large_fixed_expansions(self):
+        with self.assertRaisesRegex(ValueError, "4096-element"):
+            abi_support.sample_abi_value({"type": "uint256[64][64][2]"}, "one")
+
     def test_excessive_tuple_nesting_fails_closed(self):
         item = {"type": "uint256"}
         for _ in range(12):
