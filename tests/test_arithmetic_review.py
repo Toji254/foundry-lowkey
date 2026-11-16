@@ -126,7 +126,7 @@ class ArithmeticReviewTests(unittest.TestCase):
                  patch.object(godmode, "mutation", side_effect=AssertionError("mutation must not run")), \
                  patch.object(godmode, "coverage", side_effect=AssertionError("coverage must not run")), \
                  redirect_stdout(io.StringIO()):
-                godmode.godmode([
+                result_code = godmode.godmode([
                     "--root", str(root), "--plan-only",
                     "0x1111111111111111111111111111111111111111",
                     "--rpc-url", "http://127.0.0.1:8545",
@@ -134,6 +134,7 @@ class ArithmeticReviewTests(unittest.TestCase):
                     "--coverage-source", "Token.sol",
                 ])
 
+            self.assertEqual(result_code, 0)
             report = json.loads(
                 (root / ".audit" / "godmode" / "latest.json").read_text(encoding="utf-8")
             )
