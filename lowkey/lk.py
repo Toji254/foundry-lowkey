@@ -10665,10 +10665,21 @@ def _artifact_runtime_normalizer(artifact):
         return None
 
     normalized = expected_runtime.removeprefix("0x").lower()
-    immutable_refs = {}
     deployed = artifact.get("deployedBytecode") if isinstance(artifact, dict) else None
+    immutable_refs = {}
     if isinstance(deployed, dict):
         immutable_refs = deployed.get("immutableReferences") or {}
+
+    # Foundry and solc artifact writers have emitted the deployed bytecode
+    # object and its immutable map in more than one shape. Accept the standard
+    # nested solc form first, then the flattened Foundry artifact keys. Missing
+    # immutable metadata must never be guessed or treated as a wildcard.
+    if not immutable_refs and isinstance(artifact, dict):
+        immutable_refs = (
+            artifact.get("deployedBytecodeImmutableReferences")
+            or artifact.get("immutableReferences")
+            or {}
+        )
 
     spans = []
     if isinstance(immutable_refs, dict):
