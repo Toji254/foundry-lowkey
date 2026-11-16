@@ -52,6 +52,31 @@ def anvil_trace():
 
 
 class TraceSchemaV2Tests(unittest.TestCase):
+    def test_trace_parity_imports_when_installed_as_standalone_sibling_modules(self):
+        import os
+        import pathlib
+        import subprocess
+        import sys
+        import tempfile
+
+        module_dir = pathlib.Path(__file__).resolve().parents[1] / "lowkey"
+        with tempfile.TemporaryDirectory() as temporary:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(module_dir)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import trace_parity; assert callable(trace_parity.compare_trace_events)",
+                ],
+                cwd=temporary,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_canonical_event_has_exact_contract_fields(self):
         event = forge_trace()[0]
         self.assertEqual(tuple(event.keys()), TRACE_FIELDS)
