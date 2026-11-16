@@ -365,28 +365,38 @@ GODMODE_HELP_GUIDES = {
         "when": "Use this to validate a typed Step[] execution plan and render a reviewable Foundry harness before running Forge.",
         "variations": [
             "lk steps .audit/steps.json --root .",
+            "Minimal manifest shape: {\"family\":\"accounting\",\"target_address\":\"0x1111111111111111111111111111111111111111\",\"steps\":[{\"kind\":\"call\",\"selector\":\"0x12345678\",\"args\":[{\"type\":\"uint256\",\"value\":1}],\"value\":0}]}",
             "Choose a custom harness path with --output test/GeneratedSteps.t.sol.",
             "Choose a custom machine-readable refusal path with --refusal-output .audit/refusal.json."
         ],
         "arguments": [
-            "MANIFEST.json — JSON file describing the ordered Step[] sequence, target and typed call data."
+            "MANIFEST.json — project-local JSON object with exactly family, optional target_address, and steps.",
+            "family — one of reentrancy, replay, access, accounting, boundary, time, upgrade, callback, oracle, economic, erc20, proxy, storage, signature or dos.",
+            "target_address — optional default 20-byte target address used when a step omits target.",
+            "steps — non-empty array, maximum 128 entries. Each item uses only kind, target, selector, args, value, optional and expect.",
+            "ABIValue — each args entry is exactly {\"type\":\"uint256\",\"value\":1} (use the actual ABI type)."
         ],
         "options": [
             "--root DIR — project root; default: .",
             "--output FILE — generated Solidity harness; default: .audit/godmode/steps/step-harness.t.sol.",
-            "--refusal-output FILE — machine-readable refusal JSON; default: .audit/godmode/steps-refusal.json."
+            "--refusal-output FILE — machine-readable refusal JSON; default: .audit/godmode/steps-refusal.json.",
+            "Step kinds — call, read, unwind, skew, expect, assert, warp, roll, snapshot and revert are recognised. flash_borrow/reenter are explicitly unsupported without a protocol-specific callback actor.",
+            "Step args — arrays of typed ABIValue objects; generic arrays are capped at 64 values and some nested/tuple forms need a specialised generator.",
+            "Step expect — optional {\"count\":N,\"must_revert\":true|false}; count is used for an expected call, and must_revert asserts the call should fail.",
+            "Step optional — optional boolean allowing a failed call without making the harness fail."
         ],
         "workflow": [
-            "Prepare the manifest from supported typed steps.",
-            "Run `lk steps ...` to validate it and render the harness.",
-            "Read the JSON status and any refusal reason before compiling.",
-            "Review the generated Solidity, then run Forge tests yourself."
+            "Create the manifest with only the top-level fields family, target_address and steps.",
+            "For call/read/unwind/skew/expect steps, supply a target (or top-level target_address) and a 4-byte selector.",
+            "Encode every argument as {\"type\":\"ABI_TYPE\",\"value\":VALUE}; do not pass pre-encoded shell strings.",
+            "Use assert after a call/read when you need to assert success/revert state, and use expect immediately before its matching call.",
+            "Run `lk steps ...`, inspect PROPOSED/refusal output and the generated Solidity, then compile and test it with Forge."
         ],
         "output": [
             "Generated harness plus SHA-256 digest on success.",
             "A structured refusal in stdout and --refusal-output when a plan is invalid or unsupported."
         ],
-        "limits": "The family labels share a generic executable sequence; they are not separate protocol-specific exploit generators. Unsupported generic flash_borrow/reenter callback steps are refused rather than silently approximated.",
+        "limits": "This is a typed harness renderer, not an exploit generator. A generated PROPOSED harness still needs protocol-specific actors, setup and meaningful assertions. flash_borrow/reenter require a protocol-specific callback actor and are refused rather than fabricated.",
         "related": [
             "lk attack-forge --h",
             "lk control --h",
@@ -1012,7 +1022,12 @@ GODMODE_HELP_GUIDES = {
             "lk skew .audit/skew.json --root ."
         ],
         "arguments": [
-            "MANIFEST.json — JSON requiring pool, asset, oracle_read, consumer_call and amounts fields."
+            "MANIFEST.json — JSON object requiring all five keys: pool, asset, oracle_read, consumer_call and amounts.",
+            "pool — pool/market identity and address/details needed by the later adapter.",
+            "asset — asset being evaluated.",
+            "oracle_read — description or encoded read needed to obtain the oracle value.",
+            "consumer_call — description or encoded call for the function that consumes the oracle value.",
+            "amounts — candidate amounts/scenarios to evaluate."
         ],
         "options": [
             "--root DIR — project root; default: ."
@@ -1023,9 +1038,10 @@ GODMODE_HELP_GUIDES = {
             "Validate the pool and consumer semantics, then build a controlled fork test."
         ],
         "output": [
-            "A JSON plan including the manifest hash and supplied experiment dimensions."
+            ".audit/godmode/skew-plan.json — plan containing the manifest hash, supplied dimensions and required assertions.",
+            "The plan status is adapter-and-harness-required; no market state is changed."
         ],
-        "limits": "This command constructs a plan from supplied data; it does not by itself move a market, manipulate an oracle or prove economic impact.",
+        "limits": "This command validates the presence of the five manifest keys and writes a plan. It does not execute an oracle manipulation or consumer call, move a market, or prove economic impact.",
         "related": [
             "lk oracle-map --h",
             "lk compose --h",
@@ -1152,15 +1168,20 @@ GODMODE_HELP_GUIDES = {
             "lk path .audit/path.json --root . — the manifest contains an argv array such as [\"halmos\", \"--function\", \"check_withdraw\"]."
         ],
         "arguments": [
-            "MANIFEST.json — JSON containing a non-empty argv string array; optional timeout_seconds defaults to 600."
+            "MANIFEST.json — JSON object containing a non-empty argv string array.",
+            "argv — exact executable and argument array, for example [\"halmos\",\"--function\",\"check_withdraw\"].",
+            "timeout_seconds — optional command timeout; default: 600."
         ],
         "options": [
-            "--root DIR — project root/working directory; default: ."
+            "--root DIR — project root and working directory; default: .",
+            "argv — exact command to execute; no shell expansion or string splitting is performed.",
+            "timeout_seconds — command timeout from the manifest; default: 600."
         ],
         "workflow": [
-            "Write the exact engine executable and arguments into manifest.argv.",
-            "Review the manifest carefully; the command runs exactly that argv with shell=False.",
-            "Run the engine and interpret its native output and exit code."
+            "Write the exact symbolic/formal tool and its arguments in manifest.argv.",
+            "Review the manifest carefully; the command is executed in the project context.",
+            "Run it and inspect the tool's native output and exit code.",
+            "If the tool is not installed, Lowkey reports BLOCKED instead of silently substituting another engine."
         ],
         "output": [
             "Engine stdout/stderr and exit code."
@@ -1285,19 +1306,28 @@ GODMODE_HELP_GUIDES = {
             "lk gas-ladder .audit/gas-ladder.json --root ."
         ],
         "arguments": [
-            "MANIFEST.json — JSON containing argv (string array with at least one `{n}` token), and optional min/max search bounds."
+            "MANIFEST.json — JSON object with argv, a non-empty string array containing at least one `{n}` placeholder.",
+            "min — optional lower bound; default: 1.",
+            "max — optional upper bound; default: 10000.",
+            "oom_regex — optional regular expression identifying the failing/OOG condition; defaults to common out-of-gas phrases and OOG.",
+            "timeout_seconds — optional per-trial command timeout; default: 300."
         ],
         "options": [
-            "--root DIR — project root/working directory; default: .",
-            "Manifest min defaults to 1; max defaults to 10000. The command implementation determines the search behaviour."
+            "--root DIR — project root and command working directory; default: .",
+            "argv — every {n} occurrence is replaced with the current trial value; the argv is executed directly without a shell.",
+            "min/max — bounded inclusive search range; max-min cannot exceed 10,000,000.",
+            "oom_regex — regular expression used to classify a trial as the failing/OOG boundary.",
+            "timeout_seconds — timeout applied to each trial; default: 300."
         ],
         "workflow": [
-            "Create a manifest with the exact benchmark/test argv and a `{n}` placeholder.",
-            "Set sensible min/max bounds for the protocol.",
-            "Review every executed command and the observed threshold."
+            "Create a manifest with the exact executable/test argv and a {n} placeholder in the parameter you want to vary.",
+            "Set min/max so the lower value should succeed and the upper value should hit the target failure condition.",
+            "Set oom_regex to match the actual failure text if the default does not match your tool.",
+            "Run the command and inspect all recorded trials; it measures a threshold, not a vulnerability."
         ],
         "output": [
-            "JSON measurements and the selected threshold."
+            "JSON trial observations including n, exit code, OOM classification and output tail.",
+            "The first failing threshold, if a passing lower bound and failing upper bound are established."
         ],
         "limits": "Executes the manifest command repeatedly. Use only trusted commands and bounded search ranges; gas thresholds depend on compiler, chain and environment.",
         "related": [
@@ -1676,7 +1706,8 @@ GODMODE_HELP_GUIDES = {
             "Read stage statuses, findings and source maps; do not promote unverified signals."
         ],
         "output": [
-            "Markdown report, default .audit/godmode/report.md."
+            "Markdown report, default .audit/godmode/report.md.",
+            "A sibling .sha256 file containing the report digest."
         ],
         "limits": "Renders saved evidence. It does not run a new audit or turn source signals into validated findings.",
         "related": [
@@ -1691,20 +1722,25 @@ GODMODE_HELP_GUIDES = {
         "variations": [
             "lk questions --root . — show the current audit question (default action: current).",
             "lk questions next --root . — request the next active question.",
+            "lk questions why --root . — inspect why the current question was selected.",
+            "lk questions evidence --root . — inspect the evidence relevant to the current question.",
             "lk questions note \"The transfer check subtracts before comparing\" --root . — save your conclusion/evidence and advance the question frontier.",
-            "lk questions done --root . — mark the current question answered without a note."
+            "lk questions done --root . — mark the current question answered without a note.",
+            "lk questions skip \"Not relevant to this contract\" --root . — explicitly skip/defer with a reason.",
+            "lk questions na \"No oracle in this protocol\" --root . — mark the current question not applicable."
         ],
         "arguments": [
-            "ACTION — question-engine action; default: current.",
-            "NOTE ... — optional free-text tokens passed to that action."
+            "ACTION — current/next, why, evidence, path/source, done, note, skip/defer, na/not-applicable, all/catalog or reset; default: current.",
+            "NOTE ... — optional free-text explanation for note, skip/defer or na actions."
         ],
         "options": [
             "--root DIR — project root; default: ."
         ],
         "workflow": [
-            "Start with the default current action.",
-            "Use the question engine's returned prompt to inspect the relevant source or test.",
-            "Pass your evidence-backed observation as a note using the supported action."
+            "Start with `lk questions` to open the current question.",
+            "Use why/evidence/path to understand the prompt and relevant source context.",
+            "Save a conclusion with `lk questions note \"...\"` or mark it done/skip/not-applicable.",
+            "The command advances the question frontier; a TRY command does not answer a question."
         ],
         "output": [
             "Question-engine output and any saved question-loop context."
@@ -1835,7 +1871,7 @@ def print_command_catalog():
         status_text = (" [" + status + "]") if status else ""
         print(f"  lk {command:<22} {summary}{status_text}")
     print()
-    print("  Detailed flags/defaults/examples: lk <command> --help")
+    print("  Detailed guide (syntax, arguments, defaults, workflows, outputs and limits): lk <command> --h")
     print("  Help spellings accepted by these commands: --h, --help, -h, help")
     print("  lk capabilities lists all 44 capability states; registered does not mean fully implemented.")
 
