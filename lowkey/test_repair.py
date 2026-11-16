@@ -585,7 +585,10 @@ def handle_failure(command: str, arguments: Sequence[str] | None, output: str,
         if not request_patch:
             _render_guide(
                 project, report, source_path,
-                prefix="I left everything as it was. This failure isn't safe for automatic editing.",
+                prefix=(
+                    "I left everything as it was. This failure isn't safe for automatic editing. "
+                    "I never edit your contracts or Foundry settings."
+                ),
             )
             return int(exit_code), True
         repaired, reason = _try_lazy_repair(project, source_path, report, output)
