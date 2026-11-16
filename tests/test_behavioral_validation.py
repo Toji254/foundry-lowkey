@@ -71,6 +71,26 @@ class BehavioralValidationTests(unittest.TestCase):
             )
         self.assertEqual(report["mutants"][0]["status"], "invalid")
 
+    def test_missing_and_duplicate_mutant_ids_are_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_project(root)
+            report = validate_mutations(
+                root,
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                [
+                    {"id": "same-id", "file": "counter.py", "before": "# stable label", "after": "# changed label"},
+                    {"id": "same-id", "file": "counter.py", "before": "return value + 1", "after": "return value + 2"},
+                    {"file": "counter.py", "before": "return value + 1", "after": "return value"},
+                ],
+                timeout_seconds=10,
+            )
+        self.assertEqual(report["mutants"][0]["status"], "survived")
+        self.assertEqual(report["mutants"][1]["status"], "invalid")
+        self.assertEqual(report["mutants"][2]["status"], "invalid")
+        self.assertEqual(report["summary"]["invalid"], 2)
+        self.assertEqual(report["summary"]["survived"], 1)
+
     def test_unexplained_nonzero_exit_is_unscored_not_killed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
