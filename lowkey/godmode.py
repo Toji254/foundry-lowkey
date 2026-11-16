@@ -472,7 +472,15 @@ def rpc_url(v=None):
     return url
 def rpc(url,method,params,timeout=20):
     data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
-    req=Request(url,data=data,headers={"Content-Type":"application/json"})
+    req=Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type":"application/json",
+            "Accept":"application/json",
+            "User-Agent":"LowkeyCast/1.0 (+https://github.com/Toji254/foundry-lowkey)",
+        },
+    )
     with urlopen(req,timeout=timeout) as res: body=json.loads(res.read().decode())
     if body.get("error"): raise RuntimeError(f"{method}: {body['error']}")
     return body.get("result")
