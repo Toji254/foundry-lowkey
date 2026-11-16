@@ -469,8 +469,14 @@ def _discover_functions(host, config, target: Target) -> list[dict[str, Any]]:
     # functions. Include source-identified entries so these payable surfaces
     # are not silently omitted from local attack exploration.
     project_info = _project_break_context(host)
+    # Resolve the target's compilation source once. Some verified deployment
+    # contexts have an ABI but no artifact path in Lowkey's target registry;
+    # in that case, use the uniquely target-scoped source file as the fallback.
+    contract_source = _source_function_body(project_info, "__contract_source__", target)
     for special in ("receive", "fallback"):
         body = _source_function_body(project_info, special, target)
+        if not body:
+            body = _special_entry_source(contract_source, special)
         if not body:
             continue
         header = re.search(
@@ -2694,6 +2700,8 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     if family == "access":
         source = _source_function_body(project_info, name, target)
         contract_source = _source_function_body(project_info, "__contract_source__", target)
+        if not source and name.lower() in {"receive", "fallback"}:
+            source = _special_entry_source(contract_source, name)
         authority = _authority_assignment(source, _authority_principal_names(contract_source))
         if authority:
             return _run_authority_write_probe(host, config, rpc, target, fn, opts, rng, project_info)
@@ -3174,6 +3182,66 @@ def _source_function_body(
 
 
 
+
+def _special_entry_source(source: str, name: str) -> str:
+    """Extract a source-only receive()/fallback() entry without relying on ABI."""
+    special = str(name or "").lower()
+    if special not in {"receive", "fallback"} or not source:
+        return ""
+    matcher = re.compile(
+        r"\b" + re.escape(special) + r"\s*\([^{};]*\)[^;{}]*(?=\{)"
+    )
+    matches = list(matcher.finditer(source))
+    if len(matches) != 1:
+        return ""
+    match = matches[0]
+    open_brace = match.end()
+    if open_brace >= len(source) or source[open_brace] != "{":
+        return ""
+
+    depth = 0
+    quote = None
+    escaped = False
+    line_comment = False
+    block_comment = False
+    index = open_brace
+    while index < len(source):
+        char = source[index]
+        following = source[index + 1] if index + 1 < len(source) else ""
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+        elif block_comment:
+            if char == "*" and following == "/":
+                block_comment = False
+                index += 1
+        elif quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char == "/" and following == "/":
+            line_comment = True
+            index += 1
+        elif char == "/" and following == "*":
+            block_comment = True
+            index += 1
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[match.start():index + 1]
+        index += 1
+    return ""
+
+
+
+
 _AUTHORITY_VARIABLE_NAMES = {
     "owner", "admin", "authority", "guardian", "governor", "governance",
     "operator", "manager", "maintainer", "pauser", "upgrader", "minter",
@@ -3253,6 +3321,8 @@ def _run_authority_write_probe(host, config, rpc: str, target: Target,
     name = str(fn.get("name") or "")
     source = _source_function_body(project_info, name, target)
     contract_source = _source_function_body(project_info, "__contract_source__", target)
+    if not source and name.lower() in {"receive", "fallback"}:
+        source = _special_entry_source(contract_source, name)
     principals = _authority_principal_names(contract_source)
     principal = _authority_assignment(source, principals)
     signature = _format_signature(fn, host)
@@ -3456,6 +3526,8 @@ def _family_selection(
     outputs = list(fn.get("outputs") or [])
     source = _source_function_body(project_info, name, target)
     contract_source = _source_function_body(project_info, "__contract_source__", target)
+    if not source and name.lower() in {"receive", "fallback"}:
+        source = _special_entry_source(contract_source, name)
     authority_principals = _authority_principal_names(contract_source)
     authority_assignment = _authority_assignment(source, authority_principals)
     input_labels = " ".join(
