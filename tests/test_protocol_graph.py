@@ -54,7 +54,7 @@ class ProtocolGraphTests(unittest.TestCase):
                                         "referencedDeclaration": 2,
                                     },
                                     "rightHandSide": {
-                                        "nodeType": "FunctionCall",
+                                        "nodeType": "FunctionCall", "src": "50:12:0",
                                         "expression": {
                                             "nodeType": "Identifier",
                                             "name": "helper",
