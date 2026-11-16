@@ -288,19 +288,33 @@ def normalize_forge_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str
     if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
         raise ValueError("Forge trace events must be a sequence.")
     normalized = []
+    raw_events = []
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             raise ValueError(f"Forge trace event #{index} must be an object.")
         legacy = dict(event)
         legacy.setdefault("source_backend", "forge-state-diff")
         legacy.setdefault("storage", [])
+        raw_events.append(legacy)
+    # Forge reports EVM call depth relative to the test runner; Anvil's
+    # callTracer starts at root depth 0. Normalize the minimum observed depth
+    # to zero so parity compares equivalent tree positions, not harness frame
+    # bookkeeping.
+    observed_depths = [
+        _quantity(event.get("depth"), "depth")
+        for event in raw_events
+        if event.get("depth") is not None
+    ]
+    depth_base = min(observed_depths) if observed_depths else 0
+    for index, legacy in enumerate(raw_events):
+        raw_depth = _quantity(legacy.get("depth"), "depth")
         normalized.append(build_trace_event(
             seq=index,
             backend="forge-state-diff",
             kind=legacy.get("kind"),
             accessor=legacy.get("accessor"),
             account=legacy.get("account"),
-            depth=legacy.get("depth"),
+            depth=None if raw_depth is None else raw_depth - depth_base,
             value=legacy.get("value"),
             selector=legacy.get("selector"),
             calldata=legacy.get("input", legacy.get("calldata")),
