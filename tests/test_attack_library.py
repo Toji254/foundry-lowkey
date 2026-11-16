@@ -152,7 +152,9 @@ class AttackLibraryTests(unittest.TestCase):
     def test_launcher_routes_attack_before_generic_help_interception(self):
         source = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
         route = source.index('if [[ "${1:-}" == "attack"')
-        generic_help = source.index('for arg in "$@"')
+        # The learner-first AI mode parser also iterates over arguments; the
+        # generic help interception is the later loop after the attack route.
+        generic_help = source.index('for arg in "$@"', route)
         self.assertLess(route, generic_help)
         self.assertIn('attack_library.py', source)
 
