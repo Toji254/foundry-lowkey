@@ -962,8 +962,8 @@ class BreakEngineTests(unittest.TestCase):
             cache_path = pathlib.Path(retry[retry.index("--cache-path") + 1])
             self.assertNotEqual(out_path, root / "out")
             self.assertNotEqual(cache_path, root / "cache")
-            self.assertTrue(out_path.is_dir())
-            self.assertTrue(cache_path.is_dir())
+            self.assertFalse(out_path.exists(), "temporary IR output must be removed after retry")
+            self.assertFalse(cache_path.exists(), "temporary IR cache must be removed after retry")
 
     def test_result_parser_distinguishes_target_rejection_before_callback(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
