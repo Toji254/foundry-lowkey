@@ -874,16 +874,18 @@ def _solidity_amount_literal(value: str) -> str:
     return f"{number} {unit.lower()}"
 
 def _payable_value(fn: dict[str, Any], opts, mode="normal") -> str:
-    if str(fn.get("stateMutability") or "") != "payable":
+    if str(fn.get("stateMutability") or "").lower() != "payable":
         return "0"
     if mode == "zero":
         return "0"
+    # Solidity requires a separator: "1 wei" is valid; "1wei" is not.
+    # Cast accepts the same quantity string when sending local transactions.
     if mode == "small":
-        return "1wei"
+        return "1 wei"
     if opts.get("fund_target"):
         # Keep call value separate from optional target reserve funding.
-        return "1wei"
-    return "1wei"
+        return "1 wei"
+    return "1 wei"
 
 
 def _evm_runner(project_info: dict[str, Any], root: Path) -> str:
@@ -2699,11 +2701,18 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
 
     modes = ["normal", "one", "zero", "max"]
     mode = "one" if family in {"reentrancy", "replay", "accounting"} else modes[rng.randrange(len(modes))]
-    values = _make_value(
-        host, fn, rng, mode, config,
-        fallback_address=ABI_ADDRESS_SENTINEL,
-    )
-    calldata, error = _encode_call(host, config, target, fn, values)
+    special_entry = name.lower() in {"receive", "fallback"} or bool(fn.get("_lowkey_special_entry"))
+    if special_entry:
+        # Solidity receive()/fallback() are not ordinary ABI functions. Empty
+        # calldata is the correct entry for receive and a valid fallback probe.
+        values = []
+        calldata, error = "0x", None
+    else:
+        values = _make_value(
+            host, fn, rng, mode, config,
+            fallback_address=ABI_ADDRESS_SENTINEL,
+        )
+        calldata, error = _encode_call(host, config, target, fn, values)
     if not calldata:
         return AttackResult(
             family=family,
@@ -3167,23 +3176,38 @@ def _authority_assignment(source: str, principals: set[str]) -> str | None:
 
 
 def _read_address_getter(host, rpc: str, target: Target, getter: dict[str, Any], config) -> str:
-    calldata, error = _encode_call(host, config, target, getter, [])
-    if not calldata:
-        raise RuntimeError(f"could not encode authority getter: {error}")
-    result = _cast_exec(
-        host,
-        ["rpc", "eth_call", json.dumps({"to": target.address, "data": calldata}), "latest"],
-        rpc,
-    )
+    """Read an address getter through Cast's typed call decoder.
+
+    Using `cast rpc eth_call` here returned provider/CLI-specific raw text in
+    some environments. `cast call name()(address)` decodes the ABI type and
+    gives us a single address-shaped value to validate.
+    """
+    name = str(getter.get("name") or "").strip()
+    outputs = getter.get("outputs") or []
+    output_type = str(outputs[0].get("type") or "") if outputs else ""
+    if not name or output_type.lower() != "address" or getter.get("inputs"):
+        raise RuntimeError("authority getter must be a no-argument address-returning function")
+    signature = f"{name}()({output_type})"
+    result = _cast_exec(host, ["call", target.address, signature], rpc)
     if result.returncode != 0:
         raise RuntimeError(
-            "authority getter call failed: " + (result.stderr or result.stdout or "unknown cast error").strip()
+            "authority getter call failed: "
+            + (result.stderr or result.stdout or "unknown cast error").strip()[-1200:]
         )
-    raw = str(result.stdout or "").strip().lower()
-    raw = raw[2:] if raw.startswith("0x") else raw
-    if len(raw) < 40 or not re.fullmatch(r"[0-9a-f]+", raw):
-        raise RuntimeError("authority getter returned an invalid ABI-encoded address")
-    return "0x" + raw[-40:]
+    raw = str(result.stdout or "").strip()
+    addresses = re.findall(r"0x[0-9a-fA-F]{40}(?![0-9a-fA-F])", raw)
+    if addresses:
+        return addresses[-1].lower()
+
+    # Accept an ABI word as a compatibility fallback when Cast prints the raw
+    # 32-byte return instead of the typed address.
+    words = re.findall(r"(?:0x)?([0-9a-fA-F]{64})(?![0-9a-fA-F])", raw)
+    if words:
+        return "0x" + words[-1][-40:].lower()
+    raise RuntimeError(
+        "authority getter output was not a decodable address; "
+        f"Cast returned: {raw[:240]!r}"
+    )
 
 
 def _run_authority_write_probe(host, config, rpc: str, target: Target,
@@ -4002,6 +4026,7 @@ def run(config, args=None, host=None):
 
     rounds = 0
     campaign_results: list[AttackResult] = []
+    terminal_probes: set[tuple[str, str, str]] = set()
     try:
         while True:
             rounds += 1
@@ -4011,6 +4036,23 @@ def run(config, args=None, host=None):
             for target in targets:
                 functions = _discover_functions(host, config, target)
                 selected = _select_functions(functions, opts)
+                if selected and not opts.get("function"):
+                    contract_source = _source_function_body(project_info, "__contract_source__", target)
+                    authority_names = _authority_principal_names(contract_source)
+
+                    def _campaign_priority(item):
+                        item_name = str(item.get("name") or "")
+                        body = _source_function_body(project_info, item_name, target)
+                        assignment = _authority_assignment(body, authority_names)
+                        if assignment and item_name.lower() in {"receive", "fallback"}:
+                            return (0, item_name.lower())
+                        if assignment:
+                            return (1, item_name.lower())
+                        if CLAIM_RE.search(item_name):
+                            return (2, item_name.lower())
+                        return (3, item_name.lower())
+
+                    selected = sorted(selected, key=_campaign_priority)
                 if not selected:
                     print(f"[{target.contract}] No state-changing ABI functions found.")
                     continue
@@ -4052,6 +4094,18 @@ def run(config, args=None, host=None):
                         continue
 
                     for family, basis in selection.items():
+                        probe_key = (
+                            str(target.address).lower(),
+                            _format_signature(fn, host),
+                            str(family),
+                        )
+                        if probe_key in terminal_probes:
+                            print(
+                                f"[SKIPPED] {target.contract}::{_format_signature(fn, host)} "
+                                f"| {family} | already blocked by an unchanged prerequisite in an earlier round",
+                                flush=True,
+                            )
+                            continue
                         made_progress = True
                         print(
                             f"[PROBING] {target.contract}::{_format_signature(fn, host)} "
@@ -4062,6 +4116,32 @@ def run(config, args=None, host=None):
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
                         result = _apply_sequential_control(host, result, opts, rpc)
+                        reason_code = str((result.detail or {}).get("reason_code") or "")
+                        terminal_observation = (
+                            result.status in {"BLOCKED", "LAB_ISSUE", "TIMEOUT", "SKIPPED"}
+                            or reason_code in {
+                                "no_authority_assignment",
+                                "authority_getter_unavailable",
+                                "authority_probe_error",
+                                "no_unprivileged_actor",
+                                "call_encoding_failed",
+                                "edge_call_encoding_failed",
+                                "forge_execution_error",
+                                "forge_no_lowkey_telemetry",
+                                "setup_call_reverted",
+                                "unsupported_abi",
+                            }
+                            or (
+                                result.status == "OBSERVED"
+                                and (
+                                    "Target rejected the first" in result.summary
+                                    or "Target rejected the attack before the callback boundary" in result.summary
+                                    or "no concrete break condition reached" in result.summary.lower()
+                                )
+                            )
+                        )
+                        if terminal_observation:
+                            terminal_probes.add(probe_key)
                         result.detail = result.detail or {}
                         result.detail["selection_evidence"] = basis
                         result.detail["target_source"] = target.source
