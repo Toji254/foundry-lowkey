@@ -203,6 +203,103 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, output)
 
+    def test_godmode_help_teaches_what_to_replace_and_when_to_use_each_flag(self):
+        result, output = _capture_help("godmode", "--h")
+        self.assertEqual(result, 0, output)
+        for expected in (
+            "source scan with no target address",
+            "folder that contains foundry.toml",
+            "<target-address>",
+            "Copy a [LIVE] address from lk targets",
+            "same network where DEPLOYED_ADDRESS exists",
+            "local Anvil",
+            "same_calls_id",
+            "command array",
+            "mutants array",
+            "src/Token.sol",
+            "You do not need --plan-only",
+            "this can run the test command many times",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, output)
+
+    def test_godmode_plan_only_rejects_options_that_would_be_silently_skipped(self):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit) as raised:
+                godmode.main([
+                    "godmode", "--root", ".", "--plan-only",
+                    "--coverage-source", "src/Token.sol",
+                ])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--plan-only cannot be combined", errors.getvalue())
+
+    def test_control_manifest_requires_attack_mode(self):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit) as raised:
+                godmode.main([
+                    "godmode", "--root", ".", "--control-manifest", ".audit/control.json",
+                ])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--control-manifest is only used by the attack workflow", errors.getvalue())
+
+    def test_godmode_stage_explanations_never_leave_empty_counts(self):
+        self.assertIn(
+            "785 static source matches",
+            godmode._godmode_stage_detail({
+                "name": "source-recon", "status": "completed", "signals": 785,
+            }),
+        )
+        self.assertIn(
+            "0 matching fingerprint hit(s)",
+            godmode._godmode_stage_detail({
+                "name": "cheat-fingerprints", "status": "completed", "hits": 0, "patterns": 44,
+            }),
+        )
+        self.assertIn(
+            "No matched-control manifest was supplied",
+            godmode._godmode_stage_detail({
+                "name": "control", "status": "not-run",
+                "reason": "No sequential-control manifest; BREAK remains ineligible.",
+            }),
+        )
+
+    def test_godmode_summary_explains_review_required_and_skipped_stages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            latest = root / ".audit/godmode/latest.json"
+            provenance = root / ".audit/godmode/provenance.json"
+            latest.parent.mkdir(parents=True)
+            provenance.write_text("{}", encoding="utf-8")
+            output = io.StringIO()
+            payload = {
+                "target": None, "chain_id": None, "fork_block": None,
+                "stages": [
+                    {"name": "source-recon", "status": "completed", "signals": 785},
+                    {"name": "cheat-fingerprints", "status": "completed", "hits": 0, "patterns": 44},
+                    {"name": "attack", "status": "not-run", "reason": "No attack was run."},
+                    {"name": "onchain-recon", "status": "skipped", "reason": "No address supplied; source-only mode."},
+                ],
+            }
+            with contextlib.redirect_stdout(output):
+                godmode._print_godmode_result(payload, [], [], latest, provenance, root)
+            rendered = output.getvalue()
+            for expected in (
+                "AUDIT STATE: REVIEW REQUIRED",
+                "did not confirm a vulnerability",
+                "785 static source matches",
+                "0 matching fingerprint hit(s)",
+                "NOT REQUESTED",
+                "No deployed address was supplied",
+                "source-only (no deployed address supplied)",
+            ):
+                with self.subTest(expected=expected):
+                    self.assertIn(expected, rendered)
+
+
     def test_archetype_classify_has_its_own_help_page(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

@@ -246,43 +246,52 @@ GODMODE_HELP_GUIDES = {
         ]
     },
     "godmode": {
-        "usage": "lk godmode [target-address] [--root DIR] [options]",
-        "when": "Use this as the audit entry point. Omit the target for source-only reconnaissance; supply a target and RPC when you also need chain/proxy/selector information.",
+        "usage": "lk godmode [<target-address>] [--root PROJECT_FOLDER] [options]",
+        "when": "Use this as the first audit command. It scans the project source without needing a deployed contract. Add an address and RPC only when you also want to inspect a live deployment.",
         "variations": [
-            "START HERE — lk godmode --root . scans the source with no target or RPC.",
-            "lk godmode --root . --plan-only — static-only run; disables RPC and all optional execution stages.",
-            "lk godmode <address> --root . --rpc-url http://127.0.0.1:8545 — source scan plus read-only chain reconnaissance.",
-            "lk godmode <address> --root . --rpc-url http://127.0.0.1:8545 --attack — opt into local-Anvil attack exploration."
+            "START HERE — source scan with no target address. Run this from the folder that contains foundry.toml:  lk godmode",
+            "This is a source with no target address; no deployment or RPC is needed for the first scan.",
+            "   The same command written explicitly:  lk godmode --root .",
+            "2) Run it from another folder:  lk godmode --root \"$HOME/path/to/your/project\"",
+            "3) Read-only check of a deployed local target:  lk godmode 0xYOUR_LIVE_ADDRESS --root . --rpc-url http://127.0.0.1:8545",
+            "   Get the real address from lk targets. Replace 0xYOUR_LIVE_ADDRESS; do not type the placeholder literally.",
+            "4) Explicitly disable chain access and optional test runs:  lk godmode 0xYOUR_LIVE_ADDRESS --root . --rpc-url http://127.0.0.1:8545 --plan-only",
+            "   You do not need --plan-only for the normal first source scan. Without a target or optional test flags, Godmode already stays source-only.",
+            "5) Actively test a deployed target on LOCAL Anvil:  lk godmode 0xYOUR_LIVE_ADDRESS --root . --rpc-url http://127.0.0.1:8545 --attack",
+            "   Add --control-manifest only when you already have a project-local matched attack/control JSON manifest."
         ],
         "arguments": [
-            "target-address — optional deployed contract address. It is not the project source path; use --root for that."
+            "DEPLOYED_ADDRESS — optional 0x-prefixed address of a contract already deployed on the chain served by --rpc-url. It is not a Solidity filename or contract name. Copy a [LIVE] address from lk targets. Omit it for a source-only scan."
         ],
         "options": [
-            "--root DIR — project/source directory; default: current directory.",
-            "--rpc-url URL — RPC for read-only chain reconnaissance. Required for on-chain work.",
-            "--profile light|balanced|deep — proxy/storage reconnaissance depth; default: balanced.",
-            "--attack — explicitly invoke lk break. Requires a target and a local Anvil endpoint.",
-            "--control-manifest FILE — paired-control manifest to pass into the attack workflow.",
-            "--mutation-manifest FILE — run a configured mutation campaign.",
-            "--coverage-source FILE — run Forge coverage for a source file.",
-            "--plan-only — static-only; skips RPC, attack, mutation and coverage. Still writes the local report. Cannot be combined with --attack."
+            "--root PROJECT_FOLDER — the folder containing the code being reviewed (normally the folder with foundry.toml and src/). . means your current terminal folder. It is not a .sol file and it is not a contract address.",
+            "--rpc-url URL — the blockchain node to read. Use the same network where DEPLOYED_ADDRESS exists. For your local Anvil lab the usual URL is http://127.0.0.1:8545. Chain inspection is read-only unless you separately add --attack.",
+            "--profile light|balanced|deep — controls how many storage slots the on-chain proxy scan checks: light checks 40; balanced/deep check up to 120. It has no effect on a source-only scan.",
+            "--attack — opt in to lk break after reconnaissance. Requires a deployed address and local Anvil. This runs active experiments on the local lab; do not use a production RPC. Without a passing matched control, an observed result is not a confirmed BREAK.",
+            "--control-manifest FILE — advanced JSON file describing a matched attack and control experiment for lk break. It must already exist in your project. It needs matching target/function/attack-family identity and a same_calls_id. Use this only with --attack; see lk control --h for the manifest/freeze workflow. Without a passing control, a candidate BREAK remains OBSERVED.",
+            "--mutation-manifest FILE — optional JSON recipe for changing source code in isolated temporary copies and rerunning a test command. It has a command array (for example [\"forge\", \"test\"]) and a mutants array; each mutant has id, file, before, and after. The unmodified tests must pass first, and each before text must match exactly once. Use after you have a working test suite; this can run the test command many times.",
+            "--coverage-source FILE — Solidity file to measure, relative to --root (for example src/Token.sol). Godmode runs Forge coverage and reports whether tests reached that source. Use after you have relevant tests; line coverage alone does not prove the tests assert the right security property.",
+            "--plan-only — force a source-only report: do not contact the RPC, run attacks, run mutation tests, or run coverage. Useful when an address/RPC is present in the command but you deliberately want no chain/test execution. Do not combine it with --attack, --control-manifest, --mutation-manifest, or --coverage-source."
         ],
         "workflow": [
-            "Start with `lk godmode --root .`.",
-            "Inspect the arithmetic/source signals in `.audit/godmode/latest.json`.",
-            "Use a focused command (for example `lk reentrancy-graph --root .` or `lk oracle-map --root .`) to investigate a lead.",
-            "Only after reviewing the target and disposable chain, consider `--attack` with matched controls."
+            "1. Open a terminal in your Foundry project folder — the one containing foundry.toml — then run lk godmode. If you are elsewhere, give the folder with --root.",
+            "2. Read the POTENTIAL SOURCE LEADS section. Counts such as 785 are static code matches across scanners, not 785 vulnerabilities.",
+            "3. For a readable saved report, run lk report --root .; it writes .audit/godmode/report.md. The JSON report is for detailed evidence and tooling.",
+            "4. If you have deployed the contract locally, run lk targets, copy the address marked LIVE, and use the read-only address/RPC example above.",
+            "5. Only when you are ready for active testing on local Anvil, add --attack. Add --control-manifest only if you have already prepared the matched-control JSON. Mutation and coverage are separate optional checks."
         ],
         "output": [
-            ".audit/godmode/latest.json — machine-readable stages and source signals.",
-            ".audit/godmode/provenance.json — report hash and run context.",
-            "Use `lk report --root .` to render the saved run as Markdown."
+            ".audit/godmode/latest.json — detailed machine-readable scan, stage statuses, source matches and any chain results.",
+            ".audit/godmode/provenance.json — hash of the saved report and basic run context.",
+            "lk report --root . — creates the easier-to-read Markdown report at .audit/godmode/report.md."
         ],
-        "limits": "Static signals are candidates, not confirmed vulnerabilities. --attack can send transactions on local Anvil; never point it at a production RPC. REVIEW_REQUIRED means proof gates remain incomplete.",
+        "limits": "Source matches are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED means this run has not completed the evidence needed for a security verdict; it does not mean the command crashed. --attack runs active testing through lk break and is restricted to local Anvil. A passing attack without a matched control is still not a confirmed BREAK.",
         "related": [
-            "lk capabilities",
+            "lk targets",
             "lk break --h",
             "lk control --h",
+            "lk mutation-score --h",
+            "lk target-coverage --h",
             "lk report --h"
         ]
     },
@@ -5095,76 +5104,160 @@ def print_godmode_command_help(command):
 
 
 def _print_godmode_help():
-    """Human-first quick start; the user should not need to reverse-engineer the flags."""
-    print("LOWKEY HELP  •  lk godmode")
-    print("=" * 72)
-    print("What it does:")
-    print("  Audits the Solidity source in a project folder, maps review candidates,")
-    print("  and can optionally inspect a deployed target. It is an orchestrator,")
-    print("  not one magic exploit button.")
-    print()
-    print("When to use it:")
-    print("  Start here when you are unsure which Godmode command to run. You do")
-    print("  not need an address or RPC URL to scan the source in your current folder.")
-    print()
-    print("START HERE — COMMAND VARIATIONS")
-    print("-" * 72)
-    print("1. Source-only scan (recommended first command)")
-    print("   lk godmode --root .")
-    print("   Scans source and saves .audit/godmode/latest.json. With no target")
-    print("   address there is no on-chain reconnaissance. No attack is run by")
-    print("   default; mutation and coverage run only when their flags are supplied.")
-    print()
-    print("2. Explicit static-only plan")
-    print("   lk godmode --root . --plan-only")
-    print("   Disables RPC, attack, mutation and coverage execution. It still saves")
-    print("   the local report. This mode cannot be combined with --attack.")
-    print()
-    print("3. Add read-only on-chain reconnaissance")
-    print("   lk godmode <target-address> --root . --rpc-url http://127.0.0.1:8545")
-    print("   Reads chain ID, block height, proxy information and selectors.")
-    print("   Use a real target address and an RPC you are authorised to query.")
-    print()
-    print("4. Opt into local attack exploration")
-    print("   lk godmode <target-address> --root . --rpc-url http://127.0.0.1:8545 \\")
-    print("     --attack --control-manifest .audit/control.json")
-    print("   Invokes lk break. Attack execution is restricted to local Anvil; it")
-    print("   can send transactions on that disposable chain. Review the target,")
-    print("   harness and control manifest before enabling this.")
-    print()
-    print("OPTIONS")
-    print("-" * 72)
-    print("  <target-address>          Optional deployed contract. Omit for source-only scan.")
-    print("  --root <folder>           Project/source folder. Defaults to the current directory.")
-    print("  --rpc-url <url>           RPC for read-only on-chain reconnaissance.")
-    print("  --profile <name>          light (40 storage slots) or balanced/deep (120 slots).")
-    print("  --attack                  Explicitly run lk break. Requires target + local Anvil.")
-    print("  --control-manifest <file>  Frozen attack/control experiment manifest.")
-    print("  --mutation-manifest <file> Run the configured mutation-test campaign.")
-    print("  --coverage-source <file>  Run Forge coverage for a selected Solidity source file.")
-    print("  --plan-only               Source scan only; no RPC, attack, mutation or coverage execution.")
-    print()
-    print("WHAT THE RESULT MEANS")
-    print("-" * 72)
-    print("  source-recon       Static maps of source constructs and review signals.")
-    print("  arithmetic-review  Unsigned subtraction-before-zero-check candidates.")
-    print("  onchain-recon      Read-only chain/proxy/selector inspection, when requested.")
-    print("  attack             Not run unless --attack is explicitly supplied.")
-    print("  control/mutation/coverage show which proof-quality gates are missing or were run.")
-    print()
-    print("  Static matches are leads, not confirmed vulnerabilities. A wraparound")
-    print("  candidate still needs reachable-path analysis and an executable test.")
-    print("  REVIEW_REQUIRED means proof gates are incomplete, not that the command crashed.")
-    print()
-    print("OUTPUT")
-    print("-" * 72)
-    print("  .audit/godmode/latest.json       Machine-readable stages and source signals.")
-    print("  .audit/godmode/provenance.json   Hash of the saved report and run context.")
-    print("  lk report --root .               Render a Markdown report from the saved result.")
-    print()
-    print("Help spellings: --h, --help, -h, help")
-    print("Related: lk break --h, lk capabilities, lk report --h")
+    """Keep the legacy helper pointed at the single curated Godmode help page."""
+    return print_godmode_command_help("godmode")
 
+
+_GODMODE_STAGE_LABELS = {
+    "source-recon": "Source scan",
+    "arithmetic-review": "Arithmetic check",
+    "cheat-fingerprints": "Cheat-pattern scan",
+    "onchain-recon": "On-chain inspection",
+    "attack": "Attack campaign",
+    "control": "Matched control",
+    "mutation": "Mutation tests",
+    "target-coverage": "Source coverage",
+}
+
+_GODMODE_STATUS_LABELS = {
+    "completed": "DONE",
+    "skipped": "SKIPPED",
+    "not-run": "NOT REQUESTED",
+    "blocked": "BLOCKED",
+    "review": "NEEDS REVIEW",
+    "provided": "PROVIDED",
+}
+
+
+def _godmode_stage_detail(stage):
+    """Turn internal stage fields into a short, explicit operator explanation."""
+    name = str(stage.get("name") or "")
+    status = str(stage.get("status") or "unknown")
+    reason = str(stage.get("reason") or "").strip()
+
+    if name == "source-recon":
+        count = int(stage.get("signals") or 0)
+        return f"{count} static source matches across the scanners; these are not vulnerability findings."
+    if name == "arithmetic-review":
+        count = int(stage.get("signals") or 0)
+        wrap = int(stage.get("wraparound_candidates") or 0)
+        return f"{count} arithmetic candidate(s); {wrap} possible unsigned-wraparound candidate(s)."
+    if name == "cheat-fingerprints":
+        hits = int(stage.get("hits") or 0)
+        patterns = int(stage.get("patterns") or 0)
+        return f"{hits} matching fingerprint hit(s) across {patterns} registered pattern(s)."
+    if name == "onchain-recon" and status == "completed":
+        selectors_count = int(stage.get("selectors") or 0)
+        chain = stage.get("chain_id")
+        block = stage.get("block_number")
+        network = f" Chain ID {chain}; block {block}." if chain is not None and block is not None else ""
+        return f"Read-only inspection completed; {selectors_count} selector-like value(s) found.{network}"
+    if name == "attack":
+        if status == "not-run":
+            return "Not requested. No attack campaign or attack transactions were run."
+        if status == "review":
+            raw = str(stage.get("output") or "")
+            highlights = []
+            for line in raw.splitlines():
+                if re.match(r"^\s*(Rounds|Probes|Skipped|Blocked|Observed|Timeouts|Breaks|Report|Conclusion)\s*:", line, re.I):
+                    highlights.append(line.strip())
+            summary = "; ".join(highlights[-4:])
+            code = stage.get("exit_code")
+            base = f"lk break ran (exit code {code})." if code is not None else "lk break ran."
+            return base + (" " + summary if summary else " Open the break evidence under .audit/break/ to see the probes and verdict.")
+    if name == "control":
+        if status == "provided":
+            return f"Manifest supplied: {stage.get('manifest')}. The attack engine must still report a passing matched control."
+        if status == "not-run":
+            return "No matched-control manifest was supplied; an attack observation cannot be promoted to a confirmed BREAK."
+    if name == "mutation":
+        if status == "not-run":
+            return "Not requested. No source mutations or test reruns were performed."
+        if status in {"completed", "review"}:
+            return f"Mutation runner exit code {stage.get('exit_code')}; report: .audit/verification/mutation-score-report.json."
+    if name == "target-coverage":
+        if status == "not-run":
+            return "Not requested. Forge coverage was not run."
+        if status in {"completed", "review"}:
+            return f"Forge coverage runner exit code {stage.get('exit_code')}; report: .audit/godmode/target-coverage.json."
+
+    if status == "skipped":
+        if "--plan-only" in reason:
+            return "Disabled by --plan-only; this was intentional."
+        if "No address supplied" in reason:
+            return "No deployed address was supplied, so chain inspection was not needed."
+        return "Skipped: " + (reason or "this stage was not applicable.")
+    if status == "not-run":
+        return "Not requested. This is not a command failure."
+    if status == "blocked":
+        return "Could not run: " + (reason or "a required input or dependency was unavailable.")
+    if status == "provided":
+        return reason or "Input was supplied; see the saved report for details."
+    if status == "review":
+        return "Ran, but needs review. " + (reason or "See the saved evidence for details.")
+    return reason or "Completed."
+
+
+def _print_godmode_result(payload, arithmetic_rows, wraparound_rows, report_path, provenance_path, root):
+    """Print a beginner-readable summary while preserving full JSON evidence."""
+    target = payload.get("target")
+    chain_id = payload.get("chain_id")
+    block_number = payload.get("fork_block")
+    print("LOWKEY GODMODE — RUN SUMMARY")
+    print("=" * 72)
+    print("Project : " + str(root))
+    print("Target  : " + (target if target else "source-only (no deployed address supplied)"))
+    if chain_id is not None:
+        print("Chain   : " + str(chain_id))
+    if block_number is not None:
+        print("Block   : " + str(block_number))
+    print()
+    print("AUDIT STATE: REVIEW REQUIRED")
+    print("  This run did not confirm a vulnerability. Static matches are leads;")
+    print("  proof stages must be completed before Lowkey can claim a verified BREAK.")
+    print()
+    print("STAGE RESULTS")
+    print("-" * 72)
+    for stage in payload.get("stages") or []:
+        name = str(stage.get("name") or "unknown")
+        label = _GODMODE_STAGE_LABELS.get(name, name)
+        status = _GODMODE_STATUS_LABELS.get(str(stage.get("status") or ""), "UNKNOWN")
+        detail = _godmode_stage_detail(stage)
+        print(f"  {label:<22} [{status:<13}] {detail}")
+
+    if arithmetic_rows:
+        print()
+        print("POTENTIAL SOURCE LEADS — NOT CONFIRMED")
+        print("-" * 72)
+        for index, row in enumerate(arithmetic_rows[:20], 1):
+            location = f"{row.get('file')}:{row.get('line')}"
+            function = f" in {row.get('function')}()" if row.get("function") else ""
+            print(f"  {index}. {row.get('status', 'REVIEW')} — {location}{function}")
+            print("     " + str(row.get("expression") or "(source expression unavailable)"))
+        if len(arithmetic_rows) > 20:
+            print(f"  ... and {len(arithmetic_rows) - 20} more candidate(s) in the JSON report.")
+        if wraparound_rows:
+            print("  Next check: verify compiler semantics and reachability, then write a focused Foundry test.")
+    else:
+        print()
+        print("POTENTIAL SOURCE LEADS")
+        print("  No arithmetic candidates were detected by this check. This is not a proof that the contract is safe.")
+
+    print()
+    print("SAVED EVIDENCE")
+    print("-" * 72)
+    print("  Detailed JSON : " + str(report_path.relative_to(root)))
+    print("  Provenance    : " + str(provenance_path.relative_to(root)))
+    print("  Readable view : run lk report --root . to create .audit/godmode/report.md.")
+    print()
+    print("NEXT STEP")
+    if arithmetic_rows:
+        print("  Inspect the source lines listed above and test whether the condition is reachable.")
+    else:
+        print("  Review the source maps in the JSON report and select a concrete function/property to test.")
+    if not target:
+        print("  For chain details, run lk targets, copy an address marked LIVE, then use --rpc-url.")
+    print("  Keep --attack for a disposable local Anvil lab; do not point it at production.")
 
 def godmode(args):
     if _is_godmode_help_request(args):
@@ -5180,8 +5273,10 @@ def godmode(args):
     p.add_argument("--coverage-source", help="Solidity source file whose target lines should be checked with Forge coverage.")
     p.add_argument("--plan-only", action="store_true", help="Static source scan only: skip RPC, attack, mutation and coverage execution; still save a local report.")
     ns=p.parse_args(args)
-    if ns.plan_only and ns.attack:
-        p.error("--plan-only cannot be combined with --attack; remove one of the flags.")
+    if ns.plan_only and (ns.attack or ns.control_manifest or ns.mutation_manifest or ns.coverage_source):
+        p.error("--plan-only cannot be combined with --attack, --control-manifest, --mutation-manifest or --coverage-source; remove --plan-only or the execution option.")
+    if ns.control_manifest and not ns.attack:
+        p.error("--control-manifest is only used by the attack workflow; add --attack or remove --control-manifest.")
     root=root_path(ns.root)
     target=addr(ns.target) if ns.target else None
     maps=source_maps(root)
@@ -5196,7 +5291,7 @@ def godmode(args):
         "signals":len(arithmetic_rows),
         "wraparound_candidates":len(wraparound_rows),
     })
-    stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"])})
+    stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"]),"patterns":int(cheat.get("patterns",0))})
     chain=block=None
     onchain={}
     if ns.plan_only:
@@ -5207,7 +5302,7 @@ def godmode(args):
             chain=rpc(url,"eth_chainId",[])
             block=rpc(url,"eth_blockNumber",[])
             onchain={"proxy":proxy(target,url,40 if ns.profile=="light" else 120),"selectors":selectors(target,url)}
-            stages.append({"name":"onchain-recon","status":"completed","selectors":onchain["selectors"]["count"]})
+            stages.append({"name":"onchain-recon","status":"completed","selectors":onchain["selectors"]["count"],"chain_id":chain,"block_number":block})
         except Exception as exc:
             stages.append({"name":"onchain-recon","status":"blocked","reason":str(exc)})
     else:
@@ -5270,17 +5365,7 @@ def godmode(args):
     write_json(out,payload)
     prov=safe_out(root,".audit/godmode/provenance.json")
     write_json(prov,{"created_at":now(),"sha256":hashlib.sha256(out.read_bytes()).hexdigest(),"chain_id":chain,"fork_block":block,"artifacts":["latest.json"]})
-    print("GODMODE: "+payload["overall_status"])
-    for stage in stages:
-        print("  ["+stage["status"].upper()+"] "+stage["name"]+": "+str(stage.get("reason",stage.get("signals",stage.get("output",""))))[:190])
-    if arithmetic_rows:
-        print("ARITHMETIC REVIEW — source candidates only; none are confirmed:")
-        for row in arithmetic_rows[:20]:
-            location=f'{row.get("file")}:{row.get("line")}'
-            function=f' in {row.get("function")}' if row.get("function") else ""
-            print(f'  [{row.get("status")}] {location}{function}: {row.get("expression")}')
-    print("Report: "+str(out.relative_to(root)))
-    print("Next: inspect .audit/godmode/latest.json, then use lk findings / lk ai preview for source context; build a focused PoC before claiming exploitability.")
+    _print_godmode_result(payload, arithmetic_rows, wraparound_rows, out, prov, root)
     # Source reconnaissance is a successful task by itself. Missing optional
     # proof stages keep the saved audit REVIEW_REQUIRED, but must not look like
     # a crashed/failed command when the operator never requested those stages.
