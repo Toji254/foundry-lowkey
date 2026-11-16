@@ -1098,7 +1098,7 @@ def _cast_send(
     value: str,
     actor: str,
 ):
-    value_arg = re.sub(r"\\s+", "", str(value or "0"))
+    value_arg = str(value or "0").replace(" ", "")
     if value_arg in {"", "0", "0wei"}:
         value_arg = "0"
     args = [
