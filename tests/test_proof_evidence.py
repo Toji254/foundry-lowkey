@@ -41,7 +41,7 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertEqual(forge_promotion_status(verified, passed=True), "FORK_OBSERVED")
         self.assertEqual(forge_promotion_status(fixture, passed=True), "SIMULATED_BREAK")
         self.assertEqual(forge_promotion_status(unverified, passed=True), "SIMULATED_BREAK")
-        self.assertEqual(forge_promotion_status(verified, passed=False), "FORK_OBSERVED")
+        self.assertEqual(forge_promotion_status(verified, passed=False), "UNPROVEN")
 
     def test_assumed_fuzz_inputs_are_not_real_funded_profit(self):
         result = classify_proof(
