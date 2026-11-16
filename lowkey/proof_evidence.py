@@ -161,7 +161,8 @@ def forge_promotion_status(proof, *, passed: bool) -> str:
     if not isinstance(proof, Mapping):
         raise ValueError("proof must be a mapping returned by classify_proof().")
     if not passed:
-        return str(proof.get("status") or "UNPROVEN")
+        status = str(proof.get("status") or "UNPROVEN")
+        return status if status in {"REJECTED", "UNPROVEN"} else "UNPROVEN"
     if proof.get("target_authenticity_verified") and proof.get("target_authenticity") == "forked_deployment":
         return "FORK_OBSERVED"
     return "SIMULATED_BREAK"
