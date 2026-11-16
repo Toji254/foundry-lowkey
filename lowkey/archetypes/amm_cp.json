@@ -1,0 +1,55 @@
+{
+  "name": "amm_cp",
+  "detect_signals": [
+    {
+      "kind": "single_block_price",
+      "value": "\\b(?:getReserves|reserve0|reserve1|kLast)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "precision",
+      "value": "\\b(?:swap|mint|burn)\\s*\\(",
+      "weight": 2
+    },
+    {
+      "kind": "external_call_safety",
+      "value": "\\b(?:transfer|safeTransfer|transferFrom)\\s*\\(",
+      "weight": 2
+    },
+    {
+      "kind": "oracle_trust",
+      "value": "\\b(?:price|quote|cumulativePrice|twap)\\b",
+      "weight": 1
+    }
+  ],
+  "invariants": [
+    "Pool balances must reconcile with recorded reserves and fee-adjusted swap math.",
+    "Spot prices must not be treated as manipulation-resistant oracle prices without a validated observation window.",
+    "Liquidity minting and burning must preserve proportional claims under rounding."
+  ],
+  "required_capabilities": [
+    "control",
+    "invariant-forge",
+    "oracle-map",
+    "economic",
+    "reprove",
+    "trace-parity",
+    "flashmax",
+    "compose"
+  ],
+  "forbidden_capabilities": [],
+  "attack_families": [
+    "accounting",
+    "oracle",
+    "economic",
+    "boundary",
+    "callback",
+    "erc20"
+  ],
+  "assumption_classes": [
+    "single_block_price",
+    "precision",
+    "external_call_safety",
+    "oracle_trust"
+  ]
+}
