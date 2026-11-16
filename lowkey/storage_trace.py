@@ -329,8 +329,10 @@ def normalize_struct_logs(
             "reverted": bool(active[-1]["ancestor_reverted"]),
         })
 
-    if access_count != sum(len(rows) for rows in frame_storage.values()):
-        unmapped_storage += access_count - sum(len(rows) for rows in frame_storage.values())
+    mapped_accesses = sum(len(rows) for rows in frame_storage.values())
+    # Invalid accesses were already counted when their stack/frame was checked.
+    # Reconcile against the mapped rows instead of adding the same misses twice.
+    unmapped_storage = access_count - mapped_accesses
     if unmapped_storage:
         return _unsupported(
             "One or more SLOAD/SSTORE operations lacked a validated frame or stack slot; exact storage evidence refused.",
