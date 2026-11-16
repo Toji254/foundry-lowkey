@@ -133,8 +133,25 @@ class CommandWrapperTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 0)
-        root.assert_called_once_with("/tmp/Token")
+        root.assert_has_calls([unittest.mock.call("/tmp/Token"), unittest.mock.call("/tmp/Token")])
         self.assertEqual(run.call_args.kwargs["env"]["FOUNDRY_ETH_RPC_URL"], project_rpc)
+
+    def test_completion_event_is_written_to_explicit_project_root(self):
+        project_root = pathlib.Path("/tmp/Token")
+        fake_result = type("Result", (), {"returncode": 0})()
+        with (
+            patch.object(command_wrapper.subprocess, "run", return_value=fake_result),
+            patch.object(command_wrapper.audit_context, "foundry_project_root", return_value=project_root) as root,
+            patch.object(command_wrapper.audit_context, "emit") as emit,
+        ):
+            status = command_wrapper.run_command(
+                "godmode",
+                ["python3", "godmode.py", "--root", "/tmp/Token"],
+            )
+
+        self.assertEqual(status, 0)
+        root.assert_called_once_with("/tmp/Token")
+        self.assertEqual(emit.call_args.args[1], project_root)
 
 
 if __name__ == "__main__":

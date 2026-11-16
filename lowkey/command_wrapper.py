@@ -89,13 +89,13 @@ def _project_rpc_environment(command_name: str, command: list[str]) -> dict[str,
         return None
 
 
-def _record_completion(command_name: str, exit_code: int) -> None:
+def _record_completion(command_name: str, exit_code: int, root=None) -> None:
     try:
-        root = audit_context.foundry_project_root()
+        project_root = root if root is not None else audit_context.foundry_project_root()
         status = "completed" if exit_code == 0 else "failed"
         audit_context.emit(
             "command-completed",
-            root,
+            project_root,
             tool="cli",
             status=status,
             summary=f"{command_name} {status}",
@@ -133,7 +133,13 @@ def run_command(
         print(f"Lowkey: could not execute {command[0]}: {exc}", file=sys.stderr)
         status = 126
     if not help_only and status not in set(skip_exit_codes):
-        _record_completion(name, status)
+        explicit_root = _explicit_root(command)
+        event_root = (
+            audit_context.foundry_project_root(explicit_root)
+            if explicit_root
+            else None
+        )
+        _record_completion(name, status, root=event_root)
     return status
 
 
