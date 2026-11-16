@@ -2080,7 +2080,9 @@ def _solidity_entry_blocks(masked: str) -> list[dict[str, Any]]:
 def _authorization_guard(expression: str, privileged_names: set[str]) -> bool:
     if not re.search(r"\b(?:msg\.sender|_msgSender\s*\(\s*\))", expression):
         return False
-    if not re.search(r"==|!=", expression):
+    # A positive caller == authority comparison is the common fail-closed
+    # authorization predicate. caller != authority may be the bug itself.
+    if not re.search(r"==", expression):
         return False
     return any(re.search(r"\b" + re.escape(name) + r"\b", expression) for name in privileged_names)
 
@@ -2140,13 +2142,12 @@ def _source_security_candidates(root: str | Path) -> list[dict[str, Any]]:
             if closing is None:
                 continue
             body = masked[opening + 1:closing]
-            if (
-                re.search(r"\b(?:msg\.sender|_msgSender\s*\(\s*\))", body)
-                and (
-                    bool(guard_call.search(body))
-                    or bool(re.search(r"\b(?:_checkRole|hasRole|requireRole)\s*\(", body))
-                )
-            ):
+            has_caller_guard = any(
+                _authorization_guard(match.group(1), privileged_names)
+                for match in guard_call.finditer(body)
+            )
+            has_role_guard = bool(re.search(r"\b(?:_checkRole|hasRole|requireRole)\s*\(", body))
+            if has_caller_guard or has_role_guard:
                 auth_modifiers.add(modifier.group("name"))
 
         for block in blocks:
