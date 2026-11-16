@@ -6269,6 +6269,61 @@ def _report_stage_status(stage):
     return names.get(status, status.replace("-", " ").title())
 
 
+def _report_latest_attack_evidence(root, attack_stage, target):
+    """Load the exact campaign/break evidence path saved by the attack output."""
+    output_text = str((attack_stage or {}).get("output") or "")
+    paths = []
+    for line in output_text.splitlines():
+        match = re.search(r"(?:Report|Evidence)\s*:\s*(\S+\.json)", line, re.I)
+        if match:
+            raw_path = Path(match.group(1)).expanduser()
+            candidate = raw_path if raw_path.is_absolute() else root / raw_path
+            try:
+                candidate = candidate.resolve()
+                if candidate.is_relative_to(root) and candidate.is_file():
+                    paths.append(candidate)
+            except OSError:
+                continue
+
+    seen = set()
+    for candidate in reversed(paths):
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+            return candidate, payload
+
+    # A concrete BREAK exits before the campaign summary is written. In that
+    # case _record_break leaves a dedicated AttackResult JSON file.
+    run_root = root / ".audit" / "break" / "runs"
+    if run_root.is_dir():
+        break_files = sorted(
+            run_root.glob("*_break_*.json"),
+            key=lambda item: item.stat().st_mtime if item.exists() else 0,
+            reverse=True,
+        )
+        for candidate in break_files:
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or not payload.get("family"):
+                continue
+            recorded_target = str(payload.get("address") or "").lower()
+            if target and recorded_target and recorded_target != str(target).lower():
+                continue
+            return candidate, {
+                "mode": "break-found",
+                "rounds": None,
+                "results": [payload],
+            }
+    return None, None
+
+
 def report(args):
     parser = LowkeyArgumentParser(prog="lk report")
     parser.add_argument("--root", default=".")
@@ -6420,6 +6475,44 @@ def report(args):
             ])
             for item in observations[-20:]:
                 lines.append("- " + item.replace("|", "\\|"))
+            lines.append("")
+
+    campaign_path, campaign_data = _report_latest_attack_evidence(root, attack_stage, target if target.startswith("0x") else None)
+    if campaign_data:
+        results = campaign_data.get("results") if isinstance(campaign_data.get("results"), list) else []
+        lines.extend([
+            "### Attack probe results",
+            "",
+            f"Saved campaign: {_report_source_ref(str(campaign_path), None, root, out)}  ",
+            f"Mode: {_report_clean(campaign_data.get('mode'), 'Not recorded')} · Rounds: {_report_clean(campaign_data.get('rounds'), 'Not recorded')}",
+            "",
+            "Each row is one attempted probe. A blocked probe is an execution gap, not evidence that the path is safe.",
+            "",
+            "| Function | Probe family | Outcome | What happened |",
+            "|---|---|---|---|",
+        ])
+        for result in results[:30]:
+            if not isinstance(result, dict):
+                continue
+            detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
+            function = result.get("function") or "Target-level probe"
+            family = result.get("family") or "unknown"
+            outcome = result.get("status") or "unknown"
+            explanation = result.get("summary") or detail.get("error") or detail.get("reason_code") or "No explanation was recorded."
+            reason_code = detail.get("reason_code")
+            if reason_code:
+                explanation = str(explanation) + " Reason: " + str(reason_code)
+            lines.append(
+                f"| {_report_cell(function)} | {_report_cell(family)} | {_report_cell(outcome)} | {_report_cell(explanation, limit=500)} |"
+            )
+        if len(results) > 30:
+            lines.append(f"| … | … | … | {len(results) - 30} more probe result(s) are in the linked JSON evidence. |")
+        lines.append("")
+        if str(campaign_data.get("mode") or "").lower() == "interrupted":
+            lines.append("**Campaign note:** This run was interrupted. Its partial probe results do not support a safety conclusion.")
+            lines.append("")
+        elif any(isinstance(item, dict) and item.get("break_condition") for item in results):
+            lines.append("**Campaign note:** A local break condition was observed. It still needs matched-control, fidelity, and independent reproof before being called confirmed.")
             lines.append("")
 
     lines.extend(["## 3. Findings to investigate", ""])
