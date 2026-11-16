@@ -8,6 +8,9 @@ from lowkey import break_engine
 
 
 class _Host:
+    def __init__(self):
+        self.encoded = None
+
     def anvil_rpc_info(self, _config):
         return {"accounts": [
             "0x1111111111111111111111111111111111111111",
@@ -17,6 +20,10 @@ class _Host:
     @staticmethod
     def is_address(value):
         return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", str(value)))
+
+    def encode_target_call(self, config, signature, values):
+        self.encoded = (config, signature, list(values))
+        return "0x12345678", "0x12345678" + ("00" * 32)
 
 
 class P0SetupCompatibilityTests(unittest.TestCase):
@@ -54,54 +61,83 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(values, ["[1]"])
 
-    def test_nested_and_tuple_abi_types_refuse_with_type_name(self):
-        for abi_type in ("address[][]", "tuple"):
-            with self.subTest(abi_type=abi_type):
-                with self.assertRaisesRegex(ValueError, re.escape(abi_type)):
-                    break_engine._make_value(
-                        self.host,
-                        {"inputs": [{"name": "value", "type": abi_type}]},
-                        random.Random(7),
-                        "one",
-                    )
-
-    def test_renderer_materializes_memory_array_and_uses_actor(self):
-        declarations, expressions = break_engine._render_abi_arguments(
-            [{"name": "recipients", "type": "address[]"}],
-            ["[0x2222222222222222222222222222222222222222]"],
-            actor_expr="address(ATTACKER)",
-            prefix="testArg",
+    def test_nested_arrays_and_tuples_keep_their_recursive_shape(self):
+        nested = break_engine._make_value(
+            self.host,
+            {"inputs": [{"name": "recipients", "type": "address[][]"}]},
+            random.Random(7),
+            "one",
         )
-        self.assertIn("new address[](1)", declarations)
-        self.assertIn("testArg_0[0] = address(ATTACKER);", declarations)
-        self.assertEqual(expressions, ["testArg_0"])
+        tuple_value = break_engine._make_value(
+            self.host,
+            {"inputs": [{
+                "name": "claim",
+                "type": "tuple",
+                "components": [
+                    {"name": "recipient", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+            }]},
+            random.Random(7),
+            "one",
+        )
+        self.assertEqual(nested, ["[[0x2222222222222222222222222222222222222222]]"])
+        self.assertEqual(tuple_value, ["(0x2222222222222222222222222222222222222222,1)"])
 
-    def test_setup_discovery_supports_address_array_abi(self):
-        setup = break_engine._find_setup_abi([
+    def test_cast_encoder_receives_canonical_recursive_signature_and_samples(self):
+        fn = {
+            "name": "claimMany",
+            "inputs": [{
+                "name": "claims",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "recipient", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+            }],
+        }
+        values = break_engine._make_value(self.host, fn, random.Random(7), "one")
+        calldata, error = break_engine._encode_call(
+            self.host, {"rpc": "http://127.0.0.1:8545"}, self.target, fn, values
+        )
+        self.assertIsNone(error)
+        self.assertEqual(calldata, "0x12345678" + ("00" * 32))
+        self.assertEqual(
+            self.host.encoded[1],
+            "claimMany((address,uint256)[])",
+        )
+        self.assertEqual(self.host.encoded[2], values)
+        self.assertEqual(self.host.encoded[0]["target"], self.target.address)
+
+    def test_setup_discovery_accepts_recursive_array_abi(self):
+        setup = break_engine._find_setup_function([
             {
                 "type": "function",
                 "name": "deposit",
                 "stateMutability": "nonpayable",
-                "inputs": [{"name": "recipients", "type": "address[]"}],
+                "inputs": [{
+                    "name": "recipients",
+                    "type": "address[][]",
+                }],
                 "outputs": [],
             }
         ])
         self.assertIsNotNone(setup)
-        self.assertEqual(setup["name"], "deposit")
+        self.assertEqual(break_engine._format_signature(setup), "deposit(address[][])")
 
     def test_unsupported_setup_type_is_not_guessed(self):
-        setup = break_engine._find_setup_abi([
-            {
-                "type": "function",
-                "name": "deposit",
-                "stateMutability": "nonpayable",
-                "inputs": [{"name": "details", "type": "tuple"}],
-                "outputs": [],
-            }
-        ])
-        self.assertIsNone(setup)
+        with self.assertRaisesRegex(ValueError, "tuple"):
+            break_engine._find_setup_function([
+                {
+                    "type": "function",
+                    "name": "deposit",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{"name": "details", "type": "tuple"}],
+                    "outputs": [],
+                }
+            ])
 
-    def test_repeat_harness_uses_token_decimals_and_optional_return_approval(self):
+    def test_repeat_harness_uses_verified_token_decimals_and_optional_return_approval(self):
         body = break_engine._render_repeat_test(
             self.target,
             {"inputs": [{"name": "amount", "type": "uint256"}]},
@@ -110,23 +146,27 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             "0",
             "accounting",
             None,
+            setup_signature="deposit(uint256)",
             entitlement_signature="credit(address)",
             asset_signature="asset()",
-            setup_abi={
-                "name": "deposit",
-                "stateMutability": "nonpayable",
-                "inputs": [{"name": "amount", "type": "uint256"}],
-                "outputs": [],
-            },
+            setup_params=[{"name": "amount", "type": "uint256"}],
+            setup_payable=False,
+            payload_calldata="0x12345678" + ("00" * 32),
         )
-        self.assertIn('abi.encodeWithSignature("decimals()")', body)
-        self.assertIn("reportedDecimals <= 77", body)
-        self.assertIn('TOKEN_DECIMALS_SOURCE', body)
-        self.assertIn('fallback-18', body)
-        self.assertIn("deal(assetToken, ATTACKER, tokenSeedAmount)", body)
-        self.assertIn("returndata.length == 0", body)
-        self.assertIn("LOWKEY_APPROVE_RESET_FAILED", body)
-        self.assertIn('abi.encodeWithSignature("deposit(uint256)", 1)', body)
+        for marker in (
+            'abi.encodeWithSignature("decimals()")',
+            "reportedDecimals <= 77",
+            "assetDecimalsVerified = true",
+            "tokenFundingAmount = 10 ** assetDecimals",
+            'deal(assetToken, ATTACKER, tokenFundingAmount)',
+            "data.length == 0",
+            "_lowkeySafeApprove",
+            'console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);',
+            'console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);',
+            'abi.encodeWithSignature("deposit(uint256)", tokenFundingAmount)',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, body)
         self.assertNotIn("IERC20Lowkey(assetToken).approve", body)
 
     def test_unsupported_abi_exception_emits_machine_readable_refusal(self):
@@ -166,12 +206,11 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             "withdraw(address[])",
             ["[0x2222222222222222222222222222222222222222]"],
             2,
-            setup_abi={
-                "name": "deposit",
-                "stateMutability": "payable",
-                "inputs": [{"name": "recipients", "type": "address[]"}],
-                "outputs": [],
-            },
+            setup_signature="deposit(address[])",
+            setup_params=[{"name": "recipients", "type": "address[]"}],
+            setup_payable=True,
+            payload_calldata="0x12345678" + ("00" * 32),
+            setup_calldata="0x87654321" + ("00" * 32),
         )
         for marker in (
             "tokensReceived(",
@@ -181,11 +220,10 @@ class P0SetupCompatibilityTests(unittest.TestCase):
             "supportsInterface(",
             "setInterfaceImplementer(",
             "ERC777TokensRecipient",
+            "LowkeyABIPatch.replaceAddress",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, body)
-        self.assertIn("abi.encodeWithSignature(\"deposit(address[])\", lowkeySetupArg_0)", body)
-        self.assertIn("new address[](1)", body)
 
 
 if __name__ == "__main__":
