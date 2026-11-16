@@ -96,7 +96,7 @@ contract MockUSDT6NoReturnReset {
 }
 
 contract USDCVault {
-    MockUSDC6 public immutable asset;
+    MockUSDC6 public asset;
     mapping(address => uint256) public balances;
 
     constructor(address token) { asset = MockUSDC6(token); }
@@ -115,7 +115,7 @@ contract USDCVault {
 }
 
 contract USDTVault {
-    MockUSDT6NoReturnReset public immutable asset;
+    MockUSDT6NoReturnReset public asset;
     mapping(address => uint256) public balances;
 
     constructor(address token) { asset = MockUSDT6NoReturnReset(token); }
@@ -159,7 +159,7 @@ contract MockNoMetadataToken {
 }
 
 contract NoMetadataVault {
-    MockNoMetadataToken public immutable asset;
+    MockNoMetadataToken public asset;
     mapping(address => uint256) public balances;
 
     constructor(address token) { asset = MockNoMetadataToken(token); }
