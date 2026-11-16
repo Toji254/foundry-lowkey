@@ -183,7 +183,7 @@ class P0SetupCompatibilityTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, body)
-        self.assertIn("abi.encodeWithSignature(\"deposit(address[])\", lowkeySetupArg_0)", body)
+        self.assertIn("abi.encodeWithSignature(\"deposit(address[])\", setupArg0)", body)
         self.assertIn("new address[](1)", body)
 
 
