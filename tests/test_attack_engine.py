@@ -32,6 +32,7 @@ class AttackEngineTests(unittest.TestCase):
         self.source.write_text(
             "pragma solidity ^0.8.20;\n"
             "contract Vault {\n"
+            "    uint256 public totalAssets;\n"
             "    function withdraw(uint256 amount) external {\n"
             "        amount;\n"
             "    }\n"
@@ -50,7 +51,7 @@ class AttackEngineTests(unittest.TestCase):
         self.discovery = {
             "source_file": "src/Vault.sol",
             "source_sha256": self.source_hash,
-            "source_line": 3,
+            "source_line": 4,
             "entrypoint": "withdraw(uint256)",
         }
         self.reproof = self._write_reproof(semantic=True)
@@ -120,9 +121,9 @@ class AttackEngineTests(unittest.TestCase):
             "timeout_seconds": 30,
         }
 
-    def _trace_event(self, *, depth=2, storage_support="exact"):
+    def _trace_event(self, *, seq=0, depth=2, storage_support="exact"):
         return engine.build_trace_event(
-            seq=0,
+            seq=seq,
             backend="forge-state-diff",
             kind="Call",
             accessor=ADDR,
@@ -163,8 +164,8 @@ class AttackEngineTests(unittest.TestCase):
                 "observed": (role == "attack") if observed is None else observed,
             },
             "trace_events": [
-                self._trace_event(depth=depth),
-                self._trace_event(depth=depth),
+                self._trace_event(seq=0, depth=depth),
+                self._trace_event(seq=1, depth=depth),
             ] if spec["min_events"] > 1 else [self._trace_event(depth=depth)],
         }
 
