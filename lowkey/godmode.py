@@ -6468,6 +6468,17 @@ def report(args):
                 f"**Detector:** {tool}",
                 "",
             ])
+            optional_fields = (
+                ("Severity rationale", "severity_rubric"),
+                ("Fork block", "fork_block"),
+                ("Gas used", "gas_used"),
+                ("Gross profit", "gross_profit"),
+                ("Net profit after costs", "net_profit"),
+                ("Control evidence", "control_evidence"),
+            )
+            for label, key in optional_fields:
+                if finding.get(key) is not None and str(finding.get(key)).strip():
+                    lines.extend(["**" + label + "**", "", _report_clean(finding.get(key), limit=1800), ""])
             for label, keys in (
                 ("Why it was flagged", ("reasoning", "meaning", "description")),
                 ("Potential impact", ("impact", "why")),
