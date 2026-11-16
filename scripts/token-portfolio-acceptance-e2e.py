@@ -161,12 +161,13 @@ def deployed_address(output: str) -> str:
 
 
 def deploy(forge: str, project: Path, url: str, contract: str, args: list[str]) -> str:
-    output = run(
-        [forge, "create", f"src/PortfolioFixtures.sol:{contract}",
-         "--rpc-url", url, "--private-key", PRIVATE_KEY, "--broadcast", "--json",
-         "--constructor-args", *args],
-        project, timeout=300,
-    )
+    command = [
+        forge, "create", f"src/PortfolioFixtures.sol:{contract}",
+        "--rpc-url", url, "--private-key", PRIVATE_KEY, "--broadcast", "--json",
+    ]
+    if args:
+        command.extend(["--constructor-args", *args])
+    output = run(command, project, timeout=300)
     return deployed_address(output)
 
 
