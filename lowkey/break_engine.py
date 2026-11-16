@@ -1026,6 +1026,44 @@ def _cast_balance(host, rpc: str, address: str) -> int:
     return _cast_int(result.stdout)
 
 
+def _has_runtime_bytecode(value: str) -> bool:
+    """True only when cast returned non-empty, non-zero EVM runtime bytecode."""
+    raw = re.sub(r"\s+", "", str(value or "")).lower()
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    if not raw or not re.fullmatch(r"[0-9a-f]+", raw):
+        return False
+    return any(character != "0" for character in raw)
+
+
+def _filter_runtime_targets(host, targets: list[Target], rpc: str):
+    """Do not run a local attack against remembered addresses with no code."""
+    live: list[Target] = []
+    rejected: list[dict[str, str]] = []
+    for target in targets:
+        try:
+            result = _cast_exec(host, ["code", target.address], rpc)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "cast code failed").strip()
+                rejected.append({
+                    "address": target.address,
+                    "reason": "runtime bytecode could not be verified: " + detail[-400:],
+                })
+            elif not _has_runtime_bytecode(result.stdout):
+                rejected.append({
+                    "address": target.address,
+                    "reason": "no runtime bytecode exists at this address on the selected Anvil chain",
+                })
+            else:
+                live.append(target)
+        except Exception as exc:
+            rejected.append({
+                "address": target.address,
+                "reason": f"runtime bytecode check failed: {type(exc).__name__}: {exc}",
+            })
+    return live, rejected
+
+
 def _cast_send(
     host,
     rpc: str,
@@ -3644,6 +3682,23 @@ def run(config, args=None, host=None):
                 return host.fail(
                     "No live target selected. Run 'lk lab' or 'lk target <address>' first."
                 )
+
+        # A remembered address is not proof of a deployment. This guard applies
+        # to both current-target and --system campaigns before ABI discovery or
+        # any transaction can be attempted.
+        targets, rejected_targets = _filter_runtime_targets(host, targets, rpc)
+        for rejected in rejected_targets:
+            print(
+                f"[TARGET SKIPPED] {rejected['address']} — {rejected['reason']}",
+                flush=True,
+            )
+        if not targets:
+            reasons = "; ".join(item["reason"] for item in rejected_targets)
+            return host.fail(
+                "No selected target has verified runtime bytecode on the current Anvil RPC. "
+                "Deploy the project to this Anvil instance or select an address shown as LIVE "
+                "by 'lk targets'. " + reasons
+            )
     except Exception as exc:
         return host.fail(f"Target discovery failed: {exc}")
 
