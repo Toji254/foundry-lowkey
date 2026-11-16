@@ -1,5 +1,10 @@
 # Isolated LK capability-completion track
 
+## Current isolated implementation progress (not yet accepted)
+
+- Storage parity: Anvil opcode-level SLOAD/SSTORE/TLOAD/TSTORE extraction is implemented with fail-closed frame reconciliation. The exact-head P2 real-fork job has passed with `call_tree_parity=MATCHED`, `storage_parity=exact_comparable`, and `storage_value_parity=matched` for the pinned EntryPoint view-call fixture. Broader on-node nested/delegatecall/revert/transient-storage acceptance is still outstanding.
+- Token economics: explicit ERC-20/ERC-4626 portfolio measurement and source-verified USD 1e-18 valuation are implemented behind `lk reprove --portfolio-manifest`. Unit and end-to-end CLI acceptance is pending; do not mark token economics complete until exact-head CI and a funded local-fork portfolio fixture pass.
+
 ## Isolation contract
 
 This branch was created from `integration-test-drive` at
