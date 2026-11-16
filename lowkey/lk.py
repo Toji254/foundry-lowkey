@@ -1691,6 +1691,22 @@ def activate_project_context(config, root=None):
     config["target_contract"] = target.get("contract") if isinstance(target, dict) else None
     if address and target.get("artifact"):
         config.setdefault("abi_paths", {})[address] = target["artifact"]
+    elif address:
+        # ABI paths are still present in legacy global config. Never let an
+        # address reused by another project inherit that project's ABI.
+        abi_paths = config.setdefault("abi_paths", {})
+        configured_abi = abi_paths.get(address)
+        if configured_abi:
+            candidate = Path(os.path.expanduser(str(configured_abi)))
+            if not candidate.is_absolute():
+                candidate = project_root / candidate
+            try:
+                candidate.resolve().relative_to(project_root)
+                owned_here = candidate.is_file()
+            except (OSError, ValueError):
+                owned_here = False
+            if not owned_here:
+                abi_paths.pop(address, None)
 
     # Legacy handlers still read these fields directly. Hydrate them per
     # invocation, but the project context—not the global values—is authoritative

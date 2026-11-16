@@ -266,6 +266,45 @@ class SharedCommandContextTests(unittest.TestCase):
             )
             self.assertIsNone(resolved["target"])
 
+    def test_same_address_does_not_reuse_another_projects_abi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            project_a = base / "TokenA"
+            project_b = base / "TokenB"
+            for root in (project_a, project_b):
+                root.mkdir()
+                (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            address = "0x" + "9" * 40
+            old_abi = project_a / "out" / "Token.sol" / "Token.json"
+            old_abi.parent.mkdir(parents=True)
+            old_abi.write_text('{"abi":[]}', encoding="utf-8")
+            lk.audit_context.update(
+                project_b,
+                target={
+                    "address": address,
+                    "contract": "TokenB",
+                    "artifact": None,
+                    "source": "manual",
+                },
+                actor_scope_initialized=True,
+                actor_profile=None,
+                rpc=None,
+            )
+            config = {
+                "target": address,
+                "target_contract": "TokenA",
+                "target_owners": {address: str(project_a)},
+                "project_roots": {address: str(project_a)},
+                "abi_paths": {address: str(old_abi)},
+                "wallets": {},
+            }
+            with patch.object(lk, "project_fixture_rpc_info", return_value=None), \
+                 patch.object(lk, "anvil_rpc_info", return_value={}):
+                resolved = lk.activate_project_context(config, project_b)
+            self.assertEqual(resolved["target"]["contract"], "TokenB")
+            self.assertEqual(config["target"], address)
+            self.assertNotIn(address, config["abi_paths"])
+
     def test_selected_actor_is_persisted_as_project_state_not_just_global_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "Token"
