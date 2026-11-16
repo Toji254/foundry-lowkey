@@ -139,10 +139,11 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("support contracts", output)
         self.assertIn("lk targets --all", output)
 
+        config = {}
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_targets") as run_targets:
-            result = lk._dispatch_command_impl("targets", ["--all"], {})
+            result = lk._dispatch_command_impl("targets", ["--all"], config)
         self.assertEqual(result, run_targets.return_value)
-        run_targets.assert_called_once_with({}, include_support=True)
+        run_targets.assert_called_once_with(config, include_support=True)
 
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_targets") as run_targets:
             result = lk._dispatch_command_impl("targets", ["--unknown"], {})
@@ -1074,7 +1075,10 @@ class CommandHelpTests(unittest.TestCase):
         script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
         self.assertIn("Friendly Lowkey help must be handled by the main router.", script)
         self.assertIn('exec python3 "$HOME/.lowkey/lk.py" "$@"', script)
-        self.assertIn('exec python3 "$HOME/.lowkey/forge_tools.py" "$@"', script)
+        self.assertIn(
+            'exec python3 "$HOME/.lowkey/command_wrapper.py" "forge" -- python3 "$HOME/.lowkey/forge_tools.py" "$@"',
+            script,
+        )
 
     def test_generate_help_is_forwarded_by_bin(self):
         script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
@@ -1543,6 +1547,16 @@ class CommandHelpTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             lowkey_dir = pathlib.Path(home) / ".lowkey"
             lowkey_dir.mkdir()
+            (lowkey_dir / "command_wrapper.py").write_text(
+                "import subprocess, sys\n"
+                "args = sys.argv[1:]\n"
+                "while args and args[0] != '--':\n"
+                "    option = args.pop(0)\n"
+                "    if option == '--skip-status' and args: args.pop(0)\n"
+                "if args: args.pop(0)\n"
+                "raise SystemExit(subprocess.run(args, check=False).returncode)\n",
+                encoding="utf-8",
+            )
             (lowkey_dir / "forge_tools.py").write_text(
                 "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
                 encoding="utf-8",
@@ -1619,25 +1633,28 @@ class CommandHelpTests(unittest.TestCase):
         self.assertNotIn("constructor prompts", history_output.lower())
 
     def test_deploy_routes_to_generic_lab_and_preserves_explicit_artifact_mode(self):
+        config = {}
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
-            code = lk._dispatch_command_impl("deploy", ["TargetHolder"], {})
+            code = lk._dispatch_command_impl("deploy", ["TargetHolder"], config)
         self.assertEqual(code, 0)
         run_lab.assert_called_once_with(
-            {}, ["--generic", "TargetHolder"], deployment_only=True
+            config, ["--generic", "TargetHolder"], deployment_only=True
         )
 
+        config = {}
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
-            code = lk._dispatch_command_impl("deploy", ["--artifact", "TargetHolder"], {})
+            code = lk._dispatch_command_impl("deploy", ["--artifact", "TargetHolder"], config)
         self.assertEqual(code, 0)
         run_lab.assert_called_once_with(
-            {}, ["--artifact", "TargetHolder"], deployment_only=True
+            config, ["--artifact", "TargetHolder"], deployment_only=True
         )
 
+        config = {}
         with patch.object(lk, "activate_project_target"), patch.object(lk, "run_lab", return_value=0) as run_lab:
-            code = lk._dispatch_command_impl("deployment", ["TargetHolder"], {})
+            code = lk._dispatch_command_impl("deployment", ["TargetHolder"], config)
         self.assertEqual(code, 0)
         run_lab.assert_called_once_with(
-            {}, ["--generic", "TargetHolder"], deployment_only=True
+            config, ["--generic", "TargetHolder"], deployment_only=True
         )
 
     def test_lab_help_explains_anvil_reuse_and_local_fallback(self):

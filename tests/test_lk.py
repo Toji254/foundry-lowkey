@@ -566,9 +566,12 @@ class LowkeyCastTests(unittest.TestCase):
             "target": "0x" + "b" * 40,
             "target_contract": "Fallback",
         }
-        with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/testi")):
-            with patch.object(lk.audit_context, "set_target"), patch.object(lk, "save_config"):
-                code = lk.dispatch_command("target", ["reset"], config)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                with patch.object(lk.audit_context, "set_target"), patch.object(lk, "save_config"):
+                    code = lk.dispatch_command("target", ["reset"], config)
         self.assertIsNone(code)
         self.assertIsNone(config.get("target"))
         self.assertIsNone(config.get("target_contract"))
@@ -6879,10 +6882,11 @@ contract Pool {
 
     def test_txpool_uses_rpc_methods_not_cast_flag(self):
         config={"rpc":"http://127.0.0.1:8545"}
-        with patch.object(lk,"rpc_json",side_effect=[
-            {"pending":"0x1","queued":"0x2"},
-            {"pending":{},"queued":{}},
-        ]) as rpc_json:
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk,"rpc_json",side_effect=[
+                 {"pending":"0x1","queued":"0x2"},
+                 {"pending":{},"queued":{}},
+             ]) as rpc_json:
             output=io.StringIO()
             with redirect_stdout(output):
                 self.assertEqual(lk.run_txpool(config, []),0)

@@ -344,6 +344,11 @@ class SharedCommandContextTests(unittest.TestCase):
             config = {
                 "actor": "Alice",
                 "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+                "_resolved_project_context": {
+                    "project_root": str(root),
+                    "rpc": None,
+                    "rpc_source": None,
+                },
             }
             saved = lk.persist_project_actor(config, root)
             state = lk.audit_context.load(root)

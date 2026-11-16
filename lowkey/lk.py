@@ -713,15 +713,24 @@ def effective_rpc(config, explicit_rpc=None):
     if fixture_rpc:
         return fixture_rpc
     try:
-        root = Path(audit_context.foundry_project_root()).expanduser().resolve()
         cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
-        if (
-            isinstance(cached, dict)
-            and cached.get("project_root") == str(root)
-            and cached.get("rpc")
-            and cached.get("rpc_source") != "project-fixture"
-        ):
-            return cached["rpc"]
+        root = None
+        if isinstance(cached, dict):
+            try:
+                cached_root = Path(str(cached.get("project_root") or "")).expanduser().resolve()
+                if cached_root.is_dir():
+                    root = cached_root
+                    cached_rpc = cached.get("rpc")
+                    if (
+                        isinstance(cached_rpc, str)
+                        and cached_rpc.strip()
+                        and cached.get("rpc_source") != "project-fixture"
+                    ):
+                        return cached_rpc.strip()
+            except (OSError, TypeError, ValueError):
+                root = None
+        if root is None:
+            root = Path(audit_context.foundry_project_root()).expanduser().resolve()
 
         state = audit_context.load(root)
         legacy_rpc = (

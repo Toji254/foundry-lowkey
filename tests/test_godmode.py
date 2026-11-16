@@ -2105,7 +2105,13 @@ class GodmodeTests(unittest.TestCase):
                 "actor_scope_initialized": True,
             }), encoding="utf-8")
 
-            context = godmode._load_godmode_project_context(root, explicit_target=explicit)
+            config_path = root / "global-config.json"
+            config_path.write_text(json.dumps({
+                "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            }), encoding="utf-8")
+            context = godmode._load_godmode_project_context(
+                root, config_path=config_path, explicit_target=explicit
+            )
 
             self.assertEqual(context["target"]["address"], explicit)
             self.assertEqual(context["target"]["source"], "command-line")

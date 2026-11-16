@@ -25,6 +25,12 @@ class AuditContextTests(unittest.TestCase):
             self.assertEqual(context["target"]["contract"], None)
             self.assertEqual(context["signals"], [])
 
+    def test_project_root_accepts_string_paths_from_cli_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            self.assertEqual(audit_context.foundry_project_root(str(root)), root.resolve())
+
     def test_read_does_not_create_audit_dir_for_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

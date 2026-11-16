@@ -179,11 +179,21 @@ class BlockToolsTests(unittest.TestCase):
     def test_launcher_routes_block_to_installed_module_before_generic_help(self):
         script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
         self.assertIn('if [[ "${1:-}" == "block" || "${1:-}" == "blocks" ]]', script)
-        self.assertIn('python3 "$HOME/.lowkey/block_tools.py" "$@"', script)
+        self.assertIn('python3 "$HOME/.lowkey/command_wrapper.py" "block" -- python3 "$HOME/.lowkey/block_tools.py" "$@"', script)
 
         with tempfile.TemporaryDirectory() as tmp:
             lowkey_dir = pathlib.Path(tmp) / ".lowkey"
             lowkey_dir.mkdir()
+            (lowkey_dir / "command_wrapper.py").write_text(
+                "import subprocess, sys\n"
+                "args = sys.argv[1:]\n"
+                "while args and args[0] != '--':\n"
+                "    option = args.pop(0)\n"
+                "    if option == '--skip-status' and args: args.pop(0)\n"
+                "if args: args.pop(0)\n"
+                "raise SystemExit(subprocess.run(args, check=False).returncode)\n",
+                encoding="utf-8",
+            )
             module = lowkey_dir / "block_tools.py"
             module.write_text(
                 "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",

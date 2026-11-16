@@ -134,7 +134,7 @@ class GodmodeHelpCoverageTests(unittest.TestCase):
     def test_launcher_routes_and_help_catalog_are_the_same_command_set(self):
         launcher = LAUNCHER.read_text(encoding="utf-8")
         match = re.search(
-            r'case "\$\{1:-\}" in\s*\n\s*([^\n]+)\n\s*exec python3 "\$HOME/\.lowkey/godmode\.py"',
+            r'case "\$\{1:-\}" in\s*\n\s*([^\n]+)\n\s*exec python3 "\$HOME/\.lowkey/command_wrapper\.py" "\$1" -- python3 "\$HOME/\.lowkey/godmode\.py"',
             launcher,
         )
         self.assertIsNotNone(match, "Could not locate the Godmode route case in bin/lk.")

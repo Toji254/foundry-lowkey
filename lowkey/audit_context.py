@@ -77,14 +77,18 @@ def source_link(
 
 
 
-def project_root(start: Path | None = None) -> Path:
-    """Resolve the most relevant project root, including nested workspace projects."""
-    path = (start or Path.cwd()).expanduser().resolve()
+def project_root(start: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve the most relevant project root, including nested workspace projects.
+
+    Accept plain strings as well as Path objects because CLI root flags arrive
+    as strings at the process boundary.
+    """
+    path = (Path(start) if start is not None else Path.cwd()).expanduser().resolve()
     if detected_project_root is not None:
         return detected_project_root(path)
     return path
 
-def foundry_project_root(start: Path | None = None) -> Path:
+def foundry_project_root(start: str | os.PathLike[str] | None = None) -> Path:
     """Backward-compatible root lookup used throughout Lowkey."""
     return project_root(start)
 
