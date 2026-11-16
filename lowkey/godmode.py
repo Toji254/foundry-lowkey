@@ -5518,6 +5518,7 @@ _GODMODE_STATUS_LABELS = {
     "blocked": "BLOCKED",
     "review": "NEEDS REVIEW",
     "provided": "PROVIDED",
+    "interrupted": "INTERRUPTED",
 }
 
 
@@ -5556,6 +5557,8 @@ def _godmode_stage_detail(stage):
     if name == "attack":
         if status == "not-run":
             return "Not requested. No attack campaign or attack transactions were run."
+        if status == "interrupted":
+            return "The local attack process was stopped by the operator; review its last probe and local-chain state before resuming."
         if status in {"review", "completed"}:
             raw = str(stage.get("output") or "")
             highlights = []
