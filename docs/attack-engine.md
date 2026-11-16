@@ -4,7 +4,7 @@ This module turns the attack catalogue into a strict execution and evidence cont
 
 ## Commands
 
-\`\`\`bash
+```bash
 # See all strategy contracts and their current adapter status
 lk attack engines --json
 
@@ -21,9 +21,9 @@ lk attack chain validate .audit/lowkey/chains/flash-price-borrow.json --root .
 
 # Execute the chain's attack, control and failure-injection Foundry adapters
 lk attack chain run .audit/lowkey/chains/flash-price-borrow.json --root .
-\`\`\`
+```
 
-\`lk attack\`, \`lk attack search\`, \`learn\`, \`lab\`, and the existing library commands remain the read-only learning/reference surface. The executable strategy engine is routed only for \`engines\`, \`discover\`, \`verify\`, and \`chain\`.
+`lk attack`, `lk attack search`, `learn`, `lab`, and the existing library commands remain the read-only learning/reference surface. The executable strategy engine is routed only for `engines`, `discover`, `verify`, and `chain`.
 
 ## Family contract
 
@@ -37,7 +37,7 @@ For each family, the strategy contract declares:
 - whether exact Forge per-access storage evidence is required; and
 - whether the default impact policy expects economic proof.
 
-Only the existing reentrancy fixture is marked \`fixture_accepted\`. The other 14 are \`adapter_required\`: the strategy contract exists, but there is no automatic claim that a general exploit implementation exists. They are not eligible for a verified family verdict until a target-specific adapter and acceptance suite pass.
+Only the existing reentrancy fixture is marked `fixture_accepted`. The other 14 are `adapter_required`: the strategy contract exists, but there is no automatic claim that a general exploit implementation exists. They are not eligible for a verified family verdict until a target-specific adapter and acceptance suite pass.
 
 ### Target-specific discovery
 
@@ -53,7 +53,7 @@ The file digest must still match at validation time, the entrypoint must exist a
 
 A minimal manifest has this shape:
 
-\`\`\`json
+```json
 {
   "schema_version": 1,
   "id": "vault-withdraw-001",
@@ -97,35 +97,35 @@ A minimal manifest has this shape:
   },
   "timeout_seconds": 300
 }
-\`\`\`
+```
 
-\`code_sha256\` is SHA-256 of the deployed runtime bytecode, not the EVM Keccak code hash. \`block_number\` pins the fork parent block. The source file digest is separate from deployment bytecode identity.
+`code_sha256` is SHA-256 of the deployed runtime bytecode, not the EVM Keccak code hash. `block_number` pins the fork parent block. The source file digest is separate from deployment bytecode identity.
 
 The test runner sets:
-- \`LOWKEY_EXPERIMENT_ID\`
-- \`LOWKEY_EXPERIMENT_ROLE\` (\`attack\` or \`control\`)
-- \`LOWKEY_EVIDENCE_PATH\`
+- `LOWKEY_EXPERIMENT_ID`
+- `LOWKEY_EXPERIMENT_ROLE` (`attack` or `control`)
+- `LOWKEY_EVIDENCE_PATH`
 
 The target-specific Foundry tests must write their evidence JSON to that exact path. Each JSON document must include the matching experiment/family/role, pinned target, discovery digest, every required precondition as a boolean, the canonical TraceEvent v2 rows, the declared property result, and a pair anchor containing the same entry selector, calldata digest, prestate digest, and setup digest on both sides.
 
 For every paired run:
-- attack predicate must be \`true\`;
-- control predicate must be \`false\`;
+- attack predicate must be `true`;
+- control predicate must be `false`;
 - target, source digest, entry call, setup and prestate must match;
-- exact-storage families require a non-empty \`forge-state-diff\` event with \`storage_support: "exact"\`;
+- exact-storage families require a non-empty `forge-state-diff` event with `storage_support: "exact"`;
 - the mutation baseline must pass, and every declared mutant must be killed; survived, invalid, timeout, or infrastructure-error mutants block acceptance.
 
 The engine invokes the attack and control tests independently with the same run ID and role-specific evidence path. It does not manufacture trace evidence or fill unknown fields.
 
 ### Independent reproof and impact mode
 
-A paired Forge experiment is not enough to prove a real deployment exploit. The manifest must reference a completed \`lk reprove\` artifact. The engine checks the reproof's source-RPC verification, target address, runtime-code SHA-256, chain ID, fork block, successful mined receipt, call trace, and (for exact-storage families) trace-derived storage slots.
+A paired Forge experiment is not enough to prove a real deployment exploit. The manifest must reference a completed `lk reprove` artifact. The engine checks the reproof's source-RPC verification, target address, runtime-code SHA-256, chain ID, fork block, successful mined receipt, call trace, and (for exact-storage families) trace-derived storage slots.
 
-Use \`impact_mode: "economic"\` when the attack is required to realize positive value. The reproof must be independently classified \`PROFITABLE\`, and its measured native-ETH gas/setup costs must reconcile. The current generic reproof accounting does not value arbitrary ERC-20s, ERC-4626 shares, rebasing assets, or cross-token portfolios; those need a separately reviewed valuation adapter.
+Use `impact_mode: "economic"` when the attack is required to realize positive value. The reproof must be independently classified `PROFITABLE`, and its measured native-ETH gas/setup costs must reconcile. The current generic reproof accounting does not value arbitrary ERC-20s, ERC-4626 shares, rebasing assets, or cross-token portfolios; those need a separately reviewed valuation adapter.
 
-Use \`impact_mode: "semantic"\` for a concrete security-property violation where profit is not the correct acceptance criterion. Run \`lk reprove\` with \`--non-economic\` and a separately executed \`--semantic-check-argv-json\` / \`--semantic-test\`; a source match or passing test command without the semantic assertion is insufficient.
+Use `impact_mode: "semantic"` for a concrete security-property violation where profit is not the correct acceptance criterion. Run `lk reprove` with `--non-economic` and a separately executed `--semantic-check-argv-json` / `--semantic-test`; a source match or passing test command without the semantic assertion is insufficient.
 
-A \`SIMULATED_BREAK\` or local observation does not become \`FORK_REPRODUCED\`, \`PROFITABLE\`, or \`HUMAN_CONFIRMED\` automatically. The target authenticity and fidelity axes remain independent.
+A `SIMULATED_BREAK` or local observation does not become `FORK_REPRODUCED`, `PROFITABLE`, or `HUMAN_CONFIRMED` automatically. The target authenticity and fidelity axes remain independent.
 
 ## Chain composition
 
@@ -134,7 +134,7 @@ A chain is not just a list of unrelated calls. Each stage carries:
 - the complete family precondition list;
 - explicit stage dependencies;
 - named artifacts it consumes and produces;
-- a failure policy (\`abort\`, \`revert\`, or \`restore\`); and
+- a failure policy (`abort`, `revert`, or `restore`); and
 - an explicit rollback strategy.
 
 The manifest is limited to 32 stages and must already be in topological order. A stage cannot consume an artifact before its producer succeeds, and it must explicitly depend on the producer. Single-transaction chains must use EVM transaction revert; stateful-fork chains must use Anvil snapshot revert or a verified compensating action.
@@ -150,7 +150,7 @@ The failure-injection evidence names the failed stage and repeats that stage's e
 
 ### Example stage sequence
 
-\`\`\`json
+```json
 {
   "id": "flash-liquidity",
   "family": "economic",
@@ -171,17 +171,17 @@ The failure-injection evidence names the failed stage and repeats that stage's e
   "on_failure": "abort",
   "rollback": "evm_transaction_revert"
 }
-\`\`\`
+```
 
-A later price-manipulation stage might consume \`borrowed-liquidity\` and produce \`manipulated-price-window\`; a collateral-borrow stage consumes that artifact and produces \`borrowed-collateral\`; the final repayment/unwind stage consumes both outstanding liabilities and borrowed collateral. Those are protocol-specific adapter steps, not built-in universal calldata recipes.
+A later price-manipulation stage might consume `borrowed-liquidity` and produce `manipulated-price-window`; a collateral-borrow stage consumes that artifact and produces `borrowed-collateral`; the final repayment/unwind stage consumes both outstanding liabilities and borrowed collateral. Those are protocol-specific adapter steps, not built-in universal calldata recipes.
 
 ## Status meanings
 
-- \`VALIDATED_NOT_EXECUTED\`: manifest structure and dependency rules passed; no command or transaction ran.
-- \`PAIRED_OBSERVATION\`: local attack/control evidence matched and the declared property differed as expected.
-- \`VERIFIED_LOCAL_EXPERIMENT\`: paired Forge run plus mutation gate passed; the report remains local scope.
-- \`VERIFIED_LOCAL_ATTACK_CHAIN\`: attack/control chain, stage continuity, failure rollback, and mutation gate passed; still local scope.
-- \`REFUSED\`: a precondition, evidence, identity, dependency, storage, backend, or policy requirement was not met.
+- `VALIDATED_NOT_EXECUTED`: manifest structure and dependency rules passed; no command or transaction ran.
+- `PAIRED_OBSERVATION`: local attack/control evidence matched and the declared property differed as expected.
+- `VERIFIED_LOCAL_EXPERIMENT`: paired Forge run plus mutation gate passed; the report remains local scope.
+- `VERIFIED_LOCAL_ATTACK_CHAIN`: attack/control chain, stage continuity, failure rollback, and mutation gate passed; still local scope.
+- `REFUSED`: a precondition, evidence, identity, dependency, storage, backend, or policy requirement was not met.
 
 The status never upgrades a finding to human-confirmed. No command in this module broadcasts a production transaction. Actual transaction execution is limited to an explicitly configured local Anvil fork through the separate reproof workflow.
 
