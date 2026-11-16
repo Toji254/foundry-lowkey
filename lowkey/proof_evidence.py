@@ -64,7 +64,7 @@ def trace_evidence_capabilities(
             "calldata": "exact",
             "storage": "derived_per_access",
             "storage_observations": int(storage_observations),
-            "storage_source": "Anvil structLogs SLOAD/SSTORE",
+            "storage_source": "Anvil structLogs SLOAD/SSTORE/TLOAD/TSTORE",
             "storage_scope": "ordered per-access slots attributed to matched callTracer frames; values may remain unavailable",
         }
     if backend == "anvil-calltracer":
