@@ -4224,8 +4224,22 @@ def main(argv=None):
         if rest and rest[0] == "classify":
             return _archetype_index_main(rest[1:])
         return generate(rest,cmd)
-    if cmd=="assumptions": return _archetype_index_main(["--assumptions", *rest])
-    if cmd=="capability": return _archetype_index_main(["--capability", *rest])
+    if cmd in {"assumptions", "capability"}:
+        if any(str(token).strip().lower() in HELP_FLAGS for token in rest):
+            details = _godmode_help_details(cmd)
+            help_parser = LowkeyArgumentParser(
+                prog="lk " + cmd,
+                description=details["summary"],
+            )
+            help_parser.add_argument("--root", default=".")
+            help_parser.add_argument("--report")
+            help_parser.parse_args(rest)
+            print("When to use: " + details["when"])
+            print("Example: " + details["example"])
+            print("Limitations: " + details["limits"])
+            return 0
+        flag = "--assumptions" if cmd == "assumptions" else "--capability"
+        return _archetype_index_main([flag, *rest])
     if cmd=="token-weird": return token_weird(rest)
     if cmd=="fork-cache": return fork_cache(rest)
     if cmd=="questions": return questions(rest)
