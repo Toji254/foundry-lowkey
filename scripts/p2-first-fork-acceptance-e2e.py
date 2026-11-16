@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""P2 acceptance: canonical Forge/Anvil parity and first verified Yearn V3 clone fork.
+"""P2 acceptance: canonical Forge/Anvil parity and first exact-identity mainnet fork.
 
-The harness performs only a read-only totalAssets() call against a pinned
+The harness performs only a read-only getNonce() call against a pinned
 Ethereum mainnet fork. It never signs, broadcasts, or submits a transaction.
 """
 from __future__ import annotations
@@ -23,8 +23,7 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-TARGET = "0xbe53a109b494e5c9f97b9cd39fe969be68bf6204"
-TARGET_DEPLOYMENT_BLOCK = 19_419_991
+TARGET = "0x0000000071727de22e5e9d8baf0edac6f37da032"
 ACTOR = "0x000000000000000000000000000000000000a11c"
 DEFAULT_FORK_UPSTREAM = "https://eth-mainnet.public.blastapi.io"
 DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io"
@@ -82,12 +81,12 @@ def quantity(value: Any, label: str) -> int:
     return int(value, 16)
 
 
-def pick_common_block(fork_upstream: str, source_rpc: str) -> tuple[int, dict[str, Any]]:
+def pick_common_block(fork_upstream: str, source_rpc: str, deployment_block: int) -> tuple[int, dict[str, Any]]:
     fork_tip = quantity(rpc(fork_upstream, "eth_blockNumber", []), "fork upstream tip")
     source_tip = quantity(rpc(source_rpc, "eth_blockNumber", []), "source RPC tip")
     candidate = min(fork_tip, source_tip) - 12
-    if candidate <= TARGET_DEPLOYMENT_BLOCK:
-        raise AssertionError("Public RPC endpoints did not expose a recent block after the Yearn vault deployment.")
+    if candidate <= deployment_block:
+        raise AssertionError("Public RPC endpoints did not expose a recent block after the verified target deployment.")
     for _ in range(24):
         tag = hex(candidate)
         fork_block = rpc(fork_upstream, "eth_getBlockByNumber", [tag, False])
@@ -98,7 +97,7 @@ def pick_common_block(fork_upstream: str, source_rpc: str) -> tuple[int, dict[st
             if fork_hash and fork_hash == source_hash:
                 return candidate, fork_block
         candidate -= 12
-        if candidate <= TARGET_DEPLOYMENT_BLOCK:
+        if candidate <= deployment_block:
             break
     raise AssertionError("Could not find a recent common Ethereum block across the two independent RPC providers.")
 
@@ -150,21 +149,22 @@ pragma solidity ^0.8.20;
 
 import {LowkeyForgeStateDiffRecorder} from "../src/LowkeyForgeStateDiffRecorder.sol";
 
-contract P2FirstYearnForkTest is LowkeyForgeStateDiffRecorder {
+contract P2FirstForkTest is LowkeyForgeStateDiffRecorder {
     address private constant TARGET =
-        address(uint160(0x00be53a109b494e5c9f97b9cd39fe969be68bf6204));
+        address(uint160(0x0000000071727de22e5e9d8baf0edac6f37da032));
     address private constant ACTOR = address(uint160(0xA11C));
 
-    function test_first_verified_yearn_clone_fork_observation() external {
+    event NonceObserved(uint256 nonce);
+
+    function test_first_verified_entrypoint_fork_observation() external {
         _lowkeyStartTrace(TARGET);
         vm.prank(ACTOR);
         (bool success, bytes memory result) = TARGET.call(
-            abi.encodeWithSignature("totalAssets()")
+            abi.encodeWithSignature("getNonce(address,uint192)", ACTOR, uint192(0))
         );
-        require(success && result.length >= 32, "YEARn_TOTAL_ASSETS_CALL_FAILED");
-        uint256 observedAssets = abi.decode(result, (uint256));
-        require(observedAssets > 0, "YEARn_TOTAL_ASSETS_ZERO");
-        _lowkeyWriteTrace(".audit/godmode/p2-yearn-first-fork.json");
+        require(success && result.length == 32, "ENTRYPOINT_GET_NONCE_FAILED");
+        emit NonceObserved(abi.decode(result, (uint256)));
+        _lowkeyWriteTrace(".audit/godmode/p2-entrypoint-first-fork.json");
     }
 }
 """,
@@ -196,20 +196,27 @@ def main() -> int:
     if chain_id != 1 or source_chain_id != 1:
         raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
 
+    # Resolve the source identity first and require Sourcify's strict exact
+    # match before choosing the fork block. The deployment block comes from
+    # Sourcify metadata, not a hand-maintained fixture constant.
+    from lowkey.godmode import _eip1167_implementation, _verify_sourcify_exact
+    target_source_identity = _verify_sourcify_exact(chain_id, TARGET)
+    target_deployment_block = int(target_source_identity["deployment_block"])
+
     # Fail early when either endpoint is a latest-state-only RPC. P2 needs
     # historical code/state and EIP-1186 proof support; a valid chainId/latest
     # response is not enough to establish a pinned deployment identity.
     deployment_block_header = rpc(
-        source_rpc, "eth_getBlockByNumber", [hex(TARGET_DEPLOYMENT_BLOCK), False]
+        source_rpc, "eth_getBlockByNumber", [hex(target_deployment_block), False]
     )
     if not isinstance(deployment_block_header, dict) or not deployment_block_header.get("hash"):
-        raise AssertionError("Source RPC cannot return the Yearn deployment block; archive history is required.")
+        raise AssertionError("Source RPC cannot return the exact-match target deployment block; archive history is required.")
     deployment_code = rpc(
-        source_rpc, "eth_getCode", [TARGET, hex(TARGET_DEPLOYMENT_BLOCK)]
+        source_rpc, "eth_getCode", [TARGET, hex(target_deployment_block)]
     )
     if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
-        raise AssertionError("Source RPC cannot return Yearn clone runtime at its deployment block; archive state is required.")
-    fork_block, common_header = pick_common_block(fork_upstream, source_rpc)
+        raise AssertionError("Source RPC cannot return target runtime at its Sourcify deployment block; archive state is required.")
+    fork_block, common_header = pick_common_block(fork_upstream, source_rpc, target_deployment_block)
     source_proof = rpc(
         source_rpc, "eth_getProof", [TARGET, [], hex(fork_block)]
     )
@@ -217,12 +224,9 @@ def main() -> int:
         raise AssertionError("Source RPC must support historical EIP-1186 eth_getProof for the pinned fork block.")
     fork_code = rpc(fork_upstream, "eth_getCode", [TARGET, hex(fork_block)])
     if not isinstance(fork_code, str) or fork_code in {"0x", "0x0"}:
-        raise AssertionError("Yearn yvUSDC clone has no runtime code at the selected pinned block.")
-
-    from lowkey.godmode import _eip1167_implementation
-    implementation = _eip1167_implementation(fork_code)
-    if not implementation:
-        raise AssertionError("Yearn yvUSDC runtime is not the canonical EIP-1167 minimal-proxy bytecode expected by this acceptance.")
+        raise AssertionError("EntryPoint v0.7 has no runtime code at the selected pinned block.")
+    if _eip1167_implementation(fork_code):
+        raise AssertionError("The EntryPoint v0.7 acceptance target unexpectedly resolved as an EIP-1167 clone.")
 
     port = find_free_port()
     anvil_url = f"http://127.0.0.1:{port}"
@@ -250,7 +254,7 @@ def main() -> int:
         if local_chain != 1:
             raise AssertionError(f"Anvil fork returned chain ID {local_chain}, expected 1.")
 
-        with tempfile.TemporaryDirectory(prefix="lowkey-p2-yearn-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="lowkey-p2-entrypoint-") as temporary:
             project = Path(temporary)
             prepare_forge_project(project)
             test_env = os.environ.copy()
@@ -265,7 +269,7 @@ def main() -> int:
                 "--fork-url", anvil_url, "--fork-block-number", str(fork_block), "-vvv",
             ], cwd=project, env=test_env, timeout=300)
 
-            trace_path = project / ".audit" / "godmode" / "p2-yearn-first-fork.json"
+            trace_path = project / ".audit" / "godmode" / "p2-entrypoint-first-fork.json"
             if not trace_path.is_file():
                 raise AssertionError("Forge harness did not write the P2 trace artifact.")
             raw_forge = json.loads(trace_path.read_text(encoding="utf-8"))
@@ -291,7 +295,7 @@ def main() -> int:
                     + str(normalized.get("canonical_trace_events_error"))
                 )
 
-            signature = run([cast, "sig", "totalAssets()"], cwd=ROOT, env=test_env, timeout=20).stdout.strip()
+            signature = run([cast, "sig", "getNonce(address,uint192)"], cwd=ROOT, env=test_env, timeout=20).stdout.strip()
             if not signature.startswith("0x") or len(signature) != 10:
                 raise AssertionError(f"cast could not derive totalAssets selector: {signature!r}")
             call_request = {
@@ -331,17 +335,28 @@ def main() -> int:
                 "target_authenticity": "forked_deployment",
                 "target_identity": {
                     "source_provider": "sourcify",
-                    "deployment_block": TARGET_DEPLOYMENT_BLOCK,
-                    "proxy": {
-                        "type": "eip1167",
-                        "implementation_address": implementation,
-                    },
+                    "deployment_block": target_deployment_block,
                 },
             }
             identity = godmode._forge_source_verification(
                 source_rpc, anvil_url, normalized, spec
             )
             if not identity.get("verified") or not identity.get("identity_verified"):
+                (ARTIFACT_ROOT / "identity-verification-failure.json").write_text(
+                    json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                (ARTIFACT_ROOT / "failure-summary.json").write_text(
+                    json.dumps({
+                        "status": "FAIL",
+                        "stage": "identity_verification",
+                        "target": TARGET,
+                        "deployment_block": target_deployment_block,
+                        "sourcify_match": target_source_identity.get("match"),
+                        "sourcify_runtime_match": target_source_identity.get("runtime_match"),
+                        "sourcify_creation_match": target_source_identity.get("creation_match"),
+                        "reason": identity.get("reason"),
+                    }, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
                 raise AssertionError(
                     "Independent archive/source identity verification failed:\n"
                     + json.dumps(identity, indent=2, sort_keys=True)
@@ -389,11 +404,13 @@ def main() -> int:
             report = {
                 "status": "PASS",
                 "target": TARGET,
-                "target_name": "Yearn V3 USDC-1 vault",
-                "target_deployment_block": TARGET_DEPLOYMENT_BLOCK,
-                "target_runtime_kind": "EIP-1167 canonical minimal proxy",
-                "implementation": implementation,
-                "implementation_identity": identity.get("identity", {}).get("proxy"),
+                "target_name": "Ethereum EntryPoint v0.7",
+                "target_deployment_block": target_deployment_block,
+                "target_runtime_kind": "direct verified contract",
+                "read_only_call": "getNonce(address,uint192)",
+                "sourcify_match": target_source_identity["match"],
+                "sourcify_runtime_match": target_source_identity["runtime_match"],
+                "sourcify_creation_match": target_source_identity["creation_match"],
                 "fork_block": fork_block,
                 "fork_block_hash": common_header.get("hash"),
                 "source_provider": urlparse_safe(source_rpc),
@@ -407,7 +424,7 @@ def main() -> int:
                 "storage_support": parity["storage_support"],
                 "anvil_prestate_slots": len(partial_storage_rows),
                 "anvil_prestate_scope": "transaction-level only; attached to root trace event, not attributed to nested frames",
-                "call": "totalAssets()",
+                "call": "getNonce(address,uint192)",
                 "call_kind": "read-only protocol view invoked with no value; no transaction broadcast",
                 "identity_verified": identity.get("identity_verified"),
                 "archive_state_verified": identity.get("archive_state_verified"),
