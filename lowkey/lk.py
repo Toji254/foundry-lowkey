@@ -2082,6 +2082,8 @@ def _function_usage():
         "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
         "  -r, --risk                 Show compact audit-review flags.\n"
         "  Default output labels function mutability and detected native-ETH flow.\n"
+        "  It also lists compiler-backed state variables with source visibility and storage slots.\n"
+        "  Solidity private/internal visibility does not hide data stored on-chain.\n"
         "  PAYABLE means the function can receive ETH; attach it separately from its arguments.\n"
         "  Example: lk send <function> [args...] --eth 2  (attaches 2 ETH).\n"
         "  SENDS ETH includes detected CALL/value, payable transfer/send, CREATE and SELFDESTRUCT patterns.\n"
@@ -2420,6 +2422,255 @@ def _function_source_file(artifact, root, contract_name=None):
     except OSError:
         return path, []
     return path, _solidity_function_source_index(source)
+
+
+def _solidity_state_variable_index(source, contract_name=None):
+    """Index top-level Solidity state declarations; source supplies visibility."""
+    source = str(source or "")
+    masked = _strip_scan_comments(source, "solidity")
+    for contract_match in re.finditer(r"\b(?:contract|interface|library)\s+([A-Za-z_]\w*)\b", masked):
+        if contract_name and contract_match.group(1) != str(contract_name):
+            continue
+        opening = masked.find("{", contract_match.end())
+        if opening < 0:
+            continue
+        closing = _matching_delimiter(masked, opening, "{", "}")
+        if closing is None:
+            continue
+
+        declarations = []
+        statement_start = opening + 1
+        index = statement_start
+        parens = brackets = braces = 0
+        quote = ""
+        escape = False
+        while index < closing:
+            char = masked[index]
+            if quote:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == quote:
+                    quote = ""
+                index += 1
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                index += 1
+                continue
+            if char == "{" and parens == 0 and brackets == 0 and braces == 0:
+                prefix = masked[statement_start:index].strip()
+                if re.match(r"^(?:function|constructor|modifier|receive|fallback|struct|enum)\b", prefix):
+                    block_end = _matching_delimiter(masked, index, "{", "}")
+                    if block_end is None or block_end >= closing:
+                        break
+                    index = block_end + 1
+                    statement_start = index
+                    continue
+                braces += 1
+            elif char == "}" and braces:
+                braces -= 1
+            elif char == "(":
+                parens += 1
+            elif char == ")" and parens:
+                parens -= 1
+            elif char == "[":
+                brackets += 1
+            elif char == "]" and brackets:
+                brackets -= 1
+            elif char == ";" and parens == 0 and brackets == 0 and braces == 0:
+                statement = masked[statement_start:index].strip()
+                excluded = r"function|event|error|using|type|import|pragma|constructor|modifier|receive|fallback"
+                if statement and not re.match(r"^(?:" + excluded + r")\b", statement):
+                    declaration_head = statement
+                    p_depth = b_depth = c_depth = 0
+                    q = ""
+                    esc = False
+                    assignment = None
+                    for offset, token in enumerate(statement):
+                        if q:
+                            if esc:
+                                esc = False
+                            elif token == "\\":
+                                esc = True
+                            elif token == q:
+                                q = ""
+                            continue
+                        if token in {"'", '"'}:
+                            q = token
+                            continue
+                        if token == "(":
+                            p_depth += 1
+                        elif token == ")" and p_depth:
+                            p_depth -= 1
+                        elif token == "[":
+                            b_depth += 1
+                        elif token == "]" and b_depth:
+                            b_depth -= 1
+                        elif token == "{":
+                            c_depth += 1
+                        elif token == "}" and c_depth:
+                            c_depth -= 1
+                        elif (
+                            token == "=" and p_depth == 0 and b_depth == 0 and c_depth == 0
+                            and (offset + 1 >= len(statement) or statement[offset + 1] != ">")
+                            and (offset == 0 or statement[offset - 1] not in "=!<>")
+                            and (offset + 1 >= len(statement) or statement[offset + 1] != "=")
+                        ):
+                            assignment = offset
+                            break
+                    if assignment is not None:
+                        declaration_head = statement[:assignment].strip()
+
+                    variable_match = re.search(
+                        r"(?P<name>[A-Za-z_]\w*)\s*(?:(?:\[[^\]]*\]\s*)*)$",
+                        declaration_head,
+                    )
+                    if variable_match:
+                        variable_name = variable_match.group("name")
+                        prefix = declaration_head[:variable_match.start()].strip()
+                        type_text = re.sub(r"\boverride(?:\s*\([^)]*\))?", " ", prefix)
+                        type_text = re.sub(
+                            r"\b(?:public|private|internal|constant|immutable|payable|memory|calldata|storage)\b",
+                            " ", type_text,
+                        )
+                        type_text = " ".join(type_text.split()).strip()
+                        if type_text:
+                            visibility_match = re.search(r"\b(public|private|internal)\b", prefix)
+                            declarations.append({
+                                "name": variable_name,
+                                "type": type_text,
+                                "visibility": visibility_match.group(1) if visibility_match else "internal",
+                                "constant": bool(re.search(r"\bconstant\b", prefix)),
+                                "immutable": bool(re.search(r"\bimmutable\b", prefix)),
+                                "line": source.count("\n", 0, statement_start) + 1,
+                            })
+                statement_start = index + 1
+            index += 1
+        return declarations
+    return []
+
+
+def _state_variable_layout_data(config, artifact):
+    """Return storage types/entries, preferring the selected target artifact."""
+    layout = artifact.get("storageLayout", {}) if isinstance(artifact, dict) else {}
+    storage = layout.get("storage", []) if isinstance(layout, dict) else []
+    types = layout.get("types", {}) if isinstance(layout, dict) else {}
+    if isinstance(storage, list) and storage:
+        return types if isinstance(types, dict) else {}, storage
+    fallback_types, fallback_storage = storage_layout_details(config)
+    return (
+        fallback_types if isinstance(fallback_types, dict) else {},
+        fallback_storage if isinstance(fallback_storage, list) else [],
+    )
+
+
+def _function_state_variable_records(config, artifact, source_path, contract_name, getter_names):
+    """Combine compiler slots with source-level visibility and declaration metadata."""
+    types, storage = _state_variable_layout_data(config, artifact)
+    source_index = {}
+    if source_path:
+        try:
+            source = Path(source_path).read_text(encoding="utf-8", errors="replace")
+            for declaration in _solidity_state_variable_index(source, contract_name):
+                source_index.setdefault(declaration["name"], []).append(declaration)
+        except OSError:
+            pass
+
+    records = []
+    stored_names = set()
+    for entry in storage:
+        if not isinstance(entry, dict) or not entry.get("label"):
+            continue
+        name = str(entry["label"])
+        stored_names.add(name)
+        candidates = source_index.get(name, [])
+        declaration = candidates[0] if len(candidates) == 1 else None
+        visibility = (
+            declaration.get("visibility", "unknown")
+            if declaration else
+            "ambiguous" if len(candidates) > 1 else "unknown"
+        )
+        type_id = entry.get("type")
+        type_info = types.get(type_id, {}) if isinstance(types, dict) else {}
+        if not isinstance(type_info, dict):
+            type_info = {}
+        type_label = storage_type_label(types, type_id) if types else ""
+        type_label = type_label or (declaration or {}).get("type") or str(type_id or "unknown")
+        try:
+            number_of_bytes = int(str(type_info.get("numberOfBytes") or "32"), 0)
+        except (TypeError, ValueError):
+            number_of_bytes = 32
+        encoding = str(type_info.get("encoding") or "")
+        declared_type = str((declaration or {}).get("type") or "").lower()
+        composite = (
+            encoding in {"mapping", "dynamic_array", "bytes"}
+            or bool(type_info.get("members"))
+            or "base" in type_info
+            or number_of_bytes > 32
+            or declared_type.startswith("mapping")
+            or "[]" in declared_type
+        )
+        getter = name in getter_names
+        records.append({
+            "name": name, "type": type_label, "visibility": visibility,
+            "slot": str(entry.get("slot", "—")), "offset": int(entry.get("offset") or 0),
+            "access": "ABI GETTER" if getter else "RAW STORAGE",
+            "getter": getter, "composite": composite, "storage": True,
+            "source": f"{source_path}:{declaration['line']}" if source_path and declaration else str(source_path or "source unavailable"),
+            "type_id": type_id,
+        })
+
+    # Constants and immutables are state declarations too, but have no ordinary slots.
+    for name, candidates in source_index.items():
+        if name in stored_names:
+            continue
+        for declaration in candidates:
+            if not (declaration.get("constant") or declaration.get("immutable")):
+                continue
+            getter = name in getter_names
+            access = "ABI GETTER" if getter else "COMPILE-TIME" if declaration.get("constant") else "DEPLOYED CODE"
+            records.append({
+                "name": name, "type": declaration.get("type") or "unknown",
+                "visibility": declaration.get("visibility") or "unknown",
+                "slot": "—", "offset": 0, "access": access,
+                "getter": getter, "composite": False, "storage": False, "type_id": None,
+                "source": f"{source_path}:{declaration['line']}" if source_path else "source unavailable",
+            })
+    return records
+
+
+def _print_state_variable_inventory(records, verbose=False):
+    """Render compiler-backed state declarations separately from ABI functions."""
+    if not records:
+        return
+    print()
+    print(f"STATE VARIABLES: {len(records)}")
+    print("─" * 78)
+    if verbose:
+        for record in records:
+            print(f"\n[{record['name']}]")
+            print(f"  type       : {record['type']}")
+            print(f"  visibility : {record['visibility']}")
+            print(f"  slot       : {record['slot']} (byte offset {record['offset']})" if record["storage"] else "  slot       : not stored in ordinary contract storage")
+            print(f"  access     : {record['access']}")
+            print(f"  source     : {record['source']}")
+        return
+    name_width = min(max(4, max(len(str(item["name"])) for item in records)), 24)
+    type_width = min(max(4, max(len(str(item["type"])) for item in records)), 32)
+    visibility_width = max(len("VISIBILITY"), max(len(str(item["visibility"])) for item in records))
+    slot_width = max(len("SLOT"), max(len(str(item["slot"])) for item in records))
+    headers = ["VARIABLE", "TYPE", "VISIBILITY", "SLOT", "ACCESS"]
+    widths = [name_width, type_width, visibility_width, slot_width, 14]
+    print("  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))))
+    print("-" * (sum(widths) + 2 * (len(headers) - 1)))
+    for record in records:
+        cells = [
+            str(record["name"])[:name_width], str(record["type"])[:type_width],
+            str(record["visibility"]), str(record["slot"]), str(record["access"]),
+        ]
+        print("  ".join(cells[index].ljust(widths[index]) for index in range(len(cells))))
 
 def _function_storage_labels(target, config, artifact):
     labels = set()
@@ -3027,8 +3278,6 @@ def run_functions(config, args=None):
         entry for entry in abi
         if isinstance(entry, dict) and entry.get("type") in {"receive", "fallback"}
     ]
-    if not functions and not abi_entrypoints:
-        return fail("Error: No ABI functions or receive/fallback entrypoints loaded for the current target.")
 
     getter_names = storage_getter_names(target, config, functions)
     artifact_path, artifact = _function_inventory_artifact(target, config)
@@ -3036,6 +3285,9 @@ def run_functions(config, args=None):
     source_contract = artifact.get("contractName") or config.get("target_contract")
     source_path, source_decls = _function_source_file(artifact, source_root, source_contract)
     storage_labels = _function_storage_labels(target, config, artifact)
+    state_variables = _function_state_variable_records(config, artifact, source_path, source_contract, getter_names)
+    if not functions and not abi_entrypoints and not state_variables:
+        return fail("Error: No ABI functions, entrypoints, or compiler-backed state variables loaded for the current target.")
     method_ids = artifact.get("methodIdentifiers") or (
         artifact.get("evm", {}).get("methodIdentifiers") if isinstance(artifact.get("evm"), dict) else {}
     )
@@ -3047,8 +3299,12 @@ def run_functions(config, args=None):
         for item in functions
     ]
     records = [record for record in records if _function_matches_filter(record, options)]
+    state_records = list(state_variables)
+    if options.get("visibility"):
+        state_records = [record for record in state_records if record["visibility"].lower() == options["visibility"]]
     if query:
         records = sorted(records, key=lambda record: function_score(record["item"], query), reverse=True)[:8]
+        state_records = [record for record in state_records if query.lower() in record["name"].lower() or query.lower() in record["type"].lower()][:8]
 
     if options.get("verbose"):
         _print_function_inventory(
@@ -3057,6 +3313,7 @@ def run_functions(config, args=None):
             source_path=source_path,
             verbose=True,
         )
+        _print_state_variable_inventory(state_records, verbose=True)
         for entry in abi_entrypoints:
             kind = str(entry.get("type"))
             source_entry = next((decl for decl in source_decls if decl.get("name") == kind), None)
@@ -3078,6 +3335,8 @@ def run_functions(config, args=None):
             source_path=source_path,
             show_risk=options.get("risk", False),
         )
+        if options.get("visibility"):
+            _print_state_variable_inventory(state_records)
         return 0
 
     write_records = [
@@ -3145,6 +3404,8 @@ def run_functions(config, args=None):
                 _function_print_wrapped("        via       ", mechanism)
                 _function_print_wrapped("        recipient ", outflow["destination"])
                 _function_print_wrapped("        amount    ", outflow["amount"])
+
+    _print_state_variable_inventory(state_records)
 
     if abi_entrypoints:
         print()
@@ -10899,6 +11160,29 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
     return fixture_rpc, info, None
 
 
+def _run_scoped_lab_fixture_test(root, relative_test, safe_name, threads):
+    """Run the generated lab test with Foundry's test root limited to its temp directory."""
+    test_directory = Path(relative_test).parent.as_posix()
+    if test_directory in {"", "."}:
+        test_directory = "test"
+    had_previous = "FOUNDRY_TEST" in os.environ
+    previous = os.environ.get("FOUNDRY_TEST")
+    os.environ["FOUNDRY_TEST"] = test_directory
+    try:
+        return run_foundry([
+            "test", relative_test,
+            "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
+            "--match-test", "testLowkeyLabStateDump",
+            "--threads", str(max(1, int(threads))),
+            "--disable-block-gas-limit", "-vv",
+        ], capture=True, cwd=str(Path(root).resolve()))
+    finally:
+        if had_previous:
+            os.environ["FOUNDRY_TEST"] = previous or ""
+        else:
+            os.environ.pop("FOUNDRY_TEST", None)
+
+
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
     """Run a project-owned Foundry setup/test path and materialize its full state."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
@@ -10929,13 +11213,37 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print("Action  : executing project-owned setup/test logic, then materializing its full local state...")
     print("Helper  : Foundry test-scoped filesystem permission; no project config edit or remote broadcast.")
 
+    fixture_build_code = _run_resource_aware_foundry_build(
+        root, ["--target", relative_test], lab_phase=True
+    )
+    if fixture_build_code != 0:
+        try:
+            Path(test_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return fail(
+            "Error: Lowkey could not compile the selected lab fixture within the "
+            "resource-aware target scope. The fixture was not executed.",
+            fixture_build_code,
+        )
+    try:
+        fixture_threads = _resource_aware_forge_threads(
+            root, scope="target", target=relative_test
+        )
+    except Exception as exc:
+        try:
+            Path(test_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return fail(
+            "Error: Lowkey could not establish a safe compiler limit for the selected "
+            f"lab fixture: {exc}. The fixture was not executed."
+        )
+
     before_sources = _project_source_fingerprint(root)
-    result = run_foundry([
-        "test", "--match-path", relative_test,
-        "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
-        "--match-test", "testLowkeyLabStateDump",
-        "--disable-block-gas-limit", "-vv",
-    ], capture=True, cwd=str(Path(root).resolve()))
+    result = _run_scoped_lab_fixture_test(
+        root, relative_test, safe_name, fixture_threads
+    )
     output = result.text
     changed_sources = _project_source_mutations(root, before_sources)
     # The harness exists only to execute this promotion once. Remove it after
@@ -12085,10 +12393,54 @@ def _native_command_runtime(cwd, command):
     )
 
 
+def _foundry_build_planner():
+    """Load the single resource-aware planner used by build and local lab paths."""
+    try:
+        import foundry_build as module
+    except ImportError:
+        try:
+            from lowkey import foundry_build as module
+        except ImportError as exc:
+            raise RuntimeError(
+                "the resource-aware Foundry planner is not installed; run 'bash install.sh' "
+                "from the updated foundry-lowkey checkout"
+            ) from exc
+    return module
+
+
+LAB_MIN_AVAILABLE_MEMORY_BYTES = 2 * 1024 ** 3
+
+
+def _run_resource_aware_foundry_build(root, args, *, lab_phase=False):
+    """Build through the shared planner; lab work refuses unsafe low-memory starts."""
+    try:
+        planner = _foundry_build_planner()
+        options = {
+            "root": Path(root).expanduser().resolve(),
+            "fallback_to_native": False,
+        }
+        if lab_phase:
+            options["minimum_available_memory_bytes"] = LAB_MIN_AVAILABLE_MEMORY_BYTES
+        return planner.run_build(list(args or []), **options)
+    except RuntimeError as exc:
+        return fail(f"Error: {exc}", 2)
+
+
+def _resource_aware_forge_threads(root, *, scope="production", target=None):
+    """Return the same conservative compiler-worker choice used by the planner."""
+    planner = _foundry_build_planner()
+    plan = planner.build_plan(
+        Path(root).expanduser().resolve(),
+        scope=scope,
+        target=target,
+    )
+    return max(1, int(plan.get("threads") or 1))
+
+
 def _run_project_build(config, root):
-    """Build through the shared repository-aware bootstrap/recovery layer."""
-    root_path = Path(root)
-    project = detect_project(root) if detect_project is not None else {
+    """Prepare production artifacts using the shared resource-aware Foundry planner."""
+    root_path = Path(root).expanduser().resolve()
+    project = detect_project(root_path) if detect_project is not None else {
         "root": str(root_path),
         "kind": "generic",
         "backend": "generic",
@@ -12097,9 +12449,9 @@ def _run_project_build(config, root):
 
     selected_scope = None
     if discover_nested_projects is not None and workspace_context is not None:
-        scope = workspace_context(root)
+        scope = workspace_context(root_path)
         for candidate in scope.get("projects") or []:
-            if Path(candidate["root"]).resolve() == root_path.resolve():
+            if Path(candidate["root"]).resolve() == root_path:
                 selected_scope = candidate
                 break
     if selected_scope:
@@ -12114,65 +12466,24 @@ def _run_project_build(config, root):
         if selected_scope.get("depended_on_by"):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
 
-    bootstrap_project(project, reason="prepare")
+    if bootstrap_project is not None:
+        bootstrap_project(project, reason="prepare")
 
     kind = str(project.get("kind") or project.get("backend") or "generic")
-
-    if str(project.get("backend") or "") == "foundry" or kind in {"foundry", "mixed-foundry-vyper"}:
-        result = run_foundry(["build"], capture=True, cwd=root)
-        if result.code == 0:
-            print("")
-            print("LOWKEY BUILD")
-            print("============")
-            print("Build system : forge build")
-            print(f"Project      : {root}")
-            print("Status       : complete")
-            return 0
-
-        first_output = _format_build_failure(
-            getattr(result, "text", None) or getattr(result, "output", None) or result
+    if str(project.get("backend") or "").lower() == "foundry" or kind in {"foundry", "mixed-foundry-vyper"}:
+        # Deployment artifacts do not require compiling the repository's whole
+        # test tree. Imported application dependencies are pulled in by Forge.
+        return _run_resource_aware_foundry_build(
+            root_path,
+            ["--scope", "production"],
+            lab_phase=True,
         )
-        classification = classify_build_failure(first_output, ["forge", "build"])
-        print(
-            f"BUILD FAILURE : {classification.get('category', 'unknown')}",
-            file=sys.stderr,
-        )
-        print(f"Reason        : {classification.get('reason', '')}", file=sys.stderr)
-
-        if classification.get("repairable"):
-            repair_code = bootstrap_project(
-                project,
-                force=True,
-                reason=str(classification.get("category") or "dependency"),
-                required_paths=classification.get("missing_source_paths", ()),
-            )
-            if repair_code != 0:
-                print(
-                    "Warning: repository-declared bootstrap reported a failure; "
-                    "Lowkey will still retry the build once.",
-                    file=sys.stderr,
-                )
-            retry = run_foundry(["build"], capture=True)
-            if retry.code == 0:
-                print("")
-                print("LOWKEY BUILD")
-                print("============")
-                print("Build system : forge build")
-                print(f"Project      : {root}")
-                print("Status       : complete")
-                return 0
-            first_output = _format_build_failure(
-                getattr(retry, "text", None) or getattr(retry, "output", None) or retry
-            )
-
-        print("Build diagnostics:\n" + first_output, file=sys.stderr)
-        return result.code
 
     command_info = project_build_command(project) if project_build_command is not None else None
     if not command_info:
         print("LOWKEY BUILD")
         print("============")
-        print(f"Project      : {root}")
+        print(f"Project      : {root_path}")
         print(f"Build system : {project.get('build_backend') or project.get('backend') or 'unknown'}")
         print("Status       : no safe native build command detected")
         print("Lowkey will not invent an install or build command.")
@@ -12234,14 +12545,16 @@ def _run_project_build(config, root):
                 "Lowkey will still retry the build once.",
                 file=sys.stderr,
             )
-        code, output = run_native_build()
-        if code == 0:
+        retry_code, retry_output = run_native_build()
+        if retry_code == 0:
             print("Status       : complete")
             return 0
+        output = retry_output
+    print("Build diagnostics:\n" + output, file=sys.stderr)
+    return code
 
-    if output:
-        print("Build diagnostics:\n" + output, file=sys.stderr)
-    return code or 1
+
+
 
 def _workspace_project_description(project):
     return str(project.get("description") or project.get("name") or Path(project["root"]).name).strip()
@@ -12819,10 +13132,30 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         os.environ[name] = value
 
     try:
+        script_build_code = _run_resource_aware_foundry_build(
+            root, ["--target", relative], lab_phase=True
+        )
+        if script_build_code != 0:
+            return fail(
+                "Error: Lowkey could not compile the selected deployment script within the "
+                "resource-aware build plan. No deployment script was executed.",
+                script_build_code,
+            )
+        try:
+            script_threads = _resource_aware_forge_threads(
+                root, scope="target", target=relative
+            )
+        except Exception as exc:
+            return fail(
+                "Error: Lowkey could not establish a safe compiler limit for the selected "
+                f"deployment script: {exc}. Deployment was not attempted."
+            )
         result = run_foundry(
             [
                 "script",
                 relative,
+                "--threads",
+                str(script_threads),
                 "--rpc-url",
                 rpc,
                 "--broadcast",
@@ -16267,7 +16600,12 @@ def decode_storage_member(raw, type_id, types, offset=0):
         return f"0x{value_int:040x}"
     if lowered=="bool":
         return "true" if value_int else "false"
-    if lowered.startswith("uint") or lowered.startswith("int") or lowered.startswith("enum "):
+    if lowered.startswith("int"):
+        bits = width * 8
+        if bits and value_int & (1 << (bits - 1)):
+            value_int -= 1 << bits
+        return str(value_int)
+    if lowered.startswith("uint") or lowered.startswith("enum "):
         return str(value_int)
     return "0x"+format(value_int,"064x")
 
@@ -18950,6 +19288,9 @@ def run_native_project_command(config, command_name, args):
                     file=sys.stderr,
                 )
 
+        if command_name == "build":
+            return _run_resource_aware_foundry_build(root, args)
+
         native_command = [command_name, *args]
         result = run_foundry(native_command, capture=True)
         native_code = getattr(
@@ -19375,6 +19716,162 @@ def format_storage_read(config, slot, raw):
 
     lines.append(f"Raw:       {raw_text}")
     return "\n".join(lines)
+
+
+def run_state_variable_read(config, args):
+    """Read one named scalar state variable through its compiled storage slot."""
+    values = [str(value).strip() for value in (args or [])]
+    if not values:
+        return None
+    root = audit_context.foundry_project_root()
+    target_config = dict(config)
+    target_config["abi_paths"] = dict(config.get("abi_paths") or {})
+    target_config["project_roots"] = dict(config.get("project_roots") or {})
+    target = target_config.get("target") or active_project_target(target_config, root)
+
+    if len(values) >= 2:
+        explicit = values[0] if is_address(values[0]) else None
+        if explicit is None:
+            try:
+                explicit = resolve_target_ref(target_config, values[0], root=root)
+            except Exception:
+                explicit = None
+        if explicit:
+            target = explicit
+            values.pop(0)
+
+    if not target or len(values) != 1:
+        return None
+    variable_name = values[0]
+    if not variable_name or variable_name.startswith("-") or "(" in variable_name or ")" in variable_name:
+        return None
+    target_config["target"] = target
+    abi = load_abi(target, target_config)
+    if abi and matching_functions(abi, variable_name):
+        return None
+
+    artifact_path = resolve_abi_path(target_config, target) or auto_abi_path(target, target_config, root=root)
+    artifact = read_artifact(artifact_path) if artifact_path else {}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    if artifact.get("contractName") and not target_config.get("target_contract"):
+        target_config["target_contract"] = artifact["contractName"]
+    types, storage = _state_variable_layout_data(target_config, artifact)
+    matches = [entry for entry in storage if isinstance(entry, dict) and str(entry.get("label") or "") == variable_name]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        return fail(
+            f"State variable '{variable_name}' is ambiguous in the compiled storage layout. "
+            "Use 'lk slots <slot>' or 'lk layout <ContractName>' to inspect the exact declarations."
+        )
+
+    entry = matches[0]
+    type_id = entry.get("type")
+    type_info = types.get(type_id, {}) if isinstance(types, dict) else {}
+    if not isinstance(type_info, dict) or not type_info:
+        return fail(
+            f"Lowkey found '{variable_name}' in the storage layout but could not resolve its compiler type. "
+            "Run 'forge build' and retry; Lowkey will not guess how to decode a raw slot."
+        )
+    type_label = storage_type_label(types, type_id)
+    encoding = str(type_info.get("encoding") or "")
+    try:
+        number_of_bytes = int(str(type_info.get("numberOfBytes") or "32"), 0)
+    except (TypeError, ValueError):
+        number_of_bytes = 32
+    if encoding != "inplace" or type_info.get("members") or "base" in type_info or number_of_bytes > 32:
+        return fail(
+            f"'{variable_name}' is a composite {type_label} state variable, not one scalar storage value. "
+            "Use 'lk mapping' for mapping entries, or 'lk slots'/'lk storage' to inspect its layout."
+        )
+
+    normalized_type = type_label.lower()
+    supported_scalar = (
+        normalized_type in {"address", "bool"}
+        or normalized_type.startswith(("uint", "int", "enum ", "contract "))
+    )
+    decoding_type_id = type_id
+    visited = set()
+    while not supported_scalar and isinstance(type_info.get("underlying"), str):
+        if decoding_type_id in visited:
+            break
+        visited.add(decoding_type_id)
+        decoding_type_id = type_info["underlying"]
+        type_info = types.get(decoding_type_id, {})
+        normalized_type = storage_type_label(types, decoding_type_id).lower()
+        supported_scalar = (
+            normalized_type in {"address", "bool"}
+            or normalized_type.startswith(("uint", "int", "enum ", "contract "))
+        )
+    if not supported_scalar:
+        return fail(
+            f"Lowkey found '{variable_name}' ({type_label}) but does not yet have a safe scalar decoder for this type. "
+            "Use 'lk storage <slot>' to inspect the raw word without a guessed interpretation."
+        )
+
+    slot_number = storage_slot_int(entry.get("slot"))
+    if slot_number is None or slot_number < 0:
+        return fail(f"Compiler storage layout has an invalid slot for '{variable_name}'.")
+    try:
+        offset = int(str(entry.get("offset") or "0"), 0)
+    except (TypeError, ValueError):
+        offset = 0
+
+    blocked = _target_health_block(
+        target_config, target, variable_name, "storage", [str(slot_number)], capture=False
+    )
+    if blocked is not None:
+        return blocked
+    result = run_cast(["st", str(slot_number)], target_config, capture=True)
+    result_code = getattr(result, "code", 0)
+    raw = str(result).strip()
+    if result_code != 0:
+        print(raw or f"Could not read storage slot {slot_number}.", file=sys.stderr)
+        return result_code
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", raw):
+        return fail(
+            f"Cast returned an unexpected value for '{variable_name}' at slot {slot_number}; "
+            "the raw result was not a 32-byte storage word."
+        )
+
+    value = decode_storage_member(raw, decoding_type_id, types, offset)
+    enum_value = _humanize_storage_enum(value, type_id, types, variable_name)
+    if enum_value:
+        value = enum_value
+    elif value == "none":
+        value = "none"
+    elif is_address(value):
+        value = apply_labels(value, target_config)
+
+    source_contract = artifact.get("contractName") or target_config.get("target_contract")
+    source_path, _function_decls = _function_source_file(artifact, Path(root).resolve(), source_contract)
+    visibility = "unknown"
+    if source_path:
+        try:
+            source_text = Path(source_path).read_text(encoding="utf-8", errors="replace")
+            candidates = [
+                item for item in _solidity_state_variable_index(source_text, source_contract)
+                if item.get("name") == variable_name
+            ]
+            if len(candidates) == 1:
+                visibility = candidates[0].get("visibility", "unknown")
+            elif len(candidates) > 1:
+                visibility = "ambiguous"
+        except OSError:
+            pass
+
+    print("STATE VARIABLE READ")
+    print("===================")
+    print(f"Name:       {variable_name}")
+    print(f"Type:       {type_label}")
+    print(f"Visibility: {visibility}")
+    print(f"Storage:    slot {slot_number}, byte offset {offset}")
+    print(f"Value:      {value}")
+    print(f"Raw:        {raw}")
+    if visibility in {"private", "internal"}:
+        print("Note:       Solidity visibility limits contract-level access; it does not hide on-chain storage.")
+    return 0
 
 
 def run_raw(config,args):
@@ -21750,7 +22247,7 @@ COMMAND_HELP = {
         related=["lk functions", "lk ask"],
     ),
     "read": _help_entry(
-        "Call a contract without intentionally changing state. Lowkey uses the selected target and understands common Solidity argument types, including addresses, numbers, and fixed-size bytes such as bytes32 IDs.",
+        "Read an ABI getter or a scalar state variable without intentionally changing contract data. When a compiler storage layout is available, internal/private storage variables can be resolved by name and decoded at their exact slot and packed offset. Composite mappings, arrays, and structs require their dedicated storage inspection workflow.",
         "lk read <function> [args...]",
         "lk read getValue",
         "Use it for getters and state observation. It does not intentionally change contract data.",
@@ -22658,42 +23155,44 @@ COMMAND_HELP = {
 
 
 def _native_forge_help(command: str, summary: str, example: str) -> dict:
-    return _help_entry(
+    entry = _help_entry(
         summary,
         f"lk {command} [forge-options...]",
-        example,
+        f"lk {command} --h",
         f"Use it when you need Forge's native '{command}' capability while keeping Lowkey's project routing and command surface.",
         options=[
-            ("Forge options", "Pass options supported by your installed Forge version. Ask Forge directly for its authoritative option list; Lowkey does not reimplement these flags.", f"forge {command} --help"),
-            ("Forwarding", "Lowkey forwards the remaining arguments to the native Forge command. These are upstream Forge options, not Lowkey-owned flags, and may vary by installed version.", f"forge {command} --help"),
+            ("Installed Forge options", "Lowkey displays the options supported by your installed Forge version inside this help page. Pass the options you need after lk " + command + ".", f"lk {command} --h"),
+            ("Argument forwarding", "Lowkey forwards arguments after the command to Forge. These are native Forge options, not extra Lowkey flags; the installed option list is shown below.", f"lk {command} --h"),
         ],
         related=["lk forge", "lk doctor"],
     )
+    entry["native_help"] = {"binary": "forge", "args": [command]}
+    return entry
 
 
 # Native Forge commands routed through bin/lk deserve first-class Lowkey help too.
 COMMAND_HELP.update({
-    "bind": _native_forge_help("bind", "Generate Rust bindings from the current Forge project interfaces.", "forge bind --help"),
-    "bind-json": _native_forge_help("bind-json", "Generate JSON-form binding output from the current Forge project.", "forge bind-json --help"),
-    "cache": _native_forge_help("cache", "Manage Forge's compiler/build cache.", "forge cache --help"),
-    "clean": _native_forge_help("clean", "Remove Forge build artifacts and generated output.", "forge clean --help"),
-    "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "forge compiler --help"),
-    "completions": _native_forge_help("completions", "Generate shell completion scripts for Forge.", "forge completions --help"),
-    "config": _native_forge_help("config", "Inspect or work with Forge configuration.", "forge config --help"),
-    "doc": _native_forge_help("doc", "Generate or inspect Forge documentation output.", "forge doc --help"),
-    "eip712": _native_forge_help("eip712", "Work with Forge's EIP-712 tooling.", "forge eip712 --help"),
-    "flatten": _native_forge_help("flatten", "Flatten Solidity imports into a single Forge output file.", "forge flatten --help"),
-    "init": _native_forge_help("init", "Initialize a new Forge project.", "forge init --help"),
-    "install": _native_forge_help("install", "Install Forge project dependencies.", "forge install --help"),
-    "lsp": _native_forge_help("lsp", "Run Forge's language-server tooling.", "forge lsp --help"),
-    "remappings": _native_forge_help("remappings", "Inspect or generate Solidity import remappings.", "forge remappings --help"),
-    "remove": _native_forge_help("remove", "Remove Forge project dependencies.", "forge remove --help"),
-    "soldeer": _native_forge_help("soldeer", "Manage Solidity dependencies through Forge's Soldeer integration.", "forge soldeer --help"),
-    "tree": _native_forge_help("tree", "Show the Forge dependency/project tree.", "forge tree --help"),
-    "update": _native_forge_help("update", "Update Forge project dependencies.", "forge update --help"),
-    "verify-bytecode": _native_forge_help("verify-bytecode", "Verify deployed bytecode with Forge tooling.", "forge verify-bytecode --help"),
-    "verify-check": _native_forge_help("verify-check", "Check whether contract verification configuration is valid.", "forge verify-check --help"),
-    "verify-contract": _native_forge_help("verify-contract", "Verify a deployed contract through Forge tooling.", "forge verify-contract --help"),
+    "bind": _native_forge_help("bind", "Generate Rust bindings from the current Forge project interfaces.", "lk bind --h"),
+    "bind-json": _native_forge_help("bind-json", "Generate JSON-form binding output from the current Forge project.", "lk bind-json --h"),
+    "cache": _native_forge_help("cache", "Manage Forge's compiler/build cache.", "lk cache --h"),
+    "clean": _native_forge_help("clean", "Remove Forge build artifacts and generated output.", "lk clean --h"),
+    "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "lk compiler --h"),
+    "completions": _native_forge_help("completions", "Generate shell completion scripts for Forge.", "lk completions --h"),
+    "config": _native_forge_help("config", "Inspect or work with Forge configuration.", "lk config --h"),
+    "doc": _native_forge_help("doc", "Generate or inspect Forge documentation output.", "lk doc --h"),
+    "eip712": _native_forge_help("eip712", "Work with Forge's EIP-712 tooling.", "lk eip712 --h"),
+    "flatten": _native_forge_help("flatten", "Flatten Solidity imports into a single Forge output file.", "lk flatten --h"),
+    "init": _native_forge_help("init", "Initialize a new Forge project.", "lk init --h"),
+    "install": _native_forge_help("install", "Install Forge project dependencies.", "lk install --h"),
+    "lsp": _native_forge_help("lsp", "Run Forge's language-server tooling.", "lk lsp --h"),
+    "remappings": _native_forge_help("remappings", "Inspect or generate Solidity import remappings.", "lk remappings --h"),
+    "remove": _native_forge_help("remove", "Remove Forge project dependencies.", "lk remove --h"),
+    "soldeer": _native_forge_help("soldeer", "Manage Solidity dependencies through Forge's Soldeer integration.", "lk soldeer --h"),
+    "tree": _native_forge_help("tree", "Show the Forge dependency/project tree.", "lk tree --h"),
+    "update": _native_forge_help("update", "Update Forge project dependencies.", "lk update --h"),
+    "verify-bytecode": _native_forge_help("verify-bytecode", "Verify deployed bytecode with Forge tooling.", "lk verify-bytecode --h"),
+    "verify-check": _native_forge_help("verify-check", "Check whether contract verification configuration is valid.", "lk verify-check --h"),
+    "verify-contract": _native_forge_help("verify-contract", "Verify a deployed contract through Forge tooling.", "lk verify-contract --h"),
 })
 
 
@@ -23372,7 +23871,7 @@ def _apply_command_help_audit_catalog():
                 ("--json", "Emit the selected inspection data as JSON.", "lk inspect Vault --all --json"),
                 ("--no-build", "Use artifacts already on disk; do not trigger a Foundry build when the contract is missing.", "lk inspect Vault --no-build"),
             ],
-            "related": ["lk build", "lk layout", "lk functions", "lk abi", "lk forge inspect"],
+            "related": ["lk build", "lk layout", "lk functions", "lk abi"],
         },
         "q": {
             "forms": [
@@ -24098,6 +24597,7 @@ def _apply_command_help_audit_catalog():
         "ids": {
             "options": [
                 ("--all", "Include all saved identifiers instead of the default useful/recent view.", "lk ids --all"),
+                ("No saved IDs yet", "For an older transaction, replay its trace so Lowkey can inspect the ABI return data or decoded event again. Only identifiable contract IDs are saved; a transaction hash is not itself a contract ID.", "lk trace 0x871f..."),
                 ("No saved IDs yet", "For an older transaction, replay its trace so Lowkey can inspect the ABI return again. An identifier is saved only when it can be recovered from ABI return data or a decoded event field.", "lk trace 0x871f..."),
             ],
         },
@@ -24146,23 +24646,122 @@ def _apply_command_help_audit_catalog():
         if isinstance(child, dict):
             child["options"] = list(pipeline_poc_options)
 
-    # Every root and nested help page gets an explicit invocation example.
-    # Commands with no extra options say so honestly in OPTIONS / MODES.
-    def complete(entries, prefix=()):
-        for name, entry in entries.items():
-            if not entry.get("forms"):
-                usage = str(entry.get("usage") or "lk " + " ".join((*prefix, name)))
-                summary = str(entry.get("summary") or "Run this Lowkey command.")
-                example = str(entry.get("example") or usage)
-                entry["forms"] = [
-                    (usage, "Standard invocation: " + summary, example)
-                ]
-            complete(entry.get("children") or {}, (*prefix, name))
-
-    complete(COMMAND_HELP)
 
 
 _apply_command_help_audit_catalog()
+
+# Native tools that accept pass-through options are documented inside Lowkey.
+_NATIVE_HELP_SOURCES = {
+    "forge": ("forge", []),
+    "build": ("forge", ["build"]),
+    "test": ("forge", ["test"]),
+    "script": ("forge", ["script"]),
+    "coverage": ("forge", ["coverage"]),
+    "lint": ("forge", ["lint"]),
+    "fmt": ("forge", ["fmt"]),
+    "create": ("forge", ["create"]),
+    "fuzz": ("forge", ["test"]),
+    "invariant": ("forge", ["test"]),
+    "mutate": ("forge", ["test"]),
+    "symbolic": ("forge", ["test"]),
+    "brutalize": ("forge", ["test"]),
+    "trace": ("cast", ["run"]),
+    "replay": ("cast", ["run"]),
+    "logs": ("cast", ["logs"]),
+    "raw": ("cast", []),
+    "4byte": ("cast", ["4byte"]),
+    "4byte-calldata": ("cast", ["4byte-calldata"]),
+    "4byte-event": ("cast", ["4byte-event"]),
+    "access-list": ("cast", ["access-list"]),
+    "constructor-args": ("cast", ["constructor-args"]),
+    "creation-code": ("cast", ["creation-code"]),
+    "decode-calldata": ("cast", ["decode-calldata"]),
+    "abi-encode": ("cast", ["abi-encode"]),
+    "admin": ("cast", ["admin"]),
+    "implementation": ("cast", ["implementation"]),
+    "interface": ("cast", ["interface"]),
+    "c": ("cast", ["call"]),
+    "s": ("cast", ["send"]),
+    "chisel": ("chisel", []),
+    "slither": ("slither", []),
+    "fork": ("anvil", []),
+}
+for _help_command, (_help_binary, _help_args) in _NATIVE_HELP_SOURCES.items():
+    if _help_command in COMMAND_HELP and not COMMAND_HELP[_help_command].get("native_help"):
+        COMMAND_HELP[_help_command]["native_help"] = {
+            "binary": _help_binary,
+            "args": list(_help_args),
+        }
+
+_NATIVE_HELP_REDIRECT_RE = re.compile(
+    r"\b(?:forge|cast|anvil|chisel|slither)(?:\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\s+--help\b",
+    re.IGNORECASE,
+)
+_NATIVE_HELP_REDIRECT_SENTENCE_RE = re.compile(
+    r"[^.\n]*\b(?:forge|cast|anvil|chisel|slither)(?:\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\s+--help[^.\n]*\.?",
+    re.IGNORECASE,
+)
+_LOWKEY_NATIVE_HELP_REDIRECT_RE = re.compile(
+    r"\blk\s+(forge|raw)\s+<[^>]+>\s+--help\b",
+    re.IGNORECASE,
+)
+
+def _rewrite_native_help_references(entries, prefix=()):
+    for name, entry in entries.items():
+        command_path = " ".join((*prefix, str(name)))
+        lowkey_help = "lk " + command_path + " --h"
+
+        if _NATIVE_HELP_REDIRECT_RE.search(str(entry.get("example") or "")) or _LOWKEY_NATIVE_HELP_REDIRECT_RE.search(str(entry.get("example") or "")):
+            entry["example"] = lowkey_help
+
+        for field in ("summary", "usage", "use"):
+            value = entry.get(field)
+            if isinstance(value, str):
+                value = _NATIVE_HELP_REDIRECT_SENTENCE_RE.sub(
+                    "Lowkey displays the installed tool's supported options inside this help page.",
+                    value,
+                )
+                value = _LOWKEY_NATIVE_HELP_REDIRECT_RE.sub(
+                    lambda match: "lk " + match.group(1).lower() + " --h",
+                    value,
+                )
+                entry[field] = value
+
+        for field in ("forms", "options", "notes"):
+            rewritten = []
+            for row in entry.get(field) or []:
+                values = list(row)
+                for index, value in enumerate(values):
+                    value = str(value)
+                    passthrough = _LOWKEY_NATIVE_HELP_REDIRECT_RE.search(value)
+                    if passthrough:
+                        tool = passthrough.group(1).lower()
+                        if index == 0:
+                            value = "lk " + tool + " --h"
+                        elif index == 1:
+                            value = "Lowkey displays the installed " + ("Forge" if tool == "forge" else "Cast") + " options in this help page."
+                        else:
+                            value = "lk " + tool + " --h"
+                    if _NATIVE_HELP_REDIRECT_RE.search(value):
+                        if index == 2:
+                            value = lowkey_help
+                        else:
+                            value = _NATIVE_HELP_REDIRECT_SENTENCE_RE.sub(
+                                "Lowkey displays the installed tool's supported options inside this help page.",
+                                value,
+                            )
+                    values[index] = value
+                rewritten.append(tuple(values))
+            entry[field] = rewritten
+
+        if isinstance(entry.get("related"), list):
+            entry["related"] = [
+                value for value in entry["related"]
+                if str(value).strip().lower() != "lk forge inspect"
+            ]
+        _rewrite_native_help_references(entry.get("children") or {}, (*prefix, str(name)))
+
+_rewrite_native_help_references(COMMAND_HELP)
 
 
 HELP_ALIASES = {
@@ -24272,6 +24871,75 @@ def _help_suggestions(command, limit=3):
             scored.append((ratio, candidate))
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [candidate for _, candidate in scored[:limit]]
+
+_NATIVE_HELP_OUTPUT_CACHE = {}
+
+
+def _native_help_reference(entry):
+    """Read installed native CLI help so Lowkey can display it in-place."""
+    spec = entry.get("native_help") if isinstance(entry, dict) else None
+    if not isinstance(spec, dict):
+        return None
+    binary_name = str(spec.get("binary") or "").strip()
+    args = spec.get("args") if isinstance(spec.get("args"), list) else []
+    if not binary_name:
+        return {"available": False, "message": "No native executable was configured."}
+
+    cache_key = (binary_name, tuple(str(item) for item in args))
+    if cache_key in _NATIVE_HELP_OUTPUT_CACHE:
+        return _NATIVE_HELP_OUTPUT_CACHE[cache_key]
+    binary = shutil.which(binary_name)
+    if not binary:
+        result = {"available": False, "message": f"{binary_name} is not installed or is not available on PATH."}
+        _NATIVE_HELP_OUTPUT_CACHE[cache_key] = result
+        return result
+
+    command = [binary, *[str(item) for item in args], "--help"]
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+            start_new_session=(os.name == "posix"),
+        )
+        output = str(completed.stdout or "").strip()
+        output = re.sub(r"\x1b\[[0-9;]*m", "", output)
+        if output:
+            result = {"available": True, "output": output, "returncode": completed.returncode}
+        else:
+            result = {"available": False, "message": f"{binary_name} returned an empty help page (exit code {completed.returncode})."}
+    except subprocess.TimeoutExpired:
+        result = {"available": False, "message": f"{binary_name} did not return its help page within 10 seconds."}
+    except OSError as exc:
+        result = {"available": False, "message": f"Could not read {binary_name} help: {exc}"}
+
+    _NATIVE_HELP_OUTPUT_CACHE[cache_key] = result
+    return result
+
+
+def _render_native_help_reference(entry):
+    spec = entry.get("native_help") if isinstance(entry, dict) else None
+    if not isinstance(spec, dict):
+        return
+    binary_name = str(spec.get("binary") or "native tool")
+    args = spec.get("args") if isinstance(spec.get("args"), list) else []
+    label = " ".join([binary_name, *[str(item) for item in args]]).strip()
+    print("")
+    print("INSTALLED TOOL OPTIONS")
+    print("----------------------")
+    print(f"  Lowkey reads the options for {label} from the tool installed on this machine.")
+    print("  These options are displayed here; you do not need to leave the lk help menu.")
+    result = _native_help_reference(entry)
+    if not result or not result.get("available"):
+        print(f"  Unavailable: {(result or {}).get('message', 'native help source is not configured')}")
+        print("  The Lowkey usage, examples and options above are still available.")
+        return
+    for line in str(result.get("output") or "").splitlines():
+        print("  " + line.rstrip())
+
 
 def _render_command_help(path):
     entry, resolved, unknown = _help_entry_for_path(path)
@@ -24386,6 +25054,8 @@ def _render_command_help(path):
     else:
         print("  No additional command-specific flags or modes are registered.")
         print("  Global --ai and help flags are available; see AI GUIDANCE and HELP TIP below.")
+
+    _render_native_help_reference(entry)
 
     if shown_path.split()[0].lower() != "ai":
         print("")
@@ -25520,6 +26190,9 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         warning = _read_state_change_warning(args, config)
         if warning:
             return fail(warning)
+        state_read = run_state_variable_read(config, args)
+        if state_read is not None:
+            return state_read
         return run_cast(["call",*args],config)
     elif cmd in {"send"}:
         return run_cast(["send",*args],config)
