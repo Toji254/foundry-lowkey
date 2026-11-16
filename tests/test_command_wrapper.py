@@ -42,9 +42,14 @@ class CommandWrapperTests(unittest.TestCase):
         self.assertEqual(emit.call_args.kwargs["data"], {"command": "proxy-resolve", "exit_code": 5})
 
     def test_help_and_shell_probe_statuses_are_not_recorded(self):
-        fake_result = type("Result", (), {"returncode": 0})()
+        help_result = type("Result", (), {"returncode": 0})()
+        probe_result = type("Result", (), {"returncode": 3})()
         with (
-            patch.object(command_wrapper.subprocess, "run", return_value=fake_result),
+            patch.object(
+                command_wrapper.subprocess,
+                "run",
+                side_effect=[help_result, probe_result],
+            ),
             patch.object(command_wrapper.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/project")),
             patch.object(command_wrapper.audit_context, "emit") as emit,
         ):
@@ -54,7 +59,7 @@ class CommandWrapperTests(unittest.TestCase):
                 ["python3", "workspace_tools.py", "project"],
                 skip_exit_codes={3},
             )
-        self.assertEqual(status, 0)
+        self.assertEqual(status, 3)
         emit.assert_not_called()
 
     def test_negative_signal_exit_codes_are_normalized_and_recorded(self):
