@@ -1,0 +1,54 @@
+{
+  "name": "governance",
+  "detect_signals": [
+    {
+      "kind": "admin_authority",
+      "value": "\\b(?:propose|queue|execute|timelock|Governor|proposalState)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "time_dependence",
+      "value": "\\b(?:votingDelay|votingPeriod|proposalDeadline|snapshot|block\\.number)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "access_control",
+      "value": "\\b(?:castVote|quorum|getVotes|onlyGovernance)\\s*\\(",
+      "weight": 2
+    },
+    {
+      "kind": "randomness",
+      "value": "\\b(?:block\\.prevrandao|blockhash)\\b",
+      "weight": 1
+    }
+  ],
+  "invariants": [
+    "A proposal must execute at most once and only after its required state transition.",
+    "Vote weight must be tied to the declared snapshot and counted once.",
+    "Timelock and proposer authority must match the intended governance model."
+  ],
+  "required_capabilities": [
+    "control",
+    "invariant-forge",
+    "custody",
+    "time",
+    "sig-matrix",
+    "reprove",
+    "trace-parity"
+  ],
+  "forbidden_capabilities": [],
+  "attack_families": [
+    "access",
+    "replay",
+    "signature",
+    "time",
+    "dos",
+    "economic"
+  ],
+  "assumption_classes": [
+    "admin_authority",
+    "time_dependence",
+    "access_control",
+    "randomness"
+  ]
+}

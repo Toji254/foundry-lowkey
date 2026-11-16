@@ -1,0 +1,54 @@
+{
+  "name": "bridge",
+  "detect_signals": [
+    {
+      "kind": "admin_authority",
+      "value": "\\b(?:messenger|remoteSender|crossDomainMessenger|trustedRemote)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "access_control",
+      "value": "\\b(?:relayMessage|finalize|prove|processMessage)\\s*\\(",
+      "weight": 3
+    },
+    {
+      "kind": "time_dependence",
+      "value": "\\b(?:challengePeriod|finality|finalizedAt|epoch|block\\.timestamp)\\b",
+      "weight": 2
+    },
+    {
+      "kind": "precision",
+      "value": "\\b(?:nonce|messageHash|amount|depositId)\\b",
+      "weight": 1
+    }
+  ],
+  "invariants": [
+    "A cross-domain message must be authenticated and consumed at most once.",
+    "Minted or released representation must not exceed finalized deposits or burns.",
+    "Finality and challenge windows must be enforced before releasing assets."
+  ],
+  "required_capabilities": [
+    "control",
+    "invariant-forge",
+    "custody",
+    "reprove",
+    "trace-parity",
+    "sig-matrix"
+  ],
+  "forbidden_capabilities": [],
+  "attack_families": [
+    "replay",
+    "access",
+    "signature",
+    "accounting",
+    "time",
+    "dos",
+    "callback"
+  ],
+  "assumption_classes": [
+    "admin_authority",
+    "access_control",
+    "time_dependence",
+    "precision"
+  ]
+}

@@ -57,9 +57,14 @@ done
 mkdir -p "$STAGE_DIR/templates"
 cp "$REPO_DIR/lowkey/templates/step_harness.sol.tmpl" "$STAGE_DIR/templates/step_harness.sol.tmpl"
 
+mkdir -p "$STAGE_DIR/archetypes"
+cp "$REPO_DIR/lowkey/archetypes/__init__.py" "$STAGE_DIR/archetypes/__init__.py"
+cp "$REPO_DIR/lowkey/archetypes/_index.py" "$STAGE_DIR/archetypes/_index.py"
+cp "$REPO_DIR/lowkey/archetypes/"*.json "$STAGE_DIR/archetypes/"
+
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
 
-python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py" "$STAGE_DIR/fixture_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py" "$STAGE_DIR/attack_library.py" "$STAGE_DIR/attack_catalog.py" "$STAGE_DIR/attack_engine.py" "$STAGE_DIR/godmode.py" "$STAGE_DIR/proof_evidence.py" "$STAGE_DIR/forge_state_diff.py" "$STAGE_DIR/trace_evidence.py" "$STAGE_DIR/trace_schema.py" "$STAGE_DIR/trace_parity.py" "$STAGE_DIR/abi_support.py" "$STAGE_DIR/setup_reasoner.py" "$STAGE_DIR/foundry_build.py" "$STAGE_DIR/workspace_tools.py" "$STAGE_DIR/source_risk.py" "$STAGE_DIR/finding_explainer.py" "$STAGE_DIR/block_tools.py"
+python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py" "$STAGE_DIR/fixture_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py" "$STAGE_DIR/test_generation_analysis.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/verification_cli.py"   "$STAGE_DIR/signal_investigation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py" "$STAGE_DIR/ai_harness.py" "$STAGE_DIR/provider_adapters.py" "$STAGE_DIR/agent_runtime.py" "$STAGE_DIR/evidence_ledger.py" "$STAGE_DIR/security_review.py" "$STAGE_DIR/error_context.py" "$STAGE_DIR/error_advisor.py" "$STAGE_DIR/test_planner.py" "$STAGE_DIR/experience_memory.py" "$STAGE_DIR/ai_workflow.py" "$STAGE_DIR/jev_engine.py" "$STAGE_DIR/attack_library.py" "$STAGE_DIR/attack_catalog.py" "$STAGE_DIR/attack_engine.py" "$STAGE_DIR/godmode.py" "$STAGE_DIR/proof_evidence.py" "$STAGE_DIR/forge_state_diff.py" "$STAGE_DIR/trace_evidence.py" "$STAGE_DIR/trace_schema.py" "$STAGE_DIR/trace_parity.py" "$STAGE_DIR/abi_support.py" "$STAGE_DIR/setup_reasoner.py" "$STAGE_DIR/foundry_build.py" "$STAGE_DIR/workspace_tools.py" "$STAGE_DIR/source_risk.py" "$STAGE_DIR/finding_explainer.py" "$STAGE_DIR/block_tools.py" "$STAGE_DIR/archetypes/__init__.py" "$STAGE_DIR/archetypes/_index.py"
 bash -n "$REPO_DIR/bin/lk"
 
 # Publish exactly the validated stage so the manifest always describes the
@@ -126,6 +131,10 @@ cp "$STAGE_DIR/finding_explainer.py" "$TARGET_LOWKEY_DIR/finding_explainer.py"
 cp "$STAGE_DIR/block_tools.py" "$TARGET_LOWKEY_DIR/block_tools.py"
 mkdir -p "$TARGET_LOWKEY_DIR/templates"
 cp "$STAGE_DIR/templates/step_harness.sol.tmpl" "$TARGET_LOWKEY_DIR/templates/step_harness.sol.tmpl"
+mkdir -p "$TARGET_LOWKEY_DIR/archetypes"
+cp "$STAGE_DIR/archetypes/__init__.py" "$TARGET_LOWKEY_DIR/archetypes/__init__.py"
+cp "$STAGE_DIR/archetypes/_index.py" "$TARGET_LOWKEY_DIR/archetypes/_index.py"
+cp "$STAGE_DIR/archetypes/"*.json "$TARGET_LOWKEY_DIR/archetypes/"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -225,6 +234,18 @@ installed = {
     str(lowkey_dir / "source_risk.py"): sha256(lowkey_dir / "source_risk.py"),
     str(lowkey_dir / "finding_explainer.py"): sha256(lowkey_dir / "finding_explainer.py"),
     str(lowkey_dir / "block_tools.py"): sha256(lowkey_dir / "block_tools.py"),
+    str(lowkey_dir / "archetypes" / "__init__.py"): sha256(lowkey_dir / "archetypes" / "__init__.py"),
+    str(lowkey_dir / "archetypes" / "_index.py"): sha256(lowkey_dir / "archetypes" / "_index.py"),
+    str(lowkey_dir / "archetypes" / "vault4626.json"): sha256(lowkey_dir / "archetypes" / "vault4626.json"),
+    str(lowkey_dir / "archetypes" / "lending.json"): sha256(lowkey_dir / "archetypes" / "lending.json"),
+    str(lowkey_dir / "archetypes" / "amm_cp.json"): sha256(lowkey_dir / "archetypes" / "amm_cp.json"),
+    str(lowkey_dir / "archetypes" / "amm_concentrated.json"): sha256(lowkey_dir / "archetypes" / "amm_concentrated.json"),
+    str(lowkey_dir / "archetypes" / "staking.json"): sha256(lowkey_dir / "archetypes" / "staking.json"),
+    str(lowkey_dir / "archetypes" / "bridge.json"): sha256(lowkey_dir / "archetypes" / "bridge.json"),
+    str(lowkey_dir / "archetypes" / "governance.json"): sha256(lowkey_dir / "archetypes" / "governance.json"),
+    str(lowkey_dir / "archetypes" / "nft.json"): sha256(lowkey_dir / "archetypes" / "nft.json"),
+    str(lowkey_dir / "archetypes" / "escrow.json"): sha256(lowkey_dir / "archetypes" / "escrow.json"),
+    str(lowkey_dir / "archetypes" / "proxy.json"): sha256(lowkey_dir / "archetypes" / "proxy.json"),
     str(bin_dir / "lk"): sha256(bin_dir / "lk"),
 }
 
@@ -300,6 +321,9 @@ Files copied:
   - $TARGET_LOWKEY_DIR/source_risk.py
   - $TARGET_LOWKEY_DIR/finding_explainer.py
   - $TARGET_LOWKEY_DIR/block_tools.py
+  - $TARGET_LOWKEY_DIR/archetypes/__init__.py
+  - $TARGET_LOWKEY_DIR/archetypes/_index.py
+  - $TARGET_LOWKEY_DIR/archetypes/*.json
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
 

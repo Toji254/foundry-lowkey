@@ -1,0 +1,54 @@
+{
+  "name": "proxy",
+  "detect_signals": [
+    {
+      "kind": "upgrade_authority",
+      "value": "\\b(?:upgradeTo|upgradeToAndCall|_authorizeUpgrade|implementation|proxiableUUID)\\b",
+      "weight": 3
+    },
+    {
+      "kind": "admin_authority",
+      "value": "\\b(?:ProxyAdmin|beacon|admin|EIP1967|ERC1967|diamondCut)\\b",
+      "weight": 2
+    },
+    {
+      "kind": "access_control",
+      "value": "\\b(?:initializer|reinitializer|_disableInitializers|onlyOwner)\\b",
+      "weight": 2
+    },
+    {
+      "kind": "external_call_safety",
+      "value": "\\bdelegatecall\\b",
+      "weight": 2
+    }
+  ],
+  "invariants": [
+    "Only the intended authority may change the active implementation or routing table.",
+    "Initialization must be atomic and unavailable to unauthorized callers after deployment.",
+    "Implementation changes must preserve the declared storage layout and authorization boundaries."
+  ],
+  "required_capabilities": [
+    "control",
+    "proxy-resolve",
+    "storage-infer",
+    "upgrade-diff",
+    "reprove",
+    "trace-parity",
+    "custody"
+  ],
+  "forbidden_capabilities": [],
+  "attack_families": [
+    "upgrade",
+    "proxy",
+    "storage",
+    "access",
+    "reentrancy",
+    "dos"
+  ],
+  "assumption_classes": [
+    "upgrade_authority",
+    "admin_authority",
+    "access_control",
+    "external_call_safety"
+  ]
+}

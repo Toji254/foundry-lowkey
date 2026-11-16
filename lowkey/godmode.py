@@ -85,7 +85,7 @@ ROUTED_COMMANDS = (
     "target-coverage", "provenance", "fidelity", "sandbox", "cheat-fingerprint", "decompile",
     "storage-infer", "proxy-resolve", "selectors-full", "cfg",
     "reentrancy-graph", "fallback-map", "calldata-mine", "attack-forge",
-    "invariant-forge", "archetype", "token-weird", "oracle-map", "skew",
+    "invariant-forge", "archetype", "assumptions", "capability", "token-weird", "oracle-map", "skew",
     "flashmax", "time", "sig-matrix", "init-frontrun", "path", "compose",
     "reprove", "economic", "gas-ladder", "watch", "custody", "agent-split",
     "verify-hack", "unravel", "bundle", "sandwich", "jit", "fork-cache",
@@ -98,6 +98,24 @@ GODMODE_COMMAND_DETAILS = {
         "when": "Use it before relying on a capability or planning an audit workflow.",
         "example": "lk capabilities",
         "limits": "A registered name is not proof of a working exploit generator; partial and adapter-required states are deliberate.",
+    },
+    "archetype": {
+        "summary": "Generate a protocol-shaped invariant starter, or classify source with the deterministic P3 archetype packs.",
+        "when": "Use 'lk archetype classify' for source-backed classification; use a named profile only to render a starter checklist.",
+        "example": "lk archetype classify --root . --json",
+        "limits": "Classification is source-level, confidence-bounded and not deployment authentication or vulnerability proof. Ambiguous targets remain UNCLASSIFIED.",
+    },
+    "assumptions": {
+        "summary": "Re-read the source citations in a saved P3 assumption ledger and verify their file hashes and cited lines.",
+        "when": "Use it after archetype classification to check that every assumption citation still resolves.",
+        "example": "lk assumptions --root .",
+        "limits": "Citations establish where a trust assumption was extracted, not whether the assumption holds or is violated.",
+    },
+    "capability": {
+        "summary": "Show the capability negotiation and explicit generic-mode skip list from a saved protocol classification.",
+        "when": "Use it after 'lk archetype classify' to see which protocol-specific work Lowkey can and cannot perform.",
+        "example": "lk capability --root .",
+        "limits": "Only capabilities marked implemented are considered available; partial and adapter-required entries remain skipped.",
     },
     "godmode": {
         "summary": "Run the evidence-first audit orchestrator: source recon, on-chain recon, optional local attack, control, mutation, and coverage stages.",
@@ -2901,6 +2919,18 @@ def attack_forge(args):
     print("Status: starter only; no exploit proof claimed.")
     return 0
 
+def _archetype_index_main(args):
+    module_dir = str(Path(__file__).resolve().parent)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+    try:
+        from archetypes._index import main as archetype_main
+    except ImportError as exc:
+        print(f"Archetype index is unavailable: {exc}", file=sys.stderr)
+        return 2
+    return archetype_main(list(args or []))
+
+
 def generate(args,kind):
     p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",default="general"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
     templates={
@@ -4190,7 +4220,26 @@ def main(argv=None):
     if cmd=="economic": return economic(rest)
     if cmd=="attack-forge": return attack_forge(rest)
     if cmd=="invariant-forge": return generate(rest,cmd)
-    if cmd=="archetype": return generate(rest,cmd)
+    if cmd=="archetype":
+        if rest and rest[0] == "classify":
+            return _archetype_index_main(rest[1:])
+        return generate(rest,cmd)
+    if cmd in {"assumptions", "capability"}:
+        if any(str(token).strip().lower() in HELP_FLAGS for token in rest):
+            details = _godmode_help_details(cmd)
+            help_parser = LowkeyArgumentParser(
+                prog="lk " + cmd,
+                description=details["summary"],
+            )
+            help_parser.add_argument("--root", default=".")
+            help_parser.add_argument("--report")
+            help_parser.parse_args(rest)
+            print("When to use: " + details["when"])
+            print("Example: " + details["example"])
+            print("Limitations: " + details["limits"])
+            return 0
+        flag = "--assumptions" if cmd == "assumptions" else "--capability"
+        return _archetype_index_main([flag, *rest])
     if cmd=="token-weird": return token_weird(rest)
     if cmd=="fork-cache": return fork_cache(rest)
     if cmd=="questions": return questions(rest)
