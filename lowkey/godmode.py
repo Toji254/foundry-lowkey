@@ -6298,10 +6298,12 @@ def _report_latest_attack_evidence(root, attack_stage, target):
             return candidate, payload
 
     # A concrete BREAK exits before the campaign summary is written. Only
-    # search for a prior break record when this report actually ran an attack;
-    # a source-only report must not pick up an unrelated older campaign.
+    # search for a prior break record when this run's own output says a break
+    # condition was reached; do not attach an unrelated older record.
     attack_status = str((attack_stage or {}).get("status") or "").lower()
     if attack_status not in {"completed", "review", "interrupted", "blocked"}:
+        return None, None
+    if not re.search(r"BREAK CONDITION REACHED", output_text, re.I):
         return None, None
     run_root = root / ".audit" / "break" / "runs"
     if run_root.is_dir():
