@@ -6217,6 +6217,10 @@ def _report_code(value):
     return marker + raw + marker if raw else "Not recorded"
 
 
+def _report_cell(value, fallback="Not recorded", limit=None):
+    return _report_clean(value, fallback, limit).replace("|", chr(92) + "|")
+
+
 def _report_quote(lines, label, value):
     quote = str(value or "").strip()
     if not quote:
@@ -6367,7 +6371,7 @@ def report(args):
         except Exception:
             detail = str(stage.get("reason") or stage.get("summary") or "")
         lines.append(
-            f"| {label} | {status} | {_report_clean(detail, 'No additional detail recorded.').replace('|', '\\|')} |"
+            f"| {label} | {status} | {_report_cell(detail, 'No additional detail recorded.')} |"
         )
     lines.append("")
 
@@ -6515,7 +6519,7 @@ def report(args):
             marker = row.get("kind") or row.get("function") or group
             excerpt = _report_clean(row.get("text") or row.get("variables"), "No excerpt", limit=180)
             lines.append(
-                f"| {_report_code(where)} | {_report_clean(marker).replace('|', '\\|')} | {_report_clean(excerpt).replace('|', '\\|')} |"
+                f"| {_report_code(where)} | {_report_cell(marker)} | {_report_cell(excerpt)} |"
             )
         if len(marker_rows) > 25:
             lines.append(f"| … | … | {len(marker_rows) - 25} additional marker(s) omitted; see the JSON evidence. |")
