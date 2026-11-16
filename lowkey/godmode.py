@@ -6200,61 +6200,352 @@ def godmode(args):
     # REVIEW_REQUIRED, but they are not process failures. Return non-zero only
     # when a requested operation was blocked or failed.
     return 2 if blockers else 0
+def _report_clean(value, fallback="Not recorded", limit=None):
+    if value is None:
+        return fallback
+    text = " ".join(str(value).replace("\x00", "").split()).strip()
+    if not text:
+        return fallback
+    if limit is not None and len(text) > limit:
+        text = text[: max(0, limit - 3)].rstrip() + "..."
+    return text
+
+
+def _report_code(value):
+    marker = chr(96)
+    raw = str(value or "").replace(marker, "'").strip()
+    return marker + raw + marker if raw else "Not recorded"
+
+
+def _report_quote(lines, label, value):
+    quote = str(value or "").strip()
+    if not quote:
+        return
+    lines.extend(["**" + label + "**", ""])
+    for part in quote.splitlines():
+        clean = part.rstrip()
+        lines.append("> " + clean if clean else ">")
+    lines.append("")
+
+
+def _report_stage_status(stage):
+    status = str(stage.get("status") or "unknown").lower()
+    names = {
+        "completed": "Completed",
+        "passed": "Passed",
+        "review": "Needs review",
+        "blocked": "Blocked",
+        "failed": "Failed",
+        "skipped": "Skipped",
+        "not-run": "Not requested",
+        "provided": "Input supplied",
+        "interrupted": "Interrupted",
+    }
+    return names.get(status, status.replace("-", " ").title())
+
+
 def report(args):
-    p=LowkeyArgumentParser(prog="lk report")
-    p.add_argument("--root",default="."); p.add_argument("--input",default=".audit/godmode/latest.json")
-    p.add_argument("--output",default=".audit/godmode/report.md"); ns=p.parse_args(args)
-    root=root_path(ns.root); src=(root/ns.input).resolve()
-    if not src.is_relative_to(root) or not src.is_file(): raise ValueError("Report input not found inside project.")
-    data=json.loads(src.read_text(encoding="utf-8"))
-    lines=["# Lowkey Security Audit Report","",f"Generated: {now()}",
-           f"Overall status: **{data.get('overall_status','REVIEW_REQUIRED')}**",
-           f"Target: {data.get('target') or 'source workspace'}",
-           f"Chain ID: {data.get('chain_id') or 'not recorded'}",
-           f"Fork block: {data.get('fork_block') or 'not recorded'}","",
-           "## Scope and execution stages"]
-    for stage in data.get("stages",[]):
-        lines.append("- **"+str(stage.get("name"))+" — "+str(stage.get("status"))+"**: "+str(stage.get("reason",stage.get("output",stage.get("signals","")))))
-    lines += ["","## Findings",""]
-    findings=data.get("findings") or []
+    parser = LowkeyArgumentParser(prog="lk report")
+    parser.add_argument("--root", default=".")
+    parser.add_argument("--input", default=".audit/godmode/latest.json")
+    parser.add_argument("--output", default=".audit/godmode/report.md")
+    ns = parser.parse_args(args)
+
+    root = root_path(ns.root)
+    src = (root / ns.input).resolve()
+    if not src.is_relative_to(root) or not src.is_file():
+        raise ValueError("Report input not found inside project.")
+    data = json.loads(src.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Report input must contain a JSON object.")
+
+    stages = data.get("stages") if isinstance(data.get("stages"), list) else []
+    findings = data.get("findings") if isinstance(data.get("findings"), list) else []
+    signals = data.get("signals") if isinstance(data.get("signals"), dict) else {}
+    confirmed = [
+        item for item in findings
+        if isinstance(item, dict)
+        and (
+            item.get("verified") is True
+            or str(item.get("status") or "").lower() in {"confirmed", "validated"}
+        )
+    ]
+    candidates = [item for item in findings if isinstance(item, dict) and item not in confirmed]
+    stage_by_name = {
+        str(item.get("name") or ""): item
+        for item in stages if isinstance(item, dict)
+    }
+    source_stage = stage_by_name.get("source-recon", {})
+    attack_stage = stage_by_name.get("attack", {})
+    slither_stage = stage_by_name.get("slither-analysis", {})
+    ai_stage = stage_by_name.get("ai-review", {})
+    total_markers = sum(
+        len(rows) for rows in signals.values() if isinstance(rows, list)
+    )
+    overall = _report_clean(data.get("overall_status"), "REVIEW_REQUIRED")
+    target = _report_clean(data.get("target"), "Source workspace")
+    chain = _report_clean(data.get("chain_id"), "Not inspected")
+    block = _report_clean(data.get("fork_block"), "Not inspected")
+
+    lines = [
+        "# Smart-contract security review",
+        "",
+        f"> **Assessment:** {overall.replace('_', ' ').title()}  ",
+        f"> **Target:** {target}  ",
+        f"> **Project:** {_report_code(data.get('project_root') or str(root))}  ",
+        f"> **Generated:** {_report_clean(data.get('created_at'), now())}",
+        "",
+        "## 1. Executive summary",
+        "",
+    ]
+    if confirmed:
+        lines.append(
+            f"Lowkey recorded **{len(confirmed)} confirmed/validated item(s)** and "
+            f"**{len(candidates)} unverified candidate(s)** in this run. "
+            "Review each item’s evidence and validation basis before relying on it."
+        )
+    elif candidates:
+        lines.append(
+            f"Lowkey recorded **{len(candidates)} unverified candidate(s)**. "
+            "No candidate in this report is a confirmed vulnerability. Static analysis "
+            "identifies suspicious code; an executable exploit and independent proof are "
+            "needed before claiming impact."
+        )
+    else:
+        lines.append(
+            "This run did not record a concrete vulnerability candidate. That is not a "
+            "security clearance: scanners have coverage limits, and untested paths may "
+            "still contain vulnerabilities."
+        )
+    lines.extend([
+        "",
+        "### Run at a glance",
+        "",
+        "| Item | Result |",
+        "|---|---|",
+        f"| First-party source files indexed | {int(source_stage.get('files_scanned') or source_stage.get('signals') or 0)} |",
+        f"| Source-navigation markers (not findings) | {total_markers} |",
+        f"| Unverified candidates | {len(candidates)} |",
+        f"| Confirmed/validated findings | {len(confirmed)} |",
+        f"| Slither | {_report_stage_status(slither_stage) if slither_stage else 'Not recorded'} |",
+        f"| AI source review | {_report_stage_status(ai_stage) if ai_stage else 'Not requested'} |",
+        f"| Attack campaign | {_report_stage_status(attack_stage) if attack_stage else 'Not requested'} |",
+        f"| Chain ID / block | {chain} / {block} |",
+        "",
+    ])
+
+    lines.extend([
+        "## 2. What Lowkey ran",
+        "",
+        "This table separates completed checks from checks that were skipped, blocked, "
+        "or never requested. A skipped stage is not a passing test.",
+        "",
+        "| Audit step | Status | What it means |",
+        "|---|---|---|",
+    ])
+    stage_names = {
+        "source-recon": "Source indexing",
+        "source-security": "Built-in access-control review",
+        "slither-analysis": "Slither static analysis",
+        "ai-review": "AI-assisted source review",
+        "arithmetic-review": "Targeted arithmetic check",
+        "cheat-fingerprints": "Harness/cheatcode fingerprints",
+        "onchain-recon": "On-chain inspection",
+        "attack": "Local attack campaign",
+        "control": "Matched control",
+        "mutation": "Mutation testing",
+        "target-coverage": "Target source coverage",
+    }
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        name = str(stage.get("name") or "Unknown step")
+        label = stage_names.get(name, name.replace("-", " ").title())
+        status = _report_stage_status(stage)
+        try:
+            detail = _godmode_stage_detail(stage)
+        except Exception:
+            detail = str(stage.get("reason") or stage.get("summary") or "")
+        lines.append(
+            f"| {label} | {status} | {_report_clean(detail, 'No additional detail recorded.').replace('|', '\\|')} |"
+        )
+    lines.append("")
+
+    if attack_stage:
+        attack_output = str(attack_stage.get("output") or "")
+        observations = []
+        seen = set()
+        for raw_line in attack_output.splitlines():
+            clean = raw_line.strip()
+            if not clean:
+                continue
+            if re.match(r"^\[(?:!!! BREAK !!!|SIMULATED BREAK|BREAK|BLOCKED|OBSERVED|SKIPPED)\]", clean):
+                if clean not in seen:
+                    seen.add(clean)
+                    observations.append(clean)
+        if observations:
+            lines.extend([
+                "### Attack observations",
+                "",
+                "These are the probe outcomes captured in the run log. **OBSERVED** means "
+                "the call was executed and a behaviour was seen; it does not mean the "
+                "behaviour is exploitable. **BLOCKED** means the probe did not complete.",
+                "",
+            ])
+            for item in observations[-20:]:
+                lines.append("- " + item.replace("|", "\\|"))
+            lines.append("")
+
+    lines.extend(["## 3. Findings to investigate", ""])
     if not findings:
-        lines.append("No validated findings are recorded in this run. The source maps below are leads, not reportable vulnerabilities.")
-    for index,finding in enumerate(findings,1):
-        lines += [f"### {index}. {finding.get('title','Untitled finding')}","",
-          f"- **Severity:** {finding.get('severity','Needs human review')}",
-          f"- **Severity rubric:** {finding.get('severity_rubric','Not supplied')}",
-          f"- **Affected asset / contract:** {finding.get('asset',finding.get('target','Not supplied'))}",
-          f"- **Impact:** {finding.get('impact','Not supplied')}",
-          f"- **Attacker prerequisites:** {finding.get('prerequisites','Not supplied')}",
-          f"- **Fork block:** {finding.get('fork_block',data.get('fork_block','Not supplied'))}",
-          f"- **Gas used:** {finding.get('gas_used','Not measured')}",
-          f"- **Gross profit:** {finding.get('gross_profit','Not measured')}",
-          f"- **Net profit:** {finding.get('net_profit','Not measured')}",
-          f"- **Harness:** {finding.get('harness','Not supplied')}",
-          f"- **Control evidence:** {finding.get('control_evidence','Not supplied')}",
-          f"- **Recommendation:** {finding.get('recommendation','Not supplied')}","",
-          "**Reproduction steps**",""]
-        steps=finding.get("reproduction_steps") or []
-        lines += [f"{n}. {step}" for n,step in enumerate(steps,1)] if steps else ["Not supplied."]
+        lines.extend([
+            "No source-analysis candidate was recorded in this run.",
+            "",
+            "This does not mean the contract is safe. Check scanner coverage, compiler "
+            "configuration, inherited contracts, external dependencies, and protocol-specific "
+            "invariants. A clean static scan is not an exploitability proof.",
+            "",
+        ])
+    else:
+        lines.append(
+            "The items below are candidates, not automatic vulnerability verdicts. "
+            "Severity and confidence are triage labels; verify reachability, attacker "
+            "control, and impact against the exact deployed code."
+        )
         lines.append("")
-    lines += ["## Reconnaissance signals",""]
-    for group,rows in (data.get("signals") or {}).items():
-        lines += ["### "+group]
-        if not rows: lines.append("- No matching source signals observed.")
-        for row in rows[:100]:
-            lines.append("- "+str(row.get("file",""))+":"+str(row.get("line",""))+" "+
-                         str(row.get("kind",row.get("function",row.get("variables","signal"))))+
-                         ": "+str(row.get("text",row.get("variables",""))))
+        for index, finding in enumerate(findings, 1):
+            if not isinstance(finding, dict):
+                continue
+            location = finding.get("location") if isinstance(finding.get("location"), dict) else {}
+            path = str(location.get("path") or finding.get("file") or "")
+            line_no = location.get("line") or finding.get("line")
+            symbol = str(location.get("symbol") or finding.get("function") or "")
+            location_parts = []
+            if path:
+                location_parts.append(_report_code(path + (":" + str(line_no) if line_no else "")))
+            if symbol:
+                location_parts.append(_report_code(symbol))
+            location_text = " — ".join(location_parts) if location_parts else "Source location not recorded"
+            severity = _report_clean(finding.get("severity"), "Needs human triage").upper()
+            confidence = _report_clean(finding.get("confidence"), "Not recorded")
+            category = _report_clean(finding.get("category"), "General")
+            tool = _report_clean(finding.get("tool") or finding.get("check"), "Not recorded")
+            verified = finding.get("verified") is True or str(finding.get("status") or "").lower() in {"confirmed", "validated"}
+            state = "Confirmed/validated in saved evidence" if verified else "Candidate — not confirmed"
+
+            lines.extend([
+                f"### {index}. {_report_clean(finding.get('title'), 'Untitled candidate')}",
+                "",
+                f"**Triage:** {severity} · {category} · {confidence} confidence  ",
+                f"**Evidence state:** {state}  ",
+                f"**Where:** {location_text}  ",
+                f"**Detector:** {tool}",
+                "",
+            ])
+            for label, keys in (
+                ("Why it was flagged", ("reasoning", "meaning", "description")),
+                ("Potential impact", ("impact", "why")),
+                ("Attacker prerequisites", ("exploit_preconditions", "prerequisites")),
+                ("What to do next", ("recommendation", "next")),
+            ):
+                value = next((finding.get(key) for key in keys if finding.get(key)), None)
+                if value:
+                    lines.extend(["**" + label + "**", "", _report_clean(value, limit=3000), ""])
+            _report_quote(lines, "Relevant source evidence", finding.get("evidence_quote") or finding.get("source_excerpt"))
+            quote_status = finding.get("source_quote_status")
+            if quote_status:
+                lines.extend([
+                    f"**Source quote check:** {_report_clean(quote_status)}",
+                    "",
+                ])
+            if finding.get("evidence_path"):
+                lines.extend(["**Evidence file:** " + _report_code(finding.get("evidence_path")), ""])
+            if finding.get("harness") or finding.get("harness_archive"):
+                harness = finding.get("harness_archive") or finding.get("harness")
+                lines.extend(["**Generated test harness:** " + _report_code(harness), ""])
+            if finding.get("reproduction_steps"):
+                lines.extend(["**Reproduction outline**", ""])
+                for step_number, step in enumerate(finding["reproduction_steps"], 1):
+                    lines.append(f"{step_number}. {_report_clean(step)}")
+                lines.append("")
+
+    lines.extend([
+        "## 4. What is still needed before a finding is confirmed",
+        "",
+        "A source match or a successful function call is not enough. The evidence should "
+        "show a security property being violated and rule out the normal/control behaviour.",
+        "",
+    ])
+    proof_explanations = {
+        "attack must demonstrate a measurable security-property delta": "Show a concrete change to a security property, such as an unauthorized owner change or excess asset withdrawal.",
+        "matched sequential control must pass": "Run a paired control under the same setup and show that the vulnerable behaviour is specific to the attack.",
+        "target lines must be covered": "Show that the test actually executes the source lines associated with the candidate.",
+        "harness mutation score must meet threshold": "Change or repair the suspected vulnerable logic and demonstrate that the test detects the difference.",
+        "net profit must remain positive after costs": "For economic attacks, calculate attacker gain after gas, fees, slippage, and financing costs.",
+        "reproof must not depend on state-fabricating cheatcodes": "Reproduce the result without cheatcodes that manufacture the vulnerable state.",
+    }
+    for item in data.get("proof_gate") or []:
+        text_item = str(item)
+        lines.append("- " + proof_explanations.get(text_item, _report_clean(text_item)))
+    lines.append("")
+
+    marker_rows = []
+    for group, rows in signals.items():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            marker_rows.append((str(group), row))
+    if marker_rows:
+        lines.extend([
+            "## 5. Source-navigation markers (not findings)",
+            "",
+            f"The scanners also recorded {total_markers} navigation/context marker(s). "
+            "They are included only to help locate code for manual review; they are not "
+            "vulnerability counts.",
+            "",
+            "| Source location | Marker | Code excerpt |",
+            "|---|---|---|",
+        ])
+        for group, row in marker_rows[:25]:
+            where = str(row.get("file") or "unknown")
+            if row.get("line"):
+                where += ":" + str(row.get("line"))
+            marker = row.get("kind") or row.get("function") or group
+            excerpt = _report_clean(row.get("text") or row.get("variables"), "No excerpt", limit=180)
+            lines.append(
+                f"| {_report_code(where)} | {_report_clean(marker).replace('|', '\\|')} | {_report_clean(excerpt).replace('|', '\\|')} |"
+            )
+        if len(marker_rows) > 25:
+            lines.append(f"| … | … | {len(marker_rows) - 25} additional marker(s) omitted; see the JSON evidence. |")
         lines.append("")
-    lines += ["## Proof limitations",
-      "- Static matches, selector guesses, generated templates and source-level order are leads, not findings.",
-      "- A candidate BREAK requires a matching sequential control with a positive measured delta.",
-      "- Target-line coverage and mutation score measure harness reachability and sensitivity; neither alone proves impact.",
-      "- Net economics must account for gas, pool fees, slippage, financing and realistic recipient balance changes.",
-      "- Local-fork reproduction is not permission to broadcast; no production transaction is sent by this report command.",""]
-    out=safe_out(root,ns.output); out.write_text("\n".join(lines),encoding="utf-8")
-    digest=sha(out); sidecar=out.with_suffix(out.suffix+".sha256"); sidecar.write_text(digest+"  "+out.name+"\n",encoding="utf-8")
-    print("Report: "+str(out.relative_to(root))); print("SHA-256: "+digest); return 0
+
+    lines.extend([
+        "## 6. Evidence files and limitations",
+        "",
+        f"- Full machine-readable audit data: {_report_code(src.relative_to(root).as_posix())}",
+        f"- Provenance record: {_report_code('.audit/godmode/provenance.json')}",
+        "- Static analysis can miss bugs and can also produce false positives.",
+        "- An unexecuted, blocked, or skipped probe provides no evidence that the tested path is safe.",
+        "- Local Anvil results apply to the local deployment/state used for that run; recheck the intended fork or deployment separately.",
+        "- This report does not authorize production transactions or certify the contract as secure.",
+        "",
+        "---",
+        "",
+        "*Generated by Lowkey. Treat the report as an evidence-backed workpaper, not a security certificate.*",
+        "",
+    ])
+
+    out = safe_out(root, ns.output)
+    out.write_text("\n".join(lines), encoding="utf-8")
+    digest = sha(out)
+    sidecar = out.with_suffix(out.suffix + ".sha256")
+    sidecar.write_text(digest + "  " + out.name + "\n", encoding="utf-8")
+    print("Report: " + str(out.relative_to(root)))
+    print("SHA-256: " + digest)
+    print(f"Findings: {len(candidates)} candidate(s), {len(confirmed)} confirmed/validated")
+    return 0
 
 def provenance_cli(args): return provenance(args)
 
