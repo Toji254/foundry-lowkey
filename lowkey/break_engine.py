@@ -3353,7 +3353,7 @@ def _run_authority_write_probe(host, config, rpc: str, target: Target,
                     detail={"reason_code": "setup_call_reverted", **evidence},
                 )
 
-        attack_value = "1wei" if str(fn.get("stateMutability") or "").lower() == "payable" else "0"
+        attack_value = "1 wei" if str(fn.get("stateMutability") or "").lower() == "payable" else "0"
         attack_tx = _cast_send(host, rpc, target, attack_data, attack_value, attacker)
         evidence["attack_succeeded"] = attack_tx.returncode == 0
         evidence["attack_output"] = (attack_tx.stdout or attack_tx.stderr or "")[-1000:]
