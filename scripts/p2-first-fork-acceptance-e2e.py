@@ -51,21 +51,20 @@ def run(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 240) 
 
 
 def rpc(url: str, method: str, params: list[Any], timeout: int = 25) -> Any:
-    request = Request(
-        url,
-        data=json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
-        }).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "LowkeyCast-P2-acceptance/0.1"},
-        method="POST",
-    )
     payload = None
     last_error = None
     for attempt in range(4):
+        request = Request(
+            url,
+            data=json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "LowkeyCast-P2-acceptance/0.1"},
+            method="POST",
+        )
         try:
             with urlopen(request, timeout=timeout) as response:
                 payload = json.loads(response.read(8_000_000).decode("utf-8"))
-            break
         except HTTPError as exc:
             last_error = exc
             if exc.code not in {429, 500, 502, 503, 504} or attempt == 3:
@@ -76,14 +75,27 @@ def rpc(url: str, method: str, params: list[Any], timeout: int = 25) -> Any:
             except (TypeError, ValueError):
                 pass
             time.sleep(min(max(retry_after, 0.25 * (2 ** attempt)), 4.0))
+            continue
         except (URLError, TimeoutError) as exc:
             last_error = exc
             if attempt == 3:
                 break
             time.sleep(0.25 * (2 ** attempt))
+            continue
         except json.JSONDecodeError as exc:
             last_error = exc
             break
+
+        # Some JSON-RPC gateways return an HTTP 200 with error.code=429.
+        # Treat only explicit throttle/transient codes as retryable.
+        rpc_error = payload.get("error") if isinstance(payload, dict) else None
+        error_code = rpc_error.get("code") if isinstance(rpc_error, dict) else None
+        if error_code in {429, -32005, -32016, -32603} and attempt < 3:
+            last_error = RuntimeError(f"JSON-RPC transient error {error_code}: {str(rpc_error)[:400]}")
+            time.sleep(0.25 * (2 ** attempt))
+            continue
+        break
+
     if last_error is not None and payload is None:
         raise RuntimeError(
             f"RPC {method} failed at {urlparse_safe(url)} after bounded retries: "
