@@ -6,6 +6,7 @@ from lowkey.trace_schema import (
     build_trace_event,
     from_legacy_event,
     normalize_calltracer,
+    normalize_prestate_diff,
     flatten_calltracer,
     normalize_forge_events,
 )
@@ -86,6 +87,41 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertIsNone(event["calldata"])
         self.assertIsNone(event["reverted"])
         self.assertIsNone(event["storage"])
+
+    def test_prestate_diff_normalizes_changed_slots_without_call_frame_claims(self):
+        rows = normalize_prestate_diff({
+            "pre": {B: {"storage": {SLOT: WORD1}}},
+            "post": {B: {"storage": {SLOT: WORD2}}},
+        })
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["account"], B)
+        self.assertEqual(rows[0]["slot"], SLOT)
+        self.assertEqual(rows[0]["previous_value"], WORD1)
+        self.assertEqual(rows[0]["new_value"], WORD2)
+        self.assertTrue(rows[0]["is_write"])
+        events = normalize_calltracer(
+            [
+                {"type": "CALL", "from": A, "to": B, "depth": 0,
+                 "value": "0x0", "input": "0x12345678"},
+                {"type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
+                 "value": "0x0", "input": "0xaabbccdd"},
+            ],
+            storage_support="partial",
+            partial_storage={0: rows},
+        )
+        self.assertEqual(events[0]["storage_support"], "partial")
+        self.assertEqual(events[0]["storage"], rows)
+        self.assertEqual(events[1]["storage_support"], "declared_only")
+        self.assertIsNone(events[1]["storage"])
+
+    def test_prestate_diff_does_not_invent_missing_zero_values(self):
+        rows = normalize_prestate_diff({
+            "pre": {B: {"storage": {SLOT: WORD1}}},
+            "post": {B: {"storage": {}}},
+        })
+        self.assertEqual(rows[0]["previous_value"], WORD1)
+        self.assertIsNone(rows[0]["new_value"])
+        self.assertIsNone(rows[0]["is_write"])
 
     def test_calltracer_storage_is_declared_only_without_prestate(self):
         event = anvil_trace()[0]
