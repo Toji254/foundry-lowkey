@@ -82,7 +82,7 @@ contract Vault {
             (root / "Vault.sol").write_text(source, encoding="utf-8")
             sequences = godmode.cheat_fingerprints(root)["ordered_sequences"]
             match = next(row for row in sequences if row["mapping"] == "accounts")
-            self.assertEqual(match["external_method"], "safeTransfer")
+            self.assertEqual(match["external_method"], "safetransfer")
             self.assertEqual(match["key_expression"], "msg . sender")
             self.assertLess(match["read_line"], match["call_line"])
             self.assertLess(match["call_line"], match["write_line"])
@@ -220,19 +220,19 @@ class Tier0CoverageTests(unittest.TestCase):
                     "src/Vault.sol", "--root", str(root), "--min-percent", "75",
                     "--match-test", "test_reentrancy",
                 ])
-            self.assertEqual(code, 1)
-            report = json.loads((root / ".audit" / "godmode" / "target-coverage.json").read_text())
-            self.assertEqual(report["percent"], 50.0)
-            self.assertEqual(report["minimum_percent"], 75.0)
-            self.assertFalse(report["gate_passed"])
-            self.assertIn("--match-test", report["command"])
+                self.assertEqual(code, 1)
+                report = json.loads((root / ".audit" / "godmode" / "target-coverage.json").read_text())
+                self.assertEqual(report["percent"], 50.0)
+                self.assertEqual(report["minimum_percent"], 75.0)
+                self.assertFalse(report["gate_passed"])
+                self.assertIn("--match-test", report["command"])
 
-            passed = godmode.coverage([
-                "src/Vault.sol", "--root", str(root), "--min-percent", "50",
-            ])
-            self.assertEqual(passed, 0)
-            passed_report = json.loads((root / ".audit" / "godmode" / "target-coverage.json").read_text())
-            self.assertTrue(passed_report["gate_passed"])
+                passed = godmode.coverage([
+                    "src/Vault.sol", "--root", str(root), "--min-percent", "50",
+                ])
+                self.assertEqual(passed, 0)
+                passed_report = json.loads((root / ".audit" / "godmode" / "target-coverage.json").read_text())
+                self.assertTrue(passed_report["gate_passed"])
 
 
 class Tier0ProvenanceTests(unittest.TestCase):
@@ -372,7 +372,7 @@ class Tier0SandboxTests(unittest.TestCase):
     def test_sandbox_allowlist_refuses_when_systemd_is_unavailable(self):
         with tempfile.TemporaryDirectory() as temporary:
             with patch.object(godmode.shutil, "which", side_effect=lambda name: "/usr/bin/bwrap" if name == "bwrap" else "/usr/bin/sudo" if name == "sudo" else None):
-                with self.assertRaisesRegex(RuntimeError, "requires sudo and systemd-run"):
+                with self.assertRaisesRegex(RuntimeError, "systemd-run cgroup controls"):
                     godmode.sandbox([
                         "--root", temporary, "--network", "allowlist",
                         "--allow-host", "rpc.example.test", "--", "true",
@@ -393,6 +393,7 @@ class Tier0SandboxTests(unittest.TestCase):
                         code = godmode.sandbox([
                             "--root", str(root), "--network", "allowlist",
                             "--allow-host", "rpc.example.test", "--timeout", "10",
+                            "--memory-mb", "256", "--cpu-seconds", "10",
                             "--", "python3", "-c", "pass",
                         ])
             self.assertEqual(code, 0)
@@ -402,6 +403,7 @@ class Tier0SandboxTests(unittest.TestCase):
             self.assertIn("--property=IPAddressAllow=203.0.113.5", argv)
             self.assertIn("--property=TasksMax=512", argv)
             self.assertIn("--property=MemoryMax=268435456", argv)
+            self.assertIn("--property=LimitCPU=10s", argv)
             self.assertTrue(any(value.startswith("--property=RuntimeMaxSec=") for value in argv))
 
 
