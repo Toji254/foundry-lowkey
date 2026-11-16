@@ -14,6 +14,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from ..protocol_graph import build_full_protocol_graph
+except ImportError:
+    try:
+        from protocol_graph import build_full_protocol_graph
+    except ImportError:
+        build_full_protocol_graph = None
+
 SCHEMA_VERSION = 1
 CONFIDENCE_FLOOR = 0.35
 MIN_DISTINCT_SIGNAL_KINDS = 2
@@ -376,6 +384,27 @@ def classify_project(root: str | Path = ".") -> dict[str, Any]:
             skip_list.append("asset-specific economic valuation")
     skip_list = sorted(set(skip_list))
     graph = build_protocol_graph(base, sources, source_hashes)
+    if build_full_protocol_graph is None:
+        compiler_protocol_graph = {
+            "schema_version": 1,
+            "compiler_ast": {"status": "AST_UNAVAILABLE", "reason": "compiler graph module is not installed"},
+            "runtime_call_graph": {"status": "RUNTIME_TRACE_UNAVAILABLE"},
+            "state_dependency_graph": {"status": "UNAVAILABLE", "edges": []},
+        }
+    else:
+        try:
+            compiler_protocol_graph = build_full_protocol_graph(base)
+        except Exception as exc:
+            compiler_protocol_graph = {
+                "schema_version": 1,
+                "compiler_ast": {
+                    "status": "AST_ERROR",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "nodes": [], "edges": [],
+                },
+                "runtime_call_graph": {"status": "RUNTIME_TRACE_UNAVAILABLE", "edges": []},
+                "state_dependency_graph": {"status": "UNAVAILABLE", "edges": []},
+            }
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "OBSERVED" if classified else "UNCLASSIFIED",
@@ -398,6 +427,7 @@ def classify_project(root: str | Path = ".") -> dict[str, Any]:
         "citations_all_resolved": all(item["resolved"] for item in citation_results),
         "source_hashes": source_hashes,
         "protocol_graph": graph,
+        "compiler_protocol_graph": compiler_protocol_graph,
         "capabilities": capability_report,
         "generic_mode": {
             "enabled": True,
@@ -407,6 +437,7 @@ def classify_project(root: str | Path = ".") -> dict[str, Any]:
         "limitations": [
             "Classification is source-level and deterministic; it does not authenticate a deployment.",
             "Relationship edges are import or typed-call candidates, not proof of runtime reachability.",
+            "Compiler AST, AST-derived state dependencies, and saved runtime traces are separate evidence layers; neither static edges nor sampled runtime calls prove full protocol reachability or path-sensitive data flow.",
             "Assumptions are unverified until an explicit check changes verification_status.",
             "No vulnerability verdict, exploit execution, profit calculation, or status promotion occurs.",
         ],

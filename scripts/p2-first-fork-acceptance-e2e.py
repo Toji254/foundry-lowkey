@@ -56,11 +56,26 @@ def rpc(url: str, method: str, params: list[Any], timeout: int = 25) -> Any:
         headers={"Content-Type": "application/json", "User-Agent": "LowkeyCast-P2-acceptance/0.1"},
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read(8_000_000).decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"RPC {method} failed at {urlparse_safe(url)}: {type(exc).__name__}: {exc}") from exc
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read(8_000_000).decode("utf-8"))
+            break
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
+            retryable = (
+                isinstance(exc, (URLError, TimeoutError))
+                or (isinstance(exc, HTTPError) and (exc.code == 429 or 500 <= exc.code <= 599))
+            )
+            if not retryable or attempt == 2:
+                raise RuntimeError(
+                    f"RPC {method} failed at {urlparse_safe(url)} after {attempt + 1} attempt(s): "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            time.sleep(0.4 * (attempt + 1))
+    else:
+        raise RuntimeError(f"RPC {method} failed at {urlparse_safe(url)}: {last_error}")
     if not isinstance(payload, dict):
         raise RuntimeError(f"RPC {method} returned a non-object payload.")
     if payload.get("error"):
@@ -128,6 +143,111 @@ def is_rate_limit_failure(details: str) -> bool:
         "http error 429", "status code 429", "too many requests",
         "compute units per second", "rate limit", "rate exceeded",
     ))
+
+
+def is_transient_provider_failure(details: str) -> bool:
+    lowered = details.lower()
+    return is_rate_limit_failure(lowered) or any(marker in lowered for marker in (
+        "timed out", "timeout", "connection reset", "connection refused",
+        "temporarily unavailable", "http error 502", "http error 503",
+        "http error 504", "bad gateway", "service unavailable",
+    ))
+
+
+def select_fork_provider(primary_rpc: str, source_rpc: str) -> tuple[str, int, list[dict[str, str]]]:
+    """Select a live Ethereum fork endpoint without sharing the archive/source provider."""
+    if urlparse_safe(primary_rpc) == urlparse_safe(source_rpc):
+        raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
+    try:
+        chain_id = quantity(rpc(primary_rpc, "eth_chainId", []), "fork upstream chain ID")
+        return primary_rpc, chain_id, [{"provider": urlparse_safe(primary_rpc), "status": "selected"}]
+    except Exception as primary_error:
+        if not is_transient_provider_failure(str(primary_error)):
+            raise
+        fallback_rpc = (
+            os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
+            or DEFAULT_FORK_FALLBACK_RPC
+        )
+        fallback_key = urlparse_safe(fallback_rpc)
+        if fallback_key in {urlparse_safe(primary_rpc), urlparse_safe(source_rpc)}:
+            raise AssertionError(
+                "The fork RPC failed transiently and no independent fallback is available. "
+                "Set LOWKEY_P2_FORK_FALLBACK_RPC_URL to a different Ethereum mainnet RPC."
+            ) from primary_error
+        fallback_chain_id = quantity(
+            rpc(fallback_rpc, "eth_chainId", []), "fallback fork upstream chain ID"
+        )
+        attempts = [
+            {
+                "provider": urlparse_safe(primary_rpc),
+                "status": "transient_failure",
+                "reason": str(primary_error)[:500],
+            },
+            {"provider": fallback_key, "status": "selected_fallback"},
+        ]
+        return fallback_rpc, fallback_chain_id, attempts
+
+
+def select_source_provider(
+    primary_rpc: str,
+    fork_rpc: str,
+    deployment_block: int,
+) -> tuple[str, int, tuple[int, dict[str, Any], dict[str, Any], str], list[dict[str, str]]]:
+    """Require an independent archive endpoint with pinned-block code and EIP-1186 proof."""
+    candidates = [
+        primary_rpc,
+        os.environ.get("LOWKEY_P2_SOURCE_FALLBACK_RPC_URL", ""),
+        DEFAULT_SOURCE_RPC,
+        DEFAULT_FORK_UPSTREAM,
+        DEFAULT_FORK_FALLBACK_RPC,
+    ]
+    seen: set[str] = set()
+    attempts: list[dict[str, str]] = []
+    failures: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        key = urlparse_safe(candidate)
+        if key in seen or key == urlparse_safe(fork_rpc):
+            continue
+        seen.add(key)
+        try:
+            source_chain_id = quantity(
+                rpc(candidate, "eth_chainId", []), "source chain ID"
+            )
+            if source_chain_id != 1:
+                raise AssertionError(
+                    f"source provider {key} returned chain ID {source_chain_id}, expected 1"
+                )
+            deployment_header = rpc(
+                candidate, "eth_getBlockByNumber", [hex(deployment_block), False]
+            )
+            if not isinstance(deployment_header, dict) or not deployment_header.get("hash"):
+                raise AssertionError(
+                    "source RPC cannot return the exact-match target deployment block; archive history is required"
+                )
+            deployment_code = rpc(
+                candidate, "eth_getCode", [TARGET, hex(deployment_block)]
+            )
+            if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
+                raise AssertionError(
+                    "source RPC cannot return target runtime at its Sourcify deployment block; archive state is required"
+                )
+            snapshot = resolve_fork_snapshot(fork_rpc, candidate, deployment_block)
+            attempts.append({"provider": key, "status": "selected"})
+            return candidate, source_chain_id, snapshot, attempts
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"[:900]
+            failures.append(f"{key}: {reason}")
+            attempts.append({
+                "provider": key,
+                "status": "rejected",
+                "reason": reason,
+            })
+    raise AssertionError(
+        "No independent source/archive RPC passed deployment-history and EIP-1186 checks. "
+        + " | ".join(failures[-5:])
+    )
 
 
 def stop_anvil(process: subprocess.Popen | None) -> None:
@@ -257,46 +377,30 @@ def main() -> int:
     if not forge or not anvil or not cast or not Path(lk).is_file():
         raise AssertionError("P2 requires installed forge, anvil, cast and lk executables.")
 
-    fork_upstream = os.environ.get("LOWKEY_P2_FORK_UPSTREAM_RPC_URL") or DEFAULT_FORK_UPSTREAM
-    source_rpc = os.environ.get("LOWKEY_P2_SOURCE_RPC_URL") or DEFAULT_SOURCE_RPC
-    if urlparse_safe(fork_upstream) == urlparse_safe(source_rpc):
-        raise AssertionError("P2 fork and source RPC providers must be independent endpoints.")
+    requested_fork_rpc = os.environ.get("LOWKEY_P2_FORK_UPSTREAM_RPC_URL") or DEFAULT_FORK_UPSTREAM
+    requested_source_rpc = os.environ.get("LOWKEY_P2_SOURCE_RPC_URL") or DEFAULT_SOURCE_RPC
+    fork_upstream, chain_id, fork_provider_attempts = select_fork_provider(
+        requested_fork_rpc, requested_source_rpc
+    )
+    if chain_id != 1:
+        raise AssertionError(f"P2 first target is Ethereum mainnet; fork RPC chain ID was {chain_id}.")
 
-    chain_id = quantity(rpc(fork_upstream, "eth_chainId", []), "fork upstream chain ID")
-    source_chain_id = quantity(rpc(source_rpc, "eth_chainId", []), "source chain ID")
-    if chain_id != 1 or source_chain_id != 1:
-        raise AssertionError(f"P2 first target is Ethereum mainnet; RPC chain IDs were {chain_id} and {source_chain_id}.")
-
-    # Resolve the source identity first and require Sourcify's strict exact
-    # match before choosing the fork block. The deployment block comes from
-    # Sourcify metadata, not a hand-maintained fixture constant.
+    # Sourcify remains the strict source-identity authority. Provider fallback
+    # changes only the independent RPC used to inspect pinned historical state.
     from lowkey.godmode import _eip1167_implementation, _verify_sourcify_exact
     target_source_identity = _verify_sourcify_exact(chain_id, TARGET)
     target_deployment_block = int(target_source_identity["deployment_block"])
 
-    # Fail early when either endpoint is a latest-state-only RPC. P2 needs
-    # historical code/state and EIP-1186 proof support; a valid chainId/latest
-    # response is not enough to establish a pinned deployment identity.
-    deployment_block_header = rpc(
-        source_rpc, "eth_getBlockByNumber", [hex(target_deployment_block), False]
+    source_rpc, source_chain_id, snapshot, source_provider_attempts = select_source_provider(
+        requested_source_rpc, fork_upstream, target_deployment_block
     )
-    if not isinstance(deployment_block_header, dict) or not deployment_block_header.get("hash"):
-        raise AssertionError("Source RPC cannot return the exact-match target deployment block; archive history is required.")
-    deployment_code = rpc(
-        source_rpc, "eth_getCode", [TARGET, hex(target_deployment_block)]
-    )
-    if not isinstance(deployment_code, str) or deployment_code in {"0x", "0x0"}:
-        raise AssertionError("Source RPC cannot return target runtime at its Sourcify deployment block; archive state is required.")
-    fork_block, common_header, source_proof, fork_code = resolve_fork_snapshot(
-        fork_upstream, source_rpc, target_deployment_block
-    )
+    if source_chain_id != 1:
+        raise AssertionError(f"P2 source/archive RPC chain ID was {source_chain_id}, expected 1.")
+    fork_block, common_header, source_proof, fork_code = snapshot
 
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     anvil_log = ARTIFACT_ROOT / "anvil.log"
     env = os.environ.copy()
-    fork_provider_attempts = [{
-        "provider": urlparse_safe(fork_upstream), "status": "selected",
-    }]
     anvil_process: subprocess.Popen | None = None
     try:
         try:
@@ -317,11 +421,11 @@ def main() -> int:
                     "The configured fork RPC was rate-limited and no independent fallback is available. "
                     "Set LOWKEY_P2_FORK_FALLBACK_RPC_URL to a different Ethereum mainnet RPC."
                 ) from primary_error
-            fork_provider_attempts[0] = {
+            fork_provider_attempts.append({
                 "provider": urlparse_safe(fork_upstream),
                 "status": "rate_limited",
                 "reason": "Anvil startup returned HTTP 429",
-            }
+            })
             # Re-pin both providers at a common block for the fallback. The
             # source/archive RPC remains independent and is re-checked at the
             # newly selected block before Anvil is started.
@@ -370,7 +474,7 @@ def main() -> int:
             )
 
             from lowkey.forge_state_diff import normalize_forge_state_diff
-            from lowkey.trace_schema import normalize_calltracer, normalize_prestate_diff
+            from lowkey.trace_schema import normalize_calltracer, normalize_prestate_diff, normalize_opcode_storage
             from lowkey.trace_parity import compare_trace_events
             from lowkey import proof_evidence, godmode
 
@@ -410,14 +514,46 @@ def main() -> int:
                 timeout=60,
             )
             partial_storage_rows = normalize_prestate_diff(prestate_diff)
+
+            # Geth-compatible opcode tracing retains the execution stack and
+            # storage map. The normalizer reconciles every call/create opcode
+            # against callTracer before assigning a storage access to a frame.
+            opcode_trace = rpc(
+                anvil_url,
+                "debug_traceCall",
+                [call_request, hex(fork_block), {
+                    "disableMemory": True,
+                    "disableStack": False,
+                    "disableStorage": False,
+                    "enableReturnData": False,
+                    "limit": 50000,
+                }],
+                timeout=60,
+            )
+            opcode_trace_path = ARTIFACT_ROOT / "raw-anvil-opcode-trace.json"
+            opcode_trace_path.write_text(
+                json.dumps(opcode_trace, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            opcode_storage = normalize_opcode_storage(
+                opcode_trace, call_trace, max_steps=50000,
+            )
+            if not opcode_storage.get("supported"):
+                raise AssertionError(
+                    "Anvil opcode storage trace could not be attributed safely:\n"
+                    + json.dumps(opcode_storage, indent=2)
+                )
             anvil_events = normalize_calltracer(
                 call_trace,
-                storage_support="partial",
-                partial_storage={0: partial_storage_rows},
+                storage_support="exact",
+                exact_storage=opcode_storage["by_frame_index"],
             )
             parity = compare_trace_events(forge_events, anvil_events)
-            if parity["status"] != "MATCHED":
-                raise AssertionError("Forge/Anvil call-tree parity did not match:\n" + json.dumps(parity, indent=2))
+            if parity["status"] != "MATCHED" or parity["storage_parity"] != "exact_comparable":
+                raise AssertionError(
+                    "Forge/Anvil call-tree and per-frame storage parity did not match:\n"
+                    + json.dumps(parity, indent=2)
+                )
 
             spec = {
                 "source_addresses": [TARGET],
@@ -466,7 +602,15 @@ def main() -> int:
                 "chain_id": 1, "block_number": fork_block,
                 "runs": {"attack": {"chain_id": 1, "block_number": fork_block,
                                     "canonical_trace_events": anvil_events,
-                                    "prestate_diff": prestate_diff}},
+                                    "prestate_diff": prestate_diff,
+                                    "opcode_storage_summary": {
+                                        "mode": opcode_storage["mode"],
+                                        "steps": opcode_storage["steps"],
+                                        "frame_count": opcode_storage["frame_count"],
+                                        "access_count": opcode_storage["access_count"],
+                                        "raw_artifact": opcode_trace_path.name,
+                                        "raw_sha256": hashlib.sha256(opcode_trace_path.read_bytes()).hexdigest(),
+                                    }}},
             }
             ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
             forge_file = ARTIFACT_ROOT / "forge-evidence.json"
@@ -485,8 +629,12 @@ def main() -> int:
             ]
             parity_cli = run(parity_command, cwd=ROOT, env=env, timeout=60)
             parity_cli_payload = json.loads(parity_file.read_text(encoding="utf-8"))
-            if parity_cli_payload.get("status") != "MATCHED":
-                raise AssertionError("Installed lk trace-parity did not accept the same forked call tree.")
+            if (parity_cli_payload.get("status") != "MATCHED"
+                    or parity_cli_payload.get("storage_parity") != "exact_comparable"):
+                raise AssertionError(
+                    "Installed lk trace-parity did not accept call-tree and per-frame storage parity: "
+                    + json.dumps(parity_cli_payload, indent=2)
+                )
 
             normalized_file = ARTIFACT_ROOT / "forge-state-diff-normalized.json"
             normalized_file.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -503,6 +651,7 @@ def main() -> int:
                 "fork_block": fork_block,
                 "fork_block_hash": common_header.get("hash"),
                 "source_provider": urlparse_safe(source_rpc),
+                "source_provider_attempts": source_provider_attempts,
                 "fork_provider": urlparse_safe(fork_upstream),
                 "fork_provider_attempts": fork_provider_attempts,
                 "proof_status": proof["status"],
@@ -511,9 +660,18 @@ def main() -> int:
                 "anvil_event_count": len(anvil_events),
                 "call_tree_parity": parity["status"],
                 "storage_parity": parity["storage_parity"],
+                "storage_value_parity": parity["storage_value_parity"],
+                "storage_accesses_matched": parity["storage_accesses_matched"],
                 "storage_support": parity["storage_support"],
+                "storage_access_mismatches": parity["storage_access_mismatches"],
+                "storage_value_mismatches": parity["storage_value_mismatches"],
+                "anvil_opcode_storage_mode": opcode_storage["mode"],
+                "anvil_opcode_steps": opcode_storage["steps"],
+                "anvil_opcode_storage_accesses": opcode_storage["access_count"],
+                "anvil_opcode_storage_scope": opcode_storage["storage_scope"],
+                "anvil_opcode_raw_sha256": hashlib.sha256(opcode_trace_path.read_bytes()).hexdigest(),
                 "anvil_prestate_slots": len(partial_storage_rows),
-                "anvil_prestate_scope": "transaction-level only; attached to root trace event, not attributed to nested frames",
+                "anvil_prestate_scope": "independent transaction-level changed-slot cross-check only; not used for frame attribution",
                 "call": "getNonce(address,uint192)",
                 "call_kind": "read-only protocol view invoked with no value; no transaction broadcast",
                 "identity_verified": identity.get("identity_verified"),

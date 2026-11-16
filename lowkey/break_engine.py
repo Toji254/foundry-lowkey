@@ -26,6 +26,7 @@ import os
 import random
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -938,34 +939,44 @@ def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str,
     # through Foundry's IR pipeline; never alter the user's project config.
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     if completed.returncode != 0 and "Stack too deep" in output:
-        ir_cmd = [
-            forge,
-            "test",
-            "--match-path",
-            match_path,
-            "--fork-url",
-            rpc,
-            "--via-ir",
-            "--optimize",
-            "-vvv",
-        ]
-        try:
-            ir_completed = subprocess.run(
-                ir_cmd,
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                timeout=180,
-                start_new_session=(os.name == "posix"),
-            )
-        except subprocess.TimeoutExpired as exc:
-            return subprocess.CompletedProcess(
-                ir_cmd,
-                124,
-                stdout=exc.stdout or "",
-                stderr=(exc.stderr or "") + "\nLOWKEY_FORGE_TIMEOUT true\n",
-            )
-        return ir_completed
+        # The IR retry changes compiler settings. Never let that retry overwrite
+        # the project's normal out/ artifacts or cache: target identity checks
+        # and ABI resolution rely on those artifacts matching deployed bytecode.
+        # Keep only the generated harness test output in disposable directories.
+        with tempfile.TemporaryDirectory(prefix="lowkey-break-ir-out-") as ir_out, \
+             tempfile.TemporaryDirectory(prefix="lowkey-break-ir-cache-") as ir_cache:
+            ir_cmd = [
+                forge,
+                "test",
+                "--match-path",
+                match_path,
+                "--fork-url",
+                rpc,
+                "--out",
+                ir_out,
+                "--cache-path",
+                ir_cache,
+                "--via-ir",
+                "--optimize",
+                "-vvv",
+            ]
+            try:
+                ir_completed = subprocess.run(
+                    ir_cmd,
+                    cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    start_new_session=(os.name == "posix"),
+                )
+            except subprocess.TimeoutExpired as exc:
+                return subprocess.CompletedProcess(
+                    ir_cmd,
+                    124,
+                    stdout=exc.stdout or "",
+                    stderr=(exc.stderr or "") + "\nLOWKEY_FORGE_TIMEOUT true\n",
+                )
+            return ir_completed
 
     return completed
 
@@ -1514,6 +1525,7 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("TOKEN_APPROVAL_RESET_ATTEMPTED", tokenApprovalResetAttempted);
         console2.log("TOKEN_APPROVAL_SUCCESS", tokenApprovalSuccess);
         console2.log("ASSET_DECIMALS_VERIFIED", assetDecimalsVerified);
+        console2.log("TOKEN_DECIMALS_SOURCE", assetDecimalsVerified ? "asset.decimals()" : "fallback-18");
         console2.log("ASSET_DECIMALS_FALLBACK_18", assetReadOk && !assetDecimalsVerified);
         console2.log("ASSET_DECIMALS", assetDecimals);
         console2.log("TOKEN_FUNDING_AMOUNT", tokenFundingAmount);
@@ -2869,6 +2881,11 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
         return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)
     except Exception as exc:
         signature = _format_signature(fn, host)
+        detail_text = str(exc)
+        unsupported_abi = isinstance(exc, ValueError) and bool(
+            re.search(r"unsupported ABI|ABI .*unsupported|tuple ABI|ABI (?:value|tuple) nesting", detail_text, re.I)
+        )
+        reason_code = "unsupported_abi" if unsupported_abi else "generator_error"
         return AttackResult(
             family=family,
             contract=target.contract,
@@ -2877,9 +2894,19 @@ def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_i
             status="BLOCKED",
             summary=f"Attack generator failed safely: {exc}",
             detail={
-                "reason_code": "generator_error",
+                "reason_code": reason_code,
                 "error_type": type(exc).__name__,
-                "error": str(exc),
+                "error": detail_text,
+                **({
+                    "refusal": {
+                        "target": target.address,
+                        "family": family,
+                        "reason": reason_code,
+                        "detail": detail_text,
+                        "minimal_cmd": None,
+                        "backend": None,
+                    }
+                } if reason_code == "unsupported_abi" else {}),
             },
         )
 

@@ -105,3 +105,72 @@ This feature branch's own CI, installed-runtime smoke, and acceptance status mus
 No archetype is an attack-family acceptance. An OBSERVED classification means only that source signals selected a pack; it does not authenticate a deployment or promote a vulnerability. Assumptions remain unverified. Full compiler AST/Slither call-graph/data-flow extraction remains outstanding. Model-driven novel hypotheses remain P9; full attack-chain composition remains in the attack-engine phase.
 
 The exact-head P3 acceptance job must pass classification, citation re-read/tamper rejection, graph citations, package install/manifest and installed CLI checks before this ledger row can be marked accepted.
+
+## Tier 0 hardening phase
+
+Tier 0 is the reliability layer used by every later attack capability. The hardening implementation is under review on `feat/tier0-hardening-20261116`; it is not considered accepted until its exact-head CI and local sandbox smoke checks pass.
+
+| Capability | Implementation contract | Required acceptance |
+|---|---|---|
+| Cheat fingerprint | Stable SHA-256 pattern IDs, normalized token scan, Aho-Corasick matching, ordered mapping-read → external-call → mapping-write sequences including struct-member writes and case-insensitive external method names, line/offset/snippet provenance, explicit heuristic limits | Fixtures detect ordered sequences, ignore comments, distinguish local assignments from mapping writes, and return stable pattern IDs |
+| Control | Frozen experiment manifest, same entry-call/prestate checks, trace evidence and fail-closed BREAK downgrade | Existing control/freeze/tamper/trace tests plus P1 paired fixture |
+| Mutation score | One family per manifest, passing baseline, every mutant accounted for; invalid, timeout, error, duplicate/missing IDs, inconsistent summary totals or a mismatched score fail the gate | Tests prove ≥90% valid score passes and malformed/inconsistent reports fail |
+| Target coverage | Fresh LCOV only, target source/line filtering, optional test filters and explicit minimum percentage | Fresh-LCOV fixture test proves threshold pass and fail behavior |
+| Provenance | Artifact hashes, Git revision/branch/dirty state, chain/fork/tool metadata, detached signature and public-key sidecar, verification against an independently pinned `--public-key`; private key must stay outside the project; malformed or empty artifact lists fail | Sign → verify passes with pinned key; artifact tamper, missing trust anchor, malformed and signed-empty-manifest cases fail verification |
+| Sandbox | Disposable project copy, default network namespace isolation, architecture-checked seccomp syscall filter, per-sandbox systemd cgroup `MemoryMax`/`TasksMax`/`RuntimeMaxSec`, CPU/address-space/file-size/FD limits, read-only host/runtime mounts, whole-process-group timeout cleanup; opt-in IP allowlist uses system manager `IPAddressDeny/Allow` and fails closed | Unit tests cover network isolation, seccomp descriptor handoff, cgroup resource policy, timeout cleanup, allowlist policy and refusal without required dependencies |
+
+"Implemented" in the registry means the documented command path exists and its acceptance tests pass. It does not mean heuristic source matching is a vulnerability verdict, coverage proves security, mutation score proves exploitability, or sandboxing makes arbitrary code harmless. Network allowlisting is IP-based; all ports to an allowed IP are available. Both network modes require `systemd-run` cgroup resource controls; network-disabled mode uses the user manager and a fresh network namespace. The IP-allowlist backend additionally requires `sudo` and cgroup v2. Lowkey refuses rather than running without requested controls.
+
+## Family scope — no fake greens
+
+The 15 strings in `STEP_FAMILIES` are accepted family labels for the generic Step renderer. They are **not** 15 independently implemented exploit generators. The generic renderer's common Step sequence proves that the plan schema can be rendered and executed, not that each family has a positive attack, paired control, rejection seed, mutation test, and family-specific evidence.
+
+Until those acceptance cases exist in the same PR, the following remain **telemetry-only** and must not be placed in the evaluation table or promoted to a BREAK capability:
+
+| Family label | Scope |
+|---|---|
+| reentrancy | P1 behavioural acceptance in PR 64; local fixture gate and exact-head CI passed |
+| replay | telemetry-only |
+| access | telemetry-only |
+| accounting | telemetry-only |
+| boundary | telemetry-only |
+| time | telemetry-only |
+| upgrade | telemetry-only |
+| callback | telemetry-only |
+| oracle | telemetry-only |
+| economic | telemetry-only |
+| erc20 | telemetry-only |
+| proxy | telemetry-only |
+| storage | telemetry-only |
+| signature | telemetry-only |
+| dos | telemetry-only |
+
+This registry does not add these telemetry-only families to an evaluation or benchmark table. Each family needs acceptance cases 1–7 from the original plan in its own phase PR before promotion.
+
+## P0 evidence and reproducibility
+
+`scripts/p0-break-acceptance-e2e.py` deploys local Anvil fixtures and exercises four installed-`lk` cases: `address[]` setup, six-decimal USDC, USDT-style empty-return approval with allowance reset, and missing-decimals fallback. Every case must reach `OBSERVED` and assert its setup/funding/approval telemetry. The receiver-specific fixture under `tests/fixtures/acceptance/p0-compatibility/` separately exercises ERC-777, ERC-1155 single/batch, and ERC-721 callbacks.
+
+P0 fixture acceptance is not a promise that every ABI, ERC-20 implementation, token extension, or production vault is supported. Unsupported ABI shapes must continue to produce machine-readable refusals.
+
+## P1 gate and stop condition
+
+PR #64 is merged into `integration-test-drive`; its exact merged head `d47891c60d8426e459187af06e842b3371278138` passed all 10 CI jobs in [run 7667](https://github.com/Toji254/foundry-lowkey/actions/runs/43762416186). The merge commit is `0dd08f52a10330322fccdb3bb21c455232b6934e`.
+
+The P1 acceptance requirements were exercised by the dedicated runtime job and passed:
+
+1. Installed `lk steps` renders the registered Step labels, validates template/harness hashes, records machine-readable refusals, compiles, and executes generated harnesses on the Anvil fixture.
+2. One deployed vault and actor are reused for the sequential control and reentrant attack; the declared callback mode is the controlled scenario difference.
+3. Paired Forge evidence validates the same entry call, matched prestate apart from the declared scenario parameter, chain/block/fork anchor, expected control=1 vs attack=2 target calls, and non-empty trace-derived storage accesses.
+4. The paired Forge result remains `SIMULATED_BREAK`, never a profitability claim.
+5. The frozen spec validates separately; digest tampering yields `REJECTED/digest_mismatch` without execution.
+6. The CEI mutation kills the attack verdict and yields `REJECTED/control_passed`; surviving exploit behavior blocks acceptance.
+7. The separate funded Anvil replay has a mined receipt, trace-derived storage evidence, and positive net profit after measured prior actor-deployment/deposit outlay and replay transaction gas. Proof status remains `OBSERVED` because the target is a controlled fixture.
+
+P1 is accepted for this controlled fixture and implemented execution path. It is not a general exploit generator: all Step family labels share a generic renderer, generic `flash_borrow` / `reenter` callback Steps remain unsupported, and Forge state-diff cannot establish real EOA profitability. Do not claim `LOCAL_PROFITABLE`, `HUMAN_CONFIRMED`, or authentic production-target impact from this fixture.
+
+## Scope boundary
+
+P0's installed compatibility gate and receiver fixture are implemented and covered by dedicated Anvil/Foundry acceptance. P0's result remains fixture-scoped.
+
+P1 is accepted for the controlled fixture and implemented execution path; the exact-head PR #64 CI matrix passed all 10 jobs. The result remains fixture-scoped. No `HUMAN_CONFIRMED` or authentic deployment claim is made by the fixture.

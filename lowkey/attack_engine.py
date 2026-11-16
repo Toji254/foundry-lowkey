@@ -50,7 +50,7 @@ FAMILIES: dict[str, dict[str, Any]] = {
         "preconditions": ["sensitive state-changing entrypoint", "intended role or principal", "unauthorized and authorized actors"],
         "property": "unauthorized-state-change",
         "signals": [r"\b(?:onlyOwner|onlyRole|hasRole|_checkRole|owner|admin|guardian)\b", r"\b(?:setOwner|upgradeTo|pause|unpause|setFee|withdrawAdmin)\s*\("],
-        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": True,
+        "min_events": 1, "min_depth": 0, "exact_storage": True, "economic": False,
     },
     "accounting": {
         "title": "Accounting",
@@ -382,12 +382,54 @@ def _validate_reproof(
     if impact_mode == "economic":
         if payload.get("status") != "PROFITABLE" or payload.get("legacy_status") != "PROFITABLE":
             raise AttackEngineError(f"{label} economic reproof is not independently classified PROFITABLE.", "not_profitable")
-        net_profit = _wei(payload.get("net_profit_wei"), f"{label}.net_profit_wei")
         gas_cost = _wei(payload.get("gas_cost_wei"), f"{label}.gas_cost_wei")
         prior_cost = _wei(payload.get("prior_cost_wei"), f"{label}.prior_cost_wei")
         total_cost = _wei(payload.get("total_cost_wei"), f"{label}.total_cost_wei")
-        if net_profit <= 0 or total_cost != gas_cost + prior_cost:
-            raise AttackEngineError(f"{label} reproof costs do not reconcile to positive net profit.", "economic_cost_mismatch")
+        if total_cost != gas_cost + prior_cost:
+            raise AttackEngineError(f"{label} reproof native gas/setup costs do not reconcile.", "economic_cost_mismatch")
+        if payload.get("net_profit_unit") == "USD_18":
+            net_profit_usd_18 = _wei(payload.get("net_profit_usd_18"), f"{label}.net_profit_usd_18")
+            valuation = payload.get("economic_valuation")
+            token_portfolio = payload.get("token_portfolio")
+            if not isinstance(valuation, dict) or not isinstance(token_portfolio, dict):
+                raise AttackEngineError(f"{label} USD portfolio proof is missing its valuation evidence.", "portfolio_evidence_missing")
+            token_assets = token_portfolio.get("tokens")
+            if (
+                token_portfolio.get("quote_currency") != "USD"
+                or token_portfolio.get("source_state_verified") is not True
+                or not isinstance(token_assets, list)
+                or not token_assets
+            ):
+                raise AttackEngineError(f"{label} USD portfolio proof lacks independently source-verified asset/feed prestate.", "portfolio_source_unverified")
+            source_assets = payload.get("source_fork_verification", {})
+            if (
+                not isinstance(source_assets, dict)
+                or source_assets.get("portfolio_assets_verified") is not True
+                or source_assets.get("portfolio_asset_count") != len(token_assets)
+            ):
+                raise AttackEngineError(f"{label} source verification did not include every declared portfolio asset.", "portfolio_source_unverified")
+            def signed_metric(metric: Any, metric_label: str) -> int:
+                if type(metric) is not int:
+                    raise AttackEngineError(f"{metric_label} must be a signed integer USD 1e-18 value.")
+                return metric
+
+            expected_net = (
+                signed_metric(valuation.get("native_delta_usd_18"), f"{label}.native_delta_usd_18")
+                + signed_metric(valuation.get("token_delta_usd_18"), f"{label}.token_delta_usd_18")
+                - _wei(valuation.get("external_gas_cost_usd_18"), f"{label}.external_gas_cost_usd_18")
+                - _wei(valuation.get("prior_cost_usd_18"), f"{label}.prior_cost_usd_18")
+            )
+            if (
+                net_profit_usd_18 <= 0
+                or expected_net != net_profit_usd_18
+                or valuation.get("net_profit_usd_18") != net_profit_usd_18
+                or payload.get("net_profit_value") != net_profit_usd_18
+            ):
+                raise AttackEngineError(f"{label} USD portfolio value does not reconcile to positive net profit.", "economic_cost_mismatch")
+        else:
+            net_profit = _wei(payload.get("net_profit_wei"), f"{label}.net_profit_wei")
+            if net_profit <= 0:
+                raise AttackEngineError(f"{label} native-ETH reproof is not net profitable.", "economic_cost_mismatch")
     else:
         if payload.get("semantic_invariant_verified") is not True:
             raise AttackEngineError(f"{label} non-economic reproof lacks a passing semantic invariant.", "semantic_reproof_missing")
@@ -397,7 +439,9 @@ def _validate_reproof(
             "fork_parent_block": target["block_number"],
             "source_verified": True, "reproof_file": path.relative_to(root).as_posix(),
             "reproof_sha256": _sha256_file(path),
-            "net_profit_wei": payload.get("net_profit_wei")}
+            "net_profit_wei": payload.get("net_profit_wei"),
+            "net_profit_usd_18": payload.get("net_profit_usd_18"),
+            "net_profit_unit": payload.get("net_profit_unit", "wei")}
 
 
 def _validate_target(value: Any) -> dict[str, Any]:

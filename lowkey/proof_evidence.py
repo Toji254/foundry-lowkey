@@ -57,6 +57,16 @@ def trace_evidence_capabilities(
             "storage_source": "Vm.AccountAccess.storageAccesses",
             "storage_scope": "ordered per-account-access storage observations",
         }
+    if backend == "anvil-structlog":
+        return {
+            "backend": backend,
+            "call_tree": "exact",
+            "calldata": "exact",
+            "storage": "derived_per_access",
+            "storage_observations": int(storage_observations),
+            "storage_source": "Anvil structLogs SLOAD/SSTORE/TLOAD/TSTORE",
+            "storage_scope": "ordered per-access slots attributed to matched callTracer frames; values may remain unavailable",
+        }
     if backend == "anvil-calltracer":
         return {
             "backend": backend,
@@ -134,26 +144,45 @@ def evaluate_evidence_requirements(
         "missing": missing,
     }
 
-def evaluate_economic_policy(family, net_profit_wei=None, *, non_economic=False, semantic_invariant_verified=False):
+def evaluate_economic_policy(
+    family, net_profit_wei=None, *, net_profit_usd_18=None,
+    non_economic=False, semantic_invariant_verified=False,
+):
     family = normalize_family(family)
     requested_non_economic = bool(non_economic or family in NON_ECONOMIC_FAMILIES)
     if requested_non_economic:
         if not semantic_invariant_verified:
             return {"accepted": False, "economic": False, "net_profit_wei": net_profit_wei,
-                    "reason": "A non-economic result requires a separately executed, passing semantic invariant.",
+                    "net_profit_usd_18": net_profit_usd_18, "reason":
+                    "A non-economic result requires a separately executed, passing semantic invariant.",
                     "promotion_cap": "SIMULATED_BREAK"}
         return {"accepted": True, "economic": False, "net_profit_wei": net_profit_wei,
+                "net_profit_usd_18": net_profit_usd_18,
                 "reason": "Semantic impact was asserted; no profitability is claimed.",
                 "promotion_cap": "SIMULATED_BREAK"}
-    if not isinstance(net_profit_wei, int):
+    if net_profit_usd_18 is not None:
+        metric = net_profit_usd_18
+        unit = "USD_18"
+        if type(metric) is not int:
+            return {"accepted": False, "economic": True, "net_profit_wei": None,
+                    "net_profit_usd_18": metric,
+                    "reason": "Portfolio economic proof requires an integer USD 1e-18 net-profit value.",
+                    "promotion_cap": "OBSERVED"}
+    else:
+        metric = net_profit_wei
+        unit = "wei"
+        if type(metric) is not int:
+            return {"accepted": False, "economic": True, "net_profit_wei": metric,
+                    "net_profit_usd_18": None,
+                    "reason": "Economic attack families require a measured integer net-profit value.",
+                    "promotion_cap": "OBSERVED"}
+    if metric <= 0:
         return {"accepted": False, "economic": True, "net_profit_wei": net_profit_wei,
-                "reason": "Economic attack families require a measured integer net-profit value.",
-                "promotion_cap": "OBSERVED"}
-    if net_profit_wei <= 0:
-        return {"accepted": False, "economic": True, "net_profit_wei": net_profit_wei,
+                "net_profit_usd_18": net_profit_usd_18, "net_profit_unit": unit,
                 "reason": "Net profit after measured costs must be positive for an economic proof.",
                 "promotion_cap": "OBSERVED"}
     return {"accepted": True, "economic": True, "net_profit_wei": net_profit_wei,
+            "net_profit_usd_18": net_profit_usd_18, "net_profit_unit": unit,
             "reason": "Measured net profit is positive.", "promotion_cap": None}
 
 def forge_promotion_status(proof, *, passed: bool) -> str:
@@ -249,6 +278,9 @@ def _generator_fingerprints(root, spec):
         module_path = Path(__file__).with_name(module_name)
         if module_path.is_file():
             paths.add(module_path.resolve())
+    step_template = Path(__file__).resolve().parent / "templates" / "step_harness.sol.tmpl"
+    if step_template.is_file():
+        paths.add(step_template.resolve())
     declared = spec.get("generator_files") or []
     if not isinstance(declared, list) or not all(isinstance(item, str) and item.strip() for item in declared):
         raise ValueError("generator_files must be an array of project-relative file paths.")

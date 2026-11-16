@@ -269,14 +269,20 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             def run(output, exit_code=0):
                 script = f"print({output!r}); raise SystemExit({exit_code})"
-                return adapter.run(
-                    {"root": root},
-                    {"test_kind": "formal", "argv": ["-c", script]},
-                    budget={"timeout_seconds": 5},
-                )
+                with patch.dict("os.environ", {"CERTORAKEY": "test-only-placeholder"}):
+                    return adapter.run(
+                        {"root": root},
+                        {"test_kind": "formal", "argv": ["-c", script]},
+                        budget={"timeout_seconds": 5},
+                    )
             submitted = run("Job submitted to server")
             unclear = run("some unrecognized output")
             passed = run("Finished verification request\n[rule] supplyInvariant: PASS")
+            native_pass = run(
+                "Job submitted to server\nJob ID: 2e1c9d8a-1234\n"
+                "Finished verification request\nRule balance_never_exceeds_supply(address): PASS\n"
+                "https://prover.certora.com/output/2e1c9d8a-1234"
+            )
             failed = run("Finished verification request\nERROR: Prover found violations\n[rule] supplyInvariant: FAIL", 1)
             tool_error = run("configuration parsing failed", 1)
         self.assertEqual(submitted.status, "submitted")
@@ -285,10 +291,58 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(unclear.metadata["result_semantics"], "certora_result_not_recognized")
         self.assertEqual(passed.status, "passed")
         self.assertEqual(passed.metadata["result_semantics"], "certora_completed_pass")
+        self.assertEqual(native_pass.status, "passed")
+        self.assertEqual(native_pass.metadata["result_semantics"], "certora_completed_pass")
+        self.assertEqual(native_pass.metadata["remote_job_id"], "2e1c9d8a-1234")
+        self.assertIn("prover.certora.com/output/2e1c9d8a-1234", native_pass.metadata["remote_report_url"])
+        self.assertTrue(native_pass.metadata["remote_result_wait_requested"])
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.metadata["result_semantics"], "certora_completed_with_violations")
         self.assertEqual(tool_error.status, "error")
         self.assertEqual(tool_error.metadata["result_semantics"], "certora_cli_execution_error")
+
+    def test_certora_registry_reports_missing_credentials_as_missing_configuration(self):
+        adapter = CertoraAdapter(EngineCapability(
+            "certora", sys.executable, ("formal",), memory_class="high"
+        ))
+        registry = CapabilityRegistry([adapter])
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "rules.conf").write_text("{}", encoding="utf-8")
+            with (
+                patch.dict("os.environ", {}, clear=True),
+                patch("lowkey.verification_adapters.shutil.which", return_value=sys.executable),
+            ):
+                plan = registry.plan(
+                    {"root": root, "languages": ["solidity"], "build_systems": ["foundry"]},
+                    "formal",
+                    profile="deep",
+                    request={"engine_config_by_engine": {"certora": {"config": "rules.conf"}}},
+                )
+        self.assertEqual(plan["selected"], [])
+        rejected = next(row for row in plan["rejected"] if row["engine"] == "certora")
+        self.assertEqual(rejected["status"], "missing_configuration")
+        self.assertIn("CERTORAKEY", rejected["reason"])
+
+    def test_certora_requires_credentials_before_remote_execution(self):
+        adapter = CertoraAdapter(EngineCapability(
+            "certora", sys.executable, ("formal",), memory_class="high"
+        ))
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "rules.conf").write_text("{}", encoding="utf-8")
+            project = {"root": root}
+            with patch.dict("os.environ", {}, clear=True):
+                ready, reason = adapter.request_ready(project, {"config": "rules.conf"})
+                result = adapter.run(
+                    project,
+                    {"test_kind": "formal", "argv": ["-c", "print('must not run')"]},
+                    budget={"timeout_seconds": 5},
+                )
+        self.assertFalse(ready)
+        self.assertIn("CERTORAKEY", reason)
+        self.assertEqual(result.status, "unsupported")
+        self.assertEqual(result.metadata["result_semantics"], "certora_credentials_missing")
+        self.assertNotIn("must not run", result.raw_stdout)
+        self.assertFalse(result.raw_evidence.get("secret_value_recorded"))
 
     def test_registry_rejects_duplicate_names(self):
         cap = EngineCapability("forge", "forge", ("unit",))

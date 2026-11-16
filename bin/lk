@@ -5,9 +5,21 @@ set -euo pipefail
 # rendered by the dedicated module and never use the active RPC or wallet.
 if [[ "${1:-}" == "attack" || "${1:-}" == "attacks" ]]; then
     case "${2:-}" in
+        research)
+            shift 2
+            exec python3 "$HOME/.lowkey/attack_research.py" "$@"
+            ;;
+        synthesize)
+            shift 2
+            exec python3 "$HOME/.lowkey/attack_synthesis.py" "$@"
+            ;;
         engines|discover|verify|chain)
             shift
             exec python3 "$HOME/.lowkey/attack_engine.py" "$@"
+            ;;
+        research)
+            shift 2
+            exec python3 "$HOME/.lowkey/attack_research.py" "$@"
             ;;
         forge)
             shift 2
@@ -106,6 +118,11 @@ fi
 # repository-native build router rather than being forced through Forge.
 if [[ "${1:-}" == "build" ]]; then
     shift
+    if [[ ! -f "$HOME/.lowkey/foundry_build.py" ]]; then
+        echo "Lowkey's resource-aware build planner is not installed." >&2
+        echo "Pull the integration-test-drive branch and run 'bash install.sh' from its checkout." >&2
+        exit 2
+    fi
     exec python3 "$HOME/.lowkey/foundry_build.py" "$@"
 fi
 

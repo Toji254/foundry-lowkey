@@ -79,6 +79,22 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertFalse(evaluate_economic_policy("reentrancy", 0)["accepted"])
         self.assertTrue(evaluate_economic_policy("reentrancy", 1)["accepted"])
 
+    def test_usd_portfolio_economics_requires_positive_integer_and_preserves_unit(self):
+        accepted = evaluate_economic_policy(
+            "economic", None, net_profit_usd_18=10**18
+        )
+        rejected = evaluate_economic_policy(
+            "economic", None, net_profit_usd_18=-1
+        )
+        malformed = evaluate_economic_policy(
+            "economic", None, net_profit_usd_18=True
+        )
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["net_profit_unit"], "USD_18")
+        self.assertEqual(accepted["net_profit_usd_18"], 10**18)
+        self.assertFalse(rejected["accepted"])
+        self.assertFalse(malformed["accepted"])
+
     def test_replay_signature_and_access_control_remain_economic_by_default(self):
         for family in ("replay", "signature_replay", "access_control", "authorization_bypass"):
             with self.subTest(family=family):
@@ -112,6 +128,10 @@ class ProofEvidenceTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(path.endswith("/break_engine.py") for path in default_paths),
+                default_paths,
+            )
+            self.assertTrue(
+                any(path.endswith("/step_harness.sol.tmpl") for path in default_paths),
                 default_paths,
             )
             self.assertTrue(validate_control_freeze(
@@ -185,6 +205,9 @@ class ProofEvidenceTests(unittest.TestCase):
         anvil_with_tracer = trace_evidence_capabilities(
             "anvil-calltracer", storage_trace_supported=True, storage_observations=1
         )
+        anvil_exact = trace_evidence_capabilities(
+            "anvil-structlog", storage_trace_supported=True, storage_observations=2
+        )
         forge = trace_evidence_capabilities(
             "forge-state-diff", storage_observations=1
         )
@@ -193,6 +216,14 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertEqual(anvil_without_tracer["calldata"], "exact")
         self.assertEqual(anvil_without_tracer["storage"], "declared_only")
         self.assertEqual(anvil_with_tracer["storage"], "partial")
+        self.assertEqual(anvil_exact["storage"], "derived_per_access")
+        self.assertEqual(anvil_exact["storage_source"], "Anvil structLogs SLOAD/SSTORE/TLOAD/TSTORE")
+        self.assertTrue(evaluate_evidence_requirements(
+            "reentrancy", anvil_exact
+        )["accepted"])
+        self.assertTrue(evaluate_evidence_requirements(
+            "storage_corruption", anvil_exact, {"storage": "per_access"}
+        )["accepted"])
         self.assertEqual(forge["storage"], "derived_per_access")
         self.assertTrue(evaluate_evidence_requirements(
             "reentrancy", anvil_with_tracer

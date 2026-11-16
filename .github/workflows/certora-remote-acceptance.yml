@@ -1,0 +1,93 @@
+name: Optional authenticated Certora proof acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      submit_remote_proof:
+        description: "Submit one small Certora proof to the remote service (may incur usage charges)"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  certora-remote-acceptance:
+    if: ${{ inputs.submit_remote_proof }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CERTORAKEY: ${{ secrets.CERTORAKEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Require the repository Certora secret without displaying it
+        run: |
+          set -euo pipefail
+          if [[ -z "${CERTORAKEY:-}" ]]; then
+            echo "::error::CERTORAKEY is not configured in repository Actions secrets. Add it in Settings > Secrets and variables > Actions, then rerun this manual workflow."
+            exit 1
+          fi
+          echo "PASS: CERTORAKEY is present (value is not displayed or persisted)."
+      - name: Install pinned external verification engines
+        run: bash scripts/install-verification-engines.sh
+      - name: Select the fixture Solidity compiler
+        run: |
+          set -euo pipefail
+          solc-select install 0.8.20
+          solc-select use 0.8.20
+          solc --version
+          certoraRun --version
+      - name: Install Lowkey runtime
+        run: |
+          set -euo pipefail
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Execute the authenticated Certora proof through Lowkey
+        working-directory: tests/fixtures/acceptance/certora
+        run: |
+          set -euo pipefail
+          mkdir -p .audit/verification
+          lk verification run certora-campaign.json \
+            --profile deep \
+            --output .audit/verification/certora-remote.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path(".audit/verification/certora-remote.json").read_text())
+          results = report.get("results", [])
+          assert report.get("selected_count") == 1, report
+          assert len(results) == 1, report
+          result = results[0].get("result", {})
+          assert result.get("engine") == "certora", result
+          assert result.get("status") == "passed", result
+          metadata = result.get("metadata", {})
+          assert metadata.get("result_semantics") == "certora_completed_pass", result
+          assert metadata.get("remote_result_wait_requested") is True, metadata
+          assert metadata.get("remote_report_url") or metadata.get("remote_job_id"), metadata
+          print(json.dumps({
+              "status": result["status"],
+              "result_semantics": metadata["result_semantics"],
+              "remote_job_id": metadata.get("remote_job_id"),
+              "remote_report_url": metadata.get("remote_report_url"),
+              "secret_value_persisted": False,
+          }, indent=2))
+          PY
+      - name: Retain authenticated proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: certora-remote-acceptance-${{ github.run_number }}
+          path: tests/fixtures/acceptance/certora/.audit/verification/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 14
