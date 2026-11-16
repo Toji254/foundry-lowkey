@@ -1390,12 +1390,35 @@ class GodmodeTests(unittest.TestCase):
                 "chain_id": "0x7a69",
                 "fork_block": "0x10",
                 "stages": [{"name": "control", "status": "passed"}],
-                "signals": {},
+                "project_root": str(root),
+                "signals": {
+                    "access_control": [{
+                        "kind": "owner-write",
+                        "file": "src/Vault.sol",
+                        "line": 18,
+                        "text": "owner = msg.sender;"
+                    }]
+                },
+                "stages": [
+                    {"name": "source-recon", "status": "completed", "files_scanned": 1, "markers": 1},
+                    {"name": "slither-analysis", "status": "skipped", "reason": "Slither not installed"},
+                    {"name": "attack", "status": "not-run", "reason": "Not requested"},
+                    {"name": "control", "status": "not-run", "reason": "No matched control"}
+                ],
                 "findings": [{
                     "title": "Unauthorized withdrawal",
                     "severity": "High",
                     "severity_rubric": "Impact: direct asset theft",
+                    "category": "access-control",
+                    "confidence": "medium",
+                    "status": "candidate",
+                    "verified": False,
+                    "location": {"path": "src/Vault.sol", "line": 18, "symbol": "withdraw()"},
+                    "evidence_quote": "owner = msg.sender;",
+                    "reasoning": "An untrusted caller can change the authority variable.",
                     "impact": "Attacker withdraws another user's balance",
+                    "exploit_preconditions": "The assignment must be reachable by an untrusted caller.",
+                    "recommendation": "Restrict the write to the current owner and add an unauthorized-caller test.",
                     "gas_used": 170000,
                     "net_profit": "0.4 ETH",
                     "harness": "test/Exploit.t.sol",
@@ -1406,8 +1429,15 @@ class GodmodeTests(unittest.TestCase):
                 result = godmode.report(["--root", str(root)])
             rendered = (root / ".audit/godmode/report.md").read_text()
             self.assertEqual(result, 0)
+            self.assertIn("Executive summary", rendered)
+            self.assertIn("What Lowkey ran", rendered)
             self.assertIn("Unauthorized withdrawal", rendered)
             self.assertIn("Attacker withdraws another user's balance", rendered)
+            self.assertIn("src/Vault.sol:18", rendered)
+            self.assertIn("Relevant source evidence", rendered)
+            self.assertIn("Source-navigation markers (not findings)", rendered)
+            self.assertIn("Not requested", rendered)
+            self.assertIn("Candidate — not confirmed", rendered)
             self.assertTrue((root / ".audit/godmode/report.md.sha256").is_file())
 
 
