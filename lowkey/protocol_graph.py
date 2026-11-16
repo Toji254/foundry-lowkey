@@ -248,10 +248,65 @@ def compiler_ast_graph(
                                 "source": source_name,
                                 "source_sha256": source_data["source_sha256"],
                                 "source_span": member.get("src"),
+                                "reads": [],
+                                "writes": [],
                             }
                             nodes[modifier_key] = modifier_node
                             if isinstance(modifier_id, int):
                                 modifier_by_id[modifier_id] = modifier_node
+                        elif member_kind in {
+                            "StructDefinition", "EnumDefinition", "EventDefinition",
+                            "ErrorDefinition", "UserDefinedValueTypeDefinition", "UsingForDirective",
+                        }:
+                            declaration_name = str(member.get("name") or member_kind)
+                            declaration_kind = {
+                                "StructDefinition": "struct",
+                                "EnumDefinition": "enum",
+                                "EventDefinition": "event",
+                                "ErrorDefinition": "error",
+                                "UserDefinedValueTypeDefinition": "user_defined_value_type",
+                                "UsingForDirective": "using_for",
+                            }[member_kind]
+                            declaration_key = f"{key}::{declaration_kind}::{declaration_name}"
+                            declaration_node = {
+                                "id": declaration_key,
+                                "kind": declaration_kind,
+                                "name": declaration_name,
+                                "contract": key,
+                                "source": source_name,
+                                "source_sha256": source_data["source_sha256"],
+                                "source_span": member.get("src"),
+                            }
+                            if member_kind == "StructDefinition":
+                                declaration_node["members"] = [
+                                    {"name": item.get("name"), "type": _safe_type(item)}
+                                    for item in member.get("members", []) if isinstance(item, dict)
+                                ]
+                            elif member_kind == "EnumDefinition":
+                                declaration_node["members"] = [
+                                    item.get("name") for item in member.get("members", [])
+                                    if isinstance(item, dict)
+                                ]
+                            elif member_kind in {"EventDefinition", "ErrorDefinition"}:
+                                params = member.get("parameters", {}).get("parameters", [])
+                                declaration_node["parameters"] = [
+                                    {
+                                        "name": item.get("name"),
+                                        "type": _safe_type(item),
+                                        "indexed": item.get("indexed") is True,
+                                    }
+                                    for item in params if isinstance(item, dict)
+                                ]
+                            elif member_kind == "UserDefinedValueTypeDefinition":
+                                declaration_node["underlying_type"] = _safe_type(member.get("underlyingType"))
+                            elif member_kind == "UsingForDirective":
+                                type_name = member.get("typeName")
+                                library = member.get("libraryName")
+                                declaration_node["type"] = _safe_type(type_name)
+                                declaration_node["library_referenced_declaration"] = (
+                                    library.get("referencedDeclaration") if isinstance(library, dict) else None
+                                )
+                            nodes[declaration_key] = declaration_node
                         elif member_kind == "FunctionDefinition":
                             parameters = member.get("parameters", {}).get("parameters", [])
                             signature = str(member.get("name") or member.get("kind") or "function") + "(" + ",".join(
@@ -299,6 +354,7 @@ def compiler_ast_graph(
                         "target": parent["id"],
                         "evidence": "compiler_ast",
                         "source_sha256": contract_node["source_sha256"],
+                        "source_span": base_item.get("src"),
                     })
 
         for source_name, source_data in current_sources.items():
@@ -308,10 +364,16 @@ def compiler_ast_graph(
                 contract_name = str(contract_ast.get("name") or "<anonymous>")
                 contract_key = f"{source_name}:{contract_name}"
                 for member in contract_ast.get("nodes", []):
-                    if not isinstance(member, dict) or member.get("nodeType") != "FunctionDefinition":
+                    if not isinstance(member, dict) or member.get("nodeType") not in {"FunctionDefinition", "ModifierDefinition"}:
                         continue
                     function_id = member.get("id")
-                    function_node = function_by_id.get(function_id) if isinstance(function_id, int) else None
+                    if not isinstance(function_id, int):
+                        continue
+                    function_node = (
+                        function_by_id.get(function_id)
+                        if member.get("nodeType") == "FunctionDefinition"
+                        else modifier_by_id.get(function_id)
+                    )
                     if function_node is None:
                         continue
                     reads: set[str] = set()
@@ -325,7 +387,9 @@ def compiler_ast_graph(
                         if ast_child.get("nodeType") == "FunctionCall":
                             expression = ast_child.get("expression")
                             reference = expression.get("referencedDeclaration") if isinstance(expression, dict) else None
-                            target_fn = function_by_id.get(reference) if isinstance(reference, int) else None
+                            target_fn = (
+                                function_by_id.get(reference) or modifier_by_id.get(reference)
+                            ) if isinstance(reference, int) else None
                             if target_fn:
                                 edges.append({
                                     "kind": "compiler_call_candidate",
