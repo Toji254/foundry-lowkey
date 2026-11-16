@@ -37,7 +37,7 @@ Anvil's nested callTracer adapter derives this field using EVM message-sender se
 
 Anvil/Geth-compatible opcode tracing can expose the EVM execution stack, depth, program counter and storage observations for each opcode. Lowkey now has an opcode normalizer that consumes this trace together with the nested callTracer tree.
 
-The normalizer records SLOAD, SSTORE, TLOAD and TSTORE accesses with:
+The installed Anvil structLogs adapter now feeds the P2 control/attack runner and canonical TraceEvent normalizer. It records SLOAD, SSTORE, TLOAD and TSTORE accesses with:
 - the storage-context account and code address;
 - persistent versus transient storage kind;
 - slot, read/write operation and access order;
@@ -49,7 +49,7 @@ Frame attribution is accepted only when every CALL/STATICCALL/DELEGATECALL/CALLC
 
 \`normalize_calltracer(..., storage_support="exact", exact_storage=...)\` requires a storage array for every callTracer frame, including explicit empty arrays. The parity comparator checks per-frame access counts and ordered account/slot/read-write/storage-kind tuples. It reports storage-value parity separately because a client may expose the access while omitting a before/after value.
 
-The P2 real-fork acceptance now obtains a read-only opcode trace for the same pinned EntryPoint call, preserves the raw opcode artifact and requires exact per-frame access parity with Forge. The independent prestateTracer diff remains in the report only as a transaction-level cross-check; it does not supply frame attribution.
+The P2 real-fork acceptance obtains a read-only opcode trace for each pinned control/attack transaction, preserves trace-derived per-frame evidence and requires matching Forge/Anvil access identities before accepting exact storage parity. The independent prestateTracer diff remains a transaction-level cross-check; it does not supply frame attribution. Unmapped or ambiguous opcode frame transitions refuse exact status.
 
 Transient accesses are captured by the Anvil opcode parser, but cross-backend transient-storage parity is accepted only if Forge supplies matching per-access evidence too. A missing Forge observation is a mismatch/incomplete result, not an implicit pass.
 
