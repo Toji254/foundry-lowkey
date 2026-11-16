@@ -24,6 +24,59 @@ spec.loader.exec_module(break_engine)
 
 
 class BreakEngineTests(unittest.TestCase):
+    def test_encode_call_normalizes_bare_hex_selector(self):
+        class Host:
+            def encode_target_call(self, config, signature, values):
+                return signature, "3ccfd60b"
+
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        calldata, error = break_engine._encode_call(
+            Host(), {}, target, {"name": "withdraw", "inputs": []}, []
+        )
+        self.assertEqual(calldata, "0x3ccfd60b")
+        self.assertIsNone(error)
+
+    def test_encode_call_preserves_prefixed_hex_selector(self):
+        class Host:
+            def encode_target_call(self, config, signature, values):
+                return signature, "0X3CCFD60B"
+
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        calldata, error = break_engine._encode_call(
+            Host(), {}, target, {"name": "withdraw", "inputs": []}, []
+        )
+        self.assertEqual(calldata, "0x3ccfd60b")
+        self.assertIsNone(error)
+
+    def test_encode_call_accepts_bytes_return_from_encoder(self):
+        class Host:
+            def encode_target_call(self, config, signature, values):
+                return signature, bytes.fromhex("3ccfd60b")
+
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        calldata, error = break_engine._encode_call(
+            Host(), {}, target, {"name": "withdraw", "inputs": []}, []
+        )
+        self.assertEqual(calldata, "0x3ccfd60b")
+        self.assertIsNone(error)
+
+    def test_encode_call_rejects_malformed_or_unsupported_calldata(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+
+        class Host:
+            def __init__(self, calldata):
+                self.calldata = calldata
+            def encode_target_call(self, config, signature, values):
+                return signature, self.calldata
+
+        for malformed in ("0x123", "not-hex", "", 123):
+            with self.subTest(malformed=malformed):
+                calldata, error = break_engine._encode_call(
+                    Host(malformed), {}, target, {"name": "withdraw", "inputs": []}, []
+                )
+                self.assertIsNone(calldata)
+                self.assertTrue(error)
+
     def test_parse_supports_evidence_explainer(self):
         opts = break_engine._parse_args(["--explain", "/tmp/example.json"])
         self.assertEqual(opts["explain"], "/tmp/example.json")
