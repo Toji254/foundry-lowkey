@@ -72,6 +72,174 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertEqual(config["target_contract"], "ConfidencePoolFactory")
             self.assertEqual(config["abi_paths"][project_target], str(artifact))
 
+    def test_new_project_defaults_to_lab_deployer_instead_of_global_actor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            config = {
+                "actor": "jesee",
+                "wallets": {
+                    "jesee": {
+                        "source": "anvil-default",
+                        "anvil_index": 1,
+                        "address": "0x" + "1" * 40,
+                    }
+                },
+            }
+
+            selected = lk.activate_project_actor(config, root)
+
+            self.assertEqual(selected, "lab-deployer")
+            self.assertEqual(config["actor"], "lab-deployer")
+            self.assertEqual(
+                lk.audit_context.load(root).get("actor_profile"),
+                "lab-deployer",
+            )
+
+    def test_project_actor_isolated_by_project_but_survives_target_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fallback_root = self._root(tmp)
+            token_root = pathlib.Path(tmp) / "token"
+            token_root.mkdir()
+            (token_root / "foundry.toml").write_text(
+                "[profile.default]\nsrc = \"src\"\n",
+                encoding="utf-8",
+            )
+
+            wallets = {
+                "jesee": {
+                    "source": "anvil-default",
+                    "anvil_index": 1,
+                    "address": "0x" + "1" * 40,
+                },
+                "bob": {
+                    "source": "anvil-default",
+                    "anvil_index": 2,
+                    "address": "0x" + "2" * 40,
+                },
+            }
+            lk.audit_context.update(fallback_root, actor_profile="jesee")
+            lk.audit_context.update(token_root, actor_profile="bob")
+            config = {"actor": "jesee", "wallets": wallets}
+
+            self.assertEqual(
+                lk.activate_project_actor(config, fallback_root),
+                "jesee",
+            )
+            lk.audit_context.set_target(
+                fallback_root,
+                address="0x" + "a" * 40,
+                contract="Fallback",
+                source="manual",
+            )
+            self.assertEqual(
+                lk.activate_project_actor(config, fallback_root),
+                "jesee",
+            )
+            self.assertEqual(
+                lk.activate_project_actor(config, token_root),
+                "bob",
+            )
+            self.assertEqual(
+                lk.activate_project_actor(config, fallback_root),
+                "jesee",
+            )
+            self.assertIn("bob", config["wallets"])
+
+    def test_project_actor_migrates_legacy_display_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            jesee = "0x" + "1" * 40
+            lk.audit_context.update(
+                root,
+                actor="jesee (" + jesee + ") [Anvil #1]",
+            )
+            config = {
+                "actor": "bob",
+                "wallets": {
+                    "jesee": {
+                        "source": "anvil-default",
+                        "anvil_index": 1,
+                        "address": jesee,
+                    },
+                    "bob": {
+                        "source": "anvil-default",
+                        "anvil_index": 2,
+                        "address": "0x" + "2" * 40,
+                    },
+                },
+            }
+
+            self.assertEqual(
+                lk.activate_project_actor(config, root),
+                "jesee",
+            )
+            self.assertEqual(
+                lk.audit_context.load(root).get("actor_profile"),
+                "jesee",
+            )
+
+    def test_dispatch_restores_project_actor_before_running_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            lk.audit_context.update(root, actor_profile="bob")
+            config = {
+                "actor": "jesee",
+                "wallets": {
+                    "jesee": {"source": "anvil-default", "anvil_index": 1},
+                    "bob": {"source": "anvil-default", "anvil_index": 2},
+                },
+            }
+
+            with patch_cwd(root):
+                result = lk.dispatch_command("version", [], config)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(config["actor"], "bob")
+
+    def test_ephemeral_actor_override_does_not_replace_project_actor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            lk.audit_context.update(
+                root,
+                actor="jesee",
+                actor_profile="jesee",
+            )
+            config = {
+                "actor": "bob",
+                "_ephemeral": True,
+                "wallets": {
+                    "jesee": {"source": "anvil-default", "anvil_index": 1},
+                    "bob": {"source": "anvil-default", "anvil_index": 2},
+                },
+            }
+
+            self.assertEqual(lk.activate_project_actor(config, root), "bob")
+            synced = lk._sync_audit_context(config, root)
+            self.assertEqual(synced["actor_profile"], "jesee")
+            self.assertEqual(synced["actor"], "jesee")
+
+    def test_sync_persists_selected_project_actor_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            config = {
+                "actor": "jesee",
+                "wallets": {
+                    "jesee": {
+                        "source": "anvil-default",
+                        "anvil_index": 1,
+                        "address": "0x" + "1" * 40,
+                    },
+                },
+            }
+
+            synced = lk._sync_audit_context(config, root)
+
+            self.assertEqual(synced.get("actor_profile"), "jesee")
+            self.assertEqual(
+                lk.audit_context.load(root).get("actor_profile"),
+                "jesee",
+            )
+
 
     def test_ask_uses_current_build_artifacts_without_live_target(self):
         with tempfile.TemporaryDirectory() as tmp:
