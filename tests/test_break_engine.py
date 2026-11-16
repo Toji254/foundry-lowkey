@@ -4,6 +4,7 @@ import json
 import pathlib
 import sys
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 
 
@@ -321,7 +322,7 @@ class BreakEngineTests(unittest.TestCase):
             "model": "test-model",
             "candidate_sha256": "a" * 64,
         }
-        with __import__("unittest").mock.patch.object(
+        with mock.patch.object(
             break_engine, "rank_setup_candidates", return_value=decision
         ) as rank:
             selected = break_engine._find_setup_function(functions)
