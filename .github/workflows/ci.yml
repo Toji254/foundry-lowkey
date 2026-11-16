@@ -434,6 +434,29 @@ jobs:
           test -f "$HOME/.lowkey/token_economics.py"
           test -f "$HOME/.lowkey/protocol_graph.py"
           grep -q '/protocol_graph.py":' "$HOME/.lowkey/install-manifest.json"
+      - name: Build and inspect compiler-AST protocol graph
+        run: |
+          GRAPH_ROOT="$GITHUB_WORKSPACE/tests/fixtures/acceptance/p3-genericity/vault"
+          (cd "$GRAPH_ROOT" && forge build --build-info --ast)
+          "$HOME/.foundry/bin/lk" archetype classify --root "$GRAPH_ROOT" --json > /tmp/p3-compiler-graph.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("/tmp/p3-compiler-graph.json").read_text())
+          graph = report["compiler_protocol_graph"]
+          ast = graph["compiler_ast"]
+          assert ast["status"] == "AST_OBSERVED", ast
+          assert any(node["kind"] == "contract" for node in ast["nodes"]), ast
+          assert any(node["kind"] == "function" for node in ast["nodes"]), ast
+          assert ast["build_info_files"] >= 1, ast
+          print(json.dumps({
+              "ast_status": ast["status"],
+              "compiler_versions": ast["compiler_versions"],
+              "contracts": sum(node["kind"] == "contract" for node in ast["nodes"]),
+              "functions": sum(node["kind"] == "function" for node in ast["nodes"]),
+              "static_edges": len(ast["edges"]),
+          }, indent=2))
+          PY
           grep -q '/token_economics.py":' "$HOME/.lowkey/install-manifest.json"
       - name: ERC20 and ERC4626 portfolio reproof acceptance
         run: python3 scripts/token-portfolio-acceptance-e2e.py
