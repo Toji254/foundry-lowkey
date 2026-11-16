@@ -144,6 +144,13 @@ jobs:
           export HOME="$RUNNER_TEMP/lowkey-p3-home"
           mkdir -p "$HOME"
           bash install.sh
+          "$HOME/.foundry/bin/lk" archetype classify --help > /tmp/p3-archetype-help.txt
+          grep -q -- "--root" /tmp/p3-archetype-help.txt
+          grep -q -- "--json" /tmp/p3-archetype-help.txt
+          "$HOME/.foundry/bin/lk" assumptions --help > /tmp/p3-assumptions-help.txt
+          grep -q -- "--root" /tmp/p3-assumptions-help.txt
+          "$HOME/.foundry/bin/lk" capability --help > /tmp/p3-capability-help.txt
+          grep -q -- "--root" /tmp/p3-capability-help.txt
           "$HOME/.foundry/bin/lk" archetype classify --root tests/fixtures/acceptance/p3-genericity/vault --json > /tmp/p3-vault.json
           "$HOME/.foundry/bin/lk" archetype classify --root tests/fixtures/acceptance/p3-genericity/amm --json > /tmp/p3-amm.json
           "$HOME/.foundry/bin/lk" archetype classify --root tests/fixtures/acceptance/p3-genericity/unknown --json > /tmp/p3-unknown.json
