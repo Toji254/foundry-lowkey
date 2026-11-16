@@ -85,7 +85,7 @@ GODMODE_COMMAND_DETAILS = {
     "control": {
         "summary": "Compare an attack against a sequential control using matched execution evidence and a frozen experiment specification.",
         "when": "Use it before promoting a candidate BREAK; freeze expectations first, validate the freeze, then execute with the matching frozen inputs.",
-        "example": "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate",
+        "example": "lk control --validate  # uses .audit/control.json; no RPC is needed",
         "limits": "Anvil callTracer mode accepts a local Anvil RPC only. Forge state-diff results are structural evidence, not gas-adjusted EOA profit.",
     },
     "trace-parity": {
@@ -247,20 +247,21 @@ GODMODE_HELP_GUIDES = {
         ]
     },
     "control": {
-        "usage": "lk control MANIFEST --root DIR --rpc-url URL [options]",
+        "usage": "lk control [MANIFEST] [--root DIR] [--rpc-url URL] [options]",
         "when": "Use this to compare a candidate attack with a matched sequential control before promoting a BREAK. Freeze the experiment first, validate the freeze, then execute against those frozen inputs.",
         "variations": [
-            "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --freeze — freeze inputs and expectations without running the attack/control.",
-            "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate — validate the frozen spec without executing it.",
-            "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --require-frozen — execute only when a matching frozen spec exists.",
+            "lk control — use the default .audit/control.json manifest and the project's saved/environment RPC when available.",
+            "lk control --freeze — freeze inputs and expectations without running the attack/control; no RPC is needed.",
+            "lk control --validate — validate the frozen spec without executing it; no RPC is needed.",
+            "lk control --require-frozen — execute only when a matching frozen spec exists; an RPC is needed and is resolved from project context/environment when available.",
             "Add --source-rpc-url <archive-url> when independent source-chain verification is required."
         ],
         "arguments": [
-            "MANIFEST — JSON experiment manifest describing target, attack, sequential control and expected evidence."
+            "MANIFEST — optional JSON experiment manifest. Defaults to .audit/control.json when that file exists; otherwise create/provide the experiment manifest explicitly."
         ],
         "options": [
             "--root DIR — project root; default: .",
-            "--rpc-url URL — required. Local Anvil for callTracer mode or pinned fork RPC for Forge state-diff mode.",
+            "--rpc-url URL — needed only when executing. Lowkey first reuses the current project's saved RPC or a configured RPC environment variable.",
             "--source-rpc-url URL — optional independent read-only archive RPC.",
             "--output FILE — verdict JSON; default: .audit/godmode/control.json.",
             "--freeze — hash/freeze manifest, commands, harnesses and expectations; does not execute them.",
@@ -4094,13 +4095,24 @@ def trace_parity(args):
         prog="lk trace-parity",
         description="Compare canonical Forge and Anvil trace evidence without treating unknown fields as matches.",
     )
-    parser.add_argument("forge_file", help="JSON evidence containing canonical_trace_events from Forge.")
-    parser.add_argument("anvil_file", help="JSON evidence containing canonical_trace_events from Anvil.")
+    parser.add_argument("forge_file", nargs="?", help="JSON evidence containing canonical_trace_events from Forge.")
+    parser.add_argument("anvil_file", nargs="?", help="JSON evidence containing canonical_trace_events from Anvil.")
     parser.add_argument("--root", default=".", help="Project root for input and output paths.")
     parser.add_argument("--forge-scenario", choices=("control", "attack", "negative_control"), default="attack")
     parser.add_argument("--anvil-scenario", choices=("control", "attack", "negative_control"), default="attack")
     parser.add_argument("--output", default=".audit/godmode/trace-parity.json")
     ns = parser.parse_args(args)
+    if not ns.forge_file or not ns.anvil_file:
+        print("TRACE PARITY NOT RUN")
+        if not ns.forge_file:
+            print("  Missing required Forge evidence JSON.")
+        if not ns.anvil_file:
+            print("  Missing required Anvil evidence JSON.")
+        print("  These two saved artifacts are the data being compared; Lowkey will not guess or substitute them.")
+        print("  Example:")
+        print("    lk trace-parity .audit/forge-control.json .audit/anvil-control.json --root .")
+        print("  Create both artifacts by running the same experiment on Forge and Anvil, then compare them.")
+        return 2
     root = root_path(ns.root)
 
     try:
@@ -4164,9 +4176,9 @@ def trace_parity(args):
 
 def control(args):
     p=LowkeyArgumentParser(prog="lk control")
-    p.add_argument("manifest",help="JSON experiment manifest containing the target, sequential control, attack, and evidence expectations.")
+    p.add_argument("manifest",nargs="?",default=".audit/control.json",help="Experiment manifest; defaults to .audit/control.json.")
     p.add_argument("--root",default=".",help="Foundry project root; manifest and evidence paths are resolved inside it.")
-    p.add_argument("--rpc-url",required=True,help="Local Anvil RPC for callTracer mode or pinned fork RPC for Forge state-diff mode.")
+    p.add_argument("--rpc-url",help="Execution RPC; defaults to the project's saved RPC or configured RPC environment variable.")
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used for source-chain verification.")
     p.add_argument("--output",default=".audit/godmode/control.json",help="Path for the machine-readable control verdict.")
     p.add_argument("--freeze",action="store_true",help="Freeze the manifest, commands, harnesses and expectations without running them.")
@@ -4181,10 +4193,17 @@ def control(args):
         raise ValueError("--validate already requires an existing frozen spec; do not combine it with --require-frozen.")
 
     root=root_path(ns.root)
-    url=rpc_url(ns.rpc_url)
-    mf=(root/ns.manifest).resolve()
-    if not mf.is_relative_to(root) or not mf.is_file():
-        raise ValueError("Manifest must be an existing file inside project.")
+    mf=(root/ns.manifest).expanduser().resolve()
+    if not mf.is_relative_to(root):
+        raise ValueError("Manifest must be an existing file inside project; paths outside --root are not allowed.")
+    if not mf.is_file():
+        print("CONTROL NOT RUN — experiment manifest is missing.")
+        print("  Expected: " + str(mf.relative_to(root)))
+        print("  A matched attack/control experiment cannot be invented safely.")
+        print("  Create the JSON manifest with the target, control.argv, attack.argv, metric_addresses and same_calls_id,")
+        print("  or pass its path explicitly: lk control path/to/experiment.json")
+        print("  Use lk control --h for the workflow and manifest requirements.")
+        return 2
     spec=json.loads(mf.read_text(encoding="utf-8"))
     attack=spec.get("attack") or {}
     control_run=spec.get("control") or {}
@@ -4305,6 +4324,15 @@ def control(args):
             print("UNPROVEN: generator drift; re-freeze required; no experiment executed.")
         print("  evidence " + out.relative_to(root).as_posix())
         return 2
+    selected_rpc, rpc_source = _resolve_godmode_rpc(
+        ns.rpc_url, _load_godmode_project_context(root)
+    )
+    if not selected_rpc:
+        raise ValueError(
+            "Control execution needs an RPC. Pass --rpc-url, configure the project's saved RPC, "
+            "or set ETH_RPC_URL/FOUNDRY_ETH_RPC_URL. --freeze and --validate do not need an RPC."
+        )
+    url = rpc_url(selected_rpc)
     if backend=="anvil-calltracer" and not local_rpc(url):
         raise ValueError("Anvil callTracer control accepts a local Anvil RPC endpoint only.")
     if backend=="forge-state-diff" and not url:
