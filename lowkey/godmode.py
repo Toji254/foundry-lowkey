@@ -2184,8 +2184,14 @@ def run_live(argv, cwd, timeout=None, env=None, heartbeat_seconds=20, tail_limit
                 _signal_child(signal.SIGKILL)
                 terminate_at = None
 
+            poll_interval = 0.5
+            if heartbeat_seconds:
+                poll_interval = min(poll_interval, max(0.01, float(heartbeat_seconds)))
+            if timeout is not None and not timed_out:
+                remaining = max(0.01, float(timeout) - elapsed)
+                poll_interval = min(poll_interval, remaining)
             try:
-                line = output_queue.get(timeout=0.5)
+                line = output_queue.get(timeout=poll_interval)
             except queue.Empty:
                 now = time.monotonic()
                 if (
