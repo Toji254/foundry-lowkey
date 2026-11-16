@@ -4,10 +4,16 @@ set -euo pipefail
 # Native attack encyclopedia. Lookup is read-only; local lab instructions are
 # rendered by the dedicated module and never use the active RPC or wallet.
 if [[ "${1:-}" == "attack" || "${1:-}" == "attacks" ]]; then
-    if [[ "${2:-}" == "forge" ]]; then
-        shift 2
-        exec python3 "$HOME/.lowkey/godmode.py" attack-forge "$@"
-    fi
+    case "${2:-}" in
+        engines|discover|verify|chain)
+            shift
+            exec python3 "$HOME/.lowkey/attack_engine.py" "$@"
+            ;;
+        forge)
+            shift 2
+            exec python3 "$HOME/.lowkey/godmode.py" attack-forge "$@"
+            ;;
+    esac
     shift
     exec python3 "$HOME/.lowkey/attack_library.py" "$@"
 fi

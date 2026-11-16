@@ -38,11 +38,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _run(root: Path, argv: list[str], timeout: int) -> dict[str, Any]:
+def _run(root: Path, argv: list[str], timeout: int, *, env: dict[str, str] | None = None) -> dict[str, Any]:
     try:
         process = subprocess.Popen(
             argv, cwd=root, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=(os.name == "posix"),
         )
         try:
@@ -93,6 +93,7 @@ def validate_mutations(
     *,
     timeout_seconds: int = 300,
     invalid_markers: tuple[str, ...] = DEFAULT_INVALID_MARKERS,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run a passing baseline then each mutant in an isolated project copy.
 
@@ -106,6 +107,11 @@ def validate_mutations(
         raise ValueError("argv must be a non-empty list of native command arguments")
     if not isinstance(mutants, list):
         raise ValueError("mutants must be a list")
+    if env is not None and (
+        not isinstance(env, dict)
+        or not all(isinstance(key, str) and key and isinstance(value, str) for key, value in env.items())
+    ):
+        raise ValueError("env must be a string-to-string mapping or None")
     timeout = max(1, min(int(timeout_seconds), 7200))
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     results: list[dict[str, Any]] = []
@@ -113,7 +119,7 @@ def validate_mutations(
         temp_root = Path(temporary)
         baseline_root = temp_root / "baseline"
         _copy_project(source, baseline_root)
-        baseline = _run(baseline_root, argv, timeout)
+        baseline = _run(baseline_root, argv, timeout, env=env)
         if baseline["status"] != "passed":
             return {
                 "schema_version": 1,
@@ -159,7 +165,7 @@ def validate_mutations(
                     continue
                 target.write_text(original.replace(before, after, 1), encoding="utf-8")
                 mutant_hash = _sha256(target)
-                execution = _run(mutant_root, argv, timeout)
+                execution = _run(mutant_root, argv, timeout, env=env)
                 combined = (execution.get("stdout", "") + "\n" + execution.get("stderr", "")).lower()
                 if execution["status"] == "timeout":
                     status = "timeout"

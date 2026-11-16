@@ -6,11 +6,11 @@ This ledger separates implementation, isolated component coverage, installed-com
 **P0 baseline:** `0d13d33b91c1c2c7c82ad6f37fa7eb8f6d3f814c`  
 **P0 full integration CI:** [run 7442](https://github.com/Toji254/foundry-lowkey/actions/runs/42163749361), on `0d13d33b91c1c2c7c82ad6f37fa7eb8f6d3f814c`, completed with all 10 jobs successful.  
 **P0 latest installed-CLI acceptance:** [run 7485](https://github.com/Toji254/foundry-lowkey/actions/runs/42363585120), on the P1 feature branch before the renderer checksum fix; the dedicated P0 acceptance job passed. The full run remains separate from the P0 job result.  
-**P1 integration PR:** [PR 64](https://github.com/Toji254/foundry-lowkey/pull/64), targeting `integration-test-drive`; `master` is not part of this change. On candidate head `9eb97460e780290f447280f1f4143453672bdb4a`, the dedicated P1 runtime acceptance job passed in [run 7663](https://github.com/Toji254/foundry-lowkey/actions/runs/43760724039). The remaining exact-head CI jobs are still pending, so the full P1 phase remains pending until the complete run is green.
+**P1 integration PR:** [PR 64](https://github.com/Toji254/foundry-lowkey/pull/64) merged into integration-test-drive on 2026-11-15. Its paired reentrancy, frozen-control, mutation, and funded Anvil reproof acceptance is retained in the integration branch; target authenticity remains fixture-scoped.
 
 | Capability | Current status | Evidence and limits |
 |---|---|---|
-| ABI-aware setup values | ACCEPTED for P0 scope | Installed `lk target` + `lk break` executed `AddressArraySetupTarget.deposit(address[])` and returned `OBSERVED`. Primitive scalars and one-dimensional primitive arrays are supported. Tuple, nested arrays, and unsupported dynamic element types refuse rather than guess. |
+| ABI-aware setup values | ACCEPTED for P0 scope | Installed `lk target` + `lk break` executed `AddressArraySetupTarget.deposit(address[])` and returned `OBSERVED`. The P0 extension in merged [PR 68](https://github.com/Toji254/foundry-lowkey/pull/68) adds bounded recursive tuple/array ABI handling and reuses Cast-backed ABI encoding. Unsupported layouts and depth/sample safety-limit overflows still refuse rather than guess. |
 | Payable/nonpayable setup | ACCEPTED for P0 scope | Installed-`lk` payable `address[]` setup executed and produced `SETUP_SUCCESS true`. Nonpayable setup uses zero value; payable setup uses the generated seed value. |
 | ERC-20 decimal-aware funding | ACCEPTED for P0 compatibility scope | The installed-CLI Anvil acceptance exercises a six-decimal USDC-style vault and a token without `decimals()`. The fallback is explicitly recorded as `ASSET_DECIMALS_FALLBACK_18`, with the assumed amount visible in telemetry. An unverified fallback must not support stronger token-profit claims. |
 | Optional-return ERC-20 approval | ACCEPTED for P0 scope | Installed-`lk` USDT-style payer case exercises empty-return approval with an existing nonzero allowance. Generated telemetry confirms reset-to-zero and retry. False, revert, and malformed return data fail closed. |
@@ -33,7 +33,7 @@ Until those acceptance cases exist in the same PR, the following remain **teleme
 
 | Family label | Scope |
 |---|---|
-| reentrancy | P1 behavioural acceptance in PR 64; local fixture gate passed; full exact-head CI pending |
+| reentrancy | P1 behavioural acceptance merged in PR 64; controlled fixture scope only |
 | replay | telemetry-only |
 | access | telemetry-only |
 | accounting | telemetry-only |
@@ -59,7 +59,7 @@ P0 fixture acceptance is not a promise that every ABI, ERC-20 implementation, to
 
 ## P1 gate and stop condition
 
-PR 64 must pass, on its exact latest head SHA, the complete CI matrix before P1 is accepted. The dedicated P1 runtime job has passed on candidate head `9eb97460e780290f447280f1f4143453672bdb4a`; the following are the P1 acceptance requirements already exercised by that job:
+PR 64 is merged; its acceptance criteria below describe the retained P1 gate. The dedicated P1 runtime job has passed on candidate head `9eb97460e780290f447280f1f4143453672bdb4a`; the following are the P1 acceptance requirements already exercised by that job:
 
 1. Installed `lk steps` renders all 15 labels, validates template/harness hashes, records refusals, compiles, and **executes** every generated harness on the Anvil fixture.
 2. One deployed vault and actor are reused for the sequential control and reentrant attack; the only scenario difference is the declared callback mode set outside each measured window.
@@ -75,4 +75,25 @@ If any item fails, P1 stays pending and the PR records the actual failing comman
 
 P0's installed compatibility gate and receiver fixture are implemented and covered by dedicated Anvil/Foundry acceptance. P0's result remains fixture-scoped.
 
-P1 remains pending until the complete exact-head CI matrix for PR 64 passes. Its dedicated runtime, paired-control, mutation, and funded-reproof job has passed, but other CI jobs were still running when this ledger was updated. No `HUMAN_CONFIRMED` or authentic deployment claim is made by the fixture.
+P1 is accepted for its defined fixture scope and is merged through PR 64. No HUMAN_CONFIRMED or authentic-deployment claim is made by the fixture. P2 PR 69 now has all 11 exact-head CI jobs passing on candidate SHA 1425fdf4de92ddc93176b3f3651087ff2a03f36e in [run 7989](https://github.com/Toji254/foundry-lowkey/actions/runs/43797580616), including p2-first-fork-acceptance; PR 69 is still a draft and is not merged. The competing PR 70 is also still a draft and its earlier candidate run failed. Do not treat P2 as merged until PR 69 is merged into integration-test-drive.
+
+## Attack-family strategy engine and chain composition (feature branch)
+
+**Implementation branch:** feat/attack-family-chain-engine-20261116  
+**Base:** P2 candidate PR 69 head 1425fdf4de92ddc93176b3f3651087ff2a03f36e; this branch does not modify integration-test-drive or master.
+
+The new lowkey/attack_engine.py provides:
+- a 15-family strategy contract registry with family-specific source signals, preconditions, expected property IDs, trace requirements, and impact-mode defaults;
+- bounded source discovery that reports only CANDIDATE leads and pins the selected source file SHA-256 and entrypoint;
+- strict experiment manifests that pin target address, runtime-code SHA-256, chain and fork block;
+- target-specific attack/control Foundry test execution with role/run/evidence environment variables;
+- canonical TraceEvent v2 validation, matched entry/prestate/setup anchors and family-specific precondition/property checks;
+- mandatory independent source-verified fork reproof, including actual receipt, call trace, and changed-storage evidence where required;
+- baseline-first mutation acceptance, requiring every declared mutant to be killed; and
+- a chain schema/runner with explicit stage dependencies and artifacts, continuous pre/post-state hashes, attack/control stage predicates, failure injection, rollback verification, and mutation gates.
+
+**Important status distinction:** this is an execution/evidence framework for protocol-specific family adapters, not 15 universal exploit generators. The existing reentrancy fixture remains the only family with a dedicated accepted behavioral fixture. The other 14 family contracts are explicitly adapter_required until target-specific attack/control adapters and their acceptance campaigns are added and pass. Do not promote their registry entries into BREAK capabilities.
+
+Commands: lk attack engines, lk attack discover, lk attack verify, and lk attack chain validate|run. See [docs/attack-engine.md](attack-engine.md) for the strict manifest/evidence formats, impact-mode rules, chain-stage contract and remaining boundaries.
+
+This feature branch's own CI, installed-runtime smoke, and acceptance status must be recorded against its exact head SHA before merge. A P2 green run does not validate this new engine.

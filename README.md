@@ -257,6 +257,37 @@ No tool assigns HUMAN_CONFIRMED automatically. A human must review the evidence 
 
 The source maps classify fallback/callback paths, Chainlink-style aggregators, spot/TWAP reads, timestamps/deadlines, storage declarations, token assumptions, signatures, initializer and custody cues, cross-VM authorization cues, CFG outlines, and read/call/write candidates. These are static signals. The storage/proxy/selector commands need an RPC endpoint. Historical replay needs an archive RPC and a dedicated harness; flash loans need actual venue callbacks and liquidity reads; symbolic path work needs Halmos and an explicit harness; Flashbots bundle simulation needs relay authentication. These are not silently substituted with mocks. No Godmode command submits a production transaction or calls `eth_sendBundle`.
 
+## Attack-family strategies and multi-stage chains
+
+The attack encyclopedia and executable strategy engine are separate surfaces:
+
+```bash
+# Read the 15 registered family strategy contracts
+lk attack engines --json
+
+# Find static source leads (never a vulnerability verdict)
+lk attack discover --root . --json
+lk attack discover --root . --family oracle
+
+# Run a target-specific attack/control pair, independent fork reproof,
+# and explicit mutation gate
+lk attack verify .audit/lowkey/experiments/vault-withdraw.json --root .
+
+# Validate a multi-stage chain without executing it
+lk attack chain validate .audit/lowkey/chains/flash-price-borrow.json --root .
+
+# Run the chain's attack, control and failure-injection adapters
+lk attack chain run .audit/lowkey/chains/flash-price-borrow.json --root .
+```
+
+Each experiment pins target runtime-bytecode SHA-256, chain and fork block, target source SHA-256 and entrypoint. Its target-specific Foundry adapters must assert the complete family preconditions and write canonical TraceEvent v2 evidence to the path Lowkey supplies through `LOWKEY_EVIDENCE_PATH`. Attack/control must share the exact target, entry calldata, setup and prestate; only the family property may differ. Every declared source mutant must be killed after a passing baseline.
+
+A separate `lk reprove` artifact is required. Economic impact requires source-verified, real-funded positive net native-ETH profit after measured costs. Semantic impact requires a separate semantic test in the reproof workflow. Neither path silently promotes a local result to a human-confirmed finding.
+
+Chains have up to 32 ordered stages. Each stage carries its family, source discovery, preconditions, dependencies, consumed/produced artifacts, failure policy, rollback strategy, state hashes and trace evidence. Attack/control chain adapters must preserve stage state continuity; a failure-injection adapter must prove that the selected EVM revert, Anvil snapshot, or compensating action restores the expected state.
+
+**Current capability boundary:** the strategy registry contains 15 family contracts, but only the existing reentrancy fixture has a dedicated accepted family implementation. The other 14 remain adapter-required. The chain runner validates and executes target-specific Foundry adapters; it does not invent universal flash-loan callbacks, price-manipulation recipes or protocol calldata. See [docs/attack-engine.md](docs/attack-engine.md) for the manifest and evidence contracts.
+
 ## Integrated test-drive
 
 This branch is the integration candidate for the current Lowkey feature set. It keeps the local attack-lab/walkthrough stack and adds the project graph, reusable system bootstrap manifest, evidence engine, ripgrep evidence capture, and evidence-backed PoC generation.
@@ -410,7 +441,7 @@ lk ai test
 lk ai switch
 ~~~
 
-See [the native AI harness guide](docs/native-ai-harness.md) for provider setup, privacy boundaries, saved model profiles, and use of the explicit \`lk lab --ai-review\` option.
+See [the native AI harness guide](docs/native-ai-harness.md) for provider setup, privacy boundaries, saved model profiles, and use of the explicit `lk lab --ai-review` option.
 
 Preview the exact redacted payload locally before sharing any project context with a provider:
 
@@ -702,11 +733,11 @@ Lowkey automatically reuses an existing Anvil, or starts a disposable project-lo
 
 The generic path deliberately refuses to call an upgradeable-style contract "ready" when it exposes `initialize()`. Complex protocols may require a proxy, registries, mocks, or initialization data that cannot be safely guessed. In those cases Lowkey reports the missing lab layer instead of giving a misleading live target.
 
-### \`lk lab\` vs \`lk deploy\`
+### `lk lab` vs `lk deploy`
 
-- \`lk lab\` is the environment-setup command. It prefers the project's own deployment script or test fixture, then falls back to generic deployment when appropriate. Its goal is a usable, project-aware attack environment—not merely an address with bytecode.
-- \`lk deploy [Contract]\` is the direct-deployment shortcut. It deliberately selects the generic ABI deployment path and prompts for constructor values. It is equivalent to \`lk lab --generic [Contract]\`, but makes the intent explicit.
-- Both commands reuse the same active local Anvil when available. Deploying to a reused node adds to its existing state; it does not reset the chain. A successful \`lk deploy\` proves that the contract was deployed and its runtime bytecode is present, not that the full protocol is initialized or audit-ready.
+- `lk lab` is the environment-setup command. It prefers the project's own deployment script or test fixture, then falls back to generic deployment when appropriate. Its goal is a usable, project-aware attack environment—not merely an address with bytecode.
+- `lk deploy [Contract]` is the direct-deployment shortcut. It deliberately selects the generic ABI deployment path and prompts for constructor values. It is equivalent to `lk lab --generic [Contract]`, but makes the intent explicit.
+- Both commands reuse the same active local Anvil when available. Deploying to a reused node adds to its existing state; it does not reset the chain. A successful `lk deploy` proves that the contract was deployed and its runtime bytecode is present, not that the full protocol is initialized or audit-ready.
 
 
 Stop an Anvil started by Lowkey with:
