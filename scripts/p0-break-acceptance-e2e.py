@@ -2,6 +2,7 @@
 """Installed-CLI P0 acceptance: address[] setup, six-decimal vault, no-return USDT approval."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -96,7 +97,7 @@ contract MockUSDT6NoReturnReset {
 }
 
 contract USDCVault {
-    MockUSDC6 public immutable asset;
+    MockUSDC6 public asset;
     mapping(address => uint256) public balances;
 
     constructor(address token) { asset = MockUSDC6(token); }
@@ -115,7 +116,7 @@ contract USDCVault {
 }
 
 contract USDTVault {
-    MockUSDT6NoReturnReset public immutable asset;
+    MockUSDT6NoReturnReset public asset;
     mapping(address => uint256) public balances;
 
     constructor(address token) { asset = MockUSDT6NoReturnReset(token); }
@@ -159,7 +160,7 @@ contract MockNoMetadataToken {
 }
 
 contract NoMetadataVault {
-    MockNoMetadataToken public immutable asset;
+    MockNoMetadataToken public asset;
     mapping(address => uint256) public balances;
 
     constructor(address token) { asset = MockNoMetadataToken(token); }
@@ -200,7 +201,142 @@ def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: st
     address = payload.get("deployedTo")
     if not isinstance(address, str) or not address.startswith("0x"):
         raise AssertionError(f"forge create did not return deployedTo for {contract}: {payload}")
+    print(f"DEPLOYED {contract} at {address}")
     return address
+
+
+def target_identity_diagnostic(
+    cast: str, root: Path, env: dict[str, str], address: str, contract: str
+) -> dict[str, object]:
+    """Capture bytecode/artifact facts when strict target identity rejects a fixture."""
+    result = subprocess.run(
+        [cast, "code", address, "--rpc-url", RPC],
+        cwd=root, env=env, text=True, capture_output=True, timeout=30, check=False,
+    )
+    actual = str(result.stdout or "").strip().lower()
+    candidates = []
+    candidate_paths = []
+    runtime_candidates = []
+    actual_body = actual.removeprefix("0x")
+    ignored_parts = {".git", ".audit", "__pycache__", "node_modules", "cache", "build-info"}
+    for path in sorted(root.rglob("*.json")):
+        if any(part in ignored_parts for part in path.relative_to(root).parts):
+            continue
+        candidate_paths.append(path.relative_to(root).as_posix())
+        try:
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        artifact_name = str(artifact.get("contractName") or path.stem)
+        deployed_candidate = artifact.get("deployedBytecode")
+        deployed_candidate = (
+            deployed_candidate.get("object")
+            if isinstance(deployed_candidate, dict) else deployed_candidate
+        )
+        expected_candidate = str(deployed_candidate or "").strip().lower().removeprefix("0x")
+        if expected_candidate:
+            differing_bytes = (
+                sum(
+                    left != right
+                    for left, right in zip(
+                        (expected_candidate[index:index + 2] for index in range(0, len(expected_candidate), 2)),
+                        (actual_body[index:index + 2] for index in range(0, len(actual_body), 2)),
+                    )
+                )
+                if len(expected_candidate) == len(actual_body) else None
+            )
+            runtime_candidates.append({
+                "artifact": path.relative_to(root).as_posix(),
+                "contract": artifact_name,
+                "runtime_bytes": len(expected_candidate) // 2,
+                "exact_match": expected_candidate == actual_body,
+                "same_length": len(expected_candidate) == len(actual_body),
+                "differing_byte_pairs": differing_bytes,
+            })
+        if artifact_name.casefold() != contract.casefold():
+            continue
+        metadata_raw = artifact.get("metadata")
+        try:
+            metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+        except json.JSONDecodeError:
+            metadata = None
+        compiler = metadata.get("compiler", {}) if isinstance(metadata, dict) else {}
+        settings = metadata.get("settings", {}) if isinstance(metadata, dict) else {}
+        deployed = artifact.get("deployedBytecode")
+        deployed_object = deployed.get("object") if isinstance(deployed, dict) else deployed
+        expected = str(deployed_object or "").strip().lower()
+        expected_body = expected.removeprefix("0x")
+        actual_body = actual.removeprefix("0x")
+        first_difference = next(
+            (index // 2 for index, (left, right) in enumerate(zip(expected_body, actual_body)) if left != right),
+            None,
+        )
+        immutable_refs = (
+            deployed.get("immutableReferences", {})
+            if isinstance(deployed, dict) else artifact.get("deployedImmutableReferences", {})
+        )
+        candidates.append({
+            "artifact_path": path.relative_to(root).as_posix(),
+            "artifact_contract": artifact.get("contractName"),
+            "deployed_bytecode_shape": type(deployed).__name__,
+            "deployed_bytecode_keys": sorted(deployed.keys()) if isinstance(deployed, dict) else [],
+            "expected_runtime_bytes": len(expected_body) // 2,
+            "actual_runtime_bytes": len(actual_body) // 2,
+            "expected_runtime_sha256": hashlib.sha256(bytes.fromhex(expected_body)).hexdigest()
+                if expected_body and all(ch in "0123456789abcdef" for ch in expected_body) else None,
+            "actual_runtime_sha256": hashlib.sha256(bytes.fromhex(actual_body)).hexdigest()
+                if actual_body and all(ch in "0123456789abcdef" for ch in actual_body) else None,
+            "first_difference_byte_offset": first_difference,
+            "immutable_reference_groups": len(immutable_refs) if isinstance(immutable_refs, dict) else None,
+            "compiler_version": compiler.get("version") if isinstance(compiler, dict) else None,
+            "optimizer_enabled": (
+                settings.get("optimizer", {}).get("enabled")
+                if isinstance(settings, dict) and isinstance(settings.get("optimizer"), dict)
+                else None
+            ),
+            "optimizer_runs": (
+                settings.get("optimizer", {}).get("runs")
+                if isinstance(settings, dict) and isinstance(settings.get("optimizer"), dict)
+                else None
+            ),
+            "evm_version": settings.get("evmVersion") if isinstance(settings, dict) else None,
+        })
+    forge_path = shutil.which("forge") or str(Path.home() / ".foundry" / "bin" / "forge")
+    forge_config = subprocess.run(
+        [forge_path, "config", "--json"],
+        cwd=root, env=env, text=True, capture_output=True, timeout=30, check=False,
+    )
+    try:
+        forge_config_payload = json.loads(forge_config.stdout)
+    except json.JSONDecodeError:
+        forge_config_payload = {}
+    asset_getter = subprocess.run(
+        [cast, "call", address, "asset()", "--rpc-url", RPC],
+        cwd=root, env=env, text=True, capture_output=True, timeout=30, check=False,
+    )
+    return {
+        "address": address,
+        "cast_code_exit": result.returncode,
+        "cast_code_stderr": str(result.stderr or "")[-1200:],
+        "forge_config_exit": forge_config.returncode,
+        "forge_config": {
+            key: forge_config_payload.get(key)
+            for key in ("optimizer", "optimizer_runs", "via_ir", "solc", "evm_version", "bytecode_hash")
+        },
+        "asset_getter_exit": asset_getter.returncode,
+        "asset_getter_stdout": str(asset_getter.stdout or "").strip()[-500:],
+        "asset_getter_stderr": str(asset_getter.stderr or "")[-800:],
+        "candidate_json_paths": candidate_paths[:80],
+        "artifact_runtime_candidates": sorted(
+            runtime_candidates,
+            key=lambda row: (
+                not row["exact_match"],
+                row["differing_byte_pairs"] if row["differing_byte_pairs"] is not None else 10**9,
+                abs(row["runtime_bytes"] - len(actual_body) // 2),
+            ),
+        )[:30],
+        "artifacts": candidates,
+    }
 
 
 def exercise(
@@ -213,7 +349,15 @@ def exercise(
     evidence_root: Path,
 ) -> dict[str, object]:
     run([lk, "target", "reset"], root, env)
-    run([lk, "target", contract, address], root, env)
+    try:
+        run([lk, "target", contract, address], root, env)
+    except AssertionError as exc:
+        cast = shutil.which("cast") or str(Path.home() / ".foundry" / "bin" / "cast")
+        diagnostic = target_identity_diagnostic(cast, root, env, address, contract)
+        raise AssertionError(
+            f"{exc}\\n--- bytecode/artifact identity diagnostic ---\\n"
+            + json.dumps(diagnostic, indent=2, sort_keys=True)
+        ) from exc
     runs_dir = root / ".audit" / "break" / "runs"
     if runs_dir.exists():
         shutil.rmtree(runs_dir)
