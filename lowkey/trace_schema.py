@@ -114,6 +114,42 @@ def _storage_rows(value: Any, label: str) -> list[dict[str, Any]] | None:
             if raw is not None and not isinstance(raw, bool):
                 raise ValueError(f"TraceEvent {label}[{index}].{field} must be boolean or null.")
             normalized[field] = raw
+        optional_values = {
+            "access_type": ({"read", "write"}, str),
+            "storage_kind": ({"persistent", "transient"}, str),
+        }
+        for field, (allowed, expected_type) in optional_values.items():
+            raw = row.get(field)
+            if raw is not None:
+                if not isinstance(raw, expected_type) or raw not in allowed:
+                    raise ValueError(
+                        f"TraceEvent {label}[{index}].{field} must be one of: "
+                        + ", ".join(sorted(allowed)) + "."
+                    )
+                normalized[field] = raw
+        frame_id = row.get("frame_id")
+        if frame_id is not None:
+            if not isinstance(frame_id, str) or not frame_id or len(frame_id) > 120:
+                raise ValueError(f"TraceEvent {label}[{index}].frame_id must be a non-empty string up to 120 characters.")
+            normalized["frame_id"] = frame_id
+        opcode = row.get("opcode")
+        if opcode is not None:
+            if not isinstance(opcode, str) or not re.fullmatch(r"[A-Z0-9]{2,16}", opcode):
+                raise ValueError(f"TraceEvent {label}[{index}].opcode must be an uppercase EVM opcode name.")
+            normalized["opcode"] = opcode
+        for field in ("access_seq", "opcode_index", "pc"):
+            raw = row.get(field)
+            if raw is not None:
+                parsed = _quantity(raw, f"{label}[{index}].{field}")
+                if parsed is None:
+                    raise ValueError(f"TraceEvent {label}[{index}].{field} cannot be null when supplied.")
+                normalized[field] = parsed
+        code_address = row.get("code_address")
+        if code_address is not None:
+            normalized["code_address"] = _address(code_address, f"{label}[{index}].code_address")
+        read_value = row.get("read_value")
+        if read_value is not None:
+            normalized["read_value"] = _storage_word(read_value, f"{label}[{index}].read_value")
         rows.append(normalized)
     return rows
 
@@ -321,27 +357,42 @@ def normalize_calltracer(
     *,
     storage_support: str = "declared_only",
     partial_storage: Mapping[int, list[dict[str, Any]]] | None = None,
+    exact_storage: Mapping[int, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Normalize flattened callTracer rows, optionally attaching transaction-level partial storage.
+    """Normalize callTracer rows with declared, transaction-partial or opcode-exact storage.
 
-    prestateTracer has no call-frame attribution. A slot may be attached only
-    to the root transaction event and is explicitly marked partial.
+    prestateTracer rows remain transaction-level partial evidence. Exact mode
+    requires an explicit per-frame array for every call frame, including empty
+    arrays for frames in which no storage opcode was observed.
     """
     if isinstance(calls, Mapping):
         calls = flatten_calltracer(calls)
     if not isinstance(calls, Sequence) or isinstance(calls, (str, bytes)):
         raise ValueError("callTracer calls must be a sequence or a nested callTracer root object.")
-    if storage_support not in {"declared_only", "partial"}:
-        raise ValueError("callTracer storage_support must be declared_only or partial.")
+    if storage_support not in {"declared_only", "partial", "exact"}:
+        raise ValueError("callTracer storage_support must be declared_only, partial or exact.")
     rows = []
     partial_storage = partial_storage or {}
+    exact_storage = exact_storage or {}
+    if storage_support == "exact":
+        expected_indices = set(range(len(calls)))
+        if set(exact_storage) != expected_indices:
+            raise ValueError("Exact callTracer storage requires an explicit per-frame array for every call frame.")
+        if any(not isinstance(exact_storage[index], list) for index in expected_indices):
+            raise ValueError("Exact callTracer storage values must be per-frame arrays.")
     for index, call in enumerate(calls):
         if not isinstance(call, Mapping):
             raise ValueError(f"callTracer event #{index} must be an object.")
         error = call.get("error")
-        has_partial_observation = storage_support == "partial" and index in partial_storage
-        event_support = "partial" if has_partial_observation else "declared_only"
-        event_storage = partial_storage[index] if has_partial_observation else None
+        if storage_support == "exact":
+            event_support = "exact"
+            event_storage = exact_storage[index]
+        elif storage_support == "partial" and index in partial_storage:
+            event_support = "partial"
+            event_storage = partial_storage[index]
+        else:
+            event_support = "declared_only"
+            event_storage = None
         rows.append(build_trace_event(
             seq=index,
             backend="anvil-calltracer",
@@ -356,6 +407,228 @@ def normalize_calltracer(
             storage_support=event_support,
         ))
     return rows
+
+
+def normalize_opcode_storage(
+    opcode_trace: Mapping[str, Any],
+    call_trace: Mapping[str, Any],
+    *,
+    max_steps: int = 200_000,
+) -> dict[str, Any]:
+    """Attribute Anvil/Geth struct-logger storage opcodes to callTracer frames.
+
+    The opcode logger exposes execution depth and stack. callTracer supplies the
+    ordered frame tree and CALL target/type. If any frame transition or target
+    cannot be reconciled, the result is unsupported rather than guessed.
+    """
+    def unsupported(reason: str, *, steps: int = 0, accesses: int = 0) -> dict[str, Any]:
+        return {
+            "supported": False,
+            "complete": False,
+            "mode": "opcode-struct-logger",
+            "reason": reason,
+            "steps": steps,
+            "access_count": accesses,
+            "by_frame_index": {},
+        }
+
+    if not isinstance(opcode_trace, Mapping):
+        return unsupported("Opcode trace must be an object.")
+    if not isinstance(call_trace, Mapping):
+        return unsupported("A nested callTracer tree is required for frame attribution.")
+    if type(max_steps) is not int or max_steps < 1:
+        return unsupported("max_steps must be a positive integer.")
+    struct_logs = opcode_trace.get("structLogs")
+    if not isinstance(struct_logs, list) or not struct_logs:
+        return unsupported("Opcode trace has no structLogs array.")
+    if len(struct_logs) >= max_steps:
+        return unsupported("Opcode trace reached the configured step limit; completeness is unknown.", steps=len(struct_logs))
+
+    frames: list[dict[str, Any]] = []
+
+    def add_frame(node: Mapping[str, Any], parent: dict[str, Any] | None, path: str) -> dict[str, Any]:
+        if not isinstance(node, Mapping):
+            raise ValueError("callTracer child is not an object.")
+        kind = str(node.get("type") or node.get("callType") or "CALL").upper()
+        allowed = {"CALL", "STATICCALL", "DELEGATECALL", "CALLCODE", "CREATE", "CREATE2"}
+        if kind not in allowed:
+            raise ValueError(f"Unsupported callTracer frame type {kind!r}.")
+        raw_code_address = node.get("to") or node.get("created_address", node.get("createdAddress"))
+        code_address = _address(raw_code_address, "callTracer frame code address") if raw_code_address else None
+        if parent is not None and kind in {"DELEGATECALL", "CALLCODE"}:
+            storage_account = parent["storage_account"]
+        else:
+            storage_account = code_address
+        parent_reverted = bool(parent and parent["reverted"])
+        frame = {
+            "index": len(frames),
+            "frame_id": path,
+            "type": kind,
+            "code_address": code_address,
+            "storage_account": storage_account,
+            "reverted": parent_reverted or bool(node.get("error")) or bool(node.get("reverted", False)),
+            "children": [],
+            "child_cursor": 0,
+        }
+        frames.append(frame)
+        children = node.get("calls") or []
+        if not isinstance(children, list):
+            raise ValueError("callTracer calls must be an array.")
+        for child_index, child in enumerate(children):
+            frame["children"].append(add_frame(child, frame, f"{path}.{child_index}"))
+        return frame
+
+    try:
+        root = add_frame(call_trace, None, "0")
+    except (TypeError, ValueError) as exc:
+        return unsupported(str(exc))
+
+    by_frame_index: dict[int, list[dict[str, Any]]] = {
+        frame["index"]: [] for frame in frames
+    }
+    active = [root]
+    previous_depth: int | None = None
+    pending_child: dict[str, Any] | None = None
+    access_seq = 0
+    call_ops = {"CALL", "STATICCALL", "DELEGATECALL", "CALLCODE", "CREATE", "CREATE2"}
+    storage_ops = {"SLOAD", "SSTORE", "TLOAD", "TSTORE"}
+
+    def stack_word(raw: Any, label: str) -> str:
+        if isinstance(raw, bool):
+            raise ValueError(f"{label} cannot be boolean.")
+        if isinstance(raw, int):
+            if raw < 0 or raw >= 1 << 256:
+                raise ValueError(f"{label} is outside uint256.")
+            return "0x" + format(raw, "064x")
+        if not isinstance(raw, str):
+            raise ValueError(f"{label} must be a 32-byte stack word.")
+        value = raw.lower().removeprefix("0x")
+        if not re.fullmatch(r"[0-9a-f]{1,64}", value):
+            raise ValueError(f"{label} must be a 1-32 byte hex stack word.")
+        return "0x" + value.zfill(64)
+
+    for step_index, step in enumerate(struct_logs):
+        if not isinstance(step, Mapping):
+            return unsupported(f"structLogs[{step_index}] is not an object.", steps=len(struct_logs), accesses=access_seq)
+        try:
+            depth = _quantity(step.get("depth"), f"structLogs[{step_index}].depth")
+            if depth is None or depth < 1:
+                raise ValueError("Opcode logger depth must be a positive integer.")
+            if previous_depth is None:
+                if depth != 1:
+                    raise ValueError("Opcode logger root depth must be 1.")
+            elif depth > previous_depth:
+                if depth != previous_depth + 1 or pending_child is None:
+                    raise ValueError("Opcode logger entered a frame without a matched CALL/CREATE child.")
+                active.append(pending_child)
+            elif depth < previous_depth:
+                while len(active) > depth:
+                    active.pop()
+                if len(active) != depth:
+                    raise ValueError("Opcode logger frame depth cannot be reconciled with callTracer.")
+                pending_child = None
+            else:
+                pending_child = None
+            if len(active) != depth:
+                raise ValueError("Opcode logger depth and active call frame stack disagree.")
+
+            current = active[-1]
+            opcode = str(step.get("op") or "").upper()
+            stack = step.get("stack")
+            if opcode in call_ops:
+                if not isinstance(stack, list):
+                    raise ValueError(f"{opcode} opcode is missing its stack.")
+                target = None
+                if opcode in {"CALL", "STATICCALL", "DELEGATECALL", "CALLCODE"}:
+                    if len(stack) < 2:
+                        raise ValueError(f"{opcode} opcode stack is too short to identify its target.")
+                    target_word = stack_word(stack[-2], f"{opcode} target")
+                    target = "0x" + target_word[-40:]
+                if current["child_cursor"] >= len(current["children"]):
+                    raise ValueError(f"{opcode} has no corresponding callTracer child.")
+                child = current["children"][current["child_cursor"]]
+                current["child_cursor"] += 1
+                if child["type"] != opcode:
+                    raise ValueError(
+                        f"{opcode} does not match next callTracer child type {child['type']}."
+                    )
+                if target is not None and child["code_address"] != target:
+                    raise ValueError(
+                        f"{opcode} target {target} does not match callTracer child {child['code_address']}."
+                    )
+                pending_child = child
+            else:
+                pending_child = None
+
+            if opcode in storage_ops:
+                if not isinstance(stack, list):
+                    raise ValueError(f"{opcode} opcode is missing its stack.")
+                minimum = 2 if opcode in {"SSTORE", "TSTORE"} else 1
+                if len(stack) < minimum:
+                    raise ValueError(f"{opcode} opcode stack is too short.")
+                if not current["storage_account"]:
+                    raise ValueError(f"{opcode} frame has no verified storage-context address.")
+                slot = stack_word(stack[-1], f"{opcode} slot")
+                is_write = opcode in {"SSTORE", "TSTORE"}
+                storage_kind = "transient" if opcode in {"TLOAD", "TSTORE"} else "persistent"
+                read_value = None
+                previous_value = None
+                new_value = stack_word(stack[-2], f"{opcode} value") if is_write else None
+                if not is_write and step_index + 1 < len(struct_logs):
+                    next_step = struct_logs[step_index + 1]
+                    if isinstance(next_step, Mapping) and next_step.get("depth") == depth:
+                        next_stack = next_step.get("stack")
+                        if isinstance(next_stack, list) and next_stack:
+                            read_value = stack_word(next_stack[-1], f"{opcode} result")
+                if is_write:
+                    state_storage = step.get("storage")
+                    if isinstance(state_storage, Mapping):
+                        for raw_slot, raw_value in state_storage.items():
+                            if stack_word(raw_slot, f"{opcode} observed storage slot") == slot:
+                                previous_value = stack_word(raw_value, f"{opcode} previous value")
+                                break
+                row = {
+                    "account": current["storage_account"],
+                    "slot": slot,
+                    "previous_value": previous_value,
+                    "new_value": new_value,
+                    "is_write": is_write,
+                    "reverted": current["reverted"],
+                    "access_type": "write" if is_write else "read",
+                    "storage_kind": storage_kind,
+                    "frame_id": current["frame_id"],
+                    "access_seq": access_seq,
+                    "opcode_index": step_index,
+                    "pc": _quantity(step.get("pc"), f"structLogs[{step_index}].pc"),
+                    "opcode": opcode,
+                    "code_address": current["code_address"],
+                }
+                if read_value is not None:
+                    row["read_value"] = read_value
+                by_frame_index[current["index"]].append(row)
+                access_seq += 1
+            previous_depth = depth
+        except (TypeError, ValueError) as exc:
+            return unsupported(str(exc), steps=len(struct_logs), accesses=access_seq)
+
+    if len(active) != 1:
+        return unsupported("Opcode trace ended with unclosed call frames.", steps=len(struct_logs), accesses=access_seq)
+    for frame in frames:
+        if frame["child_cursor"] != len(frame["children"]):
+            return unsupported(
+                f"Opcode trace did not account for every child call in frame {frame['frame_id']}.",
+                steps=len(struct_logs), accesses=access_seq,
+            )
+    return {
+        "supported": True,
+        "complete": True,
+        "mode": "opcode-struct-logger",
+        "steps": len(struct_logs),
+        "frame_count": len(frames),
+        "access_count": access_seq,
+        "by_frame_index": by_frame_index,
+        "storage_scope": "ordered SLOAD/SSTORE/TLOAD/TSTORE accesses attributed to callTracer frames; DELEGATECALL/CALLCODE use the inherited storage context",
+    }
 
 
 def normalize_forge_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
