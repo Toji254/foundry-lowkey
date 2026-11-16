@@ -219,6 +219,7 @@ def _generator_fingerprints(root, spec):
     paths = {Path(__file__).resolve()}
     for module_name in (
         "godmode.py", "forge_state_diff.py", "trace_evidence.py",
+        "trace_schema.py", "trace_parity.py",
         "break_engine.py", "generator.py", "test_generation.py",
         "test_generation_analysis.py", "generation_plugins.py",
     ):
