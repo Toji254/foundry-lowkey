@@ -86,7 +86,7 @@ The P2 end-to-end acceptance uses Ethereum's canonical EntryPoint v0.7 deploymen
 
 The previous Yearn yvUSDC candidate was deliberately rejected: its embedded implementation returned a Sourcify **Similar Match**, not an exact match. The acceptance does not relax that rule. EIP-1167 parsing and implementation verification remain supported and covered by dedicated unit tests; this first live fixture is a direct target with an exact Sourcify identity so the overall P2 proof can pass without misrepresenting the Yearn source.
 
-The harness makes no live transaction and moves no user funds. It runs a getNonce() view call at a pinned common block on an Anvil fork, captures Forge state-diff, obtains an Anvil debug_traceCall callTracer tree for the same actor/target/calldata, and checks canonical call-tree parity. Storage parity is reported separately because Anvil callTracer does not expose per-access storage slots.
+The harness makes no live transaction and moves no user funds. It runs a getNonce() view call at a pinned common block on an Anvil fork, captures Forge state-diff, obtains an Anvil debug_traceCall callTracer tree and opcode struct log for the same actor/target/calldata, and checks canonical call-tree plus per-frame storage-access parity. prestateTracer diff remains an independent transaction-level cross-check; it is not used to attribute accesses to frames.
 
 ## P2 acceptance boundary
 
