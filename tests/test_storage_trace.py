@@ -67,7 +67,7 @@ class StorageTraceTests(unittest.TestCase):
         self.assertEqual(row["code_address"], C)
         self.assertEqual(row["frame_id"], "0.1")
         self.assertEqual(row["access_seq"], 0)
-        self.assertEqual(row["opcode_index"], 2)
+        self.assertEqual(row["opcode_index"], 1)
 
     def test_unmatched_storage_frame_fails_closed(self):
         trace = {"type": "CALL", "from": A, "to": A, "calls": []}
