@@ -13480,6 +13480,31 @@ def _lab_workspace_remembered_targets(config):
     return remembered
 
 
+def _lab_target_entry_has_project_identity(owner_root, entry):
+    """Trust only entries with provenance tied to the owning project.
+
+    A project-owned artifact path is also useful identity evidence when an
+    inventory entry has no explicit source label. A global alias by itself
+    remains unverified.
+    """
+    if not isinstance(entry, dict):
+        return False
+    source = str(entry.get("source") or "").strip().lower()
+    if source in {"project-context", "broadcast"}:
+        return True
+    artifact = entry.get("artifact")
+    if not artifact:
+        return False
+    try:
+        root = Path(owner_root).expanduser().resolve()
+        artifact_path = Path(str(artifact)).expanduser()
+        if not artifact_path.is_absolute():
+            artifact_path = root / artifact_path
+        return artifact_path.resolve().is_relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _lab_address_choices(config, accounts, rpc=None):
     choices = []
 
@@ -13545,7 +13570,7 @@ def _lab_address_choices(config, accounts, rpc=None):
                 matching_entries = [
                     entry for entry in owner_entries
                     if str(entry.get("address") or "").lower() == address_key
-                    and str(entry.get("source") or "") in {"project-context", "broadcast"}
+                    and _lab_target_entry_has_project_identity(owner_root, entry)
                     and _target_entry_is_protocol(owner_root, entry)
                 ]
                 canonical_names = {
