@@ -241,7 +241,7 @@ def normalize_calltracer(
             depth=call.get("depth"),
             value=call.get("value"),
             calldata=call.get("input", call.get("data")),
-            reverted=bool(error) if error is not None else call.get("reverted"),
+            reverted=bool(error) if error is not None else bool(call.get("reverted", False)),
             storage=event_storage,
             storage_support=storage_support,
         ))
