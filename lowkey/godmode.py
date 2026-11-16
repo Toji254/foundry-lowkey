@@ -5631,15 +5631,18 @@ def _godmode_stage_detail(stage):
             return "Not requested. No attack campaign or attack transactions were run."
         if status == "interrupted":
             return "The local attack process was stopped by the operator; review its last probe and local-chain state before resuming."
-        if status in {"review", "completed"}:
+        if status in {"review", "completed", "blocked"}:
             raw = str(stage.get("output") or "")
             highlights = []
             for line in raw.splitlines():
-                if re.match(r"^\s*(Rounds|Probes|Skipped|Blocked|Observed|Timeouts|Breaks|Report|Conclusion)\s*:", line, re.I):
+                if re.match(r"^\s*(Rounds|Probes|Skipped|Blocked|Observed|Timeouts|Breaks|Report|Conclusion|Error|LOWKEY BREAK)\s*:", line, re.I):
                     highlights.append(line.strip())
             summary = "; ".join(highlights[-4:])
             code = stage.get("exit_code")
             base = f"lk break exited with code {code}." if code is not None else "lk break completed."
+            detail = stage.get("reason") or ""
+            if status == "blocked" and detail:
+                base += " " + str(detail)
             return base + (" " + summary if summary else " Open .audit/break/ for per-probe results.")
     if name == "control":
         if status == "provided":
