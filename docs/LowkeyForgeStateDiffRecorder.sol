@@ -169,11 +169,9 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
         require(accesses.length != 0, "Lowkey: empty state-diff window");
         string memory accessesJson = "[";
-        bytes32 measuredTargetCodeHash;
         bool targetAccessFound;
         for (uint256 i; i < accesses.length; ++i) {
             if (accesses[i].account == target) {
-                measuredTargetCodeHash = accesses[i].account.codehash;
                 targetAccessFound = true;
             }
             if (i != 0) accessesJson = string.concat(accessesJson, ",");
@@ -186,7 +184,11 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         finalJson = string.concat(finalJson, ',"chain_id":', _uintString(_lowkeyChainId));
         finalJson = string.concat(finalJson, ',"block_number":', _uintString(_lowkeyBlockNumber));
         finalJson = string.concat(finalJson, ',"target_address":', _quoted(_hex(abi.encodePacked(target))));
-        finalJson = string.concat(finalJson, ',"target_code_hash":', _quoted(_hex(abi.encodePacked(measuredTargetCodeHash))));
+        // target_code_hash is the code identity captured before the measured
+        // call window. The target AccountAccess record is independently
+        // checked by the normalizer against this same runtime hash. Do not
+        // overwrite it with a later delegatecall implementation's code hash.
+        finalJson = string.concat(finalJson, ',"target_code_hash":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))));
         finalJson = string.concat(finalJson, ',"target_code_hash_at_start":', _quoted(_hex(abi.encodePacked(_lowkeyTargetCodeHash))));
         finalJson = string.concat(finalJson, ',"fork_parent_hash":', _quoted(_hex(abi.encodePacked(_lowkeyParentHash))));
         finalJson = string.concat(finalJson, ',"setup_events":', _serializeDomainLogs(setupEvents));
