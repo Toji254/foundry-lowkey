@@ -81,7 +81,7 @@ HELP_FLAGS = {"-h", "--h", "--help", "help"}
 # This list mirrors the first Godmode dispatch case in bin/lk. The help test
 # compares the two, so adding a shell route without adding it here fails CI.
 ROUTED_COMMANDS = (
-    "capabilities", "godmode", "control", "steps", "mutation-score",
+    "capabilities", "godmode", "control", "trace-parity", "steps", "mutation-score",
     "target-coverage", "provenance", "fidelity", "sandbox", "cheat-fingerprint", "decompile",
     "storage-infer", "proxy-resolve", "selectors-full", "cfg",
     "reentrancy-graph", "fallback-map", "calldata-mine", "attack-forge",
@@ -110,6 +110,12 @@ GODMODE_COMMAND_DETAILS = {
         "when": "Use it before promoting a candidate BREAK; freeze expectations first, validate the freeze, then execute with the matching frozen inputs.",
         "example": "lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --validate",
         "limits": "Anvil callTracer mode accepts a local Anvil RPC only. Forge state-diff results are structural evidence, not gas-adjusted EOA profit.",
+    },
+    "trace-parity": {
+        "summary": "Compare saved canonical Forge and Anvil traces field by field, preserving unknowns and storage-evidence limits.",
+        "when": "Use it after running the same frozen experiment on both backends to check call-tree and calldata parity.",
+        "example": "lk trace-parity .audit/forge-control.json .audit/anvil-control.json --root .",
+        "limits": "The comparator cannot make transaction-level prestateTracer changes equivalent to Forge per-access storage observations; it reports that storage degradation explicitly.",
     },
     "steps": {
         "summary": "Validate a typed Step[] manifest and render a hash-addressed Foundry harness, with explicit machine-readable refusals.",
@@ -1888,6 +1894,70 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
     finally:
         shutil.rmtree(temp, ignore_errors=True)
 
+
+
+def trace_parity(args):
+    parser = LowkeyArgumentParser(
+        prog="lk trace-parity",
+        description="Compare canonical Forge and Anvil trace evidence without treating unknown fields as matches.",
+    )
+    parser.add_argument("forge_file", help="JSON evidence containing canonical_trace_events from Forge.")
+    parser.add_argument("anvil_file", help="JSON evidence containing canonical_trace_events from Anvil.")
+    parser.add_argument("--root", default=".", help="Project root for input and output paths.")
+    parser.add_argument("--output", default=".audit/godmode/trace-parity.json")
+    ns = parser.parse_args(args)
+    root = root_path(ns.root)
+
+    try:
+        from .trace_parity import compare_trace_events
+        from .trace_schema import from_legacy_event, TRACE_SCHEMA_VERSION
+    except ImportError:
+        try:
+            from lowkey.trace_parity import compare_trace_events
+            from lowkey.trace_schema import from_legacy_event, TRACE_SCHEMA_VERSION
+        except ImportError:
+            from trace_parity import compare_trace_events
+            from trace_schema import from_legacy_event, TRACE_SCHEMA_VERSION
+
+    def load_evidence(token, label):
+        path = (root / Path(token).expanduser()).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError(label + " trace evidence must be an existing file inside the project root.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(label + " trace evidence must contain a JSON object.")
+        events = payload.get("canonical_trace_events")
+        if events is None:
+            events = payload.get("trace_events")
+            if not isinstance(events, list):
+                raise ValueError(label + " evidence has no canonical_trace_events or legacy trace_events array.")
+            events = [
+                from_legacy_event(event, seq=index)
+                for index, event in enumerate(events)
+            ]
+        if not isinstance(events, list):
+            raise ValueError(label + " canonical_trace_events must be an array.")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {
+            "path": path.relative_to(root).as_posix(),
+            "sha256": digest,
+            "chain_id": payload.get("chain_id"),
+            "block_number": payload.get("block_number"),
+            "events": events,
+        }
+
+    forge = load_evidence(ns.forge_file, "Forge")
+    anvil = load_evidence(ns.anvil_file, "Anvil")
+    report = compare_trace_events(forge["events"], anvil["events"])
+    report.update({
+        "forge_evidence": {key: forge[key] for key in ("path", "sha256", "chain_id", "block_number")},
+        "anvil_evidence": {key: anvil[key] for key in ("path", "sha256", "chain_id", "block_number")},
+        "schema_contract": "Lowkey canonical TraceEvent v2",
+    })
+    output_path = safe_out(root, ns.output)
+    write_json(output_path, report)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "MATCHED" else (2 if report["status"] == "MISMATCH" else 1)
 
 
 def control(args):
@@ -3910,6 +3980,7 @@ def main(argv=None):
         return 0
     if cmd=="godmode": return godmode(rest)
     if cmd=="control": return control(rest)
+    if cmd=="trace-parity": return trace_parity(rest)
     if cmd=="steps": return steps(rest)
     if cmd=="mutation-score": return mutation(rest)
     if cmd=="target-coverage": return coverage(rest)
