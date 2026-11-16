@@ -305,6 +305,7 @@ jobs:
           name: p1-reentrancy-acceptance-${{ github.run_number }}
           path: .audit/p1-reentrancy-acceptance/
           if-no-files-found: ignore
+          include-hidden-files: true
           retention-days: 14
 
   p2-first-fork-acceptance:
@@ -348,6 +349,7 @@ jobs:
           name: p2-first-fork-acceptance-${{ github.run_number }}
           path: .audit/p2-first-fork/
           if-no-files-found: ignore
+          include-hidden-files: true
           retention-days: 21
 
   foundry-integration:
