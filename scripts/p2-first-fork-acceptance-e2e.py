@@ -179,11 +179,12 @@ def resolve_source_archive_provider(
     fallback_rpc: str,
     fork_rpc: str,
     deployment_block: int,
+    alternate_rpc: str | None = None,
 ) -> tuple[str, list[dict[str, str]], dict[str, Any]]:
     """Select an independent source/archive RPC with proven historical reads."""
     attempts: list[dict[str, str]] = []
     seen: set[str] = set()
-    for provider in (primary_rpc, fallback_rpc):
+    for provider in (primary_rpc, fallback_rpc, alternate_rpc):
         key = urlparse_safe(provider)
         if key in seen:
             continue
@@ -424,6 +425,7 @@ def main() -> int:
             source_fallback_rpc,
             fork_upstream,
             target_deployment_block,
+            alternate_rpc=fallback_rpc,
         )
     )
     deployment_block_header = source_deployment_evidence["deployment_block_header"]
