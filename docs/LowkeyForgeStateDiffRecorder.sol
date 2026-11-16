@@ -172,7 +172,11 @@ abstract contract LowkeyForgeStateDiffRecorder is Test {
         bytes32 measuredTargetCodeHash;
         bool targetAccessFound;
         for (uint256 i; i < accesses.length; ++i) {
-            if (accesses[i].account == target) {
+            if (accesses[i].account == target && !targetAccessFound) {
+                // Use the first target access, matching the pre-state snapshot
+                // semantics used by the normalizer's first account observation.
+                // Later accesses are not allowed to overwrite the target's
+                // pre-call identity hash.
                 measuredTargetCodeHash = accesses[i].account.codehash;
                 targetAccessFound = true;
             }
