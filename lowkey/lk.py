@@ -1686,7 +1686,8 @@ def activate_project_context(config, root=None):
     # Legacy handlers still read these fields directly. Hydrate them per
     # invocation, but the project context—not the global values—is authoritative
     # on the next command.
-    config["rpc"] = resolved.get("rpc")
+    if resolved.get("rpc_source") != "project-fixture":
+        config["rpc"] = resolved.get("rpc")
     config["actor"] = resolved.get("actor")
     config["_resolved_project_context"] = resolved
     return resolved
@@ -20298,10 +20299,15 @@ def _sync_audit_context(config, root=None):
 
     actor = actor_display(config)
     actor_profile = config.get("actor") if config.get("actor") in (config.get("wallets") or {}) else None
-    if actor == "none":
+    if actor == "none" and existing.get("actor_scope_initialized") is not True:
         actor = existing.get("actor")
 
-    rpc = effective_rpc(config) or existing.get("rpc")
+    resolved_context = resolve_runtime_context(config, root)
+    rpc = resolved_context.get("rpc")
+    if resolved_context.get("rpc_source") == "project-fixture":
+        # A managed temporary Anvil belongs to the active lab session, not the
+        # durable project network selection.
+        rpc = existing.get("rpc")
     # Transaction history is already recorded by the send/receipt/trace
     # command in this project's context. Never import the global legacy
     # last_tx value here: that would leak another workspace's transaction.

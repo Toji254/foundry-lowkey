@@ -278,6 +278,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/generator.py
   - $TARGET_LOWKEY_DIR/slither_tools.py
   - $TARGET_LOWKEY_DIR/audit_context.py
+  - $TARGET_LOWKEY_DIR/shared_context.py
   - $TARGET_LOWKEY_DIR/fixture_context.py
   - $TARGET_LOWKEY_DIR/project_detection.py
   - $TARGET_LOWKEY_DIR/clone_tools.py

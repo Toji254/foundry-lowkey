@@ -35,6 +35,8 @@ class InstallSmokeTests(unittest.TestCase):
             question_engine = pathlib.Path(home) / ".lowkey" / "question_engine.py"
             self.assertTrue(question_engine.exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "fixture_context.py").exists())
+            shared_context = pathlib.Path(home) / ".lowkey" / "shared_context.py"
+            self.assertTrue(shared_context.exists())
             cheatsheet = pathlib.Path(home) / ".lowkey" / "solidity_cheatsheet.py"
             self.assertTrue(cheatsheet.exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "ai_harness.py").exists())
@@ -64,6 +66,7 @@ class InstallSmokeTests(unittest.TestCase):
             pack_paths = sorted(archetype_dir.glob("*.json"))
             self.assertEqual(len(pack_paths), 10)
             install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertIn(str(shared_context), install_manifest["files"])
             for installed_path in [archetype_dir / "__init__.py", archetype_dir / "_index.py", *pack_paths]:
                 self.assertIn(str(installed_path), install_manifest["files"])
             fixture_source = ROOT / "tests" / "fixtures" / "acceptance" / "p3-genericity" / "vault"
