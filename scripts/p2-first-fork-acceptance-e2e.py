@@ -474,7 +474,7 @@ def main() -> int:
             )
 
             from lowkey.forge_state_diff import normalize_forge_state_diff
-            from lowkey.trace_schema import normalize_calltracer, normalize_prestate_diff
+            from lowkey.trace_schema import normalize_calltracer, normalize_prestate_diff, normalize_opcode_storage
             from lowkey.trace_parity import compare_trace_events
             from lowkey import proof_evidence, godmode
 
@@ -514,14 +514,41 @@ def main() -> int:
                 timeout=60,
             )
             partial_storage_rows = normalize_prestate_diff(prestate_diff)
+
+            # Geth-compatible opcode tracing retains the execution stack and
+            # storage map. The normalizer reconciles every call/create opcode
+            # against callTracer before assigning a storage access to a frame.
+            opcode_trace = rpc(
+                anvil_url,
+                "debug_traceCall",
+                [call_request, hex(fork_block), {
+                    "disableMemory": True,
+                    "disableStack": False,
+                    "disableStorage": False,
+                    "enableReturnData": False,
+                    "limit": 50000,
+                }],
+                timeout=60,
+            )
+            opcode_storage = normalize_opcode_storage(
+                opcode_trace, call_trace, max_steps=50000,
+            )
+            if not opcode_storage.get("supported"):
+                raise AssertionError(
+                    "Anvil opcode storage trace could not be attributed safely:\\n"
+                    + json.dumps(opcode_storage, indent=2)
+                )
             anvil_events = normalize_calltracer(
                 call_trace,
-                storage_support="partial",
-                partial_storage={0: partial_storage_rows},
+                storage_support="exact",
+                exact_storage=opcode_storage["by_frame_index"],
             )
             parity = compare_trace_events(forge_events, anvil_events)
-            if parity["status"] != "MATCHED":
-                raise AssertionError("Forge/Anvil call-tree parity did not match:\n" + json.dumps(parity, indent=2))
+            if parity["status"] != "MATCHED" or parity["storage_parity"] != "exact_comparable":
+                raise AssertionError(
+                    "Forge/Anvil call-tree and per-frame storage parity did not match:\\n"
+                    + json.dumps(parity, indent=2)
+                )
 
             spec = {
                 "source_addresses": [TARGET],
@@ -566,11 +593,24 @@ def main() -> int:
                 "runs": {"attack": {"chain_id": 1, "block_number": fork_block,
                                     "canonical_trace_events": forge_events}},
             }
+            opcode_trace_path = ARTIFACT_ROOT / "raw-anvil-opcode-trace.json"
+            opcode_trace_path.write_text(
+                json.dumps(opcode_trace, indent=2, sort_keys=True) + "\\n",
+                encoding="utf-8",
+            )
             anvil_report = {
                 "chain_id": 1, "block_number": fork_block,
                 "runs": {"attack": {"chain_id": 1, "block_number": fork_block,
                                     "canonical_trace_events": anvil_events,
-                                    "prestate_diff": prestate_diff}},
+                                    "prestate_diff": prestate_diff,
+                                    "opcode_storage_summary": {
+                                        "mode": opcode_storage["mode"],
+                                        "steps": opcode_storage["steps"],
+                                        "frame_count": opcode_storage["frame_count"],
+                                        "access_count": opcode_storage["access_count"],
+                                        "raw_artifact": opcode_trace_path.name,
+                                        "raw_sha256": hashlib.sha256(opcode_trace_path.read_bytes()).hexdigest(),
+                                    }}},
             }
             ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
             forge_file = ARTIFACT_ROOT / "forge-evidence.json"
@@ -616,9 +656,18 @@ def main() -> int:
                 "anvil_event_count": len(anvil_events),
                 "call_tree_parity": parity["status"],
                 "storage_parity": parity["storage_parity"],
+                "storage_value_parity": parity["storage_value_parity"],
+                "storage_accesses_matched": parity["storage_accesses_matched"],
                 "storage_support": parity["storage_support"],
+                "storage_access_mismatches": parity["storage_access_mismatches"],
+                "storage_value_mismatches": parity["storage_value_mismatches"],
+                "anvil_opcode_storage_mode": opcode_storage["mode"],
+                "anvil_opcode_steps": opcode_storage["steps"],
+                "anvil_opcode_storage_accesses": opcode_storage["access_count"],
+                "anvil_opcode_storage_scope": opcode_storage["storage_scope"],
+                "anvil_opcode_raw_sha256": hashlib.sha256(opcode_trace_path.read_bytes()).hexdigest(),
                 "anvil_prestate_slots": len(partial_storage_rows),
-                "anvil_prestate_scope": "transaction-level only; attached to root trace event, not attributed to nested frames",
+                "anvil_prestate_scope": "independent transaction-level changed-slot cross-check only; not used for frame attribution",
                 "call": "getNonce(address,uint192)",
                 "call_kind": "read-only protocol view invoked with no value; no transaction broadcast",
                 "identity_verified": identity.get("identity_verified"),
