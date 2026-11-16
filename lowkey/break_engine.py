@@ -474,12 +474,12 @@ def _discover_functions(host, config, target: Target) -> list[dict[str, Any]]:
         if not body:
             continue
         header = re.search(
-            r"\\b" + re.escape(special) + r"\\s*\\(\\s*\\)(?P<header>[^{};]*)\\{",
+            r"\b" + re.escape(special) + r"\s*\(\s*\)(?P<header>[^{};]*)\{",
             body,
         )
         if not header:
             continue
-        mutability = "payable" if re.search(r"\\bpayable\\b", header.group("header")) else "nonpayable"
+        mutability = "payable" if re.search(r"\bpayable\b", header.group("header")) else "nonpayable"
         functions.append({
             "type": "function",
             "name": special,
