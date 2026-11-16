@@ -365,7 +365,7 @@ def _validate_reproof(
         source_chain_matches = str(source_chain).lower() == hex(target["chain_id"]).lower()
     if not source_chain_matches:
         raise AttackEngineError(f"{label} independent source chain id differs from the pinned target.", "identity_mismatch")
-    if str(source.get("target_code_sha256") or "").lower() != target["code_sha256"]:
+    if str(source.get("target_code_sha256") or "").lower().removeprefix("0x") != target["code_sha256"][2:]:
         raise AttackEngineError(f"{label} target runtime code SHA-256 differs from the independently checked source deployment.", "identity_mismatch")
     if payload.get("fork_parent_block") != target["block_number"]:
         raise AttackEngineError(f"{label} reproof fork block differs from the pinned experiment.", "identity_mismatch")
