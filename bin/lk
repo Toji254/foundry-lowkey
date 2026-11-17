@@ -81,7 +81,7 @@ if [[ "${1:-}" == "state-diff" ]]; then
         esac
     done
     if [[ "$use_slot_diff" -eq 1 ]]; then
-        exec python3 "$HOME/.lowkey/godmode.py" "$@"
+        exec python3 "$HOME/.lowkey/command_wrapper.py" "state-diff" -- python3 "$HOME/.lowkey/godmode.py" "$@"
     fi
 fi
 

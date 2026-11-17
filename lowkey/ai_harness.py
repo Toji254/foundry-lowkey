@@ -2335,7 +2335,7 @@ def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None)
         lines.extend([
             "  lk ai errors status   Show the current setting.",
             "  lk ai errors manual   Keep explanations user-triggered only.",
-            "  lk ai errors auto     Explain supported Lowkey failures automatically.",
+            "  lk ai errors auto     Explain failures from Lowkey command routes automatically.",
             "",
             "Manual explanation: lk ai explain-error --last",
         ])
@@ -3410,7 +3410,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg["auto_explain_errors"] = parsed.mode == "auto"
             save_config(cfg)
             if parsed.mode == "auto":
-                print("Automatic AI error explanations enabled for failed routed lk commands. Provider requests may incur charges.")
+                print("Automatic AI error explanations enabled for failed routed lk commands, including specialized command modules. Provider requests may incur charges.")
                 print("Suggestions are printed only; commands are never executed by the AI.")
             else:
                 print("Automatic AI error explanations disabled. Use 'lk ai explain-error --last' when you want help.")

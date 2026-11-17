@@ -112,5 +112,16 @@ class LauncherRoutingTests(unittest.TestCase):
 
 
 
+    def test_block_state_diff_route_uses_shared_command_wrapper(self):
+        launcher = (Path(__file__).resolve().parents[1] / "bin" / "lk").read_text(
+            encoding="utf-8"
+        )
+        state_diff = launcher.split('if [[ "${1:-}" == "state-diff" ]]', 1)[1].split(
+            "# Read-only EVM block/header inspection", 1
+        )[0]
+        self.assertIn('command_wrapper.py" "state-diff"', state_diff)
+        self.assertNotIn('exec python3 "$HOME/.lowkey/godmode.py" "$@"', state_diff)
+
+
 if __name__ == "__main__":
     unittest.main()

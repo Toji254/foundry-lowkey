@@ -1,3 +1,4 @@
+import io
 import pathlib
 import sys
 import unittest
@@ -172,6 +173,76 @@ class CommandWrapperTests(unittest.TestCase):
         self.assertEqual(status, 0)
         root.assert_called_once_with("/tmp/Token")
         self.assertEqual(emit.call_args.args[1], project_root)
+
+
+    def test_auto_error_explainer_covers_specialized_control_failures(self):
+        scenarios = [
+            (
+                ["python3", "godmode.py", "control", "--lazy"],
+                "",
+                "usage: lk control\\nlk control: error: unrecognized arguments: --lazy",
+                "unrecognized arguments: --lazy",
+            ),
+            (
+                ["python3", "godmode.py", "control"],
+                "CONTROL NOT RUN — experiment manifest is missing.",
+                "",
+                "experiment manifest is missing",
+            ),
+        ]
+        for command, stdout_text, stderr_text, expected_error in scenarios:
+            with self.subTest(command=command):
+                fake_result = type("Result", (), {
+                    "returncode": 2,
+                    "stdout": stdout_text,
+                    "stderr": stderr_text,
+                })()
+                record = {
+                    "command": "lk control",
+                    "error": expected_error,
+                    "exit_code": 2,
+                    "project_label": "Fallback",
+                    "project_root": "/tmp/Fallback",
+                }
+                stdout_capture = io.StringIO()
+                stderr_capture = io.StringIO()
+                with (
+                    patch.object(command_wrapper.error_context, "auto_error_explain_enabled", return_value=True),
+                    patch.object(command_wrapper.error_context, "record_last_error", return_value=record) as save_error,
+                    patch.object(command_wrapper.error_context, "record_command_event") as save_event,
+                    patch.object(command_wrapper.error_advisor, "maybe_auto_explain", return_value="AI CONTROL DIAGNOSIS") as advise,
+                    patch.object(command_wrapper, "_project_root_for_command", return_value=pathlib.Path("/tmp/Fallback")),
+                    patch.object(command_wrapper.subprocess, "run", return_value=fake_result) as run,
+                    patch("test_repair.should_capture", return_value=False),
+                    patch("sys.stdout", stdout_capture),
+                    patch("sys.stderr", stderr_capture),
+                    patch.object(command_wrapper.audit_context, "emit"),
+                ):
+                    status = command_wrapper.run_command("control", command)
+
+                self.assertEqual(status, 2)
+                self.assertTrue(run.call_args.kwargs["capture_output"])
+                self.assertTrue(run.call_args.kwargs["text"])
+                self.assertIn(expected_error, save_error.call_args.kwargs["error"])
+                self.assertEqual(save_error.call_args.kwargs["command"], ["lk", "control"])
+                self.assertEqual(save_event.call_args.kwargs["source"], "command-wrapper")
+                advise.assert_called_once_with(record)
+                self.assertIn(stdout_text, stdout_capture.getvalue())
+                self.assertIn(stderr_text, stderr_capture.getvalue())
+                self.assertIn("AI CONTROL DIAGNOSIS", stderr_capture.getvalue())
+
+    def test_auto_error_setting_disabled_does_not_capture_or_call_advisor(self):
+        fake_result = type("Result", (), {"returncode": 2, "stdout": "native failure", "stderr": ""})()
+        with (
+            patch.object(command_wrapper.error_context, "auto_error_explain_enabled", return_value=False),
+            patch.object(command_wrapper.error_advisor, "maybe_auto_explain") as advise,
+            patch.object(command_wrapper.subprocess, "run", return_value=fake_result) as run,
+            patch.object(command_wrapper.audit_context, "emit"),
+        ):
+            status = command_wrapper.run_command("control", ["python3", "godmode.py", "control"])
+        self.assertEqual(status, 2)
+        self.assertNotIn("capture_output", run.call_args.kwargs)
+        advise.assert_not_called()
 
 
 if __name__ == "__main__":
