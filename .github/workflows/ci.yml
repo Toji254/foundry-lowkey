@@ -225,6 +225,7 @@ jobs:
             --block-base-fee-per-gas 1000000000 \
             --gas-limit 30000000 \
             --timestamp 1700000000 \
+            --block-time 1 \
             --hardfork cancun \
             > /tmp/lowkey-p0-anvil.log 2>&1 &
           for i in $(seq 1 30); do

@@ -99,9 +99,6 @@ def prepare(target: str, attacker: str, amount: str) -> None:
 
 def probe(target: str, attacker: str) -> None:
     _, sender = accounts_for(attacker)
-    # This access-control fixture is time-independent. Pin the probe block so
-    # independently prepared control/attack runs have identical timestamps.
-    rpc("evm_setNextBlockTimestamp", [2_000_000_000])
     tx_hash, receipt = send_and_wait(sender, target, "0x", value="0x1")
     print(f"LOWKEY_TRACE_TX_HASH {tx_hash}")
     print(f"LOWKEY_PROBE_RECEIPT_STATUS {str(receipt.get('status') or '').lower()}")
