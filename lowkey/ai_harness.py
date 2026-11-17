@@ -2204,39 +2204,20 @@ AUTOMATION SETTINGS
 -------------------
 SAVED DEFAULT
   lk ai guide                 AI explains and gives clues; you make the fix.
-  lk ai lazy                  AI may repair an eligible local test and verify it.
+  lk ai lazy                  AI may repair an eligible local Solidity test.
   lk ai hint                  Show the next clue for the last guided failure.
-  lk ai status                Show the selected mode and AI readiness.
 
-ONE-COMMAND OVERRIDE
-  Put ONE of these flags after a supported command. It affects that command only;
-  it does not change your saved default.
-
-  --guide                     Explain the failure and give staged hints. Never edits files.
-  --lazy                      May edit one eligible local Solidity test; backs it up,
-                              runs forge build and that test, and restores it if either fails.
-
-  Examples:
-    lk build --guide
-    lk build --lazy
-    lk test --guide
-    lk walkthrough --lazy
-    lk break --guide
-
-  Supported command roots: build, test, walkthrough, walk, break, godmode,
-  forge (build/test only), report, deploy, test-gen.
-  Do not combine --guide and --lazy. These flags do not mean --auto.
-
-OTHER AI SETTINGS
-  lk ai mode {manual|auto}    Control automatic review requests for eligible workflows.
-  lk ai recommendations {status|auto|manual}
-                              Add optional learning notes after command attempts.
-  lk ai errors {status|auto|manual}
-                              Explain supported failures without rerunning them.
-
-AI FAILURE CONTEXT
-  For a diagnosis, the error and a small nearby source excerpt may be sent to your
-  configured provider. Redaction is best-effort; provider charges may apply.
+ONE-COMMAND FLAGS
+  Put one flag after a supported command; it does not change your saved default.
+  --guide                     Explain a failure and give clues; never edits files.
+  --lazy                      May edit one local test, back it up, then run forge build
+                              and that test. Either failed check restores the original.
+  Examples: lk build --guide | lk build --lazy | lk test --guide
+            lk walkthrough --lazy | lk break --guide
+  Supported roots: build, test, walkthrough, walk, break, godmode, forge build/test,
+  report, deploy, test-gen. Do not combine the flags or confuse them with --auto.
+  Requires a configured, enabled provider: run 'lk ai status'. Diagnosis may send
+  the error and a nearby source excerpt to that provider; redaction is best-effort.
 
 WHAT DOES "AUTO" MEAN?
 ----------------------
