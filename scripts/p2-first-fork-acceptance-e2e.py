@@ -26,9 +26,10 @@ if str(ROOT) not in sys.path:
 TARGET = "0x0000000071727de22e5e9d8baf0edac6f37da032"
 ACTOR = "0x000000000000000000000000000000000000a11c"
 DEFAULT_FORK_UPSTREAM = "https://eth-mainnet.public.blastapi.io"
-DEFAULT_FORK_FALLBACK_RPC = "https://ethereum-rpc.publicnode.com"
-DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io"
-DEFAULT_SOURCE_FALLBACK_RPC = "https://eth.llamarpc.com"
+DEFAULT_FORK_FALLBACK_RPC = "https://eth.drpc.org"
+DEFAULT_SOURCE_RPC = "https://rpc.mevblocker.io/fullprivacy"
+DEFAULT_SOURCE_FALLBACK_RPC = "https://rpc.mevblocker.io/noreverts"
+DEFAULT_SOURCE_ALT_RPC = "https://rpc.mevblocker.io/fast"
 RECORDER = ROOT / "docs" / "LowkeyForgeStateDiffRecorder.sol"
 FORGE_STD_COMMIT = "15b2df92a05d4d2f76a06653872fefb287e0e01c"
 ARTIFACT_ROOT = ROOT / ".audit" / "p2-first-fork"
@@ -399,6 +400,10 @@ def main() -> int:
         os.environ.get("LOWKEY_P2_SOURCE_FALLBACK_RPC_URL")
         or DEFAULT_SOURCE_FALLBACK_RPC
     )
+    source_alt_rpc = (
+        os.environ.get("LOWKEY_P2_SOURCE_ALT_RPC_URL")
+        or DEFAULT_SOURCE_ALT_RPC
+    )
 
     fallback_rpc = (
         os.environ.get("LOWKEY_P2_FORK_FALLBACK_RPC_URL")
@@ -427,7 +432,7 @@ def main() -> int:
             source_fallback_rpc,
             fork_upstream,
             target_deployment_block,
-            alternate_rpc=fallback_rpc,
+            alternate_rpc=source_alt_rpc,
         )
     )
     deployment_block_header = source_deployment_evidence["deployment_block_header"]

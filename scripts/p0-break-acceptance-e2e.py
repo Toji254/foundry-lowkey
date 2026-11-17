@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -29,13 +30,19 @@ contract FallbackAccessTarget {
         contributions[msg.sender] = 1000 ether;
     }
 
+    // Seed one caller-specific scenario slot through an ordinary owner call.
+    function primeUserCredit(address user, uint256 amount) external onlyOwner {
+        contributions[user] = amount;
+    }
+
     function contribute() external payable {
         require(msg.value < 0.001 ether, "too much");
-        contributions[msg.sender] += msg.value;
+        // Lowkey's one-wei automatic setup probe yields two wei of credit here.
+        contributions[msg.sender] += msg.value + 1;
     }
 
     receive() external payable {
-        require(msg.value > 0 && contributions[msg.sender] > 0, "not a contributor");
+        require(msg.value > 0 && contributions[msg.sender] > 1, "not a contributor");
         owner = payable(msg.sender);
     }
 
@@ -290,20 +297,119 @@ def exercise_fallback_takeover(
     env: dict[str, str],
     evidence_root: Path,
 ) -> dict[str, object]:
-    """Prove the Fallback receive() authority write on a real local Anvil node."""
+    """Prove the Fallback receive() authority write with a matched local control."""
     contract = "FallbackAccessTarget"
     address = deploy(forge, root, env, contract)
     run([lk, "target", "reset"], root, env)
     run([lk, "target", contract, address], root, env)
 
-    output = run(
-        [lk, "break", "--family", "access", "--function", "receive", "--rounds", "1"],
-        root, env, timeout=180,
+    account_output = run(
+        [cast, "rpc", "eth_accounts", "--rpc-url", RPC], root, env
+    ).stdout.strip()
+    try:
+        accounts = json.loads(account_output)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"Anvil did not return a JSON account list: {account_output!r}") from exc
+    if not isinstance(accounts, list) or len(accounts) < 2:
+        raise AssertionError("Fallback control requires two unlocked Anvil accounts.")
+    deployer, attacker = str(accounts[0]).lower(), str(accounts[1]).lower()
+
+    # contributions is the first state variable, so its mapping base slot is 0.
+    encoded_slot = run(
+        [cast, "abi-encode", "f(address,uint256)", attacker, "0"], root, env
+    ).stdout.strip()
+    mapping_slot = run([cast, "keccak", encoded_slot], root, env).stdout.strip()
+    if not mapping_slot.startswith("0x") or len(mapping_slot) != 66:
+        raise AssertionError(f"Could not derive contribution mapping slot: {mapping_slot!r}")
+
+    # The gate copies the project to a clean directory before executing local
+    # command inputs, so include the helper in that copied project.
+    helper_source = Path(__file__).with_name("p0-fallback-sequential-control.py")
+    if not helper_source.is_file():
+        raise AssertionError(f"Sequential-control helper is missing: {helper_source}")
+    helper_relative = Path("scripts") / helper_source.name
+    helper_copy = root / helper_relative
+    helper_copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(helper_source, helper_copy)
+    helper = helper_relative.as_posix()
+
+    manifest_path = root / "p0-fallback-control.json"
+    probe_argv = [sys.executable, helper, "probe", address, attacker]
+
+    def prepare_argv(amount: int) -> list[str]:
+        return [sys.executable, helper, "prepare", address, attacker, str(amount)]
+
+    manifest = {
+        "target_address": address.lower(),
+        "function": "receive()",
+        "family": "access",
+        "same_calls_id": "p0-fallback-receive-access-v1",
+        "non_economic": True,
+        "prestate_addresses": [address.lower(), deployer, attacker],
+        "prestate_slots": [
+            {"address": address.lower(), "slot": "0x" + format(1, "064x")},
+        ],
+        "scenario_parameters": [
+            {
+                "name": "attacker_contribution",
+                "address": address.lower(),
+                "slot": mapping_slot.lower(),
+                "control_value": 1,
+                "attack_value": 2,
+                "description": (
+                    "Only the attacker contribution mapping value differs; both "
+                    "values are checked on-chain before the matched receive() call."
+                ),
+            }
+        ],
+        "metric_addresses": [attacker],
+        "trace_expectations": [
+            {
+                "address": address.lower(),
+                "description": "Control and attack each execute one identical receive() call.",
+                "control_min_calls": 1,
+                "control_max_calls": 1,
+                "attack_min_calls": 1,
+                "attack_max_calls": 1,
+            }
+        ],
+        "prepare_timeout_seconds": 45,
+        "timeout_seconds": 45,
+        "semantic_timeout_seconds": 30,
+        "control": {
+            "prepare_argv": prepare_argv(1),
+            "argv": probe_argv,
+            "expected_receipt_status": "0x0",
+        },
+        "attack": {
+            "prepare_argv": prepare_argv(2),
+            "argv": probe_argv,
+            "expected_receipt_status": "0x1",
+            "semantic_check_argv": [
+                sys.executable, helper, "assert-owner", address, attacker
+            ],
+            "semantic_check_test": "fallback_owner_takeover",
+        },
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    if "CONCRETE BREAK CONDITION REACHED" not in output.stdout:
+    run(
+        [lk, "control", manifest_path.name, "--root", str(root), "--freeze"],
+        root, env, timeout=90,
+    )
+
+    output = run(
+        [
+            lk, "break", "--family", "access", "--function", "receive",
+            "--rounds", "1", "--control-manifest", manifest_path.name,
+        ],
+        root, env, timeout=240,
+    )
+    if "LOWKEY // SIMULATED BREAK CONDITION REACHED" not in output.stdout:
         raise AssertionError(
-            "Fallback takeover probe did not reach the expected local break condition.\\n"
-            + output.stdout[-12000:]
+            "Fallback takeover did not pass the matched-control gate as SIMULATED_BREAK.\n"
+            + output.stdout[-16000:]
         )
 
     runs_dir = root / ".audit" / "break" / "runs"
@@ -312,23 +418,31 @@ def exercise_fallback_takeover(
     )
     if not evidence_files:
         raise AssertionError(
-            f"Fallback authority-write evidence was not saved under {runs_dir}.\\n"
+            f"Fallback authority-write evidence was not saved under {runs_dir}.\n"
             + output.stdout[-12000:]
         )
     evidence_path = evidence_files[-1]
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     before = str(evidence.get("authority_before") or "").lower()
     after = str(evidence.get("authority_after") or "").lower()
-    attacker = str(evidence.get("attacker") or "").lower()
-    if not before or not attacker or before == attacker or after != attacker:
+    observed_attacker = str(evidence.get("attacker") or "").lower()
+    gate = evidence.get("control_gate") or {}
+    fidelity = gate.get("fidelity") or {}
+    if not before or not observed_attacker or before == observed_attacker or after != observed_attacker:
         raise AssertionError(
             "Fallback evidence did not prove an unauthorized owner change: "
             + json.dumps(evidence, indent=2)
         )
     if evidence.get("break_condition") is not True:
-        raise AssertionError("Fallback evidence omitted its explicit break_condition=true marker.")
+        raise AssertionError("Fallback evidence omitted break_condition=true.")
+    if evidence.get("verdict") != "SIMULATED_BREAK" or gate.get("status") != "passed":
+        raise AssertionError(
+            "Fallback candidate did not pass matched control with simulation-only cap: "
+            + json.dumps({"verdict": evidence.get("verdict"), "control_gate": gate}, indent=2)
+        )
+    if fidelity.get("confirmation_eligible") is not False:
+        raise AssertionError("A local Anvil fixture was incorrectly marked confirmation-eligible.")
 
-    # The experiment must restore the exact pre-probe Anvil snapshot.
     restored_owner = run(
         [cast, "call", address, "owner()(address)", "--rpc-url", RPC], root, env
     ).stdout.strip().lower()
@@ -337,35 +451,34 @@ def exercise_fallback_takeover(
         root, env,
     ).stdout.strip().splitlines()[0]
     if restored_owner != before:
-        raise AssertionError(
-            f"Authority probe did not restore owner after evm_revert: before={before}, after={restored_owner}"
-        )
+        raise AssertionError(f"Authority probe did not restore owner: before={before}, after={restored_owner}")
     try:
         contribution_value = int(restored_contribution, 0)
     except ValueError as exc:
-        raise AssertionError(
-            f"Could not decode restored contribution balance: {restored_contribution!r}"
-        ) from exc
+        raise AssertionError(f"Could not decode restored contribution value: {restored_contribution!r}") from exc
     if contribution_value != 0:
-        raise AssertionError(
-            f"Authority probe left attacker contribution state behind: {contribution_value}"
-        )
+        raise AssertionError(f"Authority probe left contribution state behind: {contribution_value}")
 
     destination = evidence_root / contract
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copy2(evidence_path, destination / evidence_path.name)
+    shutil.copy2(manifest_path, destination / "control-manifest.json")
+    freeze_path = root / ".audit" / "godmode" / "control.freeze.json"
+    if freeze_path.is_file():
+        shutil.copy2(freeze_path, destination / "control.freeze.json")
     return {
         "contract": contract,
-        "status": "BREAK",
+        "status": "SIMULATED_BREAK",
         "entry": "receive()",
         "authority_before": before,
         "authority_after": after,
-        "attacker": attacker,
+        "attacker": observed_attacker,
+        "control_gate": gate.get("status"),
+        "confirmation_eligible": False,
         "snapshot_restored": True,
         "attacker_contribution_after_restore": contribution_value,
         "evidence_path": (destination / evidence_path.name).as_posix(),
     }
-
 
 def main() -> int:
     forge = shutil.which("forge")
@@ -465,7 +578,10 @@ def main() -> int:
             ))
         if (
             len(cases) != 5
-            or any(case.get("status") not in {"OBSERVED", "BREAK"} for case in cases)
+            or any(case.get("status") not in {"OBSERVED", "BREAK", "SIMULATED_BREAK"} for case in cases)
+            or cases[-1].get("status") != "SIMULATED_BREAK"
+            or cases[-1].get("control_gate") != "passed"
+            or cases[-1].get("confirmation_eligible") is not False
             or not cases[-1].get("snapshot_restored")
         ):
             raise AssertionError(f"P0 acceptance did not observe all five cases: {cases}")
@@ -484,7 +600,7 @@ def main() -> int:
             encoding="utf-8",
         )
         print(json.dumps(report, indent=2, sort_keys=True))
-        print("PASS: four accounting acceptance cases and the Fallback authority-takeover proof passed.")
+        print("PASS: four accounting acceptance cases and the matched-control Fallback takeover simulation passed.")
     finally:
         # Do not leave the CI runner's global target pointed at a temporary deployment.
         subprocess.run([lk, "target", "reset"], env=env, text=True, capture_output=True, check=False)

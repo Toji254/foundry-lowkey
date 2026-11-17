@@ -379,7 +379,10 @@ jobs:
       - name: Run P2 Forge-Anvil parity and first verified deployment fork
         env:
           LOWKEY_P2_FORK_UPSTREAM_RPC_URL: ${{ secrets.LOWKEY_P2_FORK_UPSTREAM_RPC_URL }}
+          LOWKEY_P2_FORK_FALLBACK_RPC_URL: ${{ secrets.LOWKEY_P2_FORK_FALLBACK_RPC_URL }}
           LOWKEY_P2_SOURCE_RPC_URL: ${{ secrets.LOWKEY_P2_SOURCE_RPC_URL }}
+          LOWKEY_P2_SOURCE_FALLBACK_RPC_URL: ${{ secrets.LOWKEY_P2_SOURCE_FALLBACK_RPC_URL }}
+          LOWKEY_P2_SOURCE_ALT_RPC_URL: ${{ secrets.LOWKEY_P2_SOURCE_ALT_RPC_URL }}
         run: python3 scripts/p2-first-fork-acceptance-e2e.py
 
       - name: Upload P2 first-fork evidence

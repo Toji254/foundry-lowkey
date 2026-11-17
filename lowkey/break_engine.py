@@ -3472,6 +3472,30 @@ def _run_authority_write_probe(host, config, rpc: str, target: Target,
         "family": "access",
         "target": asdict(target),
         "function": signature,
+        "fidelity": {
+            "classification": "SIMULATED",
+            "execution_backend": "anvil-cast",
+            "target_authenticity": "unknown",
+            "target_authenticity_verified": False,
+            "confirmation_eligible": False,
+            "synthetic_state": False,
+            "scan_complete": False,
+            "signals": [{
+                "kind": "local_anvil_unpinned",
+                "description": (
+                    "This authority-write probe executes against local Anvil; deployment "
+                    "identity and historical block are not independently verified."
+                ),
+            }],
+            "fork_reproduction_blockers": [
+                "target_deployment_identity_not_independently_verified",
+                "historical_block_not_independently_pinned",
+            ],
+            "limitations": [
+                "This is a local behavioral reproduction, not deployment proof.",
+                "A block-pinned fork and independent deployment verification are required for confirmation.",
+            ],
+        },
         "authority_variable": principal,
         "attacker": attacker,
         "setup_function": _format_signature(setup, host) if setup else None,

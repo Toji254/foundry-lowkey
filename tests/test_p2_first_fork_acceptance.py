@@ -22,6 +22,41 @@ class P2ForkFailoverTests(unittest.TestCase):
         self.source = "https://rpc.mevblocker.io"
         self.snapshot = (123456, {"hash": "0xabc"}, {"codeHash": "0xdef"}, "0x6000")
 
+    def test_default_archive_routes_are_proof_capable_and_avoid_publicnode(self):
+        self.assertEqual(p2.DEFAULT_FORK_FALLBACK_RPC, "https://eth.drpc.org")
+        self.assertNotIn("publicnode", p2.DEFAULT_FORK_FALLBACK_RPC)
+        self.assertEqual(p2.DEFAULT_SOURCE_RPC, "https://rpc.mevblocker.io/fullprivacy")
+        self.assertEqual(p2.DEFAULT_SOURCE_FALLBACK_RPC, "https://rpc.mevblocker.io/noreverts")
+        self.assertEqual(p2.DEFAULT_SOURCE_ALT_RPC, "https://rpc.mevblocker.io/fast")
+
+    def test_source_archive_tries_all_three_independent_historical_routes(self):
+        first_error = RuntimeError("fullprivacy historical block lookup timed out")
+        second_error = RuntimeError("noreverts historical code lookup failed")
+        header = {"hash": "0x" + "5" * 64}
+        proof = {"codeHash": "0x" + "6" * 64}
+        responses = [
+            "0x1", first_error,
+            "0x1", second_error,
+            "0x1", header, "0x6000", proof,
+        ]
+        with mock.patch.object(p2, "rpc", side_effect=responses) as request:
+            active, attempts, evidence = p2.resolve_source_archive_provider(
+                p2.DEFAULT_SOURCE_RPC,
+                p2.DEFAULT_SOURCE_FALLBACK_RPC,
+                p2.DEFAULT_FORK_UPSTREAM,
+                123,
+                alternate_rpc=p2.DEFAULT_SOURCE_ALT_RPC,
+            )
+        self.assertEqual(active, p2.DEFAULT_SOURCE_ALT_RPC)
+        self.assertEqual(
+            [item["status"] for item in attempts],
+            ["unavailable", "unavailable", "selected"],
+        )
+        self.assertEqual(evidence["deployment_block_header"], header)
+        self.assertEqual(evidence["deployment_code"], "0x6000")
+        self.assertEqual(evidence["deployment_proof"], proof)
+        self.assertEqual(request.call_count, 8)
+
     def test_chain_id_rate_limit_selects_independent_fallback(self):
         error = RuntimeError(
             "RPC eth_chainId failed at eth-mainnet.public.blastapi.io: "
