@@ -2207,14 +2207,14 @@ SAVED DEFAULT
   lk ai lazy                  AI may repair an eligible local Solidity test.
   lk ai hint                  Show the next clue for the last guided failure.
 
-ONE-COMMAND FLAGS
+ONE-COMMAND OVERRIDE
   Put one flag after a supported command; it does not change your saved default.
   --guide                     Explain a failure and give clues; never edits files.
   --lazy                      May edit one local test, back it up, then run forge build
                               and that test. Either failed check restores the original.
   Examples: lk build --guide | lk build --lazy | lk test --guide
             lk walkthrough --lazy | lk break --guide
-  Supported roots: build, test, walkthrough, walk, break, godmode, forge build/test,
+  Supported command roots: build, test, walkthrough, walk, break, godmode, forge build/test,
   report, deploy, test-gen. Do not combine the flags or confuse them with --auto.
   Requires a configured, enabled provider: run 'lk ai status'. Diagnosis may send
   the error and a nearby source excerpt to that provider; redaction is best-effort.
