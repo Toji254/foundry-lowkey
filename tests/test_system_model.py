@@ -213,5 +213,39 @@ class SystemModelTests(unittest.TestCase):
         self.assertEqual(manifest["security_patterns"][0]["verification_status"], "REVIEW")
         self.assertIn("second call remained accepted", manifest["security_patterns"][0]["evidence"])
 
+
+    def test_manifest_rejects_external_source_symlinks_but_keeps_internal_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            root = base / "project"
+            (root / "src").mkdir(parents=True)
+            (root / "shared").mkdir()
+            outside = base / "outside.sol"
+            outside.write_text(
+                'contract Outside { function leak() external { token.transferFrom(owner, address(this), amount); } }\\n',
+                encoding="utf-8",
+            )
+            internal = root / "shared" / "Internal.sol"
+            internal.write_text(
+                'contract Internal { function moveFunds() external { token.transferFrom(owner, address(this), amount); } }\\n',
+                encoding="utf-8",
+            )
+            try:
+                (root / "src" / "ExternalAlias.sol").symlink_to(outside)
+                (root / "src" / "InternalAlias.sol").symlink_to(internal)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symbolic links are unavailable: {exc}")
+
+            manifest = system_model.build_manifest(root)
+
+        source_paths = {item["path"] for item in manifest["sources"]}
+        self.assertNotIn("src/ExternalAlias.sol", source_paths)
+        self.assertIn("src/InternalAlias.sol", source_paths)
+        self.assertFalse(any(
+            "ExternalAlias.sol" == item["path"]
+            for item in manifest["sources"]
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()

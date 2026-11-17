@@ -114,10 +114,19 @@ def _mask_comments(text: str) -> str:
 
 
 def _project_files(root: Path, *patterns: str) -> list[Path]:
+    """Collect project files without following links outside the selected workspace."""
+    resolved_root = root.resolve()
     seen: set[Path] = set()
     result: list[Path] = []
     for pattern in patterns:
         for path in sorted(root.glob(pattern)):
+            try:
+                resolved_path = path.resolve(strict=True)
+                resolved_path.relative_to(resolved_root)
+            except (OSError, RuntimeError, ValueError):
+                # A dangling link, symlink loop, inaccessible path, or path that
+                # escapes the workspace is not part of this project's source.
+                continue
             if path.is_file() and path not in seen:
                 seen.add(path)
                 result.append(path)

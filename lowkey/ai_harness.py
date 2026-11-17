@@ -3102,7 +3102,15 @@ def main(argv: list[str] | None = None) -> int:
             "Examples:\n"
             "  lk ai status\n"
             "  lk ai security-review --contract Vault\n"
-            "  lk ai test-plan --contract Vault"
+            "  lk ai test-plan --contract Vault\\n\\n"
+            "WHAT DOES \\"AUTO\\" MEAN?\\n"
+            "-------------------------\\n"
+            "Automatic settings are independent:\\n"
+            "  lk ai mode auto             Enable automatic complexity-triggered reviews.\\n"
+            "  lk ai recommendations auto Add optional source-grounded suggestions after eligible commands.\\n"
+            "  lk ai errors auto           Enable automatic failure explanations.\\n"
+            "Use manual to disable each setting; status shows its value. "
+            "auto is a value after a setting command, not a standalone command."
         ),
     )
     sub = parser.add_subparsers(dest="action")
