@@ -685,12 +685,63 @@ def _run_native_fallback(argv: Sequence[str]) -> int:
     ).returncode
 
 
+def render_build_help() -> str:
+    """Friendly help for the project-aware build command, including AI failure modes."""
+    return "\\n".join([
+        "LOWKEY HELP  •  lk build",
+        "=" * 72,
+        "",
+        "WHAT THIS COMMAND DOES",
+        "  Selects the correct Foundry package, plans a safe build scope, checks",
+        "  available resources, and chooses conservative compiler concurrency.",
+        "",
+        "USAGE",
+        "  lk build [OPTIONS] [FORGE OPTIONS]",
+        "",
+        "BUILD OPTIONS",
+        "  --root DIR          Select a project or package root.",
+        "  --member MEMBER     Select a workspace member by index, name, or path.",
+        "  --scope SCOPE       full, production, tests, scripts, or target (default: full).",
+        "  --target CONTRACT   Build one source file or unique contract; implies target scope.",
+        "  --low-memory        Force one compiler worker.",
+        "  --plan              Print the plan without starting the compiler.",
+        "  --json              Print the build plan as JSON.",
+        "",
+        "AI FAILURE MODES",
+        "  --guide             For this build only: explain a failure and give clues.",
+        "                      No project files are edited.",
+        "  --lazy              For this build only: may repair one eligible local Solidity",
+        "                      test, then run forge build and that test. Failed checks restore it.",
+        "",
+        "EXAMPLES",
+        "  lk build --h",
+        "  lk build --scope production --plan",
+        "  lk build --root packages/perps --scope production",
+        "  lk build --guide",
+        "  lk build --lazy",
+        "",
+        "NOTES",
+        "  --guide and --lazy are mutually exclusive and do not change 'lk ai guide/lazy'.",
+        "  Lazy edits are restricted to local Solidity tests under test/ or tests/; contracts",
+        "  and Foundry settings are never auto-edited. A configured, enabled AI provider is required.",
+        "  Diagnosis may send the error and a nearby source excerpt to that provider.",
+        "  Use 'lk ai status' to check readiness and 'lk ai --h' for the complete AI guide.",
+        "",
+        "HELP FORMS",
+        "  lk build --h | --help | -h | help",
+    ])
+
+
 def run_build(
     argv: Sequence[str],
     *,
     root: Path | None = None,
     fallback_to_native: bool = False,
 ) -> int:
+    values = list(argv)
+    if any(str(value).strip().lower() in {"--h", "--help", "-h", "help"} for value in values):
+        print(render_build_help())
+        return 0
     parser = argparse.ArgumentParser(
         prog="lk build",
         description="Plan and run a project-scoped Foundry build with conservative compiler concurrency.",

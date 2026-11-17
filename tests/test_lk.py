@@ -4957,6 +4957,25 @@ contract Pool {
             with self.subTest(expected=expected):
                 self.assertIn(expected, rendered)
 
+    def test_command_help_discloses_ai_failure_mode_flags_for_supported_roots(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = lk._render_command_help(["test"])
+        self.assertEqual(code, 0)
+        rendered = output.getvalue()
+        self.assertIn("AI FAILURE MODES", rendered)
+        self.assertIn("--guide", rendered)
+        self.assertIn("--lazy", rendered)
+        self.assertIn("lk test --guide", rendered)
+        self.assertIn("lk test --lazy", rendered)
+
+    def test_command_help_does_not_advertise_ai_repair_flags_for_unsupported_roots(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = lk._render_command_help(["status"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("AI FAILURE MODES", output.getvalue())
+
     def test_lab_generic_refuses_noninteractive_constructor_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

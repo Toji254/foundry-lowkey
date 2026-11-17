@@ -21,6 +21,32 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
+    def test_build_help_short_alias_lists_ai_failure_modes_without_running_build(self):
+        import contextlib
+        import io
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = foundry_build.run_build(["--h"])
+        rendered = output.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("LOWKEY HELP  •  lk build", rendered)
+        self.assertIn("--guide", rendered)
+        self.assertIn("--lazy", rendered)
+        self.assertIn("mutually exclusive", rendered)
+        self.assertIn("lk build --lazy", rendered)
+
+    def test_build_help_long_alias_lists_ai_failure_modes_without_running_build(self):
+        import contextlib
+        import io
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = foundry_build.run_build(["--help"])
+        self.assertEqual(result, 0)
+        self.assertIn("--guide", output.getvalue())
+        self.assertIn("--lazy", output.getvalue())
+
     def test_collect_resources_reads_ram_swap_zram_psi_and_cgroup(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = pathlib.Path(tmp)

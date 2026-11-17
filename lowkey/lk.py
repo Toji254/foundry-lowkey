@@ -24579,6 +24579,31 @@ def _render_command_help(path):
             print(f"      Example: {example}")
 
     options = entry.get("options") or []
+    repair_flag_commands = {
+        "test", "walkthrough", "walk", "break", "godmode", "forge",
+        "report", "deploy", "test-gen",
+    }
+    repair_root = (shown_path.split() or [""])[0].lower()
+    if repair_root in repair_flag_commands:
+        print("")
+        print("AI FAILURE MODES")
+        print("----------------")
+        if repair_root == "forge":
+            print("  --guide")
+            print("      Use with 'lk forge build' or 'lk forge test' to explain a failure and give clues.")
+            print("  --lazy")
+            print("      Use with 'lk forge build' or 'lk forge test' to attempt a verified local test repair.")
+            print("      Example: lk forge test --lazy")
+        else:
+            print("  --guide")
+            print("      For this command only: explain a failure and give clues. No files are edited.")
+            print(f"      Example: lk {shown_path} --guide")
+            print("  --lazy")
+            print("      For this command only: may repair one eligible local Solidity test,")
+            print("      then run 'forge build' and that test. If either check fails, restore the test.")
+            print(f"      Example: lk {shown_path} --lazy")
+        print("  These flags are mutually exclusive and do not change your saved 'lk ai guide/lazy' mode.")
+        print("  Lazy mode never auto-edits production contracts or Foundry settings.")
     print("")
     print("OPTIONS / MODES")
     print("---------------")
@@ -24646,6 +24671,11 @@ START HERE
   lk ai run "investigate why withdrawal reverts"  Plan/approve read-only checks and interpret results.
   lk ai --h                          Show AI commands, settings, examples, and safety notes.
   lk ai status                       Show optional AI provider status.
+  lk ai guide / lk ai lazy            Set the saved default for AI failure help.
+  lk build --guide / --lazy           Override AI failure help for this build only.
+  lk test --guide / --lazy            Override AI failure help for this test command only.
+  lk walkthrough --guide / --lazy     Override AI failure help for this walkthrough only.
+  Use 'lk <command> --h' to see flags supported by that command.
   lk memory status                   Inspect native project/global experience memory.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
