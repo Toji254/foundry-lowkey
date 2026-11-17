@@ -245,5 +245,22 @@ class CommandWrapperTests(unittest.TestCase):
         advise.assert_not_called()
 
 
+    def test_ai_harness_failure_is_not_explained_twice_by_wrapper(self):
+        fake_result = type("Result", (), {"returncode": 2, "stdout": "", "stderr": "AI setup failed"})()
+        with (
+            patch.object(command_wrapper.error_context, "auto_error_explain_enabled", return_value=True),
+            patch.object(command_wrapper.error_advisor, "maybe_auto_explain") as advise,
+            patch.object(command_wrapper.subprocess, "run", return_value=fake_result) as run,
+            patch("test_repair.should_capture", return_value=False),
+            patch.object(command_wrapper.audit_context, "emit"),
+        ):
+            status = command_wrapper.run_command(
+                "ai", ["python3", "/home/example/.lowkey/ai_harness.py", "setup"]
+            )
+        self.assertEqual(status, 2)
+        self.assertNotIn("capture_output", run.call_args.kwargs)
+        advise.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

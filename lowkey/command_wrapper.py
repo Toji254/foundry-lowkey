@@ -114,9 +114,12 @@ def _project_root_for_command(command: list[str], *, fallback_to_cwd: bool = Fal
     """Resolve an explicit/project root without making native commands depend on it."""
     try:
         root_hint = _explicit_root(command)
-        return audit_context.foundry_project_root(root_hint) if root_hint else audit_context.foundry_project_root()
+        root = audit_context.foundry_project_root(root_hint) if root_hint else audit_context.foundry_project_root()
+        if root is not None:
+            return root
     except Exception:
-        return Path.cwd() if fallback_to_cwd else None
+        pass
+    return Path.cwd() if fallback_to_cwd else None
 
 
 def _automatic_error_explanations_enabled() -> bool:
@@ -126,8 +129,16 @@ def _automatic_error_explanations_enabled() -> bool:
         return False
 
 
-def _is_manual_error_explainer(command_name: str, command: list[str]) -> bool:
-    return command_name == "ai" and "explain-error" in [str(value) for value in command[1:4]]
+def _is_self_explaining_ai_command(command_name: str, command: list[str]) -> bool:
+    if command_name != "ai":
+        return False
+    # ai_harness.py records and explains its own failures. Other specialised AI
+    # routes (such as finding_explainer.py) still need the shared wrapper.
+    tokens = [str(value).strip().lower() for value in command[1:5]]
+    return (
+        any(Path(value).name == "ai_harness.py" for value in tokens)
+        or "explain-error" in tokens
+    )
 
 
 def _record_and_explain_failure(
@@ -212,7 +223,7 @@ def run_command(
     # small set of commands supported by test_repair.
     auto_error_capture = (
         not help_only
-        and not _is_manual_error_explainer(name, command)
+        and not _is_self_explaining_ai_command(name, command)
         and _automatic_error_explanations_enabled()
     )
     capture_output = repair_capture or auto_error_capture
