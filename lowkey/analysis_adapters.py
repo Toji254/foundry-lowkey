@@ -312,9 +312,15 @@ def _safe_read(path: Path) -> str:
         return ""
 
 def _safe_walk_files(root: Path) -> Iterable[Path]:
+    """Walk source files without following file links outside the selected project."""
     def onerror(_exc: OSError) -> None:
         return None
+    try:
+        root = root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return
     prefixes = _dependency_prefixes(root)
+    seen: set[Path] = set()
     try:
         walker = os.walk(root, onerror=onerror, followlinks=False)
     except OSError:
@@ -325,11 +331,18 @@ def _safe_walk_files(root: Path) -> Iterable[Path]:
             name for name in dirs
             if not _should_prune_directory(root, current_path, name, prefixes)
         )
-        current_path = Path(current)
         for name in sorted(files):
+            candidate = current_path / name
             try:
-                yield current_path / name
-            except OSError:
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(root)
+                if not resolved.is_file() or resolved in seen:
+                    continue
+                seen.add(resolved)
+                # Yield the checked target, not the link path, so a link swap
+                # between enumeration and a later read cannot escape the root.
+                yield resolved
+            except (OSError, RuntimeError, ValueError):
                 continue
 
 def _is_support_path(path: Path, root: Path) -> bool:

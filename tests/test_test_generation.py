@@ -1061,5 +1061,24 @@ contract Protocol {
             with self.subTest(obligation=obligation):
                 self.assertIn(obligation, plan)
 
+    def test_contract_source_rejects_symlinks_outside_the_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "project"
+            (root / "src").mkdir(parents=True)
+            outside = base / "outside.sol"
+            outside.write_text(
+                "pragma solidity ^0.8.20; contract OutsideSecret {}\\n",
+                encoding="utf-8",
+            )
+            try:
+                (root / "src" / "ExternalAlias.sol").symlink_to(outside)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symbolic links are unavailable: {exc}")
+
+            self.assertIsNone(generation._contract_source(root, "OutsideSecret"))
+
+
+
 if __name__ == "__main__":
     unittest.main()

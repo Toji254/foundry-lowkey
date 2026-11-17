@@ -455,5 +455,34 @@ class AnalysisAdapterTests(unittest.TestCase):
         self.assertIn("analysis is partial", rendered.lower())
 
 
+
+    def test_project_source_walker_rejects_external_symlinks_and_keeps_internal_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "project"
+            (root / "src").mkdir(parents=True)
+            (root / "shared").mkdir()
+            outside = base / "outside.sol"
+            outside.write_text(
+                "pragma solidity ^0.8.20; contract OutsideSecret {}\\n",
+                encoding="utf-8",
+            )
+            internal = root / "shared" / "Internal.sol"
+            internal.write_text(
+                "pragma solidity ^0.8.20; contract InternalSource {}\\n",
+                encoding="utf-8",
+            )
+            try:
+                (root / "src" / "ExternalAlias.sol").symlink_to(outside)
+                (root / "src" / "InternalAlias.sol").symlink_to(internal)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symbolic links are unavailable: {exc}")
+
+            scanned = analysis_adapters.project_source_files(root, {".sol"})
+            resolved = {path.resolve() for path in scanned}
+            self.assertNotIn(outside.resolve(), resolved)
+            self.assertIn(internal.resolve(), resolved)
+
+
 if __name__ == "__main__":
     unittest.main()

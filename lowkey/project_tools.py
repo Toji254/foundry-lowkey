@@ -114,14 +114,21 @@ def _walk_files(root: Path, suffixes: set[str]) -> list[Path]:
     """Legacy fallback walker; canonical callers use analysis_adapters."""
     files: list[Path] = []
     root = root.resolve()
-    for current, dirs, names in os.walk(root):
+    seen: set[Path] = set()
+    for current, dirs, names in os.walk(root, followlinks=False):
         dirs[:] = sorted(name for name in dirs if name not in EXCLUDED_DIRS)
 
         current_path = Path(current)
         for name in names:
             path = current_path / name
-            if path.suffix.lower() in suffixes:
-                files.append(path)
+            try:
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(root)
+                if resolved.is_file() and resolved.suffix.lower() in suffixes and resolved not in seen:
+                    seen.add(resolved)
+                    files.append(resolved)
+            except (OSError, RuntimeError, ValueError):
+                continue
 
     return sorted(files)
 

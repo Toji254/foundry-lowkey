@@ -69,20 +69,27 @@ def _source_root(root: Path) -> Path:
     return (root / str(src)).resolve()
 
 def _contract_source(root: Path, name: str) -> tuple[Path, str] | None:
-    source_root = _source_root(root)
-    if not source_root.exists():
+    try:
+        project_root = root.resolve(strict=True)
+        source_root = _source_root(root).resolve(strict=True)
+        source_root.relative_to(project_root)
+    except (OSError, RuntimeError, ValueError):
         return None
     pattern = re.compile(
         r"\b(?:abstract\s+)?contract\s+" + re.escape(name) + r"\b"
     )
     for path in sorted(source_root.rglob("*.sol")):
         try:
-            source = path.read_text(encoding="utf-8")
-        except OSError:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(project_root)
+            if not resolved.is_file():
+                continue
+            source = resolved.read_text(encoding="utf-8")
+        except (OSError, RuntimeError, ValueError):
             continue
         searchable = mask_solidity(source) if mask_solidity else source
         if pattern.search(searchable):
-            return path, source
+            return resolved, source
     return None
 
 
