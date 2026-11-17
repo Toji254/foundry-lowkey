@@ -687,7 +687,7 @@ def _run_native_fallback(argv: Sequence[str]) -> int:
 
 def render_build_help() -> str:
     """Friendly help for the project-aware build command, including AI failure modes."""
-    return "\\n".join([
+    return "\n".join([
         "LOWKEY HELP  •  lk build",
         "=" * 72,
         "",
