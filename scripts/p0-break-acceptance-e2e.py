@@ -406,9 +406,37 @@ def exercise_fallback_takeover(
         ],
         root, env, timeout=240,
     )
+    destination = evidence_root / contract
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(manifest_path, destination / "control-manifest.json")
+    helper_evidence = root / helper
+    if helper_evidence.is_file():
+        shutil.copy2(helper_evidence, destination / helper_evidence.name)
+    freeze_path = root / ".audit" / "godmode" / "control.freeze.json"
+    if freeze_path.is_file():
+        shutil.copy2(freeze_path, destination / "control.freeze.json")
+    control_report_path = root / ".audit" / "godmode" / "control.json"
+    control_report = {}
+    if control_report_path.is_file():
+        shutil.copy2(control_report_path, destination / "control-report.json")
+        try:
+            control_report = json.loads(control_report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            control_report = {}
     if "LOWKEY // SIMULATED BREAK CONDITION REACHED" not in output.stdout:
         raise AssertionError(
             "Fallback takeover did not pass the matched-control gate as SIMULATED_BREAK.\n"
+            + "\nCONTROL REPORT:\n"
+            + json.dumps({
+                "status": control_report.get("status"),
+                "same_prestate_verified": control_report.get("same_prestate_verified"),
+                "control_delta": control_report.get("control_delta"),
+                "semantic_invariant_verified": control_report.get("semantic_invariant_verified"),
+                "reasons": control_report.get("reasons"),
+                "rejection_codes": control_report.get("rejection_codes"),
+                "runs": control_report.get("runs"),
+            }, indent=2, sort_keys=True)
+            + "\n"
             + output.stdout[-16000:]
         )
 

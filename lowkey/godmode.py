@@ -2832,8 +2832,17 @@ def _control_prestate_digest(url, receipt, addresses, slots, comparison_excluded
     ]
     digest=hashlib.sha256(json.dumps(comparable,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     prestate["equivalence_fields"] = sorted(comparable.keys())
+    prestate["equivalence_addresses"] = sorted(declared_addresses)
+    prestate["equivalence_slots"] = sorted(declared_slot_keys)
     prestate["comparison_excluded_slots"] = sorted(excluded)
-    prestate["equivalence_policy"] = "Parent block hash is retained for provenance but excluded because scenario preparation transactions differ. Explicit scenario-parameter slots are retained in evidence but excluded from equality only after their control/attack values are independently verified. All other trace-derived and declared account/storage pre-state is compared."
+    prestate["equivalence_policy"] = (
+        "Parent block hash is retained for provenance but excluded because scenario preparation "
+        "transactions differ. Equality uses only manifest-declared prestate_addresses and "
+        "prestate_slots, plus explicit scenario-parameter slots excluded only after their "
+        "control/attack values are independently verified. Per-run trace-discovered addresses "
+        "and slots remain in full evidence and are compared through shared trace observations; "
+        "they do not silently expand one run's declared equality participant set."
+    )
     return digest,prestate
 
 
@@ -3000,6 +3009,11 @@ def _trace_control_run(root, url, name, entry, spec, env):
         try:
             shutil.copytree(root,work,ignore=shutil.ignore_patterns(".git",".audit","out","cache","node_modules","__pycache__"))
             addresses=[addr(x) for x in (spec.get("prestate_addresses") or [])]
+            # Freeze the equality participant set from the manifest before
+            # adding run-specific trace discoveries. An attack-only path may
+            # touch extra accounts; they remain evidence rather than silently
+            # expanding one run's declared shared-prestate requirements.
+            declared_addresses=list(addresses)
             scenario_parameters=[]
             prepare_argv=entry.get("prepare_argv")
             for command_name,command_argv in (("prepare_argv",prepare_argv),("argv",entry.get("argv"))):
@@ -3093,7 +3107,6 @@ def _trace_control_run(root, url, name, entry, spec, env):
                     raise ValueError(f"Invalid prestate slot: {raw.get('slot')}") from exc
                 slots.append({"address":address,"slot":slot})
             declared_slots=list({(item["address"],item["slot"]):item for item in slots}.values())
-            declared_addresses=list(addresses)
             for item in storage_trace.get("slots",[]):
                 slots.append({"address":item["address"],"slot":item["slot"]})
             slots=list({(item["address"],item["slot"]):item for item in slots}.values())

@@ -854,7 +854,15 @@ class GodmodeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", "")
 
             rpc_mock = self._mock_trace_rpc(target, sender, wrapper, external_state=rpc_state)
+            trace_only_address = "0x" + "4" * 40
+
             def rpc_with_scenario(url, method, params, timeout=20):
+                if method == "debug_traceTransaction" and params[1].get("tracer") == "prestateTracer":
+                    payload = rpc_mock(url, method, params, timeout)
+                    if rpc_state["tx_hash"] == "0x" + "b" * 64:
+                        payload.setdefault("pre", {})[trace_only_address] = {}
+                        payload.setdefault("post", {})[trace_only_address] = {}
+                    return payload
                 if method == "eth_getBalance" and params[1] == "0x65":
                     gain = gain_by_tx[rpc_state["tx_hash"]]
                     if params[0] == sender:
@@ -881,6 +889,67 @@ class GodmodeTests(unittest.TestCase):
             self.assertTrue(attack_param["verified_before_transaction"])
             self.assertEqual(int(control_param["observed_value"], 16), 0)
             self.assertEqual(int(attack_param["observed_value"], 16), 1)
+            self.assertTrue(saved["same_prestate_verified"])
+            attack_prestate = saved["runs"]["attack"]["prestate"]
+            self.assertIn(
+                trace_only_address,
+                {row["address"] for row in attack_prestate["addresses"]},
+            )
+            self.assertNotIn(trace_only_address, attack_prestate["equivalence_addresses"])
+
+    def test_non_economic_control_uses_semantic_proof_not_positive_balance_delta(self):
+        from unittest.mock import patch
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest, target, sender, wrapper = self._control_manifest(root)
+            manifest["family"] = "access"
+            manifest["non_economic"] = True
+            manifest["attack"]["semantic_check_argv"] = ["semantic"]
+            manifest["attack"]["semantic_check_test"] = "fallback_owner_takeover"
+            (root / "control.json").write_text(json.dumps(manifest), encoding="utf-8")
+            proof_evidence.freeze_control_manifest(root, root / "control.json", manifest)
+
+            tx_hashes = iter(["0x" + "a" * 64, "0x" + "b" * 64])
+            def fake_run(argv, cwd, timeout=300, env=None):
+                if argv and argv[0] == "semantic":
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        "LOWKEY_SEMANTIC_INVARIANT_PASS:fallback_owner_takeover\n",
+                        "",
+                    )
+                tx_hash = next(tx_hashes)
+                return subprocess.CompletedProcess(
+                    argv, 0, f"LOWKEY_TRACE_TX_HASH {tx_hash}\n", ""
+                )
+
+            fake_rpc = self._mock_trace_rpc(
+                target, sender, wrapper,
+                control_gain=-5,
+                attack_gain=-25,
+                gas_used=10,
+                gas_price=1,
+            )
+            with patch.object(godmode, "rpc", side_effect=fake_rpc), \
+                 patch.object(godmode, "run", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.run_control([
+                    "control.json", "--root", str(root),
+                    "--rpc-url", "http://127.0.0.1:8545",
+                ])
+
+            saved = json.loads((root / ".audit" / "godmode" / "control.json").read_text())
+            self.assertEqual(result, 0, saved.get("reasons") or saved.get("rejection_codes"))
+            self.assertTrue(saved["semantic_invariant_verified"])
+            self.assertTrue(saved["same_entry_call_verified"])
+            self.assertTrue(saved["same_prestate_verified"])
+            self.assertTrue(saved["freeze"]["verified"])
+            self.assertLess(saved["runs"]["control"]["metric"], 0)
+            self.assertLess(saved["runs"]["attack"]["metric"], 0)
+            self.assertLess(saved["control_delta"], 0)
+            self.assertTrue(saved["economic_policy"]["accepted"])
+            self.assertEqual(saved["proof_status"], "SIMULATED_BREAK")
 
     def test_control_blocks_unexpected_attacker_scenario_parameter_before_sending_tx(self):
         from unittest.mock import patch

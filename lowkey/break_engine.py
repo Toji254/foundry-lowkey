@@ -4061,19 +4061,58 @@ def _apply_sequential_control(host, result: AttackResult, opts: dict[str, Any], 
             if mismatches:
                 raise ValueError("manifest does not match this candidate: " + ", ".join(mismatches))
             try:
-                from . import godmode
+                from . import godmode, proof_evidence
             except ImportError:
                 import godmode
+                import proof_evidence
             if not rpc_url:
                 raise ValueError("The breaker did not provide its detected local Anvil RPC endpoint.")
             exit_code = godmode.run_control([str(manifest_path), "--root", str(root), "--rpc-url", rpc_url])
+            non_economic = bool(
+                spec.get("non_economic")
+                or str(result.family or "").lower() in proof_evidence.NON_ECONOMIC_FAMILIES
+            )
+            control_report = {}
+            control_report_path = root / ".audit" / "godmode" / "control.json"
+            if control_report_path.is_file():
+                try:
+                    control_report = json.loads(control_report_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    control_report = {}
+            report_reasons = control_report.get("reasons") or []
+            if exit_code == 0:
+                reason = (
+                    "Matched call sequence, declared pre-state, trace expectations and passing "
+                    "semantic invariant; no positive monetary delta is required for this "
+                    "non-economic experiment."
+                    if non_economic else
+                    "Matched call-sequence and precondition/state digests plus positive attack-control delta."
+                )
+            elif report_reasons:
+                reason = "Sequential control rejected: " + "; ".join(str(x) for x in report_reasons)
+            elif non_economic:
+                reason = (
+                    "Sequential control did not satisfy the declared pre-state, trace and "
+                    "semantic requirements for this non-economic experiment."
+                )
+            else:
+                reason = (
+                    "Sequential control did not verify identical calls/state and a positive "
+                    "attack-control delta."
+                )
             gate = {
                 "status": "passed" if exit_code == 0 else "failed",
                 "exit_code": exit_code,
                 "manifest": str(manifest_path.relative_to(root)),
                 "same_calls_id": spec.get("same_calls_id"),
-                "reason": "Matched call-sequence and precondition/state digests plus positive attack-control delta." if exit_code == 0
-                          else "Sequential control did not verify identical calls/state and a positive attack-control delta.",
+                "non_economic": non_economic,
+                "control_status": control_report.get("status"),
+                "control_delta": control_report.get("control_delta"),
+                "same_prestate_verified": control_report.get("same_prestate_verified"),
+                "same_entry_call_verified": control_report.get("same_entry_call_verified"),
+                "semantic_invariant_verified": control_report.get("semantic_invariant_verified"),
+                "control_reasons": report_reasons,
+                "reason": reason,
             }
         except Exception as exc:
             gate = {"status": "failed", "reason": str(exc)}
