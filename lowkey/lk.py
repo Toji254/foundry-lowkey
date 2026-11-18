@@ -883,7 +883,11 @@ def select_anvil_actor(config,index,name):
     if index<0:
         return fail("Error: Anvil account index cannot be negative.")
     if index == 0:
-        return fail("Error: Anvil account 0 is reserved for Lowkey's lab deployer. Use account 1+ for user actors.")
+        return fail(
+            "Error: Anvil account 0 is reserved for Lowkey's internal lab-deployer. "
+            "Select it with 'lk actor 0' if you need the deployer signer; "
+            "assign user-facing actors to account 1 or higher."
+        )
     if not name:
         return fail("Error: actor name cannot be empty.")
     info=anvil_rpc_info(config)
@@ -919,7 +923,12 @@ def select_anvil_actor(config,index,name):
             if assigned_address == assigned_index:
                 assigned_address = None
         else:
-            return fail(f"Error: Anvil account {index} is already assigned to '{assigned_index}'.")
+            return fail(
+                f"Error: Anvil account {index} is already assigned to '{assigned_index}'. "
+                f"Use 'lk actor {assigned_index}' to select that existing profile, or "
+                "run 'lk actor reset 2' to remove saved Anvil actor profiles before assigning new names. "
+                "Private-key/environment wallet profiles and the internal lab-deployer are preserved."
+            )
     if assigned_address and assigned_address!=name:
         previous=config.get("wallets",{}).get(assigned_address)
         replaceable = (
@@ -931,7 +940,12 @@ def select_anvil_actor(config,index,name):
         if replaceable:
             config.setdefault("wallets",{}).pop(assigned_address,None)
         else:
-            return fail(f"Error: address {address} is already assigned to '{assigned_address}'.")
+            return fail(
+                f"Error: address {address} is already assigned to '{assigned_address}'. "
+                f"Use 'lk actor {assigned_address}' to select that existing profile, or "
+                "run 'lk actor reset 2' to remove saved Anvil actor profiles before assigning new names. "
+                "Private-key/environment wallet profiles and the internal lab-deployer are preserved."
+            )
     existing=config.get('wallets',{}).get(name)
     if existing and not wallet_is_internal(name, existing):
         if (
@@ -21911,24 +21925,24 @@ COMMAND_HELP = {
     ),
     "actor": _help_entry(
         "Name/select a local Anvil account.",
-        "lk actor <index> <name> | lk actor <name> | lk actor reset 1 | lk actor reset 2",
-        "lk actor 0 Alice",
+        "lk actor <index> <name> | lk actor <name> | lk actor reset [1|2]",
+        "lk actor 1 Alice",
         "Use it when you want readable role names instead of anonymous Anvil slots.",
         forms=[
-            ("lk actor <index> <name>", "Give an Anvil account a readable role name.", "lk actor 0 Alice"),
+            ("lk actor <index> <name>", "Give an Anvil account a readable role name (account 1+; 0 is reserved).", "lk actor 1 Alice"),
             ("lk actor <name>", "Switch to an actor profile you already created.", "lk actor Alice"),
             ("lk actor reset 1", "Clear the active actor without deleting the saved profile.", "lk actor reset 1"),
-            ("lk actor reset 2", "Clear the active actor and remove saved actor names.", "lk actor reset 2"),
+            ("lk actor reset 2", "Remove saved Anvil actor profiles; preserve key/env wallets and the internal lab-deployer.", "lk actor reset 2"),
         ],
         children={
             "reset": _help_entry(
-                "Reset actor state with an explicit preservation level.",
-                "lk actor reset 1 | lk actor reset 2",
-                "lk actor reset 1",
-                "Use 1 to clear the active actor while keeping names, or 2 to clear names too.",
+                "Reset actor selection or saved Anvil actor profiles.",
+                "lk actor reset [1|2]",
+                "lk actor reset 2",
+                "Omitting the mode (or using 1) clears only the active actor. Mode 2 removes Anvil actor profiles but preserves private-key/environment wallets and the internal lab-deployer.",
                 forms=[
-                    ("lk actor reset 1", "Clear active actor state but preserve saved actor names.", "lk actor reset 1"),
-                    ("lk actor reset 2", "Clear active actor state and remove saved actor names.", "lk actor reset 2"),
+                    ("lk actor reset 1", "Clear active actor state but preserve saved Anvil actor profiles.", "lk actor reset 1"),
+                    ("lk actor reset 2", "Remove saved Anvil actor profiles; preserve private-key/environment wallets and the internal lab-deployer.", "lk actor reset 2"),
                 ],
             ),
         },
@@ -22105,7 +22119,7 @@ COMMAND_HELP = {
             ("encode", "Build the data for the function call without sending it.", "lk wizard setValue 10 encode"),
             ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard setValue"),
             ("TARGET", "A target must already be selected before wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
-            ("ACTOR", "Transactions use the current actor. For example, select Anvil account 0 as Alice with lk actor 0 Alice.", "lk actor 0 Alice"),
+            ("ACTOR", "Transactions use the current actor. For example, select Anvil account 0 as Alice with lk actor 1 Alice.", "lk actor 1 Alice"),
             ("ATTACH ETH", "Wizard does not have an ETH-value flag. To send ETH with a function call, use lk send --value or for a local test use lk probe --value.", "lk send setValue 10 --value 1ether"),
         ],
         related=["lk ask", "lk read", "lk send", "lk probe"],
@@ -23035,7 +23049,7 @@ COMMAND_HELP.update({
         ],
         options=[
             ("TARGET", "A target must already be selected before the wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
-            ("ACTOR", "Transactions use the current actor. Select Anvil account 0 as Alice with this command.", "lk actor 0 Alice"),
+            ("ACTOR", "Transactions use the current actor. Select Anvil account 0 as Alice with this command.", "lk actor 1 Alice"),
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard setValue 10 send"),
             ("encode", "Only build the call data. Nothing is sent. Lowkey builds calldata without broadcasting a transaction.", "lk wizard setValue 10 encode"),
@@ -24760,7 +24774,8 @@ PROJECT / TARGET SETUP
   lk wallet list                    List signer profiles.
   lk wallet set-env <name> <ENV>    Use a private key from an environment variable.
   lk actor                          Show current actor/accounts.
-  lk actor <index> <name>           Name an Anvil account. Example: lk actor 0 Alice
+  lk actor <index> <name>           Name an Anvil account (1+; account 0 is reserved). Example: lk actor 1 Alice
+  lk actor reset [1|2]              Clear selection; 2 removes saved Anvil actor profiles only.
   lk actors                         List available Anvil actors.
   lk impersonate <address> [name]   Use an existing account on a local fork.
   lk as <actor> <command> [args]    Run one command as another actor.
@@ -25667,27 +25682,31 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             mode = str(args[1]).strip() if len(args) > 1 else "1"
             if mode not in {"1", "2"} or len(args) > 2:
                 return fail(
-                    "Usage: lk actor reset 1 | lk actor reset 2\n"
-                    "  1 = clear active actor state, keep actor names\n"
-                    "  2 = clear active actor state and remove actor names"
+                    "Usage: lk actor reset [1|2]\n"
+                    "  omitted or 1 = clear active actor state, keep saved Anvil actor profiles\n"
+                    "  2 = remove saved Anvil actor profiles; preserve private-key/env wallets and lab-deployer"
                 )
 
             previous = config.get("actor")
             if mode == "1":
                 config["actor"] = None
                 save_config(config)
+                guidance = (
+                    " To remove saved Anvil actor profiles, run 'lk actor reset 2'; "
+                    "private-key/environment wallet profiles and the internal lab-deployer are preserved."
+                )
                 if previous:
                     print(
                         f"Actor reset 1: no active actor "
-                        f"(profile '{previous}' was kept)."
+                        f"(profile '{previous}' was kept).{guidance}"
                     )
                 else:
-                    print("Actor reset 1: no active actor (profiles kept).")
+                    print(f"Actor reset 1: no active actor (profiles kept).{guidance}")
                 return 0
 
             # Full reset: remove configured local actor profiles and their
             # address labels, but leave unrelated wallets/targets untouched.
-            actor_names = set(config.get("wallets", {}).keys())
+            removed_actor_profiles = 0
             labels = config.setdefault("labels", {})
 
             for name, entry in list(config.get("wallets", {}).items()):
@@ -25696,19 +25715,33 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                     # actor; keep it available for deployment/bootstrap.
                     continue
 
+                source = str(entry.get("source") or "") if isinstance(entry, dict) else ""
+                # Reset only identities Lowkey created for local Anvil accounts.
+                # Saved private-key and environment-backed wallet profiles are
+                # signer credentials, not disposable actor labels.
+                if source not in {"anvil-default", "anvil-impersonated"}:
+                    continue
+
                 address = str(entry.get("address") or "") if isinstance(entry, dict) else ""
                 if address:
                     labels.pop(address, None)
                     labels.pop(address.lower(), None)
                 config["wallets"].pop(name, None)
+                removed_actor_profiles += 1
 
             config["actor"] = None
             save_config(config)
 
-            if actor_names:
-                print("Actor reset 2: active actor and saved actor names cleared.")
+            if removed_actor_profiles:
+                print(
+                    f"Actor reset 2: no active actor; removed "
+                    f"{removed_actor_profiles} saved Anvil actor profile(s)."
+                )
             else:
-                print("Actor reset 2: no actor profiles were configured.")
+                print("Actor reset 2: no active actor; no saved Anvil actor profiles to remove.")
+            print(
+                "Preserved: private-key/environment wallet profiles and Lowkey's internal lab-deployer."
+            )
             return 0
         elif len(args)==1 and args[0].isdigit():
             return select_existing_anvil_actor(config,args[0])

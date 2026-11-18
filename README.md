@@ -576,7 +576,9 @@ ABI return values keep the decoded integer visible. When the ABI provides a stro
 
 "lk actor <index>" selects an actor profile already assigned to that Anvil account. "lk actor <index> <name>" assigns or rebinds a user-facing profile. Anvil account 0 is reserved for Lowkey's internal lab-deployer, so user actors should use account 1 or higher.
 
-The same Anvil account cannot be assigned to two actor names.
+The same Anvil account cannot be assigned to two actor names. Anvil account 0 remains reserved for Lowkey's internal lab-deployer; assign user-facing actors to account 1 or higher.
+
+`lk actor reset` (or `lk actor reset 1`) clears only the active actor selection and keeps saved profiles. `lk actor reset 2` removes saved Anvil default/impersonated actor profiles, but preserves private-key and environment-backed wallet profiles as well as Lowkey's internal lab-deployer.
 
 On a local fork, you can also impersonate an existing address:
 
