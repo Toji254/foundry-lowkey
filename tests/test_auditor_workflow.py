@@ -51,6 +51,11 @@ class AuditorWorkflowTests(unittest.TestCase):
         with patch.object(workflow_engine, "_snapshot", return_value=changed):
             self.assertFalse(workflow_engine._build_current(self.root, workflow_engine._load(self.root)))
 
+    def test_dirty_file_content_hash_is_part_of_snapshot_match(self):
+        before = {"commit": "a" * 40, "dirty_paths": ["src/Vault.sol"], "dirty_digest": "a" * 64}
+        after = {"commit": "a" * 40, "dirty_paths": ["src/Vault.sol"], "dirty_digest": "b" * 64}
+        self.assertFalse(workflow_engine._matches(before, after))
+
     def test_build_prompt_is_only_shown_once(self):
         first, second = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(first): workflow_engine.on_build_success(self.root)

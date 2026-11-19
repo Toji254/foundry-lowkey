@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evidence-aware audit checkpoints layered over Lowkey's existing q engine."""
 from __future__ import annotations
-import argparse, json, os, subprocess, sys
+import argparse, hashlib, json, os, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -86,12 +86,32 @@ def _snapshot(root: Path) -> dict[str, Any]:
     status = git(["git", "status", "--porcelain", "--untracked-files=all", "--",
                   ".", ":(exclude).audit/**"])
     paths = None if status is None else sorted(line[3:].strip() for line in status.splitlines() if len(line) >= 4)
-    return {"commit": commit, "branch": branch, "dirty_paths": paths, "captured_at": _now()}
+    dirty_digest = None
+    if paths is not None:
+        digest = hashlib.sha256()
+        for relative in paths:
+            digest.update(relative.encode("utf-8", errors="replace"))
+            digest.update(b"\\0")
+            candidate = root / relative
+            try:
+                if candidate.is_file():
+                    with candidate.open("rb") as handle:
+                        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                else:
+                    digest.update(b"<deleted-or-unreadable>")
+            except OSError:
+                digest.update(b"<unreadable>")
+            digest.update(b"\\0")
+        dirty_digest = digest.hexdigest()
+    return {"commit": commit, "branch": branch, "dirty_paths": paths,
+            "dirty_digest": dirty_digest, "captured_at": _now()}
 
 def _matches(a, b) -> bool:
     return bool(isinstance(a, dict) and isinstance(b, dict) and a.get("commit")
                 and b.get("commit") and a.get("commit") == b.get("commit")
-                and a.get("dirty_paths") == b.get("dirty_paths"))
+                and a.get("dirty_paths") == b.get("dirty_paths")
+                and a.get("dirty_digest") == b.get("dirty_digest"))
 
 def _build_current(root: Path, state: dict[str, Any]) -> bool:
     build = state.get("last_build")
@@ -149,7 +169,8 @@ def render(root: Path) -> str:
     baseline = state.get("baseline") or {}
     now = _snapshot(root)
     changed = bool(baseline.get("commit") and now.get("commit") and
-                   (baseline.get("commit") != now.get("commit") or baseline.get("dirty_paths") != now.get("dirty_paths")))
+                   (baseline.get("commit") != now.get("commit") or baseline.get("dirty_paths") != now.get("dirty_paths")
+                    or baseline.get("dirty_digest") != now.get("dirty_digest")))
     complete = state.get("completed", {})
     lines += [f"REVISION • {str(baseline.get('commit') or 'UNPINNED')[:12]}",
               "WORKTREE • " + ("CHANGED SINCE START" if changed else "DIRTY AT START" if baseline.get("dirty_paths") else "CLEAN AT START"),
