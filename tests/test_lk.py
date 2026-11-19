@@ -5095,7 +5095,7 @@ contract Pool {
         with patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)) as artifact, \
              patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic:
             result = lk._preferred_lab_contract(
-                pathlib.Path("/tmp/project"), None, "TokenSaleContract"
+                pathlib.Path("/tmp/project"), None, "TokenSaleContract", manual_pin=True
             )
         self.assertEqual(result, "TokenSaleContract")
         artifact.assert_called_once_with(pathlib.Path("/tmp/project"), "TokenSaleContract")
@@ -5132,7 +5132,7 @@ contract Pool {
             "lk lab Vault --ai-review",
             "lk ai mode auto",
             "lk ai mode manual",
-            "does not choose",
+            "Lowkey validates suggested targets",
             "provider",
         ):
             with self.subTest(expected=expected):

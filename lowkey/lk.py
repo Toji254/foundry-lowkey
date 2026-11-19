@@ -13789,14 +13789,12 @@ def _lab_project_artifact_matches_runtime(config, project_root, address, contrac
         if str(deployed_bytecode or "").strip() in {"", "0x", "0x0"}:
             return False
 
-        verification_config = dict(config or {})
-        verification_config["rpc"] = rpc or verification_config.get("_lab_rpc") or effective_rpc(verification_config)
-        verification_config.pop("_fixture_rpc_scope", None)
-        state = _live_target_state(verification_config, address, str(candidate))
-        return (
-            state.get("status") == "DEPLOYED"
-            and str(state.get("verification") or "").upper()
-                in {"MATCHED", "PROXY/CLONE MATCHED"}
+        verification_rpc = rpc or config.get("_lab_rpc") or effective_rpc(config)
+        return bool(
+            verification_rpc
+            and _lab_remembered_contract_is_live(
+                config, address, verification_rpc, str(candidate)
+            )
         )
     except Exception:
         return False
@@ -13861,6 +13859,7 @@ def _lab_address_choices(config, accounts, rpc=None):
             address = str(entries[0].get("address"))
             verified = {}
             hints = set()
+            checked_artifacts = set()
 
             for entry in entries:
                 if not isinstance(entry, dict):
@@ -13870,6 +13869,12 @@ def _lab_address_choices(config, accounts, rpc=None):
                     continue
                 hints.add(name)
                 artifact_path = entry.get("artifact")
+                if not artifact_path:
+                    continue
+                artifact_key = (name.casefold(), str(Path(os.path.expanduser(str(artifact_path))).resolve()))
+                if artifact_key in checked_artifacts:
+                    continue
+                checked_artifacts.add(artifact_key)
                 if _lab_project_artifact_matches_runtime(
                     config, project_root, address, name, artifact_path, rpc
                 ):
@@ -15167,14 +15172,26 @@ def _ai_plan_primary_contract(root, suggested_name, deployment_plan):
     return None
 
 
-def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_suggested=None, ai_deployment_plan=None):
-    """Prefer explicit intent and a verified manual pin before model/native discovery."""
+def _preferred_lab_contract(
+    root,
+    requested=None,
+    remembered_name=None,
+    ai_suggested=None,
+    ai_deployment_plan=None,
+    *,
+    manual_pin=False,
+):
+    """Prefer explicit intent, then an explicit manual pin, then validated project evidence."""
     explicit = str(requested or "").strip()
     if explicit:
         return explicit
 
     remembered = str(remembered_name or "").strip()
-    if remembered and discover_artifact_lab_contract(root, remembered):
+    if (
+        manual_pin
+        and remembered
+        and discover_artifact_lab_contract(root, remembered)
+    ):
         return remembered
 
     detected = discover_audit_target_contract(root)
@@ -15233,10 +15250,10 @@ def run_lab(config,args, *, deployment_only=False):
         print("")
         print("OPTIONS / AI ASSISTANCE")
         print("  --ai | --ai-review")
-        print("      Review this project's first-party source before lab setup. AI may suggest a")
-        print("      primary contract and dependency roles; Lowkey validates every suggestion against")
-        print("      local deployable artifacts. Explicit review failure stops before deployment.")
-        print("      Lowkey validates suggested targets against first-party artifacts and prints a dependency-first plan.")
+        print("      Review project roles, target and dependency evidence before lab setup.")
+        print("      AI may suggest a primary target; Lowkey validates suggested targets against")
+        print("      first-party deployable artifacts and derives native dependency order.")
+        print("      Explicit review failure stops before deployment.")
         print("      AI-only address/delegatecall relationships remain hypotheses; they are never auto-deployed.")
         print("      The model never signs, sends transactions, or establishes a security verdict.")
         print("      Selected source excerpts may be sent to the configured provider.")
@@ -15594,6 +15611,7 @@ def run_lab(config,args, *, deployment_only=False):
         remembered_contract_name,
         _ai_suggested_primary_contract,
         _ai_deployment_plan,
+        manual_pin=bool(remembered_contract_name),
     )
     if (
         not requested
@@ -15723,6 +15741,7 @@ def run_lab(config,args, *, deployment_only=False):
             remembered_contract_name,
             _ai_suggested_primary_contract,
             _ai_deployment_plan,
+            manual_pin=bool(remembered_contract_name),
         )
 
     if not requested:

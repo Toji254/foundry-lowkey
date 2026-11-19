@@ -696,6 +696,10 @@ contract Delegation {
             self.assertEqual(lk.discover_audit_target_contract(root), "Delegation")
             self.assertEqual(lk._preferred_lab_contract(root, None, "Delegate"), "Delegation")
             self.assertEqual(
+                lk._preferred_lab_contract(root, None, "Delegate", manual_pin=True),
+                "Delegate",
+            )
+            self.assertEqual(
                 lk._preferred_lab_contract(root, None, "Delegate", "Delegate"),
                 "Delegation",
             )

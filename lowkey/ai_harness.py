@@ -2230,8 +2230,7 @@ SETUP & CONNECTION
       Delete an inactive profile; active is protected.
 
   lk ai profile prune [--keep ID]... [--yes]
-      Keep active and --keep IDs; confirm removal of all others.
-      Keys/settings are preserved.
+      Keep active and --keep IDs; confirm other removals. Keys/settings stay.
 
   lk ai enable / lk ai disable
       Enable or pause optional AI. Native Lowkey commands still work.
@@ -2254,7 +2253,7 @@ KEY MANAGEMENT
       Example: lk ai keys remove --provider gemini --slot 2
 
   lk ai keys clear --provider PROVIDER
-      Remove every saved key for that provider. Example: lk ai keys clear --provider gemini
+      Remove every saved key for that provider.
 
 REVIEW & EVIDENCE
 -----------------
@@ -2279,8 +2278,7 @@ REVIEW & EVIDENCE
       Example: lk ai ledger
 
   lk ai verify FINDING_ID --test FILE --match-test FUNCTION [--run]
-      Preview a plan for one existing local Foundry test. Without --run it is NOT run.
-      Inspect the test first; add --run only when you are ready.
+      Preview an existing Foundry test; it runs only with --run.
       Example: lk ai verify F-0123456789ab --test test/Vault.t.sol --match-test testWithdraw
 
   lk ai disposition FINDING_ID --status STATUS --reviewer NAME --reason TEXT [--evidence-id EVENT_ID]
@@ -2328,14 +2326,9 @@ UNIVERSAL --ai / TASK RUN
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
   lk lab --ai | lk lab Vault --ai-review
-      Request pre-lab role and dependency review before the native build.
-      It does not choose the final target by itself; native artifacts and dependency
-      checks validate any suggestion. An explicit review failure stops before deployment.
-  lk ai mode manual
-      Reviews run only when requested.
-  lk ai mode auto
-      Eligible labs may request reviews.
-  Recommendations add notes; errors explain failures. Neither reruns commands.
+      Review project roles, target candidates and dependency hypotheses before lab setup.
+      Lowkey validates targets against first-party artifacts; explicit review failure
+      stops before deployment. AI suggestions never send transactions or execute commands.
 
 OPTIONS / MODES
 ---------------
@@ -2369,7 +2362,7 @@ OUTPUT & SAFETY
 - AI output is unverified advice, not proof of a vulnerability or test result.
 - Reviews/test plans send selected source to your configured provider; charges may apply.
 - Preview is local-only. Redaction is best-effort; inspect context before sharing.
-- AI cannot choose targets, sign/broadcast transactions, or execute suggested commands.
+- AI cannot deploy, sign/broadcast transactions, or execute suggested commands.
 - The test planner proposes ideas; it never writes or runs Solidity tests.
 - lk ai verify previews by default; a local test runs only with --run.
 - Lowkey's native recommendations stay separate from optional AI recommendations.
