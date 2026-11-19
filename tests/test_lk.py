@@ -1340,6 +1340,17 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("only if the contract expects", amount_text)
         self.assertNotIn("ETH-denominated input detected", amount_text)
 
+    def test_constructor_defaults_are_generic_and_respect_abi_integer_widths(self):
+        self.assertEqual(lk._lab_constructor_default("Vault", "enabled", "bool"), "false")
+        self.assertEqual(lk._lab_constructor_default("Vault", "name", "string"), "Vault Lab")
+        self.assertEqual(lk._lab_constructor_default("Vault", "symbol", "string"), "LKL")
+        self.assertEqual(lk._lab_constructor_default("Vault", "version", "string"), "v1")
+        self.assertEqual(lk._lab_constructor_default("Vault", "amount", "uint256"), "1000000")
+        self.assertEqual(lk._lab_constructor_default("Vault", "amount", "int256"), "1000000")
+        self.assertEqual(lk._lab_constructor_default("Vault", "count", "uint8"), "1")
+        self.assertEqual(lk._lab_constructor_default("Vault", "count", "int8"), "1")
+        self.assertIsNone(lk._lab_constructor_default("Vault", "recipient", "address"))
+
     def test_constructor_numeric_prompt_keeps_generic_suggestion_and_accepts_enter(self):
         output = io.StringIO()
         with redirect_stdout(output), patch("builtins.input", return_value=""):
