@@ -416,9 +416,191 @@ class LowkeyCastTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("Address references (read-only getters):", rendered)
         self.assertIn(f"target()                 Fallout ({linked}) [contract (4 bytes)]", rendered)
-        self.assertIn(f"controller()             lab-deployer ({controller}) [no code (likely an EOA)]", rendered)
+        self.assertIn(f"controller()             lab-deployer ({controller}) [no runtime code (identity unverified)]", rendered)
         self.assertNotIn("withdraw()", rendered)
         self.assertNotIn("lookup(", rendered)
+
+    def test_status_identifies_recorded_fixture_principal_without_calling_it_an_eoa(self):
+        target = "0x" + "1" * 40
+        principal = "0x" + "3" * 40
+        abi = [{
+            "type": "function", "name": "owner", "inputs": [],
+            "outputs": [{"type": "address"}], "stateMutability": "view",
+        }]
+        config = {"lab_harness": {"fixture_principal": principal}}
+        with patch.object(lk, "cast_output", return_value=(0, principal, "")), \
+             patch.object(lk, "rpc_json", return_value="0x"):
+            references = lk._status_address_references(
+                config, target, abi, "http://127.0.0.1:8545"
+            )
+        self.assertEqual(len(references), 1)
+        self.assertEqual(references[0]["identity"], f"fixture test harness ({principal})")
+        self.assertEqual(
+            references[0]["code_state"],
+            "no runtime code (fixture principal not materialized)",
+        )
+
+    def test_load_abi_uses_source_proven_active_implementation_abi(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp) / "ConfidencePoolFactory.json"
+            implementation = pathlib.Path(tmp) / "MockConfidencePoolFactoryV2.json"
+            base.write_text(json.dumps({
+                "contractName": "ConfidencePoolFactory",
+                "abi": [{"type": "function", "name": "owner", "inputs": [], "outputs": []}],
+            }), encoding="utf-8")
+            implementation.write_text(json.dumps({
+                "contractName": "MockConfidencePoolFactoryV2",
+                "abi": [
+                    {"type": "function", "name": "owner", "inputs": [], "outputs": []},
+                    {"type": "function", "name": "version", "inputs": [], "outputs": []},
+                ],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "ConfidencePoolFactory",
+                "abi_paths": {target: str(base)},
+            }
+            with patch.object(
+                lk, "_active_implementation_artifact_path",
+                return_value=str(implementation),
+            ):
+                abi = lk.load_abi(target, config)
+        names = {item.get("name") for item in abi if item.get("type") == "function"}
+        self.assertIn("version", names)
+        self.assertIn("owner", names)
+
+    def test_admin_explains_zero_eip1967_slot_is_not_proof_upgrades_are_disabled(self):
+        config = {"target": "0x" + "1" * 40}
+        output = io.StringIO()
+        with patch.object(lk, "run_cast", return_value="0x" + "0" * 40), \
+             patch.object(lk, "apply_labels", side_effect=lambda value, _config: value), \
+             redirect_stdout(output):
+            result = lk.run_admin(config)
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("EIP-1967 admin slot:", rendered)
+        self.assertIn("does not mean upgrades are disabled", rendered)
+        self.assertIn("UUPS note:", rendered)
+
+    def test_proxy_report_separates_uups_authority_from_zero_admin_slot(self):
+        target = "0x" + "1" * 40
+        implementation = "0x" + "2" * 40
+        owner = "0x" + "3" * 40
+        zero = "0x" + "0" * 40
+        config = {"target": target, "rpc": "http://127.0.0.1:8545"}
+        output = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(lk, "_live_runtime", return_value="0x6000"))
+            stack.enter_context(patch.object(lk, "_minimal_proxy_implementation", return_value=None))
+            stack.enter_context(patch.object(lk, "inspect_proxy", return_value=True))
+            stack.enter_context(patch.object(lk, "run_cast", side_effect=[implementation, zero]))
+            stack.enter_context(patch.object(lk, "_uups_proxy_authority_hint", return_value=(True, "_authorizeUpgrade uses onlyOwner (source hint)")))
+            stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"))
+            stack.enter_context(patch.object(lk, "cast_output", return_value=(0, owner, "")))
+            stack.enter_context(patch.object(lk, "rpc_json", return_value="0x"))
+            stack.enter_context(patch.object(lk, "apply_labels", side_effect=lambda value, _config: value))
+            with redirect_stdout(output):
+                result = lk.run_proxy(config)
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("EIP-1967 admin slot:", rendered)
+        self.assertIn("does not prove that upgrades are disabled", rendered)
+        self.assertIn("UUPS-compatible", rendered)
+        self.assertIn("onlyOwner", rendered)
+        self.assertIn("Application owner:", rendered)
+        self.assertIn("identity unverified", rendered)
+
+    def test_status_identifies_recorded_fixture_principal_without_calling_it_an_eoa(self):
+        target = "0x" + "1" * 40
+        principal = "0x" + "3" * 40
+        abi = [{
+            "type": "function", "name": "owner", "inputs": [],
+            "outputs": [{"type": "address"}], "stateMutability": "view",
+        }]
+        config = {"lab_harness": {"fixture_principal": principal}}
+        with patch.object(lk, "cast_output", return_value=(0, principal, "")), \
+             patch.object(lk, "rpc_json", return_value="0x"):
+            references = lk._status_address_references(
+                config, target, abi, "http://127.0.0.1:8545"
+            )
+        self.assertEqual(len(references), 1)
+        self.assertEqual(references[0]["identity"], f"fixture test harness ({principal})")
+        self.assertEqual(
+            references[0]["code_state"],
+            "no runtime code (fixture principal not materialized)",
+        )
+
+    def test_load_abi_uses_source_proven_active_implementation_abi(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp) / "ConfidencePoolFactory.json"
+            implementation = pathlib.Path(tmp) / "MockConfidencePoolFactoryV2.json"
+            base.write_text(json.dumps({
+                "contractName": "ConfidencePoolFactory",
+                "abi": [{"type": "function", "name": "owner", "inputs": [], "outputs": []}],
+            }), encoding="utf-8")
+            implementation.write_text(json.dumps({
+                "contractName": "MockConfidencePoolFactoryV2",
+                "abi": [
+                    {"type": "function", "name": "owner", "inputs": [], "outputs": []},
+                    {"type": "function", "name": "version", "inputs": [], "outputs": []},
+                ],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "ConfidencePoolFactory",
+                "abi_paths": {target: str(base)},
+            }
+            with patch.object(lk, "_active_implementation_artifact_path", return_value=str(implementation)):
+                abi = lk.load_abi(target, config)
+        names = {item.get("name") for item in abi if item.get("type") == "function"}
+        self.assertIn("version", names)
+        self.assertIn("owner", names)
+
+    def test_admin_explains_zero_eip1967_slot_is_not_proof_upgrades_are_disabled(self):
+        config = {"target": "0x" + "1" * 40}
+        output = io.StringIO()
+        with patch.object(lk, "run_cast", return_value="0x" + "0" * 40), \
+             patch.object(lk, "apply_labels", side_effect=lambda value, _config: value), \
+             redirect_stdout(output):
+            result = lk.run_admin(config)
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("EIP-1967 admin slot:", rendered)
+        self.assertIn("does not mean upgrades are disabled", rendered)
+        self.assertIn("UUPS note:", rendered)
+
+    def test_proxy_report_separates_uups_authority_from_zero_admin_slot(self):
+        target = "0x" + "1" * 40
+        implementation = "0x" + "2" * 40
+        owner = "0x" + "3" * 40
+        zero = "0x" + "0" * 40
+        config = {"target": target, "rpc": "http://127.0.0.1:8545"}
+        output = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(lk, "_live_runtime", return_value="0x6000"))
+            stack.enter_context(patch.object(lk, "_minimal_proxy_implementation", return_value=None))
+            stack.enter_context(patch.object(lk, "inspect_proxy", return_value=True))
+            stack.enter_context(patch.object(lk, "run_cast", side_effect=[implementation, zero]))
+            stack.enter_context(patch.object(
+                lk, "_uups_proxy_authority_hint",
+                return_value=(True, "_authorizeUpgrade uses onlyOwner (source hint)"),
+            ))
+            stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"))
+            stack.enter_context(patch.object(lk, "cast_output", return_value=(0, owner, "")))
+            stack.enter_context(patch.object(lk, "rpc_json", return_value="0x"))
+            stack.enter_context(patch.object(lk, "apply_labels", side_effect=lambda value, _config: value))
+            with redirect_stdout(output):
+                result = lk.run_proxy(config)
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("EIP-1967 admin slot:", rendered)
+        self.assertIn("does not prove that upgrades are disabled", rendered)
+        self.assertIn("UUPS-compatible", rendered)
+        self.assertIn("onlyOwner", rendered)
+        self.assertIn("Application owner:", rendered)
+        self.assertIn("identity unverified", rendered)
 
     def test_status_reports_not_deployed_target_and_recovery(self):
         address = "0x" + "3" * 40

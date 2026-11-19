@@ -1392,6 +1392,126 @@ if __name__ == "__main__":
                 )
             self.assertIsNone(rejected_live_match)
 
+    def test_fixture_target_artifact_compiles_only_source_derived_upgrade_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            base_source = root / "src" / "Template.sol"
+            derived_source = root / "test" / "mocks" / "TemplateV2.sol"
+            unrelated_source = root / "test" / "mocks" / "Unrelated.sol"
+            base_source.parent.mkdir(parents=True, exist_ok=True)
+            derived_source.parent.mkdir(parents=True, exist_ok=True)
+            base_source.write_text(
+                "pragma solidity ^0.8.20; contract Template { function base() external {} }",
+                encoding="utf-8",
+            )
+            derived_source.write_text(
+                "pragma solidity ^0.8.20; contract TemplateV2 is Template { "
+                "function version() external pure returns (uint256) { return 2; } }",
+                encoding="utf-8",
+            )
+            unrelated_source.write_text(
+                "pragma solidity ^0.8.20; contract Unrelated { "
+                "function version() external pure returns (uint256) { return 2; } }",
+                encoding="utf-8",
+            )
+
+            output = root / "out" / "TemplateV2.sol" / "TemplateV2.json"
+            output.parent.mkdir(parents=True)
+            artifact = {
+                "contractName": "TemplateV2",
+                "sourceName": "test/mocks/TemplateV2.sol",
+                "metadata": {"sources": {
+                    "src/Template.sol": {},
+                    "test/mocks/TemplateV2.sol": {},
+                }},
+                "abi": [{"type": "function", "name": "version", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6003"},
+                "deployedBytecode": {"object": "0x6002"},
+            }
+            calls = []
+
+            def fake_run_foundry(args, capture=False, cwd=None):
+                calls.append((args, cwd))
+                output.write_text(json.dumps(artifact), encoding="utf-8")
+                return lk.CommandResult(json.dumps(artifact), 0)
+
+            with patch.object(lk, "run_foundry", side_effect=fake_run_foundry):
+                matched = lk._fixture_target_artifact_for_runtime(
+                    root, "Template", "0x6002"
+                )
+
+            self.assertEqual(Path(matched).resolve(), output.resolve())
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(
+                calls[0][0],
+                ["inspect", "--json", "test/mocks/TemplateV2.sol:TemplateV2", "artifact"],
+            )
+            self.assertEqual(Path(calls[0][1]).resolve(), root.resolve())
+
+    def test_fixture_harness_preserves_test_principal_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            state_path = root / "out" / "lowkey" / "fixture-state.json"
+            candidate = {
+                "relative": "test/Example.t.sol",
+                "contract": "ExampleTest",
+                "create_function": "testCreatesTarget",
+                "fixture_kind": "test",
+                "setup_mode": "body",
+                "helper_visibility": "external",
+            }
+            generated = lk._generate_test_fixture_lab_script(root, candidate, state_path)
+            harness = generated.read_text(encoding="utf-8")
+            self.assertIn('console2.log("LOWKEY_FIXTURE_PRINCIPAL:", address(this));', harness)
+            self.assertIn("this.testCreatesTarget();", harness)
+
+    def test_auto_target_restores_live_project_context_when_broadcasts_are_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            stale = "0x" + "1" * 40
+            live = "0x" + "2" * 40
+            context = {
+                "name": "ConfidencePoolFactory",
+                "contract": "ConfidencePoolFactory",
+                "address": live,
+                "artifact": str(root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"),
+                "source": "project-context",
+            }
+            config = {"target": None, "target_contract": None, "abi_paths": {}}
+            selected = {}
+
+            def fake_state(_config, address, _artifact=None):
+                if str(address).lower() == stale.lower():
+                    return {"status": "NOT_DEPLOYED", "verification": "UNVERIFIED"}
+                return {
+                    "status": "DEPLOYED", "verification": "PROXY/CLONE MATCHED",
+                    "code_size": 130, "chain_id": "31337", "block_number": "1",
+                }
+
+            def fake_select(_config, entry, selected_root):
+                selected["entry"] = entry
+                selected["root"] = selected_root
+                return 0
+
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(lk.audit_context, "foundry_project_root", return_value=root))
+                stack.enter_context(patch.object(lk, "discover_deployments", return_value=[{
+                    "address": stale, "contract": "ConfidencePoolFactory",
+                }]))
+                stack.enter_context(patch.object(lk, "_auto_target_records", return_value=[{
+                    "address": stale, "contract": "ConfidencePoolFactory", "_artifact": None,
+                }]))
+                stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8547"))
+                stack.enter_context(patch.object(lk, "_live_target_state", side_effect=fake_state))
+                stack.enter_context(patch.object(lk, "project_context_target", return_value=context))
+                stack.enter_context(patch.object(lk, "_select_project_target", side_effect=fake_select))
+                result = lk.run_auto_target(config)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(selected["entry"]["address"], live)
+            self.assertEqual(selected["entry"]["source"], "project-context")
+            self.assertEqual(Path(selected["root"]).resolve(), root.resolve())
+
     def test_fixture_clone_implementation_parser(self):
         implementation = "1234567890abcdef1234567890abcdef12345678"
         runtime = "0x363d3d373d3d3d363d73" + implementation + "5af43d82803e903d91602b57fd5bf3"

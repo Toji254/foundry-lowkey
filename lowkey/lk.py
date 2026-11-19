@@ -2129,6 +2129,58 @@ def auto_abi_path(target,config,root=None):
 
     return None
 
+def _active_implementation_artifact_path(config, target, base_artifact=None, *, materialize_missing=False):
+    """Return a source-proven active implementation artifact without changing target identity."""
+    if not is_address(target):
+        return None
+    selected = config.get("target")
+    if is_address(selected) and str(selected).lower() != str(target).lower():
+        return None
+    rpc = effective_rpc(config)
+    if not rpc:
+        return None
+    target_runtime = _live_runtime(config, target)
+    if not target_runtime:
+        return None
+    implementation = _minimal_proxy_implementation(target_runtime)
+    if not implementation:
+        try:
+            code, value, _error = cast_output(["cast", "implementation", target, "--rpc-url", rpc])
+        except Exception:
+            code, value = 1, ""
+        value = str(value or "").strip().splitlines()[-1].strip() if value else ""
+        if code == 0 and is_address(value) and value.lower() != str(target).lower():
+            implementation = value
+    if not is_address(implementation):
+        return None
+    implementation_runtime = _live_runtime(config, implementation)
+    if not implementation_runtime:
+        return None
+    base_path = base_artifact or resolve_abi_path(config, target)
+    base_data = read_artifact(base_path) if base_path else None
+    if isinstance(base_data, dict) and _artifact_runtime_matches("", base_data, implementation_runtime):
+        return None
+    root = configured_project_root(target, config) or audit_context.foundry_project_root()
+    target_name = config.get("target_contract")
+    if not target_name and isinstance(base_data, dict):
+        target_name = artifact_contract_name(base_path, base_data)
+    if not root or not target_name:
+        return None
+    derived_path = _fixture_target_artifact_for_runtime(
+        root, target_name, implementation_runtime,
+        materialize_missing=materialize_missing,
+    )
+    if not derived_path:
+        return None
+    if base_path:
+        try:
+            if Path(derived_path).resolve() == Path(base_path).resolve():
+                return None
+        except OSError:
+            pass
+    return derived_path
+
+
 def load_abi(target,config):
     if not target: return []
     abi_paths=config.get("abi_paths",{})
@@ -2140,6 +2192,11 @@ def load_abi(target,config):
     if not abi_path:
         abi_path=auto_abi_path(target,config)
     if not abi_path or not os.path.exists(abi_path): return []
+    active_abi_path = _active_implementation_artifact_path(
+        config, target, abi_path, materialize_missing=True
+    )
+    if active_abi_path and os.path.exists(active_abi_path):
+        abi_path = active_abi_path
     try:
         with open(abi_path,"r",encoding="utf-8") as f: artifact=json.load(f)
         abi=artifact.get("abi",[]) if isinstance(artifact,dict) else artifact
@@ -7771,16 +7828,144 @@ def inspect_proxy(config, quiet=False):
             print(f"Beacon slot: {beacon}")
     return is_proxy
 
+def _is_zero_address_value(value):
+    match = re.search(r"0x([0-9a-fA-F]{40})", str(value or ""))
+    return bool(match and int(match.group(1), 16) == 0)
+
+
+def _uups_proxy_authority_hint(config, target, implementation):
+    """Return cautious UUPS/source hints, never an authorization security verdict."""
+    rpc = effective_rpc(config)
+    if not rpc or not is_address(implementation):
+        return False, None
+    try:
+        code, uuid, _error = cast_output(
+            ["cast", "call", implementation, "proxiableUUID()(bytes32)", "--rpc-url", rpc]
+        )
+    except Exception:
+        code, uuid = 1, ""
+    expected_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+    uups_signal = code == 0 and str(uuid or "").strip().lower() == expected_slot
+    root = configured_project_root(target, config) or audit_context.foundry_project_root()
+    base_path = resolve_abi_path(config, target)
+    active_path = _active_implementation_artifact_path(config, target, base_path, materialize_missing=False)
+    artifact_path = active_path or base_path
+    artifact = read_artifact(artifact_path) if artifact_path else None
+    source_hint = None
+    if isinstance(artifact, dict) and root:
+        metadata = artifact.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except (TypeError, json.JSONDecodeError):
+                metadata = None
+        source_names = list(metadata.get("sources", {}).keys()) if isinstance(metadata, dict) and isinstance(metadata.get("sources"), dict) else []
+        declared_source = artifact_source_name(artifact, artifact_path, root)
+        if declared_source:
+            source_names.insert(0, declared_source)
+        seen = set()
+        for source_name in source_names:
+            source_path = Path(str(source_name))
+            if not source_path.is_absolute():
+                source_path = Path(root) / source_path
+            try:
+                source_path = source_path.resolve()
+                source_path.relative_to(Path(root).resolve())
+            except (OSError, ValueError):
+                continue
+            if source_path in seen or not source_path.is_file():
+                continue
+            seen.add(source_path)
+            try:
+                text = source_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            text = re.sub(r"/\*.*?\*/|//[^\r\n]*", "", text, flags=re.S)
+            match = re.search(r"\bfunction\s+_authorizeUpgrade\s*\([^)]*\)\s*(?P<header>[^{};]*)\{", text, re.S)
+            if match:
+                source_hint = (
+                    "_authorizeUpgrade uses onlyOwner (source hint; deployed-source identity is not independently proven)"
+                    if re.search(r"\bonlyOwner\b", match.group("header"))
+                    else "_authorizeUpgrade has a custom gate (inspect source manually)"
+                )
+                break
+    return uups_signal, source_hint
+
+
+def _proxy_admin_slot_value(config, target):
+    return run_cast(["admin", target], config, capture=True)
+
+
+def run_admin(config):
+    target = config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    value = _proxy_admin_slot_value(config, target)
+    if not value:
+        return fail("Error: could not read the EIP-1967 admin slot on the selected RPC.")
+    print(f"EIP-1967 admin slot: {apply_labels(value, config)}")
+    if _is_zero_address_value(value):
+        print("Interpretation: zero admin slot. This does not mean upgrades are disabled.")
+        print("UUPS note: upgrade authorization is enforced by implementation code, not this admin slot.")
+    else:
+        print("Interpretation: non-zero EIP-1967 admin address; inspect the proxy's admin authorization path.")
+    return 0
+
+
 def run_proxy(config):
     target=config.get("target")
     if not target:
         return fail("Error: Set target first.")
+    runtime = _live_runtime(config, target)
+    clone_implementation = _minimal_proxy_implementation(runtime) if runtime else None
+    if clone_implementation:
+        print("Proxy: YES (EIP-1167 minimal clone)")
+        print(f"Implementation: {apply_labels(clone_implementation, config)}")
+        print("EIP-1967 admin slot: not applicable to this clone pattern")
+        return 0
     detected=inspect_proxy(config)
-    if not detected: return
+    if not detected:
+        print("No EIP-1967 implementation or beacon slot was detected.")
+        return 0
     implementation=run_cast(["implementation",target],config,capture=True)
-    admin=run_cast(["admin",target],config,capture=True)
+    admin=_proxy_admin_slot_value(config,target)
+    implementation = str(implementation or "").strip().splitlines()[-1].strip()
     print(f"Implementation: {apply_labels(implementation or 'Unknown',config)}")
-    print(f"Admin:         {apply_labels(admin or 'Unknown',config)}")
+    print(f"EIP-1967 admin slot: {apply_labels(admin or 'Unknown',config)}")
+    if _is_zero_address_value(admin):
+        print("Admin-slot interpretation: zero; this does not prove that upgrades are disabled.")
+        uups_signal, source_hint = _uups_proxy_authority_hint(config, target, implementation)
+        if uups_signal:
+            print("Proxy model: UUPS-compatible (proxiableUUID signal; not a complete proxy audit).")
+            if source_hint:
+                print(f"Upgrade authorization: {source_hint}")
+            else:
+                print("Upgrade authorization: not established; inspect _authorizeUpgrade and inherited access control.")
+            rpc = effective_rpc(config)
+            try:
+                code, owner, _error = cast_output(["cast", "call", target, "owner()(address)", "--rpc-url", rpc]) if rpc else (1, "", "")
+            except Exception:
+                code, owner = 1, ""
+            owner = str(owner or "").strip().splitlines()[-1].strip() if owner else ""
+            if code == 0 and is_address(owner):
+                try:
+                    owner_runtime = rpc_json(rpc, "eth_getCode", [owner, "latest"])
+                except Exception:
+                    owner_runtime = None
+                if owner_runtime is None:
+                    owner_state = "code status unavailable"
+                elif str(owner_runtime).strip().lower() in {"", "0x", "0x0"}:
+                    owner_state = "no runtime code (identity unverified)"
+                else:
+                    owner_state = f"contract ({max(0, (len(str(owner_runtime).strip()) - 2) // 2)} bytes)"
+                harness = config.get("lab_harness") or {}
+                principal = harness.get("fixture_principal") if isinstance(harness, dict) else None
+                if is_address(principal) and principal.lower() == owner.lower():
+                    owner_state = "fixture test harness principal (not materialized as runtime code)"
+                print(f"Application owner: {apply_labels(owner, config)} [{owner_state}]")
+        else:
+            print("Upgrade authority: not determined by the EIP-1967 admin slot; inspect implementation authorization.")
+    return 0
 def storage_type_expression(types, type_id, seen=None):
     """Render a compact Solidity-like storage type from a Foundry layout type id."""
     if seen is None:
@@ -9142,11 +9327,21 @@ def _target_entry_is_protocol(root, entry):
 def _validate_manual_target_runtime(config, root, address, contract=None, artifact=None):
     """Validate a manually supplied target when the connected chain is authoritative."""
     rpc = effective_rpc(config)
+    if not artifact and contract and root:
+        requested_name = str(contract).strip().lower()
+        for candidate_path in local_artifact_paths(str(root)):
+            candidate_artifact = read_artifact(candidate_path) or {}
+            if artifact_contract_name(candidate_path, candidate_artifact).lower() == requested_name:
+                artifact = candidate_path
+                break
     if not rpc:
         print("Runtime check: UNVERIFIED (no RPC available; target metadata is not deployment proof).")
         return 0
 
-    state = _live_target_state(config, address, artifact)
+    validation_config = dict(config)
+    validation_config["project_roots"] = dict(config.get("project_roots") or {})
+    validation_config["project_roots"][str(address).lower()] = str(Path(root).expanduser().resolve())
+    state = _live_target_state(validation_config, address, artifact)
     if state.get("status") == "NOT_DEPLOYED":
         return fail(
             f"Error: {address} has no contract bytecode on {rpc}. "
@@ -9865,26 +10060,52 @@ def _auto_target_records(config, root, records, requested=None):
     return ranked
 
 
+def _select_live_project_context_target(config, root, requested=None):
+    """Reuse a verified first-party project-context target when broadcasts are stale."""
+    context = project_context_target(root)
+    if not isinstance(context, dict):
+        return None
+    address = context.get("address")
+    contract = str(context.get("contract") or context.get("name") or "").strip()
+    if not is_address(address):
+        return None
+    if requested and contract.casefold() != str(requested).strip().casefold():
+        return None
+    state = _live_target_state(config, address, context.get("artifact"))
+    if state.get("status") != "DEPLOYED" or state.get("verification") == "CODE MISMATCH":
+        return None
+    entry = {
+        "name": context.get("name") or contract or "project target",
+        "contract": contract or context.get("name") or "target",
+        "address": address,
+        "artifact": context.get("artifact"),
+        "source_file": context.get("source_file"),
+        "source": context.get("source") or "project-context",
+    }
+    print("INFO  using the verified project-context target; stale broadcast records were not reused.")
+    return _select_project_target(config, entry, root)
+
+
 def run_auto_target(config,name=None):
     root=audit_context.foundry_project_root()
     records=discover_deployments(root)
     if not records:
-        existing=project_context_target(root)
+        restored = _select_live_project_context_target(config, root, name)
+        if restored is not None:
+            return restored
+        existing = project_context_target(root)
         if existing:
-            state = _live_target_state(config, existing.get("address"), existing.get("artifact"))
-            if state.get("status") == "DEPLOYED" and state.get("verification") != "CODE MISMATCH":
-                print(f"Target already remembered and LIVE: {existing.get('contract') or 'unknown'} -> {apply_labels(existing.get('address'), config)}")
-                print(f"  Bytecode    : {state.get('code_size', 0)} bytes")
-                print(f"  Chain       : {state.get('chain_id') or 'unknown'}")
-                return 0
-            print(f"Remembered target is NOT LIVE on the current RPC: {existing.get('contract') or 'unknown'} -> {apply_labels(existing.get('address'), config)}")
-            print("  Lowkey will not reuse this address as a live target.")
+            print(f"Remembered target is not verified live on the current RPC: {existing.get('contract') or 'unknown'} -> {apply_labels(existing.get('address'), config)}")
+            print("  Lowkey will not reuse it without current-chain bytecode and artifact verification.")
             print("  Fix: lk lab | lk target reset | lk recon")
             return 2
         return fail("No deployment found in broadcast/. Build artifacts exist, but a live target still needs deployment. Run 'lk lab' to create one.", 1)
 
     ranked = _auto_target_records(config, root, records, requested=name)
     if not ranked:
+        restored = _select_live_project_context_target(config, root, name)
+        if restored is not None:
+            return restored
         available=", ".join(dict.fromkeys(str(item.get("contract","Unknown")) for item in records))
         return fail(
             f"Error: no application deployment could be resolved for '{name or 'auto'}'."
@@ -9904,10 +10125,13 @@ def run_auto_target(config,name=None):
             live_ranked.append(candidate)
 
         if not live_ranked:
+            restored = _select_live_project_context_target(config, root, name)
+            if restored is not None:
+                return restored
             return fail(
                 "Foundry broadcast records exist, but none resolve to a verified live contract on the current RPC. "
-                "The addresses may belong to a previous/reset Anvil instance. "
-                "Fix: lk lab | lk target auto after deployment | lk recon.",
+                "The project-context target was also unavailable or did not match the requested contract. "
+                "Fix: lk lab | lk target reset | lk recon.",
                 2,
             )
         ranked = live_ranked
@@ -10254,6 +10478,25 @@ def _foundry_active_test_root(root):
     return _foundry_resolve_project_path(root, "test", "test").resolve()
 
 
+def _fixture_provenance_path(root, safe_name):
+    directory = Path(root).expanduser().resolve() / "out" / "lowkey"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"fixture_provenance_{safe_name}.json"
+
+
+def _write_fixture_provenance(path, payload):
+    """Atomically persist fixture identity even though the generated harness is disposable."""
+    destination = Path(path)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permissions=None):
     """Generate a disposable harness around a project-owned setup/helper/test."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
@@ -10285,6 +10528,7 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permi
     # console markers in the successful test's output.
     state_dump = f"""        vm.dumpState("{state_literal}");"""
     context_capture = fixture_context.solidity_capture()
+    fixture_principal_marker = '        console2.log("LOWKEY_FIXTURE_PRINCIPAL:", address(this));'
 
     if setup_mode == "override":
         harness = f"""    function setUp() public override {{
@@ -10295,6 +10539,7 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permi
     }}
 
     function testLowkeyLabStateDump() public {{
+{fixture_principal_marker}
 {context_capture}
     }}
 """
@@ -10303,6 +10548,7 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permi
         {fixture_call}
 {target_marker}
 {state_dump}
+{fixture_principal_marker}
 {context_capture}
     }}
 """
@@ -10819,36 +11065,151 @@ def _fixture_artifact_inherits_contract(root, artifact_path, artifact, ancestor_
     return False
 
 
-def _fixture_target_artifact_for_runtime(root, target_contract, implementation_runtime):
-    """Return an artifact matching a target runtime or its source-proven derived contract."""
+def _fixture_target_artifact_for_runtime(
+    root, target_contract, implementation_runtime, *, materialize_missing=True
+):
+    """Match a target/derived artifact; compile only source-proven derived candidates."""
     target_name = str(target_contract or "").strip().lower()
     if not target_name or not implementation_runtime:
         return None
 
-    matches = []
-    for artifact_path in local_artifact_paths(str(root)):
-        artifact = read_artifact(artifact_path) or {}
-        if not artifact_is_deployable(artifact):
-            continue
-        normalizer = _artifact_runtime_normalizer(artifact)
-        if normalizer is None or not normalizer(implementation_runtime):
-            continue
+    def find_match():
+        matches = []
+        for artifact_path in local_artifact_paths(str(root)):
+            artifact = read_artifact(artifact_path) or {}
+            if not artifact_is_deployable(artifact):
+                continue
+            normalizer = _artifact_runtime_normalizer(artifact)
+            if normalizer is None or not normalizer(implementation_runtime):
+                continue
+            name = artifact_contract_name(artifact_path, artifact)
+            if name.lower() == target_name:
+                rank = 0
+            elif _fixture_artifact_inherits_contract(root, artifact_path, artifact, target_name):
+                rank = 1
+            else:
+                continue
+            matches.append((rank, str(artifact_path), artifact_path))
+        if not matches:
+            return None
+        matches.sort()
+        return matches[0][2]
 
-        name = artifact_contract_name(artifact_path, artifact)
-        if name.lower() == target_name:
-            rank = 0
-        elif _fixture_artifact_inherits_contract(root, artifact_path, artifact, target_name):
-            # The implementation source explicitly derives from the requested
-            # contract. This includes legitimate test-only upgrade implementations.
-            rank = 1
-        else:
-            continue
-        matches.append((rank, str(artifact_path), artifact_path))
+    matched = find_match()
+    if matched or not materialize_missing:
+        return matched
+    for source_path, contract_name, _relative in _fixture_derived_contract_sources(root, target_name):
+        _materialize_fixture_derived_artifact(root, source_path, contract_name)
+        matched = find_match()
+        if matched:
+            return matched
+    return None
 
-    if not matches:
+
+
+def _fixture_derived_contract_sources(root, target_contract, *, limit=16):
+    """Find bounded first-party Solidity contracts that inherit a selected application."""
+    root_path = Path(root).expanduser().resolve()
+    target_name = str(target_contract or "").strip()
+    if not target_name:
+        return []
+    source_roots = [
+        _foundry_resolve_project_path(root_path, "src", "src"),
+        root_path / "src", root_path / "contracts", root_path / "sources",
+        *_foundry_test_roots(root_path),
+    ]
+    roots, seen_roots = [], set()
+    for candidate in source_roots:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key not in seen_roots and resolved.is_dir():
+            seen_roots.add(key)
+            roots.append(resolved)
+    ignored = {
+        ".git", ".audit", ".venv", ".tox", "__pycache__", "node_modules",
+        "out", "cache", "artifacts", "build", "dist", ".lowkey", "lib",
+        "broadcast", "script", "scripts",
+    }
+    declarations, seen_files = [], set()
+    for source_root in roots:
+        for current, dirs, files in os.walk(source_root):
+            dirs[:] = sorted(d for d in dirs if d.lower() not in ignored and not d.startswith("."))
+            for filename in sorted(files):
+                if not filename.endswith(".sol"):
+                    continue
+                path = Path(current) / filename
+                try:
+                    resolved = path.resolve()
+                    relative = resolved.relative_to(root_path)
+                except (OSError, ValueError):
+                    continue
+                if str(resolved).lower() in seen_files:
+                    continue
+                seen_files.add(str(resolved).lower())
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                masked = re.sub(r"/\*.*?\*/|//[^\r\n]*", "", text, flags=re.S)
+                for match in re.finditer(r"\b(?:abstract\s+)?contract\s+([A-Za-z_][A-Za-z0-9_]*)\b", masked):
+                    name = match.group(1)
+                    bases = _fixture_contract_base_names(path, name)
+                    if bases:
+                        declarations.append((name, path, bases, relative.as_posix()))
+    known, selected, remaining = {target_name.lower()}, [], list(declarations)
+    changed = True
+    while changed and len(selected) < max(1, int(limit)):
+        changed = False
+        next_remaining = []
+        for name, path, bases, relative in remaining:
+            if any(str(base).lower() in known for base in bases):
+                if name.lower() != target_name.lower():
+                    selected.append((path, name, relative))
+                    known.add(name.lower())
+                    changed = True
+            else:
+                next_remaining.append((name, path, bases, relative))
+        remaining = next_remaining
+    selected.sort(key=lambda row: (
+        0 if row[2].startswith(("test/", "tests/")) else 1,
+        row[2].lower(), row[1].lower(),
+    ))
+    return selected[:max(1, int(limit))]
+
+
+def _materialize_fixture_derived_artifact(root, source_path, contract_name):
+    """Compile one source-proven derived contract into its normal Foundry artifact."""
+    root_path = Path(root).expanduser().resolve()
+    try:
+        relative = Path(source_path).resolve().relative_to(root_path).as_posix()
+    except (OSError, ValueError):
         return None
-    matches.sort()
-    return matches[0][2]
+    result = run_foundry(
+        ["inspect", "--json", f"{relative}:{contract_name}", "artifact"],
+        capture=True, cwd=str(root_path),
+    )
+    if getattr(result, "code", 1) != 0:
+        return None
+    for artifact_path in local_artifact_paths(str(root_path)):
+        artifact = read_artifact(artifact_path) or {}
+        if artifact_contract_name(artifact_path, artifact).lower() != str(contract_name).lower():
+            continue
+        source_name = artifact_source_name(artifact, artifact_path, root_path)
+        if source_name:
+            candidate = Path(source_name)
+            if not candidate.is_absolute():
+                candidate = root_path / candidate
+            try:
+                if candidate.resolve() != Path(source_path).resolve():
+                    continue
+            except OSError:
+                continue
+        if artifact_is_deployable(artifact):
+            return artifact_path
+    return None
 
 
 def _fixture_runtime_matches_target_or_upgrade(root, target_contract, implementation_runtime):
@@ -11156,6 +11517,22 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         root, fixture, state_path, fs_permissions=fs_permissions
     )
     relative_test = os.path.relpath(test_path, root)
+    provenance_path = _fixture_provenance_path(root, safe_name)
+    provenance_record = {
+        "schema_version": 1,
+        "status": "prepared",
+        "project_root": str(Path(root).resolve()),
+        "fixture_source": str(fixture.get("relative") or ""),
+        "fixture_contract": str(fixture.get("contract") or ""),
+        "fixture_function": str(fixture.get("create_function") or ""),
+        "fixture_kind": str(fixture.get("fixture_kind") or "helper"),
+        "setup_mode": str(fixture.get("setup_mode") or "unknown"),
+        "generated_harness": str(relative_test).replace("\\", "/"),
+        "state_snapshot": str(Path(state_path).resolve()),
+        "rpc_before_materialization": str(rpc),
+    }
+    if not _write_fixture_provenance(provenance_path, provenance_record):
+        print("WARNING: fixture provenance manifest could not be written.")
 
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
@@ -11177,6 +11554,16 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         "--disable-block-gas-limit", "-vv",
     ], capture=True, cwd=str(Path(root).resolve()))
     output = result.text
+    fixture_markers = parse_lab_system(output)
+    fixture_principal = fixture_markers.get("fixture_principal")
+    captured_context, _captured_context_error = fixture_context.parse_context(output)
+    provenance_record.update({
+        "status": "executed" if result.code == 0 else "failed",
+        "forge_exit_code": int(result.code),
+        "fixture_principal": fixture_principal,
+        "fixture_context": captured_context,
+    })
+    _write_fixture_provenance(provenance_path, provenance_record)
     changed_sources = _project_source_mutations(root, before_sources)
     # The harness exists only to execute this promotion once. Remove it after
     # measuring source mutations so future ordinary Forge runs do not inherit
@@ -11299,12 +11686,59 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     artifact = target_artifact_path
 
     contract_name = target_name or str(fixture.get("contract") or "auto-detected")
+    implementation_artifact = None
+    if implementation_address:
+        implementation_code = run_cast(
+            ["code", implementation_address, "--rpc-url", str(rpc)],
+            config={}, capture=True,
+        )
+        implementation_runtime = str(implementation_code.text or "").strip()
+        if implementation_code.code == 0 and implementation_runtime not in {"", "0x", "0X"}:
+            implementation_artifact = _fixture_target_artifact_for_runtime(
+                root, contract_name, implementation_runtime, materialize_missing=True
+            )
+            if implementation_artifact:
+                print(f"Implementation artifact: {implementation_artifact}")
+    provenance_record["implementation_artifact"] = implementation_artifact
+    _write_fixture_provenance(provenance_path, provenance_record)
     _ensure_lab_deployer(config, accounts[0], 0)
+    implementation_address = None
+    target_runtime_result = run_cast(["code", target, "--rpc-url", str(rpc)], config={}, capture=True)
+    target_runtime = str(target_runtime_result.text or "").strip()
+    target_kind = "direct"
+    if target_runtime_result.code == 0 and target_runtime:
+        embedded = _minimal_proxy_implementation(target_runtime)
+        if embedded:
+            implementation_address, target_kind = embedded, "clone"
+        else:
+            try:
+                implementation_code, implementation_value, _ = cast_output(
+                    ["cast", "implementation", target, "--rpc-url", str(rpc)]
+                )
+            except Exception:
+                implementation_code, implementation_value = 1, ""
+            implementation_value = str(implementation_value or "").strip().splitlines()[-1].strip()
+            if implementation_code == 0 and is_address(implementation_value):
+                implementation_address, target_kind = implementation_value, "proxy"
+    provenance_record.update({
+        "status": "materialized",
+        "fixture_principal": fixture_principal,
+        "rpc": str(rpc),
+        "chain_id": block_context.get("chainId"),
+        "block_number": block_context.get("blockNumber"),
+        "target_address": target,
+        "target_kind": target_kind,
+        "implementation_address": implementation_address,
+    })
+    _write_fixture_provenance(provenance_path, provenance_record)
     config["lab_harness"] = {
         "type": "test-fixture-full-state",
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
         "fixture_action": fixture.get("create_function"),
+        "fixture_principal": fixture_principal,
+        "implementation_artifact": implementation_artifact,
+        "provenance_file": str(provenance_path),
         "state_file": str(state_path),
         "block_context": block_context,
     }
@@ -21622,6 +22056,12 @@ def _status_address_references(config, target, abi, rpc, *, limit=12):
             code_state = "unset"
         else:
             identity = apply_labels(address, config)
+            lab_harness = config.get("lab_harness") if isinstance(config, dict) else None
+            fixture_principal = lab_harness.get("fixture_principal") if isinstance(lab_harness, dict) else None
+            is_fixture_principal = (
+                is_address(fixture_principal)
+                and str(fixture_principal).lower() == address.lower()
+            )
             try:
                 runtime = rpc_json(rpc, "eth_getCode", [address, "latest"])
             except Exception:
@@ -21631,7 +22071,11 @@ def _status_address_references(config, target, abi, rpc, *, limit=12):
             else:
                 runtime = str(runtime).strip()
                 if runtime.lower() in {"", "0x", "0x0"}:
-                    code_state = "no code (likely an EOA)"
+                    if is_fixture_principal:
+                        identity = f"fixture test harness ({address})"
+                        code_state = "no runtime code (fixture principal not materialized)"
+                    else:
+                        code_state = "no runtime code (identity unverified)"
                 else:
                     code_size = max(0, (len(runtime) - 2) // 2)
                     code_state = f"contract ({code_size} bytes)"
@@ -21660,6 +22104,10 @@ def run_status(config):
             save_config(config)
     _sync_current_anvil_actor(config, info)
     abi=resolve_abi_path(config,target) if target else None
+    implementation_abi = (
+        _active_implementation_artifact_path(config, target, abi, materialize_missing=False)
+        if target and abi and os.path.isfile(abi) else None
+    )
     contract=config.get("target_contract") or "unknown"
     if target:
         print(f"Target : {contract} @ {apply_labels(target, config)}")
@@ -21672,6 +22120,8 @@ def run_status(config):
         print("RPC    : none (no local Anvil detected)")
     print(f"Actor  : {actor_display(config)}")
     print(f"ABI    : {abi or 'auto/not found'}")
+    if implementation_abi:
+        print(f"Implementation ABI: {implementation_abi}")
     print(f"Contract: {contract}")
     if target:
         runtime_state = _live_target_state(config, target, abi)
@@ -23432,9 +23882,9 @@ COMMAND_HELP = {
         },
         related=["lk impersonate", "lk lab", "lk rpc"],
     ),
-    "proxy": _help_entry("Inspect an EIP-1967-style proxy.", "lk proxy", "lk proxy", "Use it when a target may be a proxy and you need to distinguish proxy from implementation.", related=["lk implementation", "lk admin"]),
+    "proxy": _help_entry("Inspect proxy/clone implementation relationships and explain EIP-1967 admin-slot semantics.", "lk proxy", "lk proxy", "Use it to distinguish the operational proxy from its implementation and identify whether upgrade authority is represented by the EIP-1967 admin slot or must be checked in UUPS implementation code.", related=["lk implementation", "lk admin"]),
     "implementation": _help_entry("Resolve the implementation behind the selected proxy.", "lk implementation", "lk implementation", "Use it to find the code that executes behind a proxy.", related=["lk proxy", "lk admin"]),
-    "admin": _help_entry("Resolve the proxy admin when supported.", "lk admin", "lk admin", "Use it when reviewing who controls upgrades.", related=["lk proxy", "lk implementation"]),
+    "admin": _help_entry("Read the raw EIP-1967 admin slot and explain its limits.", "lk admin", "lk admin", "Use it to inspect the EIP-1967 admin slot. A zero slot does not mean a UUPS proxy has no upgrade authority; inspect _authorizeUpgrade and application roles.", related=["lk proxy", "lk implementation"]),
     "selectors": _help_entry(
         "Show deployed runtime selectors matched to readable function signatures from the selected contract ABI.",
         "lk selectors [--compare|--raw] [bytecode]",
@@ -26709,7 +27159,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="recon": run_recon(config)
     elif cmd=="proxy": run_proxy(config)
     elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
-    elif cmd=="admin": run_cast(["admin",config.get("target")],config)
+    elif cmd=="admin": return run_admin(config)
     elif cmd in {"mapping","map"}: return run_mapping(config,*args)
     elif cmd in {"ids","identifiers"}: return run_ids(config,args)
     elif cmd=="id": return run_id(config,args)
