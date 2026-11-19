@@ -14021,11 +14021,10 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
                 category = "unverified"
                 origin = "Live bytecode; contract identity not proven"
 
-            # A contract-typed ABI input needs a project-owned artifact whose
-            # deployed runtime matches. Code-only addresses and wallet labels
-            # remain available for generic address inputs, not typed contracts.
-            if requires_contract and category != "contracts":
-                continue
+        # Apply the typed-contract restriction to every category, including
+        # Anvil actors. A contract ABI parameter must never show an EOA choice.
+        if requires_contract and category != "contracts":
+            continue
 
         entries.append({
             "name": str(name),
