@@ -691,7 +691,7 @@ RELATED
     }
 
     page = pages.get(topic, pages[""])
-    print(page.strip("\\n"))
+    print(page.strip())
 
 def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
