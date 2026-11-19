@@ -566,6 +566,8 @@ def _compact_request_context(context: Mapping[str, Any], byte_limit: int = MAX_C
                 candidate[key] = _shrink_context_value(
                     value, text_limit=text_limit, list_limit=list_limit, dict_limit=dict_limit
                 )
+        if "source_files_included" in candidate:
+            candidate["source_files_included"] = kept_count
         candidate["_lowkey_context_compaction"] = {
             "compacted": True,
             "original_context_bytes": original_size,
