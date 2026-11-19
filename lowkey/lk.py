@@ -25739,6 +25739,9 @@ SHORT ALIASES FOR LONG COMMANDS
   Add --h to any of these to see the same help as the full command.
 
 AUDIT WORKFLOW / EVIDENCE
+  lk workflow [start|status|next|note|done|reset]
+                                  Track the five human audit phases and their checkpoints.
+  lk workflow --h                 Explain every workflow action, option, phase and evidence rule.
   lk audit                          Interactive audit dashboard.
   lk audit auto                    Local autonomous audit; may provision Anvil.
   lk audit --checks                Explicitly run the default static-check baseline (compatibility alias).
@@ -25760,9 +25763,10 @@ AUDIT WORKFLOW / EVIDENCE
   lk export                        Build an audit-report/ bundle.
 
 PROTOCOL WALKTHROUGH
-  lk walkthrough --h                Explain the walkthrough, its options, and next commands.
+  lk walkthrough --h                Explain the live protocol walkthrough and its options.
   lk walkthrough test --h           Explain randomized adversarial testing.
   Example: lk walkthrough --auto --steps 8
+  Note: lk walkthrough teaches execution behavior; lk workflow tracks the five audit phases.
 
 FORK / PROXY / ABI FORENSICS
   lk fork <rpc> [block]             Start a local fork command/state.
