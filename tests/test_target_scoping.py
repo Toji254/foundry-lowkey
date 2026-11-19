@@ -924,5 +924,52 @@ contract Delegation {
 
 
 
+    def test_explicit_project_target_without_artifact_never_falls_back_to_reused_global_abi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            current_root = pathlib.Path(tmp) / "Current"
+            sibling_root = pathlib.Path(tmp) / "Sibling"
+            current_root.mkdir()
+            sibling_root.mkdir()
+            address = "0x" + "1" * 40
+            sibling_artifact = sibling_root / "out" / "OldContract.sol" / "OldContract.json"
+            sibling_artifact.parent.mkdir(parents=True)
+            sibling_artifact.write_text(json.dumps({
+                "contractName": "OldContract",
+                "sourceName": "src/OldContract.sol",
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+            config = {
+                "wallets": {},
+                "aliases": {"ExternalDependency": address},
+                "targets": {},
+                "project_target_registry": {
+                    str(current_root): {
+                        "ExternalDependency": {
+                            "address": address,
+                            "artifact": None,
+                            "explicit": True,
+                        }
+                    }
+                },
+                "abi_paths": {address: str(sibling_artifact)},
+                "_lab_system_root": str(current_root),
+            }
+            seen = []
+
+            def live_check(_config, checked_address, _rpc, artifact_path=None):
+                seen.append((checked_address, artifact_path))
+                return True
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=current_root):
+                with patch.object(lk, "_lab_remembered_contract_is_live", side_effect=live_check):
+                    choices = lk._lab_address_choices(config, [], rpc="http://127.0.0.1:8545")
+
+            self.assertEqual(choices, [("ExternalDependency", address)])
+            self.assertEqual(seen, [(address, None)])
+
+
+
 if __name__ == "__main__":
     unittest.main()

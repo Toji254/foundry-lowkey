@@ -13778,16 +13778,23 @@ def _lab_address_choices(config, accounts, rpc=None):
         for name, address in target_aliases(config, project_root).items():
             artifact_path = None
             record = project_records.get(name) if isinstance(project_records, dict) else None
-            if isinstance(record, dict) and str(record.get("address") or "").lower() == str(address).lower():
+            registry_identity_found = (
+                isinstance(record, dict)
+                and str(record.get("address") or "").lower() == str(address).lower()
+            )
+            if registry_identity_found:
+                # This project-specific record is authoritative even when it
+                # has no artifact path. Never fall through to the global
+                # address-keyed ABI map, which may have been overwritten by
+                # another project that reused the same Anvil address.
                 artifact_path = record.get("artifact")
-            if (
-                not artifact_path
-                and isinstance(context_target, dict)
+            elif (
+                isinstance(context_target, dict)
                 and str(context_target.get("contract") or "").casefold() == str(name).casefold()
                 and str(context_target.get("address") or "").lower() == str(address).lower()
             ):
                 artifact_path = context_target.get("artifact")
-            if not artifact_path:
+            else:
                 for registered_address, candidate in (config.get("abi_paths", {}) or {}).items():
                     if is_address(registered_address) and str(registered_address).lower() == str(address).lower():
                         artifact_path = candidate
