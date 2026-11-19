@@ -2236,6 +2236,12 @@ ONE-COMMAND OVERRIDE
 WHAT DOES "AUTO" MEAN?
 ----------------------
 auto is a value after a setting command, not a standalone command. Mode, recommendations and errors are independent.
+  lk ai mode auto
+  lk ai mode manual
+  lk ai recommendations auto
+  lk ai recommendations manual
+  lk ai errors auto
+  lk ai errors manual
 Use manual to disable a setting; status shows its value. Requests may send context and incur charges.
 
 UNIVERSAL --ai / TASK RUN
@@ -2248,8 +2254,10 @@ UNIVERSAL --ai / TASK RUN
 
 AI INSIDE EXISTING LK WORKFLOWS
 -------------------------------
-  lk lab Vault --ai-review
-      Request unverified review. It does not choose targets, deploy or test.
+  lk lab --ai | lk lab Vault --ai-review
+      Request pre-lab role and dependency review before the native build.
+      It does not choose the final target by itself; native artifacts and dependency
+      checks validate any suggestion. An explicit review failure stops before deployment.
   lk ai mode manual
       Reviews run only when requested.
   lk ai mode auto

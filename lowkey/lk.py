@@ -13773,50 +13773,186 @@ def _lab_address_choices(config, accounts, rpc=None):
         if isinstance(entry, dict) and is_address(entry.get("address")):
             choices.append((str(name), str(entry["address"])))
 
-    # Contracts from unrelated projects are not implicit constructor options.
-    # A sibling/external dependency becomes available only after the user
-    # explicitly registers it in this project's target registry (lk target).
     rpc = rpc or config.get("_lab_rpc")
     if rpc:
+        root_hint = config.get("_lab_system_root") or audit_context.foundry_project_root()
         project_root = Path(
-            config.get("_lab_system_root") or audit_context.foundry_project_root()
+            audit_context.foundry_project_root(root_hint)
         ).expanduser().resolve()
-        project_registry = config.get("project_target_registry", {})
+
+        try:
+            inventory = _project_target_entries(config, project_root)
+        except Exception:
+            inventory = []
+
+        registry = config.get("project_target_registry", {})
         project_records = (
-            project_registry.get(str(project_root), {})
-            if isinstance(project_registry, dict) else {}
+            registry.get(str(project_root), {})
+            if isinstance(registry, dict) else {}
         )
         context_target = project_context_target(project_root)
-        for name, address in target_aliases(config, project_root).items():
-            artifact_path = None
-            record = project_records.get(name) if isinstance(project_records, dict) else None
-            registry_identity_found = (
-                isinstance(record, dict)
-                and str(record.get("address") or "").lower() == str(address).lower()
-            )
-            if registry_identity_found:
-                # This project-specific record is authoritative even when it
-                # has no artifact path. Never fall through to the global
-                # address-keyed ABI map, which may have been overwritten by
-                # another project that reused the same Anvil address.
-                artifact_path = record.get("artifact")
-            elif (
+        by_address = {}
+        for entry in inventory or []:
+            if not isinstance(entry, dict) or not is_address(entry.get("address")):
+                continue
+            by_address.setdefault(str(entry["address"]).lower(), []).append(entry)
+
+        for address_key, entries in by_address.items():
+            address = str(entries[0].get("address"))
+            names = {
+                str(entry.get("contract") or entry.get("name") or "").strip()
+                for entry in entries
+                if str(entry.get("contract") or entry.get("name") or "").strip()
+            }
+
+            context_matches = (
                 isinstance(context_target, dict)
-                and str(context_target.get("contract") or "").casefold() == str(name).casefold()
-                and str(context_target.get("address") or "").lower() == str(address).lower()
-            ):
+                and str(context_target.get("address") or "").lower() == address_key
+                and str(context_target.get("contract") or "").strip()
+            )
+            context_name = (
+                str(context_target.get("contract")).strip()
+                if context_matches else None
+            )
+
+            # A project-scoped active target is authoritative for its own
+            # address, but it must not inherit a conflicting global alias.
+            if context_name:
+                name = context_name
                 artifact_path = context_target.get("artifact")
+                identity_verified = True
             else:
-                for registered_address, candidate in (config.get("abi_paths", {}) or {}).items():
-                    if is_address(registered_address) and str(registered_address).lower() == str(address).lower():
-                        artifact_path = candidate
-                        break
+                matching_records = [
+                    (str(record_name), record)
+                    for record_name, record in (project_records or {}).items()
+                    if isinstance(record, dict)
+                    and str(record.get("address") or "").lower() == address_key
+                ]
+                record_names = {record_name for record_name, _record in matching_records}
+                if len(record_names) == 1:
+                    name = next(iter(record_names))
+                    record = matching_records[0][1]
+                    artifact_path = record.get("artifact")
+                    identity_verified = bool(artifact_path) or record.get("explicit") is True
+                elif len(names) == 1:
+                    name = next(iter(names))
+                    entry = next(
+                        (
+                            item for item in entries
+                            if str(item.get("contract") or item.get("name") or "").strip() == name
+                        ),
+                        entries[0],
+                    )
+                    artifact_path = entry.get("artifact")
+                    source = str(entry.get("source") or "").strip().lower()
+                    identity_verified = source == "broadcast"
+                    if artifact_path:
+                        candidate_path = Path(os.path.expanduser(str(artifact_path)))
+                        if not candidate_path.is_absolute():
+                            candidate_path = project_root / candidate_path
+                        artifact_data = (
+                            read_artifact(str(candidate_path))
+                            if candidate_path.is_file() else None
+                        )
+                        try:
+                            local_artifact = candidate_path.resolve().is_relative_to(project_root)
+                        except (OSError, RuntimeError, ValueError):
+                            local_artifact = False
+                        identity_verified = bool(
+                            artifact_data
+                            and local_artifact
+                            and artifact_contract_name(str(candidate_path), artifact_data).casefold()
+                                == name.casefold()
+                            and artifact_is_project_application(
+                                project_root, str(candidate_path), artifact_data
+                            )
+                        ) or identity_verified
+                else:
+                    name = ""
+                    artifact_path = None
+                    identity_verified = False
+
+            # Resolve the exact project-owned artifact. Never fall back to the
+            # global address-keyed ABI map for a scoped registry entry.
+            if context_name:
+                if not artifact_path:
+                    artifact_path = context_target.get("artifact")
+            elif project_records and name in project_records:
+                record = project_records[name]
+                if isinstance(record, dict) and str(record.get("address") or "").lower() == address_key:
+                    artifact_path = record.get("artifact")
+                    identity_verified = bool(artifact_path) or record.get("explicit") is True
+
+            # Multiple names for one address are a metadata collision. Prefer a
+            # single artifact that proves its runtime; otherwise expose only a
+            # generic address label, never one of the conflicting names.
+            verified_names = []
+            for entry in entries:
+                entry_name = str(entry.get("contract") or entry.get("name") or "").strip()
+                entry_artifact = entry.get("artifact")
+                if not entry_name or not entry_artifact:
+                    continue
+                entry_path = Path(os.path.expanduser(str(entry_artifact)))
+                if not entry_path.is_absolute():
+                    entry_path = project_root / entry_path
+                artifact_data = read_artifact(str(entry_path)) if entry_path.is_file() else None
+                try:
+                    local_artifact = entry_path.resolve().is_relative_to(project_root)
+                except (OSError, RuntimeError, ValueError):
+                    local_artifact = False
+                if (
+                    not artifact_data
+                    or not local_artifact
+                    or artifact_contract_name(str(entry_path), artifact_data).casefold() != entry_name.casefold()
+                    or not artifact_is_project_application(project_root, str(entry_path), artifact_data)
+                ):
+                    continue
+                if _lab_remembered_contract_is_live(
+                    config, address, rpc, artifact_path=str(entry_path)
+                ):
+                    verified_names.append((entry_name, str(entry_path)))
+
+            if not context_name and len(names) > 1:
+                distinct_verified = {item[0].casefold() for item in verified_names}
+                if len(distinct_verified) == 1:
+                    name = next(iter(verified_names))[0]
+                    artifact_path = next(item[1] for item in verified_names if item[0].casefold() == name.casefold())
+                    identity_verified = True
+                else:
+                    name = ""
+                    artifact_path = None
+                    identity_verified = False
+            elif not context_name and len(names) == 1 and not identity_verified and verified_names:
+                distinct_verified = {item[0].casefold() for item in verified_names}
+                if len(distinct_verified) == 1:
+                    name = verified_names[0][0]
+                    artifact_path = verified_names[0][1]
+                    identity_verified = True
+
+            # A missing artifact on an explicitly registered address is not
+            # permission to borrow another project's ABI. Check only live code.
+            check_config = config
+            if not artifact_path:
+                check_config = dict(config)
+                check_config["abi_paths"] = {}
+                check_config["project_roots"] = {}
+
             if not _lab_remembered_contract_is_live(
-                config, address, rpc, artifact_path=artifact_path
+                check_config,
+                address,
+                rpc,
+                artifact_path=str(artifact_path) if artifact_path else None,
             ):
                 continue
-            choices.append((str(name), str(address)))
 
+            display_name = (
+                name if identity_verified and name
+                else f"Unverified target #{address[-6:]}"
+            )
+            choices.append((display_name, address))
+
+    # Preserve order and remove duplicates by address. An actor always wins over
+    # a contract/wallet label for the same address.
     seen = set()
     result = []
     for name, address in choices:
@@ -13913,7 +14049,7 @@ def _lab_short_address(address):
 
 
 def _lab_address_picker_entries(config, accounts, choices, requires_contract=False):
-    """Enrich known address choices for the interactive constructor picker."""
+    """Enrich known address choices using only the current project's target provenance."""
     actor_indexes = {
         str(address).lower(): index
         for index, address in enumerate(accounts or [])
@@ -13925,16 +14061,17 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
         if is_address(address):
             wallet_names.setdefault(str(address).lower(), str(name))
 
-    remembered_roots = {}
+    root_hint = config.get("_lab_system_root") or audit_context.foundry_project_root()
     try:
-        for item in _lab_workspace_remembered_targets(config):
-            address = item.get("address")
-            root = item.get("root")
-            if is_address(address) and root:
-                remembered_roots[str(address).lower()] = root
-    except Exception:
-        # Address selection must remain usable if optional provenance discovery fails.
-        remembered_roots = {}
+        project_root = Path(audit_context.foundry_project_root(root_hint)).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        project_root = Path.cwd().resolve()
+    registry = config.get("project_target_registry", {})
+    project_records = (
+        registry.get(str(project_root), {})
+        if isinstance(registry, dict) else {}
+    )
+    context_target = project_context_target(project_root)
 
     entries = []
     for name, address in choices or []:
@@ -13945,42 +14082,69 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
             category = "actors"
             origin = f"Anvil account #{actor_indexes[key]}"
         else:
-            root = configured_project_root(address, config) or remembered_roots.get(key)
-            wallet_name = wallet_names.get(key)
-            if root:
-                category = "contracts"
+            record = next(
+                (
+                    value for record_name, value in (project_records or {}).items()
+                    if isinstance(value, dict)
+                    and str(value.get("address") or "").lower() == key
+                    and str(record_name).casefold() == str(name).casefold()
+                ),
+                None,
+            )
+            artifact_path = record.get("artifact") if isinstance(record, dict) else None
+            if (
+                not artifact_path
+                and isinstance(context_target, dict)
+                and str(context_target.get("address") or "").lower() == key
+                and str(context_target.get("contract") or "").casefold() == str(name).casefold()
+            ):
+                artifact_path = context_target.get("artifact")
+
+            if artifact_path:
                 try:
-                    project_label = Path(root).expanduser().resolve().relative_to(
-                        Path.home().resolve()
-                    ).as_posix()
-                except (OSError, ValueError):
-                    project_label = str(Path(root).expanduser().resolve())
+                    artifact_root = Path(
+                        audit_context.foundry_project_root(
+                            Path(os.path.expanduser(str(artifact_path)))
+                        )
+                    ).expanduser().resolve()
+                    project_label = artifact_root.relative_to(Path.home().resolve()).as_posix()
+                except (OSError, RuntimeError, ValueError):
+                    project_label = str(Path(os.path.expanduser(str(artifact_path))).parent)
+                category = "contracts"
                 origin = project_label
-            elif wallet_name:
+            else:
+                owner = configured_project_root(address, config)
+                if owner and Path(owner).expanduser().resolve() == project_root:
+                    category = "contracts"
+                    origin = str(project_root)
+                elif isinstance(record, dict) and record.get("explicit") is True:
+                    category = "contracts"
+                    origin = "Explicitly registered for this project"
+                else:
+                    category = "contracts"
+                    origin = "Current project deployment"
+
+            wallet_name = wallet_names.get(key)
+            if not record and not artifact_path and wallet_name:
                 category = "wallets"
                 origin = "Saved wallet profile"
-            else:
-                category = "contracts"
-                origin = "Remembered deployment"
 
-        if requires_contract:
-            if category == "actors":
-                continue
-            if category == "wallets":
-                rpc = config.get("_lab_rpc")
-                if not rpc:
-                    continue
-                try:
-                    code_check = run_cast(
-                        ["code", address, "--rpc-url", rpc], config={}, capture=True
-                    )
-                    runtime_code = str(code_check.text or "").strip().lower()
-                    if code_check.code != 0 or runtime_code in {"", "0x", "0x0"}:
+            if requires_contract:
+                if category == "wallets":
+                    rpc = config.get("_lab_rpc")
+                    if not rpc:
                         continue
-                except Exception:
-                    continue
-                category = "contracts"
-                origin = f"{origin} · deployed bytecode"
+                    try:
+                        code_check = run_cast(
+                            ["code", address, "--rpc-url", rpc], config={}, capture=True
+                        )
+                        runtime_code = str(code_check.text or "").strip().lower()
+                        if code_check.code != 0 or runtime_code in {"", "0x", "0x0"}:
+                            continue
+                    except Exception:
+                        continue
+                    category = "contracts"
+                    origin = f"{origin} · deployed bytecode"
 
         entries.append({
             "name": str(name),
@@ -14841,10 +15005,14 @@ def validate_ai_primary_contract_suggestion(root, suggested_name):
 
 
 def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_suggested=None):
-    """Prefer explicit intent, artifact-checked AI hypotheses, and native dependency evidence."""
+    """Prefer explicit intent and a verified manual pin before model/native discovery."""
     explicit = str(requested or "").strip()
     if explicit:
         return explicit
+
+    remembered = str(remembered_name or "").strip()
+    if remembered and discover_artifact_lab_contract(root, remembered):
+        return remembered
 
     detected = discover_audit_target_contract(root)
     ai_name = str(ai_suggested or "").strip()
@@ -14853,14 +15021,11 @@ def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_sugge
         if candidate and artifact_is_project_application(root, candidate[2], candidate[3]):
             # The model must not promote an implementation/helper into the
             # primary slot when native source analysis places it underneath a
-            # different application entry. This relationship is generic and
-            # based on the dependency graph, not protocol-specific names.
+            # different application entry.
             if detected and detected.casefold() != candidate[1].casefold():
                 try:
                     native_dependencies = discover_contract_dependencies(root, detected)
                 except ContractDependencyCycleError:
-                    # A cyclic graph needs a project-native deployment plan;
-                    # do not let an AI suggestion override the native root.
                     return detected
                 if candidate[1].casefold() in {
                     str(name).casefold() for name in native_dependencies
@@ -14868,12 +15033,7 @@ def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_sugge
                     return detected
             return candidate[1]
 
-    if detected:
-        return detected
-    remembered = str(remembered_name or "").strip()
-    if remembered and discover_artifact_lab_contract(root, remembered):
-        return remembered
-    return None
+    return detected
 
 
 def run_lab(config,args, *, deployment_only=False):
@@ -14903,6 +15063,7 @@ def run_lab(config,args, *, deployment_only=False):
         print("      Review this project's first-party source before lab setup. AI may suggest a")
         print("      primary contract and dependency roles; Lowkey validates every suggestion against")
         print("      local deployable artifacts. Explicit review failure stops before deployment.")
+        print("      The model does not choose the final target by itself; native artifact and dependency checks validate suggestions.")
         print("      The model never signs, sends transactions, or establishes a security verdict.")
         print("      Selected source excerpts may be sent to the configured provider.")
         print("      Examples: lk lab --ai | lk lab --generic Vault --ai-review")
@@ -15223,6 +15384,14 @@ def run_lab(config,args, *, deployment_only=False):
         and str(remembered_project_target.get("source") or "").lower() == "manual"
     ):
         remembered_contract_name = str(remembered_project_target.get("contract") or "").strip()
+    elif remembered_project_target is None:
+        # Older installations stored explicit project targets only in the
+        # global config. Keep that compatibility path only when active_project_target
+        # proves the address and ABI belong to this exact project root.
+        legacy_target = active_project_target(config, root)
+        legacy_name = str(config.get("target_contract") or "").strip()
+        if legacy_target and legacy_name and discover_artifact_lab_contract(root, legacy_name):
+            remembered_contract_name = legacy_name
     auto_selected = _preferred_lab_contract(
         root,
         requested,

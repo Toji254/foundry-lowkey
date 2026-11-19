@@ -1359,16 +1359,18 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "uint8"), "1")
         self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "int8"), "1")
 
-    def test_lab_address_choices_include_live_remembered_contracts_from_other_projects(self):
+    def test_lab_address_choices_include_cross_project_contracts_only_after_explicit_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
             active_root = pathlib.Path(tmp) / "TargetHolder"
             fallout_root = pathlib.Path(tmp) / "Ethernaut CTFs" / "Fallout"
             active_root.mkdir()
             fallout_root.mkdir(parents=True)
+            (active_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             live_contract = "0x" + "a" * 40
             stale_contract = "0x" + "b" * 40
             actor = "0x" + "1" * 40
             config = {
+                "_lab_system_root": str(active_root),
                 "_lab_rpc": "http://127.0.0.1:8545",
                 "wallets": {},
                 "targets": {
@@ -1383,6 +1385,15 @@ class LowkeyCastTests(unittest.TestCase):
                     live_contract: str(fallout_root),
                     stale_contract: str(fallout_root),
                 },
+                "project_target_registry": {
+                    str(active_root): {
+                        "Fallout": {
+                            "address": live_contract,
+                            "artifact": None,
+                            "explicit": True,
+                        }
+                    }
+                },
             }
 
             def fake_run_cast(args, config=None, capture=False):
@@ -1394,9 +1405,9 @@ class LowkeyCastTests(unittest.TestCase):
                 choices = lk._lab_address_choices(config, [actor])
 
             self.assertIn(("anvil:0", actor), choices)
-            # A legacy global alias is not enough to establish project identity.
-            # Lowkey may offer the address, but must label it as unverified.
-            self.assertIn((f"Unverified target #{live_contract[-6:]}", live_contract), choices)
+            # This external dependency is available because the user explicitly
+            # registered it in the active project's target registry.
+            self.assertIn(("Fallout", live_contract), choices)
             self.assertNotIn(("OldTarget", stale_contract), choices)
             self.assertEqual(
                 sum(1 for _name, address in choices if address.lower() == live_contract.lower()),
@@ -1408,6 +1419,8 @@ class LowkeyCastTests(unittest.TestCase):
             active_root = pathlib.Path(tmp) / "telephone" / "Attack"
             telephone_root = active_root.parent
             active_root.mkdir(parents=True)
+            telephone_root.mkdir(parents=True, exist_ok=True)
+            (telephone_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             address = "0x" + "a" * 40
             config = {
                 "_lab_system_root": str(active_root),
@@ -1445,6 +1458,10 @@ class LowkeyCastTests(unittest.TestCase):
             active_root = pathlib.Path(tmp) / "telephone" / "Attack"
             telephone_root = active_root.parent
             active_root.mkdir(parents=True)
+            (telephone_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            source = telephone_root / "src" / "Telephone.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text("pragma solidity ^0.8.20; contract Telephone {}", encoding="utf-8")
             artifact = telephone_root / "out" / "telephone.sol" / "Telephone.json"
             artifact.parent.mkdir(parents=True)
             artifact.write_text(
@@ -1495,6 +1512,8 @@ class LowkeyCastTests(unittest.TestCase):
             fallout_root = workspace / "Ethernaut CTFs" / "Fallout"
             active_root.mkdir(parents=True)
             fallout_root.mkdir(parents=True)
+            (active_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (fallout_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             address = "0x" + "c" * 40
             actor = "0x" + "1" * 40
             config = {
@@ -1528,21 +1547,32 @@ class LowkeyCastTests(unittest.TestCase):
             ):
                 choices = lk._lab_address_choices(config, [actor])
 
-            self.assertIn(("Fallout", address), choices)
+            self.assertNotIn(("Fallout", address), choices)
             self.assertIn(("anvil:0", actor), choices)
 
     def test_constructor_contract_address_prompt_resolves_remembered_project_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_root = pathlib.Path(tmp) / "Ethernaut CTFs" / "Fallout"
             project_root.mkdir(parents=True)
+            (project_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             address = "0x" + "5" * 40
             actor = "0x" + "1" * 40
             config = {
+                "_lab_system_root": str(project_root),
                 "_lab_rpc": "http://127.0.0.1:8545",
                 "wallets": {},
                 "targets": {"Fallout": address},
                 "aliases": {"Fallout": address},
                 "project_roots": {address: str(project_root)},
+                "project_target_registry": {
+                    str(project_root): {
+                        "Fallout": {
+                            "address": address,
+                            "artifact": None,
+                            "explicit": True,
+                        }
+                    }
+                },
             }
             output = io.StringIO()
             with redirect_stdout(output), patch.object(
@@ -1575,7 +1605,8 @@ class LowkeyCastTests(unittest.TestCase):
             contracts = [("Contract" + str(index), "0x" + format(index + 10, "040x")) for index in range(14)]
             config = {
                 "wallets": {"Alice": {"address": wallet}},
-                "project_roots": {},
+                "project_roots": {address: str(project) for _name, address in contracts},
+                "_lab_system_root": str(project),
                 "_lab_rpc": "http://127.0.0.1:8545",
             }
             remembered = [
@@ -1583,11 +1614,10 @@ class LowkeyCastTests(unittest.TestCase):
                 for name, address in contracts
             ]
             choices = [("anvil:0", actor), ("Alice", wallet)] + contracts
-            with patch.object(lk, "_lab_workspace_remembered_targets", return_value=remembered):
-                entries = lk._lab_address_picker_entries(config, [actor], choices)
-                output = io.StringIO()
-                with redirect_stdout(output):
-                    lk._lab_print_address_picker(entries)
+            entries = lk._lab_address_picker_entries(config, [actor], choices)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk._lab_print_address_picker(entries)
 
         self.assertEqual(entries[0]["category"], "contracts")
         self.assertEqual(entries[-1]["category"], "actors")
@@ -2858,6 +2888,18 @@ class LowkeyCastTests(unittest.TestCase):
                     "ConfidencePoolFactory": "0x" + "2" * 40,
                 },
                 "targets": {},
+                "abi_paths": {
+                    "0x" + "2" * 40: str(root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"),
+                },
+                "project_target_registry": {
+                    str(root): {
+                        "ConfidencePoolFactory": {
+                            "address": "0x" + "2" * 40,
+                            "artifact": str(root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"),
+                            "explicit": True,
+                        }
+                    }
+                },
             }
             with patch.object(lk, "anvil_rpc_info", return_value={"url": "http://127.0.0.1:8545"}), \
                  patch.object(
@@ -4887,6 +4929,7 @@ contract Pool {
                  patch.object(lk, "project_tools", None), \
                  patch.object(lk, "bootstrap_project", return_value=0), \
                  patch.object(lk, "_lab_source_integrity_issue", return_value=None), \
+                 patch.object(lk, "active_project_target", return_value=target), \
                  patch.object(lk, "discover_artifact_lab_contract", return_value=("TokenSaleContract",)), \
                  patch.object(lk, "discover_audit_target_contract", return_value="Token") as heuristic, \
                  patch.object(lk, "discover_local_lab_script", return_value=str(script)), \
@@ -4905,7 +4948,7 @@ contract Pool {
                 result = lk.run_lab(config, [])
 
         self.assertEqual(result, 0)
-        self.assertIn("Target selection: preserving remembered contract TokenSaleContract.", output.getvalue())
+        self.assertIn("Target selection: preserving manually pinned contract TokenSaleContract.", output.getvalue())
         self.assertIn("STALE TARGET", output.getvalue())
         self.assertEqual(run_script.call_args.args[6], "TokenSaleContract")
         heuristic.assert_not_called()
@@ -8352,6 +8395,7 @@ def withdraw(amount: uint256):
             active_root = pathlib.Path(tmp) / "telephone" / "Attack"
             telephone_root = active_root.parent
             active_root.mkdir(parents=True)
+            (telephone_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             address = "0x" + "d" * 40
             config = {
                 "_lab_system_root": str(active_root),
