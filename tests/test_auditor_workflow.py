@@ -1,0 +1,82 @@
+from __future__ import annotations
+import contextlib, io, pathlib, sys, tempfile, unittest
+from unittest.mock import patch
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lowkey"))
+import workflow_engine
+
+class AuditorWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name).resolve()
+        (self.root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        self.snapshot = {"commit": "a" * 40, "branch": "integration-test-drive",
+                         "dirty_paths": [], "captured_at": "2026-11-19T00:00:00+00:00"}
+        patches = [
+            patch.object(workflow_engine.audit_context, "foundry_project_root",
+                         side_effect=lambda hint=None: pathlib.Path(hint).resolve() if hint else self.root),
+            patch.object(workflow_engine.audit_context, "is_audit_project", return_value=True),
+            patch.object(workflow_engine, "_snapshot", return_value=dict(self.snapshot)),
+            patch.object(workflow_engine.audit_context, "read_events", return_value=[]),
+            patch.object(workflow_engine.audit_context, "emit"),
+            patch.object(workflow_engine.question_engine, "rank_questions", return_value=[]),
+        ]
+        for p in patches: p.start(); self.addCleanup(p.stop)
+
+    def test_start_pins_scope_and_opens_prepare(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output): self.assertEqual(workflow_engine.main(["start"]), 0)
+        state = workflow_engine._load(self.root)
+        self.assertTrue(state["started"])
+        self.assertEqual(state["baseline"]["commit"], "a" * 40)
+        self.assertIn("NEXT • PREPARE", output.getvalue())
+
+    def test_prepare_requires_real_current_build(self):
+        workflow_engine.start(self.root)
+        self.assertEqual(workflow_engine.done(self.root, None, "Scope and docs reviewed."), 2)
+        self.assertNotIn("PREPARE", workflow_engine._load(self.root)["completed"])
+
+    def test_successful_build_for_same_snapshot_unlocks_prepare(self):
+        workflow_engine.start(self.root)
+        workflow_engine.on_build_success(self.root, scope="production")
+        self.assertEqual(workflow_engine.done(self.root, None, "Scope, dependencies and build reviewed."), 0)
+        self.assertEqual(workflow_engine._current(workflow_engine._load(self.root))[0], "MAP")
+
+    def test_source_change_makes_prior_build_stale(self):
+        workflow_engine.start(self.root)
+        workflow_engine.on_build_success(self.root)
+        changed = {"commit": "b" * 40, "branch": "integration-test-drive",
+                   "dirty_paths": [], "captured_at": "2026-11-19T00:01:00+00:00"}
+        with patch.object(workflow_engine, "_snapshot", return_value=changed):
+            self.assertFalse(workflow_engine._build_current(self.root, workflow_engine._load(self.root)))
+
+    def test_build_prompt_is_only_shown_once(self):
+        first, second = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(first): workflow_engine.on_build_success(self.root)
+        with contextlib.redirect_stdout(second): workflow_engine.on_build_success(self.root)
+        self.assertIn("AUDIT WORKFLOW SUGGESTION", first.getvalue())
+        self.assertEqual(second.getvalue(), "")
+
+    def test_notes_are_tagged_to_a_phase(self):
+        workflow_engine.start(self.root)
+        self.assertEqual(workflow_engine.add_note(self.root, "Mapped withdrawal auth.", "MAP"), 0)
+        self.assertEqual(workflow_engine._load(self.root)["notes"][-1]["phase"], "MAP")
+
+    def test_reset_preserves_build_record_but_clears_checkpoints(self):
+        workflow_engine.on_build_success(self.root)
+        workflow_engine.start(self.root)
+        workflow_engine.reset(self.root)
+        state = workflow_engine._load(self.root)
+        self.assertFalse(state["started"])
+        self.assertTrue(state["build_tip_shown"])
+        self.assertIsNotNone(state["last_build"])
+        self.assertFalse(state["completed"])
+
+    def test_phases_must_be_completed_in_order_and_have_notes(self):
+        workflow_engine.start(self.root)
+        self.assertEqual(workflow_engine.done(self.root, "MAP", "Mapped it."), 2)
+        self.assertEqual(workflow_engine.done(self.root, None, "  "), 2)
+        self.assertFalse(workflow_engine._load(self.root)["completed"])
+
+if __name__ == "__main__": unittest.main()

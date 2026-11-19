@@ -848,6 +848,12 @@ def run_build(
     )
     if returncode == 0:
         print(f"\nBUILD PASSED: {scope} scope compiled. This is not a test run or an audit-completeness claim.")
+        try:
+            import workflow_engine
+            workflow_engine.on_build_success(project, scope=scope)
+        except Exception:
+            # Workflow onboarding must never change compiler success/failure.
+            pass
         return 0
     print(f"\nBUILD FAILED: {failure['category']} — {failure['reason']}", file=sys.stderr)
     if failure["category"] in {"resource_exhaustion", "process_terminated"}:

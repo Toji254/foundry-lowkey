@@ -126,6 +126,12 @@ if [[ "${1:-}" == "workspace" && ( "${2:-}" == "select" || "${2:-}" == "list" ||
     exec python3 "$HOME/.lowkey/command_wrapper.py" "workspace" -- python3 "$HOME/.lowkey/workspace_tools.py" "$@"
 fi
 
+# Project-scoped audit workflow, reusing the evidence journal and q engine.
+if [[ "${1:-}" == "workflow" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/command_wrapper.py" "workflow" -- python3 "$HOME/.lowkey/workflow_engine.py" "$@"
+fi
+
 # The Foundry build front door performs package selection and a read-only
 # resource/config plan first. Non-Foundry projects fall back to the original
 # repository-native build router rather than being forced through Forge.
