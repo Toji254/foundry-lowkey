@@ -1667,7 +1667,12 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
     result["_lowkey_meta"] = {
         "ai_generated": True,
         "origin": "configured-model",
-        "source_files_included": context["source_files_included"],
+        "source_files_included": (
+            (context.get("_lowkey_context_compaction") or {}).get(
+                "source_files_included", context["source_files_included"]
+            )
+        ),
+        "source_files_found": context["source_files_included"],
         "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
         "context_compaction": context.get("_lowkey_context_compaction"),
         "verified": False,
