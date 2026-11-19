@@ -485,6 +485,12 @@ Usage:
 Example:
   lk workflow start
 
+SCOPE BASELINE
+--------------
+  The baseline records the current Git commit and branch, the source worktree's
+  dirty-file list, and a SHA-256 digest of dirty-file contents. This lets the
+  status view warn when the reviewed source has changed.
+
 BEHAVIOR
 --------
   • Creates/updates .audit/workflow/state.json for this project.
