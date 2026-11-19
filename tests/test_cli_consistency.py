@@ -35,6 +35,17 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("lk status --ai", rendered)
         self.assertIn("native command keeps its normal behavior", rendered)
 
+    def test_root_help_exposes_audit_workflow_tracker_separately_from_walkthrough(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        self.assertIn("lk workflow [start|status|next|note|done|reset]", rendered)
+        self.assertIn("lk workflow --h", rendered)
+        self.assertIn("lk walkthrough --h", rendered)
+        self.assertIn("lk walkthrough teaches execution behavior", rendered)
+        self.assertIn("lk workflow tracks the five audit phases", rendered)
+
     def test_next_command_footer_keeps_lowkey_suggestions_separate_from_ai(self):
         native = [("lk functions", "List contract functions.")]
         with patch.object(lk, "_recommended_next_commands", return_value=native), \
