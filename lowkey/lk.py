@@ -15516,6 +15516,16 @@ def run_lab(config,args, *, deployment_only=False):
                 print("Mode: explicit user request")
             print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
             print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
+            compaction = meta.get("context_compaction")
+            if isinstance(compaction, dict):
+                print(
+                    "Context budget: compacted "
+                    f"{int(compaction.get('original_context_bytes') or 0):,} bytes "
+                    f"to fit {int(compaction.get('context_limit_bytes') or 0):,} bytes; "
+                    f"{int(compaction.get('source_files_omitted') or 0)} source file(s) omitted and "
+                    f"{int(compaction.get('source_files_with_trimmed_excerpts') or 0)} excerpt(s) shortened."
+                )
+                print("Review scope note: " + str(compaction.get("note") or "Some context was omitted."))
             if meta.get("context_sha256"):
                 print(f"Context SHA-256: {meta['context_sha256']}")
             print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=True))
