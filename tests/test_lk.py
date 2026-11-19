@@ -1340,6 +1340,53 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("only if the contract expects", amount_text)
         self.assertNotIn("ETH-denominated input detected", amount_text)
 
+    def test_constructor_meaning_explains_common_abi_types_without_guessing_units(self):
+        self.assertEqual(
+            lk._lab_constructor_meaning("recipient", "address", {"internalType": "address"}),
+            "Ethereum address. Lowkey shows known local actor addresses.",
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("recipient", "address", {"internalType": "address payable"}),
+            "Ethereum address allowed to receive ETH.",
+        )
+        self.assertIn(
+            "requires deployed bytecode",
+            lk._lab_constructor_meaning("vault", "address", {"internalType": "contract Vault"}),
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("enabled", "bool"),
+            "Boolean flag: true or false.",
+        )
+        self.assertEqual(lk._lab_constructor_meaning("name", "string"), "Text value.")
+        self.assertIn(
+            "ABI does not specify its unit",
+            lk._lab_constructor_meaning("amount", "uint256"),
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("payload", "bytes"),
+            "Dynamic bytes. Enter hex, for example 0x1234.",
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("digest", "bytes32"),
+            "Fixed-size bytes value. Enter hex with the required byte length.",
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("config", "(uint256,address)"),
+            "Structured tuple. Lowkey expands its named fields below.",
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("members", "address[]", {"type": "address[]"}),
+            "Dynamic array of address values.",
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("weights", "uint256[3]", {"type": "uint256[3]"}),
+            "Fixed array of uint256 values with exactly 3 item(s).",
+        )
+        self.assertEqual(
+            lk._lab_constructor_meaning("opaque", "function"),
+            "ABI value of type function.",
+        )
+
     def test_constructor_defaults_are_generic_and_respect_abi_integer_widths(self):
         self.assertEqual(lk._lab_constructor_default("Vault", "enabled", "bool"), "false")
         self.assertEqual(lk._lab_constructor_default("Vault", "name", "string"), "Vault Lab")
