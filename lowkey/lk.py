@@ -14138,6 +14138,33 @@ def _lab_prompt_address_selection(entries, label):
             print(f"  {error}")
 
 
+def _lab_constructor_default(contract, label, ptype):
+    """Suggest safe, generic constructor defaults without guessing ABI units."""
+    name = str(label or "").strip().lower()
+
+    if ptype == "bool":
+        return "false"
+
+    if ptype == "string":
+        if name in {"name", "poolname"}:
+            return f"{contract} Lab"
+        if name in {"symbol", "poolsymbol"}:
+            return "LKL"
+        if name in {"version", "poolversion"}:
+            return "v1"
+
+    # Keep a useful generic raw-integer suggestion without guessing units.
+    # Narrow integer types receive 1 instead when 1,000,000 would overflow.
+    integer_match = re.fullmatch(r"(u?int)(\d+)?", str(ptype))
+    if integer_match:
+        signed = integer_match.group(1) == "int"
+        bits = int(integer_match.group(2) or "256")
+        maximum = (1 << (bits - 1)) - 1 if signed else (1 << bits) - 1
+        return "1000000" if maximum >= 1000000 else "1"
+
+    return None
+
+
 def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False, default=None, param=None):
     print(f"  Field     : {label}")
     print(f"  Type      : {ptype}")
