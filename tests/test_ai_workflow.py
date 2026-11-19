@@ -262,5 +262,17 @@ class AIWorkflowTests(unittest.TestCase):
             self.assertIn("Plan only: no commands were run.", output.getvalue())
 
 
+    def test_lab_ai_flag_is_reserved_for_pre_lab_review(self):
+        self.assertEqual(
+            workflow.extract_universal_ai_flag(["lab", "--ai"]),
+            (False, ["lab", "--ai"]),
+        )
+        self.assertEqual(
+            workflow.extract_universal_ai_flag(["lab", "Vault", "--ai"]),
+            (False, ["lab", "Vault", "--ai"]),
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

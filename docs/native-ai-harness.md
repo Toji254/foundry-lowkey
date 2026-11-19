@@ -97,14 +97,15 @@ The setup command prompts for the API key with hidden terminal input. The fixed 
 ~~~bash
 cd /path/to/your/foundry-project
 lk ai preview --contract ConfidencePool
-lk lab --ai-review
+lk lab --ai
+# --ai-review is the explicit long-form alias
 ~~~
 
-The preview is local-only. The explicit review sends the selected, redacted source excerpts and approved memory to the configured provider, and provider charges may apply. Inspect the result as unverified hypotheses; it is not proof of safety or a confirmed vulnerability report.
+The preview is local-only. The explicit review sends the selected, redacted source excerpts and approved memory to the configured provider, and provider charges may apply. Inspect the result as unverified hypotheses; it is not proof of safety or a confirmed vulnerability report. When the provider returns a primary-contract suggestion, Lowkey accepts it only if it exactly matches a deployable first-party artifact. Lowkey then checks source relationships and runtime bytecode before using the suggestion. If an explicitly requested review fails, the lab stops before building or deploying instead of silently continuing.
 
 ## Universal command guidance and bounded task runs
 
-Append `--ai` to a native command to get a post-command explanation of the actual output, relevant risks, missing evidence, and next steps:
+Append `--ai` to a supported native command to get a post-command explanation of the actual output, relevant risks, missing evidence, and next steps:
 
 ~~~bash
 lk status --ai
@@ -113,7 +114,9 @@ lk send --ai
 lk test --ai
 ~~~
 
-Lowkey removes the flag before native argument parsing, streams the native output as usual, and adds AI guidance afterward. The AI cannot change the target, RPC, actor, transaction arguments, or native command result. **The native action still happens normally**: `lk send --ai` can send a transaction when the underlying `lk send` invocation would send. Guidance is not a pre-transaction confirmation or a rollback.
+For these commands, Lowkey removes the flag before native argument parsing, streams the native output as usual, and adds AI guidance afterward. The AI cannot change the target, RPC, actor, transaction arguments, or native command result. **The native action still happens normally**: `lk send --ai` can send a transaction when the underlying `lk send` invocation would send. Guidance is not a pre-transaction confirmation or a rollback.
+
+**Exception: `lk lab --ai` (or `lk lab --ai-review`) is a pre-lab protocol review.** It is not post-command guidance. The flag is preserved for the lab handler, which requests contract-role and primary-target hypotheses before setup. Lowkey validates any suggested target against local deployable artifacts; explicit review failure stops before deployment.
 
 Use `lk ai mode auto` to opt into guidance for eligible workflow results and supported failures. It requires a configured, enabled, usable provider; `lk ai mode manual` disables automatic guidance. The existing `lk ai recommendations` and `lk ai errors` settings remain independent.
 
@@ -134,7 +137,7 @@ python3 -m unittest tests.test_ai_workflow tests.test_ai_harness tests.test_cli_
 
 ## Structured security review and evidence lifecycle
 
-The protocol overview (`lk lab --ai-review`) and the focused security-review task are separate jobs. The overview helps map a project; `lk ai security-review` asks for concrete candidate vulnerabilities and normalizes each item into a review record. Model confidence is descriptive only.
+The protocol overview (`lk lab --ai` or `lk lab --ai-review`) and the focused security-review task are separate jobs. The overview helps map contract roles and recommend a primary target; the recommendation is advisory until it matches a deployable first-party artifact and passes native source/runtime checks. `lk ai security-review` asks for concrete candidate vulnerabilities and normalizes each item into a review record. Model confidence is descriptive only.
 
 ~~~bash
 lk ai security-review --contract ConfidencePool

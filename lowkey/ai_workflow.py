@@ -38,7 +38,7 @@ _JEV_AUTO_GUIDANCE_COMMANDS = {
 def extract_universal_ai_flag(argv: Sequence[str]) -> tuple[bool, list[str]]:
     """Extract --ai for native commands, but leave the dedicated lk ai CLI alone."""
     values = list(argv)
-    if not values or str(values[0]).strip().lower() == "ai":
+    if not values or str(values[0]).strip().lower() in {"ai", "lab"}:
         return False, values
     requested = "--ai" in values
     return requested, [value for value in values if value != "--ai"] if requested else values

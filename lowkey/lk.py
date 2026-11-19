@@ -183,7 +183,7 @@ AUDIT_CHECKLIST = [
 DEFAULT_CONFIG = {
     "target": None, "target_contract": None, "aliases": {}, "targets": {}, "rpc": None,
     "rpc_profiles": {}, "actor": None, "wallets": {},
-    "abi_paths": {}, "project_roots": {}, "target_owners": {}, "labels": {},
+    "abi_paths": {}, "project_roots": {}, "target_owners": {}, "project_target_registry": {}, "labels": {},
     "confirm_sends": False, "rpc_auto": False, "version": 4
 }
 
@@ -312,7 +312,7 @@ def load_config():
         return fresh_config()
     config = fresh_config()
     config.update(loaded)
-    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "project_roots", "target_owners", "labels"]:
+    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "project_roots", "target_owners", "project_target_registry", "labels"]:
         if not isinstance(config.get(key), dict): config[key] = {}
     # ABI paths are normalized lazily after helper definitions are loaded.
     return config
@@ -1156,144 +1156,208 @@ def is_probable_private_key(value):
     return bool(re.fullmatch(r"(0x)?[0-9a-fA-F]{64}",str(value or "")))
 
 def target_aliases(config, root=None):
-    """Return targets owned by the current project, never another project's targets."""
-    merged={}
-    project_root = Path(audit_context.foundry_project_root(root)).resolve()
-    roots = config.get("project_roots", {})
-    if not isinstance(roots, dict):
-        roots = {}
+    """Return only targets explicitly owned by this project with matching artifact identity."""
+    merged = {}
+    project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
 
-    owners_by_address = {}
-    # Older configs used project_roots for both ABI discovery and alias
-    # ownership. Keep it as a migration fallback, but an explicit target_owners
-    # entry takes precedence because the ABI can live in a sibling project.
-    owner_maps = (roots, config.get("target_owners", {}))
-    for owner_map in owner_maps:
-        if not isinstance(owner_map, dict):
-            continue
-        for address, owner in owner_map.items():
-            if not is_address(address) or not owner:
-                continue
+    def artifact_for(address, preferred=None):
+        if preferred:
+            candidate = Path(os.path.expanduser(str(preferred)))
+            if not candidate.is_absolute():
+                candidate = project_root / candidate
+            if candidate.is_file():
+                return candidate.resolve()
+        paths = config.get("abi_paths", {})
+        if isinstance(paths, dict):
+            for registered_address, value in paths.items():
+                if is_address(registered_address) and str(registered_address).lower() == str(address).lower():
+                    candidate = Path(os.path.expanduser(str(value)))
+                    if not candidate.is_absolute():
+                        candidate = project_root / candidate
+                    if candidate.is_file():
+                        return candidate.resolve()
+        return None
+
+    def artifact_matches_name(name, address, preferred=None, *, allow_external=False):
+        candidate = artifact_for(address, preferred)
+        if candidate is None:
+            return False
+        data = read_artifact(str(candidate))
+        if not isinstance(data, dict):
+            return False
+        actual_name = artifact_contract_name(str(candidate), data)
+        if actual_name.casefold() != str(name).strip().casefold():
+            return False
+        try:
+            candidate.relative_to(project_root)
+            local_artifact = True
+        except ValueError:
+            local_artifact = False
+        if local_artifact and not artifact_is_project_application(project_root, str(candidate), data):
+            return False
+        return local_artifact or allow_external
+
+    # New records are keyed by canonical project root, then contract name.
+    # This avoids the old address-only owner map losing identity when Anvil
+    # reuses the same deterministic address in another project.
+    registry = config.get("project_target_registry", {})
+    scoped_registry = {}
+    if isinstance(registry, dict):
+        for registered_root, entries in registry.items():
             try:
-                owner_root = Path(os.path.expanduser(str(owner))).resolve()
-            except OSError:
+                if Path(os.path.expanduser(str(registered_root))).resolve() == project_root:
+                    if isinstance(entries, dict):
+                        scoped_registry = entries
+                    break
+            except (OSError, RuntimeError, TypeError, ValueError):
                 continue
-            owners_by_address[str(address).lower()] = owner_root
 
-    names = list(config.get("aliases", {}).items()) + list(config.get("targets", {}).items())
-
-    # The selected target may exist only in project-scoped audit context rather
-    # than config aliases. project_context_target() has already validated this
-    # target for the current project, so keep it as a trusted identity instead
-    # of sending it through the generic legacy-alias ownership checks below.
-    context_name = ""
-    context_address = None
-    context_target = project_context_target(project_root)
-    if isinstance(context_target, dict):
-        context_name = str(
-            context_target.get("contract")
-            or config.get("target_contract")
-            or ""
-        ).strip()
-        context_address = context_target.get("address")
-        if context_name and is_address(context_address):
-            context_identity = (context_name, context_address)
-        else:
-            context_identity = None
-    else:
-        context_identity = None
-
-    for name, addr in names:
-        if not is_address(addr):
+    registry_names = set()
+    for name, record in scoped_registry.items():
+        if not isinstance(record, dict):
             continue
-        # A project-scoped target is authoritative for its address in this
-        # project. Local chains (especially Anvil) reuse deterministic
-        # deployment addresses, so a global alias left by another project can
-        # otherwise misidentify the current contract or resolve an old name to
-        # a different contract. The legacy config does not retain per-alias
-        # chain provenance, so fail closed on conflicting names for this
-        # address and keep only the verified project-context identity.
-        if (
-            context_identity
-            and str(addr).lower() == str(context_address).lower()
-            and str(name).strip().lower() != str(context_name).strip().lower()
-        ):
+        address = record.get("address")
+        if not name or not is_address(address):
             continue
-        owner_root = owners_by_address.get(str(addr).lower())
-
-        artifact = config.get("abi_paths", {}).get(addr)
-        # Older configs may not have project_roots yet. When ownership is
-        # unknown, only admit the alias if its artifact independently proves
-        # that the target belongs to this project.
-        if owner_root is None:
-            try:
-                artifact_path = Path(os.path.expanduser(str(artifact))).resolve() if artifact else None
-            except OSError:
-                artifact_path = None
-            artifact_data = read_artifact(str(artifact_path)) if artifact_path and artifact_path.is_file() else None
-            if not artifact_data:
-                # Legacy configs often only have aliases. Recover ownership from
-                # the alias name and a first-party artifact in this project.
-                alias_name = str(name).strip().lower()
-                for candidate in local_artifact_paths(project_root):
-                    candidate_data = read_artifact(candidate) or {}
-                    if artifact_contract_name(candidate, candidate_data).strip().lower() == alias_name:
-                        artifact_path = Path(candidate).resolve()
-                        artifact_data = candidate_data
-                        break
-            if not artifact_data or not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
-                continue
-        elif owner_root != project_root:
-            continue
-        if artifact:
-            try:
-                artifact_path = Path(os.path.expanduser(str(artifact))).resolve()
-            except OSError:
-                continue
-            artifact_data = read_artifact(str(artifact_path)) if artifact_path.is_file() else None
-            # An explicit project-owned alias may intentionally point at a
-            # contract deployed from a sibling project (for example, a
-            # constructor dependency under investigation). Keep the strict
-            # first-party artifact filter for files inside this project, but
-            # do not hide a manually pinned external ABI artifact.
-            try:
-                artifact_path.relative_to(project_root)
-                artifact_is_local = True
-            except ValueError:
-                artifact_is_local = False
-            if (
-                artifact_data
-                and artifact_is_local
-                and not artifact_is_project_application(project_root, str(artifact_path), artifact_data)
+        registered_artifact = record.get("artifact")
+        if registered_artifact:
+            if not artifact_matches_name(
+                name,
+                address,
+                registered_artifact,
+                allow_external=True,
             ):
                 continue
+        elif record.get("explicit") is not True:
+            # No artifact means identity cannot be inferred from source. Only
+            # retain a target that a user/native deployment explicitly
+            # registered inside this project; runtime code is still checked
+            # before it is offered as a constructor address.
+            continue
+        merged[str(name)] = str(address)
+        registry_names.add(str(name).casefold())
 
-        lowered_name = str(name).lower()
+    roots = config.get("project_roots", {})
+    owners = config.get("target_owners", {})
+    aliases = list(config.get("aliases", {}).items()) + list(config.get("targets", {}).items())
+
+    context_target = project_context_target(project_root)
+    context_identity = None
+    if isinstance(context_target, dict):
+        context_name = str(context_target.get("contract") or "").strip()
+        context_address = context_target.get("address")
+        if context_name and is_address(context_address):
+            context_identity = (context_name, str(context_address))
+
+    for name, address in aliases:
+        if not name or not is_address(address):
+            continue
+        lowered_name = str(name).strip().casefold()
+        if lowered_name in registry_names:
+            continue
         if lowered_name.endswith(("mock", "fixture", "test")) or "mock" in lowered_name:
             continue
 
-        merged.setdefault(str(name), addr)
+        # A project-context record is authoritative for that address. Never let
+        # another legacy alias rename it merely because a local chain recycled it.
+        if (
+            context_identity
+            and str(address).lower() == context_identity[1].lower()
+            and lowered_name != context_identity[0].casefold()
+        ):
+            continue
+
+        # Prefer explicit target ownership; project_roots is primarily an ABI
+        # lookup location and may legitimately point at a sibling dependency.
+        owner = None
+        if isinstance(owners, dict):
+            owner = next((
+                value for key, value in owners.items()
+                if is_address(key) and str(key).lower() == str(address).lower()
+            ), None)
+        if not owner and isinstance(roots, dict):
+            owner = next((
+                value for key, value in roots.items()
+                if is_address(key) and str(key).lower() == str(address).lower()
+            ), None)
+        if not owner:
+            # Legacy aliases with no ownership metadata are not safe to import
+            # into an arbitrary project. The current project context below is
+            # the only ownership-free exception.
+            continue
+        try:
+            owner_root = Path(os.path.expanduser(str(owner))).resolve()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            continue
+        if owner_root != project_root:
+            continue
+
+        preferred_artifact = None
+        paths = config.get("abi_paths", {})
+        if isinstance(paths, dict):
+            preferred_artifact = next((
+                value for key, value in paths.items()
+                if is_address(key) and str(key).lower() == str(address).lower()
+            ), None)
+        # Older entries may have no registry record. Keep them only when the
+        # alias name and the artifact's real contractName agree exactly.
+        if not artifact_matches_name(
+            name,
+            address,
+            preferred_artifact,
+            allow_external=False,
+        ):
+            continue
+        merged.setdefault(str(name), str(address))
 
     if context_identity:
         context_name, context_address = context_identity
-        lowered_name = context_name.lower()
-        if not (lowered_name.endswith(("mock", "fixture", "test")) or "mock" in lowered_name):
+        lowered_name = context_name.casefold()
+        if not (
+            lowered_name.endswith(("mock", "fixture", "test"))
+            or "mock" in lowered_name
+        ):
             merged.setdefault(context_name, context_address)
 
     return merged
 
+
 def remember_project_target(config, root, name, address):
-    """Persist a target alias and its owning project independently of its ABI location."""
+    """Persist a project/name/address identity while retaining legacy aliases."""
     if not name or not is_address(address):
         return
-    root = str(Path(audit_context.foundry_project_root(root)).resolve())
+    root_path = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
+    root_key = str(root_path)
+    artifact = None
+    paths = config.get("abi_paths", {})
+    if isinstance(paths, dict):
+        artifact = next((
+            value for key, value in paths.items()
+            if is_address(key) and str(key).lower() == str(address).lower()
+        ), None)
+    if artifact:
+        try:
+            artifact_path = Path(os.path.expanduser(str(artifact)))
+            if not artifact_path.is_absolute():
+                artifact_path = root_path / artifact_path
+            artifact = str(artifact_path.resolve())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            artifact = None
+
+    registry = config.setdefault("project_target_registry", {})
+    project_entries = registry.setdefault(root_key, {})
+    project_entries[str(name)] = {
+        "address": str(address),
+        "artifact": artifact,
+        "explicit": True,
+    }
+
+    # Legacy maps remain for compatibility with older Lowkey commands. They
+    # are no longer sufficient on their own to establish target identity.
     config.setdefault("aliases", {})[str(name)] = address
     config.setdefault("targets", {})[str(name)] = address
-    # project_roots tracks where ABI/artifact discovery should look. It may
-    # legitimately point to a sibling project for an external dependency.
-    # target_owners tracks which audit project explicitly registered this name.
-    config.setdefault("target_owners", {})[address] = root
-    config.setdefault("project_roots", {}).setdefault(address, root)
+    config.setdefault("target_owners", {})[address] = root_key
+    config.setdefault("project_roots", {}).setdefault(address, root_key)
 
 def resolve_target_ref(config,ref,root=None):
     if ref is None:
@@ -9844,6 +9908,7 @@ def run_auto_target(config,name=None):
     artifact_path=record.get("_artifact")
     if artifact_path:
         config["abi_paths"][record["address"]]=artifact_path
+        remember_project_target(config, root, alias, record["address"])
         print(f"ABI auto-loaded: {artifact_path}")
 
     config["target_contract"]=contract
@@ -11803,12 +11868,49 @@ def artifact_is_project_application(root, path, artifact):
     )
 
 
+def _mask_solidity_comments_and_strings(source_text):
+    """Mask comments and string literals so contract-body parsing counts only code braces."""
+    pattern = re.compile(
+        r"//[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"
+    )
+    return pattern.sub(
+        lambda match: "".join("\n" if char == "\n" else " " for char in match.group(0)),
+        str(source_text or ""),
+    )
+
+
+def _solidity_contract_bodies(source_text):
+    """Extract each Solidity contract/interface/library body independently."""
+    masked = _mask_solidity_comments_and_strings(source_text)
+    declaration = re.compile(
+        r"\b(?:abstract\s+)?(?:contract|interface|library)\s+([A-Za-z_]\w*)\b[^{};]*\{"
+    )
+    bodies = {}
+    for match in declaration.finditer(masked):
+        name = match.group(1)
+        opening = masked.find("{", match.start(), match.end())
+        if opening < 0:
+            continue
+        depth = 1
+        cursor = opening + 1
+        while cursor < len(masked) and depth:
+            if masked[cursor] == "{":
+                depth += 1
+            elif masked[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        if depth == 0:
+            bodies[name] = masked[opening + 1:cursor - 1]
+    return bodies
+
+
 def discover_audit_target_contract(root):
     """Choose a likely application target using artifacts, source evidence, and audit signals."""
     root_path = Path(root).expanduser().resolve()
     artifacts = {}
     scores = {}
     sources = {}
+    contract_bodies = {}
     signals = [
         item for item in audit_context.signals(root_path, "open")
         if isinstance(item, dict)
@@ -11840,6 +11942,16 @@ def discover_audit_target_contract(root):
 
         artifacts[key] = name
         sources[key] = source or str(path)
+        if source:
+            try:
+                source_text = (root_path / source).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                source_text = ""
+            if Path(source).suffix.lower() == ".sol":
+                scoped_bodies = _solidity_contract_bodies(source_text)
+                contract_bodies[key] = scoped_bodies.get(name, "")
+            else:
+                contract_bodies[key] = source_text
         scores.setdefault(key, 0)
 
         lowered = key
@@ -11877,35 +11989,43 @@ def discover_audit_target_contract(root):
     if not artifacts:
         return None
 
-    # Infer creator -> child relationships from first-party source with common
-    # deployment primitives rather than names from any particular protocol.
+    # Score references within each declaration, not the entire source unit.
+    # A Solidity file may contain several contracts; whole-file matching makes
+    # every sibling appear to reference every other sibling and creates false ties.
     contract_names = set(artifacts.values())
-    for key, source_name in list(sources.items()):
-        try:
-            source_text = (root_path / source_name).read_text(
-                encoding="utf-8", errors="replace"
-            )
-        except OSError:
-            source_text = ""
+    for key, contract_name in artifacts.items():
+        body = contract_bodies.get(key, "")
+        if not body:
+            continue
         creates_or_wraps = bool(re.search(
             r"\bnew\s+[A-Za-z_]\w*|\bclone(?:Deterministic)?\s*\(|"
             r"\bcreate2?\s*\(|\bERC1967Proxy\s*\(|"
             r"\bUpgradeableBeacon\s*\(",
-            source_text,
+            body,
             re.I,
         ))
-        references_child = any(
-            other.lower() != key
-            and re.search(r"\bI?" + re.escape(other) + r"\b", source_text)
-            for other in contract_names
-        )
-        if creates_or_wraps and references_child:
+        uses_delegatecall = bool(re.search(r"\bdelegatecall\b", body, re.I))
+        referenced_dependencies = [
+            other for other in contract_names
+            if other.lower() != key
+            and re.search(r"\bI?" + re.escape(other) + r"\b", body)
+        ]
+        if not referenced_dependencies:
+            continue
+        if creates_or_wraps or uses_delegatecall:
             scores[key] += 120
-        elif references_child:
+        else:
             scores[key] += 25
 
     ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-    return artifacts[ranked[0][0]] if ranked else None
+    if not ranked:
+        return None
+    # Ties are ambiguity, not permission to guess alphabetically. The caller
+    # can request a contract explicitly or use an AI recommendation that is
+    # checked against a first-party deployable artifact.
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None
+    return artifacts[ranked[0][0]]
 
 
 def discover_generic_lab_contract(root, query=None):
@@ -11959,6 +12079,10 @@ def discover_generic_lab_contract(root, query=None):
 
     if not candidates:
         return None
+    if not preferred_name and len(candidates) > 1:
+        # Never choose the alphabetically first contract when role discovery
+        # could not distinguish several application artifacts.
+        return None
     candidates.sort(key=lambda item: (item[0], item[1].lower(), str(item[2])))
     return candidates[0]
 
@@ -11988,6 +12112,110 @@ def discover_artifact_lab_contract(root, query):
 
     matches.sort(key=lambda item: str(item[2]))
     return matches[0] if matches else None
+
+
+def discover_contract_dependencies(root, contract_name):
+    """Return first-party deployable contract dependencies in deployment order.
+
+    A dependency must be referenced as a Solidity contract type, constructed
+    with new, or explicitly cast from a constructor argument. Mere mentions in
+    comments/strings, events, or sibling declarations do not create an edge.
+    """
+    root_path = Path(root).expanduser().resolve()
+    artifacts = {}
+    for artifact_path in local_artifact_paths(root_path):
+        artifact = read_artifact(artifact_path) or {}
+        if not artifact or not artifact_is_deployable(artifact):
+            continue
+        name = artifact_contract_name(artifact_path, artifact)
+        if not name or not artifact_is_project_application(root_path, artifact_path, artifact):
+            continue
+        source = artifact_source_name(artifact, artifact_path, root_path) or source_contract_fallback(root_path, name)
+        if not source:
+            continue
+        try:
+            source_text = (root_path / source).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        body = _solidity_contract_bodies(source_text).get(name)
+        if body is None:
+            continue
+        artifacts.setdefault(name.casefold(), []).append((name, artifact_path, artifact, body))
+
+    # Ambiguous duplicate names are not auto-deployed.
+    unique = {
+        key: values[0]
+        for key, values in artifacts.items()
+        if len(values) == 1
+    }
+    target_key = str(contract_name or "").strip().casefold()
+    if target_key not in unique:
+        return []
+
+    def direct_dependencies(name):
+        key = str(name).casefold()
+        current = unique.get(key)
+        if not current:
+            return []
+        body = current[3]
+        found = []
+        for dependency_key, dependency in unique.items():
+            if dependency_key == key:
+                continue
+            dependency_name = dependency[0]
+            escaped = re.escape(dependency_name)
+            patterns = (
+                rf"\b{escaped}\s+(?:(?:public|private|internal|external|immutable|constant)\s+)*[A-Za-z_]\w*\s*(?:=[^;]*)?;",
+                rf"\bnew\s+{escaped}\b",
+                rf"\b{escaped}\s*\(\s*_[A-Za-z_]\w*\s*\)",
+            )
+            if any(re.search(pattern, body) for pattern in patterns):
+                found.append(dependency_name)
+        return sorted(found, key=str.casefold)
+
+    ordered = []
+    visiting = set()
+    visited = set()
+
+    def visit(name):
+        key = str(name).casefold()
+        if key in visited or key in visiting:
+            return
+        visiting.add(key)
+        for dependency in direct_dependencies(name):
+            visit(dependency)
+            if dependency.casefold() != target_key and dependency not in ordered:
+                ordered.append(dependency)
+        visiting.remove(key)
+        visited.add(key)
+
+    visit(contract_name)
+    return ordered
+
+
+def _live_project_contract_target(config, root, contract_name, rpc):
+    """Find a project-owned deployment whose runtime matches its artifact."""
+    try:
+        entries = _project_target_entries(config, root)
+    except Exception:
+        entries = []
+    for entry in entries:
+        actual_name = str(entry.get("contract") or entry.get("name") or "").strip()
+        if actual_name.casefold() != str(contract_name).strip().casefold():
+            continue
+        artifact_path = entry.get("artifact")
+        if not artifact_path:
+            continue
+        verification_config = dict(config)
+        verification_config["rpc"] = rpc
+        verification_config.pop("_fixture_rpc_scope", None)
+        state = _live_target_state(verification_config, entry.get("address"), artifact_path)
+        if (
+            state.get("status") == "DEPLOYED"
+            and str(state.get("verification") or "").upper() in {"MATCHED", "PROXY/CLONE MATCHED"}
+        ):
+            return entry
+    return None
 
 
 def set_lab_target(config, root, target, contract, artifact):
@@ -13509,8 +13737,7 @@ def _lab_target_entry_has_project_identity(owner_root, entry):
 def _lab_address_choices(config, accounts, rpc=None):
     choices = []
 
-    # Current Anvil actors and explicitly named wallet profiles remain the
-    # first choices, preserving the existing constructor-wizard behavior.
+    # Current Anvil actors and explicitly named wallet profiles remain first.
     for index, address in enumerate(accounts or []):
         if is_address(address):
             choices.append((f"anvil:{index}", str(address)))
@@ -13519,116 +13746,42 @@ def _lab_address_choices(config, accounts, rpc=None):
         if isinstance(entry, dict) and is_address(entry.get("address")):
             choices.append((str(name), str(entry["address"])))
 
-    # Offer globally registered targets and project-context targets from
-    # sibling projects. The latter matters for projects remembered only in
-    # their own .audit/context.json and not yet mirrored into global aliases.
-    # Every candidate is checked against this deployment's exact RPC.
+    # Contracts from unrelated projects are not implicit constructor options.
+    # A sibling/external dependency becomes available only after the user
+    # explicitly registers it in this project's target registry (lk target).
     rpc = rpc or config.get("_lab_rpc")
-    project_roots = config.get("project_roots", {})
     if rpc:
-        remembered = []
-        seen_contracts = set()
-        named_targets = []
-        for source in ("targets", "aliases"):
-            values = config.get(source, {})
-            if isinstance(values, dict):
-                named_targets.extend(values.items())
-
-        for name, address in named_targets:
-            if not name or not is_address(address):
-                continue
-            address_key = str(address).lower()
-            if address_key in seen_contracts:
-                continue
-            owner_root = configured_project_root(address, config)
-            if not owner_root:
-                continue
-
-            # Global aliases can outlive the project that originally used an
-            # Anvil address. Anvil reuses deterministic addresses after resets,
-            # so a legacy alias must never win over a verified project identity.
-            canonical_name = None
-
-            # Prefer the remembered project identity, then consult the same
-            # project-scoped inventory used by "lk targets". If the inventory
-            # cannot establish one name, display an explicit unresolved label
-            # rather than pretending an old global alias is authoritative.
-            try:
-                owner_target = project_context_target(owner_root)
-            except Exception:
-                owner_target = None
+        project_root = Path(
+            config.get("_lab_system_root") or audit_context.foundry_project_root()
+        ).expanduser().resolve()
+        project_registry = config.get("project_target_registry", {})
+        project_records = (
+            project_registry.get(str(project_root), {})
+            if isinstance(project_registry, dict) else {}
+        )
+        context_target = project_context_target(project_root)
+        for name, address in target_aliases(config, project_root).items():
+            artifact_path = None
+            record = project_records.get(name) if isinstance(project_records, dict) else None
+            if isinstance(record, dict) and str(record.get("address") or "").lower() == str(address).lower():
+                artifact_path = record.get("artifact")
             if (
-                isinstance(owner_target, dict)
-                and str(owner_target.get("address") or "").lower() == address_key
-                and str(owner_target.get("contract") or "").strip()
+                not artifact_path
+                and isinstance(context_target, dict)
+                and str(context_target.get("contract") or "").casefold() == str(name).casefold()
+                and str(context_target.get("address") or "").lower() == str(address).lower()
             ):
-                canonical_name = str(owner_target["contract"]).strip()
-            else:
-                try:
-                    owner_entries = _project_target_entries(config, owner_root)
-                except Exception:
-                    owner_entries = []
-                matching_entries = [
-                    entry for entry in owner_entries
-                    if str(entry.get("address") or "").lower() == address_key
-                    and _lab_target_entry_has_project_identity(owner_root, entry)
-                    and _target_entry_is_protocol(owner_root, entry)
-                ]
-                canonical_names = {
-                    str(entry.get("contract") or entry.get("name") or "").strip()
-                    for entry in matching_entries
-                }
-                canonical_names.discard("")
-                if len(canonical_names) == 1:
-                    canonical_name = next(iter(canonical_names))
-
-            if not canonical_name:
-                canonical_name = f"Unverified target #{str(address)[-6:]}"
-
-            if not _lab_remembered_contract_is_live(config, str(address), rpc):
-                continue
-            seen_contracts.add(address_key)
-            remembered.append({
-                "name": canonical_name,
-                "address": str(address),
-                "root": Path(owner_root).resolve(),
-                "artifact": None,
-            })
-
-        for item in _lab_workspace_remembered_targets(config):
-            address = item.get("address")
-            address_key = str(address or "").lower()
-            if not address_key or address_key in seen_contracts:
-                continue
+                artifact_path = context_target.get("artifact")
+            if not artifact_path:
+                for registered_address, candidate in (config.get("abi_paths", {}) or {}).items():
+                    if is_address(registered_address) and str(registered_address).lower() == str(address).lower():
+                        artifact_path = candidate
+                        break
             if not _lab_remembered_contract_is_live(
-                config, address, rpc, artifact_path=item.get("artifact")
+                config, address, rpc, artifact_path=artifact_path
             ):
                 continue
-            seen_contracts.add(address_key)
-            remembered.append(item)
-
-        # Make duplicate contract names unambiguous without making a unique
-        # target awkward to type. The short name still resolves when unique.
-        name_counts = {}
-        for item in remembered:
-            key = item["name"].casefold()
-            name_counts[key] = name_counts.get(key, 0) + 1
-
-        for item in remembered:
-            label = item["name"]
-            if name_counts.get(label.casefold(), 0) > 1:
-                try:
-                    project_label = item["root"].relative_to(Path.home().resolve()).as_posix()
-                except ValueError:
-                    project_label = item["root"].name
-                label = f"{label} ({project_label})"
-                if sum(
-                    1 for other in remembered
-                    if other["name"].casefold() == item["name"].casefold()
-                    and other["root"] == item["root"]
-                ) > 1:
-                    label += f" #{item['address'][-6:]}"
-            choices.append((label, item["address"]))
+            choices.append((str(name), str(address)))
 
     seen = set()
     result = []
@@ -14302,7 +14455,7 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     return None, "deployment succeeded, but Lowkey could not identify a live deployed contract address"
 
 
-def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic", deployment_only=False):
+def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic", deployment_only=False, _skip_dependency_discovery=False):
     config["_lab_system_root"] = str(Path(root).resolve())
     config.pop("lab_system", None)
     candidate = (
@@ -14331,6 +14484,56 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
             "and dependencies. Lowkey will not silently mark an implementation-only deployment ready. For explicit "
             "implementation inspection, use 'lk lab --artifact " + str(contract) + "'."
         )
+
+    if not _skip_dependency_discovery and mode != "artifact":
+        dependencies = discover_contract_dependencies(root, contract)
+        if dependencies:
+            print()
+            print("LOCAL CONTRACT DEPENDENCY PLAN")
+            print("==============================")
+            print(f"Primary target: {contract}")
+            print("Deployment order (dependencies first): " + " -> ".join(dependencies + [contract]))
+            for dependency in dependencies:
+                existing = _live_project_contract_target(config, root, dependency, rpc)
+                if existing:
+                    print(
+                        f"REUSE   {dependency} @ {existing.get('address')} "
+                        "(live bytecode matched its project artifact)"
+                    )
+                    continue
+                dependency_candidate = discover_artifact_lab_contract(root, dependency)
+                if not dependency_candidate:
+                    return fail(
+                        f"Dependency {dependency} is referenced by {contract}, but no unique deployable artifact was found. "
+                        "The primary contract was not deployed.",
+                        1,
+                    )
+                if artifact_is_locked_implementation(
+                    root, dependency_candidate[2], dependency_candidate[3]
+                ):
+                    return fail(
+                        f"Dependency {dependency} is an initializer-locked implementation. "
+                        "Lowkey will not deploy it as a standalone dependency; use the project's native proxy/clone setup.",
+                        1,
+                    )
+                print(f"DEPLOY  {dependency} (required by {contract}; constructor values will be requested)")
+                dependency_code = run_generic_lab(
+                    config,
+                    root,
+                    rpc,
+                    accounts,
+                    key,
+                    dependency,
+                    mode="generic",
+                    deployment_only=True,
+                    _skip_dependency_discovery=True,
+                )
+                if dependency_code != 0:
+                    return fail(
+                        f"Dependency deployment failed for {dependency}; "
+                        f"{contract} was not deployed.",
+                        dependency_code if isinstance(dependency_code, int) else 1,
+                    )
 
     heading = "LOWKEY CONTRACT DEPLOYMENT" if deployment_only else "LOWKEY LOCAL AUDIT LAB"
     print(heading)
@@ -14581,22 +14784,43 @@ def run_native_lab(config, root, project):
     return 0
 
 
-def _preferred_lab_contract(root, requested=None, remembered_name=None):
-    """Prefer an explicit contract, then the remembered project target, then heuristics."""
+def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_suggested=None):
+    """Prefer explicit intent, artifact-checked AI hypotheses, and native dependency evidence."""
     explicit = str(requested or "").strip()
     if explicit:
         return explicit
+
+    detected = discover_audit_target_contract(root)
+    ai_name = str(ai_suggested or "").strip()
+    if ai_name:
+        candidate = discover_artifact_lab_contract(root, ai_name)
+        if candidate and artifact_is_project_application(root, candidate[2], candidate[3]):
+            # The model must not promote an implementation/helper into the
+            # primary slot when native source analysis places it underneath a
+            # different application entry. This relationship is generic and
+            # based on the dependency graph, not protocol-specific names.
+            if detected and detected.casefold() != candidate[1].casefold():
+                native_dependencies = discover_contract_dependencies(root, detected)
+                if candidate[1].casefold() in {
+                    str(name).casefold() for name in native_dependencies
+                }:
+                    return detected
+            return candidate[1]
+
+    if detected:
+        return detected
     remembered = str(remembered_name or "").strip()
     if remembered and discover_artifact_lab_contract(root, remembered):
         return remembered
-    return discover_audit_target_contract(root)
+    return None
 
 
 def run_lab(config,args, *, deployment_only=False):
     args = list(args or [])
-    ai_review_requested = "--ai-review" in args
+    ai_review_flags = {"--ai", "--ai-review"}
+    ai_review_requested = any(str(argument).strip().lower() in ai_review_flags for argument in args)
     if ai_review_requested:
-        args = [argument for argument in args if argument != "--ai-review"]
+        args = [argument for argument in args if str(argument).strip().lower() not in ai_review_flags]
     if args and args[0].lower() in {"help","-h","--help"}:
         print("Usage:")
         print("  lk lab [Contract]")
@@ -14614,13 +14838,13 @@ def run_lab(config,args, *, deployment_only=False):
         print("             Useful when a project has several contracts with similar names.")
         print("")
         print("OPTIONS / AI ASSISTANCE")
-        print("  --ai-review")
-        print("      Ask the configured AI provider for a protocol overview, candidate invariants,")
-        print("      open questions, and deployment considerations before native lab setup continues.")
-        print("      Requires AI to be configured and enabled. Lowkey continues native lab setup if")
-        print("      the optional review is unavailable; the review is unverified and does not choose")
-        print("      a target, deploy, sign, or run tests. Selected source may be sent to the provider.")
-        print("      Example: lk lab --generic Vault --ai-review")
+        print("  --ai | --ai-review")
+        print("      Review this project's first-party source before lab setup. AI may suggest a")
+        print("      primary contract and dependency roles; Lowkey validates every suggestion against")
+        print("      local deployable artifacts. Explicit review failure stops before deployment.")
+        print("      The model never signs, sends transactions, or establishes a security verdict.")
+        print("      Selected source excerpts may be sent to the configured provider.")
+        print("      Examples: lk lab --ai | lk lab --generic Vault --ai-review")
         print("      Backward-compatible form: lk lab Vault --ai-review")
         print("")
         print("  Automatic reviews are a separate opt-in:")
@@ -14714,6 +14938,7 @@ def run_lab(config,args, *, deployment_only=False):
     _ai_review_mode = "manual" if ai_review_requested else None
     _ai_harness = None
     _ai_status = None
+    _ai_suggested_primary_contract = None
 
     if not _ai_is_stop and (_ai_review_mode is not None or not ai_review_requested):
         try:
@@ -14742,43 +14967,80 @@ def run_lab(config,args, *, deployment_only=False):
             if _ai_status is None:
                 _ai_status = _ai_harness.status()
             if not _ai_status.get("usable"):
-                print(
-                    "INFO  Optional AI protocol review skipped "
-                    f"({_ai_status.get('reason') or 'not available'}); native lab setup continues."
+                raise RuntimeError(
+                    "AI is not ready: "
+                    + str(_ai_status.get("reason") or "provider configuration unavailable")
+                    + ". Run 'lk ai status' for the exact setup state."
                 )
-            elif _ai_status.get("jev_free_tier_mode") and int(_ai_status.get("jev_calls_remaining") or 0) <= 0:
-                print("INFO  Optional Jev protocol review skipped (local free-tier AI request cap reached); native lab setup continues.")
+            if _ai_status.get("jev_free_tier_mode") and int(_ai_status.get("jev_calls_remaining") or 0) <= 0:
+                raise RuntimeError(
+                    "Lowkey's local AI request budget is exhausted for today. "
+                    "Run 'lk ai status' to inspect the budget or retry after it resets."
+                )
+            review = _ai_harness.review_project_protocol(root, requested_contract)
+            meta = review.get("_lowkey_meta", {})
+            print()
+            print("@ AI OUTPUT — PROTOCOL REVIEW (UNVERIFIED)")
+            print("==========================================")
+            if _ai_review_mode == "auto":
+                print("Mode: complexity-triggered auto-assist")
+                print("Trigger: " + json.dumps(str(_ai_review_reason), ensure_ascii=True))
             else:
-                review = _ai_harness.review_project_protocol(root, requested_contract)
-                meta = review.get("_lowkey_meta", {})
-                print()
-                print("@ AI OUTPUT — PROTOCOL REVIEW (UNVERIFIED)")
-                print("==========================================")
-                if _ai_review_mode == "auto":
-                    print("Mode: complexity-triggered auto-assist")
-                    print("Trigger: " + json.dumps(str(_ai_review_reason), ensure_ascii=True))
-                else:
-                    print("Mode: explicit user request")
-                print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
-                print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
-                if meta.get("context_sha256"):
-                    print(f"Context SHA-256: {meta['context_sha256']}")
-                print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=True))
-                for label, key in (
-                    ("Contract roles", "contract_roles"),
-                    ("Candidate invariants", "invariants"),
-                    ("Open questions", "open_questions"),
-                    ("Deployment considerations", "deployment_considerations"),
+                print("Mode: explicit user request")
+            print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
+            print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
+            if meta.get("context_sha256"):
+                print(f"Context SHA-256: {meta['context_sha256']}")
+            print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=True))
+            suggested_name = review.get("suggested_primary_contract")
+            if suggested_name:
+                suggested_candidate = discover_artifact_lab_contract(root, suggested_name)
+                if (
+                    suggested_candidate
+                    and artifact_is_project_application(root, suggested_candidate[2], suggested_candidate[3])
                 ):
-                    values = review.get(key, [])
-                    if not values:
-                        continue
-                    print(f"\n{label}:")
-                    for item in values[:8]:
-                        print("  - " + json.dumps(item, ensure_ascii=True, sort_keys=True)[:1200])
-                print("\nContinuing with Lowkey's native lab logic; AI output does not alter deployment choices.")
+                    _ai_suggested_primary_contract = suggested_candidate[1]
+                    print(
+                        "AI primary-target suggestion (artifact-validated): "
+                                                   + _ai_suggested_primary_contract
+                    )
+                else:
+                    print(
+                        "AI primary-target suggestion rejected: no matching first-party deployable artifact "
+                        + json.dumps(str(suggested_name), ensure_ascii=True)
+                    )
+            for label, key in (
+                ("Contract roles", "contract_roles"),
+                ("Candidate invariants", "invariants"),
+                ("Open questions", "open_questions"),
+                ("Deployment considerations", "deployment_considerations"),
+            ):
+                values = review.get(key, [])
+                if not values:
+                    continue
+                print(f"\n{label}:")
+                for item in values[:8]:
+                    print("  - " + json.dumps(item, ensure_ascii=True, sort_keys=True)[:1200])
+            print("\nLowkey will validate the AI's target suggestion and independently derive dependency order from source.")
         except Exception as exc:
-            print(f"INFO  Optional AI protocol review failed ({type(exc).__name__}); native lab setup continues.")
+            try:
+                import error_context as _ai_error_context
+                safe_reason = _ai_error_context.redact(str(exc), limit=900)
+            except Exception:
+                safe_reason = " ".join(str(exc).split())[:900]
+            if _ai_review_mode == "manual":
+                return fail(
+                    "AI protocol review failed before lab setup: "
+                    + str(safe_reason or type(exc).__name__)
+                    + ". No deployment was attempted. Run 'lk ai status' for provider diagnostics, "
+                    "or rerun 'lk lab' without --ai/--ai-review to use the native-only workflow.",
+                    1,
+                )
+            print(
+                "INFO  Automatic AI protocol review unavailable "
+                f"({type(exc).__name__}): {safe_reason or 'no safe detail available'}. "
+                "Native-only lab setup continues."
+            )
 
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
@@ -14879,17 +15141,26 @@ def run_lab(config,args, *, deployment_only=False):
                 "Run it from a terminal, or use 'lk lab --artifact <Contract>' for a non-interactive lab."
             )
     
-    # Save the user's project target before stale-target cleanup clears runtime state.
-    # If its artifact still exists, rebuilding the local lab should preserve that intent
-    # instead of silently switching from e.g. TokenSaleContract to Token.
-    remembered_contract_name = str(config.get("target_contract") or "").strip()
-    if not remembered_contract_name:
-        remembered_project_target = project_context_target(root)
-        if isinstance(remembered_project_target, dict):
-            remembered_contract_name = str(remembered_project_target.get("contract") or "").strip()
-    auto_selected = _preferred_lab_contract(root, requested, remembered_contract_name)
-    if not requested and remembered_contract_name and auto_selected == remembered_contract_name:
-        print(f"Target selection: preserving remembered contract {remembered_contract_name}.")
+    # Only an explicit manual pin survives automatic target discovery. A target
+    # selected by an earlier heuristic must not become permanent merely because
+    # Lowkey deployed it once; re-evaluate current source and relationship evidence.
+    remembered_project_target = project_context_target(root)
+    remembered_contract_name = ""
+    if (
+        isinstance(remembered_project_target, dict)
+        and str(remembered_project_target.get("source") or "").lower() == "manual"
+    ):
+        remembered_contract_name = str(remembered_project_target.get("contract") or "").strip()
+    auto_selected = _preferred_lab_contract(
+        root,
+        requested,
+        remembered_contract_name,
+        _ai_suggested_primary_contract,
+    )
+    if not requested and _ai_suggested_primary_contract and auto_selected == _ai_suggested_primary_contract:
+        print(f"Target selection: using AI suggestion after artifact validation: {auto_selected}.")
+    elif not requested and remembered_contract_name and auto_selected == remembered_contract_name:
+        print(f"Target selection: preserving manually pinned contract {remembered_contract_name}.")
     script = discover_local_lab_script(root, auto_selected) if mode == "auto" else None
     fixture = discover_local_lab_fixture(root, auto_selected) if mode == "auto" else None
 
@@ -14997,7 +15268,12 @@ def run_lab(config,args, *, deployment_only=False):
     # No harness? Keep an explicitly or previously selected project contract when
     # its artifact remains deployable; only then fall back to the scoring heuristic.
     if not requested:
-        requested = _preferred_lab_contract(root, None, remembered_contract_name)
+        requested = _preferred_lab_contract(
+            root,
+            None,
+            remembered_contract_name,
+            _ai_suggested_primary_contract,
+        )
 
     if not requested:
         context = audit_context.load(root)
@@ -26130,12 +26406,23 @@ def _warn_if_help_runtime_is_stale() -> None:
 
 
 def _extract_universal_ai_flag(argv):
-    """Extract --ai from native commands without changing the dedicated lk ai CLI."""
+    """Extract --ai from native commands, except lk lab where it requests a pre-lab review."""
     values = list(argv or [])
-    if not values or str(values[0]).strip().lower() == "ai":
+    if not values or str(values[0]).strip().lower() in {"ai", "lab"}:
         return False, values
     requested = "--ai" in values
     return requested, [value for value in values if value != "--ai"] if requested else values
+
+
+def _is_lab_ai_review_request(command, arguments):
+    """Prevent a second post-command AI/Jev footer after an explicit pre-lab review."""
+    return (
+        str(command or "").strip().lower() == "lab"
+        and any(
+            str(argument or "").strip().lower() in {"--ai", "--ai-review"}
+            for argument in (arguments or [])
+        )
+    )
 
 
 class _TeeCapture:
@@ -26424,9 +26711,18 @@ def main():
         )
         return fail("Refusing to run with a mismatched Lowkey installation.", 3)
 
-    jev_active = command.lower() != "ai" and _jev_auto_mode_enabled()
+    lab_ai_review_requested = _is_lab_ai_review_request(command, sys.argv[2:])
+    jev_active = (
+        command.lower() != "ai"
+        and not lab_ai_review_requested
+        and _jev_auto_mode_enabled()
+    )
     jev_capture = jev_active and command.lower() not in {"raw", "batch", "memory"}
-    auto_capture = command.lower() != "ai" and (_ai_auto_mode_enabled() or jev_capture)
+    auto_capture = (
+        command.lower() != "ai"
+        and not lab_ai_review_requested
+        and (_ai_auto_mode_enabled() or jev_capture)
+    )
     if ai_requested or auto_capture:
         result, ai_command_output = _dispatch_command_captured(command, sys.argv[2:], config)
     else:

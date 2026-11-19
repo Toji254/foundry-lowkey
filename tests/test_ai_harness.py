@@ -1471,5 +1471,22 @@ class AIHarnessTests(unittest.TestCase):
 
 
 
+    def test_protocol_review_accepts_optional_primary_contract_recommendation(self):
+        valid = {
+            "summary": "The application entry contract coordinates the protocol.",
+            "contract_roles": [],
+            "invariants": [],
+            "open_questions": [],
+            "deployment_considerations": [],
+            "suggested_primary_contract": "Vault",
+        }
+        ai._validate_protocol_review_output(valid)
+        invalid = dict(valid)
+        invalid["suggested_primary_contract"] = {"name": "Vault"}
+        with self.assertRaisesRegex(ai.AIHarnessError, "suggested_primary_contract"):
+            ai._validate_protocol_review_output(invalid)
+
+
+
 if __name__ == "__main__":
     unittest.main()

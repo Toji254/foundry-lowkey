@@ -1387,9 +1387,19 @@ def _validate_protocol_review_output(result: Mapping[str, Any]) -> None:
                     f"Protocol review field '{field}' entry {index + 1} is too long; result rejected."
                 )
 
+    suggested_primary = result.get("suggested_primary_contract")
+    if suggested_primary is not None and (
+        not isinstance(suggested_primary, str)
+        or not suggested_primary.strip()
+        or len(suggested_primary) > 240
+    ):
+        raise AIHarnessError(
+            "Protocol review suggested_primary_contract must be a contract name or null; result rejected."
+        )
+
 
 def review_project_protocol(root: str | Path, contract_name: str | None = None) -> dict[str, Any]:
-    """Produce unverified protocol hypotheses; never alter native lab decisions."""
+    """Produce unverified role/target hypotheses; native artifact and runtime checks remain authoritative."""
     context = _protocol_review_context(root, contract_name)
     result = request_structured(
         purpose="lab_protocol_review",
@@ -1399,7 +1409,11 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
             "objects with statement, rationale, source), open_questions (array of strings), and deployment_considerations "
             "(array of strings). Identify factories, implementations, proxies, initializers, roles, state transitions, "
             "accounting and external dependencies where source supports it. Cite file paths and identifiers. Call out missing "
-            "context. These are unverified hypotheses, not confirmed security findings; do not fabricate test results."
+            "context. Also return suggested_primary_contract: the exact name of the best first-party application/entry contract "
+            "to audit, or null when source evidence is ambiguous. Prefer the contract that coordinates or exposes the protocol "
+            "over implementations, libraries, mocks, fixtures, and support contracts. Explain the evidence in contract_roles. "
+            "Do not select by filename or alphabetical order. This is a suggestion only; local artifact validation must confirm it. "
+            "These are unverified hypotheses, not confirmed security findings; do not fabricate test results."
         ),
         context=context,
         required_fields=("summary", "contract_roles", "invariants", "open_questions", "deployment_considerations"),
