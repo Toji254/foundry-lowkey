@@ -1068,6 +1068,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("src/Contract0.sol", rendered)
         self.assertNotIn("shared_command_history", compacted)
         self.assertIn("_lowkey_context_compaction", compacted)
+        self.assertEqual(compacted["source_files_included"], len(compacted["source_files"]))
         self.assertEqual(len(context["source_files"]), 12)  # input object is not mutated
 
     def test_json_output_and_metadata_only_event_log(self):
