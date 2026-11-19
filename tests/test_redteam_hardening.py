@@ -139,19 +139,34 @@ Error: solar reported 1 error; see the diagnostics printed above
             "address": "0x2222222222222222222222222222222222222222",
             "internal": True,
         }
+        whale_address = "0x3333333333333333333333333333333333333333"
+        config["wallets"]["Whale"] = {
+            "source": "anvil-impersonated",
+            "address": whale_address,
+        }
+        config["wallets"]["cold-key"] = {"private_key": "0x" + "a" * 64}
+        config["wallets"]["env-key"] = {"env": "LOWKEY_TEST_PRIVATE_KEY"}
         config["labels"]["0x1111111111111111111111111111111111111111"] = "Alice"
+        config["labels"][whale_address] = "Whale"
 
-        with patch.object(lk, "save_config"):
+        output = io.StringIO()
+        with patch.object(lk, "save_config"), contextlib.redirect_stdout(output):
             code = lk.dispatch_command("actor", ["reset", "2"], config)
 
         self.assertEqual(code, 0)
         self.assertIsNone(config["actor"])
         self.assertNotIn("Alice", config["wallets"])
+        self.assertNotIn("Whale", config["wallets"])
         self.assertNotIn(
             "0x1111111111111111111111111111111111111111",
             config["labels"],
         )
+        self.assertNotIn(whale_address, config["labels"])
         self.assertIn("lab-deployer", config["wallets"])
+        self.assertIn("cold-key", config["wallets"])
+        self.assertIn("env-key", config["wallets"])
+        self.assertIn("removed 2 saved Anvil actor profile(s)", output.getvalue())
+        self.assertIn("private-key/environment wallet profiles", output.getvalue())
 
     def test_actor_list_does_not_replace_actor_identity_with_contract_identity(self):
         config = lk.fresh_config()

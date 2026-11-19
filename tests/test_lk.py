@@ -4202,12 +4202,20 @@ contract Pool {
         address1 = "0x" + "2" * 40
         config = {"wallets": {}, "actor": None}
         info = {"url": "http://127.0.0.1:8545", "accounts": [address0, address1]}
-        with patch.object(lk, "detect_anvil_rpc", return_value=info),              patch.object(lk, "save_config"):
-            self.assertEqual(lk.select_anvil_actor(config, 0, "Alice"), 2)
+        reserved_error = io.StringIO()
+        conflict_error = io.StringIO()
+        with patch.object(lk, "detect_anvil_rpc", return_value=info), patch.object(lk, "save_config"):
+            with redirect_stderr(reserved_error):
+                self.assertEqual(lk.select_anvil_actor(config, 0, "Alice"), 2)
+            self.assertIn("lk actor 0", reserved_error.getvalue())
             self.assertEqual(lk.select_anvil_actor(config, 1, "Alice"), 0)
             self.assertEqual(config["actor"], "Alice")
             self.assertEqual(config["wallets"]["Alice"]["anvil_index"], 1)
-            self.assertEqual(lk.select_anvil_actor(config, 1, "Bob"), 2)
+            with redirect_stderr(conflict_error):
+                self.assertEqual(lk.select_anvil_actor(config, 1, "Bob"), 2)
+        self.assertIn("already assigned to 'Alice'", conflict_error.getvalue())
+        self.assertIn("lk actor Alice", conflict_error.getvalue())
+        self.assertIn("lk actor reset 2", conflict_error.getvalue())
 
     def test_actor_index_without_name_selects_existing_profile(self):
         address0 = "0x" + "1" * 40
@@ -5451,11 +5459,14 @@ contract Pool {
             },
             "labels": {},
         }
-        with patch.object(lk, "save_config"):
+        output = io.StringIO()
+        with patch.object(lk, "save_config"), redirect_stdout(output):
             result = lk.dispatch_command("actor", ["reset"], config)
         self.assertEqual(result, 0)
         self.assertIsNone(config["actor"])
         self.assertIn("Alice", config["wallets"])
+        self.assertIn("lk actor reset 2", output.getvalue())
+        self.assertIn("lab-deployer", output.getvalue())
 
     def test_known_actor_addresses_render_as_name_with_address(self):
         address = "0x" + "a" * 40

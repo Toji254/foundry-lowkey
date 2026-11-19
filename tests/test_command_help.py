@@ -1162,6 +1162,24 @@ class CommandHelpTests(unittest.TestCase):
 
 
 
+    def test_actor_help_uses_valid_account_example_and_explains_reset_modes(self):
+        code, output = self.capture_dispatch("actor", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk actor 1 Alice", output)
+        self.assertNotIn("lk actor 0 Alice", output)
+        self.assertIn("lk actor reset 2", output)
+        self.assertIn("internal lab-deployer", output.lower())
+
+    def test_root_help_explains_actor_reset_and_reserved_account_zero(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        self.assertIn("lk actor reset [1|2]", rendered)
+        self.assertIn("account 0 is reserved", rendered)
+        self.assertIn("lk actor 1 Alice", rendered)
+        self.assertNotIn("lk actor 0 Alice", rendered)
+
     def test_command_variations_are_explicit_in_help(self):
         cases = {
             "actor": (
