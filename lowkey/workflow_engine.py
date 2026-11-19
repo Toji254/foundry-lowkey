@@ -536,9 +536,14 @@ WHAT THE DASHBOARD SHOWS
   • Current/next phase: the first phase not yet recorded as complete.
   • Scope warning: whether the Git revision or source worktree changed since
     the baseline was pinned.
-  • Automatic evidence: current-build status plus detected Forge test,
-    coverage and Slither events since the workflow started.
   • Question frontier: one high-ranked question when the question engine has one.
+
+AUTOMATIC EVIDENCE
+------------------
+  The dashboard reports whether a real build matches the current source snapshot
+  and whether Forge tests, coverage and Slither runs were observed since start.
+  These are tool observations, not proof that an attack is impossible or that
+  the protocol is secure.
 
 IMPORTANT
 ---------
