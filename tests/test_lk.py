@@ -1612,7 +1612,7 @@ class LowkeyCastTests(unittest.TestCase):
             rendered = output.getvalue()
             self.assertIn("Fallout", rendered)
             self.assertIn("VERIFIED CONTRACTS ON THIS ANVIL", rendered)
-            self.assertIn("choose a live deployed contract", rendered)
+            self.assertIn("first-party contract whose artifact matches this Anvil runtime", rendered)
 
     def test_constructor_address_picker_groups_all_choices_and_shows_workspace_origin(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1814,6 +1814,14 @@ class LowkeyCastTests(unittest.TestCase):
             ["call", "balanceOf(address)", owner],
             config,
         )
+
+    def test_lab_array_parts_parses_one_outer_dimension_and_rejects_invalid_fixed_lengths(self):
+        self.assertEqual(lk._lab_array_parts({"type": "uint256[2]"}), ("uint256", 2))
+        self.assertEqual(lk._lab_array_parts({"type": "string[][]"}), ("string[]", None))
+        self.assertEqual(lk._lab_array_parts({"type": "tuple[][3]"}), ("tuple[]", 3))
+        self.assertEqual(lk._lab_array_parts({"type": "address"}), (None, None))
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            lk._lab_array_parts({"type": "uint256[0]"})
 
     def test_lab_wizard_handles_fixed_and_nested_arrays_generically(self):
         config = {"wallets": {}}
@@ -8625,7 +8633,7 @@ def withdraw(amount: uint256):
                  patch.object(lk, "_project_target_entries", return_value=inventory), \
                  patch.object(lk, "_target_entry_is_protocol", return_value=True), \
                  patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
-                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                 patch.object(lk, "run_cast", return_value=lk.CommandResult("0x6000", 0)):
                 choices = lk._lab_address_choices(config, [])
 
         expected = f"Unverified target #{address[-6:]}"

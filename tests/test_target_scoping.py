@@ -971,11 +971,16 @@ contract Delegation {
                 return True
 
             with patch.object(lk.audit_context, "foundry_project_root", return_value=current_root):
-                with patch.object(lk, "_lab_remembered_contract_is_live", side_effect=live_check):
+                with patch.object(
+                    lk, "run_cast", return_value=lk.CommandResult("0x6000", 0)
+                ), patch.object(lk, "_lab_remembered_contract_is_live", side_effect=live_check):
                     choices = lk._lab_address_choices(config, [], rpc="http://127.0.0.1:8545")
 
-            self.assertEqual(choices, [("ExternalDependency", address)])
-            self.assertEqual(seen, [(address, None)])
+            self.assertEqual(
+                choices,
+                [(f"Unverified target #{address[-6:]} (label: ExternalDependency)", address)],
+            )
+            self.assertEqual(seen, [])
 
 
 

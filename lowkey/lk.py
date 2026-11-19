@@ -14207,6 +14207,32 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
 
     return value
 
+def _lab_array_parts(param):
+    """Return (element_type, fixed_length) for one outer ABI array dimension."""
+    if not isinstance(param, dict):
+        return None, None
+    raw_type = str(param.get("type") or "").strip()
+    match = re.search(r"\[([0-9]*)\]$", raw_type)
+    if not match:
+        return None, None
+
+    element_type = raw_type[:match.start()].strip()
+    if not element_type:
+        raise ValueError("ABI array type is missing its element type.")
+
+    raw_length = match.group(1)
+    if raw_length == "":
+        return element_type, None
+
+    try:
+        fixed_length = int(raw_length, 10)
+    except ValueError as exc:
+        raise ValueError(f"Invalid fixed ABI array length: {raw_length}") from exc
+    if fixed_length < 1:
+        raise ValueError("Fixed ABI array length must be at least one.")
+    return element_type, fixed_length
+
+
 def _lab_prompt_value(config, accounts, contract, param, path="root", nested=False):
     raw_type = str(param.get("type") or "")
     label = str(param.get("name") or path)
