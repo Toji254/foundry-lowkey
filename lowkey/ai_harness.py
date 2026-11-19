@@ -1237,7 +1237,7 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
     if free_tier:
         budget = autonomy_budget_status(cfg)
         request_context = _compact_free_tier_context(
-            context, int(budget["context_limit_bytes"])
+            request_context, int(budget["context_limit_bytes"])
         )
         # Keep the user's configured provider/model, but cap all guarded requests
         # locally. A provider's own quota may be stricter than this guard.
