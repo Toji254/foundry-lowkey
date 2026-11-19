@@ -852,6 +852,7 @@ contract Delegation {
 
             previous_status = lk._COMMAND_STATUS
             lk._COMMAND_STATUS = 0
+            output = io.StringIO()
             try:
                 with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
                     with patch.object(lk, "is_workspace_root", return_value=False):
@@ -859,9 +860,12 @@ contract Delegation {
                             with patch.object(lk, "_run_project_build") as build:
                                 with patch.object(lk, "ensure_project_anvil") as anvil:
                                     with patch.object(lk, "_record_last_error"):
-                                        with contextlib.redirect_stderr(io.StringIO()):
+                                        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                                             result = lk.run_lab({}, ["--ai-review"])
                 self.assertNotEqual(result, 0)
+                self.assertIn("AI protocol review failed before lab setup", output.getvalue())
+                self.assertIn("provider returned malformed protocol review JSON", output.getvalue())
+                self.assertIn("No deployment was attempted", output.getvalue())
                 build.assert_not_called()
                 anvil.assert_not_called()
             finally:
