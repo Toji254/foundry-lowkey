@@ -14184,6 +14184,12 @@ def _lab_constructor_meaning(label, ptype, param=None):
     if normalized == "string":
         return "Text value."
 
+    base_type, length = _lab_array_parts(abi_param)
+    if base_type is not None:
+        if length is None:
+            return f"Dynamic array of {base_type} values."
+        return f"Fixed array of {base_type} values with exactly {length} item(s)."
+
     if normalized.startswith(("uint", "int")):
         return (
             "Integer value. The ABI does not specify its unit; plain numbers are passed "
@@ -14199,12 +14205,6 @@ def _lab_constructor_meaning(label, ptype, param=None):
 
     if normalized.startswith("("):
         return "Structured tuple. Lowkey expands its named fields below."
-
-    base_type, length = _lab_array_parts(abi_param)
-    if base_type is not None:
-        if length is None:
-            return f"Dynamic array of {base_type} values."
-        return f"Fixed array of {base_type} values with exactly {length} item(s)."
 
     return f"ABI value of type {normalized}."
 
