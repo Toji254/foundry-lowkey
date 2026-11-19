@@ -864,5 +864,32 @@ contract Delegation {
                 lk._COMMAND_STATUS = previous_status
 
 
+    def test_cyclic_constructor_dependencies_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Cycle.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; "
+                "contract Alpha { Beta beta; } "
+                "contract Beta { Alpha alpha; }",
+                encoding="utf-8",
+            )
+            for name in ("Alpha", "Beta"):
+                artifact = root / "out" / "Cycle.sol" / f"{name}.json"
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_text(json.dumps({
+                    "contractName": name,
+                    "sourceName": "src/Cycle.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0x6000"},
+                }), encoding="utf-8")
+
+            with self.assertRaisesRegex(lk.ContractDependencyCycleError, "Alpha -> Beta -> Alpha"):
+                lk.discover_contract_dependencies(root, "Alpha")
+
+
+
 if __name__ == "__main__":
     unittest.main()

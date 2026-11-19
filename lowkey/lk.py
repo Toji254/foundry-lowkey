@@ -12114,6 +12114,10 @@ def discover_artifact_lab_contract(root, query):
     return matches[0] if matches else None
 
 
+class ContractDependencyCycleError(ValueError):
+    """Raised when constructor-time contract dependencies cannot be linearly deployed."""
+
+
 def discover_contract_dependencies(root, contract_name):
     """Return first-party deployable contract dependencies in deployment order.
 
@@ -12176,16 +12180,27 @@ def discover_contract_dependencies(root, contract_name):
     ordered = []
     visiting = set()
     visited = set()
+    stack = []
 
     def visit(name):
         key = str(name).casefold()
-        if key in visited or key in visiting:
+        if key in visited:
             return
+        if key in visiting:
+            cycle_start = stack.index(key)
+            cycle = stack[cycle_start:] + [key]
+            rendered = " -> ".join(
+                unique[item][0] if item in unique else item
+                for item in cycle
+            )
+            raise ContractDependencyCycleError(rendered)
         visiting.add(key)
+        stack.append(key)
         for dependency in direct_dependencies(name):
             visit(dependency)
             if dependency.casefold() != target_key and dependency not in ordered:
                 ordered.append(dependency)
+        stack.pop()
         visiting.remove(key)
         visited.add(key)
 
@@ -14486,7 +14501,16 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
         )
 
     if not _skip_dependency_discovery and mode != "artifact":
-        dependencies = discover_contract_dependencies(root, contract)
+        try:
+            dependencies = discover_contract_dependencies(root, contract)
+        except ContractDependencyCycleError as exc:
+            return fail(
+                f"Lowkey found a cyclic constructor-time dependency graph: {exc}. "
+                "A linear generic deployment order is unsafe. Use the project's native factory, "
+                "proxy, clone, or deterministic-deployment setup, or explicitly select an already "
+                "deployed instance. No contracts in this dependency plan were deployed.",
+                1,
+            )
         if dependencies:
             print()
             print("LOCAL CONTRACT DEPENDENCY PLAN")
@@ -14800,7 +14824,12 @@ def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_sugge
             # different application entry. This relationship is generic and
             # based on the dependency graph, not protocol-specific names.
             if detected and detected.casefold() != candidate[1].casefold():
-                native_dependencies = discover_contract_dependencies(root, detected)
+                try:
+                    native_dependencies = discover_contract_dependencies(root, detected)
+                except ContractDependencyCycleError:
+                    # A cyclic graph needs a project-native deployment plan;
+                    # do not let an AI suggestion override the native root.
+                    return detected
                 if candidate[1].casefold() in {
                     str(name).casefold() for name in native_dependencies
                 }:
