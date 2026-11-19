@@ -14808,6 +14808,19 @@ def run_native_lab(config, root, project):
     return 0
 
 
+def validate_ai_primary_contract_suggestion(root, suggested_name):
+    """Accept an AI target proposal only after a local deployable first-party artifact exists."""
+    name = str(suggested_name or "").strip()
+    if not name:
+        return None
+    candidate = discover_artifact_lab_contract(root, name)
+    if not candidate:
+        return None
+    if not artifact_is_project_application(root, candidate[2], candidate[3]):
+        return None
+    return candidate[1]
+
+
 def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_suggested=None):
     """Prefer explicit intent, artifact-checked AI hypotheses, and native dependency evidence."""
     explicit = str(requested or "").strip()
@@ -14967,6 +14980,7 @@ def run_lab(config,args, *, deployment_only=False):
     _ai_review_mode = "manual" if ai_review_requested else None
     _ai_harness = None
     _ai_status = None
+    _ai_primary_contract_proposal = None
     _ai_suggested_primary_contract = None
 
     if not _ai_is_stop and (_ai_review_mode is not None or not ai_review_requested):
@@ -15023,21 +15037,14 @@ def run_lab(config,args, *, deployment_only=False):
             print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=True))
             suggested_name = review.get("suggested_primary_contract")
             if suggested_name:
-                suggested_candidate = discover_artifact_lab_contract(root, suggested_name)
-                if (
-                    suggested_candidate
-                    and artifact_is_project_application(root, suggested_candidate[2], suggested_candidate[3])
-                ):
-                    _ai_suggested_primary_contract = suggested_candidate[1]
-                    print(
-                        "AI primary-target suggestion (artifact-validated): "
-                                                   + _ai_suggested_primary_contract
-                    )
-                else:
-                    print(
-                        "AI primary-target suggestion rejected: no matching first-party deployable artifact "
-                        + json.dumps(str(suggested_name), ensure_ascii=True)
-                    )
+                # A clean project may not have artifacts until the native build
+                # below. Keep the untrusted name only as a proposal and validate
+                # it after the build has completed successfully.
+                _ai_primary_contract_proposal = str(suggested_name).strip()
+                print(
+                    "AI primary-target proposal (pending native artifact validation): "
+                    + json.dumps(_ai_primary_contract_proposal, ensure_ascii=True)
+                )
             for label, key in (
                 ("Contract roles", "contract_roles"),
                 ("Candidate invariants", "invariants"),
@@ -15140,6 +15147,23 @@ def run_lab(config,args, *, deployment_only=False):
             return fail(
                 "Error: project build failed; Lowkey will not deploy stale or partial artifacts.",
                 build_code,
+            )
+
+    if _ai_primary_contract_proposal:
+        _ai_suggested_primary_contract = validate_ai_primary_contract_suggestion(
+            root,
+            _ai_primary_contract_proposal,
+        )
+        if _ai_suggested_primary_contract:
+            print(
+                "AI primary-target suggestion validated against the built first-party artifact: "
+                + _ai_suggested_primary_contract
+            )
+        else:
+            print(
+                "AI primary-target suggestion rejected: no matching deployable first-party artifact "
+                "was found after the native build for "
+                + json.dumps(_ai_primary_contract_proposal, ensure_ascii=True)
             )
 
     mode = "auto"

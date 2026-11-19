@@ -890,6 +890,39 @@ contract Delegation {
                 lk.discover_contract_dependencies(root, "Alpha")
 
 
+    def test_ai_primary_target_requires_a_matching_built_first_party_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Main.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Main {}",
+                encoding="utf-8",
+            )
+
+            # Before the native build, source text alone is not deployment
+            # evidence and an AI-proposed name must not become the target.
+            self.assertIsNone(lk.validate_ai_primary_contract_suggestion(root, "Main"))
+
+            artifact = root / "out" / "Main.sol" / "Main.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(json.dumps({
+                "contractName": "Main",
+                "sourceName": "src/Main.sol",
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+
+            self.assertEqual(
+                lk.validate_ai_primary_contract_suggestion(root, "Main"),
+                "Main",
+            )
+            self.assertIsNone(
+                lk.validate_ai_primary_contract_suggestion(root, "Unrelated"),
+            )
+
+
 
 if __name__ == "__main__":
     unittest.main()
