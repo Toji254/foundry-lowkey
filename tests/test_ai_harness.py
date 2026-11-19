@@ -1109,6 +1109,74 @@ class AIHarnessTests(unittest.TestCase):
         }
         ai._validate_protocol_review_output(result)
 
+    def test_protocol_review_validates_dependency_first_plan_and_constructor_mappings(self):
+        valid = {
+            "summary": "The host accepts an external implementation address.",
+            "contract_roles": [],
+            "invariants": [],
+            "open_questions": [],
+            "deployment_considerations": [],
+            "deployment_plan": [
+                {
+                    "contract": "Delegate",
+                    "role": "implementation dependency",
+                    "depends_on": [],
+                    "rationale": "The host stores this implementation address.",
+                    "evidence": "src/Delegation.sol: constructor parameter _delegateAddress",
+                    "constructor_arguments": [],
+                },
+                {
+                    "contract": "Delegation",
+                    "role": "application host",
+                    "depends_on": ["Delegate"],
+                    "rationale": "The host forwards calls using delegatecall.",
+                    "evidence": "src/Delegation.sol: fallback delegatecall",
+                    "constructor_arguments": [{
+                        "parameter": "_delegateAddress",
+                        "dependency_contract": "Delegate",
+                        "evidence": "src/Delegation.sol: constructor(_delegateAddress)",
+                    }],
+                },
+            ],
+        }
+        ai._validate_protocol_review_output(valid)
+        self.assertEqual(len(valid["deployment_plan"]), 2)
+
+    def test_protocol_review_rejects_invalid_plan_dependency_mapping(self):
+        invalid = {
+            "summary": "A host has a dependency.",
+            "contract_roles": [],
+            "invariants": [],
+            "open_questions": [],
+            "deployment_considerations": [],
+            "deployment_plan": [{
+                "contract": "Host",
+                "role": "host",
+                "depends_on": [],
+                "rationale": "Deploy this.",
+                "evidence": "src/Host.sol: constructor",
+                "constructor_arguments": [{
+                    "parameter": "implementation",
+                    "dependency_contract": "Impl",
+                    "evidence": "src/Host.sol: constructor",
+                }],
+            }],
+        }
+        with self.assertRaisesRegex(ai.AIHarnessError, "declared dependency"):
+            ai._validate_protocol_review_output(invalid)
+
+    def test_protocol_review_rejects_unbounded_deployment_plan(self):
+        invalid = {
+            "summary": "A project.",
+            "contract_roles": [],
+            "invariants": [],
+            "open_questions": [],
+            "deployment_considerations": [],
+            "deployment_plan": [{}] * 33,
+        }
+        with self.assertRaisesRegex(ai.AIHarnessError, "exceeds 32 entries"):
+            ai._validate_protocol_review_output(invalid)
+
     def test_protocol_review_rejects_malformed_nested_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1481,6 +1549,8 @@ class AIHarnessTests(unittest.TestCase):
             "suggested_primary_contract": "Vault",
         }
         ai._validate_protocol_review_output(valid)
+        # Older providers that omit the optional plan remain compatible.
+        self.assertNotIn("deployment_plan", valid)
         invalid = dict(valid)
         invalid["suggested_primary_contract"] = {"name": "Vault"}
         with self.assertRaisesRegex(ai.AIHarnessError, "suggested_primary_contract"):

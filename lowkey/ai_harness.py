@@ -1387,6 +1387,72 @@ def _validate_protocol_review_output(result: Mapping[str, Any]) -> None:
                     f"Protocol review field '{field}' entry {index + 1} is too long; result rejected."
                 )
 
+    deployment_plan = result.get("deployment_plan", [])
+    if not isinstance(deployment_plan, list):
+        raise AIHarnessError("Protocol review field 'deployment_plan' must be a list; result rejected.")
+    if len(deployment_plan) > 32:
+        raise AIHarnessError("Protocol review deployment_plan exceeds 32 entries; result rejected.")
+
+    identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    for index, step in enumerate(deployment_plan):
+        if not isinstance(step, dict):
+            raise AIHarnessError(
+                f"Protocol review deployment_plan entry {index + 1} must be an object; result rejected."
+            )
+        for field, limit in (("contract", 240), ("role", 500), ("rationale", 2_000), ("evidence", 2_000)):
+            value = step.get(field)
+            if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                raise AIHarnessError(
+                    f"Protocol review deployment_plan entry {index + 1} needs a non-empty '{field}' of at most {limit} characters; result rejected."
+                )
+        if not identifier.fullmatch(step["contract"].strip()):
+            raise AIHarnessError(
+                f"Protocol review deployment_plan entry {index + 1} has an invalid Solidity contract identifier; result rejected."
+            )
+
+        dependencies = step.get("depends_on", [])
+        if not isinstance(dependencies, list) or len(dependencies) > 16:
+            raise AIHarnessError(
+                f"Protocol review deployment_plan entry {index + 1} 'depends_on' must be a list of at most 16 names; result rejected."
+            )
+        seen_dependencies = set()
+        for dependency in dependencies:
+            if (
+                not isinstance(dependency, str)
+                or not identifier.fullmatch(dependency.strip())
+                or dependency.strip().casefold() == step["contract"].strip().casefold()
+                or dependency.strip().casefold() in seen_dependencies
+            ):
+                raise AIHarnessError(
+                    f"Protocol review deployment_plan entry {index + 1} contains an invalid or duplicate dependency; result rejected."
+                )
+            seen_dependencies.add(dependency.strip().casefold())
+
+        arguments = step.get("constructor_arguments", [])
+        if not isinstance(arguments, list) or len(arguments) > 16:
+            raise AIHarnessError(
+                f"Protocol review deployment_plan entry {index + 1} 'constructor_arguments' must be a list of at most 16 mappings; result rejected."
+            )
+        for argument_index, argument in enumerate(arguments):
+            if not isinstance(argument, dict):
+                raise AIHarnessError(
+                    f"Protocol review deployment_plan entry {index + 1} constructor argument {argument_index + 1} must be an object; result rejected."
+                )
+            for field, limit in (("parameter", 240), ("dependency_contract", 240), ("evidence", 2_000)):
+                value = argument.get(field)
+                if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                    raise AIHarnessError(
+                        f"Protocol review deployment_plan entry {index + 1} constructor argument {argument_index + 1} needs a non-empty '{field}' of at most {limit} characters; result rejected."
+                    )
+            if (
+                not identifier.fullmatch(argument["parameter"].strip())
+                or not identifier.fullmatch(argument["dependency_contract"].strip())
+                or argument["dependency_contract"].strip().casefold() not in seen_dependencies
+            ):
+                raise AIHarnessError(
+                    f"Protocol review deployment_plan entry {index + 1} constructor argument mapping must reference a declared dependency; result rejected."
+                )
+
     suggested_primary = result.get("suggested_primary_contract")
     if suggested_primary is not None and (
         not isinstance(suggested_primary, str)
@@ -1406,19 +1472,26 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
         task=(
             "Review contract logic to help an auditor understand a protocol before local lab work. Return JSON keys: "
             "summary (string), contract_roles (array of objects with name, purpose, evidence), invariants (array of "
-            "objects with statement, rationale, source), open_questions (array of strings), and deployment_considerations "
-            "(array of strings). Identify factories, implementations, proxies, initializers, roles, state transitions, "
-            "accounting and external dependencies where source supports it. Cite file paths and identifiers. Call out missing "
-            "context. Also return suggested_primary_contract: the exact name of the best first-party application/entry contract "
-            "to audit, or null when source evidence is ambiguous. Prefer the contract that coordinates or exposes the protocol "
-            "over implementations, libraries, mocks, fixtures, and support contracts. Explain the evidence in contract_roles. "
-            "Do not select by filename or alphabetical order. This is a suggestion only; local artifact validation must confirm it. "
-            "These are unverified hypotheses, not confirmed security findings; do not fabricate test results."
+            "objects with statement, rationale, source), open_questions (array of strings), deployment_considerations "
+            "(array of strings), and deployment_plan (an ordered array of objects with contract, role, depends_on, rationale, "
+            "evidence, and constructor_arguments). Each constructor_arguments entry has parameter, dependency_contract, and "
+            "evidence. Use an empty deployment_plan when no safe deployment relationships can be inferred. Identify factories, "
+            "implementations, proxies, initializers, roles, state transitions, accounting and external dependencies where source "
+            "supports it. Infer deployment order only from explicit source/ABI relationships, not name similarity. Put deployable "
+            "dependencies before the contract that consumes them. Mark address-typed or delegatecall-based relationships as "
+            "hypotheses and explain the exact source path/symbol evidence; never invent constructor parameters. Cite file paths and "
+            "identifiers and call out missing context. Also return suggested_primary_contract: the exact name of the best first-party "
+            "application/entry contract to audit, or null when source evidence is ambiguous. Prefer the contract that coordinates "
+            "or exposes the protocol over implementations, libraries, mocks, fixtures, and support contracts. Explain the evidence "
+            "in contract_roles. Do not select by filename or alphabetical order. All model-proposed relationships remain unverified "
+            "until Lowkey validates project artifacts, ABI parameters and native dependency evidence. These are not confirmed "
+            "security findings; do not fabricate test results."
         ),
         context=context,
         required_fields=("summary", "contract_roles", "invariants", "open_questions", "deployment_considerations"),
     )
     _validate_protocol_review_output(result)
+    result.setdefault("deployment_plan", [])
     result["ai_generated"] = True
     result["origin"] = "configured-model"
     result["_lowkey_meta"] = {

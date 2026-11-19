@@ -1407,7 +1407,7 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertIn(("anvil:0", actor), choices)
             # This external dependency is available because the user explicitly
             # registered it in the active project's target registry.
-            self.assertIn(("Fallout", live_contract), choices)
+            self.assertIn((f"Unverified target #{live_contract[-6:]} (label: Fallout)", live_contract), choices)
             self.assertNotIn(("OldTarget", stale_contract), choices)
             self.assertEqual(
                 sum(1 for _name, address in choices if address.lower() == live_contract.lower()),
@@ -1443,10 +1443,10 @@ class LowkeyCastTests(unittest.TestCase):
 
             with patch.object(lk, "project_context_target", side_effect=project_target), \
                  patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
-                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                 patch.object(lk, "run_cast", return_value=lk.CommandResult("0x6000", 0)):
                 choices = lk._lab_address_choices(config, [])
 
-            self.assertIn(("Telephone", address), choices)
+            self.assertIn((f"Unverified target #{address[-6:]} (label: Telephone)", address), choices)
             self.assertNotIn(("CoinFlip", address), choices)
             self.assertEqual(
                 sum(1 for _name, candidate in choices if candidate.lower() == address.lower()),
@@ -1468,6 +1468,8 @@ class LowkeyCastTests(unittest.TestCase):
                 json.dumps({
                     "contractName": "Telephone",
                     "sourceName": "src/Telephone.sol",
+                    "bytecode": {"object": "0x6001"},
+                    "deployedBytecode": {"object": "0x6001"},
                     "abi": [],
                 }),
                 encoding="utf-8",
@@ -1495,7 +1497,9 @@ class LowkeyCastTests(unittest.TestCase):
                  ), \
                  patch.object(lk, "_target_entry_is_protocol", return_value=True), \
                  patch.object(lk, "_lab_workspace_remembered_targets", return_value=[]), \
-                 patch.object(lk, "_lab_remembered_contract_is_live", return_value=True):
+                 patch.object(lk, "_live_target_state", return_value={
+                     "status": "DEPLOYED", "verification": "MATCHED"
+                 }):
                 choices = lk._lab_address_choices(config, [])
 
             self.assertIn(("Telephone", address), choices)
@@ -1555,6 +1559,18 @@ class LowkeyCastTests(unittest.TestCase):
             project_root = pathlib.Path(tmp) / "Ethernaut CTFs" / "Fallout"
             project_root.mkdir(parents=True)
             (project_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            source = project_root / "src" / "Fallout.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text("pragma solidity ^0.8.20; contract Fallout {}", encoding="utf-8")
+            artifact = project_root / "out" / "Fallout.sol" / "Fallout.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(json.dumps({
+                "contractName": "Fallout",
+                "sourceName": "src/Fallout.sol",
+                "bytecode": {"object": "0x6005"},
+                "deployedBytecode": {"object": "0x6005"},
+                "abi": [{"type": "constructor", "inputs": []}],
+            }), encoding="utf-8")
             address = "0x" + "5" * 40
             actor = "0x" + "1" * 40
             config = {
@@ -1568,7 +1584,7 @@ class LowkeyCastTests(unittest.TestCase):
                     str(project_root): {
                         "Fallout": {
                             "address": address,
-                            "artifact": None,
+                            "artifact": str(artifact),
                             "explicit": True,
                         }
                     }
@@ -1577,7 +1593,9 @@ class LowkeyCastTests(unittest.TestCase):
             output = io.StringIO()
             with redirect_stdout(output), patch.object(
                 lk, "run_cast", return_value=lk.CommandResult("0x6000", 0)
-            ), patch("builtins.input", return_value="Fallout"):
+            ), patch.object(lk, "_live_target_state", return_value={
+                "status": "DEPLOYED", "verification": "MATCHED"
+            }), patch("builtins.input", return_value="Fallout"):
                 value = lk._lab_prompt_value(
                     config,
                     [actor],
@@ -1593,7 +1611,7 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(value, address)
             rendered = output.getvalue()
             self.assertIn("Fallout", rendered)
-            self.assertIn("CONTRACTS ON THIS ANVIL", rendered)
+            self.assertIn("VERIFIED CONTRACTS ON THIS ANVIL", rendered)
             self.assertIn("choose a live deployed contract", rendered)
 
     def test_constructor_address_picker_groups_all_choices_and_shows_workspace_origin(self):
@@ -1619,14 +1637,14 @@ class LowkeyCastTests(unittest.TestCase):
             with redirect_stdout(output):
                 lk._lab_print_address_picker(entries)
 
-        self.assertEqual(entries[0]["category"], "contracts")
+        self.assertEqual(entries[0]["category"], "unverified")
         self.assertEqual(entries[-1]["category"], "actors")
         self.assertEqual(len(entries), 16)
         rendered = output.getvalue()
-        self.assertIn("CONTRACTS ON THIS ANVIL (14)", rendered)
+        self.assertIn("UNVERIFIED CODE ADDRESSES (14)", rendered)
         self.assertIn("SAVED WALLETS (1)", rendered)
         self.assertIn("ANVIL ACCOUNTS (1)", rendered)
-        self.assertIn(str(project.resolve()), rendered)
+        self.assertIn("contract identity not proven", rendered)
         self.assertIn("Contract13", rendered)
         self.assertNotIn("more; enter a contract name", rendered)
 
@@ -1671,7 +1689,7 @@ class LowkeyCastTests(unittest.TestCase):
                 config, [actor], choices, requires_contract=True
             )
 
-        self.assertEqual([(item["name"], item["address"]) for item in entries], [("Fallout", contract)])
+        self.assertEqual(entries, [])
 
     def test_deployment_review_resolves_known_constructor_address_and_supports_edit(self):
         address = "0x" + "5" * 40
@@ -1698,7 +1716,8 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(action, "edit")
         rendered = output.getvalue()
         self.assertIn("DEPLOYMENT REVIEW", rendered)
-        self.assertIn("Fallout · " + address, rendered)
+        self.assertNotIn("Fallout · " + address, rendered)
+        self.assertIn(address, rendered)
         self.assertIn("Change constructor values", rendered)
         self.assertIn("Cancel deployment", rendered)
 
@@ -4905,6 +4924,125 @@ contract Pool {
         self.assertEqual(captured["kwargs"]["command_result"], 2)
         self.assertIn("lk nope", captured["kwargs"]["lowkey_command_context"]["invocation"])
         self.assertIn("Known top-level Lowkey commands", captured["kwargs"]["lowkey_command_context"]["source_excerpt"])
+
+    def test_ai_dependency_plan_selects_unique_host_instead_of_suggested_child(self):
+        root = pathlib.Path("/tmp/PlanFixture")
+        candidates = {
+            "delegate": ("", "Delegate", "/tmp/PlanFixture/out/Delegate.json", {"contractName": "Delegate"}),
+            "delegation": ("", "Delegation", "/tmp/PlanFixture/out/Delegation.json", {"contractName": "Delegation"}),
+        }
+        plan = [
+            {"contract": "Delegate", "depends_on": [], "role": "implementation"},
+            {"contract": "Delegation", "depends_on": ["Delegate"], "role": "application host"},
+        ]
+        with patch.object(lk, "discover_audit_target_contract", return_value=None), \
+             patch.object(
+                 lk, "discover_artifact_lab_contract",
+                 side_effect=lambda _root, name: candidates.get(str(name).casefold()),
+             ), patch.object(lk, "artifact_is_project_application", return_value=True):
+            selected = lk._preferred_lab_contract(
+                root,
+                ai_suggested="Delegate",
+                ai_deployment_plan=plan,
+            )
+        self.assertEqual(selected, "Delegation")
+
+    def test_ai_suggestion_cannot_override_native_target_when_it_is_a_dependency(self):
+        root = pathlib.Path("/tmp/PlanFixture")
+        candidates = {
+            "implementation": ("", "Implementation", "/tmp/PlanFixture/out/Implementation.json", {"contractName": "Implementation"}),
+        }
+        with patch.object(lk, "discover_audit_target_contract", return_value="Host"), \
+             patch.object(
+                 lk, "discover_artifact_lab_contract",
+                 side_effect=lambda _root, name: candidates.get(str(name).casefold()),
+             ), patch.object(lk, "artifact_is_project_application", return_value=True), \
+             patch.object(
+                 lk, "discover_contract_dependencies",
+                 side_effect=lambda _root, name: ["Implementation"] if name == "Host" else [],
+             ):
+            selected = lk._preferred_lab_contract(
+                root,
+                ai_suggested="Implementation",
+            )
+        self.assertEqual(selected, "Host")
+
+
+    def test_ai_deployment_plan_validates_host_dependency_and_address_constructor_mapping(self):
+        root = pathlib.Path("/tmp/PlanFixture")
+        dependency_artifact = {
+            "contractName": "Delegate",
+            "abi": [{"type": "constructor", "inputs": []}],
+        }
+        host_artifact = {
+            "contractName": "Delegation",
+            "abi": [{
+                "type": "constructor",
+                "inputs": [{"name": "_delegateAddress", "type": "address"}],
+            }],
+        }
+        candidates = {
+            "delegate": ("", "Delegate", "/tmp/PlanFixture/out/Delegate.json", dependency_artifact),
+            "delegation": ("", "Delegation", "/tmp/PlanFixture/out/Delegation.json", host_artifact),
+        }
+        plan = [
+            {
+                "contract": "Delegate",
+                "role": "implementation dependency",
+                "depends_on": [],
+                "rationale": "The host stores this implementation address.",
+                "evidence": "src/Delegation.sol: constructor parameter _delegateAddress",
+                "constructor_arguments": [],
+            },
+            {
+                "contract": "Delegation",
+                "role": "application host",
+                "depends_on": ["Delegate"],
+                "rationale": "The host forwards calls using delegatecall.",
+                "evidence": "src/Delegation.sol: fallback delegatecall",
+                "constructor_arguments": [{
+                    "parameter": "_delegateAddress",
+                    "dependency_contract": "Delegate",
+                    "evidence": "src/Delegation.sol: constructor(_delegateAddress)",
+                }],
+            },
+        ]
+        with patch.object(
+            lk, "discover_artifact_lab_contract",
+            side_effect=lambda _root, name: candidates.get(str(name).casefold()),
+        ), patch.object(
+            lk, "artifact_is_project_application", return_value=True
+        ), patch.object(
+            lk, "discover_contract_dependencies", return_value=[]
+        ), patch.object(
+            lk, "artifact_is_locked_implementation", return_value=False
+        ):
+            report = lk.validate_ai_deployment_plan(root, plan)
+
+        self.assertEqual([step["name"] for step in report["steps"]], ["Delegate", "Delegation"])
+        mapping = report["steps"][1]["constructor_arguments"][0]
+        self.assertTrue(mapping["abi_address_parameter"])
+        self.assertFalse(mapping["relationship_native_confirmed"])
+        rendered = lk.render_ai_deployment_plan(report)
+        self.assertIn("AI-only hypothesis", rendered)
+        self.assertIn("lk lab --generic Delegate", rendered)
+        self.assertIn("lk lab --generic Delegation", rendered)
+        self.assertIn("did not deploy or send transactions", rendered)
+
+    def test_ai_deployment_plan_rejects_missing_first_party_artifacts(self):
+        plan = [{
+            "contract": "Host",
+            "role": "application",
+            "depends_on": [],
+            "rationale": "Deploy the host.",
+            "evidence": "src/Host.sol: constructor",
+            "constructor_arguments": [],
+        }]
+        with patch.object(lk, "discover_artifact_lab_contract", return_value=None):
+            report = lk.validate_ai_deployment_plan(pathlib.Path("/tmp/PlanFixture"), plan)
+        self.assertEqual(report["steps"], [])
+        self.assertIn("no unique first-party deployable artifact", report["warnings"][0])
+
 
     def test_run_lab_passes_remembered_contract_to_native_script_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -8389,6 +8527,70 @@ def withdraw(amount: uint256):
             set_latest.assert_called_once_with(
                 root, tx_hash=tx_hash, target=selected_target, rpc=rpc
             )
+
+    def test_lab_address_reuse_never_inherits_a_conflicting_global_or_artifact_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = pathlib.Path(tmp) / "FallbackLab"
+            project_root.mkdir()
+            (project_root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (project_root / "src").mkdir()
+            (project_root / "src" / "Delegate.sol").write_text(
+                "pragma solidity ^0.8.20; contract Delegate {}", encoding="utf-8"
+            )
+            (project_root / "src" / "Fallback.sol").write_text(
+                "pragma solidity ^0.8.20; contract Fallback {}", encoding="utf-8"
+            )
+            delegate_artifact = project_root / "out" / "Delegate.sol" / "Delegate.json"
+            fallback_artifact = project_root / "out" / "Fallback.sol" / "Fallback.json"
+            delegate_artifact.parent.mkdir(parents=True)
+            fallback_artifact.parent.mkdir(parents=True)
+            delegate_artifact.write_text(json.dumps({
+                "contractName": "Delegate",
+                "sourceName": "src/Delegate.sol",
+                "bytecode": {"object": "0x6001"},
+                "deployedBytecode": {"object": "0x6001"},
+                "abi": [],
+            }), encoding="utf-8")
+            fallback_artifact.write_text(json.dumps({
+                "contractName": "Fallback",
+                "sourceName": "src/Fallback.sol",
+                "bytecode": {"object": "0x6002"},
+                "deployedBytecode": {"object": "0x6002"},
+                "abi": [],
+            }), encoding="utf-8")
+            address = "0x" + "a" * 40
+            config = {
+                "_lab_system_root": str(project_root),
+                "_lab_rpc": "http://127.0.0.1:8545",
+                "wallets": {},
+                "targets": {"Delegate": address},
+                "aliases": {"Delegate": address},
+                "project_target_registry": {
+                    str(project_root): {
+                        # Deliberately corrupt/stale mapping: Fallback points at Delegate's artifact.
+                        "Fallback": {"address": address, "artifact": str(delegate_artifact), "explicit": True},
+                    }
+                },
+            }
+            inventory = [{
+                "name": "Fallback",
+                "contract": "Fallback",
+                "address": address,
+                "artifact": str(fallback_artifact),
+            }]
+            with patch.object(lk, "project_context_target", return_value=None), \
+                 patch.object(lk, "_project_target_entries", return_value=inventory), \
+                 patch.object(lk, "_live_target_state", return_value={
+                     "status": "DEPLOYED", "verification": "MATCHED"
+                 }):
+                choices = lk._lab_address_choices(config, [])
+                entries = lk._lab_address_picker_entries(
+                    config, [], choices, requires_contract=True
+                )
+
+        self.assertEqual(choices, [("Fallback", address)])
+        self.assertEqual([(item["name"], item["category"]) for item in entries], [("Fallback", "contracts")])
+
 
     def test_lab_address_choices_do_not_reuse_alias_when_project_identity_is_ambiguous(self):
         with tempfile.TemporaryDirectory() as tmp:

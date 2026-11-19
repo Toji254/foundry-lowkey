@@ -13761,10 +13761,51 @@ def _lab_target_entry_has_project_identity(owner_root, entry):
         return False
 
 
+def _lab_project_artifact_matches_runtime(config, project_root, address, contract_name, artifact_path, rpc=None):
+    """Prove that a project-owned artifact matches code at this exact lab address."""
+    if not artifact_path or not is_address(address):
+        return False
+    try:
+        root = Path(project_root).expanduser().resolve()
+        candidate = Path(os.path.expanduser(str(artifact_path)))
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            return False
+
+        artifact = read_artifact(str(candidate))
+        if not isinstance(artifact, dict):
+            return False
+        actual_name = artifact_contract_name(str(candidate), artifact)
+        if actual_name.casefold() != str(contract_name or "").strip().casefold():
+            return False
+        if not artifact_is_project_application(root, str(candidate), artifact):
+            return False
+
+        deployed_bytecode = artifact.get("deployedBytecode")
+        if isinstance(deployed_bytecode, dict):
+            deployed_bytecode = deployed_bytecode.get("object")
+        if str(deployed_bytecode or "").strip() in {"", "0x", "0x0"}:
+            return False
+
+        verification_config = dict(config or {})
+        verification_config["rpc"] = rpc or verification_config.get("_lab_rpc") or effective_rpc(verification_config)
+        verification_config.pop("_fixture_rpc_scope", None)
+        state = _live_target_state(verification_config, address, str(candidate))
+        return (
+            state.get("status") == "DEPLOYED"
+            and str(state.get("verification") or "").upper()
+                in {"MATCHED", "PROXY/CLONE MATCHED"}
+        )
+    except Exception:
+        return False
+
+
 def _lab_address_choices(config, accounts, rpc=None):
+    """Return current-project contract identities, plus explicitly unverified address hints."""
     choices = []
 
-    # Current Anvil actors and explicitly named wallet profiles remain first.
     for index, address in enumerate(accounts or []):
         if is_address(address):
             choices.append((f"anvil:{index}", str(address)))
@@ -13791,254 +13832,88 @@ def _lab_address_choices(config, accounts, rpc=None):
             if isinstance(registry, dict) else {}
         )
         context_target = project_context_target(project_root)
+
         by_address = {}
         for entry in inventory or []:
-            if not isinstance(entry, dict) or not is_address(entry.get("address")):
-                continue
-            by_address.setdefault(str(entry["address"]).lower(), []).append(entry)
+            if isinstance(entry, dict) and is_address(entry.get("address")):
+                by_address.setdefault(str(entry["address"]).lower(), []).append(entry)
+
+        for name, record in (project_records or {}).items():
+            if isinstance(record, dict) and is_address(record.get("address")):
+                by_address.setdefault(str(record["address"]).lower(), []).append({
+                    "name": str(name),
+                    "contract": str(name),
+                    "address": str(record["address"]),
+                    "artifact": record.get("artifact"),
+                    "source": "project-registry",
+                })
+
+        if isinstance(context_target, dict) and is_address(context_target.get("address")):
+            by_address.setdefault(str(context_target["address"]).lower(), []).append({
+                "name": str(context_target.get("contract") or ""),
+                "contract": str(context_target.get("contract") or ""),
+                "address": str(context_target["address"]),
+                "artifact": context_target.get("artifact"),
+                "source": str(context_target.get("source") or "project-context"),
+            })
 
         for address_key, entries in by_address.items():
             address = str(entries[0].get("address"))
-            names = {
-                str(entry.get("contract") or entry.get("name") or "").strip()
-                for entry in entries
-                if str(entry.get("contract") or entry.get("name") or "").strip()
-            }
+            verified = {}
+            hints = set()
 
-            context_matches = (
-                isinstance(context_target, dict)
-                and str(context_target.get("address") or "").lower() == address_key
-                and str(context_target.get("contract") or "").strip()
-            )
-            context_name = (
-                str(context_target.get("contract")).strip()
-                if context_matches else None
-            )
-
-            # A project-scoped active target is authoritative for its own
-            # address, but it must not inherit a conflicting global alias.
-            if context_name:
-                name = context_name
-                artifact_path = context_target.get("artifact")
-                identity_verified = True
-            else:
-                matching_records = [
-                    (str(record_name), record)
-                    for record_name, record in (project_records or {}).items()
-                    if isinstance(record, dict)
-                    and str(record.get("address") or "").lower() == address_key
-                ]
-                record_names = {record_name for record_name, _record in matching_records}
-                if len(record_names) == 1:
-                    name = next(iter(record_names))
-                    record = matching_records[0][1]
-                    artifact_path = record.get("artifact")
-                    identity_verified = bool(artifact_path) or record.get("explicit") is True
-                elif len(names) == 1:
-                    name = next(iter(names))
-                    entry = next(
-                        (
-                            item for item in entries
-                            if str(item.get("contract") or item.get("name") or "").strip() == name
-                        ),
-                        entries[0],
-                    )
-                    artifact_path = entry.get("artifact")
-                    source = str(entry.get("source") or "").strip().lower()
-                    identity_verified = source == "broadcast"
-                    if artifact_path:
-                        candidate_path = Path(os.path.expanduser(str(artifact_path)))
-                        if not candidate_path.is_absolute():
-                            candidate_path = project_root / candidate_path
-                        artifact_data = (
-                            read_artifact(str(candidate_path))
-                            if candidate_path.is_file() else None
-                        )
-                        try:
-                            local_artifact = candidate_path.resolve().is_relative_to(project_root)
-                        except (OSError, RuntimeError, ValueError):
-                            local_artifact = False
-                        identity_verified = bool(
-                            artifact_data
-                            and local_artifact
-                            and artifact_contract_name(str(candidate_path), artifact_data).casefold()
-                                == name.casefold()
-                            and artifact_is_project_application(
-                                project_root, str(candidate_path), artifact_data
-                            )
-                        ) or identity_verified
-                else:
-                    name = ""
-                    artifact_path = None
-                    identity_verified = False
-
-            # Resolve the exact project-owned artifact. Never fall back to the
-            # global address-keyed ABI map for a scoped registry entry.
-            if context_name:
-                if not artifact_path:
-                    artifact_path = context_target.get("artifact")
-            elif project_records and name in project_records:
-                record = project_records[name]
-                if isinstance(record, dict) and str(record.get("address") or "").lower() == address_key:
-                    artifact_path = record.get("artifact")
-                    identity_verified = bool(artifact_path) or record.get("explicit") is True
-
-            # Multiple names for one address are a metadata collision. Prefer a
-            # single artifact that proves its runtime; otherwise expose only a
-            # generic address label, never one of the conflicting names.
-            verified_names = []
             for entry in entries:
-                entry_name = str(entry.get("contract") or entry.get("name") or "").strip()
-                entry_artifact = entry.get("artifact")
-                if not entry_name or not entry_artifact:
+                if not isinstance(entry, dict):
                     continue
-                entry_path = Path(os.path.expanduser(str(entry_artifact)))
-                if not entry_path.is_absolute():
-                    entry_path = project_root / entry_path
-                artifact_data = read_artifact(str(entry_path)) if entry_path.is_file() else None
+                name = str(entry.get("contract") or entry.get("name") or "").strip()
+                if not name:
+                    continue
+                hints.add(name)
+                artifact_path = entry.get("artifact")
+                if _lab_project_artifact_matches_runtime(
+                    config, project_root, address, name, artifact_path, rpc
+                ):
+                    verified.setdefault(name.casefold(), (name, str(artifact_path)))
+
+            if len(verified) == 1:
+                name, artifact_path = next(iter(verified.values()))
+                display_name = name
+            elif len(verified) > 1:
+                # A single address cannot safely inherit several conflicting
+                # contract identities, even when each artifact is individually
+                # deployable. A proxy/implementation relationship needs its own
+                # explicit target selection and evidence.
+                display_name = f"Unverified target #{address[-6:]}"
+            else:
+                hint = next(iter(hints)) if len(hints) == 1 else ""
+                suffix = f" (label: {hint})" if hint else ""
+                display_name = f"Unverified target #{address[-6:]}{suffix}"
+
+                # Code existence is useful for an address-typed constructor
+                # argument, but it is not proof of the contract's identity.
                 try:
-                    local_artifact = entry_path.resolve().is_relative_to(project_root)
-                except (OSError, RuntimeError, ValueError):
-                    local_artifact = False
-                if (
-                    not artifact_data
-                    or not local_artifact
-                    or artifact_contract_name(str(entry_path), artifact_data).casefold() != entry_name.casefold()
-                    or not artifact_is_project_application(project_root, str(entry_path), artifact_data)
-                ):
+                    code_check = run_cast(
+                        ["code", address, "--rpc-url", rpc], config={}, capture=True
+                    )
+                    runtime = str(code_check.text or "").strip().lower()
+                except Exception:
                     continue
-                if _lab_remembered_contract_is_live(
-                    config, address, rpc, artifact_path=str(entry_path)
-                ):
-                    verified_names.append((entry_name, str(entry_path)))
+                if code_check.code != 0 or runtime in {"", "0x", "0x0"}:
+                    continue
 
-            if not context_name and len(names) > 1:
-                distinct_verified = {item[0].casefold() for item in verified_names}
-                if len(distinct_verified) == 1:
-                    name = next(iter(verified_names))[0]
-                    artifact_path = next(item[1] for item in verified_names if item[0].casefold() == name.casefold())
-                    identity_verified = True
-                else:
-                    name = ""
-                    artifact_path = None
-                    identity_verified = False
-            elif not context_name and len(names) == 1 and not identity_verified and verified_names:
-                distinct_verified = {item[0].casefold() for item in verified_names}
-                if len(distinct_verified) == 1:
-                    name = verified_names[0][0]
-                    artifact_path = verified_names[0][1]
-                    identity_verified = True
-
-            # A missing artifact on an explicitly registered address is not
-            # permission to borrow another project's ABI. Check only live code.
-            check_config = config
-            if not artifact_path:
-                check_config = dict(config)
-                check_config["abi_paths"] = {}
-                check_config["project_roots"] = {}
-
-            if not _lab_remembered_contract_is_live(
-                check_config,
-                address,
-                rpc,
-                artifact_path=str(artifact_path) if artifact_path else None,
-            ):
-                continue
-
-            display_name = (
-                name if identity_verified and name
-                else f"Unverified target #{address[-6:]}"
-            )
             choices.append((display_name, address))
 
-    # Preserve order and remove duplicates by address. An actor always wins over
-    # a contract/wallet label for the same address.
+    # Preserve order and de-duplicate by address. An actor/wallet explicitly
+    # selected above takes precedence over a remembered contract label.
     seen = set()
     result = []
     for name, address in choices:
-        key = address.lower()
-        if key not in seen:
-            seen.add(key)
-            result.append((name, address))
+        key = str(address).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((str(name), str(address)))
     return result
-
-
-def _lab_constructor_default(contract, label, ptype):
-    name = str(label or "").strip().lower()
-
-    if ptype == "bool":
-        return "false"
-
-    if ptype == "string":
-        if name in {"name", "poolname"}:
-            return f"{contract} Lab"
-        if name in {"symbol", "poolsymbol"}:
-            return "LKL"
-        if name in {"version", "poolversion"}:
-            return "v1"
-
-    # Keep a useful, generic raw-integer lab suggestion without guessing units.
-    # Narrow integer types receive 1 instead when 1,000,000 would overflow.
-    integer_match = re.fullmatch(r"(u?int)(\d+)?", str(ptype))
-    if integer_match:
-        signed = integer_match.group(1) == "int"
-        bits = int(integer_match.group(2) or "256")
-        maximum = (1 << (bits - 1)) - 1 if signed else (1 << bits) - 1
-        return "1000000" if maximum >= 1000000 else "1"
-
-    return None
-
-
-def _lab_array_parts(param):
-    raw_type = str(param.get("type") or "")
-    match = re.fullmatch(r"(.+?)\[(\d*)\]", raw_type)
-    if not match:
-        return None, None
-    base_type = match.group(1)
-    length = None if match.group(2) == "" else int(match.group(2))
-    return base_type, length
-
-
-def _lab_constructor_meaning(label, ptype, param=None):
-    internal_type = str((param or {}).get("internalType") or "")
-    normalized = str(ptype or "")
-
-    if normalized == "address":
-        if "payable" in internal_type:
-            return "Ethereum address allowed to receive ETH."
-        if internal_type.startswith("contract "):
-            return "Contract address. This field requires deployed bytecode, not an Anvil EOA."
-        return "Ethereum address. Lowkey shows known local actor addresses."
-
-    if normalized == "bool":
-        return "Boolean flag: true or false."
-
-    if normalized == "string":
-        return "Text value."
-
-    if normalized.startswith(("uint", "int")):
-        return (
-            "Integer value. The ABI does not specify its unit; plain numbers are passed "
-            "through, and ETH/gwei/wei notation is a convenience only when the contract "
-            "expects a wei-denominated amount."
-        )
-
-    if normalized == "bytes":
-        return "Dynamic bytes. Enter hex, for example 0x1234."
-
-    if normalized.startswith("bytes"):
-        return "Fixed-size bytes value. Enter hex with the required byte length."
-
-    if normalized.startswith("("):
-        return "Structured tuple. Lowkey expands its named fields below."
-
-    base_type, length = _lab_array_parts(param or {})
-    if base_type is not None:
-        if length is None:
-            return f"Dynamic array of {base_type} values."
-        return f"Fixed array of {base_type} values with exactly {length} item(s)."
-
-    return f"ABI value of type {normalized}."
 
 
 def _lab_short_address(address):
@@ -14049,7 +13924,7 @@ def _lab_short_address(address):
 
 
 def _lab_address_picker_entries(config, accounts, choices, requires_contract=False):
-    """Enrich known address choices using only the current project's target provenance."""
+    """Enrich address choices without promoting code-only hints to contract identities."""
     actor_indexes = {
         str(address).lower(): index
         for index, address in enumerate(accounts or [])
@@ -14066,12 +13941,14 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
         project_root = Path(audit_context.foundry_project_root(root_hint)).expanduser().resolve()
     except (OSError, TypeError, ValueError):
         project_root = Path.cwd().resolve()
+
     registry = config.get("project_target_registry", {})
-    project_records = (
-        registry.get(str(project_root), {})
-        if isinstance(registry, dict) else {}
-    )
+    project_records = registry.get(str(project_root), {}) if isinstance(registry, dict) else {}
     context_target = project_context_target(project_root)
+    try:
+        inventory = _project_target_entries(config, project_root)
+    except Exception:
+        inventory = []
 
     entries = []
     for name, address in choices or []:
@@ -14082,25 +13959,47 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
             category = "actors"
             origin = f"Anvil account #{actor_indexes[key]}"
         else:
-            record = next(
-                (
-                    value for record_name, value in (project_records or {}).items()
-                    if isinstance(value, dict)
-                    and str(value.get("address") or "").lower() == key
+            artifact_candidates = []
+            for record_name, record in (project_records or {}).items():
+                if (
+                    isinstance(record, dict)
+                    and str(record.get("address") or "").lower() == key
                     and str(record_name).casefold() == str(name).casefold()
-                ),
-                None,
-            )
-            artifact_path = record.get("artifact") if isinstance(record, dict) else None
+                ):
+                    artifact_candidates.append(record.get("artifact"))
+
+            for item in inventory or []:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("address") or "").lower() == key
+                    and str(item.get("contract") or item.get("name") or "").casefold()
+                        == str(name).casefold()
+                ):
+                    artifact_candidates.append(item.get("artifact"))
+
             if (
-                not artifact_path
-                and isinstance(context_target, dict)
+                isinstance(context_target, dict)
                 and str(context_target.get("address") or "").lower() == key
                 and str(context_target.get("contract") or "").casefold() == str(name).casefold()
             ):
-                artifact_path = context_target.get("artifact")
+                artifact_candidates.append(context_target.get("artifact"))
 
-            if artifact_path:
+            matching_artifact_path = next(
+                (
+                    item for item in artifact_candidates
+                    if item and _lab_project_artifact_matches_runtime(
+                        config, project_root, address, name, item, config.get("_lab_rpc")
+                    )
+                ),
+                None,
+            )
+            identity_verified = (
+                not str(name).startswith("Unverified target #")
+                and matching_artifact_path is not None
+            )
+            artifact_path = matching_artifact_path
+
+            if identity_verified:
                 try:
                     artifact_root = Path(
                         audit_context.foundry_project_root(
@@ -14112,39 +14011,21 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
                     project_label = str(Path(os.path.expanduser(str(artifact_path))).parent)
                 category = "contracts"
                 origin = project_label
-            else:
-                owner = configured_project_root(address, config)
-                if owner and Path(owner).expanduser().resolve() == project_root:
-                    category = "contracts"
-                    origin = str(project_root)
-                elif isinstance(record, dict) and record.get("explicit") is True:
-                    category = "contracts"
-                    origin = "Explicitly registered for this project"
-                else:
-                    category = "contracts"
-                    origin = "Current project deployment"
-
-            wallet_name = wallet_names.get(key)
-            if not record and not artifact_path and wallet_name:
+            elif str(name).startswith("Unverified target #"):
+                category = "unverified"
+                origin = "Live bytecode; saved label is only a hint"
+            elif key in wallet_names:
                 category = "wallets"
                 origin = "Saved wallet profile"
+            else:
+                category = "unverified"
+                origin = "Live bytecode; contract identity not proven"
 
-            if requires_contract:
-                if category == "wallets":
-                    rpc = config.get("_lab_rpc")
-                    if not rpc:
-                        continue
-                    try:
-                        code_check = run_cast(
-                            ["code", address, "--rpc-url", rpc], config={}, capture=True
-                        )
-                        runtime_code = str(code_check.text or "").strip().lower()
-                        if code_check.code != 0 or runtime_code in {"", "0x", "0x0"}:
-                            continue
-                    except Exception:
-                        continue
-                    category = "contracts"
-                    origin = f"{origin} · deployed bytecode"
+            # A contract-typed ABI input needs a project-owned artifact whose
+            # deployed runtime matches. Code-only addresses and wallet labels
+            # remain available for generic address inputs, not typed contracts.
+            if requires_contract and category != "contracts":
+                continue
 
         entries.append({
             "name": str(name),
@@ -14153,7 +14034,7 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
             "origin": origin,
         })
 
-    order = {"contracts": 0, "wallets": 1, "actors": 2}
+    order = {"contracts": 0, "unverified": 1, "wallets": 2, "actors": 3}
     entries.sort(key=lambda item: (order.get(item["category"], 9), item["name"].casefold()))
     return entries
 
@@ -14161,7 +14042,8 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
 def _lab_print_address_picker(entries, *, title="AVAILABLE ADDRESSES"):
     print(f"  {title}:")
     groups = (
-        ("contracts", "CONTRACTS ON THIS ANVIL"),
+        ("contracts", "VERIFIED CONTRACTS ON THIS ANVIL"),
+        ("unverified", "UNVERIFIED CODE ADDRESSES"),
         ("wallets", "SAVED WALLETS"),
         ("actors", "ANVIL ACCOUNTS"),
     )
@@ -14268,9 +14150,16 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
             config, accounts, choices, requires_contract=requires_contract
         )
         if requires_contract:
-            print("  Requirement: choose a live deployed contract; ordinary Anvil accounts are not valid here.")
+            print(
+                "  Requirement: choose a first-party contract whose artifact matches this Anvil runtime; "
+                "ordinary accounts and unverified code addresses are not valid here."
+            )
         if entries:
-            print("  Available choices are grouped by type. Contract bytecode was checked against this Anvil.")
+            print("  Available choices are grouped by type.")
+            if any(item.get("category") == "unverified" for item in entries):
+                print("  Unverified code addresses are hints only; their contract identity was not proven.")
+            if any(item.get("category") == "contracts" for item in entries):
+                print("  Verified contract entries have project-owned artifacts matching this Anvil runtime.")
 
     if default is not None:
         print(f"  Suggested : {default}")
@@ -14468,6 +14357,7 @@ def _live_deployed_address(rpc, candidates):
 
 
 def _lab_known_address_label(config, accounts, address):
+    """Return a label only when it is a wallet/actor or a verified current-project contract."""
     key = str(address or "").lower()
     if not is_address(key):
         return None
@@ -14478,18 +14368,22 @@ def _lab_known_address_label(config, accounts, address):
         candidate = entry.get("address") if isinstance(entry, dict) else None
         if str(candidate or "").lower() == key:
             return str(name)
-    for source in ("targets", "aliases"):
-        values = config.get(source, {})
-        if isinstance(values, dict):
-            for name, candidate in values.items():
-                if str(candidate or "").lower() == key:
-                    return str(name)
+
+    rpc = config.get("_lab_rpc") or effective_rpc(config)
+    if not rpc:
+        return None
     try:
-        for item in _lab_workspace_remembered_targets(config):
-            if str(item.get("address") or "").lower() == key:
-                return str(item.get("name") or item.get("contract") or "Known contract")
+        choices = _lab_address_choices(config, accounts, rpc)
+        entries = _lab_address_picker_entries(config, accounts, choices)
     except Exception:
-        pass
+        return None
+    for item in entries:
+        if str(item.get("address") or "").lower() != key:
+            continue
+        if item.get("category") == "contracts":
+            return str(item.get("name") or "") or None
+    # Deliberately do not fall back to global targets/aliases or sibling-project
+    # memories: an Anvil reset can reuse an address for an unrelated contract.
     return None
 
 
@@ -15004,7 +14898,277 @@ def validate_ai_primary_contract_suggestion(root, suggested_name):
     return candidate[1]
 
 
-def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_suggested=None):
+def validate_ai_deployment_plan(root, proposed_plan):
+    """Validate AI-proposed deployment steps against local artifacts and ABI shape.
+
+    The model may suggest relationships that static type analysis cannot see
+    (for example, an address constructor parameter later used by delegatecall).
+    Such relationships remain hypotheses; this function never authorizes a
+    transaction or mutates project state.
+    """
+    if not isinstance(proposed_plan, list):
+        return {"steps": [], "warnings": ["AI deployment plan was not a list."]}
+
+    prepared = []
+    by_name = {}
+    warnings = []
+    for index, raw_step in enumerate(proposed_plan[:32]):
+        if not isinstance(raw_step, dict):
+            warnings.append(f"Step {index + 1}: malformed entry ignored.")
+            continue
+        name = str(raw_step.get("contract") or "").strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            warnings.append(f"Step {index + 1}: invalid contract name ignored.")
+            continue
+        key = name.casefold()
+        if key in by_name:
+            warnings.append(f"{name}: duplicate plan entry ignored.")
+            continue
+
+        candidate = discover_artifact_lab_contract(root, name)
+        if (
+            not candidate
+            or not artifact_is_project_application(root, candidate[2], candidate[3])
+        ):
+            warnings.append(
+                f"{name}: rejected; no unique first-party deployable artifact was found."
+            )
+            continue
+
+        try:
+            native_dependencies = {
+                str(item).casefold()
+                for item in discover_contract_dependencies(root, candidate[1])
+            }
+            dependency_error = None
+        except ContractDependencyCycleError as exc:
+            native_dependencies = set()
+            dependency_error = str(exc)
+            warnings.append(f"{name}: native dependency graph is cyclic ({dependency_error}).")
+
+        artifact_inputs = artifact_constructor_inputs(candidate[3])
+        prepared_step = {
+            "name": str(candidate[1]),
+            "role": str(raw_step.get("role") or "unspecified role").strip(),
+            "depends_on": [
+                str(item).strip()
+                for item in raw_step.get("depends_on", [])
+                if isinstance(item, str) and str(item).strip()
+            ],
+            "rationale": str(raw_step.get("rationale") or "").strip(),
+            "evidence": str(raw_step.get("evidence") or "").strip(),
+            "native_dependencies": native_dependencies,
+            "constructor_arguments": [],
+            "artifact": str(candidate[2]),
+            "locked_implementation": artifact_is_locked_implementation(
+                root, candidate[2], candidate[3]
+            ),
+            "dependency_error": dependency_error,
+            "blocked_dependencies": [],
+        }
+
+        seen = set()
+        for dependency in prepared_step["depends_on"]:
+            dep_key = dependency.casefold()
+            if dep_key in seen:
+                continue
+            seen.add(dep_key)
+            if dep_key not in by_name:
+                prepared_step["blocked_dependencies"].append(dependency)
+                continue
+            prepared_step["dependency_status"] = prepared_step.get(
+                "dependency_status", []
+            )
+            prepared_step["dependency_status"].append({
+                "name": dependency,
+                "native_confirmed": dep_key in native_dependencies,
+            })
+
+        for argument in raw_step.get("constructor_arguments", []):
+            if not isinstance(argument, dict):
+                continue
+            parameter = str(argument.get("parameter") or "").strip()
+            dependency = str(argument.get("dependency_contract") or "").strip()
+            abi_parameter = next(
+                (
+                    item for item in artifact_inputs
+                    if str(item.get("name") or "").casefold() == parameter.casefold()
+                ),
+                None,
+            )
+            address_typed = bool(
+                abi_parameter
+                and canonical_type(abi_parameter).replace(" ", "").startswith("address")
+            )
+            prepared_step["constructor_arguments"].append({
+                "parameter": parameter,
+                "dependency_contract": dependency,
+                "abi_address_parameter": address_typed,
+                "relationship_native_confirmed": (
+                    dependency.casefold() in native_dependencies
+                ),
+                "evidence": str(argument.get("evidence") or "").strip(),
+            })
+            if not address_typed:
+                warnings.append(
+                    f"{prepared_step['name']}.{parameter}: rejected as an ABI mapping; "
+                    "no matching address-typed constructor parameter was found."
+                )
+
+        by_name[key] = prepared_step
+        prepared.append(prepared_step)
+
+    # A plan is only dependency-first when every referenced dependency has
+    # already appeared and passed local artifact validation. Preserve model
+    # order; do not silently reorder or invent missing deployment steps.
+    seen = set()
+    for step in prepared:
+        for dependency in step["depends_on"]:
+            if dependency.casefold() not in seen:
+                if dependency.casefold() not in by_name:
+                    warnings.append(
+                        f"{step['name']}: dependency {dependency} is missing or has no validated artifact."
+                    )
+                else:
+                    warnings.append(
+                        f"{step['name']}: dependency {dependency} appears after its consumer; "
+                        "the proposed order is unsafe and was not auto-corrected."
+                    )
+                step["blocked_dependencies"].append(dependency)
+        for mapping in step["constructor_arguments"]:
+            if mapping["dependency_contract"].casefold() not in {
+                item.casefold() for item in step["depends_on"]
+            }:
+                warnings.append(
+                    f"{step['name']}.{mapping['parameter']}: dependency mapping is not listed in depends_on."
+                )
+        seen.add(step["name"].casefold())
+
+    return {"steps": prepared, "warnings": warnings}
+
+
+def render_ai_deployment_plan(report):
+    """Render a non-executable, evidence-labelled plan for the auditor."""
+    steps = report.get("steps", []) if isinstance(report, dict) else []
+    warnings = report.get("warnings", []) if isinstance(report, dict) else []
+    lines = [
+        "",
+        "AI DEPLOYMENT PLAN — UNVERIFIED",
+        "===============================",
+        "Plan only: Lowkey did not deploy or send transactions from AI suggestions.",
+        "Artifact existence and ABI parameter shapes were checked locally; AI-only relationships still need source review.",
+    ]
+    if not steps:
+        lines.append("No deployment steps survived local first-party artifact validation.")
+    for index, step in enumerate(steps, 1):
+        lines.extend([
+            "",
+            f"[{index}] {step['name']} — {step['role']}",
+            f"    Artifact: {step['artifact']}",
+            f"    AI rationale: {step['rationale'] or 'not supplied'}",
+            f"    AI source reference: {step['evidence'] or 'not supplied'}",
+        ])
+        if step["depends_on"]:
+            lines.append("    Dependencies:")
+            native_status = {
+                item["name"].casefold(): item["native_confirmed"]
+                for item in step.get("dependency_status", [])
+            }
+            for dependency in step["depends_on"]:
+                if dependency.casefold() in native_status and native_status[dependency.casefold()]:
+                    evidence_label = "native dependency analysis agrees"
+                else:
+                    evidence_label = "AI-only hypothesis — manually inspect before deployment"
+                lines.append(f"      - {dependency}: {evidence_label}")
+        else:
+            lines.append("    Dependencies: none proposed")
+        for mapping in step["constructor_arguments"]:
+            if mapping["abi_address_parameter"]:
+                mapping_status = (
+                    "native dependency also confirmed"
+                    if mapping["relationship_native_confirmed"]
+                    else "address parameter exists; dependency association is AI-only"
+                )
+            else:
+                mapping_status = "invalid ABI mapping; do not rely on this suggestion"
+            lines.append(
+                f"    Constructor mapping: {mapping['parameter']} -> "
+                f"{mapping['dependency_contract']} ({mapping_status})"
+            )
+        if step["locked_implementation"]:
+            lines.append(
+                "    DEPLOYMENT GUARD: initializer-locked implementation; "
+                "use the project's native proxy/clone setup, not generic deployment."
+            )
+        if step["blocked_dependencies"]:
+            lines.append(
+                "    ORDER BLOCKED: " + ", ".join(dict.fromkeys(step["blocked_dependencies"]))
+            )
+    if warnings:
+        lines.extend(["", "VALIDATION NOTES:"])
+        for warning in warnings[:24]:
+            lines.append("  - " + warning)
+    executable_steps = [
+        step for step in steps
+        if not step["blocked_dependencies"] and not step["locked_implementation"]
+    ]
+    if executable_steps:
+        lines.extend([
+            "",
+            "SUGGESTED MANUAL ORDER (each command still uses Lowkey's constructor review):",
+        ])
+        for step in executable_steps:
+            lines.append(f"  lk lab --generic {step['name']}")
+    lines.extend([
+        "",
+        "Native source analysis remains authoritative for automatic dependency deployment. "
+        "AI-only edges are guidance, not deployment authorization.",
+    ])
+    return "\n".join(lines)
+
+
+def _ai_plan_primary_contract(root, suggested_name, deployment_plan):
+    """Use a validated-artifact-backed AI graph to identify a unique protocol root."""
+    if not isinstance(deployment_plan, list):
+        return str(suggested_name or "").strip() or None
+
+    candidates = {}
+    dependency_names = set()
+    for step in deployment_plan[:32]:
+        if not isinstance(step, dict):
+            continue
+        name = str(step.get("contract") or "").strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            continue
+        candidate = discover_artifact_lab_contract(root, name)
+        if (
+            not candidate
+            or not artifact_is_project_application(root, candidate[2], candidate[3])
+        ):
+            continue
+        candidates[name.casefold()] = str(candidate[1])
+        for dependency in step.get("depends_on", []):
+            if isinstance(dependency, str) and dependency.strip():
+                dependency_names.add(dependency.strip().casefold())
+
+    if not candidates or not dependency_names:
+        return str(suggested_name or "").strip() or None
+
+    roots = [
+        name for key, name in candidates.items()
+        if key not in dependency_names
+    ]
+    suggestion = str(suggested_name or "").strip()
+    if suggestion and suggestion.casefold() not in dependency_names:
+        return suggestion
+    if len(roots) == 1:
+        return roots[0]
+    # A child implementation is not a safe fallback when the plan names
+    # multiple possible hosts; let native discovery or the user disambiguate.
+    return None
+
+
+def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_suggested=None, ai_deployment_plan=None):
     """Prefer explicit intent and a verified manual pin before model/native discovery."""
     explicit = str(requested or "").strip()
     if explicit:
@@ -15015,22 +15179,32 @@ def _preferred_lab_contract(root, requested=None, remembered_name=None, ai_sugge
         return remembered
 
     detected = discover_audit_target_contract(root)
-    ai_name = str(ai_suggested or "").strip()
+    ai_name = _ai_plan_primary_contract(root, ai_suggested, ai_deployment_plan) or ""
     if ai_name:
         candidate = discover_artifact_lab_contract(root, ai_name)
         if candidate and artifact_is_project_application(root, candidate[2], candidate[3]):
-            # The model must not promote an implementation/helper into the
-            # primary slot when native source analysis places it underneath a
-            # different application entry.
+            # If native source analysis proves the model-selected contract is
+            # a child of the current native candidate, keep the host. If native
+            # analysis instead proves that the current candidate is a child of
+            # the AI-selected candidate, prefer the latter. When address-based
+            # relationships are not statically visible, use the artifact-checked
+            # model proposal to break a native ranking tie/ambiguity.
             if detected and detected.casefold() != candidate[1].casefold():
                 try:
-                    native_dependencies = discover_contract_dependencies(root, detected)
+                    detected_dependencies = {
+                        str(name).casefold()
+                        for name in discover_contract_dependencies(root, detected)
+                    }
+                    candidate_dependencies = {
+                        str(name).casefold()
+                        for name in discover_contract_dependencies(root, candidate[1])
+                    }
                 except ContractDependencyCycleError:
                     return detected
-                if candidate[1].casefold() in {
-                    str(name).casefold() for name in native_dependencies
-                }:
+                if candidate[1].casefold() in detected_dependencies:
                     return detected
+                if detected.casefold() in candidate_dependencies:
+                    return candidate[1]
             return candidate[1]
 
     return detected
@@ -15063,7 +15237,8 @@ def run_lab(config,args, *, deployment_only=False):
         print("      Review this project's first-party source before lab setup. AI may suggest a")
         print("      primary contract and dependency roles; Lowkey validates every suggestion against")
         print("      local deployable artifacts. Explicit review failure stops before deployment.")
-        print("      The model does not choose the final target by itself; native artifact and dependency checks validate suggestions.")
+        print("      Lowkey validates suggested targets against first-party artifacts and prints a dependency-first plan.")
+        print("      AI-only address/delegatecall relationships remain hypotheses; they are never auto-deployed.")
         print("      The model never signs, sends transactions, or establishes a security verdict.")
         print("      Selected source excerpts may be sent to the configured provider.")
         print("      Examples: lk lab --ai | lk lab --generic Vault --ai-review")
@@ -15162,6 +15337,7 @@ def run_lab(config,args, *, deployment_only=False):
     _ai_status = None
     _ai_primary_contract_proposal = None
     _ai_suggested_primary_contract = None
+    _ai_deployment_plan = []
 
     if not _ai_is_stop and (_ai_review_mode is not None or not ai_review_requested):
         try:
@@ -15175,8 +15351,20 @@ def run_lab(config,args, *, deployment_only=False):
                 if _reason:
                     _ai_review_mode = "auto"
                     _ai_review_reason = _reason
-        except Exception:
-            # Status/heuristic failures never affect the deterministic lab path.
+        except Exception as exc:
+            # Optional auto-assist must never block native lab setup, but its
+            # failure must be diagnosable instead of disappearing silently.
+            try:
+                import error_context as _ai_error_context
+                safe_reason = _ai_error_context.redact(str(exc), limit=700)
+            except Exception:
+                safe_reason = " ".join(str(exc).split())[:700]
+            if _ai_review_mode != "manual":
+                print(
+                    "INFO  Automatic AI review check unavailable "
+                    f"({type(exc).__name__}): {safe_reason or 'no safe detail available'}. "
+                    "Native-only lab setup continues; run 'lk ai status' for provider diagnostics."
+                )
             _ai_harness = None
             _ai_status = None
 
@@ -15201,6 +15389,7 @@ def run_lab(config,args, *, deployment_only=False):
                     "Run 'lk ai status' to inspect the budget or retry after it resets."
                 )
             review = _ai_harness.review_project_protocol(root, requested_contract)
+            _ai_deployment_plan = review.get("deployment_plan", []) or []
             meta = review.get("_lowkey_meta", {})
             print()
             print("@ AI OUTPUT — PROTOCOL REVIEW (UNVERIFIED)")
@@ -15237,7 +15426,12 @@ def run_lab(config,args, *, deployment_only=False):
                 print(f"\n{label}:")
                 for item in values[:8]:
                     print("  - " + json.dumps(item, ensure_ascii=True, sort_keys=True)[:1200])
-            print("\nLowkey will validate the AI's target suggestion and independently derive dependency order from source.")
+            print(
+                "\nLowkey will validate target suggestions against first-party artifacts. "
+                "AI deployment relationships remain hypotheses until ABI and native-source checks agree."
+            )
+            if _ai_deployment_plan:
+                print(f"AI deployment relationships proposed: {len(_ai_deployment_plan)} contract step(s).")
         except Exception as exc:
             try:
                 import error_context as _ai_error_context
@@ -15346,6 +15540,9 @@ def run_lab(config,args, *, deployment_only=False):
                 + json.dumps(_ai_primary_contract_proposal, ensure_ascii=True)
             )
 
+    if _ai_deployment_plan:
+        print(render_ai_deployment_plan(validate_ai_deployment_plan(root, _ai_deployment_plan)))
+
     mode = "auto"
     requested = None
     if args:
@@ -15397,8 +15594,20 @@ def run_lab(config,args, *, deployment_only=False):
         requested,
         remembered_contract_name,
         _ai_suggested_primary_contract,
+        _ai_deployment_plan,
     )
-    if not requested and _ai_suggested_primary_contract and auto_selected == _ai_suggested_primary_contract:
+    if (
+        not requested
+        and _ai_suggested_primary_contract
+        and auto_selected
+        and auto_selected != _ai_suggested_primary_contract
+    ):
+        print(
+            "Target selection: AI dependency graph identifies "
+            f"{auto_selected} as the protocol root; "
+            f"{_ai_suggested_primary_contract} is listed as one of its dependencies."
+        )
+    elif not requested and _ai_suggested_primary_contract and auto_selected == _ai_suggested_primary_contract:
         print(f"Target selection: using AI suggestion after artifact validation: {auto_selected}.")
     elif not requested and remembered_contract_name and auto_selected == remembered_contract_name:
         print(f"Target selection: preserving manually pinned contract {remembered_contract_name}.")
@@ -15514,6 +15723,7 @@ def run_lab(config,args, *, deployment_only=False):
             None,
             remembered_contract_name,
             _ai_suggested_primary_contract,
+            _ai_deployment_plan,
         )
 
     if not requested:
