@@ -1040,5 +1040,54 @@ contract Delegation {
 
 
 
+    def test_project_registry_missing_artifact_never_falls_back_to_reused_global_abi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = pathlib.Path(tmp)
+            current_root = workspace / "Current"
+            sibling_root = workspace / "Sibling"
+            current_root.mkdir()
+            sibling_root.mkdir()
+            address = "0x" + "a" * 40
+
+            # The sibling contains a different build of the same contract name.
+            # Anvil may reuse the address, but the current project's missing
+            # registry artifact must not inherit this unrelated ABI.
+            source = sibling_root / "src" / "Vault.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Vault { uint256 public siblingValue; }",
+                encoding="utf-8",
+            )
+            sibling_artifact = sibling_root / "out" / "Vault.sol" / "Vault.json"
+            sibling_artifact.parent.mkdir(parents=True)
+            sibling_artifact.write_text(json.dumps({
+                "contractName": "Vault",
+                "sourceName": "src/Vault.sol",
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+
+            missing_current_artifact = current_root / "out" / "Vault.sol" / "Vault.json"
+            config = {
+                "aliases": {"Vault": address},
+                "targets": {"Vault": address},
+                "project_roots": {address: str(sibling_root)},
+                "target_owners": {address: str(current_root)},
+                "abi_paths": {address: str(sibling_artifact)},
+                "project_target_registry": {
+                    str(current_root): {
+                        "Vault": {
+                            "address": address,
+                            "artifact": str(missing_current_artifact),
+                        }
+                    }
+                },
+            }
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=current_root):
+                self.assertEqual(lk.target_aliases(config, current_root), {})
+
+
 if __name__ == "__main__":
     unittest.main()
