@@ -1013,10 +1013,62 @@ class AIHarnessTests(unittest.TestCase):
         with self.assertRaises(ai.AIHarnessError):
             ai.request_structured(purpose="chat", task="hello", context={})
 
-    def test_context_size_is_bounded(self):
+    def test_context_size_is_bounded_before_provider_send(self):
         ai.configure(provider="deepseek", model="deepseek-flash", api_key="secret")
-        with self.assertRaises(ai.AIHarnessError):
-            ai.request_structured(purpose="protocol_analysis", task="inspect", context={"source": "X" * (ai.MAX_CONTEXT_BYTES + 10)})
+        captured = {}
+
+        def capture_send(config, **kwargs):
+            captured.update(kwargs)
+            return {"facts": [], "hypotheses": []}
+
+        oversized = {"source": "X" * (ai.MAX_CONTEXT_BYTES + 10)}
+        with patch.object(ai, "_send", side_effect=capture_send):
+            result = ai.request_structured(
+                purpose="protocol_analysis", task="inspect", context=oversized,
+                required_fields=("facts", "hypotheses"),
+            )
+
+        self.assertEqual(result["facts"], [])
+        sent_context = captured["context"]
+        self.assertLessEqual(ai._context_size_bytes(sent_context), ai.MAX_CONTEXT_BYTES)
+        self.assertLess(len(sent_context["source"]), len(oversized["source"]))
+        self.assertTrue(sent_context["_lowkey_context_compaction"]["compacted"])
+        self.assertEqual(
+            sent_context["_lowkey_context_compaction"]["original_context_bytes"],
+            len(json.dumps(oversized, ensure_ascii=False).encode("utf-8")),
+        )
+
+    def test_protocol_review_context_drops_duplicate_history_before_source(self):
+        source = [
+            {"path": f"src/Contract{i}.sol", "source_excerpt": "contract Contract {} " * 120}
+            for i in range(12)
+        ]
+        context = {
+            "project_label": "large-protocol",
+            "requested_contract": "Contract0",
+            "source_files": source,
+            "source_files_included": len(source),
+            "shared_project_context": {
+                "project_label": "large-protocol",
+                "events": [{
+                    "command": "lk build",
+                    "diagnostic_excerpt": "warning " * 600,
+                    "signals": ["signal " * 100] * 8,
+                }] * 8,
+                "project_knowledge": {"system_model": "system " * 3000},
+            },
+            "shared_command_history": {"events": [{"diagnostic_excerpt": "duplicate " * 2000}] * 8},
+            "shared_command_history_policy": "duplicate event history",
+            "approved_experience": [{"lesson": "lesson " * 500}] * 8,
+            "historical_investigations": [{"finding": "finding " * 500}] * 8,
+        }
+        compacted = ai._compact_request_context(context)
+        rendered = json.dumps(compacted, ensure_ascii=False)
+        self.assertLessEqual(ai._context_size_bytes(compacted), ai.MAX_CONTEXT_BYTES)
+        self.assertIn("src/Contract0.sol", rendered)
+        self.assertNotIn("shared_command_history", compacted)
+        self.assertIn("_lowkey_context_compaction", compacted)
+        self.assertEqual(len(context["source_files"]), 12)  # input object is not mutated
 
     def test_json_output_and_metadata_only_event_log(self):
         ai.configure(provider="deepseek", model="deepseek-flash", api_key="test-secret")
