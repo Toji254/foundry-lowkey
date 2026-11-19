@@ -191,7 +191,7 @@ def render(root: Path) -> str:
               "  Observations only; none of these is a security verdict."]
     if phase:
         lines += ["", f"NEXT • {phase[0]} — {phase[1]}", phase[2], "", "EXIT CHECK", f"  {phase[3]}",
-                  "", "USEFUL COMMANDS", f"  {phase[4]}",
+                  "", "USEFUL COMMANDS", "  " + phase[4].replace(" | ", "\n  "),
                   "", 'Record your decision: lk workflow done --note "evidence + conclusion"']
     else:
         lines += ["", "WORKFLOW COMPLETE", "All five human checkpoints are recorded. Preserve the exact reviewed revision and report."]

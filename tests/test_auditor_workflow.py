@@ -78,6 +78,15 @@ class AuditorWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(state["last_build"])
         self.assertFalse(state["completed"])
 
+    def test_suggested_commands_are_separate_not_shell_pipelines(self):
+        workflow_engine.start(self.root)
+        # Mark PREPARE using a current build so the MAP actions are displayed.
+        workflow_engine.on_build_success(self.root)
+        workflow_engine.done(self.root, None, "Scope, docs, dependencies and current build reviewed.")
+        output = workflow_engine.render(self.root)
+        self.assertIn("lk system\n  lk functions\n  lk deps\n  lk q", output)
+        self.assertNotIn("lk system | lk functions", output)
+
     def test_phases_must_be_completed_in_order_and_have_notes(self):
         workflow_engine.start(self.root)
         self.assertEqual(workflow_engine.done(self.root, "MAP", "Mapped it."), 2)
