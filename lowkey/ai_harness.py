@@ -421,6 +421,176 @@ def _reserve_jev_request(config: Mapping[str, Any], purpose: str) -> None:
     })
 
 
+def _context_size_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AIHarnessError(
+            "AI context contains a value that cannot be encoded as safe JSON; no provider request was sent."
+        ) from exc
+
+
+def _shrink_context_value(value: Any, *, text_limit: int, list_limit: int, dict_limit: int, depth: int = 0) -> Any:
+    """Bound optional JSON context while retaining leading, higher-priority entries."""
+    if depth > 10:
+        return "[context omitted: nesting limit]"
+    if isinstance(value, str):
+        return value if len(value) <= text_limit else value[:text_limit] + "…[trimmed to fit the Lowkey context budget]"
+    if isinstance(value, Mapping):
+        result = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= dict_limit:
+                result["_lowkey_context_note"] = "[remaining fields omitted to fit the Lowkey context budget]"
+                break
+            result[str(key)[:160]] = _shrink_context_value(
+                item, text_limit=text_limit, list_limit=list_limit, dict_limit=dict_limit, depth=depth + 1
+            )
+        return result
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        result = [
+            _shrink_context_value(item, text_limit=text_limit, list_limit=list_limit,
+                                  dict_limit=dict_limit, depth=depth + 1)
+            for item in items[:list_limit]
+        ]
+        if len(items) > list_limit:
+            result.append("[remaining items omitted to fit the Lowkey context budget]")
+        return result
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:text_limit]
+
+
+def _clip_source_context_files(files: Any, *, file_limit: int, per_file_chars: int,
+                               byte_budget: int) -> tuple[list[dict[str, str]], int, int, int]:
+    """Keep source paths and the highest-ranked excerpts within a byte allowance."""
+    if not isinstance(files, list):
+        return [], 0, 0, 0
+    kept: list[dict[str, str]] = []
+    used = truncated = 0
+    for item in files:
+        if len(kept) >= file_limit or used >= byte_budget:
+            break
+        if not isinstance(item, Mapping):
+            continue
+        path = str(item.get("path") or "")[:500]
+        source = str(item.get("source_excerpt") or "")
+        if not path or not source.strip():
+            continue
+        remaining = byte_budget - used
+        allowance = max(0, remaining - len(path.encode("utf-8")) - 64)
+        excerpt = source[:min(per_file_chars, allowance)]
+        entry = {"path": path, "source_excerpt": excerpt}
+        entry_size = _context_size_bytes(entry)
+        while entry_size > remaining and excerpt:
+            excerpt = excerpt[:max(0, len(excerpt) - max(64, entry_size - remaining))]
+            entry["source_excerpt"] = excerpt
+            entry_size = _context_size_bytes(entry)
+        if not excerpt.strip():
+            continue
+        if len(excerpt) < len(source):
+            truncated += 1
+        kept.append(entry)
+        used += entry_size
+    return kept, used, len(kept), truncated
+
+
+def _compact_request_context(context: Mapping[str, Any], byte_limit: int = MAX_CONTEXT_BYTES) -> dict[str, Any]:
+    """Fit complete context before provider calls, preserving ranked source first."""
+    if not isinstance(context, Mapping):
+        raise AIHarnessError("AI context must be a JSON object.")
+    try:
+        original = json.loads(json.dumps(context, ensure_ascii=False))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AIHarnessError(
+            "AI context contains a value that cannot be encoded as safe JSON; no provider request was sent."
+        ) from exc
+    original_size = _context_size_bytes(original)
+    if original_size <= byte_limit:
+        return original
+
+    base = dict(original)
+    omitted_fields: list[str] = []
+    # This compatibility alias repeats observations already in canonical shared_project_context.
+    if isinstance(base.get("shared_project_context"), Mapping):
+        for key in ("shared_command_history", "shared_command_history_policy"):
+            if key in base:
+                base.pop(key, None)
+                omitted_fields.append(key)
+
+    shared = base.get("shared_project_context")
+    if isinstance(shared, dict):
+        events = shared.get("events")
+        if isinstance(events, list) and len(events) > 4:
+            shared["events"] = events[-4:]
+        for event in shared.get("events", []) if isinstance(shared.get("events"), list) else []:
+            if not isinstance(event, dict):
+                continue
+            if isinstance(event.get("diagnostic_excerpt"), str):
+                event["diagnostic_excerpt"] = event["diagnostic_excerpt"][:700]
+            if isinstance(event.get("signals"), list):
+                event["signals"] = [str(x)[:220] for x in event["signals"][:4] if isinstance(x, str)]
+        knowledge = shared.get("project_knowledge")
+        if isinstance(knowledge, Mapping):
+            shared["project_knowledge"] = _shrink_context_value(
+                knowledge, text_limit=1200, list_limit=8, dict_limit=40
+            )
+
+    for key, keep in (("approved_experience", 4), ("historical_investigations", 3)):
+        value = base.get(key)
+        if isinstance(value, list) and len(value) > keep:
+            base[key] = value[:keep]
+
+    source_original = base.get("source_files")
+    source_count = len(source_original) if isinstance(source_original, list) else 0
+    stages = (
+        (18, 6000, 32000, 1300, 10, 48),
+        (18, 4800, 28000, 1050, 9, 44),
+        (16, 3600, 24000, 900, 8, 40),
+        (14, 2800, 20000, 750, 7, 36),
+        (12, 2200, 16000, 650, 6, 32),
+        (10, 1700, 12000, 550, 5, 28),
+        (8, 1200, 9000, 450, 4, 24),
+        (6, 800, 6000, 350, 3, 20),
+    )
+    for file_limit, per_file, source_budget, text_limit, list_limit, dict_limit in stages:
+        candidate: dict[str, Any] = {}
+        source_bytes = kept_count = truncated_count = 0
+        for key, value in base.items():
+            if key == "source_files":
+                clipped, source_bytes, kept_count, truncated_count = _clip_source_context_files(
+                    source_original, file_limit=file_limit, per_file_chars=per_file, byte_budget=source_budget
+                )
+                candidate[key] = clipped
+            else:
+                candidate[key] = _shrink_context_value(
+                    value, text_limit=text_limit, list_limit=list_limit, dict_limit=dict_limit
+                )
+        candidate["_lowkey_context_compaction"] = {
+            "compacted": True,
+            "original_context_bytes": original_size,
+            "context_limit_bytes": byte_limit,
+            "source_files_original": source_count,
+            "source_files_included": kept_count,
+            "source_files_omitted": max(0, source_count - kept_count),
+            "source_files_with_trimmed_excerpts": truncated_count,
+            "source_excerpt_json_bytes": source_bytes,
+            "omitted_duplicate_fields": omitted_fields,
+            "note": (
+                "Context was reduced before sending. Source files retain their original priority order; "
+                "some lower-priority history, memory or source excerpts may be omitted. Treat this review "
+                "as bounded context, not as proof that omitted code was reviewed."
+            ),
+        }
+        if _context_size_bytes(candidate) <= byte_limit:
+            return candidate
+
+    raise AIHarnessError(
+        f"AI context remains larger than {byte_limit} bytes after safe compaction. "
+        "Reduce the selected source scope or remove oversized audit-memory records; no provider request was sent."
+    )
+
+
 def _compact_free_tier_context(context: Mapping[str, Any], byte_limit: int) -> dict[str, Any]:
     """Reduce optional context before a free-tier request; never edit project files."""
     attempts = (
@@ -1055,7 +1225,7 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
         cfg["max_output_tokens"] = min(int(cfg.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)), 128)
     if not isinstance(task, str) or not task.strip() or len(task) > 6000:
         raise AIHarnessError("Task must contain 1–6000 characters.")
-    request_context: Mapping[str, Any] = context
+    request_context: Mapping[str, Any] = _compact_request_context(context, MAX_CONTEXT_BYTES)
     cache_key = None
     free_tier = bool(cfg.get("jev_free_tier_mode"))
     cache_enabled = free_tier or purpose == "setup_reasoning"
@@ -1320,7 +1490,7 @@ def _protocol_review_context(root: str | Path, contract_name: str | None = None)
         context["historical_investigations_policy"] = (
             "No historical investigation context was available; do not infer that past findings or checks exist."
         )
-    return context
+    return _compact_request_context(context, MAX_CONTEXT_BYTES)
 
 
 def _validate_protocol_review_output(result: Mapping[str, Any]) -> None:
@@ -1499,6 +1669,7 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
         "origin": "configured-model",
         "source_files_included": context["source_files_included"],
         "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
+        "context_compaction": context.get("_lowkey_context_compaction"),
         "verified": False,
     }
     return result
