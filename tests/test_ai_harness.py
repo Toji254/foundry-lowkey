@@ -117,7 +117,8 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("lk lab Vault --ai-review", rendered)
         self.assertIn("lk ai mode manual", rendered)
         self.assertIn("lk ai mode auto", rendered)
-        self.assertIn("It does not choose", rendered)
+        self.assertIn("Lowkey validates targets against first-party artifacts", rendered)
+        self.assertIn("stops before deployment", rendered)
 
     def test_auto_is_not_a_top_level_command_and_help_alias_does_not_hide_the_error(self):
         for args in (["auto", "--h"], ["auto", "--help"]):
