@@ -24,6 +24,51 @@ class AuditorWorkflowTests(unittest.TestCase):
         ]
         for p in patches: p.start(); self.addCleanup(p.stop)
 
+    def test_workflow_help_overview_is_plain_english_and_lists_all_actions_and_flags(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(workflow_engine.main(["--h"]), 0)
+        rendered = output.getvalue()
+        for expected in (
+            "LOWKEY HELP  •  lk workflow",
+            "COMMAND VARIATIONS",
+            "lk workflow start",
+            "lk workflow status",
+            "lk workflow next",
+            "lk workflow note <text...> [--phase PHASE]",
+            "lk workflow done [PHASE] --note",
+            "lk workflow reset --yes",
+            "--root ROOT",
+            "--phase PHASE",
+            "--note TEXT",
+            "--yes",
+            "THE FIVE AUDIT PHASES",
+            "THIS IS NOT THE PROTOCOL WALKTHROUGH",
+        ):
+            self.assertIn(expected, rendered)
+
+    def test_workflow_help_spellings_and_subcommand_pages(self):
+        for flag in ("--h", "--help", "-h", "help"):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(workflow_engine.main([flag]), 0)
+            self.assertIn("LOWKEY HELP  •  lk workflow", output.getvalue())
+
+        pages = {
+            "start": ("SCOPE BASELINE", "lk workflow start"),
+            "status": ("AUTOMATIC EVIDENCE", "lk workflow status"),
+            "next": ("AUTOMATIC EVIDENCE", "lk workflow status"),
+            "note": ("NOTE VS DONE", "--phase PHASE"),
+            "done": ("PREPARE is blocked", "--note TEXT"),
+            "reset": ("WHAT IS PRESERVED", "--yes"),
+        }
+        for action, expected in pages.items():
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(workflow_engine.main([action, "--h"]), 0)
+            for text_value in expected:
+                self.assertIn(text_value, output.getvalue())
+
     def test_start_pins_scope_and_opens_prepare(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output): self.assertEqual(workflow_engine.main(["start"]), 0)
