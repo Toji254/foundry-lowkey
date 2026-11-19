@@ -971,5 +971,61 @@ contract Delegation {
 
 
 
+    def test_project_target_list_uses_project_registry_artifact_after_address_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = pathlib.Path(tmp)
+            current_root = workspace / "Current"
+            sibling_root = workspace / "Sibling"
+            current_root.mkdir()
+            sibling_root.mkdir()
+            address = "0x" + "1" * 40
+
+            def write_vault(root, marker):
+                source = root / "src" / "Vault.sol"
+                source.parent.mkdir(parents=True)
+                source.write_text(
+                    f"pragma solidity ^0.8.20; contract Vault {{ uint256 public {marker}; }}",
+                    encoding="utf-8",
+                )
+                artifact = root / "out" / "Vault.sol" / "Vault.json"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_text(json.dumps({
+                    "contractName": "Vault",
+                    "sourceName": "src/Vault.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0x6000"},
+                }), encoding="utf-8")
+                return artifact
+
+            current_artifact = write_vault(current_root, "currentValue")
+            stale_sibling_artifact = write_vault(sibling_root, "oldValue")
+            config = {
+                "aliases": {"Vault": address},
+                "targets": {"Vault": address},
+                "abi_paths": {address: str(stale_sibling_artifact)},
+                "project_target_registry": {
+                    str(current_root): {
+                        "Vault": {
+                            "address": address,
+                            "artifact": str(current_artifact),
+                            "explicit": True,
+                        }
+                    }
+                },
+            }
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=current_root):
+                with patch.object(lk, "project_context_target", return_value=None):
+                    with patch.object(lk, "target_aliases", return_value={"Vault": address}):
+                        with patch.object(lk, "discover_deployments", return_value=[]):
+                            entries = lk._project_target_entries(config, current_root)
+
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(pathlib.Path(entries[0]["artifact"]).resolve(), current_artifact.resolve())
+            self.assertEqual(entries[0]["source_file"], "src/Vault.sol")
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9040,10 +9040,22 @@ def _project_target_entries(config, root=None):
             "source": context_target.get("source") or "project-context",
         }))
 
+    target_registry = config.get("project_target_registry", {})
+    project_registry = (
+        target_registry.get(str(project_root), {})
+        if isinstance(target_registry, dict) else {}
+    )
     for name, address in target_aliases(config, project_root).items():
         if any(str(item.get("address")).lower() == str(address).lower() for item in entries):
             continue
-        artifact = config.get("abi_paths", {}).get(address)
+        project_record = project_registry.get(name) if isinstance(project_registry, dict) else None
+        if (
+            isinstance(project_record, dict)
+            and str(project_record.get("address") or "").lower() == str(address).lower()
+        ):
+            artifact = project_record.get("artifact")
+        else:
+            artifact = config.get("abi_paths", {}).get(address)
         entries.append(enrich({
             "name": name,
             "address": address,
