@@ -1165,8 +1165,10 @@ def target_aliases(config, root=None):
             candidate = Path(os.path.expanduser(str(preferred)))
             if not candidate.is_absolute():
                 candidate = project_root / candidate
-            if candidate.is_file():
-                return candidate.resolve()
+            # A project-scoped registry artifact is authoritative. If it has
+            # disappeared, do not fall back to the global address-keyed ABI
+            # map: Anvil may have reused this address for another project.
+            return candidate.resolve() if candidate.is_file() else None
         paths = config.get("abi_paths", {})
         if isinstance(paths, dict):
             for registered_address, value in paths.items():
