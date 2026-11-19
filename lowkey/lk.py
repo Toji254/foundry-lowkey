@@ -14165,6 +14165,50 @@ def _lab_constructor_default(contract, label, ptype):
     return None
 
 
+def _lab_constructor_meaning(label, ptype, param=None):
+    """Explain common ABI constructor types without guessing application semantics."""
+    abi_param = param if isinstance(param, dict) else {}
+    internal_type = str(abi_param.get("internalType") or "")
+    normalized = str(ptype or "")
+
+    if normalized == "address":
+        if "payable" in internal_type:
+            return "Ethereum address allowed to receive ETH."
+        if internal_type.startswith("contract "):
+            return "Contract address. This field requires deployed bytecode, not an Anvil EOA."
+        return "Ethereum address. Lowkey shows known local actor addresses."
+
+    if normalized == "bool":
+        return "Boolean flag: true or false."
+
+    if normalized == "string":
+        return "Text value."
+
+    if normalized.startswith(("uint", "int")):
+        return (
+            "Integer value. The ABI does not specify its unit; plain numbers are passed "
+            "through, and ETH/gwei/wei notation is a convenience only when the contract "
+            "expects a wei-denominated amount."
+        )
+
+    if normalized == "bytes":
+        return "Dynamic bytes. Enter hex, for example 0x1234."
+
+    if normalized.startswith("bytes"):
+        return "Fixed-size bytes value. Enter hex with the required byte length."
+
+    if normalized.startswith("("):
+        return "Structured tuple. Lowkey expands its named fields below."
+
+    base_type, length = _lab_array_parts(abi_param)
+    if base_type is not None:
+        if length is None:
+            return f"Dynamic array of {base_type} values."
+        return f"Fixed array of {base_type} values with exactly {length} item(s)."
+
+    return f"ABI value of type {normalized}."
+
+
 def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False, default=None, param=None):
     print(f"  Field     : {label}")
     print(f"  Type      : {ptype}")
