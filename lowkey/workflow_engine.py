@@ -304,10 +304,417 @@ def _parser():
     reset_parser.add_argument("--yes", action="store_true", required=True, help="confirm reset")
     return parser
 
+def _print_help(topic: str | None = None) -> None:
+    """Render friendly, task-oriented help for the audit checkpoint workflow."""
+    topic = str(topic or "").strip().lower()
+    if topic in {"next"}:
+        topic = "status"
+
+    pages = {
+        "": r"""
+LOWKEY HELP  •  lk workflow
+==============================================================================
+What it does:
+  Keeps a project-scoped, five-phase audit checklist. It pins the source
+  revision/worktree at the start, shows useful evidence Lowkey has observed,
+  and records your human decisions as you move through the audit.
+
+When to use it:
+  Use it when you want a repeatable audit structure and a visible next action.
+  It does not perform the audit for you or turn passing tools into a security
+  verdict.
+
+Usage:
+  lk workflow [--root ROOT] [start|status|next|note|done|reset] [options]
+
+Quick examples:
+  lk workflow
+  lk workflow start
+  lk workflow status
+  lk workflow note "Mapped the vault, roles and withdrawal path" --phase MAP
+  lk workflow done --note "Reviewed scope, exclusions and current build"
+  lk workflow reset --yes
+
+COMMAND VARIATIONS
+------------------
+  lk workflow
+      Show the current workflow dashboard. Same as status.
+      Example: lk workflow
+
+  lk workflow start
+      Start a new audit run and pin the current Git revision plus source
+      worktree state as the scope baseline. It does not run a build or audit.
+      Example: lk workflow start
+
+  lk workflow status
+      Show completed phases, current phase, baseline changes, and detected
+      build/test/coverage/Slither evidence since the workflow started.
+      Example: lk workflow status
+
+  lk workflow next
+      Alias for status. Shows the current phase and recommended next actions.
+      Example: lk workflow next
+
+  lk workflow note <text...> [--phase PHASE]
+      Save a note without completing a phase. By default it is attached to the
+      current phase; --phase can attach it to PREPARE, MAP, HUNT, PROVE or VERIFY.
+      Example: lk workflow note "Found an external callback before accounting" --phase HUNT
+
+  lk workflow done [PHASE] --note <evidence-and-conclusion>
+      Complete only the current phase, in order. PHASE is optional; when given,
+      it must match the current phase. A human evidence note is mandatory.
+      PREPARE also requires a real successful lk build for the exact current
+      source snapshot in a Foundry project. --plan does not count.
+      Example: lk workflow done PREPARE --note "Scope frozen; docs reviewed; current build passed"
+
+  lk workflow reset --yes
+      Clear workflow checkpoints and notes, then allow a fresh start. Existing
+      audit evidence and question history are retained. The last-build record
+      is retained too; reset does not delete project evidence.
+      Example: lk workflow reset --yes
+
+THE FIVE AUDIT PHASES
+---------------------
+  1. PREPARE — Freeze scope and baseline
+     Pin the reviewed revision, read scope/docs, note compiler/dependency
+     assumptions, and understand the starting build/test state.
+     Exit check: scope and exclusions are understood; a real build matches
+     the reviewed source snapshot.
+     Useful commands: lk project, lk build, lk test
+
+  2. MAP — Map assets and trust boundaries
+     Identify assets/liabilities, actors/roles, entry points, dependencies,
+     external calls, state transitions and invariants.
+     Exit check: the critical system map and security properties are written.
+     Useful commands: lk system, lk functions, lk deps, lk q
+
+  3. HUNT — Generate ranked attack hypotheses
+     Compare intended behavior with reachable paths. Prioritize authorization,
+     accounting, callbacks, signatures/nonces, oracles, upgrades, ordering and DoS.
+     Exit check: high-value hypotheses have exact source locations, assumptions
+     and plausible impact.
+     Useful commands: lk q, lk findings, lk risk
+
+  4. PROVE — Prove or kill each hypothesis
+     Build a minimal reproducible PoC. Compare attack and control from equivalent
+     pre-state; inspect traces and state changes.
+     Exit check: each reportable hypothesis has a runnable PoC, meaningful
+     control, violated property and measured impact.
+     Useful commands: lk test, lk trace, lk changes
+
+  5. VERIFY — Validate impact and remediation
+     Justify severity, check alternate paths, inspect fixes in context, run
+     regressions and preserve the exact reviewed revision.
+     Exit check: findings/limitations are reproducible; fixes close the path
+     and regression tests pass.
+     Useful commands: lk test, lk report
+
+OPTIONS / FLAGS
+---------------
+  --root ROOT
+      Select an explicit project/package root. Put this before the action.
+      Example: lk workflow --root packages/vault status
+
+  --phase PHASE
+      For 'note', attach the note to PREPARE, MAP, HUNT, PROVE or VERIFY instead
+      of the current phase.
+      Example: lk workflow note "Reviewed owner checks" --phase MAP
+
+  --note TEXT
+      Required by 'done'. This is your evidence and conclusion for the phase.
+      It is a human attestation; Lowkey stores it but does not prove that the
+      statement is true.
+      Example: lk workflow done --note "PoC and negative control reproduced"
+
+  --yes
+      Required confirmation for 'reset'. It prevents an accidental checkpoint
+      reset from a bare command.
+      Example: lk workflow reset --yes
+
+  --h, --help, -h, help
+      Show this guide. Add one after a subcommand to see its focused page.
+      Example: lk workflow done --h
+
+HOW THE TRACKER WORKS
+---------------------
+  • State is project-scoped at .audit/workflow/state.json.
+  • 'start' records the Git commit and hashes tracked/untracked source changes
+    (excluding .audit) so later source changes can be flagged.
+  • 'status' also reads Lowkey's project event journal for build/test/coverage/
+    Slither observations since the workflow started, where available.
+  • 'note' saves context; 'done' records your checkpoint and requires a note.
+  • PREPARE is gated on a real, current Foundry build. Other phase notes are
+    human decisions, not automated proof.
+  • A clean build, passing test suite, or detector result is not a security
+    verdict. You remain responsible for the audit judgment.
+  • Help is read-only. No phase is started, completed or reset by viewing help.
+  • No AI/provider is required.
+
+THIS IS NOT THE PROTOCOL WALKTHROUGH
+------------------------------------
+  lk workflow      Track the five human audit phases and their evidence.
+  lk walkthrough   Execute/observe a local protocol story to understand how
+                   actors, calls, events, balances and storage changes connect.
+
+RELATED COMMANDS
+----------------
+  lk audit
+  lk project
+  lk system
+  lk q
+  lk findings
+  lk report
+
+HELP TIP
+  Use 'lk workflow <subcommand> --h' for focused help on start/status/note/done/reset.
+""",
+        "start": r"""
+LOWKEY HELP  •  lk workflow start
+==============================================================================
+What it does:
+  Starts a new five-phase audit run and records the current source scope
+  baseline: Git revision, branch, dirty file list and dirty-file content digest.
+
+When to use it:
+  Run it before reviewing a new protocol or before deliberately restarting the
+  audit checkpoints. Starting does not compile, test, deploy or audit anything.
+
+Usage:
+  lk workflow [--root ROOT] start
+
+Example:
+  lk workflow start
+
+BEHAVIOR
+--------
+  • Creates/updates .audit/workflow/state.json for this project.
+  • Starts at PREPARE — Freeze scope and baseline.
+  • Warns if Git metadata is unavailable or source changes already exist.
+  • If a workflow is already active, it leaves it active and shows its status.
+  • Does not delete previous findings, evidence or question history.
+
+OPTIONS
+-------
+  --root ROOT
+      Select the project/package root. It must appear before 'start'.
+      Example: lk workflow --root packages/vault start
+
+RELATED
+-------
+  lk workflow status
+  lk project
+  lk build
+""",
+        "status": r"""
+LOWKEY HELP  •  lk workflow status
+==============================================================================
+What it does:
+  Displays the audit dashboard: baseline revision, changed-worktree warning,
+  five phase checkpoints, next action and detected tool evidence.
+
+When to use it:
+  Use it at any point to see where you are and what to do next. It is read-only.
+
+Usage:
+  lk workflow [status|next]
+  lk workflow
+
+Examples:
+  lk workflow
+  lk workflow status
+  lk workflow next
+
+WHAT THE DASHBOARD SHOWS
+------------------------
+  • Progress: number of completed checkpoints out of five.
+  • Current/next phase: the first phase not yet recorded as complete.
+  • Scope warning: whether the Git revision or source worktree changed since
+    the baseline was pinned.
+  • Automatic evidence: current-build status plus detected Forge test,
+    coverage and Slither events since the workflow started.
+  • Question frontier: one high-ranked question when the question engine has one.
+
+IMPORTANT
+---------
+  Evidence shown is observational. A completed test/build is not proof that the
+  contract is secure. If source changes after start, reconcile the scope before
+  trusting earlier notes or PoCs.
+
+RELATED
+-------
+  lk workflow next
+  lk workflow done
+  lk q
+""",
+        "note": r"""
+LOWKEY HELP  •  lk workflow note
+==============================================================================
+What it does:
+  Saves an audit note under a phase without marking that phase complete.
+
+When to use it:
+  Use it for assumptions, questions, source locations, exclusions, suspicious
+  behavior or evidence you want to revisit.
+
+Usage:
+  lk workflow [--root ROOT] note <text...> [--phase PHASE]
+
+Examples:
+  lk workflow note "Owner check exists on withdraw but not claim"
+  lk workflow note "Token callback occurs before shares are updated" --phase HUNT
+
+ARGUMENTS
+---------
+  <text...>
+      Required note text. Multiple shell words are joined into one saved note.
+      Quote the text when it contains spaces.
+
+OPTIONS
+-------
+  --phase PHASE
+      Optional phase label: PREPARE, MAP, HUNT, PROVE or VERIFY.
+      If omitted, Lowkey uses the current incomplete phase.
+      Example: lk workflow note "Need to inspect oracle freshness" --phase HUNT
+
+  --root ROOT
+      Select the project root before the action.
+      Example: lk workflow --root packages/vault note "Review proxy admin"
+
+NOTE VS DONE
+------------
+  'note' stores an observation only. It does not advance the workflow.
+  Use 'lk workflow done --note "..."' only when you are ready to record the
+  phase checkpoint.
+
+RELATED
+-------
+  lk workflow status
+  lk workflow done
+  lk finding
+  lk q
+""",
+        "done": r"""
+LOWKEY HELP  •  lk workflow done
+==============================================================================
+What it does:
+  Records completion of the current audit phase, together with your evidence
+  note. Phases must be completed in order.
+
+When to use it:
+  Use it after you have reviewed the phase's exit check and can explain the
+  evidence supporting your decision.
+
+Usage:
+  lk workflow [--root ROOT] done [PHASE] --note <evidence-and-conclusion>
+
+Examples:
+  lk workflow done --note "Scope and exclusions reviewed; build matches baseline"
+  lk workflow done MAP --note "Assets, roles, entry points and invariants mapped"
+
+ARGUMENTS
+---------
+  [PHASE]
+      Optional phase name: PREPARE, MAP, HUNT, PROVE or VERIFY. If supplied, it
+      must match the current phase. This prevents skipping ahead.
+
+OPTIONS
+-------
+  --note TEXT
+      Required. Explain what you checked and what evidence supports completion.
+      The text is saved as your human conclusion; Lowkey does not validate its
+      truth automatically.
+      Example: lk workflow done --note "Attack and sequential control compared"
+
+  --root ROOT
+      Select the project root before the action.
+      Example: lk workflow --root packages/vault done --note "..."
+
+GATES
+-----
+  • Only the first incomplete phase can be completed.
+  • PREPARE is blocked for a Foundry project until a real 'lk build' succeeded
+    for the exact current source snapshot. A build plan is not enough.
+  • Other phase completion is based on your human evidence note; the tracker
+    does not automatically inspect or certify the claimed PoC/control.
+
+RELATED
+-------
+  lk workflow status
+  lk workflow note
+  lk test
+  lk report
+""",
+        "reset": r"""
+LOWKEY HELP  •  lk workflow reset
+==============================================================================
+What it does:
+  Clears the audit-workflow checkpoints and saved workflow notes so you can
+  start the five phases again.
+
+When to use it:
+  Use it when you deliberately want a fresh checkpoint sequence, not just to
+  view the current phase.
+
+Usage:
+  lk workflow [--root ROOT] reset --yes
+
+Example:
+  lk workflow reset --yes
+
+OPTIONS
+-------
+  --yes
+      Required confirmation. The command refuses to reset without this flag.
+      Example: lk workflow reset --yes
+
+  --root ROOT
+      Select the project root before the action.
+      Example: lk workflow --root packages/vault reset --yes
+
+WHAT IS PRESERVED
+-----------------
+  • Existing audit evidence and event history.
+  • Question-engine history.
+  • The last-build record and the one-time build suggestion marker.
+
+WHAT IS CLEARED
+---------------
+  • Workflow started state and baseline.
+  • Completed phase checkpoints.
+  • Notes saved inside the workflow state.
+
+RELATED
+-------
+  lk workflow start
+  lk workflow status
+""",
+    }
+
+    page = pages.get(topic, pages[""])
+    print(page.strip("\\n"))
+
 def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
-    if any(v in {"-h", "--h", "--help", "help"} for v in values):
-        _parser().print_help(); return 0
+    help_flags = {"-h", "--h", "--help", "help"}
+    if any(value in help_flags for value in values):
+        # --root consumes its following value; identify the first real workflow
+        # action so nested help is focused instead of falling back to argparse.
+        positional = []
+        index = 0
+        while index < len(values):
+            value = values[index]
+            if value == "--root":
+                index += 2
+                continue
+            if value in help_flags or value.startswith("-"):
+                index += 1
+                continue
+            positional.append(value)
+            index += 1
+        actions = {"start", "status", "next", "note", "done", "reset"}
+        topic = next((value.lower() for value in positional if value.lower() in actions), "")
+        _print_help(topic)
+        return 0
     parser = _parser()
     args = parser.parse_args(values)
     root = _root(args.root)
