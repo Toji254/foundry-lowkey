@@ -54,6 +54,7 @@ class SourceIndexTests(unittest.TestCase):
             abstract contract BaseVault {
                 address internal owner;
                 modifier onlyOwner() { require(msg.sender == owner); _; }
+                function health() internal virtual returns (uint256) { return 1; }
             }
             """,
         )
@@ -68,6 +69,7 @@ class SourceIndexTests(unittest.TestCase):
 
             contract Vault is BaseVault {
                 using SafeERC20 for IERC20;
+                enum Status { Open, Closed }
                 struct Position {
                     address owner;
                     uint256 debt;
@@ -79,6 +81,12 @@ class SourceIndexTests(unittest.TestCase):
                 event Deposited(address indexed who, uint256 amount);
                 event Withdrawn(address indexed who, uint256 amount);
                 modifier nonReentrant() { _; }
+
+                function health() internal override returns (uint256) { return 2; }
+
+                function setOwner(address next) external onlyOwner {
+                    owner = next;
+                }
 
                 function deposit() external payable {
                     positions[msg.sender][1].debt += msg.value;
@@ -141,7 +149,9 @@ class SourceIndexTests(unittest.TestCase):
         self.assertIn("mapping(uint256 => Position)", mapping[0]["type"])
         self.assertEqual(mapping[0]["mapping_keys"], ["address", "uint256"])
         self.assertEqual(mapping[0]["mapping_value_type"], "Position")
-        self.assertTrue(find_symbols(index, "Vault.Position.debt") == [])
+        self.assertTrue(find_symbols(index, "Vault.Position.debt"))
+        self.assertTrue(find_symbols(index, "Vault.Status"))
+        self.assertTrue(find_symbols(index, "Vault.Status.Open"))
 
     def test_direct_calls_storage_access_modifiers_and_events_are_linked(self):
         temporary, root = self.fixture()
@@ -161,8 +171,17 @@ class SourceIndexTests(unittest.TestCase):
         self.assertEqual(len(library_functions), 1)
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == withdraw_id and edge["to"] == library_functions[0]["id"] and edge.get("call_kind") == "using-for extension" for edge in edges))
         self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id for edge in edges))
+        self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges if nodes.get(edge["to"], {}).get("name") == "onlyOwner"))
+        owner_setter = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.setOwner(address)")
+        owner_state = next(item for item in index["nodes"] if item.get("qualified_name") == "BaseVault.owner")
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == owner_setter["id"] and edge["to"] == owner_state["id"] and edge["resolution"] == "INFERRED" for edge in edges))
+        health_override = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.health()")
+        base_health = next(item for item in index["nodes"] if item.get("qualified_name") == "BaseVault.health()")
+        self.assertTrue(any(edge["kind"] == "OVERRIDES" and edge["from"] == health_override["id"] and edge["to"] == base_health["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "EMITS" and edge["from"] == withdraw_id for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id for edge in edges))
+        debt_field = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.Position.debt")
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id and edge["to"] == debt_field["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "READS" and nodes.get(edge["from"], {}).get("name") == "getPosition" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges))
 
