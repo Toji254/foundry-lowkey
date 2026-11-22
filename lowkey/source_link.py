@@ -110,7 +110,7 @@ def _selected_edges(
             if allowed is not None and edge.get("kind") not in allowed and not declaration_traversal:
                 continue
             if edge.get("from") in frontier or edge.get("to") in frontier:
-                if not declaration_traversal:
+                if not declaration_traversal or allowed is None:
                     selected[edge["id"]] = edge
                 if edge.get("kind") == "CALLS":
                     other = edge.get("to") if edge.get("from") in frontier else edge.get("from")
@@ -190,6 +190,30 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
 
     if selected.get("kind") == "contract":
         declared = [edge for edge in edges if edge.get("kind") == "DECLARES"]
+        if only == "storage":
+            declared = [
+                edge for edge in (index.get("edges") or [])
+                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
+                and nodes.get(edge.get("to"), {}).get("kind") in {"mapping", "state_variable", "function_pointer", "struct", "struct_field"}
+            ]
+        elif only == "calls":
+            declared = [
+                edge for edge in (index.get("edges") or [])
+                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
+                and nodes.get(edge.get("to"), {}).get("kind") in {"function", "modifier"}
+            ]
+        elif only == "assets":
+            asset_functions = {
+                edge.get("from") for edge in (index.get("edges") or [])
+                if edge.get("kind") == "ASSET_FLOW"
+            }
+            declared = [
+                edge for edge in (index.get("edges") or [])
+                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
+                and edge.get("to") in asset_functions
+            ]
+        elif only == "imports":
+            declared = []
         for title, kinds in (
             ("FUNCTIONS", {"function"}),
             ("MODIFIERS", {"modifier"}),
