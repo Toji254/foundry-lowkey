@@ -255,7 +255,7 @@ class SourceIndexTests(unittest.TestCase):
         finally:
             temporary.cleanup()
 
-        invoke = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.invokeCallback(function(uint256)external,uint256)")
+        invoke = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.invokeCallback(function,uint256)")
         stored = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.invokeStoredCallback(uint256)")
         edges = index["edges"]
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == invoke["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
