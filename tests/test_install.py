@@ -192,7 +192,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("--only", link_help.stdout)
 
             flow_help = subprocess.run(
-                [str(installed_lk), "fn", "--help"],
+                [str(installed_lk), "fn", "--flow", "both", "--help"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(flow_help.returncode, 0, flow_help.stdout + flow_help.stderr)

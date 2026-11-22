@@ -22,7 +22,12 @@ class SourceLinkTests(unittest.TestCase):
         root = pathlib.Path(temporary.name)
         (root / "src").mkdir()
         (root / "foundry.toml").write_text(
-            '[profile.default]\\nsrc = "src"\\nremappings = ["@audit/=lib/audit/"]\\n',
+            "\\n".join([
+                "[profile.default]",
+                'src = "src"',
+                'remappings = ["@audit/=lib/audit/"]',
+                "",
+            ]),
             encoding="utf-8",
         )
         (root / "lib" / "audit" / "ImportedMath.sol").parent.mkdir(parents=True)
