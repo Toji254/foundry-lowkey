@@ -152,7 +152,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("AVAILABLE CONTRACTS", rendered)
         self.assertIn("Graph (contract)", rendered)
-        self.assertIn("BaseLink (contract)", rendered)
+        self.assertIn("BaseLink (abstract contract)", rendered)
         self.assertIn("ImportedMath (library)", rendered)
         self.assertIn("src/Graph.sol:", rendered)
         self.assertIn("EXPLORE", rendered)
