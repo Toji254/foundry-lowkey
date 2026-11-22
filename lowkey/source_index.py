@@ -436,6 +436,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     source_provenance: dict[str, str] = {}
     known_source_paths: set[Path] = set()
     source_raw_hashes: dict[str, str] = {}
+    dependency_import_edges: list[dict[str, Any]] = []
     source_total_bytes = 0
     for item in base_graph.get("nodes") or []:
         if item.get("language") != "solidity":
@@ -501,6 +502,89 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         known_source_paths.add(target_path)
         external_total_bytes += len(data)
         external_file_count += 1
+
+    # Follow imports made by the explicitly imported third-party files as well.
+    # This remains a narrow transitive closure, not a scan of all dependency code.
+    remappings = project_tools._solidity_remappings(root_path)
+    dependency_queue = [
+        path for display, _source, path in source_units
+        if source_provenance.get(display) == "third-party"
+    ]
+    dependency_seen = {path.resolve() for path in dependency_queue}
+    while dependency_queue:
+        importer = dependency_queue.pop(0)
+        importer_display = os.path.relpath(importer, root_path).replace(os.sep, "/")
+        try:
+            importer_source = next(source for display, source, path in source_units if path.resolve() == importer.resolve())
+        except StopIteration:
+            continue
+        for raw_import, import_line, import_statement in project_tools._solidity_imports(importer_source):
+            resolved = project_tools._resolve_solidity_import(importer, raw_import, root_path, remappings)
+            if resolved is None:
+                dependency_import_edges.append({
+                    "from": importer_display, "to": raw_import, "raw": raw_import,
+                    "line": import_line, "statement": import_statement, "resolved": False,
+                })
+                failures.append({
+                    "path": importer_display, "phase": "dependency-import",
+                    "error": f"Could not resolve imported source {raw_import!r} at line {import_line}.",
+                })
+                continue
+            resolved = resolved.resolve()
+            provenance = project_tools._import_provenance(resolved, root_path)
+            if resolved.suffix.lower() != ".sol" or not resolved.is_file() or resolved in known_source_paths:
+                continue
+            try:
+                size = resolved.stat().st_size
+                if size > project_tools.SOLIDITY_SOURCE_MAX_FILE_BYTES:
+                    failures.append({"path": str(resolved), "phase": "dependency-size-limit", "error": "Imported source exceeds the per-file source limit."})
+                    dependency_import_edges.append({
+                        "from": importer_display, "to": str(resolved), "raw": raw_import,
+                        "line": import_line, "statement": import_statement, "resolved": False,
+                    })
+                    continue
+                if provenance == "third-party" and (
+                    external_file_count >= 64 or external_total_bytes + size > 16 * 1024 * 1024
+                ):
+                    failures.append({"path": str(resolved), "phase": "dependency-inventory-budget", "error": "Imported dependency source budget reached (64 files / 16 MiB)."})
+                    dependency_import_edges.append({
+                        "from": importer_display, "to": str(resolved), "raw": raw_import,
+                        "line": import_line, "statement": import_statement, "resolved": False,
+                    })
+                    continue
+                raw_data = resolved.read_bytes()
+                if source_total_bytes + len(raw_data) > project_tools.SOLIDITY_SOURCE_MAX_TOTAL_BYTES:
+                    failures.append({"path": str(resolved), "phase": "inventory-budget", "error": "Source index would exceed the 128 MiB total source budget."})
+                    dependency_import_edges.append({
+                        "from": importer_display, "to": str(resolved), "raw": raw_import,
+                        "line": import_line, "statement": import_statement, "resolved": False,
+                    })
+                    continue
+                source_total_bytes += len(raw_data)
+                imported_source = raw_data.decode("utf-8-sig")
+            except (OSError, UnicodeError, RuntimeError) as error:
+                failures.append({"path": str(resolved), "phase": "dependency-read", "error": str(error)})
+                dependency_import_edges.append({
+                    "from": importer_display, "to": str(resolved), "raw": raw_import,
+                    "line": import_line, "statement": import_statement, "resolved": False,
+                })
+                continue
+
+            display_path = os.path.relpath(resolved, root_path).replace(os.sep, "/")
+            source_units.append((display_path, imported_source, resolved))
+            source_provenance[display_path] = "third-party" if provenance == "third-party" else "first-party"
+            source_raw_hashes[str(resolved)] = hashlib.sha256(raw_data).hexdigest()
+            known_source_paths.add(resolved)
+            dependency_import_edges.append({
+                "from": importer_display, "to": display_path, "raw": raw_import,
+                "line": import_line, "statement": import_statement, "resolved": True,
+            })
+            if provenance == "third-party":
+                external_total_bytes += len(raw_data)
+                external_file_count += 1
+                if resolved not in dependency_seen:
+                    dependency_seen.add(resolved)
+                    dependency_queue.append(resolved)
 
     source_units.sort(key=lambda item: item[0].casefold())
     source_by_path = {path: source for path, source, _absolute in source_units}
@@ -807,6 +891,21 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "source": {"file": from_path, "line": base_edge.get("line", 1), "column": 1},
             "raw": base_edge.get("raw"), "external": bool(base_edge.get("external")),
             "provenance": base_edge.get("provenance", "unresolved"),
+        })
+
+    for dependency_edge in dependency_import_edges:
+        importer_id = file_ids.get(dependency_edge["from"])
+        target_id = file_ids.get(dependency_edge["to"])
+        if importer_id is None:
+            continue
+        edges.append({
+            "id": f"IMPORTS:{importer_id}:{target_id or dependency_edge['to']}:{dependency_edge['line']}",
+            "kind": "IMPORTS", "from": importer_id,
+            "to": target_id or dependency_edge["to"],
+            "resolution": "DIRECT" if dependency_edge.get("resolved") and target_id else "UNRESOLVED",
+            "evidence": "LEXICAL_DEPENDENCY_IMPORT",
+            "source": {"file": dependency_edge["from"], "line": dependency_edge["line"], "column": 1},
+            "raw": dependency_edge.get("raw"), "provenance": "third-party",
         })
 
     # Explicit using-for directives connect extension calls to library source
