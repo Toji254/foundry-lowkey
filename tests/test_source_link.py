@@ -22,7 +22,7 @@ class SourceLinkTests(unittest.TestCase):
         root = pathlib.Path(temporary.name)
         (root / "src").mkdir()
         (root / "foundry.toml").write_text(
-            "\\n".join([
+            "\n".join([
                 "[profile.default]",
                 'src = "src"',
                 'remappings = ["@audit/=lib/audit/"]',
