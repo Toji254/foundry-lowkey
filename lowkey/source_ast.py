@@ -169,9 +169,11 @@ def _match_function(
     on_line = [item for item in candidates if item.get("line") == line]
     if len(on_line) == 1:
         return on_line[0]
-    if on_line:
-        return min(on_line, key=lambda item: abs(int(item.get("source_offset") or 0) - char_start))
-    return None
+    # Multiple same-name declarations on one line are not safely mappable
+    # without an exact source offset. Do not pick the nearest one.
+    if len(on_line) > 1:
+        return None
+    return on_line[0] if on_line else None
 
 
 def _load_matched_units(
@@ -389,9 +391,17 @@ def apply_solc_ast_call_edges(
                         receiver = expression.get("expression") or {}
                         receiver_name = str(receiver.get("name") or "") if isinstance(receiver, dict) else ""
                         target_contract_kind = str(target.get("contract_kind") or "")
-                        is_library = target_contract_kind == "library"
-                        internal_dispatch = receiver_name == "super" or is_library
-                        is_external = is_member and not internal_dispatch
+                        target_visibility = str(target.get("visibility") or "")
+                        is_library_internal = (
+                            target_contract_kind == "library"
+                            and target_visibility in {"internal", "private"}
+                        )
+                        is_library_external = (
+                            target_contract_kind == "library"
+                            and target_visibility in {"public", "external"}
+                        )
+                        internal_dispatch = receiver_name == "super" or is_library_internal
+                        is_external = (is_member and not internal_dispatch) or is_library_external
                         if receiver_name == "this":
                             is_external = True
                         kind = "EXTERNAL_CALL" if is_external else "CALLS"
