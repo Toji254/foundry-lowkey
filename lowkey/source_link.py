@@ -193,19 +193,28 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         inheritance = [edge for edge in edges if edge.get("kind") == "INHERITS"]
         _render_edges("INHERITANCE", inheritance, nodes)
         _render_edges("IMPORTS", imports, nodes)
-        contract_file = selected.get("file")
         related_functions = {
             item["id"] for item in nodes.values()
             if item.get("kind") == "function" and item.get("contract") == selected.get("name")
         }
+        contract_edges = [edge for edge in edges if edge.get("from") in related_functions]
+        calls = [edge for edge in contract_edges if edge.get("kind") == "CALLS"]
+        storage_reads = [edge for edge in contract_edges if edge.get("kind") == "READS"]
+        storage_writes = [edge for edge in contract_edges if edge.get("kind") == "WRITES"]
+        if only in (None, "calls"):
+            _render_edges("INTERNAL CALLS", calls[:limit], nodes)
+        if only in (None, "storage"):
+            _render_edges("STORAGE READS", storage_reads[:limit], nodes)
+            _render_edges("STORAGE WRITES", storage_writes[:limit], nodes)
         extras = [
             edge for edge in index.get("edges") or []
             if edge.get("from") in related_functions
             and edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}
+            and (only is None or edge.get("kind") in ONLY_KINDS.get(only, set()))
         ]
         _render_edges("EXTERNAL INTERACTIONS / ASSET PATHS", extras[:limit], nodes)
         unresolved = [
-            edge for edge in edges + extras
+            edge for edge in edges + extras + file_imports
             if edge.get("resolution") == "UNRESOLVED"
         ]
         _render_edges("UNRESOLVED", unresolved[:limit], nodes)
@@ -241,6 +250,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                      or (direction == "incoming" and edge.get("to") == selected["id"]))
             ]
             _render_edges(heading, values, nodes, reverse=(direction == "incoming"))
+        type_edges = [edge for edge in edges if edge.get("kind") == "USES_TYPE" and edge.get("from") == selected["id"]]
+        struct_ids = {edge.get("to") for edge in type_edges}
+        struct_fields = [edge for edge in index.get("edges") or [] if edge.get("kind") == "DECLARES" and edge.get("from") in struct_ids]
+        _render_edges("STRUCT FIELDS", struct_fields, nodes)
         if selected.get("mapping_value_type"):
             print(f"MAPPING VALUE TYPE  {selected['mapping_value_type']}")
             print("NOTE: declared mapping type is not a runtime storage-slot calculation.")
@@ -311,7 +324,9 @@ def run_flow(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="lk fn",
         description="Filter the shared static asset-flow graph. Static transfer attempts are not runtime proof.",
+        add_help=False,
     )
+    parser.add_argument("-h", "--h", "--help", action="help", help="show this help")
     parser.add_argument("--flow", choices=("in", "out", "both"), required=True)
     parser.add_argument("--asset", choices=("eth", "erc20", "all"), default="all")
     parser.add_argument("--root", default=".")
