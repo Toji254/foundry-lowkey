@@ -498,28 +498,33 @@ contract Engine is IOracle, Ownable {}
     def test_project_map_call_context_handles_constructor_modifier_and_multiple_contracts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "foundry.toml", "[profile.default]\\nsrc = 'src'\\n")
+            self.write(root, "foundry.toml", "[profile.default]\nsrc = 'src'\n")
             self.write(
                 root,
                 "src/Context.sol",
-                "pragma solidity ^0.8.20;\\n"
-                "contract Vault {\\n"
-                "    modifier onlyAdmin(address target) {\\n"
-                '        target.staticcall("");\\n'
-                "        _;\\n"
-                "    }\\n"
-                "    constructor(address target) {\\n"
-                '        target.delegatecall("");\\n'
-                "    }\\n"
-                "    function invoke(address target) external onlyAdmin(target) {\\n"
-                '        target.call("");\\n'
-                "    }\\n"
-                "}\\n"
-                "contract Router {\\n"
-                "    function route(address target) external {\\n"
-                '        target.call("");\\n'
-                "    }\\n"
-                "}\\n",
+                "pragma solidity ^0.8.20;\n"
+                "contract Vault {\n"
+                "    modifier onlyAdmin(address target) {\n"
+                '        target.staticcall("");\n'
+                "        _;\n"
+                "    }\n"
+                "    constructor(address target) {\n"
+                '        target.delegatecall("");\n'
+                "    }\n"
+                "    function invoke(address target) external onlyAdmin(target) {\n"
+                '        target.call("");\n'
+                "    }\n"
+                "}\n"
+                "contract Router {\n"
+                "    function route(address target) external {\n"
+                '        target.call("");\n'
+                "    }\n"
+                "}\n"
+                "contract Legacy {\n"
+                "    function() external payable {\n"
+                '        msg.sender.call.value(1)("");\n'
+                "    }\n"
+                "}\n",
             )
 
             result = project_tools.render_project_map(root)
@@ -532,6 +537,7 @@ contract Engine is IOracle, Ownable {}
                     ("Vault", "constructor", "delegatecall"),
                     ("Vault", "invoke", "call"),
                     ("Router", "route", "call"),
+                    ("Legacy", "fallback", "call"),
                 ],
             )
 
