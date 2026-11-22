@@ -543,7 +543,7 @@ def _render_contract_overview(
             print(f"  ... {len(unresolved) - limit} more unresolved relationship(s)")
         print()
 
-    if not any((inheritance, imports, functions, storage, transient, constants, external_targets, asset_groups, unresolved)):
+    if not any((bases, imported_labels, inherited_by, used_by, functions, storage, transient, constants, external_targets, asset_groups, unresolved)):
         print("No declared relationships were found for this contract.")
     _print_inventory_warning(index)
 
