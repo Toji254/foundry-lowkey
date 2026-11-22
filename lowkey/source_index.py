@@ -325,7 +325,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         raise SourceIndexError(f"Could not build the Solidity source inventory: {error}") from error
 
     source_units: list[tuple[str, str, Path]] = []
+    source_provenance: dict[str, str] = {}
     failures = list(inventory.get("uninspected") or [])
+    known_source_paths: set[Path] = set()
     for item in base_graph.get("nodes") or []:
         if item.get("language") != "solidity":
             continue
@@ -347,6 +349,43 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         except ValueError:
             display_path = os.path.relpath(path, root_path).replace(os.sep, "/")
         source_units.append((display_path, source, path))
+        source_provenance[display_path] = "first-party"
+        known_source_paths.add(path.resolve())
+
+    # Load only Solidity files explicitly imported by indexed project files.
+    # This makes imported libraries such as SafeERC20 navigable without scanning
+    # all of lib/ or node_modules. Bound this extra dependency surface separately.
+    external_total_bytes = 0
+    external_file_count = 0
+    for import_edge in base_graph.get("edges") or []:
+        if import_edge.get("kind") != "import" or not import_edge.get("resolved") or not import_edge.get("external"):
+            continue
+        raw_target = str(import_edge.get("to") or "")
+        target_path = Path(raw_target)
+        if not target_path.is_absolute():
+            target_path = root_path / target_path
+        try:
+            target_path = target_path.resolve(strict=True)
+            if target_path in known_source_paths or target_path.suffix.lower() != ".sol" or not target_path.is_file():
+                continue
+            size = target_path.stat().st_size
+            if size > project_tools.SOLIDITY_SOURCE_MAX_FILE_BYTES:
+                failures.append({"path": raw_target, "phase": "dependency-size-limit", "error": "Imported dependency exceeds the per-file source limit."})
+                continue
+            if external_file_count >= 64 or external_total_bytes + size > 16 * 1024 * 1024:
+                failures.append({"path": raw_target, "phase": "dependency-inventory-budget", "error": "Imported dependency source budget reached (64 files / 16 MiB)."})
+                continue
+            data = target_path.read_bytes()
+            source = data.decode("utf-8-sig")
+        except (OSError, UnicodeError, RuntimeError) as error:
+            failures.append({"path": raw_target, "phase": "dependency-read", "error": str(error)})
+            continue
+        display_path = os.path.relpath(target_path, root_path).replace(os.sep, "/")
+        source_units.append((display_path, source, target_path))
+        source_provenance[display_path] = "third-party"
+        known_source_paths.add(target_path)
+        external_total_bytes += len(data)
+        external_file_count += 1
 
     source_units.sort(key=lambda item: item[0].casefold())
     source_by_path = {path: source for path, source, _absolute in source_units}
@@ -405,6 +444,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         add_node({
             "id": file_id, "kind": "file", "name": path, "file": path,
             "line": 1, "evidence": "SOURCE_FILE",
+            "provenance": source_provenance.get(path, "unclassified"),
         })
         pairs = _brace_pairs(clean)
         contract_pattern = re.compile(
@@ -432,6 +472,15 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 "body_start": opening + 1, "body_end": closing,
                 "bases": [base for base in bases if re.fullmatch(r"[A-Za-z_]\w*", base)],
                 "source": source, "clean": clean,
+                "declaration_kind": match.group("kind"),
+                "provenance": source_provenance.get(path, "unclassified"),
+                "using_libraries": [
+                    {"library": using.group(1), "for_type": using.group(2)}
+                    for using in re.finditer(
+                        r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*;",
+                        clean, opening + 1, closing,
+                    )
+                ],
             }
             contracts.append(contract)
             contract_by_name.setdefault(name, []).append(contract)
@@ -439,6 +488,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 "id": contract_id, "kind": "contract", "name": name,
                 "qualified_name": qualified, "file": path,
                 "line": contract["line"], "bases": contract["bases"],
+                "declaration_kind": contract["declaration_kind"],
+                "provenance": contract["provenance"],
+                "using_libraries": contract["using_libraries"],
                 "evidence": "LEXICAL_SOURCE",
             })
             edges.append(_edge("DECLARES", file_id, contract_id, path, source, match.start()))
