@@ -393,6 +393,18 @@ def _emit_ast_storage_effects(
                 "WRITES": "TRANSIENT_WRITES",
                 "DELETES": "TRANSIENT_DELETES",
             }.get(mode, mode)
+        elif persistence == "constant":
+            if mode in {"READS", "TRANSIENT_READS"}:
+                mode = "READS_CONSTANT"
+            elif mode in {"WRITES", "DELETES"}:
+                mode = "UNRESOLVED_MUTATION"
+        elif persistence == "immutable":
+            if mode in {"READS", "TRANSIENT_READS"}:
+                mode = "READS_IMMUTABLE"
+            elif mode == "WRITES" and caller.get("name") == "constructor":
+                mode = "INITIALIZES"
+            elif mode in {"WRITES", "DELETES"}:
+                mode = "UNRESOLVED_MUTATION"
         relation_targets = [(target, None)] + [
             (field, field.get("name")) for field in access["fields"]
         ]
@@ -414,8 +426,10 @@ def _emit_ast_storage_effects(
                 "access_path": access["path"],
                 "keys": list(access["keys"]),
                 "member": field_name,
-                "operation": operation or ("read" if mode.endswith("READS") else "write"),
+                "operation": operation or ("read" if mode.startswith("READS") or mode.startswith("TRANSIENT_READS") else "write"),
                 "mutation_kind": (
+                    "INITIALIZATION" if mode == "INITIALIZES" else
+                    "UNRESOLVED_MUTATION" if mode == "UNRESOLVED_MUTATION" else
                     "DELETE" if mode in {"DELETES", "TRANSIENT_DELETES"} else
                     "ARRAY_MUTATION" if operation and operation.startswith("array.") else
                     "COMPOUND_ASSIGNMENT" if operation in {"**=", "<<=", ">>=", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="} else
@@ -844,7 +858,15 @@ def apply_solc_ast_call_edges(
             "call_edges": 0,
             "modifier_edges": 0,
             "storage_edges": 0,
-            "warnings": warnings,
+            "storage_contexts_processed": 0,
+            "storage_contexts_skipped": 0,
+            "warnings": warnings + (
+                [f"Ignored {stale_units} build-info source unit(s) that did not exactly match the current source inventory."]
+                if stale_units else []
+            ) + (
+                ["No current compiler AST declarations could be matched; lexical analysis remains authoritative."]
+                if manifest.get("files") else []
+            ),
         }
 
     ast_edges: list[dict[str, Any]] = []
@@ -986,6 +1008,17 @@ def apply_solc_ast_call_edges(
             via_chain=via,
         )
 
+    storage_contexts_skipped = len(storage_call_contexts)
+    if storage_contexts_skipped:
+        warnings.append(
+            f"Stopped storage-reference AST propagation at the 64-context safety limit; "
+            f"{storage_contexts_skipped} queued context(s) remain unresolved."
+        )
+    if stale_units:
+        warnings.append(
+            f"Ignored {stale_units} build-info source unit(s) that did not exactly match the current source inventory."
+        )
+
     # Remove a lexical relationship only when an AST-resolved declaration
     # occupies the same caller/source site. This also corrects a lexical edge
     # that resolved to the wrong same-named declaration.
@@ -1037,9 +1070,10 @@ def apply_solc_ast_call_edges(
             edge.get("from") in ast_covered
             and edge.get("evidence") != "SOLC_AST_STORAGE_DECLARATION_REFERENCE"
             and edge.get("kind") in {
-                "READS", "WRITES", "DELETES", "MUTATES",
+                "READS", "READS_CONSTANT", "READS_IMMUTABLE",
+                "WRITES", "DELETES", "MUTATES",
                 "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
-                "ALIASES_STORAGE",
+                "ALIASES_STORAGE", "INITIALIZES", "UNRESOLVED_MUTATION",
             }
             and storage_site in ast_storage_sites
         ):
@@ -1077,6 +1111,8 @@ def apply_solc_ast_call_edges(
         "call_edges": ast_call_edges,
         "modifier_edges": ast_modifier_edges,
         "storage_edges": ast_storage_edges,
+        "storage_contexts_processed": processed_contexts,
+        "storage_contexts_skipped": storage_contexts_skipped,
         "warnings": warnings + [
             f"Skipped {len(manifest.get('skipped') or [])} build-info file(s) due to configured bounds."
         ] if manifest.get("skipped") else warnings,
