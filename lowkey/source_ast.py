@@ -334,6 +334,13 @@ def apply_solc_ast_call_edges(
             if isinstance(item, dict) and item.get("nodeType") == "ContractDefinition":
                 collect_contract(item, unit)
 
+    # Several build profiles can contain the same unchanged source. Keep
+    # one AST record per graph function so calls are not double-counted.
+    records_by_function: dict[str, dict[str, Any]] = {}
+    for record in ast_function_records:
+        records_by_function.setdefault(record["graph"]["id"], record)
+    ast_function_records = list(records_by_function.values())
+
     if not ast_covered:
         return {
             "available": bool(manifest.get("files")),
@@ -360,6 +367,17 @@ def apply_solc_ast_call_edges(
         if (
             edge.get("from") in ast_covered
             and edge.get("kind") == "APPLIES_MODIFIER"
+            and edge.get("resolution") in {"DIRECT", "INFERRED"}
+        ):
+            continue
+        ast_target_ids = {
+            item.get("id") for item in declaration_map.values()
+            if item.get("kind") in {"function", "modifier"}
+        }
+        if (
+            edge.get("from") in ast_covered
+            and edge.get("kind") == "EXTERNAL_CALL"
+            and edge.get("to") in ast_target_ids
             and edge.get("resolution") in {"DIRECT", "INFERRED"}
         ):
             continue
