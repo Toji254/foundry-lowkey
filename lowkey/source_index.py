@@ -185,6 +185,31 @@ def _top_level_statements(source: str, start: int, end: int):
             statement_start = index + 1
 
 
+def _top_level_assignment_offset(value: str) -> int | None:
+    """Return a declaration initializer '=', ignoring => and nested expressions."""
+    parens = brackets = braces = 0
+    for index, char in enumerate(value):
+        if char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+        elif char == "{":
+            braces += 1
+        elif char == "}":
+            braces = max(0, braces - 1)
+        elif char == "=" and parens == brackets == braces == 0:
+            before = value[index - 1] if index else ""
+            after = value[index + 1] if index + 1 < len(value) else ""
+            if before in {"=", "!", "<", ">"} or after in {"=", ">"}:
+                continue
+            return index
+    return None
+
+
 def _state_declaration(statement: str) -> tuple[str, str] | None:
     value = statement.strip()
     if not value or re.match(
@@ -193,7 +218,8 @@ def _state_declaration(statement: str) -> tuple[str, str] | None:
     ):
         return None
     # Find the declared identifier at the end of the declaration prefix.
-    prefix = value.split("=", 1)[0].strip()
+    assignment_offset = _top_level_assignment_offset(value)
+    prefix = value[:assignment_offset].strip() if assignment_offset is not None else value
     match = re.search(r"([A-Za-z_]\w*)\s*$", prefix)
     if not match:
         return None
@@ -220,7 +246,8 @@ def _struct_fields(source: str, start: int, end: int, pairs: dict[int, int]):
         if closing is None or closing > end:
             continue
         for statement, offset in _top_level_statements(source, opening + 1, closing):
-            prefix = statement.split("=", 1)[0].strip()
+            assignment_offset = _top_level_assignment_offset(statement)
+            prefix = statement[:assignment_offset].strip() if assignment_offset is not None else statement.strip()
             field_match = re.search(r"([A-Za-z_]\w*)\s*$", prefix)
             if not field_match:
                 continue
@@ -793,7 +820,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 mapping = variable_type.startswith("mapping")
                 kind = "mapping" if mapping else "state_variable"
                 variable_id = _node_id(kind, path, f"{name}.{variable_name}")
-                initializer = statement.split("=", 1)[1].strip() if "=" in statement else None
+                initializer_offset = _top_level_assignment_offset(statement)
+                initializer = statement[initializer_offset + 1:].strip() if initializer_offset is not None else None
                 variable = {
                     "id": variable_id, "kind": kind, "name": variable_name,
                     "qualified_name": f"{name}.{variable_name}", "contract": name,
