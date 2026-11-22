@@ -77,10 +77,12 @@ class SourceIndexTests(unittest.TestCase):
 
                 mapping(address => mapping(uint256 => Position)) public positions;
                 IERC20 public token;
+                uint256 internal guard;
+                function(uint256) external callback;
 
                 event Deposited(address indexed who, uint256 amount);
                 event Withdrawn(address indexed who, uint256 amount);
-                modifier nonReentrant() { _; }
+                modifier nonReentrant() { guard += 1; _; }
 
                 function health() internal override returns (uint256) { return 2; }
 
@@ -116,6 +118,20 @@ class SourceIndexTests(unittest.TestCase):
 
                 function transferDirect(address to, uint256 amount) external {
                     token.transfer(to, amount);
+                }
+
+                function invokeCallback(function(uint256) external cb, uint256 value) external {
+                    cb(value);
+                }
+
+                function invokeStoredCallback(uint256 value) external {
+                    callback(value);
+                }
+
+                function rawStorageWrite() external {
+                    assembly {
+                        sstore(0, 1)
+                    }
                 }
 
                 function overloaded(uint256 value) internal pure returns (uint256) {
@@ -185,6 +201,9 @@ class SourceIndexTests(unittest.TestCase):
         self.assertEqual(external_edge["resolution"], "DIRECT")
         self.assertEqual(external_edge["implementation_resolution"], "UNRESOLVED")
         self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id for edge in edges))
+        guard_state = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.guard")
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["to"] == guard_state["id"] and edge["resolution"] == "DIRECT" for edge in edges if nodes.get(edge["from"], {}).get("kind") == "modifier"))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == withdraw_id and edge["to"] == guard_state["id"] and edge["resolution"] == "INFERRED" for edge in edges))
         self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges if nodes.get(edge["to"], {}).get("name") == "onlyOwner"))
         owner_setter = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.setOwner(address)")
         owner_state = next(item for item in index["nodes"] if item.get("qualified_name") == "BaseVault.owner")
@@ -228,6 +247,20 @@ class SourceIndexTests(unittest.TestCase):
 
         self.assertEqual(len(find_symbols(index, "Vault.overloaded")), 2)
         self.assertEqual(len(find_symbols(index, "Vault.overloaded(uint256)")), 1)
+
+    def test_dynamic_function_pointers_and_assembly_storage_are_unresolved(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        invoke = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.invokeCallback(function(uint256)external,uint256)")
+        stored = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.invokeStoredCallback(uint256)")
+        edges = index["edges"]
+        self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == invoke["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == stored["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "UNRESOLVED_STORAGE" and edge.get("operation") == "sstore" for edge in edges))
 
     def test_comments_do_not_create_call_or_storage_edges(self):
         temporary, root = self.fixture()
