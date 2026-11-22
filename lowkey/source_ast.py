@@ -358,11 +358,18 @@ def _emit_ast_storage_effects(
     unit: dict[str, Any],
     declarations: dict[tuple[str, int], dict[str, Any]],
     edges: list[dict[str, Any]],
+    function_declarations: dict[tuple[str, int], dict[str, Any]] | None = None,
+    call_contexts: list[dict[str, Any]] | None = None,
+    context_aliases: dict[tuple[str, int], dict[str, Any]] | None = None,
+    via_chain: list[str] | None = None,
 ) -> int:
     """Emit AST-backed storage reads/writes with referenced state declarations."""
     source = unit["source"]
     build_info = unit["build_info"]
-    aliases: dict[tuple[str, int], dict[str, Any]] = {}
+    aliases: dict[tuple[str, int], dict[str, Any]] = dict(context_aliases or {})
+    function_declarations = function_declarations or {}
+    call_contexts = call_contexts if call_contexts is not None else []
+    via_chain = list(via_chain or [])
     emitted = 0
 
     def emit(expression: dict[str, Any], mode: str, operation: str | None = None) -> None:
@@ -394,12 +401,13 @@ def _emit_ast_storage_effects(
             edge = {
                 "id": (
                     f"SOLC_AST_STORAGE:{edge_kind}:{caller['id']}:"
-                    f"{node['id']}:{unit['path']}:{start}:{column}"
+                    f"{node['id']}:{unit['path']}:{start}:{column}:"
+                    f"{hashlib.sha256((access['path'] + '|' + '|'.join(via_chain)).encode()).hexdigest()[:12]}"
                 ),
                 "kind": edge_kind,
                 "from": caller["id"],
                 "to": node["id"],
-                "resolution": "DIRECT",
+                "resolution": "INFERRED" if via_chain else "DIRECT",
                 "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
                 "source": {"file": unit["path"], "line": line, "column": column},
                 "variable": target.get("name"),
@@ -418,6 +426,8 @@ def _emit_ast_storage_effects(
             }
             if access.get("alias"):
                 edge["alias"] = access["alias"]
+            if via_chain:
+                edge["via"] = list(via_chain)
             edges.append(edge)
             emitted += 1
 
@@ -512,6 +522,68 @@ def _emit_ast_storage_effects(
                     for argument in value.get("arguments") or []:
                         walk(argument, "READS", None)
                     return
+
+            callee = _unwrap_callee(expression)
+            target_ast_id = _referenced_id(callee)
+            target_record = function_declarations.get((build_info, target_ast_id)) if target_ast_id is not None else None
+            storage_parameter_indexes: set[int] = set()
+            if target_record is not None:
+                parameters = (
+                    (target_record.get("ast") or {}).get("parameters") or {}
+                ).get("parameters") or []
+                context: dict[tuple[str, int], dict[str, Any]] = {}
+                for parameter_index, parameter in enumerate(parameters):
+                    if not isinstance(parameter, dict) or parameter.get("storageLocation") != "storage":
+                        continue
+                    arguments = value.get("arguments") or []
+                    if parameter_index >= len(arguments):
+                        continue
+                    argument = arguments[parameter_index]
+                    resolved_argument = _storage_expression(
+                        argument, build_info=build_info, declarations=declarations,
+                        aliases=aliases, source=source,
+                    )
+                    if resolved_argument is None:
+                        continue
+                    parameter_id = parameter.get("id")
+                    try:
+                        parameter_key = (build_info, int(parameter_id))
+                    except (TypeError, ValueError):
+                        continue
+                    context[parameter_key] = {
+                        **resolved_argument, "alias": parameter.get("name"),
+                    }
+                    storage_parameter_indexes.add(parameter_index)
+
+                    argument_span = _src_range(argument) if isinstance(argument, dict) else None
+                    if argument_span is not None:
+                        argument_start = _byte_to_char_offset(source, argument_span[0])
+                        argument_line, argument_column = _line_column(source, argument_start)
+                        edges.append({
+                            "id": (
+                                f"SOLC_AST_STORAGE_ARGUMENT:{caller['id']}:"
+                                f"{resolved_argument['target']['id']}:{unit['path']}:"
+                                f"{argument_start}:"
+                                f"{hashlib.sha256(resolved_argument['path'].encode()).hexdigest()[:10]}"
+                            ),
+                            "kind": "ALIASES_STORAGE",
+                            "from": caller["id"],
+                            "to": resolved_argument["target"]["id"],
+                            "resolution": "DIRECT",
+                            "evidence": "SOLC_AST_STORAGE_REFERENCE_ARGUMENT",
+                            "source": {"file": unit["path"], "line": argument_line, "column": argument_column},
+                            "alias": parameter.get("name"),
+                            "access_path": resolved_argument["path"],
+                            "detail": "Storage reference passed to a statically resolved internal/library function; inspect the callee's storage effects.",
+                        })
+
+                if context:
+                    call_contexts.append({
+                        "target": target_record,
+                        "aliases": context,
+                        "via": (via_chain or [caller["id"]]) + [target_record["graph"]["id"]],
+                    })
+
             if isinstance(expression, dict) and expression.get("nodeType") == "MemberAccess":
                 # A method receiver can itself be a state variable (token, oracle,
                 # strategy). Read the receiver, not a fictitious storage field
@@ -519,8 +591,9 @@ def _emit_ast_storage_effects(
                 walk(expression.get("expression"), "READS", None)
             else:
                 walk(expression, "READS", None)
-            for argument in value.get("arguments") or []:
-                walk(argument, "READS", None)
+            for argument_index, argument in enumerate(value.get("arguments") or []):
+                if argument_index not in storage_parameter_indexes:
+                    walk(argument, "READS", None)
             return
 
         if node_type in {"Identifier", "IndexAccess", "MemberAccess"}:
@@ -587,6 +660,7 @@ def apply_solc_ast_call_edges(
     ]
     graph_nodes = {item.get("id"): item for item in nodes}
     declaration_map: dict[tuple[str, int], dict[str, Any]] = {}
+    ast_function_declarations: dict[tuple[str, int], dict[str, Any]] = {}
     ast_function_records: list[dict[str, Any]] = []
     ast_covered: set[str] = set()
     ast_virtual: dict[str, bool] = {}
@@ -678,12 +752,14 @@ def apply_solc_ast_call_edges(
                 continue
             ast_covered.add(graph_function["id"])
             ast_virtual[graph_function["id"]] = bool(child.get("virtual"))
-            ast_function_records.append({
+            ast_record = {
                 "ast": child,
                 "graph": graph_function,
                 "contract": contract_graph,
                 "unit": unit,
-            })
+            }
+            ast_function_records.append(ast_record)
+            ast_function_declarations[(unit["build_info"], int(ast_id))] = ast_record
 
     for unit in units:
         root_ast = unit.get("ast") or {}
@@ -717,6 +793,7 @@ def apply_solc_ast_call_edges(
     ast_call_edges = 0
     ast_modifier_edges = 0
     ast_storage_edges = 0
+    storage_call_contexts: list[dict[str, Any]] = []
 
     for record in ast_function_records:
         function_ast = record["ast"]
@@ -819,6 +896,35 @@ def apply_solc_ast_call_edges(
         ast_storage_edges += _emit_ast_storage_effects(
             function_ast, caller, unit=unit,
             declarations=declaration_map, edges=edges,
+            function_declarations=ast_function_declarations,
+            call_contexts=storage_call_contexts,
+        )
+
+    # Follow storage-reference parameters across bounded internal/library calls.
+    # A callee may be called with several different storage paths; keep contexts
+    # separate and cap the total amount of repeated AST traversal.
+    context_seen: set[tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]]] = set()
+    processed_contexts = 0
+    while storage_call_contexts and processed_contexts < 64:
+        context = storage_call_contexts.pop(0)
+        target_record = context["target"]
+        aliases = context["aliases"]
+        via = context["via"]
+        alias_key = tuple(sorted(
+            (str(key[1]), str(value.get("path") or ""))
+            for key, value in aliases.items()
+        ))
+        context_key = (target_record["graph"]["id"], alias_key, tuple(via))
+        if context_key in context_seen or len(via) > 7:
+            continue
+        context_seen.add(context_key)
+        processed_contexts += 1
+        ast_storage_edges += _emit_ast_storage_effects(
+            target_record["ast"], target_record["graph"],
+            unit=target_record["unit"], declarations=declaration_map,
+            edges=edges, function_declarations=ast_function_declarations,
+            call_contexts=storage_call_contexts, context_aliases=aliases,
+            via_chain=via,
         )
 
     # Remove a lexical relationship only when an AST-resolved declaration
@@ -855,6 +961,7 @@ def apply_solc_ast_call_edges(
         for edge in edges
         if edge.get("evidence") in {
             "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+            "SOLC_AST_STORAGE_REFERENCE_ARGUMENT",
         }
     }
 
