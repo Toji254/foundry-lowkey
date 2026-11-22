@@ -1646,6 +1646,8 @@ def _project_source_role(
         if item.get("kind")
     }
 
+    # Explicit declaration kinds are strong enough to classify these roles
+    # even when a repository uses a nonstandard directory layout.
     if "interface" in kinds or any(
         part in _PROJECT_INTERFACE_PARTS for part in directories
     ):
@@ -1656,9 +1658,11 @@ def _project_source_role(
         return "library"
     if any(part in _PROJECT_INFRASTRUCTURE_PARTS for part in directories):
         return "infrastructure"
-    if kinds:
-        return "application"
 
+    # A contract/function declaration alone does not prove that a file belongs
+    # to the application's source scope. Require a recognized source root;
+    # unfamiliar paths remain visible as unclassified rather than being
+    # silently promoted into the production architecture.
     source_roots = {
         "src", "source", "sources", "contracts", "programs", "vyper",
     }
