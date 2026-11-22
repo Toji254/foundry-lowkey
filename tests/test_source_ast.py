@@ -372,6 +372,253 @@ class SourceAstTests(unittest.TestCase):
         ))
         self.assertGreaterEqual(index["ast"]["storage_edges"], 3)
 
+    def test_ast_storage_parameter_tracks_library_mutation_back_to_mapping(self):
+        temporary = tempfile.TemporaryDirectory()
+        root = pathlib.Path(temporary.name)
+        self._write(root, "foundry.toml", '[profile.default]\nsrc = "src"\n')
+        source = """
+        pragma solidity ^0.8.20;
+
+        contract StorageVault {
+            struct Position { uint256 debt; }
+            mapping(address => Position) public positions;
+
+            function increase(address user, uint256 amount) external {
+                PositionLib.increaseDebt(positions[user], amount);
+            }
+        }
+
+        library PositionLib {
+            function increaseDebt(StorageVault.Position storage position, uint256 amount) internal {
+                position.debt += amount;
+            }
+        }
+        """
+        self._write(root, "src/StorageVault.sol", source)
+
+        def span(snippet, start_after=0):
+            return self._src(source, snippet, start_after)
+
+        positions_id = 13
+        field_id = 12
+        parameter_id = 32
+        library_function_id = 31
+        caller_start = source.index("function increase(")
+        library_start = source.index("function increaseDebt(")
+        call_start = source.index("PositionLib.increaseDebt(")
+        caller_body_start = source.index("{", caller_start)
+        library_body_start = source.index("{", library_start)
+
+        call_argument = {
+            "id": 41,
+            "nodeType": "IndexAccess",
+            "baseExpression": {
+                "id": 42,
+                "nodeType": "Identifier",
+                "name": "positions",
+                "referencedDeclaration": positions_id,
+                "src": span("positions", call_start),
+            },
+            "indexExpression": {
+                "id": 43,
+                "nodeType": "Identifier",
+                "name": "user",
+                "referencedDeclaration": 21,
+                "src": span("user", call_start),
+            },
+            "src": span("positions[user]", call_start),
+        }
+        library_call = {
+            "id": 44,
+            "nodeType": "FunctionCall",
+            "expression": {
+                "id": 45,
+                "nodeType": "MemberAccess",
+                "expression": {
+                    "id": 46,
+                    "nodeType": "Identifier",
+                    "name": "PositionLib",
+                    "referencedDeclaration": 30,
+                    "src": span("PositionLib", call_start),
+                },
+                "memberName": "increaseDebt",
+                "referencedDeclaration": library_function_id,
+                "src": span("PositionLib.increaseDebt", call_start),
+            },
+            "arguments": [
+                call_argument,
+                {
+                    "id": 47,
+                    "nodeType": "Identifier",
+                    "name": "amount",
+                    "referencedDeclaration": 22,
+                    "src": span("amount", call_start),
+                },
+            ],
+            "src": span("PositionLib.increaseDebt(positions[user], amount)", call_start),
+        }
+        library_assignment = {
+            "id": 55,
+            "nodeType": "Assignment",
+            "operator": "+=",
+            "leftHandSide": {
+                "id": 56,
+                "nodeType": "MemberAccess",
+                "expression": {
+                    "id": 57,
+                    "nodeType": "Identifier",
+                    "name": "position",
+                    "referencedDeclaration": parameter_id,
+                    "src": span("position", library_start),
+                },
+                "memberName": "debt",
+                "referencedDeclaration": field_id,
+                "src": span("position.debt", library_start),
+            },
+            "rightHandSide": {
+                "id": 58,
+                "nodeType": "Identifier",
+                "name": "amount",
+                "referencedDeclaration": 33,
+                "src": span("amount", library_start),
+            },
+            "src": span("position.debt += amount", library_start),
+        }
+
+        vault_ast = {
+            "id": 10,
+            "nodeType": "ContractDefinition",
+            "name": "StorageVault",
+            "contractKind": "contract",
+            "src": span("contract StorageVault"),
+            "nodes": [
+                {
+                    "id": 11,
+                    "nodeType": "StructDefinition",
+                    "name": "Position",
+                    "src": span("struct Position"),
+                    "members": [{
+                        "id": field_id,
+                        "nodeType": "VariableDeclaration",
+                        "name": "debt",
+                        "src": span("uint256 debt;"),
+                    }],
+                },
+                {
+                    "id": positions_id,
+                    "nodeType": "VariableDeclaration",
+                    "name": "positions",
+                    "stateVariable": True,
+                    "src": span("mapping(address => Position) public positions"),
+                },
+                {
+                    "id": 20,
+                    "nodeType": "FunctionDefinition",
+                    "kind": "function",
+                    "name": "increase",
+                    "visibility": "external",
+                    "src": span("function increase(address user, uint256 amount) external {\n                PositionLib.increaseDebt(positions[user], amount);\n            }"),
+                    "body": {
+                        "id": 48,
+                        "nodeType": "Block",
+                        "statements": [{
+                            "id": 49,
+                            "nodeType": "ExpressionStatement",
+                            "expression": library_call,
+                            "src": span("PositionLib.increaseDebt(positions[user], amount);", call_start),
+                        }],
+                        "src": span("{\n                PositionLib.increaseDebt(positions[user], amount);\n            }", caller_body_start),
+                    },
+                },
+            ],
+        }
+        library_ast = {
+            "id": 30,
+            "nodeType": "ContractDefinition",
+            "name": "PositionLib",
+            "contractKind": "library",
+            "src": span("library PositionLib"),
+            "nodes": [{
+                "id": library_function_id,
+                "nodeType": "FunctionDefinition",
+                "kind": "function",
+                "name": "increaseDebt",
+                "visibility": "internal",
+                "src": span("function increaseDebt(StorageVault.Position storage position, uint256 amount) internal {\n                position.debt += amount;\n            }"),
+                "parameters": {
+                    "id": 50,
+                    "nodeType": "ParameterList",
+                    "parameters": [
+                        {
+                            "id": parameter_id,
+                            "nodeType": "VariableDeclaration",
+                            "name": "position",
+                            "storageLocation": "storage",
+                            "src": span("StorageVault.Position storage position", library_start),
+                        },
+                        {
+                            "id": 33,
+                            "nodeType": "VariableDeclaration",
+                            "name": "amount",
+                            "storageLocation": "default",
+                            "src": span("uint256 amount", library_start),
+                        },
+                    ],
+                },
+                "body": {
+                    "id": 51,
+                    "nodeType": "Block",
+                    "statements": [{
+                        "id": 52,
+                        "nodeType": "ExpressionStatement",
+                        "expression": library_assignment,
+                        "src": span("position.debt += amount;", library_body_start),
+                    }],
+                    "src": span("{\n                position.debt += amount;\n            }", library_body_start),
+                },
+            }],
+        }
+        build_info = {
+            "id": "library-storage-build",
+            "solcVersion": "0.8.28",
+            "input": {"sources": {"src/StorageVault.sol": {"content": source}}},
+            "output": {"sources": {"src/StorageVault.sol": {"id": 0, "ast": {
+                "id": 0,
+                "nodeType": "SourceUnit",
+                "src": span("pragma solidity"),
+                "nodes": [vault_ast, library_ast],
+            }}}},
+        }
+        self._write(root, "out/build-info/library-storage.json", json.dumps(build_info))
+
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        positions = find_symbols(index, "StorageVault.positions")[0]
+        caller = find_symbols(index, "StorageVault.increase(address,uint256)")[0]
+        library_function = find_symbols(index, "PositionLib.increaseDebt(StorageVault.Position,uint256)")[0]
+        library_writes = [
+            edge for edge in index["edges"]
+            if edge.get("from") == library_function["id"]
+            and edge.get("to") == positions["id"]
+            and edge.get("kind") == "WRITES"
+            and edge.get("evidence") == "SOLC_AST_STORAGE_DECLARATION_REFERENCE"
+        ]
+        self.assertEqual(len(library_writes), 1)
+        self.assertEqual(library_writes[0].get("access_path"), "positions[user].debt")
+        self.assertEqual(library_writes[0].get("operation"), "+=")
+        self.assertEqual(library_writes[0].get("resolution"), "INFERRED")
+        self.assertIn(caller["id"], library_writes[0].get("via", []))
+        self.assertTrue(any(
+            edge.get("from") == caller["id"]
+            and edge.get("kind") == "ALIASES_STORAGE"
+            and edge.get("evidence") == "SOLC_AST_STORAGE_REFERENCE_ARGUMENT"
+            and edge.get("access_path") == "positions[user]"
+            for edge in index["edges"]
+        ))
+
     def test_stale_build_info_is_rejected_and_lexical_fallback_remains(self):
         temporary, root, _source = self._fixture(stale=True)
         try:
