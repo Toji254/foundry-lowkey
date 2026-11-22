@@ -545,6 +545,125 @@ def _mapping_inner_type(type_name: str) -> str | None:
     return _mapping_layout(type_name)[1]
 
 
+def _storage_type_after_index(type_name: str) -> str:
+    """Return the value type after one mapping or array index operation."""
+    value = re.sub(r"\b(memory|calldata|storage|payable)\b", " ", type_name)
+    value = re.sub(r"\s+", " ", value).strip()
+    if value.startswith("mapping"):
+        opening = value.find("(")
+        closing = _matching(value, opening, "(", ")") if opening >= 0 else None
+        if closing is None:
+            return ""
+        parts = re.split(r"\s*=>\s*", value[opening + 1:closing], maxsplit=1)
+        return parts[1].strip() if len(parts) == 2 else ""
+    array_match = re.search(r"\[\s*(?:\d+)?\s*\]\s*$", value)
+    if array_match:
+        return value[:array_match.start()].strip()
+    return ""
+
+
+def _storage_terminal_type(type_name: str) -> str:
+    """Extract a simple struct/enum type name from a storage type expression."""
+    value = re.sub(r"\b(memory|calldata|storage|payable|struct|contract|enum)\b", " ", type_name)
+    value = re.sub(r"\s+", " ", value).strip()
+    while value.startswith("mapping"):
+        value = _storage_type_after_index(value)
+    value = re.sub(r"\[\s*(?:\d+)?\s*\]\s*$", "", value).strip()
+    matches = re.findall(r"[A-Za-z_]\w*", value)
+    return matches[-1] if matches else ""
+
+
+def _storage_is_array(type_name: str) -> bool:
+    value = re.sub(r"\b(memory|calldata|storage|payable)\b", " ", type_name)
+    return bool(re.search(r"\[\s*(?:\d+)?\s*\]\s*$", value.strip()))
+
+
+def _scan_storage_access(
+    body: str,
+    start: int,
+    *,
+    base_name: str,
+    base_type: str,
+    base_indexes: list[str],
+    contract: str,
+    fields_by_struct: dict[tuple[str, str], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Follow a state access through nested mapping/array indices and struct fields.
+
+    This is a conservative lexical expression walker. It records every parsed
+    key/member and never guesses a struct field when the declared type is unknown.
+    """
+    path = base_name + "".join(f"[{item}]" for item in base_indexes)
+    keys = list(base_indexes)
+    members: list[str] = []
+    field_nodes: list[dict[str, Any]] = []
+    current_type = base_type
+    cursor = start
+    array_method = None
+
+    while cursor < len(body):
+        while cursor < len(body) and body[cursor].isspace():
+            cursor += 1
+        if cursor >= len(body):
+            break
+
+        if body[cursor] == "[":
+            close_index = _matching(body, cursor, "[", "]")
+            if close_index is None:
+                break
+            key = body[cursor + 1:close_index].strip()
+            keys.append(key)
+            path += f"[{key}]"
+            current_type = _storage_type_after_index(current_type)
+            cursor = close_index + 1
+            continue
+
+        if body[cursor] == ".":
+            member_match = re.match(r"\.\s*([A-Za-z_]\w*)", body[cursor:])
+            if not member_match:
+                break
+            member_name = member_match.group(1)
+            member_end = cursor + member_match.end()
+            lookahead = member_end
+            while lookahead < len(body) and body[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(body) and body[lookahead] == "(":
+                if member_name in {"push", "pop"} and _storage_is_array(current_type):
+                    array_method = member_name
+                break
+
+            members.append(member_name)
+            path += f".{member_name}"
+            struct_name = _storage_terminal_type(current_type)
+            field = next(
+                (
+                    item for item in fields_by_struct.get((contract, struct_name), [])
+                    if item.get("name") == member_name
+                ),
+                None,
+            ) if struct_name else None
+            if field is None:
+                current_type = ""
+            else:
+                field_nodes.append(field)
+                current_type = str(field.get("type") or "")
+            cursor = member_end
+            continue
+
+        break
+
+    return {
+        "access_path": path,
+        "keys": keys,
+        "members": members,
+        "member": members[-1] if members else None,
+        "field_nodes": field_nodes,
+        "array_method": array_method,
+        "end": cursor,
+        "terminal_type": current_type,
+    }
+
+
 def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dict[str, Any]:
     """Build one shared source relationship graph for a Solidity project.
 
