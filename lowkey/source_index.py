@@ -22,8 +22,11 @@ except ImportError:  # pragma: no cover - package-style import
 
 try:
     import source_ast
-except ImportError:  # older partial installations retain lexical-only behavior
-    source_ast = None
+except ImportError:  # pragma: no cover - package-style import
+    try:
+        from lowkey import source_ast
+    except ImportError:  # older partial installations retain lexical-only behavior
+        source_ast = None
 
 
 CACHE_VERSION = 10
@@ -2388,6 +2391,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     if source_ast is not None:
         ast_report = source_ast.apply_solc_ast_call_edges(
             root_path, source_by_path, nodes, edges, functions,
+            manifest=ast_build_manifest,
         )
     else:
         ast_report = {
