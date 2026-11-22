@@ -831,7 +831,17 @@ def _render_edges(heading: str, edges: list[dict[str, Any]], nodes: dict[str, di
 def _link_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lk link",
-        description="Navigate static Solidity source relationships. No compile or transaction execution is performed.",
+        description="Map Solidity contracts, functions, storage, calls, and asset paths from source.",
+        epilog="""Examples:
+  lk link Vault                  Show the compact contract relationship map.
+  lk link Vault.withdraw         Trace one function and its connected relationships.
+  lk link Vault.positions        Show mapping keys, readers, writers, and struct fields.
+  lk link Vault --only writes    Drill into state mutations and initializers.
+
+Static analysis only: no compilation or transaction execution. Potential asset
+movement and unresolved targets are labelled; source relationships are not proof
+of runtime behavior.""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
     parser.add_argument("target", nargs="?")
