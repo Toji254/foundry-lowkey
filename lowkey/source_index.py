@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 17
+CACHE_VERSION = 18
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -874,7 +874,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         except ValueError:
             display_path = os.path.relpath(path, root_path).replace(os.sep, "/")
         source_units.append((display_path, source, path))
-        source_provenance[display_path] = "first-party"
+        # The dependency graph can already contain explicitly imported files.
+        # Preserve their declared/remapped dependency provenance instead of
+        # assuming every graph node under the package root is first-party.
+        origin = project_tools._import_provenance(path, root_path)
+        source_provenance[display_path] = (
+            "third-party" if origin == "third-party" else "first-party"
+        )
         source_raw_hashes[str(path.resolve())] = hashlib.sha256(data).hexdigest()
         known_source_paths.add(path.resolve())
 
@@ -2667,7 +2673,7 @@ def find_symbols(index: dict[str, Any], target: str) -> list[dict[str, Any]]:
             wanted_sig = "(" + wanted_sig
             if node.get("name") != wanted_name or node.get("signature") != f"{wanted_name}{wanted_sig}":
                 continue
-        elif node.get("name") != symbol_name:
+        elif "." not in symbol_name and node.get("name") != symbol_name:
             continue
         candidates.append(node)
     return candidates
