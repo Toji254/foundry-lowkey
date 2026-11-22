@@ -1222,7 +1222,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             edges.append(_edge("USES_TYPE", variable_id, matches[0]["id"], path, source, statement_offset, type_name=inner_type))
 
             # Enum declarations and their named members are first-class symbols.
-            for enum_match in re.finditer(r"\benum\s+([A-Za-z_]\w*)\s*\{", clean, opening + 1, closing):
+            for enum_match in re.compile(r"\benum\s+([A-Za-z_]\w*)\s*\{").finditer(clean, opening + 1, closing):
                 if not _at_contract_depth(clean, opening + 1, enum_match.start()):
                     continue
                 enum_open = enum_match.end() - 1
