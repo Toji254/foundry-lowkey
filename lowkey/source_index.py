@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - package-style import
     from lowkey import project_tools
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -1141,6 +1141,9 @@ def find_symbols(index: dict[str, Any], target: str) -> list[dict[str, Any]]:
             continue
         if contract_name and node.get("contract", node.get("name")) != contract_name:
             continue
+        if contract_name and "." in symbol_name and not exact_signature:
+            if node.get("qualified_name") != f"{contract_name}.{symbol_name}":
+                continue
         if exact_signature:
             wanted_name, wanted_sig = symbol_name.split("(", 1)
             wanted_sig = "(" + wanted_sig
