@@ -221,10 +221,12 @@ class ProjectVerbosityTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             self.write(root, "Scarb.toml", '[package]\nname = "sample"\nversion = "0.1.0"\n')
             self.write(root, "src/lib.cairo", "fn greet() {}\n")
+            self.write(root, "modules/unmapped.cairo", "fn helper() {}\n")
             _result, output = self.overview(root)
 
             self.assertIn("LOWKEY PROJECT OVERVIEW", output)
             self.assertIn("cairo", output.lower())
+            self.assertIn("Unclassified source units", output)
             self.assertIn("Solidity low-level call-site counts are not applicable", output)
             self.assertIn("lk audit", output)
             self.assertNotIn("lk sources --scope application", output)
