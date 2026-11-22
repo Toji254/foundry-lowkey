@@ -519,7 +519,12 @@ contract Engine is IOracle, Ownable {}
                 "    function route(address target) external {\n"
                 '        target.call("");\n'
                 "    }\n"
-                "}\n"
+                "}\n",
+            )
+            self.write(
+                root,
+                "src/Legacy.sol",
+                "pragma solidity ^0.5.0;\n"
                 "contract Legacy {\n"
                 "    function() external payable {\n"
                 '        msg.sender.call.value(1)("");\n'
