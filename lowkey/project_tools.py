@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import subprocess
 from pathlib import Path
@@ -136,6 +137,280 @@ def project_source_files(root: str | Path = ".", languages: Iterable[str] | None
         return list(universal_source_files(root_path, suffixes, include_support=True))
     except (ImportError, OSError):
         return _walk_files(root_path, suffixes)
+
+
+
+
+# Solidity source inventory limits mirror the bounded source-inspection policy
+# used by Godmode. They prevent one command from reading unbounded repositories.
+SOLIDITY_SOURCE_MAX_FILE_BYTES = 2_000_000
+SOLIDITY_SOURCE_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+
+_SOLIDITY_SUPPORT_DIRS = {
+    "test": "tests",
+    "tests": "tests",
+    "script": "scripts",
+    "scripts": "scripts",
+    "deploy": "deployment",
+    "deployment": "deployment",
+    "migrations": "migrations",
+    "fixture": "fixtures",
+    "fixtures": "fixtures",
+    "mock": "mocks",
+    "mocks": "mocks",
+    "harness": "harnesses",
+    "harnesses": "harnesses",
+    "benchmark": "benchmarks",
+    "benchmarks": "benchmarks",
+    "audit": "audit-support",
+    "audits": "audit-support",
+    "certora": "formal-verification",
+    "docs": "documentation",
+    "doc": "documentation",
+}
+
+
+def _solidity_source_scope(path: Path, project: Path) -> str:
+    try:
+        parts = path.absolute().relative_to(project.absolute()).parts[:-1]
+    except ValueError:
+        parts = path.parts[:-1]
+    for part in parts:
+        scope = _SOLIDITY_SUPPORT_DIRS.get(str(part).lower())
+        if scope:
+            return scope
+    return "application"
+
+
+def _solidity_declarations(source: str) -> tuple[list[dict[str, str]], str]:
+    """Extract top-level Solidity type declarations for inventory grouping."""
+    cleaned = _strip_source_comments(source, "solidity", mask_strings=True)
+    declarations = []
+    pattern = re.compile(
+        r"(?m)^\s*(abstract\s+contract|contract|interface|library)\s+([A-Za-z_]\w*)\b"
+    )
+    for match in pattern.finditer(cleaned):
+        kind = " ".join(match.group(1).split())
+        declarations.append({"kind": kind, "name": match.group(2)})
+    kinds = {item["kind"] for item in declarations}
+    labels = {
+        "contract": "contracts",
+        "abstract contract": "abstract contracts",
+        "interface": "interfaces",
+        "library": "libraries",
+    }
+    if not kinds:
+        group = "no recognized declarations"
+    elif len(kinds) > 1:
+        group = "mixed declarations"
+    else:
+        group = labels.get(next(iter(kinds)), "other declarations")
+    return declarations, group
+
+
+def solidity_source_inventory(
+    root: str | Path = ".",
+    *,
+    max_file_bytes: int = SOLIDITY_SOURCE_MAX_FILE_BYTES,
+    max_total_bytes: int = SOLIDITY_SOURCE_MAX_TOTAL_BYTES,
+) -> dict[str, Any]:
+    """Inventory first-party .sol files, preserving paths and inspection failures.
+
+    Known dependency directories are pruned using the same remapping/submodule
+    boundary logic as the canonical repository source walker. Tests, scripts,
+    fixtures, mocks and docs are still discovered and classified; callers decide
+    whether to display application files, support files, or both.
+    """
+    if not isinstance(max_file_bytes, int) or max_file_bytes < 1:
+        raise ValueError("max_file_bytes must be a positive integer")
+    if not isinstance(max_total_bytes, int) or max_total_bytes < 1:
+        raise ValueError("max_total_bytes must be a positive integer")
+
+    requested = Path(root).expanduser()
+    try:
+        requested = requested.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise FileNotFoundError(f"Cannot resolve source root {root}: {error}") from error
+
+    single_file = requested if requested.is_file() else None
+    if single_file is not None:
+        if single_file.suffix.lower() != ".sol":
+            raise ValueError(f"Source file is not Solidity: {single_file}")
+        scan_root = single_file.parent
+    elif requested.is_dir():
+        scan_root = requested
+    else:
+        raise FileNotFoundError(f"Source root does not exist: {requested}")
+
+    package_root = project_root(scan_root)
+    if not package_root.is_dir():
+        package_root = scan_root
+
+    files: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    excluded_directories: list[dict[str, str]] = []
+    files_discovered = 0
+    bytes_read = 0
+
+    def relative(path: Path) -> str:
+        try:
+            return path.absolute().relative_to(package_root.absolute()).as_posix()
+        except ValueError:
+            return path.as_posix()
+
+    def failure(path: Path, phase: str, error: object) -> None:
+        failures.append({
+            "path": relative(path),
+            "phase": phase,
+            "error": str(error),
+        })
+
+    adapters = None
+    dependency_prefixes: set[str] = set()
+    try:
+        import analysis_adapters as adapters
+        dependency_prefixes = set(adapters._dependency_prefixes(package_root))
+    except (ImportError, OSError, TypeError, ValueError) as error:
+        # Continue with fixed build/cache exclusions, but do not call this
+        # inventory complete when dependency boundaries could not be established.
+        failure(package_root, "dependency-boundary", error)
+
+    def inspect_file(path: Path, entry: object | None = None) -> None:
+        nonlocal files_discovered, bytes_read
+        files_discovered += 1
+        try:
+            metadata = (
+                entry.stat(follow_symlinks=False)
+                if entry is not None
+                else path.stat()
+            )
+        except OSError as error:
+            failure(path, "stat", error)
+            return
+        if not stat.S_ISREG(metadata.st_mode):
+            failure(path, "stat", "Source entry is not a regular file.")
+            return
+        size = int(metadata.st_size)
+        if size > max_file_bytes:
+            failure(
+                path,
+                "size-limit",
+                f"File is {size} bytes; per-file limit is {max_file_bytes} bytes.",
+            )
+            return
+        if bytes_read + size > max_total_bytes:
+            failure(
+                path,
+                "inventory-budget",
+                f"Reading this file would exceed the {max_total_bytes}-byte inventory limit.",
+            )
+            return
+        try:
+            raw = path.read_bytes()
+            if len(raw) > max_file_bytes:
+                failure(
+                    path,
+                    "size-limit",
+                    f"File grew to {len(raw)} bytes; per-file limit is {max_file_bytes} bytes.",
+                )
+                return
+            if bytes_read + len(raw) > max_total_bytes:
+                failure(
+                    path,
+                    "inventory-budget",
+                    f"Reading this file would exceed the {max_total_bytes}-byte inventory limit.",
+                )
+                return
+            source = raw.decode("utf-8-sig")
+        except (OSError, UnicodeError) as error:
+            failure(path, "read", error)
+            return
+
+        bytes_read += len(raw)
+        declarations, type_group = _solidity_declarations(source)
+        files.append({
+            "path": relative(path),
+            "scope": _solidity_source_scope(path, package_root),
+            "bytes": len(raw),
+            "declarations": declarations,
+            "type_group": type_group,
+        })
+
+    if single_file is not None:
+        inspect_file(single_file)
+    else:
+        pending = [scan_root]
+        while pending:
+            current = pending.pop()
+            try:
+                with os.scandir(current) as iterator:
+                    entries = sorted(list(iterator), key=lambda item: item.name.casefold())
+            except OSError as error:
+                failure(current, "enumerate", error)
+                continue
+
+            child_directories: list[Path] = []
+            for entry in entries:
+                path = Path(entry.path)
+                try:
+                    if entry.is_symlink():
+                        # A link can hide a Solidity file or an entire source subtree.
+                        # Never follow it implicitly; report it so coverage stays honest.
+                        failure(
+                            path,
+                            "symlink",
+                            "Symlink was not followed; inspect its target explicitly.",
+                        )
+                        continue
+
+                    is_directory = entry.is_dir(follow_symlinks=False)
+                except OSError as error:
+                    failure(path, "stat", error)
+                    continue
+
+                if is_directory:
+                    if entry.name in EXCLUDED_DIRS or entry.name.startswith(".git"):
+                        continue
+                    if adapters is not None:
+                        try:
+                            if adapters._should_prune_directory(
+                                package_root, current, entry.name, dependency_prefixes
+                            ):
+                                if adapters.is_dependency_path(
+                                    path, package_root, dependency_prefixes
+                                ):
+                                    excluded_directories.append({
+                                        "path": relative(path),
+                                        "reason": "recognized dependency boundary",
+                                    })
+                                continue
+                        except (OSError, RuntimeError, TypeError, ValueError) as error:
+                            failure(path, "dependency-boundary", error)
+                            continue
+                    child_directories.append(path)
+                    continue
+
+                if entry.name.lower().endswith(".sol"):
+                    inspect_file(path, entry)
+
+            # LIFO traversal in reverse order preserves ascending folder order.
+            pending.extend(reversed(child_directories))
+
+    files.sort(key=lambda item: item["path"].casefold())
+    failures.sort(key=lambda item: (item["path"].casefold(), item["phase"]))
+    excluded_directories.sort(key=lambda item: item["path"].casefold())
+
+    return {
+        "root": str(package_root),
+        "scan_root": str(scan_root),
+        "files_discovered": files_discovered,
+        "files_inspected": len(files),
+        "bytes_read": bytes_read,
+        "files": files,
+        "uninspected": failures,
+        "excluded_directories": excluded_directories,
+        "complete": not failures,
+    }
 
 
 def _strip_source_comments(text: str, language: str, mask_strings: bool = False) -> str:

@@ -19804,6 +19804,170 @@ def _source_comment_strip(text: str, language="solidity") -> str:
         i += 1
     return "".join(chars)
 
+
+def run_sources(args):
+    """List first-party Solidity files with folder/type grouping and coverage status."""
+    if project_tools is None or not callable(
+        getattr(project_tools, "solidity_source_inventory", None)
+    ):
+        return fail("Solidity source inventory is unavailable in this Lowkey runtime. Re-run install.sh.", 1)
+
+    values = list(args or [])
+    root = None
+    group = "directory"
+    scope = "all"
+    filter_term = None
+    json_mode = False
+    index = 0
+
+    while index < len(values):
+        token = str(values[index])
+        if token == "--json":
+            json_mode = True
+            index += 1
+            continue
+        if token in {"--group", "--scope", "--filter"}:
+            if index + 1 >= len(values) or str(values[index + 1]).startswith("--"):
+                return fail(
+                    f"Error: {token} needs a value. Run 'lk sources --h' for usage.",
+                    2,
+                )
+            value = str(values[index + 1]).strip()
+            if token == "--group":
+                group = value.lower()
+            elif token == "--scope":
+                scope = value.lower()
+            else:
+                filter_term = value
+            index += 2
+            continue
+        if token.startswith("-"):
+            return fail(
+                f"Error: unknown lk sources option '{token}'. Run 'lk sources --h'.",
+                2,
+            )
+        if root is not None:
+            return fail("Error: lk sources accepts only one optional path.", 2)
+        root = token
+        index += 1
+
+    if group not in {"directory", "type"}:
+        return fail("Error: --group must be 'directory' or 'type'.", 2)
+    if scope not in {"all", "application", "support"}:
+        return fail("Error: --scope must be 'all', 'application', or 'support'.", 2)
+
+    if root is None:
+        try:
+            root = str(audit_context.foundry_project_root())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            root = "."
+
+    try:
+        inventory = project_tools.solidity_source_inventory(root)
+    except (FileNotFoundError, NotADirectoryError, OSError, RuntimeError, TypeError, ValueError) as error:
+        return fail(f"Error: cannot inventory Solidity sources: {error}", 2)
+
+    selected = list(inventory["files"])
+    if scope == "application":
+        selected = [item for item in selected if item["scope"] == "application"]
+    elif scope == "support":
+        selected = [item for item in selected if item["scope"] != "application"]
+
+    if filter_term:
+        query = filter_term.casefold()
+        selected = [
+            item for item in selected
+            if query in item["path"].casefold()
+            or query in item["scope"].casefold()
+            or query in item["type_group"].casefold()
+            or any(
+                query in declaration["name"].casefold()
+                or query in declaration["kind"].casefold()
+                for declaration in item["declarations"]
+            )
+        ]
+
+    groups = {}
+    for item in selected:
+        if group == "directory":
+            key = Path(item["path"]).parent.as_posix()
+            if key == ".":
+                key = "(root)"
+        else:
+            key = item["type_group"]
+        groups.setdefault(key, []).append(item)
+
+    ordered_groups = []
+    for name in sorted(groups, key=str.casefold):
+        records = sorted(groups[name], key=lambda item: item["path"].casefold())
+        ordered_groups.append({"name": name, "files": records})
+
+    payload = {
+        "schema_version": 1,
+        "root": inventory["root"],
+        "scan_root": inventory["scan_root"],
+        "scope": scope,
+        "group": group,
+        "filter": filter_term,
+        "complete": inventory["complete"],
+        "files_discovered": inventory["files_discovered"],
+        "files_inspected": inventory["files_inspected"],
+        "files_displayed": len(selected),
+        "bytes_read": inventory["bytes_read"],
+        "excluded_directories": inventory["excluded_directories"],
+        "uninspected": inventory["uninspected"],
+        "groups": ordered_groups,
+    }
+
+    if json_mode:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print("LOWKEY // SOLIDITY SOURCE INVENTORY")
+        print("=" * 78)
+        print(f"Project root : {inventory['root']}")
+        print(f"Scan root    : {inventory['scan_root']}")
+        print(f"Scope        : {scope}")
+        print(f"Grouped by   : {group}")
+        print(f"Discovered   : {inventory['files_discovered']}")
+        print(f"Inspected    : {inventory['files_inspected']}")
+        print(f"Displayed    : {len(selected)}")
+        print(f"Bytes read   : {inventory['bytes_read']}")
+        print(
+            "Coverage     : "
+            + ("COMPLETE" if inventory["complete"] else "INCOMPLETE — review uninspected paths")
+        )
+        if inventory["excluded_directories"]:
+            print(f"Dependencies : {len(inventory['excluded_directories'])} recognized directory/directories excluded")
+
+        if not selected:
+            print("\nNo Solidity source files matched this scope/filter.")
+        for item in ordered_groups:
+            print()
+            print(f"{item['name']} ({len(item['files'])} file(s))")
+            print("-" * min(72, max(12, len(item["name"]) + 18)))
+            for record in item["files"]:
+                declarations = ", ".join(
+                    f"{declaration['kind']} {declaration['name']}"
+                    for declaration in record["declarations"]
+                ) or "no recognized top-level declarations"
+                print(f"  {record['path']}")
+                print(f"      scope: {record['scope']} | type: {declarations}")
+
+        if inventory["excluded_directories"]:
+            print("\nRECOGNIZED DEPENDENCY DIRECTORIES (excluded)")
+            print("--------------------------------------------")
+            for item in inventory["excluded_directories"]:
+                print(f"  {item['path']} — {item['reason']}")
+
+        if inventory["uninspected"]:
+            print("\nUNINSPECTED PATHS")
+            print("-----------------")
+            for item in inventory["uninspected"]:
+                print(f"  {item['path']} [{item['phase']}] {item['error']}")
+
+    return 0 if inventory["complete"] else 2
+
+
 def run_scan(args):
     # `lk scan` takes at most a source path; it has no options. Rejecting a
     # leading-dash token here prevents a flag (e.g. --json) from being silently
@@ -23047,7 +23211,34 @@ COMMAND_HELP = {
             ("lk scan <path>", "Scan a particular source folder or file.", "lk scan src"),
         ],
         related=["lk risk", "lk slither", "lk rg"],
-    ),    "seams": _help_entry("Show audit hotspots where protocol boundaries and assumptions deserve extra scrutiny.", "lk seams", "lk seams", "Use it to decide where manual review should start.", related=["lk project", "lk risk", "lk walkthrough"]),
+    ),    "sources": _help_entry(
+        "Inventory first-party Solidity files and show their paths, folder structure, declaration types, and inspection coverage.",
+        "lk sources [path] [--group directory|type] [--scope all|application|support] [--filter <term>] [--json]",
+        "lk sources --group directory",
+        "Use it at the beginning of a protocol review when you need to understand the Solidity source tree before choosing contracts or functions to inspect.",
+        forms=[
+            ("lk sources", "List Solidity files under the current project, grouped by their folders. Includes first-party application and support sources.", "lk sources"),
+            ("lk sources <path>", "Inventory a specific project directory or one Solidity file.", "lk sources contracts/core"),
+            ("lk sources --group directory", "Group files by their parent folder. This is the default view.", "lk sources --group directory"),
+            ("lk sources --group type", "Group files by recognized top-level contracts, abstract contracts, interfaces, libraries, or mixed/no declarations.", "lk sources --group type"),
+            ("lk sources --scope application", "Show only protocol/application source files; hide tests, scripts, fixtures, mocks, docs and other support paths.", "lk sources --scope application"),
+            ("lk sources --scope support", "Show only support source files such as tests, scripts, mocks, fixtures and harnesses.", "lk sources --scope support"),
+            ("lk sources --filter Vault", "Filter paths, declaration names, scopes, or declaration groups without changing the inventory walk.", "lk sources --filter Vault"),
+            ("lk sources --json", "Emit machine-readable inventory, excluded dependency directories, and uninspected-path details.", "lk sources --json"),
+        ],
+        options=[
+            ("--group directory|type", "Choose folder grouping or Solidity declaration-type grouping.", "lk sources --group type"),
+            ("--scope all|application|support", "Choose all first-party files, application-only files, or support-only files. The default is all.", "lk sources --scope application"),
+            ("--filter <term>", "Case-insensitive filter over relative paths, declarations, source scope, and type group.", "lk sources --filter OrderBook"),
+            ("--json", "Print structured JSON while preserving coverage status and uninspected paths.", "lk sources --json"),
+        ],
+        notes=[
+            ("Dependency boundary", "Recognized remappings and Git submodules are excluded as dependencies. Generated/build/cache directories are also skipped; first-party files under lib/ remain visible when not identified as dependencies.", "lk sources --scope all"),
+            ("Coverage", "Unreadable directories/files, symlinks that could hide source, and inventory-limit failures are listed explicitly. Exit code 2 means the inventory is incomplete, not that a vulnerability was found.", "lk sources"),
+        ],
+        related=["lk project", "lk deps", "lk import files", "lk scan", "lk recon"],
+    ),
+    "seams": _help_entry("Show audit hotspots where protocol boundaries and assumptions deserve extra scrutiny.", "lk seams", "lk seams", "Use it to decide where manual review should start.", related=["lk project", "lk risk", "lk walkthrough"]),
     "deps": _help_entry("Show imports, inheritance, and source dependencies.", "lk deps [src]", "lk deps src", "Use it to separate application logic from libraries, interfaces, and dependency code.", related=["lk project", "lk layout"]),
     "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout MyContract", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
     "ids": _help_entry(
@@ -26803,6 +26994,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="risk": run_risk(config)
     elif cmd in {"seams","hotspots"}: return run_seams(config)
     elif cmd=="scan": return run_scan(args)
+    elif cmd=="sources": return run_sources(args)
     elif cmd=="rg": return run_audit_rg(config,args)
     elif cmd=="generate":
         try:

@@ -462,3 +462,131 @@ contract Engine is IOracle, Ownable {}
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_solidity_source_inventory_lists_first_party_files_and_classifies_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", "[profile.default]\n")
+            self.write(root, "contracts/core/Vault.sol", "pragma solidity ^0.6.0;\ncontract Vault {}\n")
+            self.write(root, "contracts/interfaces/IVault.sol", "interface IVault {}\n")
+            self.write(root, "test/Vault.t.sol", "contract VaultTest {}\n")
+            self.write(root, "scripts/Deploy.sol", "contract Deploy {}\n")
+            self.write(root, "lib/Protocol.sol", "library Protocol {}\n")
+            self.write(
+                root,
+                "remappings.txt",
+                "@openzeppelin/=lib/openzeppelin-contracts/contracts/\n",
+            )
+            self.write(
+                root,
+                "lib/openzeppelin-contracts/contracts/Ownable.sol",
+                "abstract contract Ownable {}\n",
+            )
+
+            inventory = project_tools.solidity_source_inventory(root)
+            by_path = {item["path"]: item for item in inventory["files"]}
+
+            self.assertTrue(inventory["complete"])
+            self.assertEqual(inventory["files_discovered"], 5)
+            self.assertEqual(inventory["files_inspected"], 5)
+            self.assertEqual(
+                set(by_path),
+                {
+                    "contracts/core/Vault.sol",
+                    "contracts/interfaces/IVault.sol",
+                    "test/Vault.t.sol",
+                    "scripts/Deploy.sol",
+                    "lib/Protocol.sol",
+                },
+            )
+            self.assertEqual(by_path["contracts/core/Vault.sol"]["type_group"], "contracts")
+            self.assertEqual(by_path["contracts/interfaces/IVault.sol"]["type_group"], "interfaces")
+            self.assertEqual(by_path["test/Vault.t.sol"]["scope"], "tests")
+            self.assertEqual(by_path["scripts/Deploy.sol"]["scope"], "scripts")
+            self.assertEqual(by_path["lib/Protocol.sol"]["scope"], "application")
+            self.assertEqual(
+                inventory["excluded_directories"],
+                [{"path": "lib/openzeppelin-contracts/contracts", "reason": "recognized dependency boundary"}],
+            )
+
+    def test_solidity_source_inventory_reports_directory_enumeration_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            blocked = root / "contracts" / "private"
+            blocked.mkdir(parents=True)
+            self.write(root, "contracts/Vault.sol", "contract Vault {}\n")
+            real_scandir = project_tools.os.scandir
+
+            def failing_scandir(path):
+                if pathlib.Path(path).resolve() == blocked.resolve():
+                    raise PermissionError("permission denied for test")
+                return real_scandir(path)
+
+            with patch.object(project_tools.os, "scandir", side_effect=failing_scandir):
+                inventory = project_tools.solidity_source_inventory(root)
+
+            self.assertFalse(inventory["complete"])
+            self.assertEqual(inventory["files_inspected"], 1)
+            self.assertTrue(
+                any(
+                    item["path"] == "contracts/private" and item["phase"] == "enumerate"
+                    for item in inventory["uninspected"]
+                )
+            )
+
+    def test_solidity_source_inventory_reports_file_read_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = self.write(root, "src/Vault.sol", "contract Vault {}\n")
+            real_read_bytes = pathlib.Path.read_bytes
+
+            def failing_read_bytes(path):
+                if path.resolve() == source.resolve():
+                    raise PermissionError("read denied for test")
+                return real_read_bytes(path)
+
+            with patch.object(pathlib.Path, "read_bytes", failing_read_bytes):
+                inventory = project_tools.solidity_source_inventory(root)
+
+            self.assertFalse(inventory["complete"])
+            self.assertEqual(inventory["files_discovered"], 1)
+            self.assertEqual(inventory["files_inspected"], 0)
+            self.assertEqual(inventory["uninspected"][0]["phase"], "read")
+            self.assertEqual(inventory["uninspected"][0]["path"], "src/Vault.sol")
+
+    def test_solidity_source_inventory_enforces_per_file_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "src/Large.sol", "contract Large { uint256 value; }\n")
+
+            inventory = project_tools.solidity_source_inventory(root, max_file_bytes=8)
+
+            self.assertFalse(inventory["complete"])
+            self.assertEqual(inventory["files_discovered"], 1)
+            self.assertEqual(inventory["files_inspected"], 0)
+            self.assertEqual(inventory["uninspected"][0]["phase"], "size-limit")
+
+
+    def test_solidity_source_inventory_reports_symlink_subtrees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = root / "real-contracts"
+            target.mkdir()
+            self.write(root, "real-contracts/Hidden.sol", "contract Hidden {}\n")
+            link = root / "linked-contracts"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"directory symlinks are unavailable: {error}")
+
+            inventory = project_tools.solidity_source_inventory(root)
+
+            self.assertFalse(inventory["complete"])
+            self.assertEqual(inventory["files_discovered"], 1)
+            self.assertTrue(
+                any(
+                    item["path"] == "linked-contracts" and item["phase"] == "symlink"
+                    for item in inventory["uninspected"]
+                )
+            )

@@ -367,6 +367,12 @@ The catalogue is an expandable cross-reference, not a claim that every possible 
 The output tells you what happened, why it matters, and what source/function to inspect next. The full forensic renderer is still available with `lk walkthrough test --technical`.
 
 The teaching layer is language-neutral: it does not assume the target is Solidity or a particular protocol. It can label Solidity, Vyper, Move, Cairo, Tact, FunC, Clarity, Rust, and unknown source files without changing the underlying audit semantics. Chain execution remains adapter-specific, so a language needs a compatible build/runtime adapter before live probes can run.
+### Solidity source inventory
+
+Use `lk sources` before recon on a large protocol to see every first-party `.sol` path grouped by folder. The default scope includes application and support Solidity; `--scope application` hides tests/scripts/fixtures/mocks/docs, while `--scope support` shows only those support paths. `--group type` groups files by recognized top-level contracts, abstract contracts, interfaces and libraries. `--filter <term>` matches paths and declarations. `--json` emits the same inventory as machine-readable JSON.
+
+Known remappings and Git submodules are treated as dependency boundaries; build/cache directories are skipped. Files or directories that cannot be inspected, and symlinks that could conceal sources, are reported explicitly. An incomplete inventory exits with status 2.
+
 ### Universal repository analysis
 Lowkey first determines the repository scope and available native/security tooling before choosing a command path. A conventional directory name such as `lib/` is not automatically treated as dependency code: Lowkey prunes it only when repository evidence (for example a Git submodule or Foundry remapping) identifies it as external. First-party source under `lib/` remains auditable.\n\n`lk scan` is a coverage-aware source/security triage command. It uses installed native analyzers when they are relevant (for example Slither on EVM projects, or Rust/Move security tooling when installed) and never turns unsupported language heuristics into a clean audit verdict.\n\nScan exit codes are deliberate: `0` means the requested triage completed with full coverage, `1` means an analyzer/tool failed, and `2` means Lowkey could not establish complete coverage and the result requires review. A nonzero scan result is therefore not a vulnerability finding by itself; it means the analysis state needs attention.\n\n### Working inside a multi-project workspace
 
@@ -529,6 +535,7 @@ lk findings
 lk focus <SIGNAL_ID>
 
 lk recon
+lk sources
 lk functions
 lk ask withdraw
 
