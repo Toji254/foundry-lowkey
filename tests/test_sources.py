@@ -4,7 +4,7 @@ import json
 import pathlib
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 
@@ -25,7 +25,7 @@ class SoliditySourcesCommandTests(unittest.TestCase):
 
     def run_sources(self, args):
         output = io.StringIO()
-        with redirect_stdout(output):
+        with redirect_stdout(output), redirect_stderr(output):
             code = lk.run_sources(args)
         return code, output.getvalue()
 
