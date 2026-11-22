@@ -754,7 +754,18 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     }
                     function_pointers.append(pointer_node)
                     add_node(pointer_node)
+                    pointer_storage = {
+                        **pointer_node, "type": "function", "scope": "state",
+                        "source_offset": statement_offset,
+                        "initializer": statement.split("=", 1)[1].strip() if "=" in statement else None,
+                    }
+                    state_variables.append(pointer_storage)
                     edges.append(_edge("DECLARES", contract_id, pointer_id, path, source, statement_offset))
+                    if pointer_storage["initializer"] is not None:
+                        edges.append(_edge(
+                            "INITIALIZES", contract_id, pointer_id, path, source, statement_offset,
+                            initializer=pointer_storage["initializer"],
+                        ))
                     continue
                 declaration = _state_declaration(statement)
                 if declaration is None:
@@ -1151,7 +1162,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         )
         for call in member_pattern.finditer(body):
             receiver, method = call.group("receiver"), call.group("name")
-            if method in {"call", "delegatecall", "staticcall"}:
+            if method in {"call", "delegatecall", "staticcall", "push", "pop"}:
                 continue
             if receiver == "super":
                 inherited = []
@@ -1358,7 +1369,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 assignment = re.match(r"(?:\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
-                is_write = bool(assignment or prefix_assignment or deletion)
+                is_write = bool(assignment or prefix_assignment or deletion or member_name in {"push", "pop"})
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
                 relations = ["WRITES"] if is_write else ["READS"]
                 if is_compound:
