@@ -333,15 +333,29 @@ def _render_contract_overview(
     print("EVIDENCE: static source relationships; not runtime execution")
     print()
 
-    inheritance = [
-        edge for edge in all_edges
-        if edge.get("kind") == "INHERITS" and edge.get("from") == selected["id"]
-    ]
-    if inheritance:
+    base_nodes = {
+        item.get("name"): item for item in nodes.values()
+        if item.get("kind") == "contract"
+    }
+    bases = list(selected.get("bases") or [])
+    if bases:
         print("INHERITANCE")
-        for edge in inheritance[:limit]:
-            target = nodes.get(edge.get("to"), {})
-            print(f"  └── {_symbol_label(target)}")
+        visited_bases = set()
+
+        def render_bases(names: list[str], prefix: str, depth: int = 0) -> None:
+            for index, name in enumerate(names):
+                last = index == len(names) - 1
+                connector = "└──" if last else "├──"
+                print(f"{prefix}{connector} {name}")
+                if name in visited_bases or depth >= 8:
+                    continue
+                visited_bases.add(name)
+                base_node = base_nodes.get(name, {})
+                nested = list(base_node.get("bases") or [])
+                if nested:
+                    render_bases(nested, prefix + ("    " if last else "│   "), depth + 1)
+
+        render_bases(bases, "  ")
         print()
 
     file_node = next(
@@ -358,10 +372,26 @@ def _render_contract_overview(
         and file_node
         and edge.get("from") == file_node.get("id")
     ]
-    if imports:
+    imported_labels = []
+    for edge in imports:
+        imported_file = nodes.get(edge.get("to"), {})
+        imported_path = imported_file.get("name") or imported_file.get("file")
+        declarations = [
+            item for item in nodes.values()
+            if item.get("kind") == "contract" and item.get("file") == imported_path
+        ]
+        labels = [item.get("name") for item in declarations if item.get("name")]
+        if not labels and imported_path:
+            labels = [Path(str(imported_path)).stem]
+        for label in labels:
+            if label not in imported_labels:
+                imported_labels.append(label)
+    if imported_labels:
         print("IMPORTS")
-        for edge in imports[:limit]:
-            print(f"  ├── {_symbol_label(nodes.get(edge.get('to'), {}))}")
+        for label in imported_labels[:limit]:
+            print(f"  ├── {label}")
+        if len(imported_labels) > limit:
+            print(f"  └── ... {len(imported_labels) - limit} more")
         print()
 
     inherited_by = [
