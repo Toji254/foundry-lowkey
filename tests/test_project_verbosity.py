@@ -130,6 +130,7 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertIn("Type          : Foundry", output)
             self.assertIn("Compiler(s)   : Solidity", output)
             self.assertIn("Build systems :", output)
+            self.assertIn("Scope         : Repository", output)
 
     def test_dependency_health_separates_production_and_support_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
