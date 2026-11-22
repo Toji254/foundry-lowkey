@@ -328,7 +328,7 @@ class SourceIndexTests(unittest.TestCase):
         debt_field = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.Position.debt")
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id and edge["to"] == debt_field["id"] for edge in edges))
         alias_function = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault._updateViaAlias(address,uint256)")
-        positions_node = mapping[0]
+        positions_node = find_symbols(index, "Vault.positions")[0]
         self.assertTrue(any(edge["kind"] == "ALIASES_STORAGE" and edge["from"] == alias_function["id"] and edge["to"] == positions_node["id"] and edge.get("alias") == "p" and edge.get("keys") == ["user", "1"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == alias_function["id"] and edge["to"] == debt_field["id"] and edge.get("alias") == "p" for edge in edges))
         self.assertTrue(any(
@@ -522,7 +522,13 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "TRANSIENT_WRITES" and edge["from"] == update["id"] and edge["to"] == transient_counter["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "TRANSIENT_WRITES" and edge["operation"] == "tstore" and edge["persistence"] == "transient" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["operation"] == "sstore" and edge["persistence"] == "persistent" and edge["resolution"] == "UNRESOLVED" for edge in edges))
-        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update["id"] and edge["to"] == transient_counter["id"] and edge.get("via", [])[0] == update["id"] for edge in edges))
+        last_checkpoint = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.lastCheckpoint")
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == update["id"]
+            and edge["to"] == last_checkpoint["id"]
+            and edge.get("evidence") == "MODIFIER_EXECUTION_PROPAGATION"
+            for edge in edges
+        ))
         storage_ids = {positions["id"], queue["id"], owner["id"], total_supply["id"], transient_counter["id"]}
         self.assertFalse(any(edge["from"] == memory_only["id"] and edge["to"] in storage_ids and edge["kind"] in {"WRITES", "DELETES", "TRANSIENT_WRITES"} for edge in edges))
 
