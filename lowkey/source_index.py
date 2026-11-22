@@ -664,6 +664,24 @@ def _scan_storage_access(
     }
 
 
+
+def _tuple_assignment_for(body: str, position: int) -> bool:
+    """Recognize a state variable on the left side of a simple tuple assignment."""
+    statement_start = max(
+        body.rfind(";", 0, position),
+        body.rfind("{", 0, position),
+        body.rfind("}", 0, position),
+    ) + 1
+    statement_end = body.find(";", position)
+    if statement_end < 0:
+        statement_end = len(body)
+    statement = body[statement_start:statement_end]
+    assignment = _top_level_assignment_offset(statement)
+    if assignment is None or position - statement_start > assignment:
+        return False
+    return bool(re.search(r"\([^()]*,[^()]*\)\s*$", statement[:assignment]))
+
+
 def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dict[str, Any]:
     """Build one shared source relationship graph for a Solidity project.
 
@@ -1938,10 +1956,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
                 array_method = access_info.get("array_method")
-                is_write = bool(assignment or prefix_assignment or deletion or array_method)
+                tuple_write = _tuple_assignment_for(body, access.start())
+                is_write = bool(assignment or prefix_assignment or deletion or array_method or tuple_write)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or array_method == "pop"
                 operation = (
-                    "delete" if deletion else assignment.group(0) if assignment
+                    "delete" if deletion else "tuple=" if tuple_write else assignment.group(0) if assignment
                     else prefix_assignment.group(0).strip() if prefix_assignment
                     else f"array.{array_method}" if array_method else "read"
                 )
@@ -1976,8 +1995,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             evidence="STORAGE_ALIAS_RESOLUTION",
                             operation=operation,
                             mutation_kind=(
-                                "DELETE" if deletion else "ARRAY_MUTATION" if array_method
-                                else "COMPOUND_ASSIGNMENT" if is_compound
+                                "DELETE" if deletion else "TUPLE_ASSIGNMENT" if tuple_write
+                                else "ARRAY_MUTATION" if array_method else "COMPOUND_ASSIGNMENT" if is_compound
                                 else "ASSIGNMENT" if is_write else "READ"
                             ),
                             persistence=persistence,
@@ -2009,10 +2028,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
                 array_method = access_info.get("array_method")
-                is_write = bool(assignment or prefix_assignment or deletion or array_method)
+                tuple_write = _tuple_assignment_for(body, access.start())
+                is_write = bool(assignment or prefix_assignment or deletion or array_method or tuple_write)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or array_method == "pop"
                 operation = (
-                    "delete" if deletion else assignment.group(0) if assignment
+                    "delete" if deletion else "tuple=" if tuple_write else assignment.group(0) if assignment
                     else prefix_assignment.group(0).strip() if prefix_assignment
                     else f"array.{array_method}" if array_method else "read"
                 )
@@ -2048,8 +2068,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
                             operation=operation,
                             mutation_kind=(
-                                "DELETE" if deletion else "ARRAY_MUTATION" if array_method
-                                else "COMPOUND_ASSIGNMENT" if is_compound
+                                "DELETE" if deletion else "TUPLE_ASSIGNMENT" if tuple_write
+                                else "ARRAY_MUTATION" if array_method else "COMPOUND_ASSIGNMENT" if is_compound
                                 else "ASSIGNMENT" if is_write else "READ"
                             ),
                             persistence=persistence,
