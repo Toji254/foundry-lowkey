@@ -1250,18 +1250,32 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 and item["kind"] == "function"
             ] if len(type_contracts) == 1 else []
             if receiver == "this":
-                self_methods = [
+                own_methods = [
                     item for item in functions
                     if item["contract"] == scope and item["file"] == path
                     and item["name"] == method and item["kind"] == "function"
                     and item.get("visibility") in {"public", "external"}
                 ]
+                self_methods = own_methods
+                if not self_methods:
+                    for base_name in func.get("bases") or []:
+                        inherited_methods = [
+                            item for item in functions
+                            if item["contract"] == base_name and item["name"] == method
+                            and item["kind"] == "function"
+                            and item.get("visibility") in {"public", "external"}
+                        ]
+                        if inherited_methods:
+                            self_methods = inherited_methods
+                            break
                 if len(self_methods) == 1:
+                    target_method = self_methods[0]
+                    is_virtual = bool(re.search(r"\bvirtual\b", target_method.get("header", "")))
                     edges.append(_edge(
-                        "EXTERNAL_CALL", func["id"], self_methods[0]["id"],
+                        "EXTERNAL_CALL", func["id"], target_method["id"],
                         path, source, body_absolute + call.start(),
                         resolution="DIRECT", receiver="this", method=method,
-                        implementation_resolution="UNRESOLVED" if re.search(r"\bvirtual\b", self_methods[0].get("header", "")) else "DIRECT",
+                        implementation_resolution="UNRESOLVED" if is_virtual else "DIRECT",
                         detail="External self-call resolves to this declared public/external method; virtual implementation selection remains runtime-dependent when applicable.",
                     ))
                     continue
