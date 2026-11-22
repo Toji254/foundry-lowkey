@@ -223,7 +223,7 @@ ADAPTERS = {
         "markers": {"Cargo.toml"},
         "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False, "live_native": True},
     },
-    "cairo": {
+    "cairo-starknet": {
         "kind": "cairo",
         "languages": {"cairo"},
         "markers": {"Scarb.toml"},
