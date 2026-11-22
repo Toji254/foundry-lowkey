@@ -21,7 +21,22 @@ class SourceLinkTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(temporary.name)
         (root / "src").mkdir()
-        (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+        (root / "foundry.toml").write_text(
+            '[profile.default]\\nsrc = "src"\\nremappings = ["@audit/=lib/audit/"]\\n',
+            encoding="utf-8",
+        )
+        (root / "lib" / "audit" / "ImportedMath.sol").parent.mkdir(parents=True)
+        (root / "lib" / "audit" / "ImportedMath.sol").write_text(
+            """
+            pragma solidity ^0.8.20;
+            library ImportedMath {
+                function plus(uint256 value, uint256 amount) internal pure returns (uint256) {
+                    return value + amount;
+                }
+            }
+            """,
+            encoding="utf-8",
+        )
         (root / "src" / "BaseLink.sol").write_text(
             """
             pragma solidity ^0.8.20;
@@ -47,14 +62,19 @@ class SourceLinkTests(unittest.TestCase):
             pragma solidity ^0.8.20;
             import "./BaseLink.sol";
             import "./LinkLib.sol";
+            import "@audit/ImportedMath.sol";
             contract Graph is BaseLink {
                 using LinkLib for uint256;
+                using ImportedMath for uint256;
                 mapping(address => uint256) public balances;
                 event Paid(address indexed user, uint256 amount);
                 function deposit() external payable {
                     balances[msg.sender] += msg.value;
                 }
                 function baseAction() public override {}
+                function thirdPartyUse(uint256 value) external pure returns (uint256) {
+                    return value.plus(1);
+                }
                 function libraryUse(uint256 value) external pure returns (uint256) {
                     return value.inc(1);
                 }
@@ -127,6 +147,27 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("FUNCTIONS", text)
         self.assertIn("STORAGE", text)
         self.assertIn("INTERNAL CALLS", text)
+
+    def test_imported_library_is_marked_third_party_and_linked_back_to_importer(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "ImportedMath")
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(status, 0)
+        rendered = output.getvalue()
+        self.assertIn("ORIGIN    THIRD-PARTY", rendered)
+        self.assertIn("USED BY", rendered)
+        self.assertIn("Graph (contract)", rendered)
+        imported_function = next(
+            item for item in index["nodes"]
+            if item.get("qualified_name") == "ImportedMath.plus(uint256,uint256)"
+        )
+        self.assertEqual(imported_function.get("provenance"), "third-party")
 
     def test_contract_navigation_shows_reverse_inheritance_and_library_use(self):
         temporary, root = self.fixture()
