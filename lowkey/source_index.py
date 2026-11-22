@@ -436,7 +436,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     source_provenance: dict[str, str] = {}
     known_source_paths: set[Path] = set()
     source_raw_hashes: dict[str, str] = {}
-    source_total_bytes = inventory_bytes
+    source_total_bytes = 0
     for item in base_graph.get("nodes") or []:
         if item.get("language") != "solidity":
             continue
