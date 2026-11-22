@@ -565,8 +565,11 @@ def _vyper_compiler_version(root: Path) -> str | None:
 
 
 def _solidity_compiler_versions(root: Path) -> list[str]:
+    root = Path(root).resolve()
     versions: set[str] = set()
     for path in project_source_files(root, {"sol"}):
+        if _solidity_source_scope(path, root) != "application":
+            continue
         text = _read(path)
         match = re.search(r"(?m)\bpragma\s+solidity\s+([^;]+);", text)
         if not match:
@@ -575,9 +578,11 @@ def _solidity_compiler_versions(root: Path) -> list[str]:
         for version in re.findall(r"\b0\.(?:[0-9]+)\.(?:[0-9]+)\b", expression):
             versions.add(version)
 
-    # Some projects pin the compiler in Python deployment/test code rather
-    # than Solidity pragmas. Capture that exact pin as additional evidence.
+    # Python deployment/build pins are useful only when they come from
+    # application code, not examples or test fixtures.
     for path in _walk_files(root, {".py"}):
+        if _solidity_source_scope(path, root) != "application":
+            continue
         text = _read(path)
         for version in re.findall(r"""(?m)\bsolc_version\s*[=:]\s*["'](0\.[0-9]+\.[0-9]+)["']""", text):
             versions.add(version)
@@ -1493,17 +1498,35 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     print("1. CONTRACT DECLARATIONS IN THE APPLICATION GRAPH")
     print("-" * 72)
     print("  Includes reusable first-party base contracts; this is not a protocol-only inventory.")
+    application_source_count = int(analysis.get("source_file_count", 0) or 0)
+    application_languages = analysis.get("languages") or {}
+    inventory_summary = ", ".join(
+        f"{str(language).lower()} ({int(count)})"
+        for language, count in sorted(application_languages.items())
+        if str(count).strip().lstrip("-").isdigit() and int(count) > 0
+    ) if isinstance(application_languages, dict) else ""
+
     if contracts:
         for name, file, parents in contracts:
             parent_text = f" (inherits {', '.join(parents)})" if parents else ""
             print(f"  {name}{parent_text}")
             print(f"    Source: {file}")
-    elif int(analysis.get("source_file_count", 0) or 0) > 0:
-        print("  Application source was detected.")
-        print("  ABI-style contract declarations are not available for this language/backend.")
+    elif protocol_nodes:
+        print("  Application source nodes were mapped, but no Solidity contract declarations were found.")
+        if inventory_summary:
+            print(f"  First-party application source inventory: {inventory_summary}")
+        print("  Contract findings are not available from this declaration view.")
         print("  Absence of contract findings is not a clean result; see coverage above.")
+    elif application_source_count:
+        print(
+            "  First-party application source inventory: "
+            f"{inventory_summary or str(application_source_count) + ' source file(s)'}"
+        )
+        print("  No application Solidity/Vyper source nodes were mapped.")
+        print("  Contract structure and call-site analysis were not performed for this source set.")
+        print("  This is not a clean security result.")
     else:
-        print("  No application source detected; protocol security was not analyzed.")
+        print("  No application contract source detected; protocol security was not analyzed.")
 
     print()
     print("2. HOW DOES IT DEPEND ON OTHER CODE?")
@@ -1518,8 +1541,13 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             else:
                 label = "UNRESOLVED"
             print(f"  {edge['from']} -> {destination} | {label}")
+    elif protocol_nodes:
+        print("  No imports detected in the mapped application source nodes.")
+    elif application_source_count:
+        print("  Not assessed: no application contract nodes were mapped for this source inventory.")
+        print("  Imports in the detected application language(s) are not represented by this graph.")
     else:
-        print("  No imports detected in application code.")
+        print("  No application contract imports were mapped.")
 
     if inheritance:
         print()
@@ -1531,21 +1559,28 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     print()
     print("3. WHERE ARE THE SECURITY-RELEVANT CALLS?")
     print("-" * 72)
-    print(
-        f"  Low-level calls (.call/.delegatecall/.staticcall): {len(low_level)} "
-        "(meaning: exact source syntax matched; trust: HIGH for the presence of that syntax, "
-        "LOW for whether it is actually unsafe)"
-    )
-    print(
-        f"  Other call sites detected by the heuristic:        {len(external_calls)} "
-        "(meaning: the source-pattern scanner found possible call sites outside low-level calls; "
-        "trust: LOW — false positives/negatives are possible, inspect the listed source)"
-    )
-    if low_level:
-        for call in low_level[:12]:
-            print(f"    line {call['line']}: {call['text']}")
-        if len(low_level) > 12:
-            print(f"    ... and {len(low_level) - 12} more")
+    mapped_application_languages = {
+        str(node.get("language") or "").lower() for node in protocol_nodes
+    }
+    if "solidity" not in mapped_application_languages:
+        print("  Solidity call-site scan: NOT APPLICABLE — no application Solidity source nodes were mapped.")
+        print("  Zero matches here do not say anything about Python or excluded support/test files.")
+    else:
+        print(
+            f"  Low-level calls (.call/.delegatecall/.staticcall): {len(low_level)} "
+            "(meaning: exact source syntax matched; trust: HIGH for the presence of that syntax, "
+            "LOW for whether it is actually unsafe)"
+        )
+        print(
+            f"  Other call sites detected by the heuristic:        {len(external_calls)} "
+            "(meaning: the source-pattern scanner found possible call sites outside low-level calls; "
+            "trust: LOW — false positives/negatives are possible, inspect the listed source)"
+        )
+        if low_level:
+            for call in low_level[:12]:
+                print(f"    line {call['line']}: {call['text']}")
+            if len(low_level) > 12:
+                print(f"    ... and {len(low_level) - 12} more")
 
     print()
     print("4. DEPENDENCY HEALTH")
@@ -1560,10 +1595,10 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             print(f"    ... and {len(unresolved) - 12} more")
     elif protocol_nodes:
         print("  All imports used by analyzed application code were resolved.")
-    elif int(analysis.get("source_file_count", 0) or 0) > 0:
-        print("  Dependency graph is not implemented for the detected non-EVM source language; not assessed.")
+    elif application_source_count:
+        print("  Not assessed: no application contract graph was mapped for the detected source inventory.")
     else:
-        print("  Dependency resolution was not assessed because no application code was analyzed.")
+        print("  Dependency resolution was not assessed because no application contract source was mapped.")
 
     print()
     print("5. FILES LOWKEY IS NOT CALLING 'PROTOCOL CODE'")
@@ -1580,10 +1615,18 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     print()
     print("HOW TO READ THIS")
     print("-" * 72)
-    print("  Start with the contract(s) under section 1.")
-    print("  Follow their imports/inheritance under section 2.")
-    print("  Review low-level calls under section 3.")
-    print("  Fix anything under 'NOT RESOLVED' before trusting the map.")
+    if contracts:
+        print("  Start with the application contracts under section 1.")
+        print("  Follow their imports/inheritance under section 2.")
+        print("  Review the Solidity call sites under section 3.")
+    elif protocol_nodes:
+        print("  Application source nodes exist, but this view found no Solidity contract declarations.")
+        print("  Check the source-language coverage before treating empty contract sections as meaningful.")
+    else:
+        print("  No application Solidity/Vyper source nodes were mapped in this scope.")
+        print("  Section 5 lists support, documentation and test sources kept out of the application graph.")
+        print("  Select the actual protocol package before relying on contract dependency or call-site results.")
+    print("  Review unresolved imports in section 4; support-only failures are not production dependency failures.")
     print("  Generated PoCs/tests/scripts are evidence and tooling, not protocol logic.")
 
     human_graph = {
@@ -2142,9 +2185,7 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
             "lk sources --scope application",
             "List first-party Solidity application files before choosing entry points."
         ))
-    graph_has_links = any(
-        edge.get("kind") in {"import", "inherits"} for edge in edges
-    )
+    graph_has_links = bool(production_import_edges or inheritance_edges)
     if graph_has_links and any(
         str(node.get("language") or "").lower() in {"solidity", "vyper"}
         for node in nodes

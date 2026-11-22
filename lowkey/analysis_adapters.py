@@ -589,7 +589,11 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     nested_projects = _nested_project_roots(project_root)
     nested_container = bool(
         explicit_workspace
-        or (len(nested_projects) >= 2 and not has_root_project_manifest)
+        or (
+            not _is_lowkey_source_checkout(project_root)
+            and len(nested_projects) >= 2
+            and not has_root_project_manifest
+        )
     )
     if nested_container:
         child_stacks: list[str] = []

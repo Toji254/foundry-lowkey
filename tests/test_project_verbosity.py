@@ -16,6 +16,8 @@ if str(LOWKEY_DIR) not in sys.path:
     sys.path.insert(0, str(LOWKEY_DIR))
 
 import project_tools
+import analysis_adapters
+import project_detection
 
 LK_MODULE = LOWKEY_DIR / "lk.py"
 spec = importlib.util.spec_from_file_location("lowkeycast_project_verbosity", LK_MODULE)
@@ -133,6 +135,61 @@ class ProjectVerbosityTests(unittest.TestCase):
             )
             self.assertNotIn("Analyzer scope:", output)
             self.assertIn("Application contracts/modules", output)
+
+    def test_lowkey_source_checkout_does_not_become_a_workspace_from_fixture_manifests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "lowkey/lk.py", "# Lowkey CLI entry point\n")
+            self.write(root, "lowkey/project_detection.py", "# checkout identity marker\n")
+            self.write(root, "lowkey/tool.py", "def run():\n    return True\n")
+            self.write(root, "install.sh", "#!/bin/sh\n")
+            self.write(
+                root,
+                "tests/fixtures/foundry/foundry.toml",
+                '[profile.default]\nsrc = "src"\n',
+            )
+            self.write(
+                root,
+                "tests/fixtures/foundry/src/Fixture.sol",
+                'pragma solidity ^0.8.20;\nimport "forge-std/Test.sol";\ncontract Fixture {}\n',
+            )
+            self.write(
+                root,
+                "tests/fixtures/cairo/Scarb.toml",
+                '[package]\nname = "fixture"\nversion = "0.1.0"\n',
+            )
+            self.write(
+                root,
+                "tests/fixtures/cairo/src/lib.cairo",
+                "fn fixture() {}\n",
+            )
+
+            analysis = analysis_adapters.inspect_repository(root)
+            result, output = self.overview(root)
+
+            self.assertFalse(project_detection.is_workspace_root(root))
+            self.assertFalse(analysis["workspace"])
+            self.assertEqual(analysis["scope_type"], "repository")
+            self.assertEqual(analysis["stacks"], [])
+            self.assertEqual(analysis["languages"], {"python": 1})
+            self.assertEqual(result["project"]["analysis"]["scope_type"], "repository")
+            self.assertNotIn("workspace", result)
+            self.assertIn("Triage inventory: 1 first-party source file(s) | python: 1", output)
+            self.assertNotIn("lk deps", output)
+            self.assertNotIn("Build systems : foundry", output)
+
+            map_output = io.StringIO()
+            with redirect_stdout(map_output):
+                project_tools.render_project_map(root)
+            verbose = map_output.getvalue()
+            self.assertIn("No application Solidity/Vyper source nodes were mapped.", verbose)
+            self.assertIn("Solidity call-site scan: NOT APPLICABLE", verbose)
+            self.assertNotIn(
+                "Low-level calls (.call/.delegatecall/.staticcall): 0",
+                verbose,
+            )
+            self.assertNotIn("Start with the contract(s) under section 1.", verbose)
+            self.assertNotIn("Compiler      : 0.8.20", verbose)
 
     def test_overview_restores_project_type_and_compiler_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:

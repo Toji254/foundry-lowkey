@@ -587,6 +587,8 @@ def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
         text = _read(root / "Cargo.toml")
         if re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]", text):
             return True
+    if _is_lowkey_source_checkout(root):
+        return False
     return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and _has_multiple_nested_projects(root)
 
 def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
