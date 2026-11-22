@@ -489,6 +489,7 @@ class SourceIndexTests(unittest.TestCase):
                     function nested(uint256 id, uint256 amount) external {
                         positions[msg.sender][id].risk.threshold = amount;
                         positions[msg.sender][id].samples.push(amount);
+                        positions[msg.sender][id].samples[0] = amount;
                         positions[msg.sender][id].allowances[address(1)] = amount;
                         (owner, lastCheckpoint) = (msg.sender, amount);
                     }
@@ -542,11 +543,29 @@ class SourceIndexTests(unittest.TestCase):
             edge["kind"] == "WRITES" and edge["from"] == nested["id"]
             and edge.get("access_path") == "positions[msg.sender][id].samples"
             and edge.get("operation") == "array.push"
+            and edge.get("index_kinds") == ["mapping", "mapping"]
+            and edge.get("index_types") == ["address", "uint256"]
+            and edge.get("mapping_depth") == 2
+            and edge.get("terminal_type") == "uint256[]"
+            for edge in edges
+        ))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == nested["id"]
+            and edge.get("access_path") == "positions[msg.sender][id].samples[0]"
+            and edge.get("index_kinds") == ["mapping", "mapping", "array"]
+            and edge.get("index_types") == ["address", "uint256", "uint256"]
+            and edge.get("mapping_key_types") == ["address", "uint256"]
+            and edge.get("mapping_depth") == 2
+            and edge.get("terminal_type") == "uint256"
             for edge in edges
         ))
         self.assertTrue(any(
             edge["kind"] == "WRITES" and edge["from"] == nested["id"]
             and edge.get("access_path") == "positions[msg.sender][id].allowances[address(1)]"
+            and edge.get("index_kinds") == ["mapping", "mapping", "mapping"]
+            and edge.get("index_types") == ["address", "uint256", "address"]
+            and edge.get("mapping_depth") == 3
+            and edge.get("terminal_type") == "uint256"
             for edge in edges
         ))
         self.assertTrue(any(
