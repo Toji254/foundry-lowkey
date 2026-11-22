@@ -141,6 +141,9 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("READ BY", text)
         self.assertIn("WRITTEN BY", text)
         self.assertIn("balances[who]", text)
+        self.assertIn("indexes=mapping[address]", text)
+        self.assertIn("mapping-depth=1", text)
+        self.assertIn("value-type=uint256", text)
 
     def test_contract_link_shows_importable_overview(self):
         temporary, root = self.fixture()
