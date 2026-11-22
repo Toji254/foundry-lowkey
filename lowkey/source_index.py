@@ -491,6 +491,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 failures.append({"path": raw_target, "phase": "dependency-inventory-budget", "error": "Imported dependency source budget reached (64 files / 16 MiB)."})
                 continue
             data = target_path.read_bytes()
+            if source_total_bytes + len(data) > project_tools.SOLIDITY_SOURCE_MAX_TOTAL_BYTES:
+                failures.append({"path": raw_target, "phase": "inventory-budget", "error": "Source index would exceed the 128 MiB total source budget."})
+                continue
+            source_total_bytes += len(data)
             source = data.decode("utf-8-sig")
         except (OSError, UnicodeError, RuntimeError) as error:
             failures.append({"path": raw_target, "phase": "dependency-read", "error": str(error)})
