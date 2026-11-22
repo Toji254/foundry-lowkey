@@ -180,6 +180,23 @@ if [[ "${1:-}" == "ai" ]]; then
     exec python3 "$HOME/.lowkey/command_wrapper.py" "ai" -- python3 "$HOME/.lowkey/ai_harness.py" "$@"
 fi
 
+# Source navigation and the new asset-flow filters share one source index.
+# Ordinary lk fn, lk trace, and all existing routes keep their current handlers.
+if [[ "${1:-}" == "link" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/command_wrapper.py" "link" -- python3 "$HOME/.lowkey/source_link.py" link "$@"
+fi
+if [[ "${1:-}" == "fn" ]]; then
+    for arg in "$@"; do
+        case "$arg" in
+            --flow|--flow=*)
+                shift
+                exec python3 "$HOME/.lowkey/command_wrapper.py" "fn" -- python3 "$HOME/.lowkey/source_link.py" flow "$@"
+                ;;
+        esac
+    done
+fi
+
 # Native experience memory; this command works without AI configured.
 if [[ "${1:-}" == "memory" ]]; then
     shift
