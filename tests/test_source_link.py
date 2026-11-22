@@ -13,7 +13,7 @@ if str(LOWKEY) not in sys.path:
     sys.path.insert(0, str(LOWKEY))
 
 from source_index import build_source_index
-from source_link import render_link, run_flow
+from source_link import main, render_link, run_flow
 
 
 class SourceLinkTests(unittest.TestCase):
@@ -137,6 +137,21 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("STORAGE WRITES", text)
         self.assertIn("ASSET FLOW / CAPABILITY", text)
         self.assertIn("ORIGIN    FIRST-PARTY", text)
+
+    def test_trace_source_alias_renders_a_function_call_tree(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main([
+                    "trace", "source", "Graph.withdraw(uint256)",
+                    "--root", str(root),
+                ])
+        finally:
+            temporary.cleanup()
+        self.assertEqual(status, 0)
+        self.assertIn("CALL CHAIN", output.getvalue())
+        self.assertIn("Graph._debit(address,uint256)", output.getvalue())
 
     def test_mapping_link_includes_key_path_and_accessors(self):
         temporary, root = self.fixture()
