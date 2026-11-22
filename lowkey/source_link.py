@@ -981,11 +981,14 @@ def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     if not values or values[0] in {"-h", "--h", "--help", "help"}:
         print("Usage: lk link TARGET [--depth N] [--only calls|storage|reads|writes|imports|assets]")
+        print("       lk trace source TARGET [--depth N]")
         print("       lk fn --flow in|out|both --asset eth|erc20|all")
         return 0 if values else 2
     command, rest = values[0], values[1:]
     if command == "link":
         return run_link(rest)
+    if command == "trace" and rest and rest[0] == "source":
+        return run_link(rest[1:])
     if command == "flow":
         return run_flow(rest)
     print(f"Unknown source-relationship command: {command}", file=sys.stderr)
