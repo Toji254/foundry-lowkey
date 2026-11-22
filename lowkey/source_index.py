@@ -675,6 +675,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     state_variables: list[dict[str, Any]] = []
     function_pointers: list[dict[str, Any]] = []
     structs: list[dict[str, Any]] = []
+    struct_node_ids: set[str] = set()
+    events_by_contract_name: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    errors_by_contract_name: dict[tuple[str, str], list[dict[str, Any]]] = {}
     fields_by_struct: dict[tuple[str, str], list[dict[str, Any]]] = {}
     file_ids: dict[str, str] = {}
     contract_by_name: dict[str, list[dict[str, Any]]] = {}
@@ -770,7 +773,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 clean, opening + 1, closing, pairs
             ):
                 struct_id = _node_id("struct", path, f"{name}.{field_struct}")
-                if not any(item["id"] == struct_id for item in structs):
+                if struct_id not in struct_node_ids:
+                    struct_node_ids.add(struct_id)
                     struct_node = {
                         "id": struct_id, "kind": "struct", "name": field_struct,
                         "qualified_name": f"{name}.{field_struct}", "contract": name,
@@ -899,13 +903,16 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     if not _at_contract_depth(clean, opening + 1, declaration_match.start()):
                         continue
                     symbol_id = _node_id(kind, path, f"{name}.{declaration_match.group(1)}")
-                    add_node({
+                    symbol_node = {
                         "id": symbol_id, "kind": kind, "name": declaration_match.group(1),
                         "qualified_name": f"{name}.{declaration_match.group(1)}",
                         "contract": name, "file": path,
                         "line": _line(source, declaration_match.start()),
                         "evidence": "LEXICAL_SOURCE",
-                    })
+                    }
+                    add_node(symbol_node)
+                    lookup = events_by_contract_name if kind == "event" else errors_by_contract_name
+                    lookup.setdefault((name, declaration_match.group(1)), []).append(symbol_node)
                     edges.append(_edge("DECLARES", contract_id, symbol_id, path, source, declaration_match.start()))
 
             function_pattern = re.compile(
@@ -1649,10 +1656,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         for emitted in re.finditer(r"\bemit\s+([A-Za-z_]\w*)\s*\(", body):
             name = emitted.group(1)
             event_nodes = [
-                node for node in nodes
-                if node.get("kind") == "event"
-                and node.get("contract") in {scope, *func.get("bases", [])}
-                and node.get("name") == name
+                node
+                for base_name in [scope, *func.get("bases", [])]
+                for node in events_by_contract_name.get((base_name, name), [])
             ]
             if len(event_nodes) == 1:
                 edges.append(_edge("EMITS", func["id"], event_nodes[0]["id"], path, source, body_absolute + emitted.start()))
@@ -1662,10 +1668,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         for reverted in re.finditer(r"\brevert\s+([A-Za-z_]\w*)\s*\(", body):
             error_name = reverted.group(1)
             error_nodes = [
-                node for node in nodes
-                if node.get("kind") == "custom_error"
-                and node.get("contract") in {scope, *func.get("bases", [])}
-                and node.get("name") == error_name
+                node
+                for base_name in [scope, *func.get("bases", [])]
+                for node in errors_by_contract_name.get((base_name, error_name), [])
             ]
             if len(error_nodes) == 1:
                 edges.append(_edge("REVERTS", func["id"], error_nodes[0]["id"], path, source, body_absolute + reverted.start()))
@@ -1914,6 +1919,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         if item["kind"] == "APPLIES_MODIFIER" and item["resolution"] in {"DIRECT", "INFERRED"}:
             direct_modifiers.setdefault(item["from"], []).append(item)
     function_by_id = {item["id"]: item for item in functions}
+    effect_keys = {
+        (item.get("from"), item.get("to"), item.get("kind"), item.get("direction"))
+        for item in edges
+    }
     for start_id, start_func in function_by_id.items():
         queue: list[tuple[str, list[str], int]] = [(start_id, [start_id], 0)]
         # Modifiers execute as part of the decorated function. Seed their bodies
@@ -1937,14 +1946,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 for effect in direct_effects.get(target, []):
                     if effect["kind"] == "ASSET_FLOW" and effect.get("status") == "CAPABILITY":
                         continue
-                    duplicate = any(
-                        existing["from"] == start_id
-                        and existing["to"] == effect["to"]
-                        and existing["kind"] == effect["kind"]
-                        and existing.get("direction") == effect.get("direction")
-                        for existing in edges
-                    )
-                    if not duplicate:
+                    effect_key = (start_id, effect.get("to"), effect.get("kind"), effect.get("direction"))
+                    if effect_key not in effect_keys:
                         inherited = dict(effect)
                         inherited.update({
                             "id": f"INFERRED:{start_id}:{effect['to']}:{effect['kind']}",
@@ -1955,6 +1958,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             "detail": "Effect is reachable through an internal helper; inspect the call chain before concluding execution.",
                         })
                         edges.append(inherited)
+                        effect_keys.add(effect_key)
                 queue.append((target, next_chain, depth + 1))
 
     if len(edges) > MAX_RELATIONSHIPS:
