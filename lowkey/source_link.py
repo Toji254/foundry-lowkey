@@ -304,7 +304,7 @@ def _render_call_tree(
         print(f"  OUTPUT: call tree limited to {limit} edge(s); increase --limit to expand it.")
 
 
-def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int = 1, limit: int = 80, as_json: bool = False) -> int:
+def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int | None = None, limit: int = 80, as_json: bool = False) -> int:
     candidates = find_symbols(index, target)
     if not candidates:
         print(f"UNRESOLVED: no source symbol matched '{target}'.")
@@ -320,6 +320,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         return 2
 
     selected = candidates[0]
+    if depth is None:
+        # Function investigations should reveal a useful nested call chain by
+        # default; contract overviews stay shallow and summarized.
+        depth = 3 if selected.get("kind") in {"function", "modifier"} else 1
     nodes = _node_map(index)
     edges = _selected_edges(selected, index.get("edges") or [], only=only, depth=depth)
     if as_json:
@@ -674,7 +678,7 @@ def _link_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("target", nargs="?")
     parser.add_argument("--root", default=".")
-    parser.add_argument("--depth", type=int, default=1)
+    parser.add_argument("--depth", type=int, default=None)
     parser.add_argument("--only", choices=sorted(ONLY_KINDS))
     parser.add_argument("--limit", type=int, default=80)
     parser.add_argument("--json", action="store_true")
@@ -688,7 +692,7 @@ def run_link(argv: list[str]) -> int:
     if not args.target:
         parser.print_help()
         return 2
-    if args.depth < 1 or args.depth > 10:
+    if args.depth is not None and (args.depth < 1 or args.depth > 10):
         parser.error("--depth must be between 1 and 10")
     if args.limit < 1 or args.limit > 500:
         parser.error("--limit must be between 1 and 500")
