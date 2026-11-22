@@ -446,10 +446,10 @@ class SourceIndexTests(unittest.TestCase):
     def test_repeated_queries_use_the_content_addressed_cache(self):
         temporary, root = self.fixture()
         try:
-            (root / "remappings.txt").write_text("alpha/=lib/alpha/\\n", encoding="utf-8")
+            (root / "remappings.txt").write_text("alpha/=lib/alpha/\n", encoding="utf-8")
             build_source_index(root)
             second = build_source_index(root)
-            (root / "remappings.txt").write_text("alpha/=vendor/alpha/\\n", encoding="utf-8")
+            (root / "remappings.txt").write_text("alpha/=vendor/alpha/\n", encoding="utf-8")
             third = build_source_index(root)
         finally:
             temporary.cleanup()
