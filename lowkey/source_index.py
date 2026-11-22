@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - package-style import
     from lowkey import project_tools
 
 
-CACHE_VERSION = 8
+CACHE_VERSION = 9
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -989,6 +989,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 variable_id = _node_id(kind, path, f"{name}.{variable_name}")
                 initializer_offset = _top_level_assignment_offset(statement)
                 initializer = statement[initializer_offset + 1:].strip() if initializer_offset is not None else None
+                storage_class = (
+                    "constant" if re.search(r"\bconstant\b", statement)
+                    else "immutable" if re.search(r"\bimmutable\b", statement)
+                    else "transient" if re.search(r"\btransient\b", statement)
+                    else "persistent"
+                )
                 variable = {
                     "id": variable_id, "kind": kind, "name": variable_name,
                     "qualified_name": f"{name}.{variable_name}", "contract": name,
@@ -997,7 +1003,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "initializer": initializer, "type": variable_type, "source_offset": statement_offset,
                     "mapping_value_type": _mapping_inner_type(variable_type),
                     "mapping_keys": _mapping_layout(variable_type)[0] if mapping else [],
-                    "scope": "state",
+                    "scope": "state", "storage_class": storage_class,
+                    "persistence": storage_class,
                 }
                 state_variables.append(variable)
                 add_node({**variable, "evidence": "LEXICAL_SOURCE"})
@@ -1005,8 +1012,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 if initializer is not None:
                     edges.append(_edge(
                         "INITIALIZES", contract_id, variable_id, path, source, statement_offset,
-                        initializer=initializer,
-                        detail="State declaration has an initializer; constructor and runtime mutations are analyzed separately.",
+                        initializer=initializer, operation="INITIALIZER",
+                        mutation_kind="INITIALIZATION", persistence=storage_class,
+                        detail="State declaration initializer; this is a potential construction-time initialization, not proof of deployed state.",
                     ))
                 inner_type = _mapping_inner_type(variable_type) if mapping else variable_type
                 if inner_type:
@@ -1809,20 +1817,33 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             cursor += 1
                 before = body[max(0, access.start() - 12):access.start()]
                 after = body[cursor:cursor + 4]
-                assignment = re.match(r"(?:\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
-                prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
-                deletion = re.search(r"\bdelete\s*$", before)
-                is_write = bool(assignment or prefix_assignment or deletion or member_name in {"push", "pop"})
-                is_compound = (
-                    bool(assignment and assignment.group(0) != "=")
-                    or bool(prefix_assignment)
-                    or member_name == "pop"
-                )
-                relations = ["WRITES"] if is_write else ["READS"]
-                if is_compound:
-                    relations.append("READS")
                 variable = alias["variable"]
-                access_path = alias["name"] + (f".{member_name}" if member_name else "")
+                assignment = re.match(r"(\\*\\*=|<<=|>>=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
+                deletion = re.search(r"\\bdelete\\s*$", before)
+                array_mutation = member_name in {"push", "pop"}
+                is_write = bool(assignment or prefix_assignment or deletion or array_mutation)
+                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or member_name == "pop"
+                operation = (
+                    "delete" if deletion else assignment.group(0) if assignment
+                    else prefix_assignment.group(0).strip() if prefix_assignment
+                    else f"array.{member_name}" if array_mutation else "read"
+                )
+                persistence = variable.get("storage_class", "persistent")
+                relations = ["DELETES"] if deletion else ["WRITES"] if is_write else ["READS"]
+                if persistence == "transient":
+                    relations = [
+                        {"READS": "TRANSIENT_READS", "WRITES": "TRANSIENT_WRITES",
+                         "DELETES": "TRANSIENT_DELETES"}.get(item, item)
+                        for item in relations
+                    ]
+                if persistence in {"constant", "immutable"} and is_write:
+                    relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
+                if is_compound:
+                    relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
+                access_path = variable["name"] + "".join(f"[{item}]" for item in alias["indexes"])
+                if member_name:
+                    access_path += f".{member_name}"
                 for relation in relations:
                     edges.append(_edge(
                         relation, func["id"], variable["id"], path, source,
@@ -1831,6 +1852,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         member=member_name, access_path=access_path,
                         resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                         evidence="STORAGE_ALIAS_RESOLUTION",
+                        operation=operation, mutation_kind=(
+                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
+                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
+                            else "READ"
+                        ), persistence=persistence,
                     ))
                     struct_type = variable.get("mapping_value_type") or variable.get("type") or alias["type"]
                     struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type)
@@ -1843,8 +1869,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                                 body_absolute + access.start(),
                                 variable=variable["name"], alias=alias["name"],
                                 member=member_name, access_path=access_path,
-                                resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
-                                evidence="STORAGE_ALIAS_RESOLUTION",
+                        resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                        evidence="STORAGE_ALIAS_RESOLUTION",
+                        operation=operation, mutation_kind=(
+                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
+                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
+                            else "READ"
+                        ), persistence=persistence,
                             ))
 
         for variable in accessible_state:
@@ -1886,17 +1917,29 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             cursor += 1
                 before = body[max(0, access.start() - 12):access.start()]
                 after = body[cursor:cursor + 4]
-                assignment = re.match(r"(?:\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
-                prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
-                deletion = re.search(r"\bdelete\s*$", before)
-                is_write = bool(
-                    assignment or prefix_assignment or deletion
-                    or member_name in {"push", "pop"}
+                assignment = re.match(r"(\\*\\*=|<<=|>>=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
+                deletion = re.search(r"\\bdelete\\s*$", before)
+                array_mutation = member_name in {"push", "pop"}
+                is_write = bool(assignment or prefix_assignment or deletion or array_mutation)
+                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or member_name == "pop"
+                operation = (
+                    "delete" if deletion else assignment.group(0) if assignment
+                    else prefix_assignment.group(0).strip() if prefix_assignment
+                    else f"array.{member_name}" if array_mutation else "read"
                 )
-                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
-                relations = ["WRITES"] if is_write else ["READS"]
+                persistence = variable.get("storage_class", "persistent")
+                relations = ["DELETES"] if deletion else ["WRITES"] if is_write else ["READS"]
+                if persistence == "transient":
+                    relations = [
+                        {"READS": "TRANSIENT_READS", "WRITES": "TRANSIENT_WRITES",
+                         "DELETES": "TRANSIENT_DELETES"}.get(item, item)
+                        for item in relations
+                    ]
+                if persistence in {"constant", "immutable"} and is_write:
+                    relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
                 if is_compound:
-                    relations.append("READS")
+                    relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
                 access_path = variable["name"] + "".join(f"[{item}]" for item in access_keys)
                 if member_name:
                     access_path += f".{member_name}"
@@ -1908,6 +1951,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         member=member_name, access_path=access_path,
                         resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                         evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
+                        operation=operation, mutation_kind=(
+                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
+                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
+                            else "READ"
+                        ), persistence=persistence,
                     ))
                     struct_type = variable.get("mapping_value_type") or variable.get("type")
                     struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type or "")
@@ -1922,6 +1970,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                                 member=member_name, access_path=access_path,
                                 resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                                 evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
+                        operation=operation, mutation_kind=(
+                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
+                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
+                            else "READ"
+                        ), persistence=persistence,
                             ))
 
         for emitted in re.finditer(r"\bemit\s+([A-Za-z_]\w*)\s*\(", body):
@@ -2182,11 +2235,20 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 opcode = operation.group(1).lower()
                 absolute_offset = offset + assembly_open + 1 + operation.start()
                 if opcode in {"sload", "sstore", "tload", "tstore"}:
+                    transient = opcode in {"tload", "tstore"}
+                    write = opcode in {"sstore", "tstore"}
+                    edge_kind = (
+                        "TRANSIENT_WRITES" if opcode == "tstore" else
+                        "TRANSIENT_READS" if opcode == "tload" else
+                        "WRITES" if opcode == "sstore" else "READS"
+                    )
                     edges.append(_edge(
-                        "UNRESOLVED_STORAGE", func["id"], f"storage-slot:{opcode}",
+                        edge_kind, func["id"], f"storage-slot:{opcode}",
                         path, source, absolute_offset, resolution="UNRESOLVED",
-                        operation=opcode,
-                        detail="Assembly storage access is visible, but the slot expression is not mapped to a Solidity declaration by this lexical pass.",
+                        evidence="YUL_OPCODE_SCAN", operation=opcode,
+                        persistence="transient" if transient else "persistent",
+                        mutation_kind="UNRESOLVED_SLOT_WRITE" if write else "UNRESOLVED_SLOT_READ",
+                        detail="Assembly storage access is visible, but the slot expression is not mapped to a Solidity declaration; no mapping or variable ownership is guessed.",
                     ))
                 else:
                     edges.append(_edge(
@@ -2211,7 +2273,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             direct_calls.setdefault(item["from"], []).append(item)
     direct_effects: dict[str, list[dict[str, Any]]] = {}
     for item in edges:
-        if item["kind"] in {"READS", "WRITES", "ASSET_FLOW"}:
+        if item["kind"] in {
+            "READS", "WRITES", "DELETES", "MUTATES",
+            "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+            "ASSET_FLOW",
+        }:
             direct_effects.setdefault(item["from"], []).append(item)
     direct_modifiers: dict[str, list[dict[str, Any]]] = {}
     for item in edges:
@@ -2292,6 +2358,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         "schema_version": CACHE_VERSION,
         "root": str(root_path),
         "parser": "LEXICAL",
+        "analysis_mode": "STATIC_SOURCE",
+        "mutation_semantics": "POTENTIAL_PATHS_NOT_RUNTIME_OBSERVATIONS",
         "nodes": nodes,
         "edges": edges,
         "inventory": {
