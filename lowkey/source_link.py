@@ -363,6 +363,27 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for warning in (ast_report.get("warnings") or [])[:4]:
             print(f"AST NOTE  {warning}")
     print(f"CACHE     {(index.get('cache') or {}).get('status', 'UNKNOWN')}")
+    summary = index.get("summary") or {}
+    if summary:
+        print(
+            "INDEX     "
+            f"files={summary.get('files', 0)} "
+            f"contracts={summary.get('contracts', 0)} "
+            f"functions={summary.get('functions', 0)} "
+            f"relationships={summary.get('relationships', 0)}"
+        )
+        print(
+            "STATE     "
+            f"persistent={summary.get('persistent_storage', 0)} "
+            f"transient={summary.get('transient_storage', 0)} "
+            f"constants={summary.get('constants', 0)} "
+            f"immutables={summary.get('immutables', 0)}"
+        )
+        print(
+            "RESOLUTION "
+            f"ambiguous={summary.get('ambiguous', 0)} "
+            f"unresolved={summary.get('unresolved', 0)}"
+        )
     if selected.get("type"):
         print(f"TYPE      {selected['type']}")
     if selected.get("signature"):
