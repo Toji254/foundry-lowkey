@@ -97,6 +97,8 @@ def _selected_edges(
     for _level in range(max(1, depth)):
         next_frontier: set[str] = set()
         for edge in edges:
+            if edge.get("via") and len(edge.get("via") or []) > depth + 1:
+                continue
             declaration_traversal = (
                 node.get("kind") == "contract"
                 and _level == 0
@@ -218,6 +220,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         contract_edges = [
             edge for edge in (index.get("edges") or [])
             if edge.get("from") in related_functions
+            and (not edge.get("via") or len(edge.get("via") or []) <= depth + 1)
         ]
         # Include direct function relationships in the contract overview. A
         # larger --depth additionally exposes nested helper relationships.
