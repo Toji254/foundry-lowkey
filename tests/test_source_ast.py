@@ -597,8 +597,8 @@ class SourceAstTests(unittest.TestCase):
             temporary.cleanup()
 
         positions = find_symbols(index, "StorageVault.positions")[0]
-        caller = find_symbols(index, "StorageVault.increase(address,uint256)")[0]
-        library_function = find_symbols(index, "PositionLib.increaseDebt(StorageVault.Position,uint256)")[0]
+        caller = find_symbols(index, "StorageVault.increase")[0]
+        library_function = find_symbols(index, "PositionLib.increaseDebt")[0]
         library_writes = [
             edge for edge in index["edges"]
             if edge.get("from") == library_function["id"]
