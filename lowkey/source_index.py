@@ -1731,7 +1731,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
                 is_write = bool(assignment or prefix_assignment or deletion or member_name in {"push", "pop"})
-                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
+                is_compound = (
+                    bool(assignment and assignment.group(0) != "=")
+                    or bool(prefix_assignment)
+                    or member_name == "pop"
+                )
                 relations = ["WRITES"] if is_write else ["READS"]
                 if is_compound:
                     relations.append("READS")
@@ -2062,12 +2066,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             assembly_body = body[assembly_open + 1:assembly_close]
             for operation in re.finditer(
-                r"\b(call|callcode|delegatecall|staticcall|create|create2|selfdestruct|sload|sstore)\s*\(",
+                r"\b(call|callcode|delegatecall|staticcall|create|create2|selfdestruct|sload|sstore|tload|tstore)\s*\(",
                 assembly_body,
             ):
                 opcode = operation.group(1).lower()
                 absolute_offset = offset + assembly_open + 1 + operation.start()
-                if opcode in {"sload", "sstore"}:
+                if opcode in {"sload", "sstore", "tload", "tstore"}:
                     edges.append(_edge(
                         "UNRESOLVED_STORAGE", func["id"], f"storage-slot:{opcode}",
                         path, source, absolute_offset, resolution="UNRESOLVED",
