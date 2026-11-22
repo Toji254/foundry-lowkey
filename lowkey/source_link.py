@@ -352,7 +352,17 @@ def _render_edges(heading: str, edges: list[dict[str, Any]], nodes: dict[str, di
         if reverse:
             target = nodes.get(edge.get("from"), {})
             label = _symbol_label(target) if target else str(edge.get("from", "?"))
-            print(f"  {label}  [{edge.get('resolution', 'UNRESOLVED')}]  {_location(edge)}")
+            details = []
+            if edge.get("access_path"):
+                details.append(str(edge["access_path"]))
+            elif edge.get("keys"):
+                details.append("keys=" + ", ".join(str(item) for item in edge["keys"]))
+            if edge.get("member") and not edge.get("access_path"):
+                details.append("field=" + str(edge["member"]))
+            if edge.get("alias"):
+                details.append("storage alias " + str(edge["alias"]))
+            detail_text = "  " + " · ".join(details) if details else ""
+            print(f"  {label}{detail_text}  [{edge.get('resolution', 'UNRESOLVED')}]  {_location(edge)}")
         else:
             print("  " + _edge_label(edge, nodes))
 
