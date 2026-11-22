@@ -56,6 +56,19 @@ if [[ "$#" -eq 1 ]]; then
         --h|--help|-h|help)
             python3 "$HOME/.lowkey/lk.py" "$@"
             python3 "$HOME/.lowkey/godmode.py"
+            cat <<'LOWKEY_SOURCE_HELP'
+
+Source relationship navigation:
+  lk link Vault
+  lk link Vault.withdraw
+  lk link Vault.positions
+  lk link Vault.withdraw(uint256) --depth 3
+  lk link Vault --only calls|storage|imports|assets
+  lk fn --flow in|out|both --asset eth|erc20|all
+
+Static links describe source relationships, not proof that a path executed.
+Use lk trace to investigate actual transaction execution.
+LOWKEY_SOURCE_HELP
             exit 0
             ;;
     esac
