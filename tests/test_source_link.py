@@ -264,7 +264,7 @@ class SourceLinkTests(unittest.TestCase):
             index = self._index(root)
             nested_output = io.StringIO()
             with contextlib.redirect_stdout(nested_output):
-                nested_status = render_link(index, "Graph.withdraw(uint256)", depth=3)
+                nested_status = render_link(index, "Graph.withdraw(uint256)")
             recursive_output = io.StringIO()
             with contextlib.redirect_stdout(recursive_output):
                 recursive_status = render_link(index, "Graph.recurse(uint256)", depth=5)
