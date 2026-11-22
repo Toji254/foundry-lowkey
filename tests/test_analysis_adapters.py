@@ -241,6 +241,9 @@ class AnalysisAdapterTests(unittest.TestCase):
             (nested / "ProxySupport.sol").write_text("pragma solidity ^0.8.20; contract ProxySupport {}\n", encoding="utf-8")
             info = analysis_adapters.inspect_repository(root)
             self.assertEqual(info["backend"], "cairo-starknet")
+            self.assertTrue(info["capabilities"]["build"])
+            self.assertTrue(info["capabilities"]["tests"])
+            self.assertTrue(info["capabilities"]["live_native"])
             self.assertNotIn("evm-source", info["stacks"])
 
     def test_security_plan_uses_installed_native_analyzers(self):
