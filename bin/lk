@@ -63,7 +63,7 @@ Source relationship navigation:
   lk link Vault.withdraw
   lk link Vault.positions
   lk link Vault.withdraw(uint256) --depth 3
-  lk link Vault --only calls|storage|imports|assets
+  lk link Vault --only calls|storage|reads|writes|imports|assets
   lk fn --flow in|out|both --asset eth|erc20|all
 
 Static links describe source relationships, not proof that a path executed.
