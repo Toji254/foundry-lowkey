@@ -1141,9 +1141,109 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
     return values
 
 
+def _solidity_scope_context(source: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return enclosing contract and function-like body ranges for Solidity offsets.
+
+    This is intentionally a lightweight lexical mapper, not a Solidity parser.
+    It uses comment/string-masked source and balanced braces, and leaves context
+    unset when a declaration body cannot be identified safely.
+    """
+    brace_stack: list[int] = []
+    brace_pairs: dict[int, int] = {}
+    for index, character in enumerate(source):
+        if character == "{":
+            brace_stack.append(index)
+        elif character == "}" and brace_stack:
+            brace_pairs[brace_stack.pop()] = index
+
+    contract_ranges: list[dict[str, Any]] = []
+    contract_pattern = re.compile(
+        r"\b(?:abstract\s+)?(?:contract|interface|library)\s+"
+        r"([A-Za-z_][A-Za-z0-9_]*)\b[^{};]*\{"
+    )
+    for match in contract_pattern.finditer(source):
+        body_open = match.end() - 1
+        body_close = brace_pairs.get(body_open)
+        if body_close is None:
+            continue
+        contract_ranges.append({
+            "start": body_open + 1,
+            "end": body_close,
+            "name": match.group(1),
+        })
+
+    def function_body_open(start: int) -> int | None:
+        # The match ends just after the declaration's opening parenthesis.
+        # Track parameter lists and modifier arguments until the body or
+        # a declaration-only semicolon is reached.
+        paren_depth = 1
+        for index in range(start, len(source)):
+            character = source[index]
+            if character == "(":
+                paren_depth += 1
+            elif character == ")":
+                paren_depth -= 1
+            elif paren_depth == 0:
+                if character == "{":
+                    return index
+                if character == ";":
+                    return None
+        return None
+
+    function_ranges: list[dict[str, Any]] = []
+    function_pattern = re.compile(
+        r"\b(?:function(?:\s+([A-Za-z_][A-Za-z0-9_]*))?"
+        r"|(?P<special>constructor|fallback|receive)"
+        r"|modifier\s+([A-Za-z_][A-Za-z0-9_]*))\s*\("
+    )
+    for match in function_pattern.finditer(source):
+        if not any(
+            contract["start"] <= match.start() < contract["end"]
+            for contract in contract_ranges
+        ):
+            continue
+        body_open = function_body_open(match.end())
+        if body_open is None:
+            continue
+        body_close = brace_pairs.get(body_open)
+        if body_close is None:
+            continue
+        if match.group(1):
+            name = match.group(1)
+        elif match.group("special"):
+            name = match.group("special")
+        elif match.group(3):
+            name = f"modifier {match.group(3)}"
+        else:
+            # Solidity 0.5.x represents fallback functions as function().
+            name = "fallback"
+        function_ranges.append({
+            "start": body_open + 1,
+            "end": body_close,
+            "name": name,
+        })
+
+    return contract_ranges, function_ranges
+
+
+def _enclosing_scope_name(scopes: list[dict[str, Any]], position: int) -> str | None:
+    matches = [
+        scope for scope in scopes
+        if scope["start"] <= position < scope["end"]
+    ]
+    if not matches:
+        return None
+    # Prefer the narrowest range if the source contains nested function-like
+    # constructs (for example, inline assembly declarations).
+    return min(matches, key=lambda scope: scope["end"] - scope["start"])["name"]
+
+
 def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     text = _strip_source_comments(text, language, mask_strings=True)
+    contract_ranges: list[dict[str, Any]] = []
+    function_ranges: list[dict[str, Any]] = []
     if language == "solidity":
+        contract_ranges, function_ranges = _solidity_scope_context(text)
         patterns = [
             ("low-level-call", re.compile(r'\.(?:call|delegatecall|staticcall)\b[^\n]*')),
             # Deliberately exclude .call/.delegatecall/.staticcall here: the
@@ -1163,7 +1263,13 @@ def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     for label, pattern in patterns:
         for match in pattern.finditer(text):
             line = text.count("\n", 0, match.start()) + 1
-            calls.append({"kind": label, "line": line, "text": match.group(0).strip()})
+            call = {"kind": label, "line": line, "text": match.group(0).strip()}
+            if label == "low-level-call" and language == "solidity":
+                operation = re.match(r"\.(call|delegatecall|staticcall)\b", match.group(0))
+                call["operation"] = operation.group(1) if operation else None
+                call["contract"] = _enclosing_scope_name(contract_ranges, match.start())
+                call["function"] = _enclosing_scope_name(function_ranges, match.start())
+            calls.append(call)
     calls.sort(key=lambda item: (item["line"], item["kind"]))
     return calls
 
@@ -1584,6 +1690,9 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
                     f"    {call.get('file') or 'unknown'}:{call['line']}: "
                     f"{call['text']}"
                 )
+                print(f"      Contract : {call.get('contract') or 'not identified'}")
+                print(f"      Function : {call.get('function') or 'not identified'}")
+                print(f"      Operation: {call.get('operation') or 'low-level call'}")
             if len(low_level) > 12:
                 print(f"    ... and {len(low_level) - 12} more")
 
