@@ -130,6 +130,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("LOWKEY // SOURCE LINK", linked_function.stdout)
             self.assertIn("FlowVault.withdraw(uint256)", linked_function.stdout)
             self.assertIn("TRANSFER ATTEMPT", linked_function.stdout)
+            self.assertIn("ORIGIN    FIRST-PARTY", linked_function.stdout)
 
             linked_mapping = subprocess.run(
                 [str(installed_lk), "link", "FlowVault.balances", "--root", str(source_fixture)],
