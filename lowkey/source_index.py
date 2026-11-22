@@ -1888,11 +1888,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             variable = candidates[0]
             indexes = re.findall(r"\[([^\]]*)\]", alias_match.group("indexes"))
-            base_type = variable.get("mapping_value_type") or variable.get("type", "")
-            if not variable.get("mapping_value_type"):
-                base_type = re.sub(r"(?:\s*\[\s*\])+$", "", base_type)
-                if indexes and variable.get("type", "").endswith("]"):
-                    base_type = re.sub(r"(?:\s*\[\s*\])+$", "", variable.get("type", ""))
+            base_type = variable.get("type", "")
+            for _index in indexes:
+                base_type = _storage_type_after_index(base_type)
             declared_alias_type = re.sub(r"\s+", "", alias_match.group("type"))
             expected_alias_type = re.sub(r"\s+", "", base_type)
             if declared_alias_type != expected_alias_type:
