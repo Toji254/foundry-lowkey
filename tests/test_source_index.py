@@ -530,7 +530,17 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "INITIALIZES" and edge["to"] == total_supply["id"] and edge.get("operation") == "INITIALIZER" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == constructor["id"] and edge["to"] == owner["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == modifier["id"] and edge["to"] == next(item["id"] for item in nodes.values() if item.get("qualified_name") == "MutationVault.lastCheckpoint") for edge in edges))
-        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update["id"] and edge["to"] == positions["id"] and edge.get("access_path") == "positions[msg.sender][id].debt" for edge in edges))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES"
+            and edge["from"] == update["id"]
+            and edge["to"] == positions["id"]
+            and edge.get("access_path") == "positions[msg.sender][id].debt"
+            and edge.get("index_kinds") == ["mapping", "mapping"]
+            and edge.get("index_types") == ["address", "uint256"]
+            and edge.get("mapping_key_types") == ["address", "uint256"]
+            and edge.get("mapping_depth") == 2
+            for edge in edges
+        ))
         self.assertTrue(any(edge["kind"] == "DELETES" and edge["from"] == clear["id"] and edge["to"] == positions["id"] and edge.get("access_path") == "positions[msg.sender][id]" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update["id"] and edge["to"] == queue["id"] and edge.get("operation") == "array.push" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == clear["id"] and edge["to"] == queue["id"] and edge.get("operation") == "array.pop" for edge in edges))
