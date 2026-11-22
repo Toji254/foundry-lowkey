@@ -208,9 +208,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"] + file_imports
         inheritance = [edge for edge in edges if edge.get("kind") == "INHERITS"]
         libraries = [edge for edge in edges if edge.get("kind") == "USES_LIBRARY"]
-        _render_edges("INHERITANCE", inheritance, nodes)
-        _render_edges("IMPORTS", imports, nodes)
-        _render_edges("LIBRARY EXTENSIONS", libraries, nodes)
+        _render_edges("INHERITANCE", inheritance[:limit], nodes)
+        _render_edges("IMPORTS", imports[:limit], nodes)
+        _render_edges("LIBRARY EXTENSIONS", libraries[:limit], nodes)
         related_functions = {
             item["id"] for item in nodes.values()
             if item.get("kind") == "function" and item.get("contract") == selected.get("name")
@@ -269,7 +269,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ]
             _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
         unresolved = [edge for edge in edges if edge.get("resolution") == "UNRESOLVED"]
-        _render_edges("UNRESOLVED TARGETS", unresolved, nodes)
+        _render_edges("UNRESOLVED TARGETS", unresolved[:limit], nodes)
     elif selected.get("kind") in {"mapping", "state_variable"}:
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
@@ -283,7 +283,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 and ((direction == "outgoing" and edge.get("from") == selected["id"])
                      or (direction == "incoming" and edge.get("to") == selected["id"]))
             ]
-            _render_edges(heading, values, nodes, reverse=(direction == "incoming"))
+            _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
         type_edges = [edge for edge in edges if edge.get("kind") == "USES_TYPE" and edge.get("from") == selected["id"]]
         struct_ids = {edge.get("to") for edge in type_edges}
         struct_fields = [edge for edge in index.get("edges") or [] if edge.get("kind") == "DECLARES" and edge.get("from") in struct_ids]
@@ -296,9 +296,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
     else:
         outgoing, incoming = _edge_groups(selected, edges, nodes)
         for kind, values in sorted(outgoing.items()):
-            _render_edges(kind.replace("_", " "), values, nodes)
+            _render_edges(kind.replace("_", " "), values[:limit], nodes)
         for kind, values in sorted(incoming.items()):
-            _render_edges("REFERENCED BY " + kind.replace("_", " "), values, nodes, reverse=True)
+            _render_edges("REFERENCED BY " + kind.replace("_", " "), values[:limit], nodes, reverse=True)
 
     print()
     print(f"GRAPH     {index.get('summary', {}).get('relationships', 0)} relationship(s) indexed across {index.get('summary', {}).get('files', 0)} Solidity file(s)")
