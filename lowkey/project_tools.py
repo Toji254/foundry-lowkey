@@ -1969,7 +1969,7 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     print("-" * 72)
     print(
         "Most connected application components "
-        "(imports/inheritance only; not a risk or severity ranking):"
+        "(imports/inheritance only; not a risk ranking or severity score):"
     )
     limit = 8 if verbosity == 1 else 5
     if app_rows:
