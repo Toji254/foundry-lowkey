@@ -458,7 +458,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     contracts: list[dict[str, Any]] = []
     functions: list[dict[str, Any]] = []
     state_variables: list[dict[str, Any]] = []
-    structs: list[dict[str, Any]] = []
+    function_pointers: list[dict[str, Any]] = []
+    structs: list[dict[str, Any]] =
     fields_by_struct: dict[tuple[str, str], list[dict[str, Any]]] = {}
     file_ids: dict[str, str] = {}
     contract_by_name: dict[str, list[dict[str, Any]]] = {}
@@ -567,6 +568,24 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 edges.append(_edge("USES_TYPE", field_id, type_id, path, source, field_offset, type_name=field_type))
 
             for statement, statement_offset in _top_level_statements(clean, opening + 1, closing):
+                pointer_match = re.match(
+                    r"^function\s*\([^;]*\)\s*(?:external|internal)\b.*?\b(?P<name>[A-Za-z_]\w*)$",
+                    statement.strip(),
+                )
+                if pointer_match:
+                    pointer_name = pointer_match.group("name")
+                    pointer_id = _node_id("function_pointer", path, f"{name}.{pointer_name}")
+                    pointer_node = {
+                        "id": pointer_id, "kind": "function_pointer",
+                        "name": pointer_name, "qualified_name": f"{name}.{pointer_name}",
+                        "contract": name, "file": path,
+                        "line": _line(source, statement_offset),
+                        "evidence": "LEXICAL_SOURCE",
+                    }
+                    function_pointers.append(pointer_node)
+                    add_node(pointer_node)
+                    edges.append(_edge("DECLARES", contract_id, pointer_id, path, source, statement_offset))
+                    continue
                 declaration = _state_declaration(statement)
                 if declaration is None:
                     continue
@@ -666,6 +685,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     continue
                 raw_kind = function_match.group("kind")
                 function_name = function_match.group("name")
+                if raw_kind == "function" and not function_name and body_open is None:
+                    # A declaration like function(uint256) external callback;
+                    # is a function pointer, not a named fallback function.
+                    continue
                 if raw_kind == "function" and not function_name:
                     function_name = "fallback"
                 function_name = function_name or raw_kind
@@ -809,9 +832,31 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 ))
 
         local_functions = function_by_scope_name
+        dynamic_pointer_names = {
+            item["name"] for item in function_pointers
+            if item["contract"] == scope and item["file"] == path
+        }
+        dynamic_pointer_names.update(
+            name for name, type_name in (func.get("parameter_declared_types") or {}).items()
+            if re.match(r"function\s*\(", type_name)
+        )
+        for pointer_match in re.finditer(
+            r"function\s*\([^;]*?\)\s*(?:external|internal)\b[^;]*?\b([A-Za-z_]\w*)\s*(?:=|;)",
+            body,
+        ):
+            dynamic_pointer_names.add(pointer_match.group(1))
         call_pattern = re.compile(r"(?<![A-Za-z0-9_.$])([A-Za-z_]\w*)\s*\(")
         for call in call_pattern.finditer(body):
             callee_name = call.group(1)
+            if callee_name in dynamic_pointer_names:
+                edges.append(_edge(
+                    "CALLS", func["id"], f"function-pointer:{scope}.{callee_name}",
+                    path, source, body_absolute + call.start(),
+                    resolution="UNRESOLVED",
+                    call_kind="dynamic-function-pointer",
+                    detail="Function pointer target depends on runtime assignment or dispatch; no implementation is assumed.",
+                ))
+                continue
             if callee_name in _BUILTIN_CALLS:
                 continue
             if callee_name in {"function", "modifier"}:
@@ -1417,7 +1462,7 @@ def find_symbols(index: dict[str, Any], target: str) -> list[dict[str, Any]]:
     for node in index.get("nodes") or []:
         if node.get("kind") not in {
             "contract", "function", "modifier", "mapping", "state_variable",
-            "struct", "struct_field", "event", "custom_error", "enum", "enum_value",
+            "struct", "struct_field", "event", "custom_error", "enum", "enum_value", "function_pointer",
         }:
             continue
         if contract_name and node.get("contract", node.get("name")) != contract_name:
