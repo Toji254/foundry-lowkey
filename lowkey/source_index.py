@@ -361,7 +361,6 @@ def _infer_expression_type(
     state_matches = [
         item for item in state_variables
         if item.get("contract") in {contract, *function.get("bases", [])}
-        and item.get("file") == file_path
         and item.get("name") == value
     ]
     if len(state_matches) == 1:
