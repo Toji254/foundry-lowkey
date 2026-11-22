@@ -225,6 +225,17 @@ def _struct_fields(source: str, start: int, end: int, pairs: dict[int, int]):
                 yield match.group(1), field_match.group(1), field_type, offset
 
 
+def _at_contract_depth(source: str, body_start: int, offset: int) -> bool:
+    """Return true only for a declaration directly inside a contract body."""
+    depth = 0
+    for char in source[body_start:offset]:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depth == 0
+
+
 def _source_ref(path: str, source: str, offset: int) -> dict[str, Any]:
     before = source.rfind("\n", 0, offset)
     return {
@@ -514,6 +525,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*;",
                         clean, opening + 1, closing,
                     )
+                    if _at_contract_depth(clean, opening + 1, using.start())
                 ],
             }
             contracts.append(contract)
@@ -583,6 +595,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
 
             # Enum declarations and their named members are first-class symbols.
             for enum_match in re.finditer(r"\benum\s+([A-Za-z_]\w*)\s*\{", clean, opening + 1, closing):
+                if not _at_contract_depth(clean, opening + 1, enum_match.start()):
+                    continue
                 enum_open = enum_match.end() - 1
                 enum_close = pairs.get(enum_open)
                 if enum_close is None or enum_close > closing:
@@ -618,6 +632,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 ("custom_error", re.compile(r"\berror\s+([A-Za-z_]\w*)\s*\(")),
             ):
                 for declaration_match in pattern.finditer(clean, opening + 1, closing):
+                    if not _at_contract_depth(clean, opening + 1, declaration_match.start()):
+                        continue
                     symbol_id = _node_id(kind, path, f"{name}.{declaration_match.group(1)}")
                     add_node({
                         "id": symbol_id, "kind": kind, "name": declaration_match.group(1),
@@ -633,6 +649,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 r"(?:\s+(?P<name>[A-Za-z_]\w*))?\s*\("
             )
             for function_match in function_pattern.finditer(clean, opening + 1, closing):
+                if not _at_contract_depth(clean, opening + 1, function_match.start()):
+                    continue
                 params_open = function_match.end() - 1
                 params_close = _matching(clean, params_open, "(", ")")
                 if params_close is None:
