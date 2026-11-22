@@ -927,6 +927,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         "id": struct_id, "kind": "struct", "name": field_struct,
                         "qualified_name": f"{name}.{field_struct}", "contract": name,
                         "file": path, "line": _line(source, field_offset),
+                        "provenance": source_provenance.get(path, "unclassified"),
                     }
                     structs.append(struct_node)
                     add_node({**struct_node, "evidence": "LEXICAL_SOURCE"})
@@ -938,6 +939,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "contract": name, "struct": field_struct, "type": field_type,
                     "file": path, "line": _line(source, field_offset),
                     "source_offset": field_offset,
+                    "provenance": source_provenance.get(path, "unclassified"),
                 }
                 add_node({**field_node, "evidence": "LEXICAL_SOURCE"})
                 fields_by_struct.setdefault((name, field_struct), []).append(field_node)
@@ -958,6 +960,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         "name": pointer_name, "qualified_name": f"{name}.{pointer_name}",
                         "contract": name, "file": path,
                         "line": _line(source, statement_offset),
+                        "provenance": source_provenance.get(path, "unclassified"),
                         "evidence": "LEXICAL_SOURCE",
                     }
                     function_pointers.append(pointer_node)
@@ -988,6 +991,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "id": variable_id, "kind": kind, "name": variable_name,
                     "qualified_name": f"{name}.{variable_name}", "contract": name,
                     "file": path, "line": _line(source, statement_offset),
+                    "provenance": source_provenance.get(path, "unclassified"),
                     "initializer": initializer, "type": variable_type, "source_offset": statement_offset,
                     "mapping_value_type": _mapping_inner_type(variable_type),
                     "mapping_keys": _mapping_layout(variable_type)[0] if mapping else [],
@@ -1025,6 +1029,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "id": enum_id, "kind": "enum", "name": enum_name,
                     "qualified_name": f"{name}.{enum_name}", "contract": name,
                     "file": path, "line": _line(source, enum_match.start()),
+                    "provenance": source_provenance.get(path, "unclassified"),
                     "evidence": "LEXICAL_SOURCE",
                 }
                 add_node(enum_node)
@@ -1039,7 +1044,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         "id": value_id, "kind": "enum_value", "name": value_name,
                         "qualified_name": f"{name}.{enum_name}.{value_name}",
                         "contract": name, "enum": enum_name, "file": path,
-                        "line": _line(source, value_offset), "evidence": "LEXICAL_SOURCE",
+                        "line": _line(source, value_offset),
+                        "provenance": source_provenance.get(path, "unclassified"),
+                        "evidence": "LEXICAL_SOURCE",
                     })
                     edges.append(_edge("DECLARES", enum_id, value_id, path, source, value_offset))
 
@@ -1057,6 +1064,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         "qualified_name": f"{name}.{declaration_match.group(1)}",
                         "contract": name, "file": path,
                         "line": _line(source, declaration_match.start()),
+                        "provenance": source_provenance.get(path, "unclassified"),
                         "evidence": "LEXICAL_SOURCE",
                     }
                     add_node(symbol_node)
@@ -1106,6 +1114,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "signature": signature, "qualified_name": f"{name}.{signature}",
                     "contract": name, "contract_kind": contract["declaration_kind"], "file": path,
                     "line": _line(source, function_match.start()),
+                    "provenance": contract["provenance"],
                     "header": header_text,
                     "visibility": visibility_match.group(1) if visibility_match else "UNSPECIFIED",
                     "mutability": mutability_match.group(1) if mutability_match else "nonpayable",
