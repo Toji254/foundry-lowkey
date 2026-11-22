@@ -49,6 +49,40 @@ class SourceIndexTests(unittest.TestCase):
         )
         self.write(
             root,
+            "src/NameA.sol",
+            """
+            pragma solidity ^0.8.20;
+            abstract contract NameA {
+                function select(uint256 value) internal virtual returns (uint256);
+            }
+            """,
+        )
+        self.write(
+            root,
+            "src/NameB.sol",
+            """
+            pragma solidity ^0.8.20;
+            abstract contract NameB {
+                function select(address value) internal virtual returns (uint256);
+            }
+            """,
+        )
+        self.write(
+            root,
+            "src/Multi.sol",
+            """
+            pragma solidity ^0.8.20;
+            import "./NameA.sol";
+            import "./NameB.sol";
+            abstract contract Multi is NameA, NameB {
+                function invoke() external view returns (uint256) {
+                    return select(msg.sender);
+                }
+            }
+            """,
+        )
+        self.write(
+            root,
             "src/BaseVault.sol",
             """
             pragma solidity ^0.8.20;
@@ -212,7 +246,7 @@ class SourceIndexTests(unittest.TestCase):
             temporary.cleanup()
 
         self.assertEqual(index["parser"], "LEXICAL")
-        self.assertEqual(index["summary"]["contracts"], 4)
+        self.assertEqual(index["summary"]["contracts"], 7)
         self.assertTrue(find_symbols(index, "Vault"))
         self.assertEqual(
             len(find_symbols(index, "Vault.withdraw(uint256)")),
@@ -282,6 +316,25 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == alias_function["id"] and edge["to"] == debt_field["id"] and edge.get("alias") == "p" for edge in edges))
         self.assertTrue(any(edge["kind"] == "READS" and nodes.get(edge["from"], {}).get("name") == "getPosition" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges))
+
+    def test_multiple_inheritance_same_depth_calls_remain_unresolved(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        multi_invoke = find_symbols(index, "Multi.invoke()")[0]
+        edge = next(
+            item for item in index["edges"]
+            if item["kind"] == "CALLS" and item["from"] == multi_invoke["id"]
+            and item.get("symbol") == "select"
+        )
+        self.assertEqual(edge["resolution"], "UNRESOLVED")
+        candidates = {item["id"] for item in index["nodes"] if item.get("qualified_name") in {
+            "NameA.select(uint256)", "NameB.select(address)"
+        }}
+        self.assertEqual(set(edge["candidates"]), candidates)
 
     def test_flow_distinguishes_payable_capability_from_transfer_attempts(self):
         temporary, root = self.fixture()
