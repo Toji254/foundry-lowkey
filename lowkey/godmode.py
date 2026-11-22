@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,9 +32,9 @@ except ImportError:
     from lowkey import shared_context, capability_registry
 
 try:
-    from .arithmetic_review import scan_project as scan_unsigned_arithmetic, _mask_comments_and_strings
+    from .arithmetic_review import scan_source as scan_unsigned_source, _mask_comments_and_strings
 except ImportError:
-    from arithmetic_review import scan_project as scan_unsigned_arithmetic, _mask_comments_and_strings
+    from arithmetic_review import scan_source as scan_unsigned_source, _mask_comments_and_strings
 
 VERSION = "0.2.0"
 EXTS = {".sol", ".vy", ".yul", ".huff", ".rs", ".move", ".cairo"}
@@ -1891,17 +1892,238 @@ def files(root,include_tests=False):
             if p.stat().st_size <= 2_000_000: out.append(p)
         except OSError: pass
     return sorted(out)
-def patterns(root,table,include_tests=False):
-    compiled={k:re.compile(v,re.I) for k,v in table.items()}
-    rows=[]
-    for path in files(root,include_tests):
-        try: lines=path.read_text(encoding="utf-8",errors="replace").splitlines()
-        except OSError: continue
-        for n,line in enumerate(lines,1):
-            for key,rx in compiled.items():
-                if rx.search(line):
-                    rows.append({"kind":key,"file":path.relative_to(root).as_posix(),"line":n,"text":line.strip()[:400]})
+
+# Godmode uses one auditable inventory for every mandatory source scanner.
+# The legacy files() helper remains for unrelated commands; it must not be
+# used to establish complete audit coverage because it predates error reporting.
+_SOURCE_FILE_MAX_BYTES = 2_000_000
+_SOURCE_INVENTORY_MAX_BYTES = 128 * 1024 * 1024
+_SOURCE_TEST_PARTS = {"test", "tests", "script", "scripts", "fixtures", "mocks"}
+
+
+def _source_stat(path: Path):
+    """Small seam for deterministic stat-failure regression tests."""
+    return path.stat()
+
+
+def _read_source_text(path: Path) -> str:
+    """Small seam for deterministic read-failure regression tests."""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _collect_source_inventory(root: str | Path, *, include_tests: bool = True) -> dict[str, Any]:
+    """Enumerate and read first-party source files, retaining every inspection failure.
+
+    Traversal never follows symlinks. A directory that cannot be enumerated is
+    reported as an unknown subtree because its children cannot be named safely.
+    """
+    project = Path(root).expanduser().resolve()
+    inventory: dict[str, Any] = {
+        "root": project,
+        "files": [],
+        "contents": {},
+        "discovered_paths": [],
+        "failures": [],
+        "bytes_read": 0,
+    }
+    failures = inventory["failures"]
+    discovered = inventory["discovered_paths"]
+    contents = inventory["contents"]
+    inspected = inventory["files"]
+
+    def relative(path: Path) -> str:
+        try:
+            return path.relative_to(project).as_posix() or "."
+        except (OSError, ValueError):
+            return str(path)
+
+    def record(path: Path, phase: str, error: BaseException | str, *, scope: str) -> None:
+        detail = (
+            f"{type(error).__name__}: {error}"
+            if isinstance(error, BaseException) else str(error)
+        )
+        failures.append({
+            "path": relative(path),
+            "phase": phase,
+            "scope": scope,
+            "error": detail[:600],
+        })
+
+    def walk(directory: Path) -> None:
+        pending = []
+        try:
+            with os.scandir(directory) as iterator:
+                while True:
+                    try:
+                        pending.append(next(iterator))
+                    except StopIteration:
+                        break
+                    except OSError as exc:
+                        record(directory, "directory-enumeration", exc, scope="directory")
+                        break
+        except OSError as exc:
+            record(directory, "directory-enumeration", exc, scope="directory")
+            return
+
+        for entry in sorted(pending, key=lambda item: item.name.casefold()):
+            path = Path(entry.path)
+            suffix = path.suffix.lower()
+            try:
+                is_symlink = entry.is_symlink()
+                if is_symlink:
+                    try:
+                        is_directory_target = entry.is_dir(follow_symlinks=True)
+                    except OSError:
+                        is_directory_target = False
+                    if entry.name in SKIP:
+                        continue
+                    if suffix in EXTS:
+                        discovered.append(relative(path))
+                    if suffix in EXTS or is_directory_target:
+                        record(
+                            path,
+                            "symlink-not-followed",
+                            "Source symlinks are not followed during an audit scan.",
+                            scope="source-file" if suffix in EXTS else "directory",
+                        )
+                    continue
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError as exc:
+                record(
+                    path, "entry-inspection", exc,
+                    scope="source-file" if suffix in EXTS else "directory-or-entry",
+                )
+                if suffix in EXTS:
+                    discovered.append(relative(path))
+                continue
+
+            if is_directory:
+                if entry.name in SKIP:
+                    continue
+                if not include_tests and entry.name in _SOURCE_TEST_PARTS:
+                    continue
+                walk(path)
+                continue
+
+            if suffix not in EXTS:
+                continue
+
+            discovered.append(relative(path))
+            try:
+                info = _source_stat(path)
+            except OSError as exc:
+                record(path, "stat", exc, scope="source-file")
+                continue
+
+            if not stat.S_ISREG(info.st_mode):
+                record(path, "file-type", "Source candidate is not a regular file.", scope="source-file")
+                continue
+            if info.st_size > _SOURCE_FILE_MAX_BYTES:
+                record(
+                    path, "size-limit",
+                    f"Source file is {info.st_size} bytes; scan limit is {_SOURCE_FILE_MAX_BYTES} bytes.",
+                    scope="source-file",
+                )
+                continue
+            if inventory["bytes_read"] + info.st_size > _SOURCE_INVENTORY_MAX_BYTES:
+                record(
+                    path, "inventory-budget",
+                    f"Total source inventory budget of {_SOURCE_INVENTORY_MAX_BYTES} bytes was reached.",
+                    scope="source-file",
+                )
+                continue
+            try:
+                text = _read_source_text(path)
+            except OSError as exc:
+                record(path, "read", exc, scope="source-file")
+                continue
+
+            encoded_size = len(text.encode("utf-8", errors="replace"))
+            if encoded_size > _SOURCE_FILE_MAX_BYTES:
+                record(
+                    path, "size-limit-after-read",
+                    f"Source file grew beyond the {_SOURCE_FILE_MAX_BYTES}-byte scan limit while being read.",
+                    scope="source-file",
+                )
+                continue
+            inventory["bytes_read"] += encoded_size
+            inspected.append(path)
+            contents[path] = text
+
+    try:
+        root_info = _source_stat(project)
+    except OSError as exc:
+        record(project, "root-stat", exc, scope="directory")
+    else:
+        if not stat.S_ISDIR(root_info.st_mode):
+            record(project, "root-validation", "Project root is not a directory.", scope="directory")
+        else:
+            walk(project)
+
+    if not discovered and not failures:
+        record(project, "source-discovery", "No supported source files were discovered.", scope="project")
+
+    inspected.sort(key=lambda item: relative(item).casefold())
+    discovered.sort(key=str.casefold)
+    failures.sort(key=lambda item: (str(item.get("path", "")).casefold(), str(item.get("phase", ""))))
+    return inventory
+
+
+def _inventory_paths(inventory: dict[str, Any], *, include_tests: bool = False) -> list[Path]:
+    root = Path(inventory["root"])
+    selected = []
+    for path in inventory.get("files", []):
+        try:
+            parts = set(path.relative_to(root).parts[:-1])
+        except (OSError, ValueError):
+            continue
+        if not include_tests and parts & _SOURCE_TEST_PARTS:
+            continue
+        selected.append(path)
+    return selected
+
+
+def _source_inventory_status(inventory: dict[str, Any]) -> str:
+    """completed only when every in-scope source candidate was inspected."""
+    if not inventory.get("failures"):
+        return "completed"
+    if not inventory.get("files"):
+        return "blocked"
+    return "review"
+
+
+def _source_inventory_report(inventory: dict[str, Any]) -> dict[str, Any]:
+    failures = list(inventory.get("failures") or [])
+    return {
+        "root": str(inventory.get("root") or ""),
+        "complete": not failures,
+        "files_discovered": len(inventory.get("discovered_paths") or []),
+        "files_inspected": len(inventory.get("files") or []),
+        "bytes_read": int(inventory.get("bytes_read") or 0),
+        "uninspected_count": len(failures),
+        "uninspected": failures,
+    }
+
+
+def patterns(root, table, include_tests=False, inventory=None):
+    project = Path(root).expanduser().resolve()
+    compiled = {key: re.compile(value, re.I) for key, value in table.items()}
+    if inventory is None:
+        inventory = _collect_source_inventory(project, include_tests=True)
+    rows = []
+    for path in _inventory_paths(inventory, include_tests=include_tests):
+        text = inventory["contents"][path]
+        for number, line in enumerate(text.splitlines(), 1):
+            for key, regex in compiled.items():
+                if regex.search(line):
+                    rows.append({
+                        "kind": key,
+                        "file": path.relative_to(project).as_posix(),
+                        "line": number,
+                        "text": line.strip()[:400],
+                    })
     return rows
+
 def funcs(text):
     rx=re.compile(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^;{}]*\)[^{;]*\{")
     for m in rx.finditer(text):
@@ -1911,64 +2133,137 @@ def funcs(text):
             elif text[i]=="}": depth-=1
             i+=1
         if depth==0: yield {"name":m.group(1),"start":m.start(),"body":text[m.end():i-1]}
-def reentrancy_graph(root):
-    out=[]
-    calls=re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()|\.transfer\s*\(|\.send\s*\(|safeTransfer(?:From)?\s*\(")
-    reads=re.compile(r"\b([A-Za-z_$][\w$]*)\s*\[[^\]]+\]")
-    writes=re.compile(r"\b([A-Za-z_$][\w$]*)\s*(?:\[[^\]]+\])?\s*(?:\+\+|--|[+\-*/]?=)")
-    for p in files(root):
-        text=p.read_text(encoding="utf-8",errors="replace")
-        for f in funcs(text):
-            r= list(reads.finditer(f["body"])); w=list(writes.finditer(f["body"]))
-            for call in calls.finditer(f["body"]):
-                before={m.group(1) for m in r if m.start()<call.start()}
-                after={m.group(1) for m in w if m.start()>call.start()}
-                shared=sorted(before&after)
+def reentrancy_graph(root, inventory=None):
+    project = Path(root).expanduser().resolve()
+    if inventory is None:
+        inventory = _collect_source_inventory(project, include_tests=True)
+    out = []
+    calls = re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()|\.transfer\s*\(|\.send\s*\(|safeTransfer(?:From)?\s*\(")
+    reads = re.compile(r"\b([A-Za-z_$][\w$]*)\s*\[[^\]]+\]")
+    writes = re.compile(r"\b([A-Za-z_$][\w$]*)\s*(?:\[[^\]]+\])?\s*(?:\+\+|--|[+\-*/]?=)")
+    for path in _inventory_paths(inventory, include_tests=False):
+        text = inventory["contents"][path]
+        for function in funcs(text):
+            read_rows = list(reads.finditer(function["body"]))
+            write_rows = list(writes.finditer(function["body"]))
+            for call in calls.finditer(function["body"]):
+                before = {match.group(1) for match in read_rows if match.start() < call.start()}
+                after = {match.group(1) for match in write_rows if match.start() > call.start()}
+                shared = sorted(before & after)
                 if shared:
-                    out.append({"file":p.relative_to(root).as_posix(),"function":f["name"],"variables":shared,
-                                "call_offset":call.start(),"confidence":"heuristic",
-                                "excerpt":f["body"][max(0,call.start()-80):call.end()+100].strip()[:280]})
+                    out.append({
+                        "file": path.relative_to(project).as_posix(),
+                        "function": function["name"],
+                        "variables": shared,
+                        "call_offset": call.start(),
+                        "confidence": "heuristic",
+                        "excerpt": function["body"][max(0, call.start() - 80):call.end() + 100].strip()[:280],
+                    })
     return out
-def source_maps(root):
+
+def source_maps(root, inventory=None):
+    project = Path(root).expanduser().resolve()
+    if inventory is None:
+        inventory = _collect_source_inventory(project, include_tests=True)
+
+    arithmetic_rows = []
+    for path in _inventory_paths(inventory, include_tests=False):
+        if path.suffix.lower() != ".sol":
+            continue
+        try:
+            arithmetic_rows.extend(
+                scan_unsigned_source(
+                    inventory["contents"][path],
+                    path.relative_to(project).as_posix(),
+                    project,
+                )
+            )
+        except Exception as exc:
+            inventory["failures"].append({
+                "path": path.relative_to(project).as_posix(),
+                "phase": "arithmetic-analysis",
+                "scope": "source-file",
+                "error": f"{type(exc).__name__}: {exc}"[:600],
+            })
+
+    cfg_outline = []
+    for path in _inventory_paths(inventory, include_tests=False):
+        text = inventory["contents"][path]
+        for function in funcs(text):
+            if not re.search(PATTERNS["external_call"], function["body"], re.I):
+                continue
+            operations = sorted(
+                list(re.finditer(PATTERNS["external_call"], function["body"], re.I))
+                + list(re.finditer(r"\b[A-Za-z_$][\w$]*\s*(?:\[[^\]]+\])?\s*(?:\+\+|--|[+\-*/]?=)", function["body"])),
+                key=lambda item: item.start(),
+            )
+            cfg_outline.append({
+                "file": path.relative_to(project).as_posix(),
+                "function": function["name"],
+                "nodes": ([{"kind": "entry", "offset": 0}]
+                    + [{
+                        "kind": "external_call" if "call" in item.group(0) else "state_write",
+                        "offset": item.start(),
+                        "text": item.group(0)[:90],
+                    } for item in operations]
+                    + [{"kind": "exit", "offset": len(function["body"])}]),
+            })
+
     return {
-      "fallback_map":patterns(root,{**FALLBACK,"generic_hook":r"\bon[A-Z][A-Za-z0-9_]*\s*\("},True),
-      "oracle_map":patterns(root,{
-          "chainlink_aggregator":r"\b(?:latestRoundData|latestAnswer|getRoundData)\s*\(",
-          "uniswap_v2_spot":r"\bgetReserves\s*\(",
-          "uniswap_v3_spot":r"\bslot0\s*\(",
-          "twap_observation":r"\b(?:observe|consult)\s*\(",
-          "generic_price_or_rate":r"\b(?:price|oracle|exchangeRate|virtualPrice|sharePrice)\b",
-          "freshness_guard":r"\b(?:updatedAt|answeredInRound|heartbeat|stale|staleness)\b"}),
-      "time_map":patterns(root,{"timestamp":r"\bblock\.timestamp\b","block_number":r"\bblock\.number\b",
-          "blockhash":r"\bblockhash\s*\(","prevrandao":r"\bblock\.prevrandao\b",
-          "deadline":r"\b(?:deadline|expiry|expiration)\b","lock_window":r"\b(?:unlock|lockUntil|epoch|vesting)\b"}),
-      "storage_map":patterns(root,{"mapping_declaration":r"\bmapping\s*\(","dynamic_array":r"\b[A-Za-z_$][\w$]*\s*\[\s*\]\s+(?:public|private|internal|external)?",
-          "storage_assembly":r"\b(?:sload|sstore)\s*\(","hash_derived_slot":r"\b(?:keccak256|keccak)\s*\("}),
-      "token_map":patterns(root,{"erc20_transfer":r"\b(?:transfer|transferFrom|safeTransfer|safeTransferFrom)\s*\(",
-          "unchecked_balance":r"\bbalanceOf\s*\(","decimals_assumption":r"\bdecimals\s*\(",
-          "permit":r"\bpermit\s*\(","approval":r"\b(?:approve|allowance)\s*\("}),
-      "arithmetic_review":scan_unsigned_arithmetic(root),
-      "signature_map":patterns(root,{"signature":PATTERNS["signature"],"nonce_domain":PATTERNS["nonce_domain"]}),
-      "initializer_map":patterns(root,{"initializer":r"\binitializer\b","reinitializer":r"\breinitializer\s*\(",
-          "initialize_function":r"\bfunction\s+initialize[A-Za-z0-9_]*\s*\(","disable_initializers":r"\b_disableInitializers\s*\("}),
-      "custody_map":patterns(root,{"owner":r"\b(?:onlyOwner|owner\s*\(|transferOwnership|renounceOwnership)\b",
-          "access_control":r"\b(?:AccessControl|onlyRole|grantRole|revokeRole|hasRole)\b","guardian":r"\bguardian\b",
-          "pause":r"\b(?:pause|unpause|whenNotPaused|Pausable)\b","timelock":r"\b(?:Timelock|timelock|schedule|execute)\b",
-          "upgrade":r"\b(?:upgradeTo|upgradeToAndCall|_authorizeUpgrade|ProxyAdmin|beacon)\b"}),
-      "cross_vm_map":patterns(root,{"solana_signer":r"\bSigner\s*<|\bis_signer\b","solana_pda":r"\bseeds\s*=|find_program_address|create_program_address",
-          "solana_account":r"\bAccountInfo\b|\bowner\s*==\s*\*?program_id",
-          "move_capability":r"\b(?:has key|acquires|TreasuryCap|AdminCap|public entry|friend)\b",
-          "cairo_caller":r"\b(?:get_caller_address|caller_address|external\s*\()",
-          "soroban_auth":r"\b(?:require_auth|require_auth_for_args|\.auth\s*\()"}),
-      "reentrancy_graph":reentrancy_graph(root),
-      "cfg_outline":[{"file":p.relative_to(root).as_posix(),"function":f["name"],
-          "nodes":[{"kind":"entry","offset":0}]+[
-            {"kind":"external_call" if m.group(0).find("call")>=0 else "state_write","offset":m.start(),"text":m.group(0)[:90]}
-            for m in sorted(list(re.finditer(PATTERNS["external_call"],f["body"],re.I))+list(re.finditer(r"\b[A-Za-z_$][\w$]*\s*(?:\[[^\]]+\])?\s*(?:\+\+|--|[+\-*/]?=)",f["body"])),key=lambda x:x.start())
-          ]+[{"kind":"exit","offset":len(f["body"])}]}
-          for p in files(root) for f in funcs(p.read_text(encoding="utf-8",errors="replace"))
-          if re.search(PATTERNS["external_call"],f["body"],re.I)]
+        "fallback_map": patterns(root, {**FALLBACK, "generic_hook": r"\bon[A-Z][A-Za-z0-9_]*\s*\("}, True, inventory),
+        "oracle_map": patterns(root, {
+            "chainlink_aggregator": r"\b(?:latestRoundData|latestAnswer|getRoundData)\s*\(",
+            "uniswap_v2_spot": r"\bgetReserves\s*\(",
+            "uniswap_v3_spot": r"\bslot0\s*\(",
+            "twap_observation": r"\b(?:observe|consult)\s*\(",
+            "generic_price_or_rate": r"\b(?:price|oracle|exchangeRate|virtualPrice|sharePrice)\b",
+            "freshness_guard": r"\b(?:updatedAt|answeredInRound|heartbeat|stale|staleness)\b",
+        }, inventory=inventory),
+        "time_map": patterns(root, {
+            "timestamp": r"\bblock\.timestamp\b", "block_number": r"\bblock\.number\b",
+            "blockhash": r"\bblockhash\s*\(", "prevrandao": r"\bblock\.prevrandao\b",
+            "deadline": r"\b(?:deadline|expiry|expiration)\b",
+            "lock_window": r"\b(?:unlock|lockUntil|epoch|vesting)\b",
+        }, inventory=inventory),
+        "storage_map": patterns(root, {
+            "mapping_declaration": r"\bmapping\s*\(",
+            "dynamic_array": r"\b[A-Za-z_$][\w$]*\s*\[\s*\]\s+(?:public|private|internal|external)?",
+            "storage_assembly": r"\b(?:sload|sstore)\s*\(",
+            "hash_derived_slot": r"\b(?:keccak256|keccak)\s*\(",
+        }, inventory=inventory),
+        "token_map": patterns(root, {
+            "erc20_transfer": r"\b(?:transfer|transferFrom|safeTransfer|safeTransferFrom)\s*\(",
+            "unchecked_balance": r"\bbalanceOf\s*\(", "decimals_assumption": r"\bdecimals\s*\(",
+            "permit": r"\bpermit\s*\(", "approval": r"\b(?:approve|allowance)\s*\(",
+        }, inventory=inventory),
+        "arithmetic_review": arithmetic_rows,
+        "signature_map": patterns(root, {
+            "signature": PATTERNS["signature"], "nonce_domain": PATTERNS["nonce_domain"],
+        }, inventory=inventory),
+        "initializer_map": patterns(root, {
+            "initializer": r"\binitializer\b", "reinitializer": r"\breinitializer\s*\(",
+            "initialize_function": r"\bfunction\s+initialize[A-Za-z0-9_]*\s*\(",
+            "disable_initializers": r"\b_disableInitializers\s*\(",
+        }, inventory=inventory),
+        "custody_map": patterns(root, {
+            "owner": r"\b(?:onlyOwner|owner\s*\(|transferOwnership|renounceOwnership)\b",
+            "access_control": r"\b(?:AccessControl|onlyRole|grantRole|revokeRole|hasRole)\b",
+            "guardian": r"\bguardian\b", "pause": r"\b(?:pause|unpause|whenNotPaused|Pausable)\b",
+            "timelock": r"\b(?:Timelock|timelock|schedule|execute)\b",
+            "upgrade": r"\b(?:upgradeTo|upgradeToAndCall|_authorizeUpgrade|ProxyAdmin|beacon)\b",
+        }, inventory=inventory),
+        "cross_vm_map": patterns(root, {
+            "solana_signer": r"\bSigner\s*<|\bis_signer\b",
+            "solana_pda": r"\bseeds\s*=|find_program_address|create_program_address",
+            "solana_account": r"\bAccountInfo\b|\bowner\s*==\s*\*?program_id",
+            "move_capability": r"\b(?:has key|acquires|TreasuryCap|AdminCap|public entry|friend)\b",
+            "cairo_caller": r"\b(?:get_caller_address|caller_address|external\s*\()",
+            "soroban_auth": r"\b(?:require_auth|require_auth_for_args|\.auth\s*\()",
+        }, inventory=inventory),
+        "reentrancy_graph": reentrancy_graph(project, inventory),
+        "cfg_outline": cfg_outline,
     }
+
 class AhoCorasick:
     def __init__(self,patterns):
         self.next=[{}]; self.fail=[0]; self.out=[[]]
@@ -1994,35 +2289,60 @@ class AhoCorasick:
             state=self.next[state].get(token,0)
             hits.extend((i-size+1,label,size) for label,size in self.out[state])
         return hits
-def cheat_fingerprints(root):
+def cheat_fingerprints(root, inventory=None):
+    project = Path(root).expanduser().resolve()
+    if inventory is None:
+        inventory = _collect_source_inventory(project, include_tests=True)
     try:
-        try: from .solidity_cheat_topics import register_topics
-        except ImportError: from solidity_cheat_topics import register_topics
-        entries=[]
-        def collect(*args,**kwargs):
-            label=str(args[0]) if args else "cheat-topic"
+        try:
+            from .solidity_cheat_topics import register_topics
+        except ImportError:
+            from solidity_cheat_topics import register_topics
+        entries = []
+
+        def collect(*args, **kwargs):
+            label = str(args[0]) if args else "cheat-topic"
             for item in args[1:]:
-                if not isinstance(item,str): continue
+                if not isinstance(item, str):
+                    continue
                 for line in item.splitlines():
-                    if not re.search(r"(?:mapping|call|delegatecall|keccak|sload|sstore|fallback|receive|signature|nonce|vm\.)",line,re.I): continue
-                    toks=tuple(re.findall(r"[A-Za-z_$][\w$]*|0x[0-9a-fA-F]+|\d+|==|!=|<=|>=|=>|&&|\|\||[^\s]",line))
-                    if 3<=len(toks)<=30: entries.append((label,toks))
+                    if not re.search(r"(?:mapping|call|delegatecall|keccak|sload|sstore|fallback|receive|signature|nonce|vm\.)", line, re.I):
+                        continue
+                    tokens = tuple(re.findall(r"[A-Za-z_$][\w$]*|0x[0-9a-fA-F]+|\d+|==|!=|<=|>=|=>|&&|\|\||[^\s]", line))
+                    if 3 <= len(tokens) <= 30:
+                        entries.append((label, tokens))
+
         register_topics(collect)
-    except Exception: entries=[]
-    unique={}
-    for label,toks in entries: unique.setdefault(toks,label)
-    if not unique: unique={("delegatecall",):"delegatecall",("mapping",):"mapping",("sstore",):"storage-write",("call",):"external-call"}
-    ac=AhoCorasick([(v,k) for k,v in unique.items()])
-    result=[]
-    for p in files(root):
-        text=p.read_text(encoding="utf-8",errors="replace")
-        matches=list(re.finditer(r"[A-Za-z_$][\w$]*|0x[0-9a-fA-F]+|\d+|==|!=|<=|>=|=>|&&|\|\||[^\s]",text))
-        tokens=[m.group(0) for m in matches]
-        for idx,label,size in ac.scan(tokens):
-            line=text.count("\n",0,matches[idx].start())+1
-            result.append({"topic":label,"file":p.relative_to(root).as_posix(),"line":line,
-                           "fingerprint":hashlib.sha256(" ".join(tokens[idx:idx+size]).encode()).hexdigest()[:16]})
-    return {"patterns":len(unique),"hits":result,"meaning":"Fingerprint matches are leads, never vulnerability verdicts."}
+    except Exception:
+        entries = []
+
+    unique = {}
+    for label, tokens in entries:
+        unique.setdefault(tokens, label)
+    if not unique:
+        unique = {
+            ("delegatecall",): "delegatecall", ("mapping",): "mapping",
+            ("sstore",): "storage-write", ("call",): "external-call",
+        }
+    automaton = AhoCorasick([(label, tokens) for tokens, label in unique.items()])
+    result = []
+    for path in _inventory_paths(inventory, include_tests=False):
+        text = inventory["contents"][path]
+        matches = list(re.finditer(r"[A-Za-z_$][\w$]*|0x[0-9a-fA-F]+|\d+|==|!=|<=|>=|=>|&&|\|\||[^\s]", text))
+        tokens = [match.group(0) for match in matches]
+        for index, label, size in automaton.scan(tokens):
+            line = text.count("\n", 0, matches[index].start()) + 1
+            result.append({
+                "topic": label,
+                "file": path.relative_to(project).as_posix(),
+                "line": line,
+                "fingerprint": hashlib.sha256(" ".join(tokens[index:index + size]).encode()).hexdigest()[:16],
+            })
+    return {
+        "patterns": len(unique),
+        "hits": result,
+        "meaning": "Fingerprint matches are leads, never vulnerability verdicts.",
+    }
 
 _PRIVILEGED_STATE_NAMES = {
     "owner", "admin", "authority", "guardian", "governor", "governance",
@@ -2089,7 +2409,7 @@ def _authorization_guard(expression: str, privileged_names: set[str]) -> bool:
     return any(re.search(r"\b" + re.escape(name) + r"\b", expression) for name in privileged_names)
 
 
-def _source_security_candidates(root: str | Path) -> list[dict[str, Any]]:
+def _source_security_candidates(root: str | Path, inventory: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Find generic unguarded writes to state used as an authorization principal.
 
     This is a conservative source-level rule: it derives custom authority variable
@@ -2097,6 +2417,8 @@ def _source_security_candidates(root: str | Path) -> list[dict[str, Any]]:
     external, receive and fallback entry point for writes to those variables.
     """
     project = Path(root).expanduser().resolve()
+    if inventory is None:
+        inventory = _collect_source_inventory(project, include_tests=True)
     findings: list[dict[str, Any]] = []
     guard_call = re.compile(r"\b(?:require|assert|if)\s*\(([^{};]*)\)")
     modifier_pattern = re.compile(
@@ -2107,13 +2429,10 @@ def _source_security_candidates(root: str | Path) -> list[dict[str, Any]]:
         r"(?P<operator>=(?!=)|\+=|-=|\+\+|--)"
     )
 
-    for path in files(project):
+    for path in _inventory_paths(inventory, include_tests=False):
         if path.suffix.lower() != ".sol":
             continue
-        try:
-            source = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        source = inventory["contents"][path]
         masked = _mask_comments_and_strings(source)
         blocks = _solidity_entry_blocks(masked)
 
@@ -6038,7 +6357,8 @@ def _load_godmode_project_context(root, config_path=None, *, explicit_target=Non
 
     # Preserve the rest of the project audit metadata for Godmode's report,
     # while replacing context-bearing fields with the canonical resolution.
-    if not has_owned_project_state and not resolved.get("target") and not resolved.get("rpc") and not resolved.get("actor"):
+    # A default global wallet profile alone is not project-owned context.
+    if not has_owned_project_state and not resolved.get("target") and not resolved.get("rpc"):
         return {}
     context = dict(project_state)
     context.update({
@@ -6097,9 +6417,36 @@ def godmode(args):
             "environment": "the environment-configured",
         }.get(rpc_source, "the configured")
         print(f"INFO  Using {rpc_label} RPC for read-only inspection.")
-    maps=source_maps(root)
-    cheat=cheat_fingerprints(root)
-    source_findings=_source_security_candidates(root)
+    source_inventory = _collect_source_inventory(root, include_tests=True)
+
+    def record_scanner_failure(scanner: str, exc: BaseException) -> None:
+        source_inventory["failures"].append({
+            "path": ".",
+            "phase": scanner,
+            "scope": "scanner",
+            "error": f"{type(exc).__name__}: {exc}"[:600],
+        })
+
+    try:
+        maps = source_maps(root, inventory=source_inventory)
+    except Exception as exc:
+        record_scanner_failure("source-map-analysis", exc)
+        maps = {
+            "fallback_map": [], "oracle_map": [], "time_map": [],
+            "storage_map": [], "token_map": [], "arithmetic_review": [],
+            "signature_map": [], "initializer_map": [], "custody_map": [],
+            "cross_vm_map": [], "reentrancy_graph": [], "cfg_outline": [],
+        }
+    try:
+        cheat = cheat_fingerprints(root, inventory=source_inventory)
+    except Exception as exc:
+        record_scanner_failure("cheat-fingerprint-analysis", exc)
+        cheat = {"patterns": 0, "hits": [], "meaning": "Analysis incomplete."}
+    try:
+        source_findings = _source_security_candidates(root, inventory=source_inventory)
+    except Exception as exc:
+        record_scanner_failure("source-security-analysis", exc)
+        source_findings = []
     slither_stage,slither_findings=_run_slither_analysis(root)
     if ns.ai_review:
         ai_stage,ai_findings=_run_ai_security_review(root)
@@ -6109,26 +6456,64 @@ def godmode(args):
     findings=source_findings+slither_findings+ai_findings
     stages=[]
     raw_map_count=sum(len(v) for key,v in maps.items() if isinstance(v,list) and key != "arithmetic_review")
-    source_file_count=len(files(root))
+    source_file_count = len(_inventory_paths(source_inventory, include_tests=False))
+    coverage_status = _source_inventory_status(source_inventory)
+    coverage_report = _source_inventory_report(source_inventory)
+    coverage_reason = ""
+    if source_inventory["failures"]:
+        coverage_reason = (
+            f"Source coverage is incomplete: {len(source_inventory['failures'])} file, directory, "
+            "or scanner inspection failure(s). See source_inventory.uninspected in the JSON report."
+        )
     stages.append({
-        "name":"source-recon",
-        "status":"completed",
-        "signals":source_file_count,
-        "files_scanned":source_file_count,
-        "markers":raw_map_count,
+        "name": "source-recon",
+        "status": coverage_status,
+        "signals": source_file_count,
+        "files_discovered": coverage_report["files_discovered"],
+        "files_scanned": coverage_report["files_inspected"],
+        "uninspected_count": coverage_report["uninspected_count"],
+        "uninspected": coverage_report["uninspected"],
+        "coverage_complete": coverage_report["complete"],
+        "reason": coverage_reason,
+        "markers": raw_map_count,
     })
-    stages.append({"name":"source-security","status":"completed","finding_count":len(source_findings)})
+    stages.append({
+        "name": "source-security",
+        "status": coverage_status,
+        "finding_count": len(source_findings),
+        "files_scanned": len([
+            path for path in _inventory_paths(source_inventory, include_tests=False)
+            if path.suffix.lower() == ".sol"
+        ]),
+        "uninspected_count": coverage_report["uninspected_count"],
+        "uninspected": coverage_report["uninspected"],
+        "coverage_complete": coverage_report["complete"],
+        "reason": coverage_reason,
+    })
     stages.append(slither_stage)
     stages.append(ai_stage)
     arithmetic_rows=maps.get("arithmetic_review", [])
     wraparound_rows=[row for row in arithmetic_rows if row.get("status")=="WRAPAROUND_POSSIBLE"]
     stages.append({
-        "name":"arithmetic-review",
-        "status":"completed",
-        "signals":len(arithmetic_rows),
-        "wraparound_candidates":len(wraparound_rows),
+        "name": "arithmetic-review",
+        "status": coverage_status,
+        "signals": len(arithmetic_rows),
+        "wraparound_candidates": len(wraparound_rows),
+        "coverage_complete": coverage_report["complete"],
+        "uninspected_count": coverage_report["uninspected_count"],
+        "uninspected": coverage_report["uninspected"],
+        "reason": coverage_reason,
     })
-    stages.append({"name":"cheat-fingerprints","status":"completed","hits":len(cheat["hits"]),"patterns":int(cheat.get("patterns",0))})
+    stages.append({
+        "name": "cheat-fingerprints",
+        "status": coverage_status,
+        "hits": len(cheat["hits"]),
+        "patterns": int(cheat.get("patterns", 0)),
+        "coverage_complete": coverage_report["complete"],
+        "uninspected_count": coverage_report["uninspected_count"],
+        "uninspected": coverage_report["uninspected"],
+        "reason": coverage_reason,
+    })
     chain=block=None
     onchain={}
     target_has_code=None
@@ -6222,11 +6607,30 @@ def godmode(args):
         stages.append({"name":"target-coverage","status":"completed" if rc==0 else "review","exit_code":rc})
     else:
         stages.append({"name":"target-coverage","status":"not-run","reason":"No target source line scope was supplied."})
-    blockers=[s for s in stages if s["status"] in {"blocked","failed"} or
-               (s["status"]=="review" and s.get("name") in {"attack","mutation","target-coverage"})]
+    requested_stages = set()
+    if ns.ai_review:
+        requested_stages.add("ai-review")
+    if target and selected_rpc and not ns.plan_only:
+        requested_stages.add("onchain-recon")
+    if ns.attack:
+        requested_stages.add("attack")
+    if ns.mutation_manifest and not ns.plan_only:
+        requested_stages.add("mutation")
+    if ns.coverage_source and not ns.plan_only:
+        requested_stages.add("target-coverage")
+
+    mandatory_stages = {
+        "source-recon", "source-security", "arithmetic-review", "cheat-fingerprints"
+    }
+    blockers = [
+        stage for stage in stages
+        if stage.get("name") in (mandatory_stages | requested_stages)
+        and stage.get("status") in {"blocked", "failed", "review"}
+    ]
     payload={"created_at":now(),"target":target,"project_root":str(root),"git_revision":None,"chain_id":chain,"fork_block":block,
              "profile":ns.profile,"stages":stages,"signals":maps,"cheat_fingerprints":cheat,
              "findings":findings,"source_security_findings":source_findings,"slither_findings":slither_findings,"ai_findings":ai_findings,
+             "source_inventory": coverage_report,
              "onchain":onchain,"overall_status":"REVIEW_REQUIRED",
              "proof_gate":["attack must demonstrate a measurable security-property delta","matched sequential control must pass",
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
@@ -6236,6 +6640,15 @@ def godmode(args):
     prov=safe_out(root,".audit/godmode/provenance.json")
     write_json(prov,{"created_at":now(),"sha256":hashlib.sha256(out.read_bytes()).hexdigest(),"chain_id":chain,"fork_block":block,"artifacts":["latest.json"]})
     _print_godmode_result(payload, arithmetic_rows, wraparound_rows, out, prov, root)
+    if source_inventory["failures"]:
+        print("\nSOURCE COVERAGE INCOMPLETE")
+        print("=========================")
+        print(coverage_reason)
+        for failure in source_inventory["failures"]:
+            print(
+                f"  {failure.get('path')} [{failure.get('phase')}]: "
+                f"{failure.get('error')}"
+            )
     if any(stage.get("name") == "attack" and stage.get("status") == "interrupted" for stage in stages):
         return 130
     # Not-requested control, mutation and coverage stages keep the audit

@@ -171,5 +171,172 @@ class ArithmeticReviewTests(unittest.TestCase):
             self.assertEqual(len(report["signals"]["arithmetic_review"]), 1)
 
 
+    def test_godmode_records_source_stat_failures_and_returns_nonzero(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import io
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            broken = root / "Broken.sol"
+            healthy = root / "Healthy.sol"
+            broken.write_text("pragma solidity ^0.8.20; contract Broken {}", encoding="utf-8")
+            healthy.write_text("pragma solidity ^0.8.20; contract Healthy {}", encoding="utf-8")
+            real_stat = godmode._source_stat
+
+            def fail_one_stat(path):
+                if pathlib.Path(path) == broken:
+                    raise PermissionError("simulated source stat denial")
+                return real_stat(path)
+
+            with patch.object(godmode, "_source_stat", side_effect=fail_one_stat), \
+                 patch.object(godmode, "_run_slither_analysis", return_value=({"name": "slither-analysis", "status": "blocked", "reason": "optional fixture failure"}, [])), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.godmode(["--root", str(root), "--plan-only"])
+
+            report = json.loads((root / ".audit/godmode/latest.json").read_text(encoding="utf-8"))
+            stages = {item["name"]: item for item in report["stages"]}
+            self.assertEqual(result, 2)
+            self.assertFalse(report["source_inventory"]["complete"])
+            self.assertEqual(report["source_inventory"]["files_inspected"], 1)
+            self.assertTrue(any(
+                item["path"] == "Broken.sol" and item["phase"] == "stat"
+                and "simulated source stat denial" in item["error"]
+                for item in report["source_inventory"]["uninspected"]
+            ))
+            self.assertEqual(stages["source-recon"]["status"], "review")
+            self.assertEqual(stages["source-security"]["status"], "review")
+            self.assertEqual(stages["arithmetic-review"]["status"], "review")
+            self.assertEqual(stages["cheat-fingerprints"]["status"], "review")
+            self.assertEqual(stages["slither-analysis"]["status"], "blocked")
+
+    def test_godmode_records_source_read_failures_and_returns_nonzero(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import io
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            broken = root / "Unreadable.sol"
+            healthy = root / "Readable.sol"
+            broken.write_text("pragma solidity ^0.8.20; contract Unreadable {}", encoding="utf-8")
+            healthy.write_text("pragma solidity ^0.8.20; contract Readable {}", encoding="utf-8")
+            real_read = godmode._read_source_text
+
+            def fail_one_read(path):
+                if pathlib.Path(path) == broken:
+                    raise PermissionError("simulated source read denial")
+                return real_read(path)
+
+            with patch.object(godmode, "_read_source_text", side_effect=fail_one_read), \
+                 patch.object(godmode, "_run_slither_analysis", return_value=({"name": "slither-analysis", "status": "skipped", "reason": "not installed"}, [])), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.godmode(["--root", str(root), "--plan-only"])
+
+            report = json.loads((root / ".audit/godmode/latest.json").read_text(encoding="utf-8"))
+            stages = {item["name"]: item for item in report["stages"]}
+            self.assertEqual(result, 2)
+            self.assertEqual(report["source_inventory"]["files_discovered"], 2)
+            self.assertEqual(report["source_inventory"]["files_inspected"], 1)
+            self.assertTrue(any(
+                item["path"] == "Unreadable.sol" and item["phase"] == "read"
+                and "simulated source read denial" in item["error"]
+                for item in report["source_inventory"]["uninspected"]
+            ))
+            self.assertEqual(stages["source-recon"]["status"], "review")
+            self.assertEqual(stages["source-security"]["status"], "review")
+            self.assertEqual(stages["arithmetic-review"]["status"], "review")
+            self.assertEqual(stages["cheat-fingerprints"]["status"], "review")
+
+    def test_godmode_records_directory_enumeration_failures(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import io
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            blocked = root / "blocked"
+            blocked.mkdir()
+            (blocked / "Hidden.sol").write_text(
+                "pragma solidity ^0.8.20; contract Hidden {}", encoding="utf-8"
+            )
+            (root / "Visible.sol").write_text(
+                "pragma solidity ^0.8.20; contract Visible {}", encoding="utf-8"
+            )
+            real_scandir = godmode.os.scandir
+
+            def fail_one_directory(path):
+                if pathlib.Path(path) == blocked:
+                    raise PermissionError("simulated directory traversal denial")
+                return real_scandir(path)
+
+            with patch.object(godmode.os, "scandir", side_effect=fail_one_directory), \
+                 patch.object(godmode, "_run_slither_analysis", return_value=({"name": "slither-analysis", "status": "skipped", "reason": "not installed"}, [])), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.godmode(["--root", str(root), "--plan-only"])
+
+            report = json.loads((root / ".audit/godmode/latest.json").read_text(encoding="utf-8"))
+            stages = {item["name"]: item for item in report["stages"]}
+            self.assertEqual(result, 2)
+            self.assertTrue(any(
+                item["path"] == "blocked" and item["phase"] == "directory-enumeration"
+                and item["scope"] == "directory"
+                and "simulated directory traversal denial" in item["error"]
+                for item in report["source_inventory"]["uninspected"]
+            ))
+            self.assertEqual(stages["source-recon"]["status"], "review")
+            self.assertEqual(stages["source-security"]["status"], "review")
+
+    def test_godmode_blocks_when_no_source_file_can_be_inspected(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import io
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "Broken.sol").write_text("pragma solidity ^0.8.20; contract Broken {}", encoding="utf-8")
+            with patch.object(godmode, "_read_source_text", side_effect=PermissionError("all source reads denied")), \
+                 patch.object(godmode, "_run_slither_analysis", return_value=({"name": "slither-analysis", "status": "skipped", "reason": "not installed"}, [])), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.godmode(["--root", str(root), "--plan-only"])
+
+            report = json.loads((root / ".audit/godmode/latest.json").read_text(encoding="utf-8"))
+            stages = {item["name"]: item for item in report["stages"]}
+            self.assertEqual(result, 2)
+            self.assertEqual(stages["source-recon"]["status"], "blocked")
+            self.assertEqual(stages["source-security"]["status"], "blocked")
+            self.assertEqual(stages["arithmetic-review"]["status"], "blocked")
+            self.assertEqual(stages["cheat-fingerprints"]["status"], "blocked")
+            self.assertFalse(report["source_inventory"]["complete"])
+            self.assertEqual(report["source_inventory"]["files_inspected"], 0)
+
+    def test_optional_slither_blocked_status_does_not_fail_unrequested_source_scan(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import io
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "Healthy.sol").write_text("pragma solidity ^0.8.20; contract Healthy {}", encoding="utf-8")
+            with patch.object(godmode, "_run_slither_analysis", return_value=({"name": "slither-analysis", "status": "blocked", "reason": "optional tool failed"}, [])), \
+                 redirect_stdout(io.StringIO()):
+                result = godmode.godmode(["--root", str(root), "--plan-only"])
+
+            report = json.loads((root / ".audit/godmode/latest.json").read_text(encoding="utf-8"))
+            stages = {item["name"]: item for item in report["stages"]}
+            self.assertEqual(result, 0)
+            self.assertTrue(report["source_inventory"]["complete"])
+            self.assertEqual(stages["source-recon"]["status"], "completed")
+            self.assertEqual(stages["source-security"]["status"], "completed")
+            self.assertEqual(stages["arithmetic-review"]["status"], "completed")
+            self.assertEqual(stages["cheat-fingerprints"]["status"], "completed")
+            self.assertEqual(stages["slither-analysis"]["status"], "blocked")
+
+
 if __name__ == "__main__":
     unittest.main()
