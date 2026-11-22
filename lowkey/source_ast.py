@@ -251,6 +251,7 @@ def apply_solc_ast_call_edges(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     functions: list[dict[str, Any]],
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Use valid Foundry AST declaration references to replace resolved lexical calls.
 
@@ -259,7 +260,7 @@ def apply_solc_ast_call_edges(
     their lexical analysis. This function never invokes forge or solc.
     """
     try:
-        manifest = build_info_manifest(root)
+        manifest = manifest if manifest is not None else build_info_manifest(root)
     except Exception as error:
         return {
             "available": False, "build_info_files": 0, "matched_units": 0,
@@ -354,38 +355,11 @@ def apply_solc_ast_call_edges(
             "warnings": warnings,
         }
 
-    # Replace only relationships for AST-covered functions. Ambiguous/dynamic
-    # lexical relationships remain visible as unresolved evidence.
-    filtered_edges = []
-    for edge in edges:
-        if (
-            edge.get("from") in ast_covered
-            and edge.get("kind") == "CALLS"
-            and edge.get("resolution") in {"DIRECT", "INFERRED"}
-        ):
-            continue
-        if (
-            edge.get("from") in ast_covered
-            and edge.get("kind") == "APPLIES_MODIFIER"
-            and edge.get("resolution") in {"DIRECT", "INFERRED"}
-        ):
-            continue
-        ast_target_ids = {
-            item.get("id") for item in declaration_map.values()
-            if item.get("kind") in {"function", "modifier"}
-        }
-        if (
-            edge.get("from") in ast_covered
-            and edge.get("kind") == "EXTERNAL_CALL"
-            and edge.get("to") in ast_target_ids
-            and edge.get("resolution") in {"DIRECT", "INFERRED"}
-        ):
-            continue
-        filtered_edges.append(edge)
-    edges[:] = filtered_edges
-
+    ast_edges: list[dict[str, Any]] = []
+    ast_sites: set[tuple[str, str, int, int, str, str]] = set()
     ast_call_edges = 0
     ast_modifier_edges = 0
+
     for record in ast_function_records:
         function_ast = record["ast"]
         caller = record["graph"]
@@ -446,7 +420,8 @@ def apply_solc_ast_call_edges(
                                 "dispatch": "VIRTUAL",
                                 "implementation_resolution": "UNRESOLVED",
                             })
-                        edges.append(edge)
+                        ast_edges.append(edge)
+                        ast_sites.add((caller["id"], unit["path"], line, column, kind, target["id"]))
                         ast_call_edges += 1
 
             elif node_type == "ModifierInvocation":
@@ -458,7 +433,7 @@ def apply_solc_ast_call_edges(
                     if span is not None:
                         start = _byte_to_char_offset(content, span[0])
                         line, column = _line_column(content, start)
-                        edges.append({
+                        ast_edges.append({
                             "id": f"SOLC_AST:APPLIES_MODIFIER:{caller['id']}:{target['id']}:{unit['path']}:{start}",
                             "kind": "APPLIES_MODIFIER",
                             "from": caller["id"],
@@ -468,12 +443,63 @@ def apply_solc_ast_call_edges(
                             "source": {"file": unit["path"], "line": line, "column": column},
                             "ast_declaration_id": target_ast_id,
                         })
+                        ast_sites.add((caller["id"], unit["path"], line, column, "APPLIES_MODIFIER", target["id"]))
                         ast_modifier_edges += 1
 
             for child in _ast_children(value):
                 walk(child)
 
         walk(function_ast)
+
+    # Remove a lexical edge only when the AST resolves the same declaration at
+    # the same source site. Other lexical unresolved/dynamic edges remain intact.
+    ast_site_counts: dict[tuple[str, str, int, str, str], int] = {}
+    for caller_id, path, line, _column, kind, target_id in ast_sites:
+        bucket = (caller_id, path, line, kind, target_id)
+        ast_site_counts[bucket] = ast_site_counts.get(bucket, 0) + 1
+    lexical_bucket_counts: dict[tuple[str, str, int, str, str], int] = {}
+    for edge in edges:
+        if edge.get("kind") not in {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER"}:
+            continue
+        source_ref = edge.get("source") or {}
+        bucket = (
+            str(edge.get("from") or ""),
+            str(source_ref.get("file") or ""),
+            int(source_ref.get("line") or 0),
+            str(edge.get("kind") or ""),
+            str(edge.get("to") or ""),
+        )
+        lexical_bucket_counts[bucket] = lexical_bucket_counts.get(bucket, 0) + 1
+
+    filtered_edges = []
+    for edge in edges:
+        source_ref = edge.get("source") or {}
+        bucket = (
+            str(edge.get("from") or ""),
+            str(source_ref.get("file") or ""),
+            int(source_ref.get("line") or 0),
+            str(edge.get("kind") or ""),
+            str(edge.get("to") or ""),
+        )
+        exact_site = bucket[:1] + bucket[1:3] + (
+            int(source_ref.get("column") or 0),
+        ) + bucket[3:]
+        ast_has_same_site = exact_site in ast_sites
+        if (
+            edge.get("from") in ast_covered
+            and edge.get("kind") in {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER"}
+            and edge.get("resolution") in {"DIRECT", "INFERRED"}
+            and (
+                ast_has_same_site
+                or (
+                    ast_site_counts.get(bucket) == 1
+                    and lexical_bucket_counts.get(bucket) == 1
+                )
+            )
+        ):
+            continue
+        filtered_edges.append(edge)
+    edges[:] = filtered_edges + ast_edges
 
     return {
         "available": bool(manifest.get("files")),
