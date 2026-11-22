@@ -451,6 +451,55 @@ contract Engine is IOracle, Ownable {}
             self.assertIn("trust: LOW", rendered)
             self.assertIn("false positives/negatives are possible", rendered)
 
+    def test_project_map_call_site_records_keep_source_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", "[profile.default]\nsrc = 'src'\n")
+            self.write(
+                root,
+                "src/nested/Vault.sol",
+                "pragma solidity ^0.8.20;\n"
+                "contract Vault {\n"
+                "    function invoke(address target) external {\n"
+                '        target.call("");\n'
+                '        target.delegatecall("");\n'
+                "    }\n"
+                "}\n",
+            )
+
+            output = __import__("io").StringIO()
+            from contextlib import redirect_stdout
+            with redirect_stdout(output):
+                result = project_tools.render_project_map(root)
+
+            calls = result["human"]["low_level_calls"]
+            self.assertEqual(
+                [(call["file"], call["line"]) for call in calls],
+                [
+                    ("src/nested/Vault.sol", 4),
+                    ("src/nested/Vault.sol", 5),
+                ],
+            )
+            rendered = output.getvalue()
+            self.assertIn('src/nested/Vault.sol:4: target.call("");', rendered)
+            self.assertIn('src/nested/Vault.sol:5: target.delegatecall("");', rendered)
+
+    def test_solidity_compiler_versions_use_numeric_semver_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", "[profile.default]\nsrc = 'src'\n")
+            self.write(root, "src/Vault.sol", "pragma solidity ^0.5.0; contract Vault {}\n")
+            self.write(root, "src/Token.sol", "pragma solidity ^0.6.0; contract Token {}\n")
+            self.write(root, "src/Router.sol", "pragma solidity ^0.6.2; contract Router {}\n")
+            self.write(root, "src/Pool.sol", "pragma solidity ^0.6.12; contract Pool {}\n")
+
+            project = project_tools.detect_project(root)
+
+            self.assertEqual(
+                project["solidity_compilers"],
+                ["0.5.0", "0.6.0", "0.6.2", "0.6.12"],
+            )
+
     def test_source_inventory_excludes_audit_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

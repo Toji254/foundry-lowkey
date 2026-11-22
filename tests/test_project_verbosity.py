@@ -123,6 +123,22 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertGreater(result["graph"]["summary"]["imports"], 0)
 
 
+    def test_full_coverage_is_qualified_when_languages_are_unsupported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.fixture(root)
+            result, _output = self.overview(root)
+            result["project"]["analysis"]["coverage"] = "full"
+            result["project"]["analysis"]["unsupported_languages"] = ["javascript"]
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                project_tools.render_project_overview(result)
+
+            rendered = output.getvalue()
+            self.assertIn("Coverage      : full for supported languages", rendered)
+            self.assertIn("Unsupported source languages: javascript", rendered)
+
     def test_overview_reports_first_party_triage_inventory_by_language(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

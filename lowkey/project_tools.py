@@ -586,7 +586,7 @@ def _solidity_compiler_versions(root: Path) -> list[str]:
         text = _read(path)
         for version in re.findall(r"""(?m)\bsolc_version\s*[=:]\s*["'](0\.[0-9]+\.[0-9]+)["']""", text):
             versions.add(version)
-    return sorted(versions)
+    return sorted(versions, key=lambda value: tuple(int(part) for part in value.split(".")))
 
 
 def detect_project(root: str | Path = ".") -> dict[str, Any]:
@@ -1456,12 +1456,14 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     imports = [edge for edge in protocol_edges if edge.get("kind") == "import"]
     inheritance = [edge for edge in protocol_edges if edge.get("kind") == "inherits"]
     low_level = [
-        call for node in protocol_nodes
+        {**call, "file": str(node.get("file") or "unknown")}
+        for node in protocol_nodes
         for call in node.get("calls", [])
         if call.get("kind") == "low-level-call"
     ]
     external_calls = [
-        call for node in protocol_nodes
+        {**call, "file": str(node.get("file") or "unknown")}
+        for node in protocol_nodes
         for call in node.get("calls", [])
         if call.get("kind") == "external-call"
     ]
@@ -1578,7 +1580,10 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         )
         if low_level:
             for call in low_level[:12]:
-                print(f"    line {call['line']}: {call['text']}")
+                print(
+                    f"    {call.get('file') or 'unknown'}:{call['line']}: "
+                    f"{call['text']}"
+                )
             if len(low_level) > 12:
                 print(f"    ... and {len(low_level) - 12} more")
 
@@ -1882,6 +1887,9 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     analysis = project.get("analysis") or {}
     analysis_status = str(analysis.get("analysis_status") or "not assessed")
     coverage = str(analysis.get("coverage") or "not recorded")
+    unsupported_languages = analysis.get("unsupported_languages") or []
+    if coverage.strip().lower() == "full" and unsupported_languages:
+        coverage = "full for supported languages"
     source_units = int(graph_summary.get("files", len(nodes)) or 0)
     declared_units = sum(1 for node in nodes if node.get("declarations"))
     declared_symbols = sum(
