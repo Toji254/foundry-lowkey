@@ -63,6 +63,8 @@ Source relationship navigation:
   lk link Vault.withdraw
   lk link Vault.positions
   lk link Vault.withdraw(uint256) --depth 3
+  lk trace source Vault.withdraw
+  lk trace source Vault.withdraw(uint256) --depth 5
   lk link Vault --only calls|storage|reads|writes|imports|assets
   lk fn --flow in|out|both --asset eth|erc20|all
 
@@ -191,6 +193,14 @@ fi
 if [[ "${1:-}" == "ai" ]]; then
     shift
     exec python3 "$HOME/.lowkey/command_wrapper.py" "ai" -- python3 "$HOME/.lowkey/ai_harness.py" "$@"
+fi
+
+# Static source tracing is separate from runtime transaction tracing.
+# "lk trace source ..." walks source-level calls/effects; ordinary "lk trace TX"
+# continues to use the existing runtime trace handler.
+if [[ "${1:-}" == "trace" && "${2:-}" == "source" ]]; then
+    shift 2
+    exec python3 "$HOME/.lowkey/command_wrapper.py" "trace" -- python3 "$HOME/.lowkey/source_link.py" trace source "$@"
 fi
 
 # Source navigation and the new asset-flow filters share one source index.
