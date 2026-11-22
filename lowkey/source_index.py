@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 11
+CACHE_VERSION = 12
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -553,6 +553,25 @@ def _mapping_inner_type(type_name: str) -> str | None:
     return _mapping_layout(type_name)[1]
 
 
+def _storage_index_info(type_name: str) -> tuple[str, str | None, str]:
+    """Classify one Solidity storage index using the declared current type."""
+    value = re.sub(r"\\b(memory|calldata|storage|payable)\\b", " ", type_name)
+    value = re.sub(r"\\s+", " ", value).strip()
+    if value.startswith("mapping"):
+        opening = value.find("(")
+        closing = _matching(value, opening, "(", ")") if opening >= 0 else None
+        if closing is None:
+            return "unresolved", None, ""
+        parts = re.split(r"\\s*=>\\s*", value[opening + 1:closing], maxsplit=1)
+        if len(parts) != 2:
+            return "unresolved", None, ""
+        return "mapping", parts[0].strip(), parts[1].strip()
+    array_match = re.search(r"\\[\\s*(?:\\d+)?\\s*\\]\\s*$", value)
+    if array_match:
+        return "array", "uint256", value[:array_match.start()].strip()
+    return "unresolved", None, ""
+
+
 def _storage_type_after_index(type_name: str) -> str:
     """Return the value type after one mapping or array index operation."""
     value = re.sub(r"\b(memory|calldata|storage|payable)\b", " ", type_name)
@@ -595,6 +614,8 @@ def _scan_storage_access(
     base_indexes: list[str],
     contract: str,
     fields_by_struct: dict[tuple[str, str], list[dict[str, Any]]],
+    base_index_kinds: list[str] | None = None,
+    base_index_types: list[str | None] | None = None,
 ) -> dict[str, Any]:
     """Follow a state access through nested mapping/array indices and struct fields.
 
@@ -603,6 +624,12 @@ def _scan_storage_access(
     """
     path = base_name + "".join(f"[{item}]" for item in base_indexes)
     keys = list(base_indexes)
+    index_kinds = list(base_index_kinds or [])
+    index_types = list(base_index_types or [])
+    while len(index_kinds) < len(keys):
+        index_kinds.append("unresolved")
+    while len(index_types) < len(keys):
+        index_types.append(None)
     members: list[str] = []
     field_nodes: list[dict[str, Any]] = []
     current_type = base_type
@@ -620,9 +647,12 @@ def _scan_storage_access(
             if close_index is None:
                 break
             key = body[cursor + 1:close_index].strip()
+            index_kind, index_type, next_type = _storage_index_info(current_type)
             keys.append(key)
+            index_kinds.append(index_kind)
+            index_types.append(index_type)
             path += f"[{key}]"
-            current_type = _storage_type_after_index(current_type)
+            current_type = next_type
             cursor = close_index + 1
             continue
 
@@ -669,6 +699,13 @@ def _scan_storage_access(
         "array_method": array_method,
         "end": cursor,
         "terminal_type": current_type,
+        "index_kinds": index_kinds,
+        "index_types": index_types,
+        "mapping_key_types": [
+            index_type for kind, index_type in zip(index_kinds, index_types)
+            if kind == "mapping"
+        ],
+        "mapping_depth": sum(1 for kind in index_kinds if kind == "mapping"),
     }
 
 
@@ -1928,8 +1965,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             variable = candidates[0]
             indexes = re.findall(r"\[([^\]]*)\]", alias_match.group("indexes"))
             base_type = variable.get("type", "")
+            base_index_kinds: list[str] = []
+            base_index_types: list[str | None] = []
             for _index in indexes:
-                base_type = _storage_type_after_index(base_type)
+                index_kind, index_type, next_type = _storage_index_info(base_type)
+                base_index_kinds.append(index_kind)
+                base_index_types.append(index_type)
+                base_type = next_type
             declared_alias_type = re.sub(r"\s+", "", alias_match.group("type"))
             expected_alias_type = re.sub(r"\s+", "", base_type)
             if declared_alias_type != expected_alias_type:
@@ -1941,6 +1983,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 "type": alias_match.group("type").strip(),
                 "variable": variable,
                 "indexes": [item.strip() for item in indexes],
+                "index_kinds": base_index_kinds,
+                "index_types": base_index_types,
                 "start": alias_match.start(),
                 "end": alias_match.end(),
             }
@@ -1952,6 +1996,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                 alias=alias["name"], keys=alias["indexes"],
                 access_path=base_name + "".join(f"[{item}]" for item in indexes),
+                index_kinds=alias["index_kinds"], index_types=alias["index_types"],
+                mapping_key_types=[
+                    index_type for kind, index_type in zip(alias["index_kinds"], alias["index_types"])
+                    if kind == "mapping"
+                ],
+                mapping_depth=sum(1 for kind in alias["index_kinds"] if kind == "mapping"),
+                terminal_type=alias["type"],
                 detail="Local storage reference aliases the declared state variable; it is not a separate storage slot.",
             ))
 
@@ -1969,6 +2020,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     base_indexes=alias["indexes"],
                     contract=variable["contract"],
                     fields_by_struct=fields_by_struct,
+                    base_index_kinds=alias["index_kinds"],
+                    base_index_types=alias["index_types"],
                 )
                 cursor = access_info["end"]
                 before = body[max(0, access.start() - 12):access.start()]
@@ -2017,6 +2070,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             variable=variable["name"], alias=alias["name"],
                             keys=access_info["keys"], member=field_name or access_info["member"],
                             access_path=access_info["access_path"],
+                            index_kinds=access_info["index_kinds"],
+                            index_types=access_info["index_types"],
+                            mapping_key_types=access_info["mapping_key_types"],
+                            mapping_depth=access_info["mapping_depth"],
+                            terminal_type=access_info["terminal_type"],
                             resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                             evidence="STORAGE_ALIAS_RESOLUTION",
                             operation=operation,
@@ -2095,6 +2153,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             variable=variable["name"], keys=access_info["keys"],
                             member=field_name or access_info["member"],
                             access_path=access_info["access_path"],
+                            index_kinds=access_info["index_kinds"],
+                            index_types=access_info["index_types"],
+                            mapping_key_types=access_info["mapping_key_types"],
+                            mapping_depth=access_info["mapping_depth"],
+                            terminal_type=access_info["terminal_type"],
                             resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                             evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
                             operation=operation,
