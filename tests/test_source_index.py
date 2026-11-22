@@ -451,7 +451,13 @@ class SourceIndexTests(unittest.TestCase):
                 """
                 pragma solidity ^0.8.28;
                 contract MutationVault {
-                    struct Position { uint256 debt; }
+                    struct RiskConfig { uint256 threshold; }
+                    struct Position {
+                        uint256 debt;
+                        RiskConfig risk;
+                        uint256[] samples;
+                        mapping(address => uint256) allowances;
+                    }
                     uint256 public totalSupply = 100;
                     address public owner;
                     uint256 public lastCheckpoint;
@@ -478,6 +484,13 @@ class SourceIndexTests(unittest.TestCase):
                     function clear(uint256 id) external {
                         delete positions[msg.sender][id];
                         queue.pop();
+                    }
+
+                    function nested(uint256 id, uint256 amount) external {
+                        positions[msg.sender][id].risk.threshold = amount;
+                        positions[msg.sender][id].samples.push(amount);
+                        positions[msg.sender][id].allowances[address(1)] = amount;
+                        (owner, lastCheckpoint) = (msg.sender, amount);
                     }
 
                     function rawTransient() external {
@@ -508,6 +521,7 @@ class SourceIndexTests(unittest.TestCase):
         constructor = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.constructor()")
         update = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.update(uint256,uint256)")
         clear = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.clear(uint256)")
+        nested = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.nested(uint256,uint256)")
         memory_only = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.memoryOnly()")
         modifier = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.checkpoint()")
 
@@ -519,6 +533,33 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "DELETES" and edge["from"] == clear["id"] and edge["to"] == positions["id"] and edge.get("access_path") == "positions[msg.sender][id]" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update["id"] and edge["to"] == queue["id"] and edge.get("operation") == "array.push" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == clear["id"] and edge["to"] == queue["id"] and edge.get("operation") == "array.pop" for edge in edges))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == nested["id"]
+            and edge.get("access_path") == "positions[msg.sender][id].risk.threshold"
+            for edge in edges
+        ))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == nested["id"]
+            and edge.get("access_path") == "positions[msg.sender][id].samples"
+            and edge.get("operation") == "array.push"
+            for edge in edges
+        ))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == nested["id"]
+            and edge.get("access_path") == "positions[msg.sender][id].allowances[address(1)]"
+            for edge in edges
+        ))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == nested["id"]
+            and edge["to"] == owner["id"] and edge.get("operation") == "tuple="
+            for edge in edges
+        ))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == nested["id"]
+            and edge["to"] == next(item["id"] for item in nodes.values() if item.get("qualified_name") == "MutationVault.lastCheckpoint")
+            and edge.get("mutation_kind") == "TUPLE_ASSIGNMENT"
+            for edge in edges
+        ))
         self.assertTrue(any(edge["kind"] == "TRANSIENT_WRITES" and edge["from"] == update["id"] and edge["to"] == transient_counter["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "TRANSIENT_WRITES" and edge["operation"] == "tstore" and edge["persistence"] == "transient" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["operation"] == "sstore" and edge["persistence"] == "persistent" and edge["resolution"] == "UNRESOLVED" for edge in edges))
