@@ -553,7 +553,14 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             resolved = resolved.resolve()
             provenance = project_tools._import_provenance(resolved, root_path)
-            if resolved.suffix.lower() != ".sol" or not resolved.is_file() or resolved in known_source_paths:
+            if resolved.suffix.lower() != ".sol" or not resolved.is_file():
+                continue
+            display_path = os.path.relpath(resolved, root_path).replace(os.sep, "/")
+            if resolved in known_source_paths:
+                dependency_import_edges.append({
+                    "from": importer_display, "to": display_path, "raw": raw_import,
+                    "line": import_line, "statement": import_statement, "resolved": True,
+                })
                 continue
             try:
                 size = resolved.stat().st_size
@@ -591,7 +598,6 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 })
                 continue
 
-            display_path = os.path.relpath(resolved, root_path).replace(os.sep, "/")
             source_units.append((display_path, imported_source, resolved))
             source_provenance[display_path] = "third-party" if provenance == "third-party" else "first-party"
             source_raw_hashes[str(resolved)] = hashlib.sha256(raw_data).hexdigest()
