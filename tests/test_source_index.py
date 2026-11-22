@@ -114,6 +114,10 @@ class SourceIndexTests(unittest.TestCase):
                     return positions[user][1].debt;
                 }
 
+                function transferDirect(address to, uint256 amount) external {
+                    token.transfer(to, amount);
+                }
+
                 function overloaded(uint256 value) internal pure returns (uint256) {
                     return value;
                 }
@@ -175,6 +179,11 @@ class SourceIndexTests(unittest.TestCase):
         library_functions = [item for item in index["nodes"] if item.get("qualified_name") == "SafeERC20.safeTransfer(IERC20,address,uint256)"]]
         self.assertEqual(len(library_functions), 1)
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == withdraw_id and edge["to"] == library_functions[0]["id"] and edge.get("call_kind") == "using-for extension" for edge in edges))
+        direct_transfer = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.transferDirect(address,uint256)")
+        interface_transfer = next(item for item in index["nodes"] if item.get("qualified_name") == "IERC20.transfer(address,uint256)")
+        external_edge = next(edge for edge in edges if edge["kind"] == "EXTERNAL_CALL" and edge["from"] == direct_transfer["id"] and edge["to"] == interface_transfer["id"])
+        self.assertEqual(external_edge["resolution"], "DIRECT")
+        self.assertEqual(external_edge["implementation_resolution"], "UNRESOLVED")
         self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id for edge in edges))
         self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges if nodes.get(edge["to"], {}).get("name") == "onlyOwner"))
         owner_setter = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.setOwner(address)")
