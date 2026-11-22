@@ -54,6 +54,7 @@ class SourceIndexTests(unittest.TestCase):
             pragma solidity ^0.8.20;
             abstract contract NameA {
                 function select(uint256 value) internal virtual returns (uint256);
+                function resolve(uint256 value) internal virtual returns (uint256);
             }
             """,
         )
@@ -64,6 +65,7 @@ class SourceIndexTests(unittest.TestCase):
             pragma solidity ^0.8.20;
             abstract contract NameB {
                 function select(address value) internal virtual returns (uint256);
+                function resolve(uint256 value) internal virtual returns (uint256);
             }
             """,
         )
@@ -77,6 +79,9 @@ class SourceIndexTests(unittest.TestCase):
             abstract contract Multi is NameA, NameB {
                 function invoke() external view returns (uint256) {
                     return select(msg.sender);
+                }
+                function invokeAmbiguous(uint256 value) external view returns (uint256) {
+                    return resolve(value);
                 }
             }
             """,
@@ -317,7 +322,7 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "READS" and nodes.get(edge["from"], {}).get("name") == "getPosition" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges))
 
-    def test_multiple_inheritance_same_depth_calls_remain_unresolved(self):
+    def test_multiple_inheritance_overload_resolution_and_true_ambiguity(self):
         temporary, root = self.fixture()
         try:
             index = build_source_index(root, use_cache=False)
@@ -335,6 +340,18 @@ class SourceIndexTests(unittest.TestCase):
         )
         self.assertEqual(edge["resolution"], "INFERRED")
         self.assertEqual(edge.get("dispatch"), "VIRTUAL")
+        ambiguous_function = find_symbols(index, "Multi.invokeAmbiguous(uint256)")[0]
+        ambiguous_edge = next(
+            item for item in index["edges"]
+            if item["kind"] == "CALLS" and item["from"] == ambiguous_function["id"]
+            and item.get("symbol") == "resolve"
+        )
+        self.assertEqual(ambiguous_edge["resolution"], "UNRESOLVED")
+        ambiguous_targets = {
+            item["id"] for item in index["nodes"]
+            if item.get("qualified_name") in {"NameA.resolve(uint256)", "NameB.resolve(uint256)"}
+        }
+        self.assertEqual(set(ambiguous_edge["candidates"]), ambiguous_targets)
 
     def test_flow_distinguishes_payable_capability_from_transfer_attempts(self):
         temporary, root = self.fixture()
