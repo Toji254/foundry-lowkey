@@ -891,9 +891,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         # Position storage p = positions[user][id];
         # The alias is a pointer to the declared state object, not a new slot.
         alias_pattern = re.compile(
-            r"\\b(?P<type>[A-Za-z_]\\w*(?:\\s*\\[\\s*\\])*)\\s+storage\\s+"
-            r"(?P<alias>[A-Za-z_]\\w*)\\s*=\\s*(?P<base>[A-Za-z_]\\w*)"
-            r"(?P<indexes>(?:\\s*\\[[^\\]]*\\])*)\\s*;"
+            r"\b(?P<type>[A-Za-z_]\w*(?:\s*\[\s*\])*)\s+storage\s+"
+            r"(?P<alias>[A-Za-z_]\w*)\s*=\s*(?P<base>[A-Za-z_]\w*)"
+            r"(?P<indexes>(?:\s*\[[^\]]*\])*)\s*;"
         )
         storage_aliases: list[dict[str, Any]] = []
         alias_ranges: list[tuple[int, int]] = []
@@ -907,7 +907,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             if len(candidates) != 1:
                 continue
             variable = candidates[0]
-            indexes = re.findall(r"\\[([^\\]]*)\\]", alias_match.group("indexes"))
+            indexes = re.findall(r"\[([^\]]*)\]", alias_match.group("indexes"))
             alias = {
                 "name": alias_match.group("alias"),
                 "type": alias_match.group("type").strip(),
@@ -928,7 +928,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             ))
 
         for alias in storage_aliases:
-            alias_pattern_usage = re.compile(rf"\\b{re.escape(alias['name'])}\\b")
+            alias_pattern_usage = re.compile(rf"\b{re.escape(alias['name'])}\b")
             for access in alias_pattern_usage.finditer(body):
                 if any(start <= access.start() < end for start, end in alias_ranges):
                     continue
@@ -937,7 +937,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     cursor += 1
                 member_name = None
                 if cursor < len(body) and body[cursor] == ".":
-                    member_match = re.match(r"\\.\\s*([A-Za-z_]\\w*)", body[cursor:])
+                    member_match = re.match(r"\.\s*([A-Za-z_]\w*)", body[cursor:])
                     if member_match:
                         member_name = member_match.group(1)
                         cursor += member_match.end()
@@ -945,9 +945,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             cursor += 1
                 before = body[max(0, access.start() - 12):access.start()]
                 after = body[cursor:cursor + 4]
-                assignment = re.match(r"(?:\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
-                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
-                deletion = re.search(r"\\bdelete\\s*$", before)
+                assignment = re.match(r"(?:\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
+                deletion = re.search(r"\bdelete\s*$", before)
                 is_write = bool(assignment or prefix_assignment or deletion)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
                 relations = ["WRITES"] if is_write else ["READS"]
@@ -965,7 +965,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         evidence="STORAGE_ALIAS_RESOLUTION",
                     ))
                     struct_type = variable.get("mapping_value_type") or variable.get("type") or alias["type"]
-                    struct_names = re.findall(r"\\b[A-Z][A-Za-z0-9_]*\\b", struct_type)
+                    struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type)
                     if member_name and struct_names:
                         fields = fields_by_struct.get((variable["contract"], struct_names[-1]), [])
                         field = next((item for item in fields if item["name"] == member_name), None)
@@ -986,10 +986,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             if variable["name"] in params_shadow:
                 continue
-            if re.search(rf"\\b(?:[A-Za-z_]\\w*\\s+)+(?:memory|storage|calldata\\s+)?{re.escape(variable['name'])}\\b", body):
+            if re.search(rf"\b(?:[A-Za-z_]\w*\s+)+(?:memory|storage|calldata\s+)?{re.escape(variable['name'])}\b", body):
                 # A same-named local declaration may shadow state. Do not guess.
                 continue
-            access_pattern = re.compile(rf"\\b{re.escape(variable['name'])}\\b")
+            access_pattern = re.compile(rf"\b{re.escape(variable['name'])}\b")
             for access in access_pattern.finditer(body):
                 if any(start <= access.start() < end for start, end in alias_ranges):
                     continue
@@ -1010,7 +1010,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             break
                 member_name = None
                 if cursor < len(body) and body[cursor] == ".":
-                    member_match = re.match(r"\\.\\s*([A-Za-z_]\\w*)", body[cursor:])
+                    member_match = re.match(r"\.\s*([A-Za-z_]\w*)", body[cursor:])
                     if member_match:
                         member_name = member_match.group(1)
                         cursor += member_match.end()
@@ -1018,9 +1018,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             cursor += 1
                 before = body[max(0, access.start() - 12):access.start()]
                 after = body[cursor:cursor + 4]
-                assignment = re.match(r"(?:\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
-                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
-                deletion = re.search(r"\\bdelete\\s*$", before)
+                assignment = re.match(r"(?:\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
+                deletion = re.search(r"\bdelete\s*$", before)
                 is_write = bool(assignment or prefix_assignment or deletion)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
                 relations = ["WRITES"] if is_write else ["READS"]
@@ -1039,7 +1039,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
                     ))
                     struct_type = variable.get("mapping_value_type") or variable.get("type")
-                    struct_names = re.findall(r"\\b[A-Z][A-Za-z0-9_]*\\b", struct_type or "")
+                    struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type or "")
                     if member_name and struct_names:
                         fields = fields_by_struct.get((variable["contract"], struct_names[-1]), [])
                         field = next((item for item in fields if item["name"] == member_name), None)
