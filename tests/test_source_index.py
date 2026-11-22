@@ -328,13 +328,13 @@ class SourceIndexTests(unittest.TestCase):
         edge = next(
             item for item in index["edges"]
             if item["kind"] == "CALLS" and item["from"] == multi_invoke["id"]
-            and item.get("symbol") == "select"
+            and item.get("to") == next(
+                node["id"] for node in index["nodes"]
+                if node.get("qualified_name") == "NameB.select(address)"
+            )
         )
-        self.assertEqual(edge["resolution"], "UNRESOLVED")
-        candidates = {item["id"] for item in index["nodes"] if item.get("qualified_name") in {
-            "NameA.select(uint256)", "NameB.select(address)"
-        }}
-        self.assertEqual(set(edge["candidates"]), candidates)
+        self.assertEqual(edge["resolution"], "INFERRED")
+        self.assertEqual(edge.get("dispatch"), "VIRTUAL")
 
     def test_flow_distinguishes_payable_capability_from_transfer_attempts(self):
         temporary, root = self.fixture()
@@ -370,6 +370,10 @@ class SourceIndexTests(unittest.TestCase):
 
         self.assertEqual(len(find_symbols(index, "Vault.overloaded")), 2)
         self.assertEqual(len(find_symbols(index, "Vault.overloaded(uint256)")), 1)
+        index_edges = index["edges"]
+        overload_test = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.testOverload()")
+        overload_target = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.overloaded(uint256)")
+        self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == overload_test["id"] and edge["to"] == overload_target["id"] and edge["resolution"] == "DIRECT" for edge in index_edges))
 
     def test_dynamic_function_pointers_and_assembly_storage_are_unresolved(self):
         temporary, root = self.fixture()
