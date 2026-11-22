@@ -2507,6 +2507,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     # struct fields and both paths are valuable to an auditor.
     effect_keys = {(item.get("from"), item.get("id")) for item in edges}
     effect_propagation = {
+        "scope": "RESOLVED_STATIC_CALL_AND_MODIFIER_EDGES",
         "max_depth": MAX_TRAVERSAL_DEPTH,
         "truncated_frontiers": 0,
     }
@@ -2571,7 +2572,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     continue
                 visited.add(target)
                 queue.append((target, chain + [target], depth + 1))
-    effect_propagation["complete"] = effect_propagation["truncated_frontiers"] == 0
+    # This flag describes only depth truncation in the resolved static graph;
+    # it does not claim that source inventory, dynamic calls, or runtime paths
+    # are complete or proven.
+    effect_propagation["depth_complete"] = effect_propagation["truncated_frontiers"] == 0
 
     if len(edges) > MAX_RELATIONSHIPS:
         raise SourceIndexError(f"Source index reached the {MAX_RELATIONSHIPS}-relationship safety limit.")

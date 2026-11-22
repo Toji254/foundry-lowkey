@@ -478,7 +478,57 @@ class SourceIndexTests(unittest.TestCase):
         ))
         self.assertEqual(len(propagated_helper_write), 1)
         self.assertEqual(index["effect_propagation"]["max_depth"], 10)
-        self.assertTrue(index["effect_propagation"]["complete"])
+        self.assertTrue(index["effect_propagation"]["depth_complete"])
+
+    def test_effect_propagation_reports_depth_truncation_without_claiming_full_completeness(self):
+        temporary, root = self.fixture()
+        try:
+            functions = [
+                "function execute() external { _step1(); }",
+                *[
+                    f"function _step{i}() internal {{ _step{i + 1}(); }}"
+                    for i in range(1, 11)
+                ],
+                "function _step11() internal { marker = 1; }",
+            ]
+            self.write(
+                root,
+                "src/DepthVault.sol",
+                """
+                pragma solidity ^0.8.20;
+                contract DepthVault {
+                    uint256 public marker;
+                """
+                + "\n".join(functions)
+                + """
+                }
+                """,
+            )
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        execute = find_symbols(index, "DepthVault.execute()")[0]
+        final_step = find_symbols(index, "DepthVault._step11()")[0]
+        marker = find_symbols(index, "DepthVault.marker")[0]
+        self.assertTrue(any(
+            edge.get("from") == final_step["id"]
+            and edge.get("to") == marker["id"]
+            and edge.get("kind") == "WRITES"
+            for edge in index["edges"]
+        ))
+        self.assertFalse(any(
+            edge.get("from") == execute["id"]
+            and edge.get("to") == marker["id"]
+            and edge.get("kind") == "WRITES"
+            for edge in index["edges"]
+        ))
+        self.assertGreater(index["effect_propagation"]["truncated_frontiers"], 0)
+        self.assertFalse(index["effect_propagation"]["depth_complete"])
+        self.assertEqual(
+            index["effect_propagation"]["scope"],
+            "RESOLVED_STATIC_CALL_AND_MODIFIER_EDGES",
+        )
 
     def test_dynamic_function_pointers_and_assembly_storage_are_unresolved(self):
         temporary, root = self.fixture()
