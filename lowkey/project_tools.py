@@ -1910,6 +1910,12 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     print("-" * 72)
     print(f"Status        : {analysis_status}")
     print(f"Coverage      : {coverage}")
+    analysis_scope = (
+        analysis.get("scope_type")
+        or project.get("scope_type")
+        or "repository"
+    )
+    print(f"Scope         : {_project_pretty_kind(analysis_scope)}")
     print(
         f"Source units  : {source_units} mapped | {declared_units} "
         f"with declarations | {declared_symbols} declared symbols"
