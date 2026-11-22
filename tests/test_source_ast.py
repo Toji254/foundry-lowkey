@@ -714,6 +714,91 @@ class SourceAstTests(unittest.TestCase):
             for edge in edges
         ))
 
+    def test_ast_storage_index_kinds_follow_nested_mapping_and_array_types(self):
+        source = "positions[user][token].samples[0]"
+        build_id = "fixture"
+        positions = {
+            "id": "state:positions",
+            "kind": "mapping",
+            "name": "positions",
+            "type": "mapping(address => mapping(address => Position))",
+        }
+        samples = {
+            "id": "field:Position.samples",
+            "kind": "struct_field",
+            "name": "samples",
+            "type": "uint256[]",
+        }
+        declarations = {
+            (build_id, 1): positions,
+            (build_id, 2): samples,
+        }
+
+        def node_span(text: str, start_after: int = 0) -> str:
+            start = source.index(text, start_after)
+            return f"{start}:{len(text)}:0"
+
+        positions_ref = {
+            "nodeType": "Identifier",
+            "name": "positions",
+            "referencedDeclaration": 1,
+            "src": node_span("positions"),
+        }
+        first_index_start = source.index("[user]")
+        first_index = {
+            "nodeType": "IndexAccess",
+            "baseExpression": positions_ref,
+            "indexExpression": {
+                "nodeType": "Identifier",
+                "name": "user",
+                "src": node_span("user"),
+            },
+            "src": f"{source.index('positions')}:{first_index_start + len('[user]') - source.index('positions')}:0",
+        }
+        second_index_start = source.index("[token]")
+        second_index = {
+            "nodeType": "IndexAccess",
+            "baseExpression": first_index,
+            "indexExpression": {
+                "nodeType": "Identifier",
+                "name": "token",
+                "src": node_span("token"),
+            },
+            "src": f"{source.index('positions')}:{second_index_start + len('[token]') - source.index('positions')}:0",
+        }
+        member_start = source.index(".samples")
+        member = {
+            "nodeType": "MemberAccess",
+            "expression": second_index,
+            "memberName": "samples",
+            "referencedDeclaration": 2,
+            "src": f"{source.index('positions')}:{member_start + len('.samples') - source.index('positions')}:0",
+        }
+        array_index = {
+            "nodeType": "IndexAccess",
+            "baseExpression": member,
+            "indexExpression": {
+                "nodeType": "Literal",
+                "value": "0",
+                "src": node_span("0"),
+            },
+            "src": f"{source.index('positions')}:{len(source) - source.index('positions')}:0",
+        }
+
+        resolved = source_ast._storage_expression(
+            array_index,
+            build_info=build_id,
+            declarations=declarations,
+            aliases={},
+            source=source,
+        )
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved["path"], "positions[user][token].samples[0]")
+        self.assertEqual(resolved["keys"], ["user", "token", "0"])
+        self.assertEqual(resolved["index_kinds"], ["mapping", "mapping", "array"])
+        self.assertEqual(resolved["index_types"], ["address", "address", "uint256"])
+        self.assertEqual(resolved["terminal_type"], "uint256")
+
     def test_stale_build_info_is_rejected_and_lexical_fallback_remains(self):
         temporary, root, _source = self._fixture(stale=True)
         try:
