@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import pathlib
 import sys
 import tempfile
@@ -138,6 +139,41 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("ASSET FLOW / CAPABILITY", text)
         self.assertIn("ORIGIN    FIRST-PARTY", text)
 
+    def test_bare_link_lists_available_contracts_and_how_to_explore_them(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "--root", str(root)])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("AVAILABLE CONTRACTS", rendered)
+        self.assertIn("Graph (contract)", rendered)
+        self.assertIn("BaseLink (contract)", rendered)
+        self.assertIn("ImportedMath (library)", rendered)
+        self.assertIn("src/Graph.sol:", rendered)
+        self.assertIn("EXPLORE", rendered)
+        self.assertIn("lk link ContractName.mappingName", rendered)
+        self.assertNotIn("relationships=", rendered)
+        self.assertLess(len(rendered.splitlines()), 45)
+
+    def test_bare_link_supports_json_project_index(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "--root", str(root), "--json"])
+        finally:
+            temporary.cleanup()
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(status, 0)
+        self.assertGreater(payload["total_contracts"], 0)
+        self.assertTrue(any(item["name"] == "Graph" for item in payload["contracts"]))
+
     def test_trace_source_alias_renders_a_function_call_tree(self):
         temporary, root = self.fixture()
         try:
@@ -266,7 +302,7 @@ class SourceLinkTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         rendered = output.getvalue()
-        self.assertIn("ORIGIN    THIRD-PARTY", rendered)
+        self.assertIn("ORIGIN:   THIRD-PARTY", rendered)
         self.assertIn("USED BY", rendered)
         self.assertIn("Graph (contract)", rendered)
         imported_function = next(
