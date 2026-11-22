@@ -273,6 +273,34 @@ def _match_storage_declaration(
     return on_line[0] if len(on_line) == 1 else None
 
 
+def _storage_index_info(type_name: str) -> tuple[str, str | None, str]:
+    """Classify a Solidity IndexAccess from its current declared storage type."""
+    value = re.sub(r"\b(memory|calldata|storage|payable)\b", " ", type_name)
+    value = re.sub(r"\s+", " ", value).strip()
+    if value.startswith("mapping"):
+        opening = value.find("(")
+        depth = 0
+        closing = None
+        for offset in range(opening, len(value)):
+            if value[offset] == "(":
+                depth += 1
+            elif value[offset] == ")":
+                depth -= 1
+                if depth == 0:
+                    closing = offset
+                    break
+        if closing is None:
+            return "unresolved", None, ""
+        parts = re.split(r"\s*=>\s*", value[opening + 1:closing], maxsplit=1)
+        if len(parts) != 2:
+            return "unresolved", None, ""
+        return "mapping", parts[0].strip(), parts[1].strip()
+    array_match = re.search(r"\[\s*(?:\d+)?\s*\]\s*$", value)
+    if array_match:
+        return "array", "uint256", value[:array_match.start()].strip()
+    return "unresolved", None, ""
+
+
 def _storage_expression(
     expression: Any,
     *,
@@ -299,6 +327,9 @@ def _storage_expression(
                 "keys": [],
                 "fields": [],
                 "alias": None,
+                "index_kinds": [],
+                "index_types": [],
+                "terminal_type": str(target.get("type") or ""),
             }
         alias = aliases.get((build_info, declaration_id))
         if alias is not None:
@@ -308,6 +339,9 @@ def _storage_expression(
                 "keys": list(alias.get("keys") or []),
                 "fields": list(alias.get("fields") or []),
                 "alias": alias.get("alias"),
+                "index_kinds": list(alias.get("index_kinds") or []),
+                "index_types": list(alias.get("index_types") or []),
+                "terminal_type": str(alias.get("terminal_type") or alias["target"].get("type") or ""),
             }
         return None
 
@@ -326,8 +360,14 @@ def _storage_expression(
             start = _byte_to_char_offset(source, index_span[0])
             end = _byte_to_char_offset(source, index_span[0] + index_span[1])
             index_text = source[start:end].strip() or "?"
+        index_kind, index_type, next_type = _storage_index_info(
+            str(base.get("terminal_type") or "")
+        )
         base["path"] += f"[{index_text}]"
         base["keys"].append(index_text)
+        base.setdefault("index_kinds", []).append(index_kind)
+        base.setdefault("index_types", []).append(index_type)
+        base["terminal_type"] = next_type
         return base
 
     if node_type == "MemberAccess":
@@ -346,6 +386,9 @@ def _storage_expression(
         field = declarations.get((build_info, member_id)) if member_id is not None else None
         if field is not None and field.get("kind") == "struct_field":
             base["fields"].append(field)
+            base["terminal_type"] = str(field.get("type") or "")
+        else:
+            base["terminal_type"] = ""
         return base
 
     return None
@@ -425,6 +468,17 @@ def _emit_ast_storage_effects(
                 "variable": target.get("name"),
                 "access_path": access["path"],
                 "keys": list(access["keys"]),
+                "index_kinds": list(access.get("index_kinds") or []),
+                "index_types": list(access.get("index_types") or []),
+                "mapping_key_types": [
+                    index_type for kind, index_type in zip(
+                        access.get("index_kinds") or [], access.get("index_types") or []
+                    ) if kind == "mapping"
+                ],
+                "mapping_depth": sum(
+                    1 for kind in access.get("index_kinds") or [] if kind == "mapping"
+                ),
+                "terminal_type": access.get("terminal_type"),
                 "member": field_name,
                 "operation": operation or ("read" if mode.startswith("READS") or mode.startswith("TRANSIENT_READS") else "write"),
                 "mutation_kind": (
@@ -470,6 +524,7 @@ def _emit_ast_storage_effects(
                     try:
                         aliases[(build_info, int(declaration_id))] = {
                             **initial_access, "alias": declaration.get("name"),
+                            "terminal_type": initial_access.get("terminal_type"),
                         }
                         span = _src_range(value)
                         if span is not None:
@@ -621,6 +676,19 @@ def _emit_ast_storage_effects(
                             "source": {"file": unit["path"], "line": argument_line, "column": argument_column},
                             "alias": parameter.get("name"),
                             "access_path": resolved_argument["path"],
+                            "index_kinds": list(resolved_argument.get("index_kinds") or []),
+                            "index_types": list(resolved_argument.get("index_types") or []),
+                            "mapping_key_types": [
+                                index_type for kind, index_type in zip(
+                                    resolved_argument.get("index_kinds") or [],
+                                    resolved_argument.get("index_types") or [],
+                                ) if kind == "mapping"
+                            ],
+                            "mapping_depth": sum(
+                                1 for kind in resolved_argument.get("index_kinds") or []
+                                if kind == "mapping"
+                            ),
+                            "terminal_type": resolved_argument.get("terminal_type"),
                             "detail": "Storage reference passed to a statically resolved internal/library function; inspect the callee's storage effects.",
                         })
 
@@ -647,6 +715,19 @@ def _emit_ast_storage_effects(
                             "source": {"file": unit["path"], "line": receiver_line, "column": receiver_column},
                             "alias": receiver_parameter.get("name"),
                             "access_path": receiver_access["path"],
+                            "index_kinds": list(receiver_access.get("index_kinds") or []),
+                            "index_types": list(receiver_access.get("index_types") or []),
+                            "mapping_key_types": [
+                                index_type for kind, index_type in zip(
+                                    receiver_access.get("index_kinds") or [],
+                                    receiver_access.get("index_types") or [],
+                                ) if kind == "mapping"
+                            ],
+                            "mapping_depth": sum(
+                                1 for kind in receiver_access.get("index_kinds") or []
+                                if kind == "mapping"
+                            ),
+                            "terminal_type": receiver_access.get("terminal_type"),
                         })
 
                 if context:
