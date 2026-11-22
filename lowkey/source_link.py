@@ -219,6 +219,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("MODIFIERS", {"modifier"}),
             ("STORAGE", {"mapping", "state_variable", "function_pointer"}),
             ("STRUCTURES", {"struct", "struct_field"}),
+            ("ENUMS", {"enum", "enum_value"}),
             ("EVENTS / ERRORS", {"event", "custom_error"}),
         ):
             items = [
