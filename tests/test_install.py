@@ -101,7 +101,7 @@ class InstallSmokeTests(unittest.TestCase):
             source_fixture = pathlib.Path(home) / "source-link-fixture"
             (source_fixture / "src").mkdir(parents=True)
             (source_fixture / "foundry.toml").write_text(
-                '[profile.default]\\nsrc = "src"\\n',
+                '[profile.default]\nsrc = "src"\n',
                 encoding="utf-8",
             )
             (source_fixture / "src" / "FlowVault.sol").write_text(
