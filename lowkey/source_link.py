@@ -817,21 +817,22 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for kind, values in sorted(incoming.items()):
             _render_edges("REFERENCED BY " + kind.replace("_", " "), values[:limit], nodes, reverse=True)
 
-    print()
-    print(f"GRAPH     {index.get('summary', {}).get('relationships', 0)} relationship(s) indexed across {index.get('summary', {}).get('files', 0)} Solidity file(s)")
-    if selected.get("kind") in {"contract", "function"} and _depth_has_more_calls(selected, index.get("edges") or [], depth):
-        print(f"DEPTH     Additional nested call relationships exist beyond --depth {depth}; increase --depth to follow them.")
-    print("LIMITS    Static source links do not prove execution, success, storage-slot identity, or an external implementation.")
-    _print_inventory_warning(index)
-    propagation = index.get("effect_propagation") or {}
-    if propagation.get("truncated_frontiers"):
-        print(
-            "EFFECTS   Helper/modifier propagation reached the "
-            f"depth cap ({propagation.get('max_depth', '?')}) at "
-            f"{propagation['truncated_frontiers']} frontier(s); deeper effects may be missing."
-        )
-    if len(edges) > limit:
-        print(f"OUTPUT    Showing {limit} of {len(edges)} selected relationship(s); use --limit to increase.")
+    if not (selected.get("kind") == "contract" and only is None):
+        print()
+        print(f"GRAPH     {index.get('summary', {}).get('relationships', 0)} relationship(s) indexed across {index.get('summary', {}).get('files', 0)} Solidity file(s)")
+        if selected.get("kind") in {"contract", "function"} and _depth_has_more_calls(selected, index.get("edges") or [], depth):
+            print(f"DEPTH     Additional nested call relationships exist beyond --depth {depth}; increase --depth to follow them.")
+        print("LIMITS    Static source links do not prove execution, success, storage-slot identity, or an external implementation.")
+        _print_inventory_warning(index)
+        propagation = index.get("effect_propagation") or {}
+        if propagation.get("truncated_frontiers"):
+            print(
+                "EFFECTS   Helper/modifier propagation reached the "
+                f"depth cap ({propagation.get('max_depth', '?')}) at "
+                f"{propagation['truncated_frontiers']} frontier(s); deeper effects may be missing."
+            )
+        if len(edges) > limit:
+            print(f"OUTPUT    Showing {limit} of {len(edges)} selected relationship(s); use --limit to increase.")
     return 0
 
 
