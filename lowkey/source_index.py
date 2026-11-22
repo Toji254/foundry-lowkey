@@ -1065,7 +1065,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             candidates = [
                 inherited for inherited in functions
-                if inherited["contract"] in contract["bases"]
+                if inherited["contract"] in contract.get("ancestors", contract["bases"])
                 and inherited["kind"] == "function"
                 and inherited["signature"] == func["signature"]
             ]
