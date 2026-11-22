@@ -1973,8 +1973,16 @@ def _collect_source_inventory(root: str | Path, *, include_tests: bool = True) -
                 if is_symlink:
                     try:
                         is_directory_target = entry.is_dir(follow_symlinks=True)
-                    except OSError:
-                        is_directory_target = False
+                    except OSError as exc:
+                        if suffix in EXTS:
+                            discovered.append(relative(path))
+                        record(
+                            path,
+                            "entry-inspection",
+                            exc,
+                            scope="source-file" if suffix in EXTS else "directory-or-entry",
+                        )
+                        continue
                     if entry.name in SKIP:
                         continue
                     if suffix in EXTS:
@@ -2094,11 +2102,19 @@ def _source_inventory_status(inventory: dict[str, Any]) -> str:
 
 def _source_inventory_report(inventory: dict[str, Any]) -> dict[str, Any]:
     failures = list(inventory.get("failures") or [])
+    discovered_paths = list(inventory.get("discovered_paths") or [])
+    source_discovered = [
+        item for item in discovered_paths
+        if item != "."
+        and not (set(Path(item).parts[:-1]) & _SOURCE_TEST_PARTS)
+    ]
     return {
         "root": str(inventory.get("root") or ""),
         "complete": not failures,
-        "files_discovered": len(inventory.get("discovered_paths") or []),
+        "files_discovered": len(discovered_paths),
         "files_inspected": len(inventory.get("files") or []),
+        "source_files_discovered": len(source_discovered),
+        "source_files_inspected": len(_inventory_paths(inventory, include_tests=False)),
         "bytes_read": int(inventory.get("bytes_read") or 0),
         "uninspected_count": len(failures),
         "uninspected": failures,
@@ -6469,8 +6485,8 @@ def godmode(args):
         "name": "source-recon",
         "status": coverage_status,
         "signals": source_file_count,
-        "files_discovered": coverage_report["files_discovered"],
-        "files_scanned": coverage_report["files_inspected"],
+        "files_discovered": coverage_report["source_files_discovered"],
+        "files_scanned": coverage_report["source_files_inspected"],
         "uninspected_count": coverage_report["uninspected_count"],
         "uninspected": coverage_report["uninspected"],
         "coverage_complete": coverage_report["complete"],
