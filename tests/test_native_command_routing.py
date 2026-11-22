@@ -92,6 +92,15 @@ class NativeBuildPlannerTests(unittest.TestCase):
 
 
 class LauncherRoutingTests(unittest.TestCase):
+    def test_hardhat_init_and_clean_have_dedicated_routing(self):
+        launcher = (Path(__file__).resolve().parents[1] / "bin" / "lk").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if [[ "${1:-}" == "hardhat" ]]', launcher)
+        self.assertIn('hardhat_tools.py" "$@"', launcher)
+        self.assertIn('if [[ "${1:-}" == "clean" ]]', launcher)
+        self.assertIn('hardhat_tools.py" clean "$@"', launcher)
+
     def test_build_and_test_are_not_short_circuited_to_forge(self):
         launcher = (Path(__file__).resolve().parents[1] / "bin" / "lk").read_text(
             encoding="utf-8"

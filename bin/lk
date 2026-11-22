@@ -1,6 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
+# Hardhat has project-local binaries. Keep initialization and clean routing in
+# one adapter; build/test continue through Lowkey's existing native planners.
+if [[ "${1:-}" == "hardhat" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/command_wrapper.py" "hardhat" -- python3 "$HOME/.lowkey/hardhat_tools.py" "$@"
+fi
+if [[ "${1:-}" == "clean" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/command_wrapper.py" "clean" -- python3 "$HOME/.lowkey/hardhat_tools.py" clean "$@"
+fi
+
 # One-command AI repair choice. The persistent choice is unchanged.
 case "${1:-}" in
     build|test|walkthrough|walk|break|godmode|forge|report|deploy|test-gen)
@@ -57,6 +68,12 @@ if [[ "$#" -eq 1 ]]; then
             python3 "$HOME/.lowkey/lk.py" "$@"
             python3 "$HOME/.lowkey/godmode.py"
             cat <<'LOWKEY_SOURCE_HELP'
+
+Hardhat project setup:
+  lk hardhat init
+  lk build
+  lk test
+  lk clean
 
 Source relationship navigation:
   lk link Vault
