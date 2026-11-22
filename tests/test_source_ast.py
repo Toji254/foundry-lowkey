@@ -619,6 +619,101 @@ class SourceAstTests(unittest.TestCase):
             for edge in index["edges"]
         ))
 
+    def test_ast_constants_and_immutables_are_not_storage_reads_or_writes(self):
+        source = "SCALE + deployedAt;\ndeployedAt = block.timestamp;"
+        unit = {"path": "src/Values.sol", "source": source, "build_info": "test-build"}
+        constant = {
+            "id": "state:SCALE", "kind": "state_variable",
+            "name": "SCALE", "storage_class": "constant",
+        }
+        immutable = {
+            "id": "state:deployedAt", "kind": "state_variable",
+            "name": "deployedAt", "storage_class": "immutable",
+        }
+        declarations = {
+            ("test-build", 1): constant,
+            ("test-build", 2): immutable,
+        }
+
+        def identifier(name: str, declaration: int) -> dict:
+            start = source.index(name)
+            return {
+                "nodeType": "Identifier",
+                "name": name,
+                "referencedDeclaration": declaration,
+                "src": f"{start}:{len(name)}:0",
+            }
+
+        reader = {
+            "nodeType": "FunctionDefinition",
+            "body": {
+                "nodeType": "Block",
+                "statements": [{
+                    "nodeType": "ExpressionStatement",
+                    "expression": {
+                        "nodeType": "BinaryOperation",
+                        "operator": "+",
+                        "leftExpression": identifier("SCALE", 1),
+                        "rightExpression": identifier("deployedAt", 2),
+                    },
+                }],
+            },
+        }
+        constructor_start = source.index("deployedAt =")
+        constructor = {
+            "nodeType": "FunctionDefinition",
+            "body": {
+                "nodeType": "Block",
+                "statements": [{
+                    "nodeType": "ExpressionStatement",
+                    "expression": {
+                        "nodeType": "Assignment",
+                        "operator": "=",
+                        "leftHandSide": identifier("deployedAt", 2),
+                        "rightHandSide": {
+                            "nodeType": "Literal",
+                            "value": "1",
+                            "src": f"{source.index('block.timestamp', constructor_start)}:15:0",
+                        },
+                    },
+                }],
+            },
+        }
+        edges = []
+        source_ast._emit_ast_storage_effects(
+            reader, {"id": "function:readMeta", "name": "readMeta"},
+            unit=unit, declarations=declarations, edges=edges,
+        )
+        source_ast._emit_ast_storage_effects(
+            constructor, {"id": "function:constructor", "name": "constructor"},
+            unit=unit, declarations=declarations, edges=edges,
+        )
+
+        self.assertTrue(any(
+            edge.get("kind") == "READS_CONSTANT"
+            and edge.get("from") == "function:readMeta"
+            and edge.get("to") == constant["id"]
+            for edge in edges
+        ))
+        self.assertTrue(any(
+            edge.get("kind") == "READS_IMMUTABLE"
+            and edge.get("from") == "function:readMeta"
+            and edge.get("to") == immutable["id"]
+            for edge in edges
+        ))
+        self.assertTrue(any(
+            edge.get("kind") == "INITIALIZES"
+            and edge.get("from") == "function:constructor"
+            and edge.get("to") == immutable["id"]
+            and edge.get("persistence") == "immutable"
+            for edge in edges
+        ))
+        self.assertFalse(any(
+            edge.get("kind") in {"READS", "WRITES"}
+            and edge.get("to") in {constant["id"], immutable["id"]}
+            for edge in edges
+        ))
+
     def test_stale_build_info_is_rejected_and_lexical_fallback_remains(self):
         temporary, root, _source = self._fixture(stale=True)
         try:
