@@ -760,7 +760,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "id": variable_id, "kind": kind, "name": variable_name,
                     "qualified_name": f"{name}.{variable_name}", "contract": name,
                     "file": path, "line": _line(source, statement_offset),
-                    "type": variable_type, "mapping_value_type": _mapping_inner_type(variable_type),
+                    "type": variable_type, "source_offset": statement_offset,
+                    "mapping_value_type": _mapping_inner_type(variable_type),
                     "mapping_keys": _mapping_layout(variable_type)[0] if mapping else [],
                     "scope": "state",
                 }
@@ -980,7 +981,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 edges.append(_edge(
                     "USES_TYPE", variable["id"], candidates[0]["id"],
                     variable["file"], source_by_path.get(variable["file"], ""),
-                    0, type_name=type_name,
+                    variable.get("source_offset", 0), type_name=type_name,
                 ))
 
     for func in functions:
@@ -1202,7 +1203,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 if item["contract"] in {scope, *func["bases"]}
                 and item["name"] == receiver
             ]
-            declared_type = receiver_vars[0].get("type", "").replace(" payable", "").strip() if len(receiver_vars) == 1 else ""
+            if len(receiver_vars) == 1:
+                declared_type = receiver_vars[0].get("type", "").replace(" payable", "").strip()
+            else:
+                declared_type = (func.get("parameter_declared_types") or {}).get(receiver, "")
+                declared_type = re.sub(r"\b(memory|calldata|storage|payable)\b", " ", declared_type)
+                declared_type = re.sub(r"\s+", " ", declared_type).strip()
             type_contracts = contract_by_name.get(declared_type, []) if declared_type else []
             typed_methods = [
                 item for item in functions
@@ -1210,6 +1216,30 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 and item["name"] == method
                 and item["kind"] == "function"
             ] if len(type_contracts) == 1 else []
+            if receiver == "this":
+                self_methods = [
+                    item for item in functions
+                    if item["contract"] == scope and item["file"] == path
+                    and item["name"] == method and item["kind"] == "function"
+                    and item.get("visibility") in {"public", "external"}
+                ]
+                if len(self_methods) == 1:
+                    edges.append(_edge(
+                        "EXTERNAL_CALL", func["id"], self_methods[0]["id"],
+                        path, source, body_absolute + call.start(),
+                        resolution="DIRECT", receiver="this", method=method,
+                        implementation_resolution="DIRECT",
+                        detail="External self-call resolves to this contract's declared public/external function.",
+                    ))
+                    continue
+                if len(self_methods) > 1:
+                    edges.append(_edge(
+                        "EXTERNAL_CALL", func["id"], f"external:this.{method}",
+                        path, source, body_absolute + call.start(),
+                        resolution="UNRESOLVED", receiver="this", method=method,
+                        candidates=[item["id"] for item in self_methods],
+                    ))
+                    continue
             if len(typed_methods) == 1:
                 typed = typed_methods[0]
                 edges.append(_edge(
