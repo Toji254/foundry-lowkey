@@ -1317,7 +1317,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         # Inline Yul is a separate language. Do not infer Solidity identifiers,
         # function calls, or ordinary state-variable accesses from its contents.
         assembly_ranges: list[tuple[int, int]] = []
-        for assembly_match in re.finditer(r"\\bassembly\\b(?:\\s*\\([^)]*\\))?\\s*\\{", body):
+        for assembly_match in re.finditer(r"\bassembly\b(?:\s*\([^)]*\))?\s*\{", body):
             assembly_open = assembly_match.end() - 1
             assembly_close = _matching(body, assembly_open, "{", "}")
             assembly_ranges.append((
