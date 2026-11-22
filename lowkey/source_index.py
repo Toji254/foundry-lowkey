@@ -724,6 +724,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     }
                     structs.append(struct_node)
                     add_node({**struct_node, "evidence": "LEXICAL_SOURCE"})
+                    edges.append(_edge("DECLARES", contract_id, struct_id, path, source, field_offset))
                 field_id = _node_id("struct_field", path, f"{name}.{field_struct}.{field_name}")
                 field_node = {
                     "id": field_id, "kind": "struct_field", "name": field_name,
