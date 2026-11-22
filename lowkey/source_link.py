@@ -64,6 +64,24 @@ def _edge_groups(node: dict[str, Any], edges: list[dict[str, Any]], nodes: dict[
     return outgoing, incoming
 
 
+def _storage_index_shape(edge: dict[str, Any]) -> str | None:
+    kinds = edge.get("index_kinds") or []
+    types = edge.get("index_types") or []
+    if not kinds:
+        return None
+    parts = []
+    for index, kind in enumerate(kinds):
+        type_name = types[index] if index < len(types) else None
+        type_label = str(type_name or "?")
+        if kind == "mapping":
+            parts.append(f"mapping[{type_label}]")
+        elif kind == "array":
+            parts.append(f"array[{type_label}]")
+        else:
+            parts.append("index[unresolved]")
+    return " -> ".join(parts)
+
+
 def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
     target = nodes.get(edge.get("to"), {})
     label = _symbol_label(target) if target else str(edge.get("to", "UNRESOLVED"))
@@ -101,6 +119,15 @@ def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
     elif edge.get("via"):
         via_names = [nodes.get(item, {}).get("qualified_name", item) for item in edge["via"]]
         detail = " via " + " -> ".join(via_names)
+    index_shape = _storage_index_shape(edge)
+    if index_shape:
+        detail += f" · indexes={index_shape}"
+        if edge.get("mapping_depth") is not None:
+            detail += f" · mapping-depth={edge['mapping_depth']}"
+        if edge.get("terminal_type"):
+            detail += f" · value-type={edge['terminal_type']}"
+    elif edge.get("terminal_type"):
+        detail += f" · value-type={edge['terminal_type']}"
     return f"{label}{detail}  [{resolution}]  {_location(edge)}"
 
 
@@ -609,6 +636,13 @@ def _render_edges(heading: str, edges: list[dict[str, Any]], nodes: dict[str, di
                 details.append("field=" + str(edge["member"]))
             if edge.get("alias"):
                 details.append("storage alias " + str(edge["alias"]))
+            index_shape = _storage_index_shape(edge)
+            if index_shape:
+                details.append("indexes=" + index_shape)
+            if edge.get("mapping_depth") is not None:
+                details.append("mapping-depth=" + str(edge["mapping_depth"]))
+            if edge.get("terminal_type"):
+                details.append("value-type=" + str(edge["terminal_type"]))
             detail_text = "  " + " · ".join(details) if details else ""
             print(f"  {label}{detail_text}  [{edge.get('resolution', 'UNRESOLVED')}]  {_location(edge)}")
         else:
