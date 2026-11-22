@@ -1925,33 +1925,27 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             for access in alias_pattern_usage.finditer(body):
                 if in_assembly(access.start()) or any(start <= access.start() < end for start, end in alias_ranges):
                     continue
-                cursor = access.end()
-                while cursor < len(body) and body[cursor].isspace():
-                    cursor += 1
-                member_name = None
-                if cursor < len(body) and body[cursor] == ".":
-                    member_match = re.match(r"\.\s*([A-Za-z_]\w*)", body[cursor:])
-                    if member_match:
-                        member_name = member_match.group(1)
-                        cursor += member_match.end()
-                        while cursor < len(body) and body[cursor].isspace():
-                            cursor += 1
+                access_info = _scan_storage_access(
+                    body, access.end(),
+                    base_name=variable["name"],
+                    base_type=alias["type"],
+                    base_indexes=alias["indexes"],
+                    contract=variable["contract"],
+                    fields_by_struct=fields_by_struct,
+                )
+                cursor = access_info["end"]
                 before = body[max(0, access.start() - 12):access.start()]
                 after = body[cursor:cursor + 5]
                 assignment = re.match(r"(\*\*=|<<=|>>=|\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
-                array_type = variable.get("mapping_value_type") or variable.get("type", "")
-                array_mutation = (
-                    member_name in {"push", "pop"}
-                    and bool(re.search(r"\[\s*\]\s*$", array_type))
-                )
-                is_write = bool(assignment or prefix_assignment or deletion or array_mutation)
-                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or member_name == "pop"
+                array_method = access_info.get("array_method")
+                is_write = bool(assignment or prefix_assignment or deletion or array_method)
+                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or array_method == "pop"
                 operation = (
                     "delete" if deletion else assignment.group(0) if assignment
                     else prefix_assignment.group(0).strip() if prefix_assignment
-                    else f"array.{member_name}" if array_mutation else "read"
+                    else f"array.{array_method}" if array_method else "read"
                 )
                 if deletion:
                     relations = ["DELETES"]
@@ -1969,47 +1963,27 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
                 if is_compound:
                     relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
-                access_path = variable["name"] + "".join(f"[{item}]" for item in alias["indexes"])
-                if member_name:
-                    access_path += f".{member_name}"
-                for relation in relations:
-                    edge = _edge(
-                        relation, func["id"], variable["id"], path, source,
-                        body_absolute + access.start(),
-                        variable=variable["name"], alias=alias["name"],
-                        member=member_name, access_path=access_path,
-                        resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
-                        evidence="STORAGE_ALIAS_RESOLUTION",
-                        operation=operation,
-                        mutation_kind=(
-                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                            else "COMPOUND_ASSIGNMENT" if is_compound
-                            else "ASSIGNMENT" if is_write else "READ"
-                        ),
-                        persistence=persistence,
-                    )
-                    edges.append(edge)
-                    struct_type = variable.get("mapping_value_type") or variable.get("type") or alias["type"]
-                    struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type)
-                    if member_name and struct_names:
-                        fields = fields_by_struct.get((variable["contract"], struct_names[-1]), [])
-                        field = next((item for item in fields if item["name"] == member_name), None)
-                        if field:
-                            edges.append(_edge(
-                                relation, func["id"], field["id"], path, source,
-                                body_absolute + access.start(),
-                                variable=variable["name"], alias=alias["name"],
-                                member=member_name, access_path=access_path,
-                                resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
-                                evidence="STORAGE_ALIAS_RESOLUTION",
-                                operation=operation,
-                                mutation_kind=(
-                                    "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                                    else "COMPOUND_ASSIGNMENT" if is_compound
-                                    else "ASSIGNMENT" if is_write else "READ"
-                                ),
-                                persistence=persistence,
-                            ))
+
+                relation_targets = [(variable["id"], None)]
+                relation_targets.extend((field["id"], field.get("name")) for field in access_info["field_nodes"])
+                for target_id, field_name in relation_targets:
+                    for relation in relations:
+                        edges.append(_edge(
+                            relation, func["id"], target_id, path, source,
+                            body_absolute + access.start(),
+                            variable=variable["name"], alias=alias["name"],
+                            keys=access_info["keys"], member=field_name or access_info["member"],
+                            access_path=access_info["access_path"],
+                            resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                            evidence="STORAGE_ALIAS_RESOLUTION",
+                            operation=operation,
+                            mutation_kind=(
+                                "DELETE" if deletion else "ARRAY_MUTATION" if array_method
+                                else "COMPOUND_ASSIGNMENT" if is_compound
+                                else "ASSIGNMENT" if is_write else "READ"
+                            ),
+                            persistence=persistence,
+                        ))
 
         for variable in accessible_state:
             if accessible_name_counts.get(variable["name"], 0) > 1:
@@ -2022,48 +1996,35 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             for access in access_pattern.finditer(body):
                 if in_assembly(access.start()) or any(start <= access.start() < end for start, end in alias_ranges):
                     continue
-                cursor = access.end()
-                while cursor < len(body) and body[cursor].isspace():
-                    cursor += 1
-                access_keys: list[str] = []
-                if cursor < len(body) and body[cursor] == "[":
-                    close_index = _matching(body, cursor, "[", "]")
-                    while close_index is not None:
-                        access_keys.append(body[cursor + 1:close_index].strip())
-                        cursor = close_index + 1
-                        while cursor < len(body) and body[cursor].isspace():
-                            cursor += 1
-                        if cursor < len(body) and body[cursor] == "[":
-                            close_index = _matching(body, cursor, "[", "]")
-                        else:
-                            break
-                member_name = None
-                if cursor < len(body) and body[cursor] == ".":
-                    member_match = re.match(r"\.\s*([A-Za-z_]\w*)", body[cursor:])
-                    if member_match:
-                        member_name = member_match.group(1)
-                        cursor += member_match.end()
-                        while cursor < len(body) and body[cursor].isspace():
-                            cursor += 1
+                access_info = _scan_storage_access(
+                    body, access.end(),
+                    base_name=variable["name"],
+                    base_type=variable.get("type", ""),
+                    base_indexes=[],
+                    contract=variable["contract"],
+                    fields_by_struct=fields_by_struct,
+                )
+                cursor = access_info["end"]
                 before = body[max(0, access.start() - 12):access.start()]
                 after = body[cursor:cursor + 5]
                 assignment = re.match(r"(\*\*=|<<=|>>=|\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
-                array_type = variable.get("mapping_value_type") or variable.get("type", "")
-                array_mutation = (
-                    member_name in {"push", "pop"}
-                    and bool(re.search(r"\[\s*\]\s*$", array_type))
-                )
-                is_write = bool(assignment or prefix_assignment or deletion or array_mutation)
-                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or member_name == "pop"
+                array_method = access_info.get("array_method")
+                is_write = bool(assignment or prefix_assignment or deletion or array_method)
+                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or array_method == "pop"
                 operation = (
                     "delete" if deletion else assignment.group(0) if assignment
                     else prefix_assignment.group(0).strip() if prefix_assignment
-                    else f"array.{member_name}" if array_mutation else "read"
+                    else f"array.{array_method}" if array_method else "read"
                 )
                 persistence = variable.get("storage_class", "persistent")
-                relations = ["DELETES"] if deletion else ["WRITES"] if is_write else ["READS"]
+                if deletion:
+                    relations = ["DELETES"]
+                elif is_write:
+                    relations = ["WRITES"]
+                else:
+                    relations = ["READS"]
                 if persistence == "transient":
                     relations = [
                         {"READS": "TRANSIENT_READS", "WRITES": "TRANSIENT_WRITES",
@@ -2074,46 +2035,27 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
                 if is_compound:
                     relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
-                access_path = variable["name"] + "".join(f"[{item}]" for item in access_keys)
-                if member_name:
-                    access_path += f".{member_name}"
-                for relation in relations:
-                    edges.append(_edge(
-                        relation, func["id"], variable["id"], path, source,
-                        body_absolute + access.start(),
-                        variable=variable["name"], keys=access_keys,
-                        member=member_name, access_path=access_path,
-                        resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
-                        evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
-                        operation=operation,
-                        mutation_kind=(
-                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                            else "COMPOUND_ASSIGNMENT" if is_compound
-                            else "ASSIGNMENT" if is_write else "READ"
-                        ),
-                        persistence=persistence,
-                    ))
-                    struct_type = variable.get("mapping_value_type") or variable.get("type")
-                    struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type or "")
-                    if member_name and struct_names:
-                        fields = fields_by_struct.get((variable["contract"], struct_names[-1]), [])
-                        field = next((item for item in fields if item["name"] == member_name), None)
-                        if field:
-                            edges.append(_edge(
-                                relation, func["id"], field["id"], path, source,
-                                body_absolute + access.start(),
-                                variable=variable["name"], keys=access_keys,
-                                member=member_name, access_path=access_path,
-                                resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
-                                evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
-                                operation=operation,
-                                mutation_kind=(
-                                    "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                                    else "COMPOUND_ASSIGNMENT" if is_compound
-                                    else "ASSIGNMENT" if is_write else "READ"
-                                ),
-                                persistence=persistence,
-                            ))
+
+                relation_targets = [(variable["id"], None)]
+                relation_targets.extend((field["id"], field.get("name")) for field in access_info["field_nodes"])
+                for target_id, field_name in relation_targets:
+                    for relation in relations:
+                        edges.append(_edge(
+                            relation, func["id"], target_id, path, source,
+                            body_absolute + access.start(),
+                            variable=variable["name"], keys=access_info["keys"],
+                            member=field_name or access_info["member"],
+                            access_path=access_info["access_path"],
+                            resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                            evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
+                            operation=operation,
+                            mutation_kind=(
+                                "DELETE" if deletion else "ARRAY_MUTATION" if array_method
+                                else "COMPOUND_ASSIGNMENT" if is_compound
+                                else "ASSIGNMENT" if is_write else "READ"
+                            ),
+                            persistence=persistence,
+                        ))
 
         for emitted in re.finditer(r"\bemit\s+([A-Za-z_]\w*)\s*\(", body):
             name = emitted.group(1)
