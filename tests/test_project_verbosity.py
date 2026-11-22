@@ -52,6 +52,21 @@ class ProjectVerbosityTests(unittest.TestCase):
             "src/Worker.sol",
             'pragma solidity ^0.8.20;\nimport "./Coordinator.sol";\ncontract Worker is Coordinator {}\n',
         )
+        self.write(
+            root,
+            "src/math/FixedPoint.sol",
+            "pragma solidity ^0.8.20;\nlibrary FixedPoint {}\n",
+        )
+        self.write(
+            root,
+            "src/Repository.sol",
+            'pragma solidity ^0.8.20;\nimport "./IRepository.sol";\nimport "./math/FixedPoint.sol";\ncontract Repository is IRepository {}\n',
+        )
+        self.write(
+            root,
+            "test/CoordinatorTest.sol",
+            'pragma solidity ^0.8.20;\nimport "hardhat/console.sol";\ncontract CoordinatorTest {}\n',
+        )
 
     def overview(self, root, verbosity=0):
         map_output = io.StringIO()
@@ -91,14 +106,63 @@ class ProjectVerbosityTests(unittest.TestCase):
             result, output = self.overview(root)
 
             self.assertIn("LOWKEY PROJECT OVERVIEW", output)
-            self.assertIn("STRUCTURAL NAVIGATION", output)
+            self.assertIn("PROJECT STRUCTURE", output)
+            self.assertIn("APPLICATION ARCHITECTURE", output)
+            self.assertIn("SHARED BUILDING BLOCKS", output)
             self.assertIn("Coordinator", output)
             self.assertIn("Repository", output)
             self.assertIn("IRepository", output)
+            self.assertIn("FixedPoint", output)
             self.assertIn("not a risk ranking", output)
+            application_section = output.split("SHARED BUILDING BLOCKS", 1)[0]
+            self.assertNotIn("IRepository", application_section)
+            self.assertNotIn("FixedPoint", application_section)
             self.assertNotIn("LOWKEY PROJECT MAP", output)
             self.assertNotIn("GMX", output)
             self.assertGreater(result["graph"]["summary"]["imports"], 0)
+
+
+    def test_overview_restores_project_type_and_compiler_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.fixture(root)
+            _result, output = self.overview(root)
+
+            self.assertIn("Type          : Foundry", output)
+            self.assertIn("Compiler(s)   : Solidity", output)
+            self.assertIn("Build systems :", output)
+
+    def test_dependency_health_separates_production_and_support_imports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.fixture(root)
+            result, output = self.overview(root)
+
+            self.assertIn("Production graph imports", output)
+            self.assertIn("Support/test imports", output)
+            self.assertIn("Unresolved production imports", output) if result["human"]["unresolved"] else None
+            self.assertIn("Unresolved support/test imports (not production dependencies)", output)
+            self.assertIn("test/CoordinatorTest.sol -> hardhat/console.sol", output)
+            self.assertIn("1 unresolved", output)
+            self.assertEqual(
+                len(result["human"]["unresolved"]),
+                0,
+                "the production graph must not inherit test-only unresolved imports",
+            )
+
+    def test_architecture_navigation_separates_contracts_from_shared_building_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.fixture(root)
+            result, _output = self.overview(root)
+
+            navigation = project_tools._project_structural_navigation(result)
+            app_files = {row["file"] for row in navigation["rows"]}
+            shared_files = {row["file"] for row in navigation["shared_rows"]}
+            self.assertTrue(any(path.endswith("Repository.sol") for path in app_files))
+            self.assertTrue(any(path.endswith("IRepository.sol") for path in shared_files))
+            self.assertTrue(any(path.endswith("FixedPoint.sol") for path in shared_files))
+            self.assertFalse(app_files & shared_files)
 
     def test_verbose_overview_adds_relationships_without_dumping_full_graph(self):
         with tempfile.TemporaryDirectory() as tmp:
