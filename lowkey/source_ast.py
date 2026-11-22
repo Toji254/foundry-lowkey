@@ -279,6 +279,8 @@ def _storage_index_info(type_name: str) -> tuple[str, str | None, str]:
     value = re.sub(r"\s+", " ", value).strip()
     if value.startswith("mapping"):
         opening = value.find("(")
+        if opening < 0:
+            return "unresolved", None, ""
         depth = 0
         closing = None
         for offset in range(opening, len(value)):
