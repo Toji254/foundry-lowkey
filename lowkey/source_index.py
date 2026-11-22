@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 13
+CACHE_VERSION = 14
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -472,6 +472,9 @@ def _edge(
     evidence: str = "LEXICAL_SOURCE",
     **extra: Any,
 ) -> dict[str, Any]:
+    candidate_ids = extra.get("candidates")
+    if resolution == "UNRESOLVED" and isinstance(candidate_ids, list) and len(candidate_ids) > 1:
+        resolution = "AMBIGUOUS"
     value = {
         "id": f"{kind}:{source_id}:{target_id}:{_line(source, offset)}:{offset}",
         "kind": kind,
