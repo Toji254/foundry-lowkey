@@ -409,7 +409,9 @@ def _emit_ast_storage_effects(
                 "operation": operation or ("read" if mode.endswith("READS") else "write"),
                 "mutation_kind": (
                     "DELETE" if mode == "DELETES" else
-                    "COMPOUND_ASSIGNMENT" if operation and operation not in {"=", "tuple="} else
+                    "ARRAY_MUTATION" if operation and operation.startswith("array.") else
+                    "COMPOUND_ASSIGNMENT" if operation in {"**=", "<<=", ">>=", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="} else
+                    "TUPLE_ASSIGNMENT" if operation == "tuple=" else
                     "ASSIGNMENT" if mode.endswith("WRITES") else "READ"
                 ),
                 "persistence": persistence,
@@ -476,7 +478,9 @@ def _emit_ast_storage_effects(
 
         if node_type == "Assignment":
             operator = str(value.get("operator") or "=")
-            walk(value.get("leftHandSide"), "WRITES", operator)
+            left_hand_side = value.get("leftHandSide")
+            write_operation = "tuple=" if isinstance(left_hand_side, dict) and left_hand_side.get("nodeType") == "TupleExpression" else operator
+            walk(left_hand_side, "WRITES", write_operation)
             if operator != "=":
                 walk(value.get("leftHandSide"), "READS", "read-for-update")
             walk(value.get("rightHandSide"), "READS", None)
