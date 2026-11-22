@@ -293,21 +293,27 @@ def _save_cache(path: Path, payload: dict[str, Any]) -> None:
         return
 
 
+def _mapping_layout(type_name: str) -> tuple[list[str], str | None]:
+    keys: list[str] = []
+    current = type_name.strip()
+    while current.startswith("mapping"):
+        opening = current.find("(")
+        if opening < 0:
+            return keys, None
+        closing = _matching(current, opening, "(", ")")
+        if closing is None:
+            return keys, None
+        inside = current[opening + 1:closing]
+        parts = re.split(r"\s*=>\s*", inside, maxsplit=1)
+        if len(parts) < 2:
+            return keys, None
+        keys.append(parts[0].strip())
+        current = parts[1].strip()
+    return keys, current or None
+
+
 def _mapping_inner_type(type_name: str) -> str | None:
-    if not type_name.startswith("mapping"):
-        return None
-    opening = type_name.find("(")
-    if opening < 0:
-        return None
-    closing = _matching(type_name, opening, "(", ")")
-    if closing is None:
-        return None
-    inside = type_name[opening + 1:closing]
-    parts = re.split(r"\s*=>\s*", inside, maxsplit=1)
-    if len(parts) < 2:
-        return None
-    # Split the first top-level key/value delimiter; nested mapping values stay intact.
-    return parts[1].strip()
+    return _mapping_layout(type_name)[1]
 
 
 def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dict[str, Any]:
@@ -532,6 +538,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "qualified_name": f"{name}.{variable_name}", "contract": name,
                     "file": path, "line": _line(source, statement_offset),
                     "type": variable_type, "mapping_value_type": _mapping_inner_type(variable_type),
+                    "mapping_keys": _mapping_layout(variable_type)[0] if mapping else [],
                     "scope": "state",
                 }
                 state_variables.append(variable)
