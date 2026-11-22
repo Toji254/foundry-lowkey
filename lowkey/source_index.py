@@ -1537,9 +1537,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         eth_call = re.compile(
             r"(?P<recipient>payable\s*\(\s*address\s*\(\s*this\s*\)\s*\)"
             r"|address\s*\(\s*this\s*\)|payable\s*\([^)]*\)|msg\.sender|tx\.origin|[A-Za-z_]\w*)"
-            r"\s*\.\s*call\s*\{\s*value\s*:\s*(?P<amount>[^}]+)\}"
+            r"\s*\.\s*call\s*\{(?P<options>[^}]+)\}"
         )
         for match in eth_call.finditer(body):
+            value_option = re.search(r"\bvalue\s*:\s*([^,}]+)", match.group("options"))
+            if value_option is None:
+                continue
             recipient = re.sub(r"\s+", "", match.group("recipient"))
             if recipient in {"address(this)", "payable(address(this))"}:
                 continue
@@ -1547,8 +1550,26 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
                 offset + match.start(), asset="eth", direction="out",
                 status="TRANSFER_ATTEMPT", recipient=match.group("recipient").strip(),
-                amount=match.group("amount").strip(),
+                amount=value_option.group(1).strip(),
                 detail="Source-level value-bearing CALL; verify the call result and actual balance movement at runtime.",
+            ))
+
+        # Solidity 0.5-style call.value(amount)(data) remains common in legacy
+        # contracts. Keep it visible as a value-bearing attempt.
+        legacy_eth_call = re.compile(
+            r"(?P<recipient>msg\.sender|tx\.origin|payable\s*\([^)]*\)|[A-Za-z_]\w*)"
+            r"\s*\.\s*call\s*\.\s*value\s*\((?P<amount>[^)]*)\)"
+        )
+        for match in legacy_eth_call.finditer(body):
+            recipient = re.sub(r"\s+", "", match.group("recipient"))
+            if recipient in {"address(this)", "payable(address(this))"}:
+                continue
+            edges.append(_edge(
+                "ASSET_FLOW", func["id"], "asset:eth", path, source,
+                offset + match.start(), asset="eth", direction="out",
+                status="TRANSFER_ATTEMPT", recipient=match.group("recipient").strip(),
+                amount=match.group("amount").strip(), syntax="legacy-call-value",
+                detail="Legacy call.value amount is attached to a low-level CALL; verify success and balance movement at runtime.",
             ))
 
         # .transfer/.send are native-ETH flows only when the receiver is
@@ -1570,6 +1591,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             rf"(?P<recipient>{native_receiver})\s*\.\s*(?P<method>transfer|send)\s*\(\s*(?P<amount>[^)]*)\)"
         )
         for match in native_method.finditer(body):
+            if re.sub(r"\s+", "", match.group("recipient")) in {"address(this)", "payable(address(this))"}:
+                continue
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
                 offset + match.start(), asset="eth", direction="out",
@@ -1595,11 +1618,14 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         # SELFDESTRUCT balance transfers remain fork-sensitive. Do not assume
         # pre-Cancun code deletion semantics or a particular execution occurred.
         for destruction in re.finditer(r"\b(?:selfdestruct|suicide)\s*\((?P<recipient>[^)]*)\)", body):
+            recipient = destruction.group("recipient").strip()
+            recipient_compact = re.sub(r"\s+", "", recipient)
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
-                offset + destruction.start(), asset="eth", direction="out",
+                offset + destruction.start(), asset="eth",
+                direction="unresolved" if recipient_compact in {"address(this)", "payable(address(this))"} else "out",
                 status="FORK_SEMANTIC_DEPENDENT",
-                recipient=destruction.group("recipient").strip(),
+                recipient=recipient,
                 detail="SELFDESTRUCT can transfer the account balance; code-deletion semantics depend on the active EVM fork and account history.",
             ))
 
