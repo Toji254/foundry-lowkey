@@ -272,7 +272,7 @@ def _render_call_tree(
             target = nodes.get(target_id)
             resolution = str(edge.get("resolution") or "UNRESOLVED")
             if target is None:
-                label = f"UNRESOLVED TARGET {target_id}"
+                label = f"{resolution} TARGET {target_id}"
             else:
                 label = _symbol_label(target)
             print(f"{prefix}{branch} {label}  [{resolution}]  {_location(edge)}")
@@ -572,7 +572,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             edge for edge in edges + extras + file_imports
             if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
         ]
-        _render_edges("UNRESOLVED", unresolved[:limit], nodes)
+        _render_edges("UNRESOLVED / AMBIGUOUS", unresolved[:limit], nodes)
     elif selected.get("kind") in {"function", "modifier"}:
         group_map = [
             ("CALLED BY", "CALLS", "incoming"),
@@ -612,7 +612,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             edge for edge in edges
             if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
         ]
-        _render_edges("UNRESOLVED TARGETS", unresolved[:limit], nodes)
+        _render_edges("UNRESOLVED / AMBIGUOUS TARGETS", unresolved[:limit], nodes)
     elif selected.get("kind") in {"mapping", "state_variable", "function_pointer"}:
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
