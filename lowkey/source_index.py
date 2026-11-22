@@ -784,7 +784,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     # Direct state access, modifiers, events and function-to-function calls.
     function_nodes = {item["id"]: item for item in functions}
     for func in functions:
-        if func["kind"] != "function":
+        if func["kind"] not in {"function", "modifier"}:
             continue
         path = func["file"]
         source = source_by_path.get(path, "")
@@ -1307,9 +1307,20 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     for item in edges:
         if item["kind"] in {"READS", "WRITES", "ASSET_FLOW"}:
             direct_effects.setdefault(item["from"], []).append(item)
+    direct_modifiers: dict[str, list[dict[str, Any]]] = {}
+    for item in edges:
+        if item["kind"] == "APPLIES_MODIFIER" and item["resolution"] in {"DIRECT", "INFERRED"}:
+            direct_modifiers.setdefault(item["from"], []).append(item)
     function_by_id = {item["id"]: item for item in functions}
     for start_id, start_func in function_by_id.items():
         queue: list[tuple[str, list[str], int]] = [(start_id, [start_id], 0)]
+        # Modifiers execute as part of the decorated function. Seed their bodies
+        # into the bounded traversal, but preserve APPLIES_MODIFIER as the edge.
+        queue.extend(
+            (item["to"], [start_id, item["to"]], 1)
+            for item in direct_modifiers.get(start_id, [])
+            if item["to"] in function_by_id
+        )
         visited = {start_id}
         while queue:
             current, chain, depth = queue.pop(0)
