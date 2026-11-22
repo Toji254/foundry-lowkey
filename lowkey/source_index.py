@@ -1143,10 +1143,18 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 candidates = inherited
             if len(candidates) == 1:
                 target_func = candidates[0]
+                has_override = any(
+                    edge.get("kind") == "OVERRIDES" and edge.get("to") == target_func["id"]
+                    for edge in edges
+                )
+                virtual_dispatch = bool(re.search(r"\bvirtual\b", target_func.get("header", ""))) or has_override
                 edges.append(_edge(
                     "CALLS", func["id"], target_func["id"], path, source,
                     body_absolute + call.start(),
-                    resolution="INFERRED" if target_func["contract"] != scope else "DIRECT",
+                    resolution="INFERRED" if target_func["contract"] != scope or virtual_dispatch else "DIRECT",
+                    implementation_resolution="UNRESOLVED" if virtual_dispatch else "DIRECT",
+                    dispatch="VIRTUAL" if virtual_dispatch else "STATIC",
+                    detail="Call names this declaration, but virtual dispatch may select an override at runtime." if virtual_dispatch else None,
                 ))
             elif len(candidates) > 1:
                 edges.append(_edge(
@@ -1169,7 +1177,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 for base_name in func["bases"]:
                     inherited.extend(item for item in local_functions.get((base_name, method), []) if item["kind"] == "function")
                 if len(inherited) == 1:
-                    edges.append(_edge("CALLS", func["id"], inherited[0]["id"], path, source, body_absolute + call.start(), resolution="INFERRED"))
+                    edges.append(_edge("CALLS", func["id"], inherited[0]["id"], path, source, body_absolute + call.start(), resolution="DIRECT", dispatch="SUPER", implementation_resolution="DIRECT"))
                     continue
 
             # Resolve static Library.method(...) and using Library for Type
@@ -1253,8 +1261,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         "EXTERNAL_CALL", func["id"], self_methods[0]["id"],
                         path, source, body_absolute + call.start(),
                         resolution="DIRECT", receiver="this", method=method,
-                        implementation_resolution="DIRECT",
-                        detail="External self-call resolves to this contract's declared public/external function.",
+                        implementation_resolution="UNRESOLVED" if re.search(r"\bvirtual\b", self_methods[0].get("header", "")) else "DIRECT",
+                        detail="External self-call resolves to this declared public/external method; virtual implementation selection remains runtime-dependent when applicable.",
                     ))
                     continue
                 if len(self_methods) > 1:
