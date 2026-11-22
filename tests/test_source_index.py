@@ -192,6 +192,10 @@ class SourceIndexTests(unittest.TestCase):
                     return positions;
                 }
 
+                function structCast() external pure returns (Position memory) {
+                    return Position(address(0), 1);
+                }
+
                 function abiEncoding(address who) external pure returns (bytes memory) {
                     return abi.encode(who);
                 }
@@ -360,8 +364,10 @@ class SourceIndexTests(unittest.TestCase):
         mapping = find_symbols(index, "Vault.positions")[0]
         local_shadow = find_symbols(index, "Vault.localShadow()")[0]
         abi_encoding = find_symbols(index, "Vault.abiEncoding(address)")[0]
+        struct_cast = find_symbols(index, "Vault.structCast()")[0]
         self.assertFalse(any(edge["from"] == local_shadow["id"] and edge["to"] == mapping["id"] and edge["kind"] in {"READS", "WRITES"} for edge in index["edges"]))
         self.assertFalse(any(edge["from"] == abi_encoding["id"] and edge["kind"] == "EXTERNAL_CALL" and edge.get("receiver") == "abi" for edge in index["edges"]))
+        self.assertFalse(any(edge["from"] == struct_cast["id"] and edge["kind"] == "CALLS" and edge.get("to") == "function-name:Vault.Position" for edge in index["edges"]))
 
     def test_repeated_queries_use_the_content_addressed_cache(self):
         temporary, root = self.fixture()
