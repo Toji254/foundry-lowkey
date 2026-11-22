@@ -330,6 +330,8 @@ def _render_contract_overview(
 
     print(f"CONTRACT: {selected.get('name', '?')}")
     print(f"SOURCE:   {_location(selected)}")
+    if selected.get("provenance"):
+        print(f"ORIGIN:   {str(selected['provenance']).upper()}")
     print("EVIDENCE: static source relationships; not runtime execution")
     print()
 
