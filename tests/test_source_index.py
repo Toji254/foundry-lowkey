@@ -219,7 +219,7 @@ class SourceIndexTests(unittest.TestCase):
         edges = index["edges"]
 
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == withdraw_id and edge["to"] == update_id for edge in edges))
-        library_functions = [item for item in index["nodes"] if item.get("qualified_name") == "SafeERC20.safeTransfer(IERC20,address,uint256)"]]
+        library_functions = [item for item in index["nodes"] if item.get("qualified_name") == "SafeERC20.safeTransfer(IERC20,address,uint256)"]
         self.assertEqual(len(library_functions), 1)
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == withdraw_id and edge["to"] == library_functions[0]["id"] and edge.get("call_kind") == "using-for extension" for edge in edges))
         direct_transfer = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.transferDirect(address,uint256)")
