@@ -71,6 +71,8 @@ def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
             detail += f" amount={edge['amount']}"
     elif edge.get("kind") == "EXTERNAL_CALL":
         detail = f" [{edge.get('receiver', 'target')}.{edge.get('method', edge.get('operation', 'call'))}]"
+        if edge.get("implementation_resolution"):
+            detail += f" · implementation {edge['implementation_resolution']}"
     elif edge.get("kind") in {"READS", "WRITES", "ALIASES_STORAGE"} and edge.get("access_path"):
         detail = f" [{edge['access_path']}]"
         if edge.get("alias"):
