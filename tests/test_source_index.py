@@ -85,6 +85,7 @@ class SourceIndexTests(unittest.TestCase):
 
                 event Deposited(address indexed who, uint256 amount);
                 event Withdrawn(address indexed who, uint256 amount);
+                error Unauthorized(address caller);
                 modifier nonReentrant() { guard += 1; _; }
 
                 function health() internal override returns (uint256) { return 2; }
@@ -133,6 +134,14 @@ class SourceIndexTests(unittest.TestCase):
 
                 function sendNative(uint256 amount) external {
                     treasury.transfer(amount);
+                }
+
+                function revertWithCustomError() external {
+                    revert Unauthorized(msg.sender);
+                }
+
+                function typeCast(uint256 value) external pure returns (uint256) {
+                    return uint256(value);
                 }
 
                 function invokeCallback(function(uint256) external cb, uint256 value) external {
@@ -240,6 +249,12 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "OVERRIDES" and edge["from"] == health_override["id"] and edge["to"] == base_health["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "EMITS" and edge["from"] == withdraw_id for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id for edge in edges))
+        self.assertFalse(any(edge["kind"] == "CALLS" and edge.get("to") == "function-name:Vault.Deposited" for edge in edges))
+        revert_func = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.revertWithCustomError()")
+        custom_error = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.Unauthorized")
+        self.assertTrue(any(edge["kind"] == "REVERTS" and edge["from"] == revert_func["id"] and edge["to"] == custom_error["id"] for edge in edges))
+        cast_func = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.typeCast(uint256)")
+        self.assertFalse(any(edge["kind"] == "CALLS" and edge["from"] == cast_func["id"] and edge.get("to") == "function-name:Vault.uint256" for edge in edges))
         debt_field = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.Position.debt")
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id and edge["to"] == debt_field["id"] for edge in edges))
         alias_function = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault._updateViaAlias(address,uint256)")
@@ -272,6 +287,7 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["from"] == inbound_pull["id"] and edge["asset"] == "erc20" and edge["direction"] == "in" for edge in flow_edges))
         self.assertFalse(any(edge["from"] == direct_transfer["id"] and edge["asset"] == "eth" for edge in flow_edges))
         self.assertTrue(any(edge["from"] == native_send["id"] and edge["asset"] == "eth" and edge["direction"] == "out" for edge in flow_edges))
+        self.assertFalse(any(edge["kind"] == "EXTERNAL_CALL" and edge["from"] == native_send["id"] and edge.get("method") == "transfer" for edge in index["edges"]))
 
     def test_overloads_are_reported_as_ambiguous_without_a_signature(self):
         temporary, root = self.fixture()
