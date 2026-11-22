@@ -886,6 +886,99 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         accessible_name_counts: dict[str, int] = {}
         for item in accessible_state:
             accessible_name_counts[item["name"]] = accessible_name_counts.get(item["name"], 0) + 1
+
+        # Resolve local storage-reference aliases such as:
+        # Position storage p = positions[user][id];
+        # The alias is a pointer to the declared state object, not a new slot.
+        alias_pattern = re.compile(
+            r"\\b(?P<type>[A-Za-z_]\\w*(?:\\s*\\[\\s*\\])*)\\s+storage\\s+"
+            r"(?P<alias>[A-Za-z_]\\w*)\\s*=\\s*(?P<base>[A-Za-z_]\\w*)"
+            r"(?P<indexes>(?:\\s*\\[[^\\]]*\\])*)\\s*;"
+        )
+        storage_aliases: list[dict[str, Any]] = []
+        alias_ranges: list[tuple[int, int]] = []
+        for alias_match in alias_pattern.finditer(body):
+            base_name = alias_match.group("base")
+            candidates = [
+                item for item in accessible_state
+                if item["name"] == base_name
+                and accessible_name_counts.get(base_name, 0) == 1
+            ]
+            if len(candidates) != 1:
+                continue
+            variable = candidates[0]
+            indexes = re.findall(r"\\[([^\\]]*)\\]", alias_match.group("indexes"))
+            alias = {
+                "name": alias_match.group("alias"),
+                "type": alias_match.group("type").strip(),
+                "variable": variable,
+                "indexes": [item.strip() for item in indexes],
+                "start": alias_match.start(),
+                "end": alias_match.end(),
+            }
+            storage_aliases.append(alias)
+            alias_ranges.append((alias_match.start(), alias_match.end()))
+            edges.append(_edge(
+                "ALIASES_STORAGE", func["id"], variable["id"], path, source,
+                body_absolute + alias_match.start(),
+                resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                alias=alias["name"], keys=alias["indexes"],
+                access_path=base_name + "".join(f"[{item}]" for item in indexes),
+                detail="Local storage reference aliases the declared state variable; it is not a separate storage slot.",
+            ))
+
+        for alias in storage_aliases:
+            alias_pattern_usage = re.compile(rf"\\b{re.escape(alias['name'])}\\b")
+            for access in alias_pattern_usage.finditer(body):
+                if any(start <= access.start() < end for start, end in alias_ranges):
+                    continue
+                cursor = access.end()
+                while cursor < len(body) and body[cursor].isspace():
+                    cursor += 1
+                member_name = None
+                if cursor < len(body) and body[cursor] == ".":
+                    member_match = re.match(r"\\.\\s*([A-Za-z_]\\w*)", body[cursor:])
+                    if member_match:
+                        member_name = member_match.group(1)
+                        cursor += member_match.end()
+                        while cursor < len(body) and body[cursor].isspace():
+                            cursor += 1
+                before = body[max(0, access.start() - 12):access.start()]
+                after = body[cursor:cursor + 4]
+                assignment = re.match(r"(?:\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
+                deletion = re.search(r"\\bdelete\\s*$", before)
+                is_write = bool(assignment or prefix_assignment or deletion)
+                is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
+                relations = ["WRITES"] if is_write else ["READS"]
+                if is_compound:
+                    relations.append("READS")
+                variable = alias["variable"]
+                access_path = alias["name"] + (f".{member_name}" if member_name else "")
+                for relation in relations:
+                    edges.append(_edge(
+                        relation, func["id"], variable["id"], path, source,
+                        body_absolute + access.start(),
+                        variable=variable["name"], alias=alias["name"],
+                        member=member_name, access_path=access_path,
+                        resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                        evidence="STORAGE_ALIAS_RESOLUTION",
+                    ))
+                    struct_type = variable.get("mapping_value_type") or variable.get("type") or alias["type"]
+                    struct_names = re.findall(r"\\b[A-Z][A-Za-z0-9_]*\\b", struct_type)
+                    if member_name and struct_names:
+                        fields = fields_by_struct.get((variable["contract"], struct_names[-1]), [])
+                        field = next((item for item in fields if item["name"] == member_name), None)
+                        if field:
+                            edges.append(_edge(
+                                relation, func["id"], field["id"], path, source,
+                                body_absolute + access.start(),
+                                variable=variable["name"], alias=alias["name"],
+                                member=member_name, access_path=access_path,
+                                resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                                evidence="STORAGE_ALIAS_RESOLUTION",
+                            ))
+
         for variable in accessible_state:
             if accessible_name_counts.get(variable["name"], 0) > 1:
                 # A state name is shadowed across the inheritance boundary.
@@ -893,17 +986,21 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             if variable["name"] in params_shadow:
                 continue
-            if re.search(rf"\b(?:[A-Za-z_]\w*\s+)+(?:memory|storage|calldata\s+)?{re.escape(variable['name'])}\b", body):
+            if re.search(rf"\\b(?:[A-Za-z_]\\w*\\s+)+(?:memory|storage|calldata\\s+)?{re.escape(variable['name'])}\\b", body):
                 # A same-named local declaration may shadow state. Do not guess.
                 continue
-            access_pattern = re.compile(rf"\b{re.escape(variable['name'])}\b")
+            access_pattern = re.compile(rf"\\b{re.escape(variable['name'])}\\b")
             for access in access_pattern.finditer(body):
+                if any(start <= access.start() < end for start, end in alias_ranges):
+                    continue
                 cursor = access.end()
                 while cursor < len(body) and body[cursor].isspace():
                     cursor += 1
+                access_keys: list[str] = []
                 if cursor < len(body) and body[cursor] == "[":
                     close_index = _matching(body, cursor, "[", "]")
                     while close_index is not None:
+                        access_keys.append(body[cursor + 1:close_index].strip())
                         cursor = close_index + 1
                         while cursor < len(body) and body[cursor].isspace():
                             cursor += 1
@@ -913,7 +1010,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             break
                 member_name = None
                 if cursor < len(body) and body[cursor] == ".":
-                    member_match = re.match(r"\.\s*([A-Za-z_]\w*)", body[cursor:])
+                    member_match = re.match(r"\\.\\s*([A-Za-z_]\\w*)", body[cursor:])
                     if member_match:
                         member_name = member_match.group(1)
                         cursor += member_match.end()
@@ -921,33 +1018,40 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             cursor += 1
                 before = body[max(0, access.start() - 12):access.start()]
                 after = body[cursor:cursor + 4]
-                assignment = re.match(r"(?:\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
-                prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
-                deletion = re.search(r"\bdelete\s*$", before)
+                assignment = re.match(r"(?:\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
+                deletion = re.search(r"\\bdelete\\s*$", before)
                 is_write = bool(assignment or prefix_assignment or deletion)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
                 relations = ["WRITES"] if is_write else ["READS"]
                 if is_compound:
                     relations.append("READS")
+                access_path = variable["name"] + "".join(f"[{item}]" for item in access_keys)
+                if member_name:
+                    access_path += f".{member_name}"
                 for relation in relations:
                     edges.append(_edge(
                         relation, func["id"], variable["id"], path, source,
                         body_absolute + access.start(),
-                        variable=variable["name"],
+                        variable=variable["name"], keys=access_keys,
+                        member=member_name, access_path=access_path,
                         resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                         evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
                     ))
-                    if member_name and variable.get("mapping_value_type"):
-                        struct_name = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", variable["mapping_value_type"])
-                        if struct_name:
-                            fields = fields_by_struct.get((variable["contract"], struct_name[-1]), [])
-                            field = next((item for item in fields if item["name"] == member_name), None)
-                            if field:
-                                edges.append(_edge(
-                                    relation, func["id"], field["id"], path, source,
-                                    body_absolute + access.start(),
-                                    variable=variable["name"], member=member_name,
-                                ))
+                    struct_type = variable.get("mapping_value_type") or variable.get("type")
+                    struct_names = re.findall(r"\\b[A-Z][A-Za-z0-9_]*\\b", struct_type or "")
+                    if member_name and struct_names:
+                        fields = fields_by_struct.get((variable["contract"], struct_names[-1]), [])
+                        field = next((item for item in fields if item["name"] == member_name), None)
+                        if field:
+                            edges.append(_edge(
+                                relation, func["id"], field["id"], path, source,
+                                body_absolute + access.start(),
+                                variable=variable["name"], keys=access_keys,
+                                member=member_name, access_path=access_path,
+                                resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                                evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
+                            ))
 
         for emitted in re.finditer(r"\bemit\s+([A-Za-z_]\w*)\s*\(", body):
             name = emitted.group(1)
