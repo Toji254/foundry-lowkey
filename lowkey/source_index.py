@@ -1429,6 +1429,15 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         )
         for call in member_pattern.finditer(body):
             receiver, method = call.group("receiver"), call.group("name")
+            member_open = call.end() - 1
+            member_close = _matching(body, member_open, "(", ")")
+            member_args = _split_top_level(body[member_open + 1:member_close]) if member_close is not None else []
+            member_arg_types = [
+                _infer_expression_type(
+                    argument, func, state_variables, scope, path, body, call.start()
+                )
+                for argument in member_args
+            ]
             if receiver == "abi" and method in {
                 "encode", "encodePacked", "encodeWithSelector",
                 "encodeWithSignature", "encodeCall", "decode",
@@ -1498,6 +1507,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     item for item in local_functions.get((receiver, method), [])
                     if item["kind"] == "function"
                 ]
+                library_candidates = _filter_overloads_by_arguments(
+                    library_candidates, member_arg_types
+                )
                 library_resolution = "DIRECT"
             else:
                 receiver_vars = [
@@ -1513,10 +1525,15 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     for directive in contract_units[0].get("using_libraries") or []:
                         if directive.get("for_type") not in {receiver_type, "*"}:
                             continue
-                        library_candidates.extend(
+                        extension_candidates = [
                             item for item in local_functions.get((directive["library"], method), [])
                             if item["kind"] == "function"
-                        )
+                        ]
+                        receiver_type_for_overload = _canonical_parameter(receiver_type)
+                        library_candidates.extend(_filter_overloads_by_arguments(
+                            extension_candidates,
+                            [receiver_type_for_overload, *member_arg_types],
+                        ))
             if len(library_candidates) == 1:
                 edges.append(_edge(
                     "CALLS", func["id"], library_candidates[0]["id"], path, source,
@@ -1554,6 +1571,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 and item["name"] == method
                 and item["kind"] == "function"
             ] if len(type_contracts) == 1 else []
+            typed_methods = _filter_overloads_by_arguments(typed_methods, member_arg_types)
             if receiver == "this":
                 own_methods = [
                     item for item in functions
@@ -1561,7 +1579,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     and item["name"] == method and item["kind"] == "function"
                     and item.get("visibility") in {"public", "external"}
                 ]
-                self_methods = own_methods
+                self_methods = _filter_overloads_by_arguments(own_methods, member_arg_types)
                 if not self_methods:
                     inherited_methods = [
                         item for item in functions
@@ -1571,7 +1589,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         and item.get("visibility") in {"public", "external"}
                     ]
                     self_methods = _nearest_inherited(
-                        inherited_methods, func.get("ancestor_depths") or {}
+                        _filter_overloads_by_arguments(inherited_methods, member_arg_types),
+                        func.get("ancestor_depths") or {},
                     )
                 if len(self_methods) == 1:
                     target_method = self_methods[0]
