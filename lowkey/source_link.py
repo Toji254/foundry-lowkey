@@ -16,8 +16,8 @@ except ImportError:  # pragma: no cover - package-style import
 
 
 ONLY_KINDS = {
-    "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"},
-    "storage": {"READS", "WRITES", "USES_TYPE", "ALIASES_STORAGE", "UNRESOLVED_STORAGE"},
+    "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS", "REVERTS"},
+    "storage": {"READS", "WRITES", "USES_TYPE", "ALIASES_STORAGE", "UNRESOLVED_STORAGE", "INITIALIZES"},
     "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY"},
     "assets": {"ASSET_FLOW"},
 }
@@ -256,6 +256,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("OVERRIDDEN BY", "OVERRIDES", "incoming"),
             ("STORAGE READS", "READS", "outgoing"),
             ("STORAGE WRITES", "WRITES", "outgoing"),
+            ("INITIALIZES", "INITIALIZES", "outgoing"),
+            ("EMITS", "EMITS", "outgoing"),
+            ("REVERTS", "REVERTS", "outgoing"),
             ("STORAGE ALIASES", "ALIASES_STORAGE", "outgoing"),
             ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
             ("EMITS", "EMITS", "outgoing"),
@@ -274,6 +277,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
             ("WRITTEN BY", "WRITES", "incoming"),
+            ("INITIALIZED BY", "INITIALIZES", "incoming"),
             ("ALIASED BY", "ALIASES_STORAGE", "incoming"),
             ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
             ("USES TYPE", "USES_TYPE", "outgoing"),
