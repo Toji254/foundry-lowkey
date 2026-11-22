@@ -600,6 +600,73 @@ class SourceIndexTests(unittest.TestCase):
         self.assertFalse(any(edge["from"] == abi_encoding["id"] and edge["kind"] == "EXTERNAL_CALL" and edge.get("receiver") == "abi" for edge in index["edges"]))
         self.assertFalse(any(edge["from"] == struct_cast["id"] and edge["kind"] == "CALLS" and edge.get("to") == "function-name:Vault.Position" for edge in index["edges"]))
 
+    def test_constants_and_immutables_are_not_reported_as_persistent_storage_reads(self):
+        temporary, root = self.fixture()
+        try:
+            self.write(
+                root,
+                "src/ValueKinds.sol",
+                """
+                pragma solidity ^0.8.20;
+                contract ValueKinds {
+                    uint256 public constant SCALE = 1e18;
+                    uint256 public immutable deployedAt;
+
+                    constructor() {
+                        deployedAt = block.timestamp;
+                    }
+
+                    function readValues() external view returns (uint256) {
+                        return SCALE + deployedAt;
+                    }
+                }
+                """,
+            )
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        nodes = {item["id"]: item for item in index["nodes"]}
+        scale = next(item for item in nodes.values() if item.get("qualified_name") == "ValueKinds.SCALE")
+        deployed_at = next(item for item in nodes.values() if item.get("qualified_name") == "ValueKinds.deployedAt")
+        constructor = find_symbols(index, "ValueKinds.constructor()")[0]
+        reader = find_symbols(index, "ValueKinds.readValues()")[0]
+
+        self.assertEqual(scale.get("storage_class"), "constant")
+        self.assertEqual(deployed_at.get("storage_class"), "immutable")
+        self.assertTrue(any(
+            edge.get("kind") == "INITIALIZES" and edge.get("to") == scale["id"]
+            for edge in index["edges"]
+        ))
+        self.assertTrue(any(
+            edge.get("kind") == "INITIALIZES"
+            and edge.get("from") == constructor["id"]
+            and edge.get("to") == deployed_at["id"]
+            for edge in index["edges"]
+        ))
+        self.assertTrue(any(
+            edge.get("kind") == "READS_CONSTANT"
+            and edge.get("from") == reader["id"]
+            and edge.get("to") == scale["id"]
+            for edge in index["edges"]
+        ))
+        self.assertTrue(any(
+            edge.get("kind") == "READS_IMMUTABLE"
+            and edge.get("from") == reader["id"]
+            and edge.get("to") == deployed_at["id"]
+            for edge in index["edges"]
+        ))
+        self.assertFalse(any(
+            edge.get("kind") == "READS"
+            and edge.get("from") == reader["id"]
+            and edge.get("to") in {scale["id"], deployed_at["id"]}
+            for edge in index["edges"]
+        ))
+        self.assertFalse(any(
+            edge.get("kind") == "WRITES" and edge.get("to") == deployed_at["id"]
+            for edge in index["edges"]
+        ))
+
     def test_repeated_queries_use_the_content_addressed_cache(self):
         temporary, root = self.fixture()
         try:
