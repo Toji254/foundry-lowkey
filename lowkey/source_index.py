@@ -555,18 +555,18 @@ def _mapping_inner_type(type_name: str) -> str | None:
 
 def _storage_index_info(type_name: str) -> tuple[str, str | None, str]:
     """Classify one Solidity storage index using the declared current type."""
-    value = re.sub(r"\\b(memory|calldata|storage|payable)\\b", " ", type_name)
-    value = re.sub(r"\\s+", " ", value).strip()
+    value = re.sub(r"\b(memory|calldata|storage|payable)\b", " ", type_name)
+    value = re.sub(r"\s+", " ", value).strip()
     if value.startswith("mapping"):
         opening = value.find("(")
         closing = _matching(value, opening, "(", ")") if opening >= 0 else None
         if closing is None:
             return "unresolved", None, ""
-        parts = re.split(r"\\s*=>\\s*", value[opening + 1:closing], maxsplit=1)
+        parts = re.split(r"\s*=>\s*", value[opening + 1:closing], maxsplit=1)
         if len(parts) != 2:
             return "unresolved", None, ""
         return "mapping", parts[0].strip(), parts[1].strip()
-    array_match = re.search(r"\\[\\s*(?:\\d+)?\\s*\\]\\s*$", value)
+    array_match = re.search(r"\[\s*(?:\d+)?\s*\]\s*$", value)
     if array_match:
         return "array", "uint256", value[:array_match.start()].strip()
     return "unresolved", None, ""
