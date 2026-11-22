@@ -1314,6 +1314,20 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         ]
         params_shadow = set(func["parameters"])
 
+        # Inline Yul is a separate language. Do not infer Solidity identifiers,
+        # function calls, or ordinary state-variable accesses from its contents.
+        assembly_ranges: list[tuple[int, int]] = []
+        for assembly_match in re.finditer(r"\\bassembly\\b(?:\\s*\\([^)]*\\))?\\s*\\{", body):
+            assembly_open = assembly_match.end() - 1
+            assembly_close = _matching(body, assembly_open, "{", "}")
+            assembly_ranges.append((
+                assembly_open,
+                (assembly_close + 1) if assembly_close is not None else len(body),
+            ))
+
+        def in_assembly(offset: int) -> bool:
+            return any(start <= offset < end for start, end in assembly_ranges)
+
         if func["kind"] == "function":
             modifier_names = sorted({item["name"] for item in known_modifiers})
             for modifier_name in modifier_names:
@@ -1368,6 +1382,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             if item.get("kind") in {"struct", "enum"}
         }
         for call in call_pattern.finditer(body):
+            if in_assembly(call.start()):
+                continue
             callee_name = call.group(1)
             if callee_name in dynamic_pointer_names:
                 edges.append(_edge(
@@ -1437,6 +1453,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             r"\b(?P<receiver>[A-Za-z_]\w*|this|super)\s*\.\s*(?P<name>[A-Za-z_]\w*)\s*\("
         )
         for call in member_pattern.finditer(body):
+            if in_assembly(call.start()):
+                continue
             receiver, method = call.group("receiver"), call.group("name")
             member_open = call.end() - 1
             member_close = _matching(body, member_open, "(", ")")
@@ -1669,6 +1687,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         storage_aliases: list[dict[str, Any]] = []
         alias_ranges: list[tuple[int, int]] = []
         for alias_match in alias_pattern.finditer(body):
+            if in_assembly(alias_match.start()):
+                continue
             base_name = alias_match.group("base")
             candidates = [
                 item for item in accessible_state
@@ -1712,7 +1732,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         for alias in storage_aliases:
             alias_pattern_usage = re.compile(rf"\b{re.escape(alias['name'])}\b")
             for access in alias_pattern_usage.finditer(body):
-                if any(start <= access.start() < end for start, end in alias_ranges):
+                if in_assembly(access.start()) or any(start <= access.start() < end for start, end in alias_ranges):
                     continue
                 cursor = access.end()
                 while cursor < len(body) and body[cursor].isspace():
@@ -1777,7 +1797,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             access_pattern = re.compile(rf"\b{re.escape(variable['name'])}\b")
             for access in access_pattern.finditer(body):
-                if any(start <= access.start() < end for start, end in alias_ranges):
+                if in_assembly(access.start()) or any(start <= access.start() < end for start, end in alias_ranges):
                     continue
                 cursor = access.end()
                 while cursor < len(body) and body[cursor].isspace():
@@ -1883,7 +1903,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         return bool(ancestors & erc20_type_names)
 
     for func in functions:
-        if func["kind"] != "function":
+        if func["kind"] not in {"function", "modifier"}:
             continue
         body = func["body"]
         path = func["file"]
