@@ -527,18 +527,46 @@ def _emit_ast_storage_effects(
             target_ast_id = _referenced_id(callee)
             target_record = function_declarations.get((build_info, target_ast_id)) if target_ast_id is not None else None
             storage_parameter_indexes: set[int] = set()
+            storage_receiver_consumed = False
             if target_record is not None:
                 parameters = (
                     (target_record.get("ast") or {}).get("parameters") or {}
                 ).get("parameters") or []
                 context: dict[tuple[str, int], dict[str, Any]] = {}
-                for parameter_index, parameter in enumerate(parameters):
+                arguments = value.get("arguments") or []
+
+                # A using-for library extension passes its receiver as the first
+                # storage parameter, even though it is not in FunctionCall.arguments.
+                if (
+                    isinstance(expression, dict)
+                    and expression.get("nodeType") == "MemberAccess"
+                    and parameters
+                    and isinstance(parameters[0], dict)
+                    and parameters[0].get("storageLocation") == "storage"
+                ):
+                    receiver_access = _storage_expression(
+                        expression.get("expression"), build_info=build_info,
+                        declarations=declarations, aliases=aliases, source=source,
+                    )
+                    if receiver_access is not None:
+                        receiver_parameter = parameters[0]
+                        try:
+                            receiver_key = (build_info, int(receiver_parameter.get("id")))
+                            context[receiver_key] = {
+                                **receiver_access, "alias": receiver_parameter.get("name"),
+                            }
+                            storage_receiver_consumed = True
+                        except (TypeError, ValueError):
+                            pass
+
+                parameter_offset = 1 if storage_receiver_consumed else 0
+                for argument_index, argument in enumerate(arguments):
+                    parameter_index = argument_index + parameter_offset
+                    if parameter_index >= len(parameters):
+                        continue
+                    parameter = parameters[parameter_index]
                     if not isinstance(parameter, dict) or parameter.get("storageLocation") != "storage":
                         continue
-                    arguments = value.get("arguments") or []
-                    if parameter_index >= len(arguments):
-                        continue
-                    argument = arguments[parameter_index]
                     resolved_argument = _storage_expression(
                         argument, build_info=build_info, declarations=declarations,
                         aliases=aliases, source=source,
@@ -553,7 +581,7 @@ def _emit_ast_storage_effects(
                     context[parameter_key] = {
                         **resolved_argument, "alias": parameter.get("name"),
                     }
-                    storage_parameter_indexes.add(parameter_index)
+                    storage_parameter_indexes.add(argument_index)
 
                     argument_span = _src_range(argument) if isinstance(argument, dict) else None
                     if argument_span is not None:
@@ -577,6 +605,31 @@ def _emit_ast_storage_effects(
                             "detail": "Storage reference passed to a statically resolved internal/library function; inspect the callee's storage effects.",
                         })
 
+                if storage_receiver_consumed:
+                    receiver_parameter = parameters[0]
+                    receiver_access = _storage_expression(
+                        expression.get("expression"), build_info=build_info,
+                        declarations=declarations, aliases=aliases, source=source,
+                    )
+                    receiver_span = _src_range(expression.get("expression"))
+                    if receiver_access is not None and receiver_span is not None:
+                        receiver_start = _byte_to_char_offset(source, receiver_span[0])
+                        receiver_line, receiver_column = _line_column(source, receiver_start)
+                        edges.append({
+                            "id": (
+                                f"SOLC_AST_STORAGE_RECEIVER:{caller['id']}:"
+                                f"{receiver_access['target']['id']}:{unit['path']}:{receiver_start}"
+                            ),
+                            "kind": "ALIASES_STORAGE",
+                            "from": caller["id"],
+                            "to": receiver_access["target"]["id"],
+                            "resolution": "DIRECT",
+                            "evidence": "SOLC_AST_STORAGE_REFERENCE_ARGUMENT",
+                            "source": {"file": unit["path"], "line": receiver_line, "column": receiver_column},
+                            "alias": receiver_parameter.get("name"),
+                            "access_path": receiver_access["path"],
+                        })
+
                 if context:
                     call_contexts.append({
                         "target": target_record,
@@ -585,10 +638,11 @@ def _emit_ast_storage_effects(
                     })
 
             if isinstance(expression, dict) and expression.get("nodeType") == "MemberAccess":
-                # A method receiver can itself be a state variable (token, oracle,
-                # strategy). Read the receiver, not a fictitious storage field
-                # named after the external method.
-                walk(expression.get("expression"), "READS", None)
+                # A storage receiver consumed by an internal library extension is
+                # a reference argument, not a value read. Other member-call receivers
+                # (token, oracle, strategy) are read as ordinary state values.
+                if not storage_receiver_consumed:
+                    walk(expression.get("expression"), "READS", None)
             else:
                 walk(expression, "READS", None)
             for argument_index, argument in enumerate(value.get("arguments") or []):
