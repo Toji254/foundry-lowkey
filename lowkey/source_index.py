@@ -693,7 +693,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         scope = func["contract"]
         known_modifiers = [
             item for item in functions
-            if item["kind"] == "modifier" and item["contract"] == scope and item["file"] == path
+            if item["kind"] == "modifier"
+            and item["contract"] in {scope, *func["bases"]}
         ]
         params_shadow = set(func["parameters"])
 
@@ -702,6 +703,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 edges.append(_edge(
                     "APPLIES_MODIFIER", func["id"], modifier["id"], path, source,
                     func["source_offset"],
+                    resolution="DIRECT" if modifier["contract"] == scope else "INFERRED",
                 ))
 
         local_functions = function_by_scope_name
@@ -809,7 +811,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 resolution="UNRESOLVED", operation=low_level.group(1),
             ))
 
-        for variable in [item for item in state_variables if item["contract"] == scope and item["file"] == path]:
+        accessible_state = [
+            item for item in state_variables
+            if (item["contract"] == scope and item["file"] == path)
+            or item["contract"] in func["bases"]
+        ]
+        for variable in accessible_state:
             if variable["name"] in params_shadow:
                 continue
             if re.search(rf"\b(?:[A-Za-z_]\w*\s+)+(?:memory|storage|calldata\s+)?{re.escape(variable['name'])}\b", body):
@@ -853,11 +860,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         relation, func["id"], variable["id"], path, source,
                         body_absolute + access.start(),
                         variable=variable["name"],
+                        resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                        evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
                     ))
                     if member_name and variable.get("mapping_value_type"):
                         struct_name = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", variable["mapping_value_type"])
                         if struct_name:
-                            fields = fields_by_struct.get((scope, struct_name[-1]), [])
+                            fields = fields_by_struct.get((variable["contract"], struct_name[-1]), [])
                             field = next((item for item in fields if item["name"] == member_name), None)
                             if field:
                                 edges.append(_edge(
