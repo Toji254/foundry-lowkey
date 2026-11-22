@@ -1,0 +1,198 @@
+import pathlib
+import sys
+import tempfile
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+LOWKEY = ROOT / "lowkey"
+if str(LOWKEY) not in sys.path:
+    sys.path.insert(0, str(LOWKEY))
+
+from source_index import build_source_index, find_symbols
+
+
+class SourceIndexTests(unittest.TestCase):
+    def write(self, root: pathlib.Path, relative: str, content: str) -> pathlib.Path:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def fixture(self):
+        temporary = tempfile.TemporaryDirectory()
+        root = pathlib.Path(temporary.name)
+        self.write(root, "foundry.toml", '[profile.default]\nsrc = "src"\n')
+        self.write(
+            root,
+            "src/IERC20.sol",
+            """
+            pragma solidity ^0.8.20;
+            interface IERC20 {
+                function transfer(address to, uint256 amount) external returns (bool);
+            }
+            """,
+        )
+        self.write(
+            root,
+            "src/BaseVault.sol",
+            """
+            pragma solidity ^0.8.20;
+            abstract contract BaseVault {
+                address internal owner;
+                modifier onlyOwner() { require(msg.sender == owner); _; }
+            }
+            """,
+        )
+        self.write(
+            root,
+            "src/Vault.sol",
+            """
+            pragma solidity ^0.8.20;
+            import "./IERC20.sol";
+            import "./BaseVault.sol";
+
+            contract Vault is BaseVault {
+                struct Position {
+                    address owner;
+                    uint256 debt;
+                }
+
+                mapping(address => mapping(uint256 => Position)) public positions;
+                IERC20 public token;
+
+                event Deposited(address indexed who, uint256 amount);
+                event Withdrawn(address indexed who, uint256 amount);
+                modifier nonReentrant() { _; }
+
+                function deposit() external payable {
+                    positions[msg.sender][1].debt += msg.value;
+                    emit Deposited(msg.sender, msg.value);
+                }
+
+                function withdraw(uint256 amount) external onlyOwner nonReentrant {
+                    _update(msg.sender, amount);
+                    token.transfer(msg.sender, amount);
+                    (bool ok,) = msg.sender.call{value: amount}("");
+                    require(ok);
+                    emit Withdrawn(msg.sender, amount);
+                }
+
+                function _update(address user, uint256 amount) internal {
+                    positions[user][1].debt -= amount;
+                }
+
+                function getPosition(address user) external view returns (uint256) {
+                    return positions[user][1].debt;
+                }
+
+                function overloaded(uint256 value) internal pure returns (uint256) {
+                    return value;
+                }
+
+                function overloaded(address value) internal pure returns (address) {
+                    return value;
+                }
+
+                function testOverload() external {
+                    overloaded(uint256(1));
+                }
+
+                function commentedOnly() external view {
+                    // fakeCall(); positions[msg.sender][1] = Position(msg.sender, 1);
+                }
+            }
+            """,
+        )
+        return temporary, root
+
+    def test_indexes_contract_functions_mapping_and_struct_fields(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(index["parser"], "LEXICAL")
+        self.assertEqual(index["summary"]["contracts"], 3)
+        self.assertTrue(find_symbols(index, "Vault"))
+        self.assertEqual(
+            len(find_symbols(index, "Vault.withdraw(uint256)")),
+            1,
+        )
+        mapping = find_symbols(index, "Vault.positions")
+        self.assertEqual(len(mapping), 1)
+        self.assertEqual(mapping[0]["kind"], "mapping")
+        self.assertIn("mapping(uint256 => Position)", mapping[0]["type"])
+        self.assertTrue(find_symbols(index, "Vault.Position.debt") == [])
+
+    def test_direct_calls_storage_access_modifiers_and_events_are_linked(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        nodes = {item["id"]: item for item in index["nodes"]}
+        functions = {item.get("qualified_name"): item["id"] for item in index["nodes"] if item.get("kind") == "function"}
+        withdraw_id = functions["Vault.withdraw(uint256)"]
+        update_id = functions["Vault._update(address,uint256)"]
+        edges = index["edges"]
+
+        self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == withdraw_id and edge["to"] == update_id for edge in edges))
+        self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id for edge in edges))
+        self.assertTrue(any(edge["kind"] == "EMITS" and edge["from"] == withdraw_id for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id for edge in edges))
+        self.assertTrue(any(edge["kind"] == "READS" and nodes.get(edge["from"], {}).get("name") == "getPosition" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges))
+
+    def test_flow_distinguishes_payable_capability_from_transfer_attempts(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        nodes = {item["id"]: item for item in index["nodes"]}
+        flow_edges = [edge for edge in index["edges"] if edge["kind"] == "ASSET_FLOW"]
+        deposit = next(item for item in nodes.values() if item.get("qualified_name") == "Vault.deposit()")
+        withdraw = next(item for item in nodes.values() if item.get("qualified_name") == "Vault.withdraw(uint256)")
+
+        self.assertTrue(any(edge["from"] == deposit["id"] and edge["asset"] == "eth" and edge["direction"] == "in" and edge["status"] == "CAPABILITY" for edge in flow_edges))
+        self.assertTrue(any(edge["from"] == withdraw["id"] and edge["asset"] == "eth" and edge["direction"] == "out" and edge["status"] == "TRANSFER_ATTEMPT" for edge in flow_edges))
+        self.assertTrue(any(edge["from"] == withdraw["id"] and edge["asset"] == "erc20" and edge["direction"] == "out" for edge in flow_edges))
+
+    def test_overloads_are_reported_as_ambiguous_without_a_signature(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(len(find_symbols(index, "Vault.overloaded")), 2)
+        self.assertEqual(len(find_symbols(index, "Vault.overloaded(uint256)")), 1)
+
+    def test_comments_do_not_create_call_or_storage_edges(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        function = find_symbols(index, "Vault.commentedOnly")[0]
+        edges = [edge for edge in index["edges"] if edge["from"] == function["id"]]
+        self.assertFalse(any(edge["kind"] == "CALLS" and "fakeCall" in edge.get("to", "") for edge in edges))
+        self.assertFalse(any(edge["kind"] in {"READS", "WRITES"} and "positions" in edge.get("variable", "") for edge in edges))
+
+    def test_repeated_queries_use_the_content_addressed_cache(self):
+        temporary, root = self.fixture()
+        try:
+            build_source_index(root)
+            second = build_source_index(root)
+        finally:
+            temporary.cleanup()
+        self.assertEqual(second["cache"]["status"], "HIT")
+
+
+if __name__ == "__main__":
+    unittest.main()
