@@ -39,11 +39,6 @@ class ProjectVerbosityTests(unittest.TestCase):
         )
         self.write(
             root,
-            "src/Repository.sol",
-            'pragma solidity ^0.8.20;\nimport "./IRepository.sol";\ncontract Repository is IRepository {}\n',
-        )
-        self.write(
-            root,
             "src/Coordinator.sol",
             'pragma solidity ^0.8.20;\nimport "./IRepository.sol";\ncontract Coordinator {}\n',
         )
@@ -140,7 +135,7 @@ class ProjectVerbosityTests(unittest.TestCase):
 
             self.assertIn("Production graph imports", output)
             self.assertIn("Support/test imports", output)
-            self.assertIn("Unresolved production imports", output) if result["human"]["unresolved"] else None
+            self.assertNotIn("Unresolved production imports:", output)
             self.assertIn("Unresolved support/test imports (not production dependencies)", output)
             self.assertIn("test/CoordinatorTest.sol -> hardhat/console.sol", output)
             self.assertIn("1 unresolved", output)
