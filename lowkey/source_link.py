@@ -756,9 +756,20 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         }
         if only == "writes":
             related_contract_ids = {item["id"] for item in nodes.values() if item.get("kind") == "contract" and item.get("name") in related_contracts}
-            constructor_ids = {item["id"] for item in nodes.values() if item.get("kind") == "function" and item.get("name") == "constructor" and item.get("contract") in related_contracts}
+            constructor_nodes = [
+                item for item in nodes.values()
+                if item.get("kind") == "function" and item.get("name") == "constructor"
+                and item.get("contract") in related_contracts
+            ]
+            constructor_ids = {item["id"] for item in constructor_nodes}
             initializers = [edge for edge in (index.get("edges") or []) if edge.get("kind") == "INITIALIZES" and (edge.get("from") in related_contract_ids or edge.get("from") in constructor_ids)]
             _render_edges("STATE INITIALIZERS", initializers[:limit], nodes)
+            constructor_writes = [
+                edge for edge in (index.get("edges") or [])
+                if edge.get("from") in constructor_ids
+                and edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES"}
+            ]
+            _render_edges("CONSTRUCTOR WRITES", constructor_writes[:limit], nodes, reverse=True)
         contract_edges = [edge for edge in index.get("edges") or [] if edge.get("from") in related_functions]
         if only in (None, "calls"):
             _render_edges("INTERNAL CALLS", [edge for edge in contract_edges if edge.get("kind") == "CALLS"][:limit], nodes)
