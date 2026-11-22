@@ -370,9 +370,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     if use_cache:
         cached = _load_cache(cached_path, fingerprint)
         if cached is not None:
+            cached_inventory = cached.get("inventory") or {}
+            cached_failures = cached_inventory.get("uninspected") or []
+            merged_failures = failures + cached_failures
             cached["inventory"] = {
-                "complete": not failures,
-                "uninspected": failures,
+                "complete": not merged_failures,
+                "uninspected": merged_failures,
                 "files_inspected": len(source_units),
                 "files_discovered": inventory.get("files_discovered", len(source_units)),
             }
@@ -901,6 +904,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "nodes": nodes,
             "edges": edges,
             "summary": index["summary"],
+            "inventory": index["inventory"],
         })
     return index
 
