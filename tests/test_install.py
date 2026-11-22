@@ -176,6 +176,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk ai status", help_result.stdout)
             self.assertIn("lk memory status", help_result.stdout)
             self.assertIn("lk link Vault", help_result.stdout)
+            self.assertIn("--only calls|storage|reads|writes|imports|assets", help_result.stdout)
             self.assertIn("lk fn --flow", help_result.stdout)
 
             link_help = subprocess.run(
