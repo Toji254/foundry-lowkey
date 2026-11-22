@@ -85,8 +85,16 @@ class SourceLinkTests(unittest.TestCase):
                     emit Paid(msg.sender, amount);
                 }
                 function _debit(address user, uint256 amount) internal {
+                    _recordDebit(user, amount);
                     balances[user] -= amount;
                 }
+                function _recordDebit(address user, uint256 amount) internal {
+                    lastDebitAmount = amount;
+                }
+                function recurse(uint256 count) internal {
+                    if (count > 0) recurse(count - 1);
+                }
+                uint256 public lastDebitAmount;
                 function overloaded(uint256 value) internal pure returns (uint256) { return value; }
                 function overloaded(address value) internal pure returns (address) { return value; }
             }
@@ -223,6 +231,26 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("AMBIGUOUS", output.getvalue())
         self.assertIn("overloaded(uint256)", output.getvalue())
         self.assertIn("overloaded(address)", output.getvalue())
+
+    def test_function_link_renders_nested_call_chains_and_stops_recursion(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            nested_output = io.StringIO()
+            with contextlib.redirect_stdout(nested_output):
+                nested_status = render_link(index, "Graph.withdraw(uint256)", depth=3)
+            recursive_output = io.StringIO()
+            with contextlib.redirect_stdout(recursive_output):
+                recursive_status = render_link(index, "Graph.recurse(uint256)", depth=5)
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(nested_status, 0)
+        self.assertIn("CALL CHAIN", nested_output.getvalue())
+        self.assertIn("Graph._debit(address,uint256)", nested_output.getvalue())
+        self.assertIn("Graph._recordDebit(address,uint256)", nested_output.getvalue())
+        self.assertEqual(recursive_status, 0)
+        self.assertIn("recursive cycle; traversal stopped", recursive_output.getvalue())
 
     def test_flow_filter_separates_payable_capability_from_eth_out(self):
         temporary, root = self.fixture()
