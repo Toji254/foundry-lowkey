@@ -432,9 +432,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     manifest_valid = False
                     break
             if imports_are_resolved and manifest_valid:
+                cached_inventory = cached.get("inventory") or {}
+                cached_failures = cached_inventory.get("uninspected") or []
+                merged_failures = failures + cached_failures
                 cached["inventory"] = {
-                    "complete": not failures,
-                    "uninspected": failures,
+                    "complete": not merged_failures,
+                    "uninspected": merged_failures,
                     "files_inspected": len(root_manifest),
                     "files_discovered": inventory.get("files_discovered", len(root_manifest)),
                 }
