@@ -1232,6 +1232,23 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             receiver, method = call.group("receiver"), call.group("name")
             if method in {"call", "delegatecall", "staticcall", "push", "pop"}:
                 continue
+            if method in {"transfer", "send"}:
+                receiver_vars = [
+                    item for item in state_variables
+                    if item["contract"] in {scope, *func["bases"]}
+                    and item["name"] == receiver
+                ]
+                parameter_type = (func.get("parameter_declared_types") or {}).get(receiver, "")
+                payable_receiver = (
+                    len(receiver_vars) == 1
+                    and bool(re.search(r"\baddress\s+payable\b", receiver_vars[0].get("type", "")))
+                ) or bool(re.search(r"\baddress\s+payable\b", parameter_type))
+                prefix = body[max(0, call.start() - 20):call.start()]
+                legacy_msg_sender = bool(re.search(r"\bmsg\s*\.\s*$", prefix))
+                if payable_receiver or legacy_msg_sender:
+                    # This is a native ETH address operation, represented by
+                    # ASSET_FLOW below rather than a generic contract call.
+                    continue
             if receiver == "super":
                 inherited: list[dict[str, Any]] = []
                 for base_name in func["bases"]:
@@ -1424,6 +1441,17 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             variable = candidates[0]
             indexes = re.findall(r"\[([^\]]*)\]", alias_match.group("indexes"))
+            base_type = variable.get("mapping_value_type") or variable.get("type", "")
+            if not variable.get("mapping_value_type"):
+                base_type = re.sub(r"(?:\s*\[\s*\])+$", "", base_type)
+                if indexes and variable.get("type", "").endswith("]"):
+                    base_type = re.sub(r"(?:\s*\[\s*\])+$", "", variable.get("type", ""))
+            declared_alias_type = re.sub(r"\s+", "", alias_match.group("type"))
+            expected_alias_type = re.sub(r"\s+", "", base_type)
+            if declared_alias_type != expected_alias_type:
+                # A lexical name match is not enough; the storage-reference
+                # type must agree with the declared base/terminal storage type.
+                continue
             alias = {
                 "name": alias_match.group("alias"),
                 "type": alias_match.group("type").strip(),
