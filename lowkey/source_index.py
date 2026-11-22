@@ -129,7 +129,11 @@ def _parameter_descriptors(raw: str) -> list[dict[str, str]]:
             continue
         name = ""
         type_name = value
-        if len(parts) > 1 and re.fullmatch(r"[A-Za-z_]\w*", parts[-1]):
+        if (
+            len(parts) > 1
+            and parts[-1] not in {"payable", "external", "internal", "view", "pure"}
+            and re.fullmatch(r"[A-Za-z_]\w*", parts[-1])
+        ):
             name = parts[-1]
             type_name = " ".join(parts[:-1])
         result.append({
