@@ -1230,6 +1230,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         )
         for call in member_pattern.finditer(body):
             receiver, method = call.group("receiver"), call.group("name")
+            if receiver == "abi" and method in {
+                "encode", "encodePacked", "encodeWithSelector",
+                "encodeWithSignature", "encodeCall", "decode",
+            }:
+                continue
             if method in {"call", "delegatecall", "staticcall", "push", "pop"}:
                 continue
             if method in {"transfer", "send"}:
