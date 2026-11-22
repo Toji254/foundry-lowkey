@@ -1194,14 +1194,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 ]
                 inherited_modifier = False
                 if not candidates:
-                    for base_name in func["bases"]:
-                        candidates = [
-                            item for item in known_modifiers
-                            if item["contract"] == base_name and item["name"] == modifier_name
-                        ]
-                        if candidates:
-                            inherited_modifier = True
-                            break
+                    candidates = [
+                        item for item in known_modifiers
+                        if item["contract"] in func["bases"] and item["name"] == modifier_name
+                    ]
+                    candidates = _nearest_inherited(candidates, func.get("ancestor_depths") or {})
+                    inherited_modifier = bool(candidates)
                 if len(candidates) == 1:
                     edges.append(_edge(
                         "APPLIES_MODIFIER", func["id"], candidates[0]["id"], path, source,
@@ -1260,16 +1258,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             candidates = [item for item in local_functions.get((scope, callee_name), []) if item["kind"] == "function" and item["file"] == path]
             if not candidates:
-                for base_name in func["bases"]:
-                    inherited = [
-                        item for item in local_functions.get((base_name, callee_name), [])
-                        if item["kind"] == "function"
-                    ]
-                    if inherited:
-                        # Solidity's inherited lookup selects the nearest base
-                        # declaration; do not also add shadowed grandparent methods.
-                        candidates = inherited
-                        break
+                inherited = [
+                    item for item in functions
+                    if item["contract"] in func["bases"]
+                    and item["name"] == callee_name
+                    and item["kind"] == "function"
+                ]
+                candidates = _nearest_inherited(inherited, func.get("ancestor_depths") or {})
             if len(candidates) == 1:
                 target_func = candidates[0]
                 has_override = any(
@@ -1325,14 +1320,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     # ASSET_FLOW below rather than a generic contract call.
                     continue
             if receiver == "super":
-                inherited: list[dict[str, Any]] = []
-                for base_name in func["bases"]:
-                    inherited = [
-                        item for item in local_functions.get((base_name, method), [])
-                        if item["kind"] == "function"
-                    ]
-                    if inherited:
-                        break
+                inherited = [
+                    item for item in functions
+                    if item["contract"] in func["bases"]
+                    and item["name"] == method
+                    and item["kind"] == "function"
+                ]
+                inherited = _nearest_inherited(inherited, func.get("ancestor_depths") or {})
                 if len(inherited) == 1:
                     edges.append(_edge("CALLS", func["id"], inherited[0]["id"], path, source, body_absolute + call.start(), resolution="DIRECT", dispatch="SUPER", implementation_resolution="DIRECT"))
                     continue
@@ -1423,16 +1417,16 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 ]
                 self_methods = own_methods
                 if not self_methods:
-                    for base_name in func.get("bases") or []:
-                        inherited_methods = [
-                            item for item in functions
-                            if item["contract"] == base_name and item["name"] == method
-                            and item["kind"] == "function"
-                            and item.get("visibility") in {"public", "external"}
-                        ]
-                        if inherited_methods:
-                            self_methods = inherited_methods
-                            break
+                    inherited_methods = [
+                        item for item in functions
+                        if item["contract"] in func.get("bases", [])
+                        and item["name"] == method
+                        and item["kind"] == "function"
+                        and item.get("visibility") in {"public", "external"}
+                    ]
+                    self_methods = _nearest_inherited(
+                        inherited_methods, func.get("ancestor_depths") or {}
+                    )
                 if len(self_methods) == 1:
                     target_method = self_methods[0]
                     is_virtual = bool(re.search(r"\bvirtual\b", target_method.get("header", "")))
