@@ -515,17 +515,21 @@ def _emit_ast_storage_effects(
 
         if node_type == "FunctionCall":
             expression = value.get("expression")
-            if isinstance(expression, dict) and expression.get("nodeType") == "MemberAccess":
-                member_name = str(expression.get("memberName") or "")
-                if member_name in {"push", "pop"}:
-                    walk(expression.get("expression"), "WRITES", f"array.{member_name}")
-                    for argument in value.get("arguments") or []:
-                        walk(argument, "READS", None)
-                    return
-
             callee = _unwrap_callee(expression)
             target_ast_id = _referenced_id(callee)
             target_record = function_declarations.get((build_info, target_ast_id)) if target_ast_id is not None else None
+            if (
+                isinstance(expression, dict)
+                and expression.get("nodeType") == "MemberAccess"
+                and str(expression.get("memberName") or "") in {"push", "pop"}
+                and target_record is None
+            ):
+                member_name = str(expression.get("memberName") or "")
+                walk(expression.get("expression"), "WRITES", f"array.{member_name}")
+                for argument in value.get("arguments") or []:
+                    walk(argument, "READS", None)
+                return
+
             storage_parameter_indexes: set[int] = set()
             storage_receiver_consumed = False
             if target_record is not None:
@@ -540,6 +544,7 @@ def _emit_ast_storage_effects(
                 if (
                     isinstance(expression, dict)
                     and expression.get("nodeType") == "MemberAccess"
+                    and target_record["graph"].get("contract_kind") == "library"
                     and parameters
                     and isinstance(parameters[0], dict)
                     and parameters[0].get("storageLocation") == "storage"
