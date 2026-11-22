@@ -599,7 +599,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     functions: list[dict[str, Any]] = []
     state_variables: list[dict[str, Any]] = []
     function_pointers: list[dict[str, Any]] = []
-    structs: list[dict[str, Any]] =
+    structs: list[dict[str, Any]] = []
     fields_by_struct: dict[tuple[str, str], list[dict[str, Any]]] = {}
     file_ids: dict[str, str] = {}
     contract_by_name: dict[str, list[dict[str, Any]]] = {}
