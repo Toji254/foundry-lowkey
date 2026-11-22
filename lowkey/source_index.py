@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - package-style import
     from lowkey import project_tools
 
 
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
