@@ -108,7 +108,7 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertIn("Repository", output)
             self.assertIn("IRepository", output)
             self.assertIn("FixedPoint", output)
-            self.assertIn("not a risk or severity ranking", output)
+            self.assertIn("not a risk ranking or severity score", output)
             self.assertIn("WHERE TO START", output)
             self.assertIn("lk sources --scope application", output)
             self.assertIn("lk deps", output)
