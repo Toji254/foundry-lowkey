@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 12
+CACHE_VERSION = 13
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -2057,7 +2057,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
                     else:
                         relations = ["READS_IMMUTABLE"]
-                if is_compound:
+                if is_compound and persistence in {"persistent", "transient"}:
                     relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
 
                 relation_targets = [(variable["id"], None)]
@@ -2079,6 +2079,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             evidence="STORAGE_ALIAS_RESOLUTION",
                             operation=operation,
                             mutation_kind=(
+                                "INITIALIZATION" if relation == "INITIALIZES" else
+                                "UNRESOLVED_MUTATION" if relation == "UNRESOLVED_MUTATION" else
                                 "DELETE" if deletion else "TUPLE_ASSIGNMENT" if tuple_write
                                 else "ARRAY_MUTATION" if array_method else "COMPOUND_ASSIGNMENT" if is_compound
                                 else "ASSIGNMENT" if is_write else "READ"
@@ -2140,7 +2142,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
                     else:
                         relations = ["READS_IMMUTABLE"]
-                if is_compound:
+                if is_compound and persistence in {"persistent", "transient"}:
                     relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
 
                 relation_targets = [(variable["id"], None)]
@@ -2162,6 +2164,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
                             operation=operation,
                             mutation_kind=(
+                                "INITIALIZATION" if relation == "INITIALIZES" else
+                                "UNRESOLVED_MUTATION" if relation == "UNRESOLVED_MUTATION" else
                                 "DELETE" if deletion else "TUPLE_ASSIGNMENT" if tuple_write
                                 else "ARRAY_MUTATION" if array_method else "COMPOUND_ASSIGNMENT" if is_compound
                                 else "ASSIGNMENT" if is_write else "READ"
