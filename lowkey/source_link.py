@@ -545,7 +545,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         _render_edges("EXTERNAL INTERACTIONS / ASSET PATHS", extras[:limit], nodes)
         unresolved = [
             edge for edge in edges + extras + file_imports
-            if edge.get("resolution") == "UNRESOLVED"
+            if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
         ]
         _render_edges("UNRESOLVED", unresolved[:limit], nodes)
     elif selected.get("kind") in {"function", "modifier"}:
@@ -583,7 +583,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         _render_call_tree(
             selected, index.get("edges") or [], nodes, depth=depth, limit=limit,
         )
-        unresolved = [edge for edge in edges if edge.get("resolution") == "UNRESOLVED"]
+        unresolved = [
+            edge for edge in edges
+            if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+        ]
         _render_edges("UNRESOLVED TARGETS", unresolved[:limit], nodes)
     elif selected.get("kind") in {"mapping", "state_variable", "function_pointer"}:
         for heading, kind, direction in (
