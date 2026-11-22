@@ -91,6 +91,63 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertEqual(capability_view.returncode, 0, capability_view.stdout + capability_view.stderr)
             self.assertIn("Capability negotiation:", capability_view.stdout)
 
+            source_index = pathlib.Path(home) / ".lowkey" / "source_index.py"
+            source_link = pathlib.Path(home) / ".lowkey" / "source_link.py"
+            self.assertTrue(source_index.is_file())
+            self.assertTrue(source_link.is_file())
+            self.assertIn(str(source_index), install_manifest["files"])
+            self.assertIn(str(source_link), install_manifest["files"])
+
+            source_fixture = pathlib.Path(home) / "source-link-fixture"
+            (source_fixture / "src").mkdir(parents=True)
+            (source_fixture / "foundry.toml").write_text(
+                '[profile.default]\\nsrc = "src"\\n',
+                encoding="utf-8",
+            )
+            (source_fixture / "src" / "FlowVault.sol").write_text(
+                """
+                // SPDX-License-Identifier: MIT
+                pragma solidity ^0.8.20;
+                contract FlowVault {
+                    mapping(address => uint256) public balances;
+                    function deposit() external payable {
+                        balances[msg.sender] += msg.value;
+                    }
+                    function withdraw(uint256 amount) external {
+                        balances[msg.sender] -= amount;
+                        (bool ok,) = msg.sender.call{value: amount}("");
+                        require(ok);
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            linked_function = subprocess.run(
+                [str(installed_lk), "link", "FlowVault.withdraw(uint256)", "--root", str(source_fixture)],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(linked_function.returncode, 0, linked_function.stdout + linked_function.stderr)
+            self.assertIn("LOWKEY // SOURCE LINK", linked_function.stdout)
+            self.assertIn("FlowVault.withdraw(uint256)", linked_function.stdout)
+            self.assertIn("TRANSFER ATTEMPT", linked_function.stdout)
+
+            linked_mapping = subprocess.run(
+                [str(installed_lk), "link", "FlowVault.balances", "--root", str(source_fixture)],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(linked_mapping.returncode, 0, linked_mapping.stdout + linked_mapping.stderr)
+            self.assertIn("balances[msg.sender]", linked_mapping.stdout)
+            self.assertIn("WRITTEN BY", linked_mapping.stdout)
+
+            flow_filter = subprocess.run(
+                [str(installed_lk), "fn", "--flow", "out", "--asset", "eth", "--root", str(source_fixture)],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(flow_filter.returncode, 0, flow_filter.stdout + flow_filter.stderr)
+            self.assertIn("FlowVault.withdraw(uint256)", flow_filter.stdout)
+            self.assertIn("ETH", flow_filter.stdout)
+            self.assertIn("OUT", flow_filter.stdout)
+
             version = subprocess.run(
                 [str(installed_lk), "--version"],
                 cwd=ROOT,
