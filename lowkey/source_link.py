@@ -364,6 +364,26 @@ def _render_contract_overview(
             print(f"  ├── {_symbol_label(nodes.get(edge.get('to'), {}))}")
         print()
 
+    inherited_by = [
+        edge for edge in all_edges
+        if edge.get("kind") == "INHERITS" and edge.get("to") == selected["id"]
+    ]
+    if inherited_by:
+        print("INHERITED BY")
+        for edge in inherited_by[:limit]:
+            print(f"  └── {_symbol_label(nodes.get(edge.get('from'), {}))}")
+        print()
+
+    used_by = [
+        edge for edge in all_edges
+        if edge.get("kind") == "USES_LIBRARY" and edge.get("to") == selected["id"]
+    ]
+    if used_by:
+        print("USED BY")
+        for edge in used_by[:limit]:
+            print(f"  └── {_symbol_label(nodes.get(edge.get('from'), {}))}")
+        print()
+
     functions = sorted(
         (item for item in declared if item.get("kind") == "function"),
         key=lambda item: (
