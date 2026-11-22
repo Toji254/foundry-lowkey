@@ -22276,11 +22276,11 @@ def run_project_map(config, args):
         print("  lk project [number|path] [-v|-vv] [--json]")
         print("  lk project --workspace [--json]")
         print("")
-        print("Default: concise project overview and structural navigation.")
-        print("  -v   Expand the architecture relationships.")
+        print("Default: project identity, analysis coverage, source roles, dependency health and architecture.")
+        print("  -v   Expand application components and their shared dependencies.")
         print("  -vv  Show the complete technical map and call-site report.")
         print("  --json  Emit the complete machine-readable project graph.")
-        print("The overview is derived from the detected source graph; connectivity is not a security score.")
+        print("Unknown source roles remain unclassified; connectivity is not a security or severity score.")
         return 0
 
     if workspace_container and (in_multi_workspace or (selectors and selectors[0].lower() in {"--workspace", "workspace"})):
@@ -22900,15 +22900,15 @@ COMMAND_HELP = {
         related=["lk project", "lk findings", "lk walkthrough"],
     ),
     "project": _help_entry(
-        "Explain a project or monorepo in plain English: purpose, contracts, tests, dependencies, and audit scope.",
+        "Orient an auditor in an unfamiliar project or monorepo: detected toolchain and compilers, source coverage, application/shared structure, dependency health, and audit scope.",
         "lk project [number|path|--workspace] [-v|-vv] [--json]",
         "lk project 2",
-        "Use it at the start of an audit so you know which package is the application scope and which packages are dependencies/tooling.",
+        "Use it at the start of an audit to understand what Lowkey mapped, what remains unclassified or unresolved, and where manual review should begin.",
         children={
             "--workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace --h", "Use it before choosing a primary audit project in a monorepo."),
         },
         options=[
-            ("-v", "Expand the overview with first-party architecture relationships.", "lk project -v"),
+            ("-v", "Expand the overview with direct component relationships and shared dependencies.", "lk project -v"),
             ("-vv", "Show the complete technical map and call-site report.", "lk project -vv"),
             ("--json", "Print the complete machine-readable project graph.", "lk project 2 --json"),
         ],
@@ -25852,7 +25852,7 @@ PROJECT / TARGET SETUP
   lk deployments                    List deployment history only; does not deploy.
   lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
   lk projects                       Show projects found inside the current workspace.
-  lk project [number|path]          Show the human-readable project map.
+  lk project [number|path]          Show project identity, coverage and architecture.
   lk lab [Contract]                 Set up a realistic local lab automatically.
   lk lab [Contract] --ai-review     Add an optional source-grounded AI protocol review.
   lk lab --generic [Contract]      Deploy a contract directly and enter constructor values.
