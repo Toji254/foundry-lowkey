@@ -230,11 +230,13 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         calls = [edge for edge in contract_edges if edge.get("kind") == "CALLS"]
         storage_reads = [edge for edge in contract_edges if edge.get("kind") == "READS"]
         storage_writes = [edge for edge in contract_edges if edge.get("kind") == "WRITES"]
+        state_initializers = [edge for edge in (index.get("edges") or []) if edge.get("kind") == "INITIALIZES" and edge.get("from") == selected["id"]]
         if only in (None, "calls"):
             _render_edges("INTERNAL CALLS", calls[:limit], nodes)
         if only in (None, "storage"):
             _render_edges("STORAGE READS", storage_reads[:limit], nodes)
             _render_edges("STORAGE WRITES", storage_writes[:limit], nodes)
+            _render_edges("STATE INITIALIZERS", state_initializers[:limit], nodes)
         extras = [
             edge for edge in contract_edges
             if edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}
@@ -261,7 +263,6 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("REVERTS", "REVERTS", "outgoing"),
             ("STORAGE ALIASES", "ALIASES_STORAGE", "outgoing"),
             ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
-            ("EMITS", "EMITS", "outgoing"),
             ("ASSET FLOW / CAPABILITY", "ASSET_FLOW", "outgoing"),
         ]
         for heading, kind, direction in group_map:
