@@ -220,6 +220,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             "inventory": index.get("inventory"),
             "summary": index.get("summary"),
             "parser": index.get("parser"),
+            "ast": index.get("ast"),
+            "mutation_semantics": index.get("mutation_semantics"),
         }, indent=2, sort_keys=True))
         return 0
 
@@ -230,6 +232,17 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         print(f"ORIGIN    {str(selected['provenance']).upper()}")
     print(f"KIND      {selected.get('kind', 'symbol').upper()}")
     print(f"EVIDENCE  {index.get('parser', 'UNKNOWN')} static source analysis (not runtime execution)")
+    ast_report = index.get("ast") or {}
+    if ast_report:
+        print(
+            "AST       "
+            f"{ast_report.get('functions', 0)} function(s), "
+            f"{ast_report.get('call_edges', 0)} call edge(s), "
+            f"{ast_report.get('modifier_edges', 0)} modifier edge(s) "
+            "from matched build-info"
+        )
+        for warning in (ast_report.get("warnings") or [])[:4]:
+            print(f"AST NOTE  {warning}")
     print(f"CACHE     {(index.get('cache') or {}).get('status', 'UNKNOWN')}")
     if selected.get("type"):
         print(f"TYPE      {selected['type']}")
