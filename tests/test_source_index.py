@@ -80,6 +80,7 @@ class SourceIndexTests(unittest.TestCase):
                 IERC20 public token;
                 address payable public treasury;
                 uint256 internal guard;
+                uint256[] public amounts;
                 function(uint256) external callback;
 
                 event Deposited(address indexed who, uint256 amount);
@@ -140,6 +141,18 @@ class SourceIndexTests(unittest.TestCase):
 
                 function invokeStoredCallback(uint256 value) external {
                     callback(value);
+                }
+
+                function setCallback(function(uint256) external cb) external {
+                    callback = cb;
+                }
+
+                function updateArray(uint256 value) external {
+                    amounts.push(value);
+                }
+
+                function removeArrayItem() external {
+                    amounts.pop();
                 }
 
                 function rawStorageWrite() external {
@@ -283,6 +296,15 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == invoke["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == stored["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
         self.assertTrue(any(edge["kind"] == "UNRESOLVED_STORAGE" and edge.get("operation") == "sstore" for edge in edges))
+        callback_node = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.callback")
+        self.assertTrue(any(edge["kind"] == "READS" and edge["to"] == callback_node["id"] and edge["from"] == stored["id"] for edge in edges))
+        setter = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.setCallback(function)")
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["to"] == callback_node["id"] and edge["from"] == setter["id"] for edge in edges))
+        amounts = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.amounts")
+        update_array = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.updateArray(uint256)")
+        remove_array = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.removeArrayItem()")
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["to"] == amounts["id"] and edge["from"] == update_array["id"] for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["to"] == amounts["id"] and edge["from"] == remove_array["id"] for edge in edges))
 
     def test_comments_do_not_create_call_or_storage_edges(self):
         temporary, root = self.fixture()
