@@ -201,6 +201,9 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertIn("RELATIONSHIP DETAIL", expanded)
             self.assertNotIn("LOWKEY PROJECT MAP", expanded)
 
+    def test_project_command_does_not_append_generic_target_dependent_followups(self):
+        self.assertEqual(lk._NEXT_COMMANDS["project"], [])
+
     def test_json_remains_complete_json_even_with_verbosity_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
