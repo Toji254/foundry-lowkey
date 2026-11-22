@@ -930,6 +930,75 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "raw": dependency_edge.get("raw"), "provenance": "third-party",
         })
 
+    # Resolve transitive inheritance only across uniquely named contracts.
+    # Ambiguous parents remain unresolved; no name-based guess is promoted.
+    for contract in contracts:
+        ancestors: list[str] = []
+        visited: set[str] = set()
+
+        def visit_base(base_name: str) -> None:
+            if base_name in visited:
+                return
+            visited.add(base_name)
+            matches = contract_by_name.get(base_name, [])
+            if len(matches) != 1:
+                return
+            ancestors.append(base_name)
+            for parent in matches[0].get("bases") or []:
+                visit_base(parent)
+
+        for direct_base in contract.get("bases") or []:
+            visit_base(direct_base)
+        contract["ancestors"] = ancestors
+        for node in nodes:
+            if node.get("id") == contract["id"]:
+                node["ancestors"] = ancestors
+                break
+
+    for func in functions:
+        owning_contract = next(
+            (
+                item for item in contracts
+                if item["name"] == func["contract"] and item["file"] == func["file"]
+            ),
+            None,
+        )
+        if owning_contract is not None:
+            func["bases"] = list(owning_contract.get("ancestors") or [])
+
+    # Resolve user-defined state and parameter types to a unique contract,
+    # interface, library or struct declaration where possible.
+    for variable in state_variables:
+        type_name = re.sub(r"\s+payable\b", "", variable.get("type", "")).strip()
+        type_name = re.sub(r"(?:\[\s*\])+$", "", type_name).strip()
+        if variable.get("kind") == "mapping":
+            type_name = variable.get("mapping_value_type") or ""
+        type_name = type_name.strip()
+        if re.fullmatch(r"[A-Za-z_]\w*", type_name):
+            candidates = contract_by_name.get(type_name, [])
+            if len(candidates) == 1:
+                edges.append(_edge(
+                    "USES_TYPE", variable["id"], candidates[0]["id"],
+                    variable["file"], source_by_path.get(variable["file"], ""),
+                    0, type_name=type_name,
+                ))
+
+    for func in functions:
+        for parameter_name, declared_type in (func.get("parameter_declared_types") or {}).items():
+            simple_type = re.sub(r"\b(memory|calldata|storage|payable|external|internal)\b", " ", declared_type)
+            simple_type = re.sub(r"(?:\[\s*\])+$", "", simple_type)
+            simple_type = re.sub(r"\s+", " ", simple_type).strip()
+            if not re.fullmatch(r"[A-Za-z_]\w*", simple_type):
+                continue
+            candidates = contract_by_name.get(simple_type, [])
+            if len(candidates) == 1:
+                edges.append(_edge(
+                    "USES_TYPE", func["id"], candidates[0]["id"],
+                    func["file"], source_by_path.get(func["file"], ""),
+                    func["source_offset"], parameter=parameter_name,
+                    type_name=simple_type,
+                ))
+
     # Explicit using-for directives connect extension calls to library source
     # only when the directive, receiver type, and library function are unique.
     for contract in contracts:
