@@ -22,14 +22,41 @@ class SourceLinkTests(unittest.TestCase):
         root = pathlib.Path(temporary.name)
         (root / "src").mkdir()
         (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+        (root / "src" / "BaseLink.sol").write_text(
+            """
+            pragma solidity ^0.8.20;
+            abstract contract BaseLink {
+                function baseAction() public virtual {}
+            }
+            """,
+            encoding="utf-8",
+        )
+        (root / "src" / "LinkLib.sol").write_text(
+            """
+            pragma solidity ^0.8.20;
+            library LinkLib {
+                function inc(uint256 value, uint256 amount) internal pure returns (uint256) {
+                    return value + amount;
+                }
+            }
+            """,
+            encoding="utf-8",
+        )
         (root / "src" / "Graph.sol").write_text(
             """
             pragma solidity ^0.8.20;
-            contract Graph {
+            import "./BaseLink.sol";
+            import "./LinkLib.sol";
+            contract Graph is BaseLink {
+                using LinkLib for uint256;
                 mapping(address => uint256) public balances;
                 event Paid(address indexed user, uint256 amount);
                 function deposit() external payable {
                     balances[msg.sender] += msg.value;
+                }
+                function baseAction() public override {}
+                function libraryUse(uint256 value) external pure returns (uint256) {
+                    return value.inc(1);
                 }
                 function withdraw(uint256 amount) external {
                     _debit(msg.sender, amount);
@@ -100,6 +127,26 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("FUNCTIONS", text)
         self.assertIn("STORAGE", text)
         self.assertIn("INTERNAL CALLS", text)
+
+    def test_contract_navigation_shows_reverse_inheritance_and_library_use(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            base_output = io.StringIO()
+            with contextlib.redirect_stdout(base_output):
+                base_status = render_link(index, "BaseLink")
+            library_output = io.StringIO()
+            with contextlib.redirect_stdout(library_output):
+                library_status = render_link(index, "LinkLib")
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(base_status, 0)
+        self.assertIn("INHERITED BY", base_output.getvalue())
+        self.assertIn("Graph (contract)", base_output.getvalue())
+        self.assertEqual(library_status, 0)
+        self.assertIn("USED BY", library_output.getvalue())
+        self.assertIn("Graph (contract)", library_output.getvalue())
 
     def test_overloaded_symbol_without_signature_is_not_guessed(self):
         temporary, root = self.fixture()
