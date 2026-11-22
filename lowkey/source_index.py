@@ -270,13 +270,22 @@ def _at_source_level(source: str, offset: int) -> bool:
 
 def _at_contract_depth(source: str, body_start: int, offset: int) -> bool:
     """Return true only for a declaration directly inside a contract body."""
-    depth = 0
+    braces = parens = brackets = 0
     for char in source[body_start:offset]:
         if char == "{":
-            depth += 1
+            braces += 1
         elif char == "}":
-            depth = max(0, depth - 1)
-    return depth == 0
+            braces = max(0, braces - 1)
+        elif char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+    return braces == 0 and parens == 0 and brackets == 0
+
 
 
 def _has_local_shadow(body: str, name: str) -> bool:
