@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 14
+CACHE_VERSION = 15
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -2590,8 +2590,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "functions": sum(1 for item in functions if item["kind"] == "function"),
             "modifiers": sum(1 for item in functions if item["kind"] == "modifier"),
             "storage": len(state_variables),
+            "persistent_storage": sum(1 for item in state_variables if item.get("storage_class", "persistent") == "persistent"),
+            "transient_storage": sum(1 for item in state_variables if item.get("storage_class") == "transient"),
+            "constants": sum(1 for item in state_variables if item.get("storage_class") == "constant"),
+            "immutables": sum(1 for item in state_variables if item.get("storage_class") == "immutable"),
             "mappings": sum(1 for item in state_variables if item["kind"] == "mapping"),
             "relationships": len(edges),
+            "ambiguous": sum(1 for item in edges if item.get("resolution") == "AMBIGUOUS"),
             "unresolved": sum(1 for item in edges if item.get("resolution") == "UNRESOLVED"),
         },
         "cache": {"status": "MISS", "fingerprint": fingerprint},
