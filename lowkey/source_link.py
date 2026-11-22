@@ -344,6 +344,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 edge for edge in (index.get("edges") or [])
                 if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
                 and nodes.get(edge.get("to"), {}).get("kind") in {"mapping", "state_variable", "function_pointer", "struct", "struct_field"}
+                and nodes.get(edge.get("to"), {}).get("storage_class") not in {"constant", "immutable"}
             ]
         elif only == "calls":
             declared = [
@@ -378,6 +379,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("FUNCTIONS", {"function"}),
             ("MODIFIERS", {"modifier"}),
             ("STORAGE", {"mapping", "state_variable", "function_pointer"}),
+            ("CONSTANTS / IMMUTABLES", {"state_variable"}),
             ("STRUCTURES", {"struct", "struct_field"}),
             ("ENUMS", {"enum", "enum_value"}),
             ("EVENTS / ERRORS", {"event", "custom_error"}),
@@ -385,6 +387,15 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             items = [
                 nodes.get(edge["to"], {}) for edge in declared
                 if nodes.get(edge["to"], {}).get("kind") in kinds
+                and (
+                    title == "CONSTANTS / IMMUTABLES"
+                    and nodes.get(edge["to"], {}).get("storage_class") in {"constant", "immutable"}
+                    or title != "CONSTANTS / IMMUTABLES"
+                    and (
+                        title != "STORAGE"
+                        or nodes.get(edge["to"], {}).get("storage_class") not in {"constant", "immutable"}
+                    )
+                )
             ]
             if items:
                 print(title)
