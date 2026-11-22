@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import os
 import pathlib
 import sys
@@ -30,26 +31,26 @@ class ProjectVerbosityTests(unittest.TestCase):
         return path
 
     def fixture(self, root):
-        self.write(root, "foundry.toml", '[profile.default]\\nsrc = "src"\\n')
+        self.write(root, "foundry.toml", '[profile.default]\nsrc = "src"\n')
         self.write(
             root,
             "src/IRepository.sol",
-            "pragma solidity ^0.8.20;\\ninterface IRepository {}\\n",
+            "pragma solidity ^0.8.20;\ninterface IRepository {}\n",
         )
         self.write(
             root,
             "src/Repository.sol",
-            'pragma solidity ^0.8.20;\\nimport "./IRepository.sol";\\ncontract Repository is IRepository {}\\n',
+            'pragma solidity ^0.8.20;\nimport "./IRepository.sol";\ncontract Repository is IRepository {}\n',
         )
         self.write(
             root,
             "src/Coordinator.sol",
-            'pragma solidity ^0.8.20;\\nimport "./IRepository.sol";\\ncontract Coordinator {}\\n',
+            'pragma solidity ^0.8.20;\nimport "./IRepository.sol";\ncontract Coordinator {}\n',
         )
         self.write(
             root,
             "src/Worker.sol",
-            'pragma solidity ^0.8.20;\\nimport "./Coordinator.sol";\\ncontract Worker is Coordinator {}\\n',
+            'pragma solidity ^0.8.20;\nimport "./Coordinator.sol";\ncontract Worker is Coordinator {}\n',
         )
 
     def overview(self, root, verbosity=0):
@@ -66,15 +67,17 @@ class ProjectVerbosityTests(unittest.TestCase):
         output = io.StringIO()
         try:
             os.chdir(root)
-            with patch.object(lk, "workspace_context", return_value=None), \\
-                 patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
-                 patch.object(lk, "_sync_security_patterns"), \\
-                 patch.object(
-                     lk,
-                     "_security_pattern_summary",
-                     return_value={"total": 0, "reviews": 0, "confirmed": 0, "candidates": 0},
-                 ), \\
-                 redirect_stdout(output):
+            with (
+                patch.object(lk, "workspace_context", return_value=None),
+                patch.object(lk.audit_context, "foundry_project_root", return_value=root),
+                patch.object(lk, "_sync_security_patterns"),
+                patch.object(
+                    lk,
+                    "_security_pattern_summary",
+                    return_value={"total": 0, "reviews": 0, "confirmed": 0, "candidates": 0},
+                ),
+                redirect_stdout(output),
+            ):
                 code = lk.run_project_map({}, args)
         finally:
             os.chdir(previous)
@@ -140,7 +143,6 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.fixture(root)
             code, output = self.run_cli(root, ["-vv", "--json"])
 
-            import json
             payload = json.loads(output)
             self.assertEqual(code, 0)
             self.assertIn("graph", payload)
@@ -150,8 +152,8 @@ class ProjectVerbosityTests(unittest.TestCase):
     def test_non_solidity_projects_get_a_language_neutral_overview(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "Scarb.toml", '[package]\\nname = "sample"\\nversion = "0.1.0"\\n')
-            self.write(root, "src/lib.cairo", "fn greet() {}\\n")
+            self.write(root, "Scarb.toml", '[package]\nname = "sample"\nversion = "0.1.0"\n')
+            self.write(root, "src/lib.cairo", "fn greet() {}\n")
             _result, output = self.overview(root)
 
             self.assertIn("LOWKEY PROJECT OVERVIEW", output)
