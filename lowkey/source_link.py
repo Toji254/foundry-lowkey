@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - package-style import
 
 ONLY_KINDS = {
     "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"},
-    "storage": {"READS", "WRITES", "USES_TYPE"},
+    "storage": {"READS", "WRITES", "USES_TYPE", "ALIASES_STORAGE"},
     "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY"},
     "assets": {"ASSET_FLOW"},
 }
@@ -71,6 +71,10 @@ def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
             detail += f" amount={edge['amount']}"
     elif edge.get("kind") == "EXTERNAL_CALL":
         detail = f" [{edge.get('receiver', 'target')}.{edge.get('method', edge.get('operation', 'call'))}]"
+    elif edge.get("kind") in {"READS", "WRITES", "ALIASES_STORAGE"} and edge.get("access_path"):
+        detail = f" [{edge['access_path']}]"
+        if edge.get("alias"):
+            detail += f" (storage alias {edge['alias']})"
     elif edge.get("via"):
         via_names = [nodes.get(item, {}).get("qualified_name", item) for item in edge["via"]]
         detail = " via " + " -> ".join(via_names)
@@ -241,6 +245,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("OVERRIDDEN BY", "OVERRIDES", "incoming"),
             ("STORAGE READS", "READS", "outgoing"),
             ("STORAGE WRITES", "WRITES", "outgoing"),
+            ("STORAGE ALIASES", "ALIASES_STORAGE", "outgoing"),
             ("EMITS", "EMITS", "outgoing"),
             ("ASSET FLOW / CAPABILITY", "ASSET_FLOW", "outgoing"),
         ]
@@ -257,6 +262,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
             ("WRITTEN BY", "WRITES", "incoming"),
+            ("ALIASED BY", "ALIASES_STORAGE", "incoming"),
             ("USES TYPE", "USES_TYPE", "outgoing"),
         ):
             values = [
