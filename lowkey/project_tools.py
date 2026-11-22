@@ -1385,7 +1385,11 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
 
 
 def _protocol_node(node: dict[str, Any]) -> bool:
-    """Keep the human graph focused on first-party source at any workspace depth."""
+    """Exclude only explicitly recognized support paths from first-party analysis.
+
+    Unknown source locations stay in the graph so the overview can label them
+    UNCLASSIFIED instead of silently pretending they are tests or tooling.
+    """
     rel = str(node.get("file") or "").replace("\\", "/").lstrip("./")
     parts = [part for part in rel.split("/") if part]
     support = {
@@ -1394,10 +1398,7 @@ def _protocol_node(node: dict[str, Any]) -> bool:
         "benchmarks", "benchmark", "docs", "doc", "out", "cache",
         "artifacts", "broadcast", "node_modules", ".audit",
     }
-    if any(part.lower() in support for part in parts[:-1]):
-        return False
-    source_roots = {"src", "contracts", "vyper", "interfaces", "programs"}
-    return any(part.lower() in source_roots for part in parts[:-1]) or bool(node.get("declarations"))
+    return not any(part.lower() in support for part in parts[:-1])
 
 
 def _display_name(node: dict[str, Any]) -> str:
