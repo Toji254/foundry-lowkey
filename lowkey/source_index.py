@@ -657,7 +657,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         file_using_libraries = [
             {"library": using.group(1), "for_type": using.group(2), "offset": using.start()}
             for using in re.finditer(
-                r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*;",
+                r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*(?:global\s*)?;",
                 clean,
             )
             if _at_source_level(clean, using.start())
@@ -693,7 +693,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 "using_libraries": file_using_libraries + [
                     {"library": using.group(1), "for_type": using.group(2), "offset": using.start()}
                     for using in re.finditer(
-                        r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*;",
+                        r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*(?:global\s*)?;",
                         clean, opening + 1, closing,
                     )
                     if _at_contract_depth(clean, opening + 1, using.start())
