@@ -211,6 +211,7 @@ class SourceIndexTests(unittest.TestCase):
                         tstore(1, 2)
                         let target := 0
                         call(gas(), target, 0, 0, 0, 0, 0)
+                        selfdestruct(target)
                     }
                 }
 
@@ -413,6 +414,8 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "UNRESOLVED_STORAGE" and edge.get("operation") == "tstore" for edge in edges))
         self.assertTrue(any(edge["kind"] == "EXTERNAL_CALL" and edge.get("operation") == "call" and edge["from"] == next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.rawStorageWrite()")["id"] for edge in edges))
         raw_storage = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.rawStorageWrite()")
+        self.assertTrue(any(edge["kind"] == "ASSET_FLOW" and edge["from"] == raw_storage["id"] and edge.get("operation") == "selfdestruct" and edge.get("direction") == "unresolved" and edge.get("status") == "ASSEMBLY_UNRESOLVED" for edge in edges))
+        self.assertFalse(any(edge["kind"] == "ASSET_FLOW" and edge["from"] == raw_storage["id"] and edge.get("status") == "FORK_SEMANTIC_DEPENDENT" for edge in edges))
         self.assertFalse(any(edge["from"] == raw_storage["id"] and edge["to"] == next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.positions")["id"] and edge["kind"] in {"READS", "WRITES"} for edge in edges))
 
         callback_node = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.callback")
