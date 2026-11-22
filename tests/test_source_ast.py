@@ -352,7 +352,7 @@ class SourceAstTests(unittest.TestCase):
         self.assertEqual(balances.get("source_offset"), expected_balances_offset)
         self.assertEqual(
             balances.get("line"),
-            source.count("\\n", 0, expected_balances_offset) + 1,
+            source.count("\n", 0, expected_balances_offset) + 1,
         )
         setter = find_symbols(index, "StorageVault.set(address,uint256)")[0]
         increase = find_symbols(index, "StorageVault.increase(address,uint256)")[0]
