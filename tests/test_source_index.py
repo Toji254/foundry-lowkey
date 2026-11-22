@@ -185,6 +185,15 @@ class SourceIndexTests(unittest.TestCase):
                 function commentedOnly() external view {
                     // fakeCall(); positions[msg.sender][1] = Position(msg.sender, 1);
                 }
+
+                function localShadow() external pure returns (uint256) {
+                    uint256 positions = 7;
+                    return positions;
+                }
+
+                function abiEncoding(address who) external pure returns (bytes memory) {
+                    return abi.encode(who);
+                }
             }
             """,
         )
@@ -333,6 +342,19 @@ class SourceIndexTests(unittest.TestCase):
         edges = [edge for edge in index["edges"] if edge["from"] == function["id"]]
         self.assertFalse(any(edge["kind"] == "CALLS" and "fakeCall" in edge.get("to", "") for edge in edges))
         self.assertFalse(any(edge["kind"] in {"READS", "WRITES"} and "positions" in edge.get("variable", "") for edge in edges))
+
+    def test_local_shadow_and_abi_intrinsics_do_not_create_false_edges(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        mapping = find_symbols(index, "Vault.positions")[0]
+        local_shadow = find_symbols(index, "Vault.localShadow()")[0]
+        abi_encoding = find_symbols(index, "Vault.abiEncoding(address)")[0]
+        self.assertFalse(any(edge["from"] == local_shadow["id"] and edge["to"] == mapping["id"] and edge["kind"] in {"READS", "WRITES"} for edge in index["edges"]))
+        self.assertFalse(any(edge["from"] == abi_encoding["id"] and edge["kind"] == "EXTERNAL_CALL" and edge.get("receiver") == "abi" for edge in index["edges"]))
 
     def test_repeated_queries_use_the_content_addressed_cache(self):
         temporary, root = self.fixture()
