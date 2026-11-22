@@ -30,7 +30,7 @@ _BUILTIN_CALLS = {
     "if", "while", "for", "do", "return", "emit", "require", "assert",
     "revert", "keccak256", "sha256", "ripemd160", "ecrecover", "addmod",
     "mulmod", "abi", "type", "new", "delete", "unchecked", "assembly",
-    "gasleft", "blockhash", "selfdestruct", "suicide",
+    "gasleft", "blockhash", "selfdestruct", "suicide", "payable", "address",
 }
 _STORAGE_QUALIFIERS = {
     "public", "private", "internal", "external", "constant", "immutable",
@@ -250,6 +250,18 @@ def _at_contract_depth(source: str, body_start: int, offset: int) -> bool:
         elif char == "}":
             depth = max(0, depth - 1)
     return depth == 0
+
+
+def _has_local_shadow(body: str, name: str) -> bool:
+    """Detect a local declaration without confusing return/delete/emit expressions."""
+    blocked = r"(?:return|delete|emit|revert|if|else|for|while|require|assert|throw)"
+    pattern = re.compile(
+        rf"(?:^|[;{{}}])\s*(?!{blocked}\b)"
+        rf"(?:[A-Za-z_]\w*(?:\s*\[[^\]]*\])?\s+)+"
+        rf"(?:(?:memory|storage|calldata)\s+)?{re.escape(name)}\s*(?:=|;|,|\))",
+        re.MULTILINE,
+    )
+    return bool(pattern.search(body))
 
 
 def _source_ref(path: str, source: str, offset: int) -> dict[str, Any]:
@@ -1138,16 +1150,28 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     detail="Function pointer target depends on runtime assignment or dispatch; no implementation is assumed.",
                 ))
                 continue
-            if callee_name in _BUILTIN_CALLS:
+            if callee_name in _BUILTIN_CALLS or re.fullmatch(
+                r"(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|bytes(?:[1-9]|[12]\d|3[0-2])?|fixed(?:\d+x\d+)?|ufixed(?:\d+x\d+)?|bool|string|address)",
+                callee_name,
+            ):
+                continue
+            prefix = body[max(0, call.start() - 32):call.start()]
+            if re.search(r"\b(?:emit|revert|new)\s*$", prefix):
                 continue
             if callee_name in {"function", "modifier"}:
                 continue
             candidates = [item for item in local_functions.get((scope, callee_name), []) if item["kind"] == "function" and item["file"] == path]
             if not candidates:
-                inherited = []
                 for base_name in func["bases"]:
-                    inherited.extend(item for item in local_functions.get((base_name, callee_name), []) if item["kind"] == "function")
-                candidates = inherited
+                    inherited = [
+                        item for item in local_functions.get((base_name, callee_name), [])
+                        if item["kind"] == "function"
+                    ]
+                    if inherited:
+                        # Solidity's inherited lookup selects the nearest base
+                        # declaration; do not also add shadowed grandparent methods.
+                        candidates = inherited
+                        break
             if len(candidates) == 1:
                 target_func = candidates[0]
                 has_override = any(
@@ -1436,8 +1460,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             if variable["name"] in params_shadow:
                 continue
-            if re.search(rf"\b(?:[A-Za-z_]\w*\s+)+(?:memory|storage|calldata\s+)?{re.escape(variable['name'])}\b", body):
-                # A same-named local declaration may shadow state. Do not guess.
+            if _has_local_shadow(body, variable["name"]):
+                # A same-named local declaration shadows state. Do not guess.
                 continue
             access_pattern = re.compile(rf"\b{re.escape(variable['name'])}\b")
             for access in access_pattern.finditer(body):
