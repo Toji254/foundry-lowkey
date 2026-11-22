@@ -1293,7 +1293,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 ) or bool(re.search(r"\baddress\s+payable\b", parameter_type))
                 prefix = body[max(0, call.start() - 20):call.start()]
                 legacy_msg_sender = bool(re.search(r"\bmsg\s*\.\s*$", prefix))
-                if payable_receiver or legacy_msg_sender:
+                legacy_tx_origin = bool(re.search(r"\btx\s*\.\s*$", prefix))
+                if payable_receiver or legacy_msg_sender or legacy_tx_origin:
                     # This is a native ETH address operation, represented by
                     # ASSET_FLOW below rather than a generic contract call.
                     continue
@@ -1775,9 +1776,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             name for name, type_name in (func.get("parameter_types") or {}).items()
             if re.search(r"\baddress\s+payable\b", (func.get("parameter_declared_types") or {}).get(name, type_name))
         )
-        native_receiver = r"payable\s*\(\s*address\s*\(\s*this\s*\)\s*\)|payable\s*\([^)]*\)|" + "|".join(
-            re.escape(name) for name in sorted(payable_names, key=len, reverse=True)
-        ) if payable_names else r"payable\s*\([^)]*\)"
+        native_receiver_base = r"payable\s*\(\s*address\s*\(\s*this\s*\)\s*\)|payable\s*\([^)]*\)|msg\.sender|tx\.origin"
+        native_receiver = native_receiver_base + (
+            "|" + "|".join(re.escape(name) for name in sorted(payable_names, key=len, reverse=True))
+            if payable_names else ""
+        )
         native_method = re.compile(
             rf"(?P<recipient>{native_receiver})\s*\.\s*(?P<method>transfer|send)\s*\(\s*(?P<amount>[^)]*)\)"
         )
