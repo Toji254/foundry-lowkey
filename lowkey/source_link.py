@@ -635,62 +635,63 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         }, indent=2, sort_keys=True))
         return 0
 
-    print("LOWKEY // SOURCE LINK")
-    print(f"TARGET    {_symbol_label(selected)}")
-    print(f"SOURCE    {_location(selected)}")
-    if selected.get("provenance"):
-        print(f"ORIGIN    {str(selected['provenance']).upper()}")
-    print(f"KIND      {selected.get('kind', 'symbol').upper()}")
-    if selected.get("storage_class"):
-        persistence = str(selected["storage_class"])
-        print(f"PERSISTENCE {persistence.upper()}")
-        if persistence in {"constant", "immutable"}:
-            print("NOTE      This value is not an ordinary persistent EVM storage slot.")
-    print(f"EVIDENCE  {index.get('parser', 'UNKNOWN')} static source analysis (not runtime execution)")
-    ast_report = index.get("ast") or {}
-    if ast_report:
-        print(
-            "AST       "
-            f"{ast_report.get('functions', 0)} function(s), "
-            f"{ast_report.get('call_edges', 0)} call edge(s), "
-            f"{ast_report.get('modifier_edges', 0)} modifier edge(s), "
-            f"{ast_report.get('storage_edges', 0)} storage edge(s) "
-            "from matched build-info"
-        )
-        for warning in (ast_report.get("warnings") or [])[:4]:
-            print(f"AST NOTE  {warning}")
-    print(f"CACHE     {(index.get('cache') or {}).get('status', 'UNKNOWN')}")
-    summary = index.get("summary") or {}
-    if summary:
-        print(
-            "INDEX     "
-            f"files={summary.get('files', 0)} "
-            f"contracts={summary.get('contracts', 0)} "
-            f"functions={summary.get('functions', 0)} "
-            f"relationships={summary.get('relationships', 0)}"
-        )
-        print(
-            "STATE     "
-            f"persistent={summary.get('persistent_storage', 0)} "
-            f"transient={summary.get('transient_storage', 0)} "
-            f"constants={summary.get('constants', 0)} "
-            f"immutables={summary.get('immutables', 0)}"
-        )
-        print(
-            "RESOLUTION "
-            f"ambiguous={summary.get('ambiguous', 0)} "
-            f"unresolved={summary.get('unresolved', 0)}"
-        )
-    if selected.get("type"):
-        print(f"TYPE      {selected['type']}")
-    if selected.get("signature"):
-        print(f"SIGNATURE {selected['signature']}")
-    if selected.get("visibility"):
-        print(f"VISIBILITY {selected['visibility']}  MUTABILITY {selected.get('mutability', 'unknown')}")
-    if selected.get("bases"):
-        print("BASES     " + ", ".join(selected["bases"]))
-    print()
-
+    if not (selected.get("kind") == "contract" and only is None):
+        print("LOWKEY // SOURCE LINK")
+        print(f"TARGET    {_symbol_label(selected)}")
+        print(f"SOURCE    {_location(selected)}")
+        if selected.get("provenance"):
+            print(f"ORIGIN    {str(selected['provenance']).upper()}")
+        print(f"KIND      {selected.get('kind', 'symbol').upper()}")
+        if selected.get("storage_class"):
+            persistence = str(selected["storage_class"])
+            print(f"PERSISTENCE {persistence.upper()}")
+            if persistence in {"constant", "immutable"}:
+                print("NOTE      This value is not an ordinary persistent EVM storage slot.")
+        print(f"EVIDENCE  {index.get('parser', 'UNKNOWN')} static source analysis (not runtime execution)")
+        ast_report = index.get("ast") or {}
+        if ast_report:
+            print(
+                "AST       "
+                f"{ast_report.get('functions', 0)} function(s), "
+                f"{ast_report.get('call_edges', 0)} call edge(s), "
+                f"{ast_report.get('modifier_edges', 0)} modifier edge(s), "
+                f"{ast_report.get('storage_edges', 0)} storage edge(s) "
+                "from matched build-info"
+            )
+            for warning in (ast_report.get("warnings") or [])[:4]:
+                print(f"AST NOTE  {warning}")
+        print(f"CACHE     {(index.get('cache') or {}).get('status', 'UNKNOWN')}")
+        summary = index.get("summary") or {}
+        if summary:
+            print(
+                "INDEX     "
+                f"files={summary.get('files', 0)} "
+                f"contracts={summary.get('contracts', 0)} "
+                f"functions={summary.get('functions', 0)} "
+                f"relationships={summary.get('relationships', 0)}"
+            )
+            print(
+                "STATE     "
+                f"persistent={summary.get('persistent_storage', 0)} "
+                f"transient={summary.get('transient_storage', 0)} "
+                f"constants={summary.get('constants', 0)} "
+                f"immutables={summary.get('immutables', 0)}"
+            )
+            print(
+                "RESOLUTION "
+                f"ambiguous={summary.get('ambiguous', 0)} "
+                f"unresolved={summary.get('unresolved', 0)}"
+            )
+        if selected.get("type"):
+            print(f"TYPE      {selected['type']}")
+        if selected.get("signature"):
+            print(f"SIGNATURE {selected['signature']}")
+        if selected.get("visibility"):
+            print(f"VISIBILITY {selected['visibility']}  MUTABILITY {selected.get('mutability', 'unknown')}")
+        if selected.get("bases"):
+            print("BASES     " + ", ".join(selected["bases"]))
+        print()
+    
     if selected.get("kind") == "contract" and only is None:
         _render_contract_overview(selected, index, nodes, limit=min(limit, 24))
     elif selected.get("kind") == "contract":
