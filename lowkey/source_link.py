@@ -499,17 +499,18 @@ def _render_mapping_view(
     *,
     limit: int,
 ) -> None:
-    """Render a mapping as a compact declaration/access/struct map."""
+    """Render a mapping/state variable as a compact declaration/access map."""
     all_edges = index.get("edges") or []
-    print(f"MAPPING: {selected.get('qualified_name') or selected.get('name', '?')}")
+    heading = "MAPPING" if selected.get("kind") == "mapping" else "STATE VARIABLE"
+    print(f"{heading}: {selected.get('qualified_name') or selected.get('name', '?')}")
     print()
     print("TYPE")
     print(f"  {selected.get('type') or 'unknown'}")
-    print()
     if selected.get("mapping_keys"):
+        print()
         print("KEY TYPES")
         print("  " + " -> ".join(selected["mapping_keys"]))
-        print()
+    print()
     print("DECLARED")
     print(f"  {_location(selected)}")
 
@@ -524,6 +525,13 @@ def _render_mapping_view(
     read_edges = [edge for edge in access_edges if edge.get("kind") in {"READS", "TRANSIENT_READS"}]
     write_edges = [edge for edge in access_edges if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES"}]
 
+    key_examples = sorted({str(edge.get("access_path")) for edge in access_edges if edge.get("access_path")})
+    if key_examples:
+        print()
+        print("KEY EXAMPLES")
+        for example in key_examples[:limit]:
+            print(f"  ├── {example}")
+
     def render_access(heading: str, values: list[dict[str, Any]]) -> None:
         if not values:
             return
@@ -537,9 +545,6 @@ def _render_mapping_view(
                 continue
             seen.add(label)
             print(f"  ├── {label}")
-            access_path = edge.get("access_path")
-            if access_path:
-                print(f"  │   {access_path}")
             if len(seen) >= limit:
                 break
 
@@ -551,23 +556,16 @@ def _render_mapping_view(
         struct_nodes = [
             item for item in nodes.values()
             if item.get("kind") == "struct"
-            and (
-                item.get("name") == value_type
-                or (item.get("qualified_name") or "").endswith("." + value_type)
-            )
+            and (item.get("name") == value_type or (item.get("qualified_name") or "").endswith("." + value_type))
             and item.get("contract") == selected.get("contract")
         ]
         if not struct_nodes:
-            struct_nodes = [
-                item for item in nodes.values()
-                if item.get("kind") == "struct" and item.get("name") == value_type
-            ]
+            struct_nodes = [item for item in nodes.values() if item.get("kind") == "struct" and item.get("name") == value_type]
         if struct_nodes:
             struct_node = struct_nodes[0]
             fields = [
                 nodes[edge["to"]] for edge in all_edges
-                if edge.get("kind") == "DECLARES"
-                and edge.get("from") == struct_node.get("id")
+                if edge.get("kind") == "DECLARES" and edge.get("from") == struct_node.get("id")
                 and edge.get("to") in nodes
             ]
             print()
@@ -577,7 +575,8 @@ def _render_mapping_view(
             if len(fields) > limit:
                 print(f"  └── ... {len(fields) - limit} more")
     print()
-    print("NOTE: mapping key examples are source expressions, not computed EVM storage slots.")
+    if selected.get("kind") == "mapping":
+        print("NOTE: key expressions are source-level access paths, not computed EVM storage slots.")
     _print_inventory_warning(index)
 
 
@@ -676,7 +675,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         _render_contract_overview(selected, index, nodes, limit=min(limit, 24))
     elif selected.get("kind") == "contract":
         # Explicit filters remain detailed: they are intentional drill-downs.
-        declared = [edge for edge in edges if edge.get("kind") == "DECLARES"]
+        declared = [edge for edge in (index.get("edges") or []) if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]]
         for title, kinds in (
             ("FUNCTIONS", {"function"}),
             ("STORAGE", {"mapping", "state_variable", "function_pointer"}),
@@ -696,6 +695,11 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             item["id"] for item in nodes.values()
             if item.get("kind") in {"function", "modifier"} and item.get("contract") in related_contracts
         }
+        if only == "writes":
+            related_contract_ids = {item["id"] for item in nodes.values() if item.get("kind") == "contract" and item.get("name") in related_contracts}
+            constructor_ids = {item["id"] for item in nodes.values() if item.get("kind") == "function" and item.get("name") == "constructor" and item.get("contract") in related_contracts}
+            initializers = [edge for edge in (index.get("edges") or []) if edge.get("kind") == "INITIALIZES" and (edge.get("from") in related_contract_ids or edge.get("from") in constructor_ids)]
+            _render_edges("STATE INITIALIZERS", initializers[:limit], nodes)
         contract_edges = [edge for edge in index.get("edges") or [] if edge.get("from") in related_functions]
         if only in (None, "calls"):
             _render_edges("INTERNAL CALLS", [edge for edge in contract_edges if edge.get("kind") == "CALLS"][:limit], nodes)
