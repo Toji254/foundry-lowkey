@@ -331,6 +331,12 @@ class SourceIndexTests(unittest.TestCase):
         positions_node = mapping[0]
         self.assertTrue(any(edge["kind"] == "ALIASES_STORAGE" and edge["from"] == alias_function["id"] and edge["to"] == positions_node["id"] and edge.get("alias") == "p" and edge.get("keys") == ["user", "1"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == alias_function["id"] and edge["to"] == debt_field["id"] and edge.get("alias") == "p" for edge in edges))
+        self.assertTrue(any(
+            edge["kind"] == "WRITES" and edge["from"] == alias_function["id"]
+            and edge.get("access_path") == "positions[user][1].debt"
+            and edge.get("evidence") == "STORAGE_ALIAS_RESOLUTION"
+            for edge in edges
+        ))
         self.assertTrue(any(edge["kind"] == "READS" and nodes.get(edge["from"], {}).get("name") == "getPosition" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges))
 
@@ -417,8 +423,8 @@ class SourceIndexTests(unittest.TestCase):
         edges = index["edges"]
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == invoke["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == stored["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
-        self.assertTrue(any(edge["kind"] == "UNRESOLVED_STORAGE" and edge.get("operation") == "sstore" for edge in edges))
-        self.assertTrue(any(edge["kind"] == "UNRESOLVED_STORAGE" and edge.get("operation") == "tstore" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge.get("operation") == "sstore" and edge.get("persistence") == "persistent" and edge["resolution"] == "UNRESOLVED" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "TRANSIENT_WRITES" and edge.get("operation") == "tstore" and edge.get("persistence") == "transient" and edge["resolution"] == "UNRESOLVED" for edge in edges))
         self.assertTrue(any(edge["kind"] == "EXTERNAL_CALL" and edge.get("operation") == "call" and edge["from"] == next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.rawStorageWrite()")["id"] for edge in edges))
         raw_storage = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.rawStorageWrite()")
         self.assertTrue(any(edge["kind"] == "ASSET_FLOW" and edge["from"] == raw_storage["id"] and edge.get("operation") == "selfdestruct" and edge.get("direction") == "unresolved" and edge.get("status") == "ASSEMBLY_UNRESOLVED" for edge in edges))
@@ -435,6 +441,90 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["to"] == amounts["id"] and edge["from"] == update_array["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["to"] == amounts["id"] and edge["from"] == remove_array["id"] for edge in edges))
         self.assertTrue(any(edge["kind"] == "READS" and edge["to"] == amounts["id"] and edge["from"] == remove_array["id"] for edge in edges))
+
+    def test_mutation_inventory_covers_initializers_constructors_modifiers_arrays_deletes_and_transient_state(self):
+        temporary, root = self.fixture()
+        try:
+            self.write(
+                root,
+                "src/MutationVault.sol",
+                """
+                pragma solidity ^0.8.28;
+                contract MutationVault {
+                    struct Position { uint256 debt; }
+                    uint256 public totalSupply = 100;
+                    address public owner;
+                    uint256 public lastCheckpoint;
+                    uint256 transient transientCounter;
+                    uint256[] public queue;
+                    mapping(address => mapping(uint256 => Position)) public positions;
+
+                    modifier checkpoint() {
+                        lastCheckpoint = block.timestamp;
+                        _;
+                    }
+
+                    constructor() {
+                        owner = msg.sender;
+                    }
+
+                    function update(uint256 id, uint256 amount) external checkpoint {
+                        Position storage p = positions[msg.sender][id];
+                        p.debt -= amount;
+                        queue.push(amount);
+                        transientCounter += 1;
+                    }
+
+                    function clear(uint256 id) external {
+                        delete positions[msg.sender][id];
+                        queue.pop();
+                    }
+
+                    function rawTransient() external {
+                        assembly {
+                            tstore(0, 1)
+                            sstore(0, 2)
+                        }
+                    }
+
+                    function memoryOnly() external pure {
+                        uint256 localValue = 1;
+                        localValue = 2;
+                    }
+                }
+                """,
+            )
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        nodes = {item["id"]: item for item in index["nodes"]}
+        edges = index["edges"]
+        total_supply = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.totalSupply")
+        owner = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.owner")
+        positions = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.positions")
+        queue = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.queue")
+        transient_counter = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.transientCounter")
+        constructor = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.constructor()")
+        update = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.update(uint256,uint256)")
+        clear = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.clear(uint256)")
+        memory_only = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.memoryOnly()")
+        modifier = next(item for item in nodes.values() if item.get("qualified_name") == "MutationVault.checkpoint()")
+
+        self.assertEqual(total_supply.get("storage_class"), "persistent")
+        self.assertTrue(any(edge["kind"] == "INITIALIZES" and edge["to"] == total_supply["id"] and edge.get("operation") == "INITIALIZER" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == constructor["id"] and edge["to"] == owner["id"] for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == modifier["id"] and edge["to"] == next(item["id"] for item in nodes.values() if item.get("qualified_name") == "MutationVault.lastCheckpoint") for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update["id"] and edge["to"] == positions["id"] and edge.get("access_path") == "positions[msg.sender][id].debt" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "DELETES" and edge["from"] == clear["id"] and edge["to"] == positions["id"] and edge.get("access_path") == "positions[msg.sender][id]" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update["id"] and edge["to"] == queue["id"] and edge.get("operation") == "array.push" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == clear["id"] and edge["to"] == queue["id"] and edge.get("operation") == "array.pop" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "TRANSIENT_WRITES" and edge["from"] == update["id"] and edge["to"] == transient_counter["id"] for edge in edges))
+        self.assertTrue(any(edge["kind"] == "TRANSIENT_WRITES" and edge["operation"] == "tstore" and edge["persistence"] == "transient" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["operation"] == "sstore" and edge["persistence"] == "persistent" and edge["resolution"] == "UNRESOLVED" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update["id"] and edge["to"] == transient_counter["id"] and edge.get("via", [])[0] == update["id"] for edge in edges))
+        storage_ids = {positions["id"], queue["id"], owner["id"], total_supply["id"], transient_counter["id"]}
+        self.assertFalse(any(edge["from"] == memory_only["id"] and edge["to"] in storage_ids and edge["kind"] in {"WRITES", "DELETES", "TRANSIENT_WRITES"} for edge in edges))
 
     def test_comments_do_not_create_call_or_storage_edges(self):
         temporary, root = self.fixture()
