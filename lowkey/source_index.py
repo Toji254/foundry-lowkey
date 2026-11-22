@@ -20,8 +20,13 @@ try:
 except ImportError:  # pragma: no cover - package-style import
     from lowkey import project_tools
 
+try:
+    import source_ast
+except ImportError:  # older partial installations retain lexical-only behavior
+    source_ast = None
 
-CACHE_VERSION = 9
+
+CACHE_VERSION = 10
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -722,6 +727,18 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         })
     root_manifest.sort(key=lambda item: item["path"])
 
+    try:
+        ast_build_manifest = (
+            source_ast.build_info_manifest(root_path)
+            if source_ast is not None
+            else {"directory_present": False, "files": [], "skipped": []}
+        )
+    except Exception as error:
+        ast_build_manifest = {
+            "directory_present": False, "files": [],
+            "skipped": [{"reason": f"manifest failed: {error}"}],
+        }
+
     resolution_inputs: dict[str, str] = {}
     for config_name in ("remappings.txt", "soldeer.lock", ".gitmodules"):
         try:
@@ -736,6 +753,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         "foundry_profile": os.environ.get("FOUNDRY_PROFILE", "default"),
         "resolution_inputs": resolution_inputs,
         "root_manifest": root_manifest,
+        "solc_build_info_manifest": ast_build_manifest,
     }
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1277,7 +1295,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 functions.append(func)
                 function_by_scope_name.setdefault((name, function_name), []).append(func)
                 add_node({
-                    **{key: value for key, value in func.items() if key not in {"header", "body", "source_offset", "body_start", "body_end"}},
+                    **{key: value for key, value in func.items() if key not in {"header", "body", "body_start", "body_end"}},
                     "evidence": "LEXICAL_SOURCE",
                 })
                 edges.append(_edge("DECLARES", contract_id, function_id, path, source, function_match.start()))
@@ -2364,6 +2382,20 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                             detail="Assembly contains a potentially value-moving EVM operation; decode operands and runtime context before assigning asset direction.",
                         ))
 
+    # Compiler AST declaration references override resolved lexical call edges
+    # when Foundry build-info is available and its embedded source is current.
+    source_by_path = {display: content for display, content, _path in source_units}
+    if source_ast is not None:
+        ast_report = source_ast.apply_solc_ast_call_edges(
+            root_path, source_by_path, nodes, edges, functions,
+        )
+    else:
+        ast_report = {
+            "available": False, "build_info_files": 0, "matched_units": 0,
+            "stale_units": 0, "functions": 0, "call_edges": 0,
+            "modifier_edges": 0, "warnings": ["AST resolver is not installed; lexical analysis used."],
+        }
+
     # Add inferred storage/asset relationships through bounded internal call chains.
     direct_calls: dict[str, list[dict[str, Any]]] = {}
     for item in edges:
@@ -2455,7 +2487,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     index = {
         "schema_version": CACHE_VERSION,
         "root": str(root_path),
-        "parser": "LEXICAL",
+        "parser": "SOLC_AST+LEXICAL" if ast_report.get("functions") else "LEXICAL",
+        "ast": ast_report,
         "analysis_mode": "STATIC_SOURCE",
         "mutation_semantics": "POTENTIAL_PATHS_NOT_RUNTIME_OBSERVATIONS",
         "nodes": nodes,
@@ -2485,6 +2518,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "schema_version": index["schema_version"],
             "root": index["root"],
             "parser": index["parser"],
+            "ast": ast_report,
+            "analysis_mode": index["analysis_mode"],
+            "mutation_semantics": index["mutation_semantics"],
             "nodes": nodes,
             "edges": edges,
             "summary": index["summary"],
