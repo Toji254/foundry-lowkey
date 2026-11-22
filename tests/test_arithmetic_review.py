@@ -338,5 +338,34 @@ class ArithmeticReviewTests(unittest.TestCase):
             self.assertEqual(stages["slither-analysis"]["status"], "blocked")
 
 
+    def test_godmode_blocks_test_only_inventory_as_no_application_source(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import io
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            test_dir = root / "test"
+            test_dir.mkdir()
+            (test_dir / "OnlyTest.sol").write_text(
+                "pragma solidity ^0.8.20; contract OnlyTest {}", encoding="utf-8"
+            )
+            with patch.object(
+                godmode,
+                "_run_slither_analysis",
+                return_value=({"name": "slither-analysis", "status": "skipped", "reason": "not installed"}, []),
+            ), redirect_stdout(io.StringIO()):
+                result = godmode.godmode(["--root", str(root), "--plan-only"])
+
+            report = json.loads((root / ".audit/godmode/latest.json").read_text(encoding="utf-8"))
+            stages = {item["name"]: item for item in report["stages"]}
+            self.assertEqual(result, 2)
+            self.assertFalse(report["source_inventory"]["complete"])
+            self.assertEqual(report["source_inventory"]["source_files_discovered"], 0)
+            self.assertEqual(stages["source-recon"]["status"], "blocked")
+            self.assertEqual(stages["source-security"]["status"], "blocked")
+
+
 if __name__ == "__main__":
     unittest.main()

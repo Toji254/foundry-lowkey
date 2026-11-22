@@ -2068,8 +2068,17 @@ def _collect_source_inventory(root: str | Path, *, include_tests: bool = True) -
         else:
             walk(project)
 
-    if not discovered and not failures:
-        record(project, "source-discovery", "No supported source files were discovered.", scope="project")
+    source_discovered = [
+        item for item in discovered
+        if not (set(Path(item).parts[:-1]) & _SOURCE_TEST_PARTS)
+    ]
+    if not source_discovered and not failures:
+        record(
+            project,
+            "source-discovery",
+            "No in-scope first-party source files were discovered outside tests, scripts, fixtures, and mocks.",
+            scope="project",
+        )
 
     inspected.sort(key=lambda item: relative(item).casefold())
     discovered.sort(key=str.casefold)
@@ -2092,12 +2101,13 @@ def _inventory_paths(inventory: dict[str, Any], *, include_tests: bool = False) 
 
 
 def _source_inventory_status(inventory: dict[str, Any]) -> str:
-    """completed only when every in-scope source candidate was inspected."""
-    if not inventory.get("failures"):
-        return "completed"
-    if not inventory.get("files"):
+    """Return completed only when at least one in-scope source exists and all were read."""
+    source_files = _inventory_paths(inventory, include_tests=False)
+    if not source_files:
         return "blocked"
-    return "review"
+    if inventory.get("failures"):
+        return "review"
+    return "completed"
 
 
 def _source_inventory_report(inventory: dict[str, Any]) -> dict[str, Any]:
@@ -2108,13 +2118,15 @@ def _source_inventory_report(inventory: dict[str, Any]) -> dict[str, Any]:
         if item != "."
         and not (set(Path(item).parts[:-1]) & _SOURCE_TEST_PARTS)
     ]
+    source_inspected = len(_inventory_paths(inventory, include_tests=False))
+    complete = not failures and bool(source_discovered) and source_inspected == len(source_discovered)
     return {
         "root": str(inventory.get("root") or ""),
-        "complete": not failures,
+        "complete": complete,
         "files_discovered": len(discovered_paths),
         "files_inspected": len(inventory.get("files") or []),
         "source_files_discovered": len(source_discovered),
-        "source_files_inspected": len(_inventory_paths(inventory, include_tests=False)),
+        "source_files_inspected": source_inspected,
         "bytes_read": int(inventory.get("bytes_read") or 0),
         "uninspected_count": len(failures),
         "uninspected": failures,
