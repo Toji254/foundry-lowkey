@@ -175,6 +175,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
     print("LOWKEY // SOURCE LINK")
     print(f"TARGET    {_symbol_label(selected)}")
     print(f"SOURCE    {_location(selected)}")
+    if selected.get("provenance"):
+        print(f"ORIGIN    {str(selected['provenance']).upper()}")
     print(f"KIND      {selected.get('kind', 'symbol').upper()}")
     print(f"EVIDENCE  {index.get('parser', 'UNKNOWN')} static source analysis (not runtime execution)")
     print(f"CACHE     {(index.get('cache') or {}).get('status', 'UNKNOWN')}")
