@@ -197,7 +197,18 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             item["id"] for item in nodes.values()
             if item.get("kind") == "function" and item.get("contract") == selected.get("name")
         }
-        contract_edges = [edge for edge in edges if edge.get("from") in related_functions]
+        contract_edges = [
+            edge for edge in (index.get("edges") or [])
+            if edge.get("from") in related_functions
+        ]
+        # Include direct function relationships in the contract overview. A
+        # larger --depth additionally exposes nested helper relationships.
+        if depth > 1:
+            contract_edges.extend(
+                edge for edge in edges
+                if edge.get("from") not in related_functions
+                and edge.get("kind") in {"CALLS", "READS", "WRITES", "ASSET_FLOW", "EXTERNAL_CALL"}
+            )
         calls = [edge for edge in contract_edges if edge.get("kind") == "CALLS"]
         storage_reads = [edge for edge in contract_edges if edge.get("kind") == "READS"]
         storage_writes = [edge for edge in contract_edges if edge.get("kind") == "WRITES"]
@@ -207,9 +218,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             _render_edges("STORAGE READS", storage_reads[:limit], nodes)
             _render_edges("STORAGE WRITES", storage_writes[:limit], nodes)
         extras = [
-            edge for edge in index.get("edges") or []
-            if edge.get("from") in related_functions
-            and edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}
+            edge for edge in contract_edges
+            if edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}
             and (only is None or edge.get("kind") in ONLY_KINDS.get(only, set()))
         ]
         _render_edges("EXTERNAL INTERACTIONS / ASSET PATHS", extras[:limit], nodes)
@@ -254,6 +264,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         struct_ids = {edge.get("to") for edge in type_edges}
         struct_fields = [edge for edge in index.get("edges") or [] if edge.get("kind") == "DECLARES" and edge.get("from") in struct_ids]
         _render_edges("STRUCT FIELDS", struct_fields, nodes)
+        if selected.get("mapping_keys"):
+            print("MAPPING KEYS       " + " -> ".join(selected["mapping_keys"]))
         if selected.get("mapping_value_type"):
             print(f"MAPPING VALUE TYPE  {selected['mapping_value_type']}")
             print("NOTE: declared mapping type is not a runtime storage-slot calculation.")
