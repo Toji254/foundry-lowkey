@@ -252,6 +252,51 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(recursive_status, 0)
         self.assertIn("recursive cycle; traversal stopped", recursive_output.getvalue())
 
+    def test_constant_immutable_and_transient_views_are_labeled_separately(self):
+        temporary, root = self.fixture()
+        try:
+            (root / "src" / "ValueKinds.sol").write_text(
+                """
+                pragma solidity ^0.8.20;
+                contract ValueKinds {
+                    uint256 public constant SCALE = 1e18;
+                    uint256 public immutable deployedAt;
+                    uint256 transient transientCounter;
+
+                    constructor() {
+                        deployedAt = block.timestamp;
+                    }
+
+                    function readValues() external view returns (uint256) {
+                        return SCALE + deployedAt + transientCounter;
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            index = self._index(root)
+            variable_output = io.StringIO()
+            with contextlib.redirect_stdout(variable_output):
+                variable_status = render_link(index, "ValueKinds.deployedAt")
+            contract_output = io.StringIO()
+            with contextlib.redirect_stdout(contract_output):
+                contract_status = render_link(index, "ValueKinds")
+            function_output = io.StringIO()
+            with contextlib.redirect_stdout(function_output):
+                function_status = render_link(index, "ValueKinds.readValues()")
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(variable_status, 0)
+        self.assertIn("PERSISTENCE IMMUTABLE", variable_output.getvalue())
+        self.assertIn("not an ordinary persistent EVM storage slot", variable_output.getvalue())
+        self.assertEqual(contract_status, 0)
+        self.assertIn("CONSTANTS / IMMUTABLES", contract_output.getvalue())
+        self.assertIn("STORAGE", contract_output.getvalue())
+        self.assertEqual(function_status, 0)
+        self.assertIn("CONSTANT REFERENCES", function_output.getvalue())
+        self.assertIn("IMMUTABLE REFERENCES", function_output.getvalue())
+
     def test_flow_filter_separates_payable_capability_from_eth_out(self):
         temporary, root = self.fixture()
         try:
