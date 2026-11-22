@@ -105,6 +105,11 @@ class SourceIndexTests(unittest.TestCase):
                     positions[user][1].debt -= amount;
                 }
 
+                function _updateViaAlias(address user, uint256 amount) internal {
+                    Position storage p = positions[user][1];
+                    p.debt += amount;
+                }
+
                 function getPosition(address user) external view returns (uint256) {
                     return positions[user][1].debt;
                 }
@@ -182,6 +187,10 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id for edge in edges))
         debt_field = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.Position.debt")
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id and edge["to"] == debt_field["id"] for edge in edges))
+        alias_function = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault._updateViaAlias(address,uint256)")
+        positions_node = mapping[0]
+        self.assertTrue(any(edge["kind"] == "ALIASES_STORAGE" and edge["from"] == alias_function["id"] and edge["to"] == positions_node["id"] and edge.get("alias") == "p" and edge.get("keys") == ["user", "1"] for edge in edges))
+        self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == alias_function["id"] and edge["to"] == debt_field["id"] and edge.get("alias") == "p" for edge in edges))
         self.assertTrue(any(edge["kind"] == "READS" and nodes.get(edge["from"], {}).get("name") == "getPosition" for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == withdraw_id and edge["resolution"] == "INFERRED" for edge in edges))
 
