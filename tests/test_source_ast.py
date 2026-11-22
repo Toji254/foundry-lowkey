@@ -635,8 +635,8 @@ class SourceAstTests(unittest.TestCase):
             ("test-build", 2): immutable,
         }
 
-        def identifier(name: str, declaration: int) -> dict:
-            start = source.index(name)
+        def identifier(name: str, declaration: int, start_after: int = 0) -> dict:
+            start = source.index(name, start_after)
             return {
                 "nodeType": "Identifier",
                 "name": name,
@@ -654,7 +654,7 @@ class SourceAstTests(unittest.TestCase):
                         "nodeType": "BinaryOperation",
                         "operator": "+",
                         "leftExpression": identifier("SCALE", 1),
-                        "rightExpression": identifier("deployedAt", 2),
+                        "rightExpression": identifier("deployedAt", 2, source.index("SCALE")),
                     },
                 }],
             },
@@ -669,7 +669,7 @@ class SourceAstTests(unittest.TestCase):
                     "expression": {
                         "nodeType": "Assignment",
                         "operator": "=",
-                        "leftHandSide": identifier("deployedAt", 2),
+                        "leftHandSide": identifier("deployedAt", 2, constructor_start),
                         "rightHandSide": {
                             "nodeType": "Literal",
                             "value": "1",
