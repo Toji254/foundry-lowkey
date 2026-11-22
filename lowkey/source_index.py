@@ -1890,13 +1890,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
 
         for variable in accessible_state:
             if accessible_name_counts.get(variable["name"], 0) > 1:
-                # A state name is shadowed across the inheritance boundary.
-                # Do not guess which storage declaration the unqualified name uses.
                 continue
             if variable["name"] in params_shadow:
                 continue
             if _has_local_shadow(body, variable["name"]):
-                # A same-named local declaration shadows state. Do not guess.
                 continue
             access_pattern = re.compile(rf"\b{re.escape(variable['name'])}\b")
             for access in access_pattern.finditer(body):
@@ -1926,10 +1923,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         while cursor < len(body) and body[cursor].isspace():
                             cursor += 1
                 before = body[max(0, access.start() - 12):access.start()]
-                after = body[cursor:cursor + 4]
-                assignment = re.match(r"(\\*\\*=|<<=|>>=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
-                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
-                deletion = re.search(r"\\bdelete\\s*$", before)
+                after = body[cursor:cursor + 5]
+                assignment = re.match(r"(\*\*=|<<=|>>=|\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
+                deletion = re.search(r"\bdelete\s*$", before)
                 array_mutation = member_name in {"push", "pop"}
                 is_write = bool(assignment or prefix_assignment or deletion or array_mutation)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or member_name == "pop"
@@ -1961,11 +1958,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         member=member_name, access_path=access_path,
                         resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                         evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
-                        operation=operation, mutation_kind=(
+                        operation=operation,
+                        mutation_kind=(
                             "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
-                            else "READ"
-                        ), persistence=persistence,
+                            else "COMPOUND_ASSIGNMENT" if is_compound
+                            else "ASSIGNMENT" if is_write else "READ"
+                        ),
+                        persistence=persistence,
                     ))
                     struct_type = variable.get("mapping_value_type") or variable.get("type")
                     struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type or "")
@@ -1980,11 +1979,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                                 member=member_name, access_path=access_path,
                                 resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                                 evidence="LEXICAL_SOURCE" if variable["contract"] == scope else "INHERITED_STORAGE_RESOLUTION",
-                        operation=operation, mutation_kind=(
-                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
-                            else "READ"
-                        ), persistence=persistence,
+                                operation=operation,
+                                mutation_kind=(
+                                    "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
+                                    else "COMPOUND_ASSIGNMENT" if is_compound
+                                    else "ASSIGNMENT" if is_write else "READ"
+                                ),
+                                persistence=persistence,
                             ))
 
         for emitted in re.finditer(r"\bemit\s+([A-Za-z_]\w*)\s*\(", body):
