@@ -229,6 +229,7 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertIn("cairo", output.lower())
             self.assertIn("Unclassified source units", output)
             self.assertIn("Solidity low-level call-site counts are not applicable", output)
+            self.assertIn("build=yes, tests=yes", output)
             self.assertIn("lk audit", output)
             self.assertNotIn("lk sources --scope application", output)
             self.assertNotIn("Solidity source files", output)
