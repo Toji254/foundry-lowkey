@@ -838,6 +838,11 @@ def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]
     if positional:
         request.function, request.args = positional[0], positional[1:]
     else:
+        # Reject an incomplete PoC before looking up a recorded/global send.
+        # A missing impact assertion must not trigger transaction lookup.
+        if kind == "poc" and not request.impact_assertion:
+            return request
+
         latest = _request_from_latest(root, expected_target=request.target)
         if latest:
             latest.output = request.output

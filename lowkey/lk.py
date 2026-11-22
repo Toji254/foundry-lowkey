@@ -13681,11 +13681,41 @@ def _lab_workspace_remembered_targets(config):
     if discover_nested_projects is None:
         return []
 
-    # A workspace does not need a package-manager manifest to contain related
-    # projects. Walk upward only until the nearest ancestor that actually
-    # discovers this project alongside at least one sibling project.
+    # Prefer an explicitly marked workspace when one exists. This performs
+    # only ancestor marker checks and avoids repeatedly walking broad folders.
+    explicit_workspace = None
+    if workspace_root is not None:
+        try:
+            candidate = Path(workspace_root(active_root)).expanduser().resolve()
+            if candidate != active_root:
+                active_root.relative_to(candidate)
+                explicit_workspace = candidate
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+
+    search_roots = []
+    if explicit_workspace is not None:
+        search_roots = [explicit_workspace]
+    else:
+        # Markerless workspaces are still supported, but only inspect nearby
+        # project containers. Never recursively scan /, the system temp root,
+        # or the user's entire home directory.
+        protected_ancestors = {
+            Path("/").resolve(),
+            Path(tempfile.gettempdir()).expanduser().resolve(),
+            Path.home().expanduser().resolve(),
+        }
+
+        for parent in active_root.parents:
+            parent = parent.resolve()
+            if parent in protected_ancestors:
+                break
+            search_roots.append(parent)
+            if len(search_roots) >= 4:
+                break
+
     workspace_projects = []
-    for parent in active_root.parents:
+    for parent in search_roots:
         try:
             discovered = discover_nested_projects(parent, max_depth=4)
         except (OSError, TypeError, ValueError):

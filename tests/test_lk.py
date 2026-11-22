@@ -3350,12 +3350,16 @@ contract Pool {
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             with patch.object(lk.subprocess, "run", return_value=completed), \
-                 patch.object(lk, "cast_output", side_effect=fake_cast):
+                 patch.object(lk, "cast_output", side_effect=fake_cast), \
+                 patch.object(
+                     lk, "_lab_review_deployment", return_value="deploy"
+                 ) as review:
                 address, reason = lk._deploy_artifact_locally(
                     {}, root, "http://127.0.0.1:8545",
                     [sender], artifact, [],
                 )
 
+        review.assert_called_once()
         self.assertEqual(address, deployed)
         self.assertIsNone(reason)
 
@@ -8516,6 +8520,72 @@ def withdraw(amount: uint256):
         self.assertNotIn(stale, display_config["labels"])
         self.assertNotIn(target, display_config["labels"])
         self.assertEqual(config["labels"], {})
+
+    def test_lab_workspace_remembered_targets_skips_temp_directory_ancestor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            active_root = pathlib.Path(tmp).resolve()
+            config = {"_lab_system_root": str(active_root)}
+
+            with patch.object(
+                lk.audit_context,
+                "foundry_project_root",
+                return_value=active_root,
+            ), patch.object(lk, "discover_nested_projects") as discover:
+                remembered = lk._lab_workspace_remembered_targets(config)
+
+        self.assertEqual(remembered, [])
+        discover.assert_not_called()
+
+    def test_lab_workspace_remembered_targets_discovers_markerless_siblings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = pathlib.Path(tmp) / "workspace"
+            active_root = workspace / "Active"
+            sibling_root = workspace / "Sibling"
+
+            active_root.mkdir(parents=True)
+            sibling_root.mkdir()
+
+            for project_root in (active_root, sibling_root):
+                (project_root / "foundry.toml").write_text(
+                    "[profile.default]\\n",
+                    encoding="utf-8",
+                )
+                source = project_root / "src"
+                source.mkdir()
+                (source / "Example.sol").write_text(
+                    "pragma solidity ^0.8.20; contract Example {}\\n",
+                    encoding="utf-8",
+                )
+
+            sibling_address = "0x" + "1" * 40
+
+            def project_target(root):
+                if pathlib.Path(root).resolve() == sibling_root.resolve():
+                    return {
+                        "address": sibling_address,
+                        "contract": "SiblingExample",
+                    }
+                return None
+
+            config = {"_lab_system_root": str(active_root)}
+
+            with patch.object(
+                lk.audit_context,
+                "foundry_project_root",
+                return_value=active_root,
+            ), patch.object(
+                lk,
+                "project_context_target",
+                side_effect=project_target,
+            ):
+                remembered = lk._lab_workspace_remembered_targets(config)
+
+        self.assertEqual(len(remembered), 1)
+        self.assertEqual(remembered[0]["address"], sibling_address)
+        self.assertEqual(
+            pathlib.Path(remembered[0]["root"]).resolve(),
+            sibling_root.resolve(),
+        )
 
     def test_tx_output_explains_origin_and_intermediary_msg_sender(self):
         origin = "0x" + "1" * 40
