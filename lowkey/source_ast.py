@@ -607,7 +607,51 @@ def apply_solc_ast_call_edges(
         except (TypeError, ValueError):
             pass
 
-        for child in contract_ast.get("nodes") or []:
+        contract_children = contract_ast.get("nodes") or []
+        state_candidates = [
+            item for item in nodes
+            if item.get("file") == unit["path"]
+            and item.get("contract") == contract_name
+            and item.get("kind") in {"mapping", "state_variable", "function_pointer"}
+        ]
+        for child in contract_children:
+            if not isinstance(child, dict):
+                continue
+            if child.get("nodeType") == "VariableDeclaration" and child.get("stateVariable"):
+                graph_storage = _match_storage_declaration(
+                    state_candidates, path=unit["path"], contract=contract_name,
+                    name=str(child.get("name") or ""), ast_node=child,
+                    source=unit["source"],
+                )
+                if graph_storage is not None:
+                    try:
+                        declaration_map[(unit["build_info"], int(child.get("id")))] = graph_storage
+                    except (TypeError, ValueError):
+                        pass
+            elif child.get("nodeType") == "StructDefinition":
+                struct_name = str(child.get("name") or "")
+                field_candidates = [
+                    item for item in nodes
+                    if item.get("kind") == "struct_field"
+                    and item.get("file") == unit["path"]
+                    and item.get("contract") == contract_name
+                    and item.get("struct") == struct_name
+                ]
+                for member in child.get("members") or []:
+                    if not isinstance(member, dict) or member.get("nodeType") != "VariableDeclaration":
+                        continue
+                    graph_field = _match_storage_declaration(
+                        field_candidates, path=unit["path"], contract=contract_name,
+                        name=str(member.get("name") or ""), ast_node=member,
+                        source=unit["source"],
+                    )
+                    if graph_field is not None:
+                        try:
+                            declaration_map[(unit["build_info"], int(member.get("id")))] = graph_field
+                        except (TypeError, ValueError):
+                            pass
+
+        for child in contract_children:
             if not isinstance(child, dict):
                 continue
             if child.get("nodeType") not in {"FunctionDefinition", "ModifierDefinition"}:
@@ -658,6 +702,7 @@ def apply_solc_ast_call_edges(
             "functions": 0,
             "call_edges": 0,
             "modifier_edges": 0,
+            "storage_edges": 0,
             "warnings": warnings,
         }
 
@@ -665,6 +710,7 @@ def apply_solc_ast_call_edges(
     ast_sites: set[tuple[str, str, int, int, str, str]] = set()
     ast_call_edges = 0
     ast_modifier_edges = 0
+    ast_storage_edges = 0
 
     for record in ast_function_records:
         function_ast = record["ast"]
@@ -764,6 +810,10 @@ def apply_solc_ast_call_edges(
                 walk(child)
 
         walk(function_ast)
+        ast_storage_edges += _emit_ast_storage_effects(
+            function_ast, caller, unit=unit,
+            declarations=declaration_map, edges=edges,
+        )
 
     # Remove a lexical relationship only when an AST-resolved declaration
     # occupies the same caller/source site. This also corrects a lexical edge
@@ -789,9 +839,39 @@ def apply_solc_ast_call_edges(
         )
         lexical_line_counts[bucket] = lexical_line_counts.get(bucket, 0) + 1
 
+    ast_storage_sites = {
+        (
+            edge.get("from"),
+            str((edge.get("source") or {}).get("file") or ""),
+            int((edge.get("source") or {}).get("line") or 0),
+            int((edge.get("source") or {}).get("column") or 0),
+        )
+        for edge in edges
+        if edge.get("evidence") in {
+            "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+        }
+    }
+
     filtered_edges = []
     for edge in edges:
         source_ref = edge.get("source") or {}
+        storage_site = (
+            edge.get("from"),
+            str(source_ref.get("file") or ""),
+            int(source_ref.get("line") or 0),
+            int(source_ref.get("column") or 0),
+        )
+        if (
+            edge.get("from") in ast_covered
+            and edge.get("evidence") != "SOLC_AST_STORAGE_DECLARATION_REFERENCE"
+            and edge.get("kind") in {
+                "READS", "WRITES", "DELETES", "MUTATES",
+                "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+                "ALIASES_STORAGE",
+            }
+            and storage_site in ast_storage_sites
+        ):
+            continue
         bucket = (
             str(edge.get("from") or ""),
             str(source_ref.get("file") or ""),
@@ -824,6 +904,7 @@ def apply_solc_ast_call_edges(
         "functions": len(ast_covered),
         "call_edges": ast_call_edges,
         "modifier_edges": ast_modifier_edges,
+        "storage_edges": ast_storage_edges,
         "warnings": warnings + [
             f"Skipped {len(manifest.get('skipped') or [])} build-info file(s) due to configured bounds."
         ] if manifest.get("skipped") else warnings,
