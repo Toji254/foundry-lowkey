@@ -300,6 +300,23 @@ def _has_local_shadow(body: str, name: str) -> bool:
     return bool(pattern.search(body))
 
 
+def _nearest_inherited(
+    candidates: list[dict[str, Any]],
+    ancestor_depths: dict[str, int],
+) -> list[dict[str, Any]]:
+    """Keep only the nearest inherited declaration(s); preserve same-depth ambiguity."""
+    if not candidates:
+        return []
+    nearest = min(
+        ancestor_depths.get(str(item.get("contract")), MAX_TRAVERSAL_DEPTH + 1)
+        for item in candidates
+    )
+    return [
+        item for item in candidates
+        if ancestor_depths.get(str(item.get("contract")), MAX_TRAVERSAL_DEPTH + 1) == nearest
+    ]
+
+
 def _source_ref(path: str, source: str, offset: int) -> dict[str, Any]:
     before = source.rfind("\n", 0, offset)
     return {
@@ -1023,25 +1040,29 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     # Ambiguous parents remain unresolved; no name-based guess is promoted.
     for contract in contracts:
         ancestors: list[str] = []
-        visited: set[str] = set()
+        ancestor_depths: dict[str, int] = {}
 
-        def visit_base(base_name: str) -> None:
-            if base_name in visited:
+        def visit_base(base_name: str, depth: int) -> None:
+            previous = ancestor_depths.get(base_name)
+            if previous is not None and previous <= depth:
                 return
-            visited.add(base_name)
+            ancestor_depths[base_name] = depth
             matches = contract_by_name.get(base_name, [])
             if len(matches) != 1:
                 return
-            ancestors.append(base_name)
+            if base_name not in ancestors:
+                ancestors.append(base_name)
             for parent in matches[0].get("bases") or []:
-                visit_base(parent)
+                visit_base(parent, depth + 1)
 
         for direct_base in contract.get("bases") or []:
-            visit_base(direct_base)
+            visit_base(direct_base, 1)
         contract["ancestors"] = ancestors
+        contract["ancestor_depths"] = ancestor_depths
         for node in nodes:
             if node.get("id") == contract["id"]:
                 node["ancestors"] = ancestors
+                node["ancestor_depths"] = ancestor_depths
                 break
 
     for func in functions:
@@ -1054,6 +1075,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         )
         if owning_contract is not None:
             func["bases"] = list(owning_contract.get("ancestors") or [])
+            func["ancestor_depths"] = dict(owning_contract.get("ancestor_depths") or {})
 
     # Resolve user-defined state and parameter types to a unique contract,
     # interface, library or struct declaration where possible.
@@ -1126,16 +1148,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             if not re.search(r"\boverride\b", func["header"]):
                 continue
-            candidates: list[dict[str, Any]] = []
-            for base_name in contract.get("ancestors", contract["bases"]):
-                candidates = [
-                    inherited for inherited in functions
-                    if inherited["contract"] == base_name
-                    and inherited["kind"] == "function"
-                    and inherited["signature"] == func["signature"]
-                ]
-                if candidates:
-                    break
+            candidates = [
+                inherited for inherited in functions
+                if inherited["contract"] in contract.get("ancestors", contract["bases"])
+                and inherited["kind"] == "function"
+                and inherited["signature"] == func["signature"]
+            ]
+            candidates = _nearest_inherited(candidates, contract.get("ancestor_depths") or {})
             target = candidates[0]["id"] if len(candidates) == 1 else f"override:{contract['name']}.{func['signature']}"
             edges.append(_edge(
                 "OVERRIDES", func["id"], target, func["file"],
