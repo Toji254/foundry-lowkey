@@ -98,6 +98,10 @@ def _selected_edges(
                     other = edge.get("to") if edge.get("from") in frontier else edge.get("from")
                     if other not in visited:
                         next_frontier.add(other)
+                elif node.get("kind") == "contract" and _level == 0 and edge.get("kind") == "DECLARES" and edge.get("from") == node["id"]:
+                    # A contract overview starts traversal from its declared functions.
+                    if edge.get("to") not in visited:
+                        next_frontier.add(edge.get("to"))
         visited.update(next_frontier)
         frontier = next_frontier
         if not frontier:
@@ -183,7 +187,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 print(title)
                 for item in items:
                     print(f"  {_symbol_label(item)}  {_location(item)}")
-        imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"]
+        file_node = next((item for item in nodes.values() if item.get("kind") == "file" and item.get("name") == selected.get("file")), None)
+        file_imports = [edge for edge in (index.get("edges") or []) if file_node and edge.get("kind") == "IMPORTS" and edge.get("from") == file_node.get("id")]
+        imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"] + file_imports
         inheritance = [edge for edge in edges if edge.get("kind") == "INHERITS"]
         _render_edges("INHERITANCE", inheritance, nodes)
         _render_edges("IMPORTS", imports, nodes)
