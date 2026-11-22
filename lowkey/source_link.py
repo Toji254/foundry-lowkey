@@ -274,7 +274,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
         unresolved = [edge for edge in edges if edge.get("resolution") == "UNRESOLVED"]
         _render_edges("UNRESOLVED TARGETS", unresolved[:limit], nodes)
-    elif selected.get("kind") in {"mapping", "state_variable"}:
+    elif selected.get("kind") in {"mapping", "state_variable", "function_pointer"}:
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
             ("WRITTEN BY", "WRITES", "incoming"),
