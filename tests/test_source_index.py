@@ -364,7 +364,7 @@ class SourceIndexTests(unittest.TestCase):
             if item["kind"] == "CALLS" and item["from"] == ambiguous_function["id"]
             and item.get("symbol") == "resolve"
         )
-        self.assertEqual(ambiguous_edge["resolution"], "UNRESOLVED")
+        self.assertEqual(ambiguous_edge["resolution"], "AMBIGUOUS")
         ambiguous_targets = {
             item["id"] for item in index["nodes"]
             if item.get("qualified_name") in {"NameA.resolve(uint256)", "NameB.resolve(uint256)"}
