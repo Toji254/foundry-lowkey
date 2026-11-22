@@ -189,7 +189,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for title, kinds in (
             ("FUNCTIONS", {"function"}),
             ("MODIFIERS", {"modifier"}),
-            ("STORAGE", {"mapping", "state_variable"}),
+            ("STORAGE", {"mapping", "state_variable", "function_pointer"}),
             ("STRUCTURES", {"struct", "struct_field"}),
             ("EVENTS / ERRORS", {"event", "custom_error"}),
         ):
