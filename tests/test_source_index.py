@@ -113,10 +113,12 @@ class SourceIndexTests(unittest.TestCase):
                 struct Position {
                     address owner;
                     uint256 debt;
+                    Status status;
                 }
 
                 mapping(address => mapping(uint256 => Position)) public positions;
                 IERC20 public token;
+                Status public status;
                 uint256 public totalDeposits = 1;
                 address payable public treasury;
                 uint256 internal guard;
@@ -276,6 +278,11 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(find_symbols(index, "Vault.Position.debt"))
         self.assertTrue(find_symbols(index, "Vault.Status"))
         self.assertTrue(find_symbols(index, "Vault.Status.Open"))
+        status_enum = find_symbols(index, "Vault.Status")[0]
+        status_field = find_symbols(index, "Vault.Position.status")[0]
+        status_state = find_symbols(index, "Vault.status")[0]
+        self.assertTrue(any(edge["kind"] == "USES_TYPE" and edge["from"] == status_field["id"] and edge["to"] == status_enum["id"] for edge in index["edges"]))
+        self.assertTrue(any(edge["kind"] == "USES_TYPE" and edge["from"] == status_state["id"] and edge["to"] == status_enum["id"] for edge in index["edges"]))
 
     def test_direct_calls_storage_access_modifiers_and_events_are_linked(self):
         temporary, root = self.fixture()
