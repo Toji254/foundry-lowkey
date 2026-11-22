@@ -211,6 +211,167 @@ class SourceAstTests(unittest.TestCase):
         self.assertEqual(index["parser"], "SOLC_AST+LEXICAL")
         self.assertGreaterEqual(index["ast"]["functions"], 3)
 
+    def test_ast_storage_mapping_write_and_compound_write_are_declaration_resolved(self):
+        temporary = tempfile.TemporaryDirectory()
+        root = pathlib.Path(temporary.name)
+        self._write(root, "foundry.toml", '[profile.default]\nsrc = "src"\n')
+        source = """
+        pragma solidity ^0.8.20;
+        contract StorageVault {
+            mapping(address => uint256) public balances;
+            function set(address user, uint256 amount) external {
+                balances[user] = amount;
+            }
+            function increase(address user, uint256 amount) external {
+                balances[user] += amount;
+            }
+        }
+        """
+        self._write(root, "src/StorageVault.sol", source)
+
+        state_src = self._src(source, "mapping(address => uint256) public balances")
+        set_src = self._src(source, "function set(address user, uint256 amount) external {\n                balances[user] = amount;\n            }")
+        increase_src = self._src(source, "function increase(address user, uint256 amount) external {\n                balances[user] += amount;\n            }")
+
+        def ident(name, referenced, snippet):
+            return {
+                "id": referenced + 100,
+                "nodeType": "Identifier",
+                "name": name,
+                "referencedDeclaration": referenced,
+                "src": self._src(source, snippet),
+            }
+
+        def access_and_assignment(operator, expression):
+            index_access = {
+                "id": 30 if operator == "=" else 40,
+                "nodeType": "IndexAccess",
+                "baseExpression": ident("balances", 10, "balances"),
+                "indexExpression": {
+                    "id": 31 if operator == "=" else 41,
+                    "nodeType": "Identifier",
+                    "name": "user",
+                    "referencedDeclaration": 21 if operator == "=" else 22,
+                    "src": self._src(source, "user", source.index("function set") if operator == "=" else source.index("function increase")),
+                },
+                "src": self._src(source, expression),
+            }
+            assignment_start = source.index(expression)
+            assignment = {
+                "id": 32 if operator == "=" else 42,
+                "nodeType": "Assignment",
+                "operator": operator,
+                "leftHandSide": index_access,
+                "rightHandSide": {
+                    "id": 33 if operator == "=" else 43,
+                    "nodeType": "Identifier",
+                    "name": "amount" if operator == "=" else "amount",
+                    "referencedDeclaration": 23 if operator == "=" else 24,
+                    "src": self._src(source, "amount", assignment_start),
+                },
+                "src": self._src(source, expression + (";" if operator == "=" else ";")),
+            }
+            return {
+                "id": 34 if operator == "=" else 44,
+                "nodeType": "ExpressionStatement",
+                "expression": assignment,
+                "src": self._src(source, expression + ";"),
+            }
+
+        set_expression = "balances[user] = amount"
+        increase_expression = "balances[user] += amount"
+        set_statement = access_and_assignment("=", set_expression)
+        increase_statement = access_and_assignment("+=", increase_expression)
+
+        contract_ast = {
+            "id": 1,
+            "nodeType": "ContractDefinition",
+            "name": "StorageVault",
+            "contractKind": "contract",
+            "src": self._src(source, "contract StorageVault"),
+            "nodes": [
+                {
+                    "id": 10,
+                    "nodeType": "VariableDeclaration",
+                    "name": "balances",
+                    "stateVariable": True,
+                    "visibility": "public",
+                    "src": state_src,
+                },
+                {
+                    "id": 2,
+                    "nodeType": "FunctionDefinition",
+                    "kind": "function",
+                    "name": "set",
+                    "visibility": "external",
+                    "src": set_src,
+                    "body": {
+                        "id": 35,
+                        "nodeType": "Block",
+                        "statements": [set_statement],
+                        "src": self._src(source, "{\n                balances[user] = amount;\n            }"),
+                    },
+                },
+                {
+                    "id": 3,
+                    "nodeType": "FunctionDefinition",
+                    "kind": "function",
+                    "name": "increase",
+                    "visibility": "external",
+                    "src": increase_src,
+                    "body": {
+                        "id": 45,
+                        "nodeType": "Block",
+                        "statements": [increase_statement],
+                        "src": self._src(source, "{\n                balances[user] += amount;\n            }"),
+                    },
+                },
+            ],
+        }
+        build_info = {
+            "id": "storage-test",
+            "solcVersion": "0.8.28",
+            "input": {"sources": {"src/StorageVault.sol": {"content": source}}},
+            "output": {"sources": {"src/StorageVault.sol": {"id": 0, "ast": {
+                "id": 0, "nodeType": "SourceUnit", "src": self._src(source, "pragma solidity"),
+                "nodes": [contract_ast],
+            }}}},
+        }
+        self._write(root, "out/build-info/storage.json", json.dumps(build_info))
+
+        try:
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        balances = find_symbols(index, "StorageVault.balances")[0]
+        setter = find_symbols(index, "StorageVault.set(address,uint256)")[0]
+        increase = find_symbols(index, "StorageVault.increase(address,uint256)")[0]
+        ast_edges = [
+            edge for edge in index["edges"]
+            if edge.get("evidence") == "SOLC_AST_STORAGE_DECLARATION_REFERENCE"
+            and edge.get("to") == balances["id"]
+        ]
+        self.assertTrue(any(
+            edge.get("from") == setter["id"] and edge["kind"] == "WRITES"
+            and edge.get("access_path") == "balances[user]"
+            and edge.get("operation") == "="
+            for edge in ast_edges
+        ))
+        self.assertTrue(any(
+            edge.get("from") == increase["id"] and edge["kind"] == "WRITES"
+            and edge.get("access_path") == "balances[user]"
+            and edge.get("operation") == "+="
+            for edge in ast_edges
+        ))
+        self.assertTrue(any(
+            edge.get("from") == increase["id"] and edge["kind"] == "READS"
+            and edge.get("access_path") == "balances[user]"
+            and edge.get("operation") == "read-for-update"
+            for edge in ast_edges
+        ))
+        self.assertGreaterEqual(index["ast"]["storage_edges"], 3)
+
     def test_stale_build_info_is_rejected_and_lexical_fallback_remains(self):
         temporary, root, _source = self._fixture(stale=True)
         try:
