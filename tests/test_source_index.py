@@ -30,6 +30,7 @@ class SourceIndexTests(unittest.TestCase):
             pragma solidity ^0.8.20;
             interface IERC20 {
                 function transfer(address to, uint256 amount) external returns (bool);
+                function transferFrom(address from, address to, uint256 amount) external returns (bool);
             }
             """,
         )
@@ -77,6 +78,7 @@ class SourceIndexTests(unittest.TestCase):
 
                 mapping(address => mapping(uint256 => Position)) public positions;
                 IERC20 public token;
+                address payable public treasury;
                 uint256 internal guard;
                 function(uint256) external callback;
 
@@ -118,6 +120,18 @@ class SourceIndexTests(unittest.TestCase):
 
                 function transferDirect(address to, uint256 amount) external {
                     token.transfer(to, amount);
+                }
+
+                function externalTransferFrom(address from, address to, uint256 amount) external {
+                    token.transferFrom(from, to, amount);
+                }
+
+                function pullTokenIn(address from, uint256 amount) external {
+                    token.transferFrom(from, address(this), amount);
+                }
+
+                function sendNative(uint256 amount) external {
+                    treasury.transfer(amount);
                 }
 
                 function invokeCallback(function(uint256) external cb, uint256 value) external {
@@ -237,6 +251,14 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["from"] == deposit["id"] and edge["asset"] == "eth" and edge["direction"] == "in" and edge["status"] == "CAPABILITY" for edge in flow_edges))
         self.assertTrue(any(edge["from"] == withdraw["id"] and edge["asset"] == "eth" and edge["direction"] == "out" and edge["status"] == "TRANSFER_ATTEMPT" for edge in flow_edges))
         self.assertTrue(any(edge["from"] == withdraw["id"] and edge["asset"] == "erc20" and edge["direction"] == "out" for edge in flow_edges))
+        direct_transfer = next(item for item in nodes.values() if item.get("qualified_name") == "Vault.transferDirect(address,uint256)")
+        external_pull = next(item for item in nodes.values() if item.get("qualified_name") == "Vault.externalTransferFrom(address,address,uint256)")
+        inbound_pull = next(item for item in nodes.values() if item.get("qualified_name") == "Vault.pullTokenIn(address,uint256)")
+        native_send = next(item for item in nodes.values() if item.get("qualified_name") == "Vault.sendNative(uint256)")
+        self.assertTrue(any(edge["from"] == external_pull["id"] and edge["asset"] == "erc20" and edge["direction"] == "unresolved" for edge in flow_edges))
+        self.assertTrue(any(edge["from"] == inbound_pull["id"] and edge["asset"] == "erc20" and edge["direction"] == "in" for edge in flow_edges))
+        self.assertFalse(any(edge["from"] == direct_transfer["id"] and edge["asset"] == "eth" for edge in flow_edges))
+        self.assertTrue(any(edge["from"] == native_send["id"] and edge["asset"] == "eth" and edge["direction"] == "out" for edge in flow_edges))
 
     def test_overloads_are_reported_as_ambiguous_without_a_signature(self):
         temporary, root = self.fixture()
