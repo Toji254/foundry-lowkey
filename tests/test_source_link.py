@@ -319,6 +319,8 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(contract_status, 0)
         self.assertIn("CONSTANTS / IMMUTABLES", contract_output.getvalue())
         self.assertIn("STORAGE", contract_output.getvalue())
+        self.assertIn("TRANSIENT STORAGE", contract_output.getvalue())
+        self.assertIn("transientCounter", contract_output.getvalue())
         self.assertEqual(function_status, 0)
         self.assertIn("CONSTANT REFERENCES", function_output.getvalue())
         self.assertIn("IMMUTABLE REFERENCES", function_output.getvalue())
