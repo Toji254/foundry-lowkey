@@ -121,6 +121,19 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertGreater(result["graph"]["summary"]["imports"], 0)
 
 
+    def test_overview_reports_first_party_triage_inventory_by_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.fixture(root)
+            _result, output = self.overview(root)
+
+            self.assertIn(
+                "Triage inventory: 5 first-party source file(s) | solidity: 5",
+                output,
+            )
+            self.assertNotIn("Analyzer scope:", output)
+            self.assertIn("Application contracts/modules", output)
+
     def test_overview_restores_project_type_and_compiler_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -183,7 +196,10 @@ class ProjectVerbosityTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn("LOWKEY PROJECT MAP", output)
-            self.assertIn("1. WHAT IS THE PROTOCOL?", output)
+            self.assertIn("1. CONTRACT DECLARATIONS IN THE APPLICATION GRAPH", output)
+            self.assertNotIn("WHAT IS THE PROTOCOL?", output)
+            self.assertIn("| LOCAL DEPENDENCY", output)
+            self.assertNotIn("[localdependency]", output)
             self.assertIn("2. HOW DOES IT DEPEND ON OTHER CODE?", output)
 
     def test_cli_default_and_single_verbose_select_the_expected_views(self):

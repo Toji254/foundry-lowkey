@@ -1490,8 +1490,9 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         compiler_versions.append(f"vyper {vyper_compiler}")
     print(f"Compiler      : {', '.join(compiler_versions or ['not detected'])}")
     print()
-    print("1. WHAT IS THE PROTOCOL?")
+    print("1. CONTRACT DECLARATIONS IN THE APPLICATION GRAPH")
     print("-" * 72)
+    print("  Includes reusable first-party base contracts; this is not a protocol-only inventory.")
     if contracts:
         for name, file, parents in contracts:
             parent_text = f" (inherits {', '.join(parents)})" if parents else ""
@@ -1511,12 +1512,12 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         for edge in imports:
             destination = str(edge.get("to") or "unknown")
             if edge.get("resolved") and edge.get("external"):
-                label = "external dependency"
+                label = "EXTERNAL DEPENDENCY"
             elif edge.get("resolved"):
-                label = "local dependency"
+                label = "LOCAL DEPENDENCY"
             else:
-                label = "NOT RESOLVED"
-            print(f"  {edge['from']} -> {destination} [{label}]")
+                label = "UNRESOLVED"
+            print(f"  {edge['from']} -> {destination} | {label}")
     else:
         print("  No imports detected in application code.")
 
@@ -1926,7 +1927,22 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     )
     analyzed_sources = project.get("source_file_count")
     if analyzed_sources is not None:
-        print(f"Analyzer scope: {int(analyzed_sources)} application source file(s) reported")
+        inventory_languages = analysis.get("languages") or {}
+        language_counts = []
+        if isinstance(inventory_languages, dict):
+            for language, count in sorted(inventory_languages.items()):
+                try:
+                    count = int(count)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    language_counts.append(f"{str(language).lower()}: {count}")
+        inventory_detail = f" | {', '.join(language_counts)}" if language_counts else ""
+        print(
+            "Triage inventory: "
+            f"{int(analyzed_sources)} first-party source file(s)"
+            f"{inventory_detail}"
+        )
     if analysis.get("unsupported_languages"):
         print(
             "Unsupported source languages: "
