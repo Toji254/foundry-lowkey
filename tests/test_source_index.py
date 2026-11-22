@@ -78,6 +78,7 @@ class SourceIndexTests(unittest.TestCase):
 
                 mapping(address => mapping(uint256 => Position)) public positions;
                 IERC20 public token;
+                uint256 public totalDeposits = 1;
                 address payable public treasury;
                 uint256 internal guard;
                 uint256[] public amounts;
@@ -219,6 +220,11 @@ class SourceIndexTests(unittest.TestCase):
         self.assertIn("mapping(uint256 => Position)", mapping[0]["type"])
         self.assertEqual(mapping[0]["mapping_keys"], ["address", "uint256"])
         self.assertEqual(mapping[0]["mapping_value_type"], "Position")
+        self.assertIsNone(mapping[0].get("initializer"))
+        self.assertFalse(any(edge["kind"] == "INITIALIZES" and edge["to"] == mapping[0]["id"] for edge in index["edges"]))
+        total_deposits = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.totalDeposits")
+        self.assertEqual(total_deposits.get("initializer"), "1")
+        self.assertTrue(any(edge["kind"] == "INITIALIZES" and edge["to"] == total_deposits["id"] for edge in index["edges"]))
         self.assertTrue(find_symbols(index, "Vault.Position.debt"))
         self.assertTrue(find_symbols(index, "Vault.Status"))
         self.assertTrue(find_symbols(index, "Vault.Status.Open"))
