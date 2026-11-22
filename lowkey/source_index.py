@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 10
+CACHE_VERSION = 11
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -1997,8 +1997,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                          "DELETES": "TRANSIENT_DELETES"}.get(item, item)
                         for item in relations
                     ]
-                if persistence in {"constant", "immutable"} and is_write:
-                    relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
+                if persistence == "constant":
+                    relations = ["UNRESOLVED_MUTATION"] if is_write else ["READS_CONSTANT"]
+                elif persistence == "immutable":
+                    if is_write:
+                        relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
+                    else:
+                        relations = ["READS_IMMUTABLE"]
                 if is_compound:
                     relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
 
@@ -2070,8 +2075,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                          "DELETES": "TRANSIENT_DELETES"}.get(item, item)
                         for item in relations
                     ]
-                if persistence in {"constant", "immutable"} and is_write:
-                    relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
+                if persistence == "constant":
+                    relations = ["UNRESOLVED_MUTATION"] if is_write else ["READS_CONSTANT"]
+                elif persistence == "immutable":
+                    if is_write:
+                        relations = ["INITIALIZES"] if func["name"] == "constructor" else ["UNRESOLVED_MUTATION"]
+                    else:
+                        relations = ["READS_IMMUTABLE"]
                 if is_compound:
                     relations.append("TRANSIENT_READS" if persistence == "transient" else "READS")
 
@@ -2408,7 +2418,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     direct_effects: dict[str, list[dict[str, Any]]] = {}
     for item in edges:
         if item["kind"] in {
-            "READS", "WRITES", "DELETES", "MUTATES",
+            "READS", "READS_CONSTANT", "READS_IMMUTABLE",
+            "WRITES", "DELETES", "MUTATES",
             "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
             "ASSET_FLOW",
         }:
