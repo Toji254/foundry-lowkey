@@ -937,6 +937,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "qualified_name": f"{name}.{field_struct}.{field_name}",
                     "contract": name, "struct": field_struct, "type": field_type,
                     "file": path, "line": _line(source, field_offset),
+                    "source_offset": field_offset,
                 }
                 add_node({**field_node, "evidence": "LEXICAL_SOURCE"})
                 fields_by_struct.setdefault((name, field_struct), []).append(field_node)
@@ -1247,7 +1248,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             edges.append(_edge(
                 "USES_TYPE", node["id"], candidates[0]["id"],
                 node["file"], source_by_path.get(node["file"], ""),
-                max(0, node.get("line", 1) - 1),
+                node.get("source_offset", 0),
                 type_name=field_type,
             ))
 
