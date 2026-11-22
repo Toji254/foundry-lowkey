@@ -1908,6 +1908,20 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         path = func["file"]
         source = source_by_path.get(path, "")
         offset = func["body_start"] or 0
+        # Yul CALL/CREATE/SELFDESTRUCT semantics are handled by the opcode
+        # scanner below. Never classify them using Solidity-level regex rules.
+        asset_assembly_ranges: list[tuple[int, int]] = []
+        for assembly_match in re.finditer(r"\bassembly\b(?:\s*\([^)]*\))?\s*\{", body):
+            assembly_open = assembly_match.end() - 1
+            assembly_close = _matching(body, assembly_open, "{", "}")
+            asset_assembly_ranges.append((
+                assembly_open,
+                (assembly_close + 1) if assembly_close is not None else len(body),
+            ))
+
+        def in_asset_assembly(position: int) -> bool:
+            return any(start <= position < end for start, end in asset_assembly_ranges)
+
         if func["mutability"] == "payable":
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
@@ -1915,6 +1929,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 direction="in", detail="Payable entry point can receive ETH; this does not prove a particular execution supplied or retained ETH.",
             ))
         for value_use in re.finditer(r"\bmsg\s*\.\s*value\b", body):
+            if in_asset_assembly(value_use.start()):
+                continue
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
                 offset + value_use.start(), status="VALUE_USAGE", asset="eth",
@@ -1945,6 +1961,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             r"\s*\.\s*call\s*\{(?P<options>[^}]+)\}"
         )
         for match in eth_call.finditer(body):
+            if in_asset_assembly(match.start()):
+                continue
             value_option = re.search(r"\bvalue\s*:\s*([^,}]+)", match.group("options"))
             if value_option is None:
                 continue
@@ -1966,6 +1984,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             r"\s*\.\s*call\s*\.\s*value\s*\((?P<amount>[^)]*)\)"
         )
         for match in legacy_eth_call.finditer(body):
+            if in_asset_assembly(match.start()):
+                continue
             recipient = re.sub(r"\s+", "", match.group("recipient"))
             if recipient in {"address(this)", "payable(address(this))"}:
                 continue
@@ -1998,6 +2018,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             rf"(?P<recipient>{native_receiver})\s*\.\s*(?P<method>transfer|send)\s*\(\s*(?P<amount>[^)]*)\)"
         )
         for match in native_method.finditer(body):
+            if in_asset_assembly(match.start()):
+                continue
             if re.sub(r"\s+", "", match.group("recipient")) in {"address(this)", "payable(address(this))"}:
                 continue
             edges.append(_edge(
@@ -2014,6 +2036,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             r"\bnew\s+(?P<contract>[A-Za-z_]\w*)\s*\{\s*value\s*:\s*(?P<amount>[^}]+)\}"
         )
         for match in creation.finditer(body):
+            if in_asset_assembly(match.start()):
+                continue
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], f"asset:eth:new:{match.group('contract')}",
                 path, source, offset + match.start(), asset="eth", direction="out",
@@ -2025,6 +2049,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         # SELFDESTRUCT balance transfers remain fork-sensitive. Do not assume
         # pre-Cancun code deletion semantics or a particular execution occurred.
         for destruction in re.finditer(r"\b(?:selfdestruct|suicide)\s*\((?P<recipient>[^)]*)\)", body):
+            if in_asset_assembly(destruction.start()):
+                continue
             recipient = destruction.group("recipient").strip()
             recipient_compact = re.sub(r"\s+", "", recipient)
             edges.append(_edge(
@@ -2042,6 +2068,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             r"\((?P<args>[^;{}]*)\)"
         )
         for match in token_call.finditer(body):
+            if in_asset_assembly(match.start()):
+                continue
             if match.group("token") not in token_names:
                 continue
             method = match.group("method")
