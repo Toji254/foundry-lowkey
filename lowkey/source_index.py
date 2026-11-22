@@ -1801,6 +1801,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
 
         for alias in storage_aliases:
             alias_pattern_usage = re.compile(rf"\b{re.escape(alias['name'])}\b")
+            variable = alias["variable"]
+            persistence = variable.get("storage_class", "persistent")
             for access in alias_pattern_usage.finditer(body):
                 if in_assembly(access.start()) or any(start <= access.start() < end for start, end in alias_ranges):
                     continue
@@ -1816,11 +1818,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         while cursor < len(body) and body[cursor].isspace():
                             cursor += 1
                 before = body[max(0, access.start() - 12):access.start()]
-                after = body[cursor:cursor + 4]
-                variable = alias["variable"]
-                assignment = re.match(r"(\\*\\*=|<<=|>>=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=(?!=|>))", after)
-                prefix_assignment = re.search(r"(?:\\+\\+|--)\\s*$", before)
-                deletion = re.search(r"\\bdelete\\s*$", before)
+                after = body[cursor:cursor + 5]
+                assignment = re.match(r"(\*\*=|<<=|>>=|\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
+                prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
+                deletion = re.search(r"\bdelete\s*$", before)
                 array_mutation = member_name in {"push", "pop"}
                 is_write = bool(assignment or prefix_assignment or deletion or array_mutation)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or member_name == "pop"
@@ -1829,8 +1830,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     else prefix_assignment.group(0).strip() if prefix_assignment
                     else f"array.{member_name}" if array_mutation else "read"
                 )
-                persistence = variable.get("storage_class", "persistent")
-                relations = ["DELETES"] if deletion else ["WRITES"] if is_write else ["READS"]
+                if deletion:
+                    relations = ["DELETES"]
+                elif is_write:
+                    relations = ["WRITES"]
+                else:
+                    relations = ["READS"]
                 if persistence == "transient":
                     relations = [
                         {"READS": "TRANSIENT_READS", "WRITES": "TRANSIENT_WRITES",
@@ -1845,19 +1850,22 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 if member_name:
                     access_path += f".{member_name}"
                 for relation in relations:
-                    edges.append(_edge(
+                    edge = _edge(
                         relation, func["id"], variable["id"], path, source,
                         body_absolute + access.start(),
                         variable=variable["name"], alias=alias["name"],
                         member=member_name, access_path=access_path,
                         resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
                         evidence="STORAGE_ALIAS_RESOLUTION",
-                        operation=operation, mutation_kind=(
+                        operation=operation,
+                        mutation_kind=(
                             "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
-                            else "READ"
-                        ), persistence=persistence,
-                    ))
+                            else "COMPOUND_ASSIGNMENT" if is_compound
+                            else "ASSIGNMENT" if is_write else "READ"
+                        ),
+                        persistence=persistence,
+                    )
+                    edges.append(edge)
                     struct_type = variable.get("mapping_value_type") or variable.get("type") or alias["type"]
                     struct_names = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", struct_type)
                     if member_name and struct_names:
@@ -1869,13 +1877,15 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                                 body_absolute + access.start(),
                                 variable=variable["name"], alias=alias["name"],
                                 member=member_name, access_path=access_path,
-                        resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
-                        evidence="STORAGE_ALIAS_RESOLUTION",
-                        operation=operation, mutation_kind=(
-                            "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
-                            else "COMPOUND_ASSIGNMENT" if is_compound else "ASSIGNMENT" if is_write
-                            else "READ"
-                        ), persistence=persistence,
+                                resolution="DIRECT" if variable["contract"] == scope else "INFERRED",
+                                evidence="STORAGE_ALIAS_RESOLUTION",
+                                operation=operation,
+                                mutation_kind=(
+                                    "DELETE" if deletion else "ARRAY_MUTATION" if array_mutation
+                                    else "COMPOUND_ASSIGNMENT" if is_compound
+                                    else "ASSIGNMENT" if is_write else "READ"
+                                ),
+                                persistence=persistence,
                             ))
 
         for variable in accessible_state:
