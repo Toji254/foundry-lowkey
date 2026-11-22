@@ -1205,6 +1205,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         ):
             dynamic_pointer_names.add(pointer_match.group(1))
         call_pattern = re.compile(r"(?<![A-Za-z0-9_.$])([A-Za-z_]\w*)\s*\(")
+        user_type_names = {
+            item["name"] for item in contracts
+        } | {
+            item.get("name") for item in nodes
+            if item.get("kind") in {"struct", "enum"}
+        }
         for call in call_pattern.finditer(body):
             callee_name = call.group(1)
             if callee_name in dynamic_pointer_names:
@@ -1216,7 +1222,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     detail="Function pointer target depends on runtime assignment or dispatch; no implementation is assumed.",
                 ))
                 continue
-            if callee_name in _BUILTIN_CALLS or re.fullmatch(
+            if callee_name in user_type_names or callee_name in _BUILTIN_CALLS or re.fullmatch(
                 r"(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|bytes(?:[1-9]|[12]\d|3[0-2])?|fixed(?:\d+x\d+)?|ufixed(?:\d+x\d+)?|bool|string|address)",
                 callee_name,
             ):
