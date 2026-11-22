@@ -119,6 +119,11 @@ def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
     elif edge.get("via"):
         via_names = [nodes.get(item, {}).get("qualified_name", item) for item in edge["via"]]
         detail = " via " + " -> ".join(via_names)
+    if edge.get("kind") == "INITIALIZES":
+        initializer = nodes.get(str(edge.get("from") or ""), {})
+        initializer_contract = initializer.get("contract") or initializer.get("name")
+        if initializer_contract:
+            detail += f" · initialization context={initializer_contract}"
     index_shape = _storage_index_shape(edge)
     if index_shape:
         detail += f" · indexes={index_shape}"
@@ -501,6 +506,11 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             edge for edge in contract_edges
             if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "UNRESOLVED_MUTATION"}
         ]
+        related_contract_ids = {
+            item["id"] for item in nodes.values()
+            if item.get("kind") == "contract"
+            and item.get("name") in related_contracts
+        }
         constructor_ids = {
             item["id"] for item in nodes.values()
             if item.get("kind") == "function"
@@ -510,7 +520,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         state_initializers = [
             edge for edge in (index.get("edges") or [])
             if edge.get("kind") == "INITIALIZES"
-            and (edge.get("from") == selected["id"] or edge.get("from") in constructor_ids)
+            and (
+                edge.get("from") in related_contract_ids
+                or edge.get("from") in constructor_ids
+            )
         ]
         transient_reads = [edge for edge in contract_edges if edge.get("kind") == "TRANSIENT_READS"]
         if only in (None, "calls"):
