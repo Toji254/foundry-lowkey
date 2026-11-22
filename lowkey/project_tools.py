@@ -1850,13 +1850,18 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     }
 
     import_edges = [edge for edge in edges if edge.get("kind") == "import"]
+    production_roles = {"application", "interface", "library", "infrastructure"}
     support_import_edges = [
         edge for edge in import_edges
         if roles.get(str(edge.get("from") or ""), "unclassified") == "support"
     ]
     production_import_edges = [
         edge for edge in import_edges
-        if roles.get(str(edge.get("from") or ""), "unclassified") != "support"
+        if roles.get(str(edge.get("from") or ""), "unclassified") in production_roles
+    ]
+    unclassified_import_edges = [
+        edge for edge in import_edges
+        if roles.get(str(edge.get("from") or ""), "unclassified") == "unclassified"
     ]
 
     def dependency_counts(items: list[dict[str, Any]]) -> tuple[int, int, int, int]:
@@ -1871,9 +1876,10 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
 
     production_counts = dependency_counts(production_import_edges)
     support_counts = dependency_counts(support_import_edges)
+    unclassified_counts = dependency_counts(unclassified_import_edges)
     inheritance_edges = [
         edge for edge in edges if edge.get("kind") == "inherits"
-        and roles.get(str(edge.get("from") or ""), "unclassified") != "support"
+        and roles.get(str(edge.get("from") or ""), "unclassified") in production_roles
     ]
 
     # Use the application-graph call inventory. An empty list is meaningful:
@@ -1909,22 +1915,47 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     )
     analyzed_sources = project.get("source_file_count")
     if analyzed_sources is not None:
-        print(f"Analyzer scope: {int(analyzed_sources)} source file(s) reported")
+        print(f"Analyzer scope: {int(analyzed_sources)} application source file(s) reported")
+    if analysis.get("unsupported_languages"):
+        print(
+            "Unsupported source languages: "
+            + ", ".join(str(item) for item in analysis["unsupported_languages"])
+        )
+    capabilities = analysis.get("capabilities") or {}
+    if capabilities:
+        capability_names = ("build", "tests", "coverage", "slither", "live_evm", "live_native")
+        capability_text = ", ".join(
+            f"{name}={'yes' if capabilities.get(name) else 'no'}"
+            for name in capability_names if name in capabilities
+        )
+        if capability_text:
+            print(f"Native capabilities: {capability_text}")
+    analyzer_names = project.get("security_analyzers") or analysis.get("security_analyzers") or []
+    if analyzer_names:
+        print("Available analyzers: " + ", ".join(str(item) for item in analyzer_names))
 
     print("")
     print("PROJECT STRUCTURE")
     print("-" * 72)
-    print(f"Application contracts/modules : {role_counts['application']}")
-    print(f"Interfaces                    : {role_counts['interface']}")
-    print(f"Libraries                     : {role_counts['library']}")
-    print(f"Shared infrastructure          : {role_counts['infrastructure']}")
-    print(f"Tests/support/tooling           : {role_counts['support']}")
-    if role_counts["unclassified"]:
-        print(f"Unclassified source units       : {role_counts['unclassified']}")
-    print(
-        "Roles are inferred from declarations and generic path conventions; "
-        "they are navigation hints, not semantic guarantees."
-    )
+    if source_units:
+        print(f"Application contracts/modules : {role_counts['application']}")
+        print(f"Interfaces                    : {role_counts['interface']}")
+        print(f"Libraries                     : {role_counts['library']}")
+        print(f"Shared infrastructure          : {role_counts['infrastructure']}")
+        print(f"Tests/support/tooling           : {role_counts['support']}")
+        if role_counts["unclassified"]:
+            print(f"Unclassified source units       : {role_counts['unclassified']}")
+        print(
+            "Roles are inferred from declarations and generic path conventions; "
+            "they are navigation hints, not semantic guarantees."
+        )
+    elif analyzed_sources:
+        print(
+            "Source-role breakdown is unavailable: the detected language/backend "
+            "did not produce source nodes for this dependency graph."
+        )
+    else:
+        print("No application source files were mapped for this project scope.")
 
     print("")
     print("DEPENDENCY HEALTH")
@@ -1939,6 +1970,12 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
         f"{support_counts[0]} total | {support_counts[1]} resolved | "
         f"{support_counts[2]} unresolved | {support_counts[3]} external"
     )
+    print(
+        "Unclassified imports     : "
+        f"{unclassified_counts[0]} total | {unclassified_counts[1]} resolved | "
+        f"{unclassified_counts[2]} unresolved | {unclassified_counts[3]} external "
+        "(scope not assumed)"
+    )
     print(f"Production inheritance   : {len(inheritance_edges)} relationship(s)")
 
     unresolved_production = [
@@ -1946,6 +1983,9 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     ]
     unresolved_support = [
         edge for edge in support_import_edges if not edge.get("resolved")
+    ]
+    unresolved_unclassified = [
+        edge for edge in unclassified_import_edges if not edge.get("resolved")
     ]
     if unresolved_production:
         print("Unresolved production imports:")
@@ -1961,7 +2001,14 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
                 f"  - {edge.get('from', 'unknown')} -> "
                 f"{edge.get('to', 'unknown')}"
             )
-    if not unresolved_production and not unresolved_support:
+    if unresolved_unclassified:
+        print("Unresolved imports from unclassified source units (scope unknown):")
+        for edge in unresolved_unclassified[:3]:
+            print(
+                f"  - {edge.get('from', 'unknown')} -> "
+                f"{edge.get('to', 'unknown')}"
+            )
+    if not unresolved_production and not unresolved_support and not unresolved_unclassified:
         print("No unresolved imports were recorded in the mapped source graph.")
 
     print("")
@@ -1979,6 +2026,8 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
                 f"({len(row['incoming'])} used by, "
                 f"{len(row['outgoing'])} dependencies)"
             )
+    elif not nodes and analyzed_sources:
+        print("  Application sources were detected, but this backend has no mapped component graph.")
     else:
         print("  No connected application contracts/modules were identified.")
     print("")
@@ -2037,15 +2086,59 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     print("")
     print("SECURITY ORIENTATION")
     print("-" * 72)
-    print(f"Low-level call syntax matches : {len(low_level)}")
-    print(
-        f"Heuristic call-like patterns : {len(heuristic_calls)} "
-        "(leads only; not vulnerability findings)"
+    detected_languages = {
+        str(item).lower() for item in (languages or [])
+    }
+    if "solidity" in detected_languages:
+        print(f"Low-level call syntax matches : {len(low_level)}")
+        print(
+            f"Heuristic call-like patterns : {len(heuristic_calls)} "
+            "(leads only; not vulnerability findings)"
+        )
+        print(
+            "A zero pattern count is not proof of safety; check source coverage, "
+            "runtime reachability and test evidence."
+        )
+    else:
+        print(
+            "Solidity low-level call-site counts are not applicable to the "
+            "detected language set; use its native analyzer and manual source review."
+        )
+
+    print("")
+    print("WHERE TO START")
+    print("-" * 72)
+    starting_steps = []
+    source_counts = project.get("sources") or {}
+    if int(source_counts.get("solidity", 0) or 0) > 0:
+        starting_steps.append((
+            "lk sources --scope application",
+            "List first-party Solidity application files before choosing entry points."
+        ))
+    graph_has_links = any(
+        edge.get("kind") in {"import", "inherits"} for edge in edges
     )
-    print(
-        "A zero pattern count is not proof of safety; check source coverage, "
-        "runtime reachability and test evidence."
-    )
+    if graph_has_links and any(
+        str(node.get("language") or "").lower() in {"solidity", "vyper"}
+        for node in nodes
+    ):
+        starting_steps.append((
+            "lk deps",
+            "Follow first-party imports and inheritance from the selected package."
+        ))
+    if capabilities.get("build") or capabilities.get("tests"):
+        starting_steps.append((
+            "lk audit",
+            "Run the detected project's native audit checks and inspect the reported coverage."
+        ))
+    if not starting_steps:
+        starting_steps.append((
+            "lk doctor",
+            "Check which native build, test and security tools are available for this project."
+        ))
+    for command, reason in starting_steps[:3]:
+        print(f"  {command}")
+        print(f"    Why: {reason}")
 
     print("")
     print("HOW TO EXPAND")
