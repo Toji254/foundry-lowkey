@@ -238,7 +238,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             "AST       "
             f"{ast_report.get('functions', 0)} function(s), "
             f"{ast_report.get('call_edges', 0)} call edge(s), "
-            f"{ast_report.get('modifier_edges', 0)} modifier edge(s) "
+            f"{ast_report.get('modifier_edges', 0)} modifier edge(s), "
+            f"{ast_report.get('storage_edges', 0)} storage edge(s) "
             "from matched build-info"
         )
         for warning in (ast_report.get("warnings") or [])[:4]:
