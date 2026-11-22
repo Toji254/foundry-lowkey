@@ -443,6 +443,19 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             raise SourceIndexError(f"Source index reached the {MAX_RELATIONSHIPS}-node safety limit.")
         nodes.append(value)
 
+    type_node_ids: set[str] = set()
+
+    def ensure_type_node(path: str, type_name: str, source: str, offset: int) -> str:
+        type_id = _node_id("type", path, type_name)
+        if type_id not in type_node_ids:
+            type_node_ids.add(type_id)
+            add_node({
+                "id": type_id, "kind": "type", "name": type_name,
+                "qualified_name": type_name, "file": path,
+                "line": _line(source, offset), "evidence": "LEXICAL_SOURCE",
+            })
+        return type_id
+
     for path, source, _absolute in source_units:
         clean = project_tools._strip_source_comments(source, "solidity", mask_strings=True)
         file_id = _node_id("file", path, path)
@@ -523,7 +536,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 add_node({**field_node, "evidence": "LEXICAL_SOURCE"})
                 fields_by_struct.setdefault((name, field_struct), []).append(field_node)
                 edges.append(_edge("DECLARES", struct_id, field_id, path, source, field_offset))
-                edges.append(_edge("USES_TYPE", field_id, _node_id("type", path, field_type), path, source, field_offset, type_name=field_type))
+                type_id = ensure_type_node(path, field_type, source, field_offset)
+                edges.append(_edge("USES_TYPE", field_id, type_id, path, source, field_offset, type_name=field_type))
 
             for statement, statement_offset in _top_level_statements(clean, opening + 1, closing):
                 declaration = _state_declaration(statement)
@@ -551,6 +565,37 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         matches = [item for item in structs if item["contract"] == name and item["name"] == struct_name]
                         if matches:
                             edges.append(_edge("USES_TYPE", variable_id, matches[0]["id"], path, source, statement_offset, type_name=inner_type))
+
+            # Enum declarations and their named members are first-class symbols.
+            for enum_match in re.finditer(r"\benum\s+([A-Za-z_]\w*)\s*\{", clean, opening + 1, closing):
+                enum_open = enum_match.end() - 1
+                enum_close = pairs.get(enum_open)
+                if enum_close is None or enum_close > closing:
+                    failures.append({"path": path, "phase": "parse", "error": f"Unclosed enum at line {_line(source, enum_match.start())}."})
+                    continue
+                enum_name = enum_match.group(1)
+                enum_id = _node_id("enum", path, f"{name}.{enum_name}")
+                enum_node = {
+                    "id": enum_id, "kind": "enum", "name": enum_name,
+                    "qualified_name": f"{name}.{enum_name}", "contract": name,
+                    "file": path, "line": _line(source, enum_match.start()),
+                    "evidence": "LEXICAL_SOURCE",
+                }
+                add_node(enum_node)
+                edges.append(_edge("DECLARES", contract_id, enum_id, path, source, enum_match.start()))
+                for enum_value in _split_top_level(clean[enum_open + 1:enum_close]):
+                    value_name = enum_value.strip().split("=", 1)[0].strip()
+                    if not re.fullmatch(r"[A-Za-z_]\w*", value_name):
+                        continue
+                    value_offset = clean.find(value_name, enum_open + 1, enum_close)
+                    value_id = _node_id("enum_value", path, f"{name}.{enum_name}.{value_name}")
+                    add_node({
+                        "id": value_id, "kind": "enum_value", "name": value_name,
+                        "qualified_name": f"{name}.{enum_name}.{value_name}",
+                        "contract": name, "enum": enum_name, "file": path,
+                        "line": _line(source, value_offset), "evidence": "LEXICAL_SOURCE",
+                    })
+                    edges.append(_edge("DECLARES", enum_id, value_id, path, source, value_offset))
 
             # Events and custom errors are declarations with their own nodes.
             for kind, pattern in (
@@ -677,6 +722,28 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 resolution="DIRECT" if len(candidates) == 1 else "UNRESOLVED",
                 candidates=[item["id"] for item in candidates],
                 base=base_name,
+            ))
+
+    # Explicit override declarations link to a base implementation only
+    # when the inherited signature identifies exactly one candidate.
+    for contract in contracts:
+        for func in functions:
+            if func["contract"] != contract["name"] or func["file"] != contract["file"] or func["kind"] != "function":
+                continue
+            if not re.search(r"\boverride\b", func["header"]):
+                continue
+            candidates = [
+                inherited for inherited in functions
+                if inherited["contract"] in contract["bases"]
+                and inherited["kind"] == "function"
+                and inherited["signature"] == func["signature"]
+            ]
+            target = candidates[0]["id"] if len(candidates) == 1 else f"override:{contract['name']}.{func['signature']}"
+            edges.append(_edge(
+                "OVERRIDES", func["id"], target, func["file"],
+                source_by_path.get(func["file"], ""), func["source_offset"],
+                resolution="DIRECT" if len(candidates) == 1 else "UNRESOLVED",
+                candidates=[item["id"] for item in candidates],
             ))
 
     # Direct state access, modifiers, events and function-to-function calls.
@@ -816,7 +883,14 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             if (item["contract"] == scope and item["file"] == path)
             or item["contract"] in func["bases"]
         ]
+        accessible_name_counts: dict[str, int] = {}
+        for item in accessible_state:
+            accessible_name_counts[item["name"]] = accessible_name_counts.get(item["name"], 0) + 1
         for variable in accessible_state:
+            if accessible_name_counts.get(variable["name"], 0) > 1:
+                # A state name is shadowed across the inheritance boundary.
+                # Do not guess which storage declaration the unqualified name uses.
+                continue
             if variable["name"] in params_shadow:
                 continue
             if re.search(rf"\b(?:[A-Za-z_]\w*\s+)+(?:memory|storage|calldata\s+)?{re.escape(variable['name'])}\b", body):
@@ -1062,7 +1136,7 @@ def find_symbols(index: dict[str, Any], target: str) -> list[dict[str, Any]]:
     for node in index.get("nodes") or []:
         if node.get("kind") not in {
             "contract", "function", "modifier", "mapping", "state_variable",
-            "struct", "struct_field", "event", "custom_error",
+            "struct", "struct_field", "event", "custom_error", "enum", "enum_value",
         }:
             continue
         if contract_name and node.get("contract", node.get("name")) != contract_name:
