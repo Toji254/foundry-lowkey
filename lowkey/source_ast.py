@@ -408,7 +408,7 @@ def _emit_ast_storage_effects(
                 "member": field_name,
                 "operation": operation or ("read" if mode.endswith("READS") else "write"),
                 "mutation_kind": (
-                    "DELETE" if mode == "DELETES" else
+                    "DELETE" if mode in {"DELETES", "TRANSIENT_DELETES"} else
                     "ARRAY_MUTATION" if operation and operation.startswith("array.") else
                     "COMPOUND_ASSIGNMENT" if operation in {"**=", "<<=", ">>=", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="} else
                     "TUPLE_ASSIGNMENT" if operation == "tuple=" else
@@ -512,7 +512,13 @@ def _emit_ast_storage_effects(
                     for argument in value.get("arguments") or []:
                         walk(argument, "READS", None)
                     return
-            walk(expression, "READS", None)
+            if isinstance(expression, dict) and expression.get("nodeType") == "MemberAccess":
+                # A method receiver can itself be a state variable (token, oracle,
+                # strategy). Read the receiver, not a fictitious storage field
+                # named after the external method.
+                walk(expression.get("expression"), "READS", None)
+            else:
+                walk(expression, "READS", None)
             for argument in value.get("arguments") or []:
                 walk(argument, "READS", None)
             return
