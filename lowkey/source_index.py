@@ -1512,16 +1512,14 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 )
                 library_resolution = "DIRECT"
             else:
-                receiver_vars = [
-                    item for item in state_variables
-                    if item["contract"] == scope and item["file"] == path and item["name"] == receiver
-                ]
+                receiver_type = _infer_expression_type(
+                    receiver, func, state_variables, scope, path, body, call.start()
+                )
                 contract_units = [
                     item for item in contracts
                     if item["name"] == scope and item["file"] == path
                 ]
-                if len(receiver_vars) == 1 and len(contract_units) == 1:
-                    receiver_type = receiver_vars[0].get("type", "").replace(" payable", "").strip()
+                if receiver_type and len(contract_units) == 1:
                     for directive in contract_units[0].get("using_libraries") or []:
                         if directive.get("for_type") not in {receiver_type, "*"}:
                             continue
@@ -1558,12 +1556,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 if item["contract"] in {scope, *func["bases"]}
                 and item["name"] == receiver
             ]
-            if len(receiver_vars) == 1:
-                declared_type = receiver_vars[0].get("type", "").replace(" payable", "").strip()
-            else:
-                declared_type = (func.get("parameter_declared_types") or {}).get(receiver, "")
-                declared_type = re.sub(r"\b(memory|calldata|storage|payable)\b", " ", declared_type)
-                declared_type = re.sub(r"\s+", " ", declared_type).strip()
+            declared_type = _infer_expression_type(
+                receiver, func, state_variables, scope, path, body, call.start()
+            ) or ""
             type_contracts = contract_by_name.get(declared_type, []) if declared_type else []
             typed_methods = [
                 item for item in functions
