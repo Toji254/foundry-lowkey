@@ -149,6 +149,26 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("STORAGE", text)
         self.assertIn("INTERNAL CALLS", text)
 
+    def test_contract_reads_and_writes_filters_show_direct_and_indirect_effects(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            writes_output = io.StringIO()
+            with contextlib.redirect_stdout(writes_output):
+                writes_status = render_link(index, "Graph", only="writes")
+            reads_output = io.StringIO()
+            with contextlib.redirect_stdout(reads_output):
+                reads_status = render_link(index, "Graph", only="reads")
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(writes_status, 0)
+        self.assertIn("STATE MUTATIONS / WRITES", writes_output.getvalue())
+        self.assertIn("balances[user]", writes_output.getvalue())
+        self.assertEqual(reads_status, 0)
+        self.assertIn("STORAGE READS", reads_output.getvalue())
+        self.assertIn("balances[user]", reads_output.getvalue())
+
     def test_imported_library_is_marked_third_party_and_linked_back_to_importer(self):
         temporary, root = self.fixture()
         try:
