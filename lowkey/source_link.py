@@ -188,7 +188,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 for item in items:
                     print(f"  {_symbol_label(item)}  {_location(item)}")
         file_node = next((item for item in nodes.values() if item.get("kind") == "file" and item.get("name") == selected.get("file")), None)
-        file_imports = [edge for edge in (index.get("edges") or []) if file_node and edge.get("kind") == "IMPORTS" and edge.get("from") == file_node.get("id")]
+        file_imports = [edge for edge in (index.get("edges") or []) if file_node and edge.get("kind") == "IMPORTS" and edge.get("from") == file_node.get("id") and (only is None or only == "imports")]
         imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"] + file_imports
         inheritance = [edge for edge in edges if edge.get("kind") == "INHERITS"]
         _render_edges("INHERITANCE", inheritance, nodes)
