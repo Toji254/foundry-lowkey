@@ -197,7 +197,10 @@ class SourceAstTests(unittest.TestCase):
             and edge.get("kind") == "CALLS"
             and edge.get("evidence") == "SOLC_AST_DECLARATION_REFERENCE"
         ]
-        self.assertEqual(len(ast_calls), 1)
+        self.assertEqual(
+            len(ast_calls), 1,
+            msg=f"AST match diagnostics: {json.dumps(index.get('ast'), sort_keys=True)}; inventory={json.dumps(index.get('inventory'), sort_keys=True)}",
+        )
         self.assertEqual(ast_calls[0]["to"], vault_debit["id"])
         self.assertNotEqual(ast_calls[0]["to"], other_debit["id"])
         self.assertEqual(ast_calls[0]["resolution"], "DIRECT")
@@ -357,7 +360,7 @@ class SourceAstTests(unittest.TestCase):
             and edge.get("access_path") == "balances[user]"
             and edge.get("operation") == "="
             for edge in ast_edges
-        ))
+        ), msg=f"AST match diagnostics: {json.dumps(index.get('ast'), sort_keys=True)}; storage edges={json.dumps(ast_edges, sort_keys=True)}")
         self.assertTrue(any(
             edge.get("from") == increase["id"] and edge["kind"] == "WRITES"
             and edge.get("access_path") == "balances[user]"
@@ -606,7 +609,10 @@ class SourceAstTests(unittest.TestCase):
             and edge.get("kind") == "WRITES"
             and edge.get("evidence") == "SOLC_AST_STORAGE_DECLARATION_REFERENCE"
         ]
-        self.assertEqual(len(library_writes), 1)
+        self.assertEqual(
+            len(library_writes), 1,
+            msg=f"AST match diagnostics: {json.dumps(index.get('ast'), sort_keys=True)}; storage edges={json.dumps([edge for edge in index['edges'] if edge.get('kind') in {'WRITES','ALIASES_STORAGE'}], sort_keys=True)}",
+        )
         self.assertEqual(library_writes[0].get("access_path"), "positions[user].debt")
         self.assertEqual(library_writes[0].get("index_kinds"), ["mapping"])
         self.assertEqual(library_writes[0].get("index_types"), ["address"])
