@@ -1467,12 +1467,27 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             name = emitted.group(1)
             event_nodes = [
                 node for node in nodes
-                if node.get("kind") == "event" and node.get("contract") == scope and node.get("name") == name
+                if node.get("kind") == "event"
+                and node.get("contract") in {scope, *func.get("bases", [])}
+                and node.get("name") == name
             ]
             if len(event_nodes) == 1:
                 edges.append(_edge("EMITS", func["id"], event_nodes[0]["id"], path, source, body_absolute + emitted.start()))
             else:
                 edges.append(_edge("EMITS", func["id"], f"event-name:{scope}.{name}", path, source, body_absolute + emitted.start(), resolution="UNRESOLVED"))
+
+        for reverted in re.finditer(r"\brevert\s+([A-Za-z_]\w*)\s*\(", body):
+            error_name = reverted.group(1)
+            error_nodes = [
+                node for node in nodes
+                if node.get("kind") == "custom_error"
+                and node.get("contract") in {scope, *func.get("bases", [])}
+                and node.get("name") == error_name
+            ]
+            if len(error_nodes) == 1:
+                edges.append(_edge("REVERTS", func["id"], error_nodes[0]["id"], path, source, body_absolute + reverted.start()))
+            else:
+                edges.append(_edge("REVERTS", func["id"], f"error-name:{scope}.{error_name}", path, source, body_absolute + reverted.start(), resolution="UNRESOLVED"))
 
     # Asset-flow observations distinguish capability, source-level attempts,
     # and unresolved low-level behavior. No static result is runtime proof.
