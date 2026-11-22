@@ -207,7 +207,10 @@ class SourceIndexTests(unittest.TestCase):
                 function rawStorageWrite() external {
                     assembly {
                         sstore(0, 1)
+                        sstore(positions.slot, 1)
                         tstore(1, 2)
+                        let target := 0
+                        call(gas(), target, 0, 0, 0, 0, 0)
                     }
                 }
 
@@ -408,6 +411,10 @@ class SourceIndexTests(unittest.TestCase):
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == stored["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
         self.assertTrue(any(edge["kind"] == "UNRESOLVED_STORAGE" and edge.get("operation") == "sstore" for edge in edges))
         self.assertTrue(any(edge["kind"] == "UNRESOLVED_STORAGE" and edge.get("operation") == "tstore" for edge in edges))
+        self.assertTrue(any(edge["kind"] == "EXTERNAL_CALL" and edge.get("operation") == "call" and edge["from"] == next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.rawStorageWrite()")["id"] for edge in edges))
+        raw_storage = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.rawStorageWrite()")
+        self.assertFalse(any(edge["from"] == raw_storage["id"] and edge["to"] == next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.positions")["id"] and edge["kind"] in {"READS", "WRITES"} for edge in edges))
+
         callback_node = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.callback")
         self.assertTrue(any(edge["kind"] == "READS" and edge["to"] == callback_node["id"] and edge["from"] == stored["id"] for edge in edges))
         setter = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.setCallback(function)")
