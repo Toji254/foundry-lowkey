@@ -475,7 +475,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 "declaration_kind": match.group("kind"),
                 "provenance": source_provenance.get(path, "unclassified"),
                 "using_libraries": [
-                    {"library": using.group(1), "for_type": using.group(2)}
+                    {"library": using.group(1), "for_type": using.group(2), "offset": using.start()}
                     for using in re.finditer(
                         r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*;",
                         clean, opening + 1, closing,
@@ -623,7 +623,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         from_path = str(base_edge.get("from") or "")
         to_path = str(base_edge.get("to") or "")
         from_id = file_ids.get(from_path)
-        to_id = file_ids.get(to_path)
+        to_path_key = to_path
+        if base_edge.get("resolved"):
+            target_path = Path(to_path)
+            if not target_path.is_absolute():
+                target_path = root_path / target_path
+            to_path_key = os.path.relpath(target_path.resolve(), root_path).replace(os.sep, "/")
+        to_id = file_ids.get(to_path_key)
         if from_id is None:
             continue
         edges.append({
@@ -635,6 +641,23 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "raw": base_edge.get("raw"), "external": bool(base_edge.get("external")),
             "provenance": base_edge.get("provenance", "unresolved"),
         })
+
+    # Explicit using-for directives connect extension calls to library source
+    # only when the directive, receiver type, and library function are unique.
+    for contract in contracts:
+        for directive in contract.get("using_libraries") or []:
+            matches = [
+                item for item in contract_by_name.get(directive["library"], [])
+                if item.get("declaration_kind") == "library"
+            ]
+            target = matches[0]["id"] if len(matches) == 1 else f"library-name:{directive['library']}"
+            edges.append(_edge(
+                "USES_LIBRARY", contract["id"], target, contract["file"],
+                contract["source"], directive.get("offset", contract["offset"]),
+                resolution="DIRECT" if len(matches) == 1 else "UNRESOLVED",
+                library=directive["library"], for_type=directive["for_type"],
+                candidates=[item["id"] for item in matches],
+            ))
 
     # Resolve inheritance names only when exactly one indexed contract matches.
     for contract in contracts:
@@ -718,6 +741,54 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 if len(inherited) == 1:
                     edges.append(_edge("CALLS", func["id"], inherited[0]["id"], path, source, body_absolute + call.start(), resolution="INFERRED"))
                     continue
+
+            # Resolve static Library.method(...) and using Library for Type
+            # extension calls without pretending arbitrary interface calls are local.
+            library_candidates: list[dict[str, Any]] = []
+            library_resolution = "INFERRED"
+            static_libraries = [
+                item for item in contract_by_name.get(receiver, [])
+                if item.get("declaration_kind") == "library"
+            ]
+            if static_libraries:
+                library_candidates = [
+                    item for item in local_functions.get((receiver, method), [])
+                    if item["kind"] == "function"
+                ]
+                library_resolution = "DIRECT"
+            else:
+                receiver_vars = [
+                    item for item in state_variables
+                    if item["contract"] == scope and item["file"] == path and item["name"] == receiver
+                ]
+                contract_units = [
+                    item for item in contracts
+                    if item["name"] == scope and item["file"] == path
+                ]
+                if len(receiver_vars) == 1 and len(contract_units) == 1:
+                    receiver_type = receiver_vars[0].get("type", "").replace(" payable", "").strip()
+                    for directive in contract_units[0].get("using_libraries") or []:
+                        if directive.get("for_type") not in {receiver_type, "*"}:
+                            continue
+                        library_candidates.extend(
+                            item for item in local_functions.get((directive["library"], method), [])
+                            if item["kind"] == "function"
+                        )
+            if len(library_candidates) == 1:
+                edges.append(_edge(
+                    "CALLS", func["id"], library_candidates[0]["id"], path, source,
+                    body_absolute + call.start(), resolution=library_resolution,
+                    call_kind="library" if library_resolution == "DIRECT" else "using-for extension",
+                ))
+                continue
+            if len(library_candidates) > 1:
+                edges.append(_edge(
+                    "CALLS", func["id"], f"library-function:{receiver}.{method}",
+                    path, source, body_absolute + call.start(),
+                    resolution="UNRESOLVED", candidates=[item["id"] for item in library_candidates],
+                    call_kind="library-or-extension",
+                ))
+                continue
             edges.append(_edge(
                 "EXTERNAL_CALL", func["id"], f"external:{receiver}.{method}",
                 path, source, body_absolute + call.start(),
