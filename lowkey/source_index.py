@@ -763,11 +763,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 mapping = variable_type.startswith("mapping")
                 kind = "mapping" if mapping else "state_variable"
                 variable_id = _node_id(kind, path, f"{name}.{variable_name}")
+                initializer = statement.split("=", 1)[1].strip() if "=" in statement else None
                 variable = {
                     "id": variable_id, "kind": kind, "name": variable_name,
                     "qualified_name": f"{name}.{variable_name}", "contract": name,
                     "file": path, "line": _line(source, statement_offset),
-                    "type": variable_type, "source_offset": statement_offset,
+                    "initializer": initializer, "type": variable_type, "source_offset": statement_offset,
                     "mapping_value_type": _mapping_inner_type(variable_type),
                     "mapping_keys": _mapping_layout(variable_type)[0] if mapping else [],
                     "scope": "state",
@@ -775,6 +776,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 state_variables.append(variable)
                 add_node({**variable, "evidence": "LEXICAL_SOURCE"})
                 edges.append(_edge("DECLARES", contract_id, variable_id, path, source, statement_offset))
+                if initializer is not None:
+                    edges.append(_edge(
+                        "INITIALIZES", contract_id, variable_id, path, source, statement_offset,
+                        initializer=initializer,
+                        detail="State declaration has an initializer; constructor and runtime mutations are analyzed separately.",
+                    ))
                 inner_type = _mapping_inner_type(variable_type) if mapping else variable_type
                 if inner_type:
                     clean_type = re.sub(r"\b(mapping|address|uint\d*|int\d*|bytes\d*|bool|string)\b", " ", inner_type)
