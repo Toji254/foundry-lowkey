@@ -187,9 +187,13 @@ def _top_level_statements(source: str, start: int, end: int):
             if depth == 0:
                 statement_start = index + 1
         elif char == ";" and depth == 0:
-            statement = source[statement_start:index].strip()
+            raw_statement = source[statement_start:index]
+            leading_whitespace = len(raw_statement) - len(raw_statement.lstrip())
+            statement = raw_statement.strip()
             if statement:
-                yield statement, statement_start
+                # Offsets are graph identity evidence: point at the declaration
+                # token, not the newline/indentation after the previous statement.
+                yield statement, statement_start + leading_whitespace
             statement_start = index + 1
 
 

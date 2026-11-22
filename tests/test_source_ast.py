@@ -144,7 +144,7 @@ class SourceAstTests(unittest.TestCase):
                     "name": "_debit",
                     "visibility": "internal",
                     "virtual": False,
-                    "src": self._src(source, "function _debit() internal {}", debit_start + 1),
+                    "src": self._src(source, "function _debit() internal {}", debit_start),
                     "body": {"id": 40, "nodeType": "Block", "statements": [], "src": self._src(source, "{}")},
                 },
             ],
@@ -348,6 +348,12 @@ class SourceAstTests(unittest.TestCase):
             temporary.cleanup()
 
         balances = find_symbols(index, "StorageVault.balances")[0]
+        expected_balances_offset = source.index("mapping(address => uint256) public balances")
+        self.assertEqual(balances.get("source_offset"), expected_balances_offset)
+        self.assertEqual(
+            balances.get("line"),
+            source.count("\\n", 0, expected_balances_offset) + 1,
+        )
         setter = find_symbols(index, "StorageVault.set(address,uint256)")[0]
         increase = find_symbols(index, "StorageVault.increase(address,uint256)")[0]
         ast_edges = [
@@ -600,6 +606,11 @@ class SourceAstTests(unittest.TestCase):
             temporary.cleanup()
 
         positions = find_symbols(index, "StorageVault.positions")[0]
+        expected_positions_offset = source.index("mapping(address => Position) public positions")
+        self.assertEqual(positions.get("source_offset"), expected_positions_offset)
+        position_field = find_symbols(index, "StorageVault.Position.debt")[0]
+        expected_field_offset = source.index("uint256 debt;")
+        self.assertEqual(position_field.get("source_offset"), expected_field_offset)
         caller = find_symbols(index, "StorageVault.increase")[0]
         library_function = find_symbols(index, "PositionLib.increaseDebt")[0]
         library_writes = [
