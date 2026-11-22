@@ -633,6 +633,7 @@ class SourceAstTests(unittest.TestCase):
         self.assertEqual(library_writes[0].get("operation"), "+=")
         self.assertEqual(library_writes[0].get("resolution"), "INFERRED")
         self.assertIn(caller["id"], library_writes[0].get("via", []))
+        self.assertEqual(index["ast"]["storage_contexts_processed"], 1)
         self.assertTrue(any(
             edge.get("from") == caller["id"]
             and edge.get("kind") == "ALIASES_STORAGE"
