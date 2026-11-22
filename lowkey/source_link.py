@@ -884,7 +884,7 @@ of runtime behavior.""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
-    parser.add_argument("target", nargs="?")
+    parser.add_argument("target", nargs="?", help="contract, function, mapping, or state variable; omit to list available contracts")
     parser.add_argument("--root", default=".")
     parser.add_argument("--depth", type=int, default=None)
     parser.add_argument("--only", choices=sorted(ONLY_KINDS))
@@ -894,21 +894,114 @@ of runtime behavior.""",
     return parser
 
 
+def render_project_index(
+    index: dict[str, Any],
+    *,
+    limit: int = 40,
+    as_json: bool = False,
+) -> int:
+    """List selectable source contracts when lk link is run without a target."""
+    nodes = _node_map(index)
+    all_nodes = list(nodes.values())
+    contracts = sorted(
+        (item for item in all_nodes if item.get("kind") == "contract"),
+        key=lambda item: (
+            str(item.get("file") or ""),
+            int(item.get("line") or 0),
+            str(item.get("name") or ""),
+        ),
+    )
+
+    entries = []
+    for contract in contracts:
+        name = str(contract.get("name") or "?")
+        declared = [
+            item for item in all_nodes
+            if item.get("contract") == name
+        ]
+        function_count = sum(item.get("kind") in {"function", "modifier"} for item in declared)
+        storage_count = sum(
+            item.get("kind") in {"mapping", "state_variable", "function_pointer"}
+            and item.get("storage_class") not in {"constant", "immutable", "transient"}
+            for item in declared
+        )
+        entries.append({
+            "name": name,
+            "declaration_kind": contract.get("declaration_kind") or "contract",
+            "source": _location(contract),
+            "functions": function_count,
+            "storage_items": storage_count,
+            "origin": contract.get("provenance") or "unknown",
+        })
+
+    summary = index.get("summary") or {}
+    if as_json:
+        print(json.dumps({
+            "contracts": entries[:limit],
+            "total_contracts": len(entries),
+            "shown": min(len(entries), limit),
+            "summary": {
+                "files": summary.get("files", 0),
+                "functions": summary.get("functions", 0),
+            },
+            "inventory": index.get("inventory"),
+        }, indent=2, sort_keys=True))
+        return 0
+
+    print("LOWKEY // SOURCE MAP")
+    print("AVAILABLE CONTRACTS")
+    print(f"  {len(entries)} contract/interface/library declaration(s) found")
+    print()
+    if entries:
+        for entry in entries[:limit]:
+            declaration_kind = str(entry["declaration_kind"]).replace("_", " ")
+            print(f"  {entry['name']} ({declaration_kind})")
+            print(f"    {entry['source']}")
+            print(f"    {entry['functions']} functions · {entry['storage_items']} storage items")
+        if len(entries) > limit:
+            print(f"  ... {len(entries) - limit} more; use --limit {min(500, len(entries))} to show more")
+    else:
+        print("  No Solidity contracts, interfaces, or libraries were discovered.")
+        source_files = sorted({
+            str(item.get("name") or item.get("file") or "")
+            for item in all_nodes if item.get("kind") == "file"
+        })
+        if source_files:
+            print()
+            print("SOURCE FILES")
+            for path in source_files[:limit]:
+                print(f"  {path}")
+            if len(source_files) > limit:
+                print(f"  ... {len(source_files) - limit} more")
+    print()
+    print("EXPLORE")
+    print("  lk link ContractName")
+    print("  lk link ContractName.functionName")
+    print("  lk link ContractName.mappingName")
+    print("  lk trace source ContractName.functionName")
+    print("  lk link ContractName --only calls|storage|reads|writes|imports|assets")
+    print()
+    print("EVIDENCE: static source relationships, not runtime execution.")
+    _print_inventory_warning(index)
+    return 0
+
+
 def run_link(argv: list[str]) -> int:
     parser = _link_parser()
     args = parser.parse_args(argv)
-    if not args.target:
-        parser.print_help()
-        return 2
     if args.depth is not None and (args.depth < 1 or args.depth > 10):
         parser.error("--depth must be between 1 and 10")
     if args.limit < 1 or args.limit > 500:
         parser.error("--limit must be between 1 and 500")
+    if not args.target and (args.depth is not None or args.only is not None):
+        parser.error("--depth and --only require a target; run 'lk link' to list available contracts")
     try:
         index = build_source_index(args.root)
     except (SourceIndexError, OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
+    if not args.target:
+        return render_project_index(index, limit=min(args.limit, 40), as_json=args.json)
     return render_link(index, args.target, only=args.only, depth=args.depth, limit=args.limit, as_json=args.json)
 
 
