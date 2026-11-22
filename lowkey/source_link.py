@@ -335,6 +335,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             "parser": index.get("parser"),
             "ast": index.get("ast"),
             "mutation_semantics": index.get("mutation_semantics"),
+            "effect_propagation": index.get("effect_propagation"),
         }, indent=2, sort_keys=True))
         return 0
 
@@ -656,6 +657,13 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         print(f"DEPTH     Additional nested call relationships exist beyond --depth {depth}; increase --depth to follow them.")
     print("LIMITS    Static source links do not prove execution, success, storage-slot identity, or an external implementation.")
     _print_inventory_warning(index)
+    propagation = index.get("effect_propagation") or {}
+    if propagation.get("truncated_frontiers"):
+        print(
+            "EFFECTS   Helper/modifier propagation reached the "
+            f"depth cap ({propagation.get('max_depth', '?')}) at "
+            f"{propagation['truncated_frontiers']} frontier(s); deeper effects may be missing."
+        )
     if len(edges) > limit:
         print(f"OUTPUT    Showing {limit} of {len(edges)} selected relationship(s); use --limit to increase.")
     return 0

@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 16
+CACHE_VERSION = 17
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -2479,7 +2479,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "modifier_edges": 0, "warnings": ["AST resolver is not installed; lexical analysis used."],
         }
 
-    # Add inferred storage/asset relationships through bounded internal call chains.
+    # Propagate state/asset effects through the executable relationship graph.
+    # A function's modifiers are execution edges just like its internal calls:
+    # modifiers attached to an internal helper must also contribute effects to
+    # the external entrypoint that reaches that helper.
     direct_calls: dict[str, list[dict[str, Any]]] = {}
     for item in edges:
         if item["kind"] == "CALLS" and item["resolution"] in {"DIRECT", "INFERRED"}:
@@ -2498,66 +2501,77 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         if item["kind"] == "APPLIES_MODIFIER" and item["resolution"] in {"DIRECT", "INFERRED"}:
             direct_modifiers.setdefault(item["from"], []).append(item)
     function_by_id = {item["id"]: item for item in functions}
+
     # Deduplicate inherited effects by the concrete source edge, not just the
     # target variable. Two helper accesses may touch different mapping keys or
     # struct fields and both paths are valuable to an auditor.
     effect_keys = {(item.get("from"), item.get("id")) for item in edges}
+    effect_propagation = {
+        "max_depth": MAX_TRAVERSAL_DEPTH,
+        "truncated_frontiers": 0,
+    }
     for start_id, start_func in function_by_id.items():
         queue: list[tuple[str, list[str], int]] = [(start_id, [start_id], 0)]
-        # Modifiers execute as part of the decorated function. Their direct
-        # reads/writes are effects of the decorated function, even when the
-        # modifier makes no helper call (the common "guard += 1; _;" pattern).
-        for modifier_edge in direct_modifiers.get(start_id, []):
-            modifier_id = modifier_edge["to"]
-            if modifier_id not in function_by_id:
-                continue
-            modifier_chain = [start_id, modifier_id]
-            for effect in direct_effects.get(modifier_id, []):
-                if effect["kind"] == "ASSET_FLOW" and effect.get("status") == "CAPABILITY":
-                    continue
-                effect_key = (start_id, effect.get("id"))
-                if effect_key in effect_keys:
-                    continue
-                inherited = dict(effect)
-                inherited.update({
-                    "id": f"INFERRED:{start_id}:{effect['id']}",
-                    "from": start_id,
-                    "resolution": "INFERRED",
-                    "evidence": "MODIFIER_EXECUTION_PROPAGATION",
-                    "via": modifier_chain,
-                    "detail": "Effect occurs in a modifier applied to this function; execution is still conditional on reaching the modifier body.",
-                })
-                edges.append(inherited)
-                effect_keys.add(effect_key)
-            queue.append((modifier_id, modifier_chain, 1))
         visited = {start_id}
         while queue:
             current, chain, depth = queue.pop(0)
-            if depth >= MAX_TRAVERSAL_DEPTH:
-                continue
-            for call_edge in direct_calls.get(current, []):
-                target = call_edge["to"]
-                if target in visited or target not in function_by_id:
-                    continue
-                visited.add(target)
-                next_chain = chain + [target]
-                for effect in direct_effects.get(target, []):
+
+            # The start function's direct effects are already represented by
+            # their source edges. Every other reached function/modifier adds
+            # effects to the original entrypoint with an explicit execution path.
+            if current != start_id:
+                path_has_modifier = any(
+                    function_by_id.get(item, {}).get("kind") == "modifier"
+                    for item in chain[1:]
+                )
+                for effect in direct_effects.get(current, []):
                     if effect["kind"] == "ASSET_FLOW" and effect.get("status") == "CAPABILITY":
                         continue
                     effect_key = (start_id, effect.get("id"))
-                    if effect_key not in effect_keys:
-                        inherited = dict(effect)
-                        inherited.update({
-                            "id": f"INFERRED:{start_id}:{effect['id']}",
-                            "from": start_id,
-                            "resolution": "INFERRED",
-                            "evidence": "CALL_GRAPH_PROPAGATION",
-                            "via": next_chain,
-                            "detail": "Effect is reachable through an internal helper; inspect the call chain before concluding execution.",
-                        })
-                        edges.append(inherited)
-                        effect_keys.add(effect_key)
-                queue.append((target, next_chain, depth + 1))
+                    if effect_key in effect_keys:
+                        continue
+                    inherited = dict(effect)
+                    inherited.update({
+                        "id": f"INFERRED:{start_id}:{effect['id']}",
+                        "from": start_id,
+                        "resolution": "INFERRED",
+                        "evidence": (
+                            "MODIFIER_EXECUTION_PROPAGATION"
+                            if path_has_modifier else "CALL_GRAPH_PROPAGATION"
+                        ),
+                        "via": chain,
+                        "detail": (
+                            "Effect is reachable through a call path that includes a modifier; "
+                            "inspect the path and branch conditions before concluding execution."
+                            if path_has_modifier else
+                            "Effect is reachable through an internal helper; inspect the call chain before concluding execution."
+                        ),
+                    })
+                    edges.append(inherited)
+                    effect_keys.add(effect_key)
+
+            # A modifier is part of its decorated function's execution. Enqueue
+            # both modifier bodies and internal callees at every level, not only
+            # for the original entrypoint.
+            next_edges = [
+                *direct_modifiers.get(current, []),
+                *direct_calls.get(current, []),
+            ]
+            if depth >= MAX_TRAVERSAL_DEPTH:
+                if any(
+                    edge.get("to") in function_by_id and edge.get("to") not in visited
+                    for edge in next_edges
+                ):
+                    effect_propagation["truncated_frontiers"] += 1
+                continue
+
+            for relation in next_edges:
+                target = relation.get("to")
+                if target in visited or target not in function_by_id:
+                    continue
+                visited.add(target)
+                queue.append((target, chain + [target], depth + 1))
+    effect_propagation["complete"] = effect_propagation["truncated_frontiers"] == 0
 
     if len(edges) > MAX_RELATIONSHIPS:
         raise SourceIndexError(f"Source index reached the {MAX_RELATIONSHIPS}-relationship safety limit.")
@@ -2575,6 +2589,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         "ast": ast_report,
         "analysis_mode": "STATIC_SOURCE",
         "mutation_semantics": "POTENTIAL_PATHS_NOT_RUNTIME_OBSERVATIONS",
+        "effect_propagation": effect_propagation,
         "nodes": nodes,
         "edges": edges,
         "inventory": {
@@ -2610,6 +2625,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "ast": ast_report,
             "analysis_mode": index["analysis_mode"],
             "mutation_semantics": index["mutation_semantics"],
+            "effect_propagation": effect_propagation,
             "nodes": nodes,
             "edges": edges,
             "summary": index["summary"],

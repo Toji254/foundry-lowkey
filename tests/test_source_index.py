@@ -411,6 +411,75 @@ class SourceIndexTests(unittest.TestCase):
         overload_target = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.overloaded(uint256)")
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == overload_test["id"] and edge["to"] == overload_target["id"] and edge["resolution"] == "DIRECT" for edge in index_edges))
 
+    def test_effects_from_modifiers_on_internal_helpers_reach_the_external_entrypoint(self):
+        temporary, root = self.fixture()
+        try:
+            self.write(
+                root,
+                "src/NestedModifierVault.sol",
+                """
+                pragma solidity ^0.8.20;
+                contract NestedModifierVault {
+                    uint256 public guard;
+                    uint256 public accounting;
+
+                    modifier updateGuard() {
+                        guard += 1;
+                        _;
+                        guard += 2;
+                    }
+
+                    function _performAccounting() internal updateGuard {
+                        accounting += 1;
+                    }
+
+                    function execute() external {
+                        _performAccounting();
+                    }
+                }
+                """,
+            )
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        execute = find_symbols(index, "NestedModifierVault.execute()")[0]
+        helper = find_symbols(index, "NestedModifierVault._performAccounting()")[0]
+        modifier = find_symbols(index, "NestedModifierVault.updateGuard")[0]
+        guard = find_symbols(index, "NestedModifierVault.guard")[0]
+        accounting = find_symbols(index, "NestedModifierVault.accounting")[0]
+
+        direct_modifier_writes = [
+            edge for edge in index["edges"]
+            if edge.get("from") == modifier["id"]
+            and edge.get("to") == guard["id"]
+            and edge.get("kind") == "WRITES"
+        ]
+        propagated_guard_writes = [
+            edge for edge in index["edges"]
+            if edge.get("from") == execute["id"]
+            and edge.get("to") == guard["id"]
+            and edge.get("kind") == "WRITES"
+            and edge.get("evidence") == "MODIFIER_EXECUTION_PROPAGATION"
+        ]
+        propagated_helper_write = [
+            edge for edge in index["edges"]
+            if edge.get("from") == execute["id"]
+            and edge.get("to") == accounting["id"]
+            and edge.get("kind") == "WRITES"
+            and edge.get("evidence") == "CALL_GRAPH_PROPAGATION"
+        ]
+
+        self.assertEqual(len(direct_modifier_writes), 2)
+        self.assertEqual(len(propagated_guard_writes), 2)
+        self.assertTrue(all(
+            edge.get("via") == [execute["id"], helper["id"], modifier["id"]]
+            for edge in propagated_guard_writes
+        ))
+        self.assertEqual(len(propagated_helper_write), 1)
+        self.assertEqual(index["effect_propagation"]["max_depth"], 10)
+        self.assertTrue(index["effect_propagation"]["complete"])
+
     def test_dynamic_function_pointers_and_assembly_storage_are_unresolved(self):
         temporary, root = self.fixture()
         try:
