@@ -430,18 +430,23 @@ def _render_contract_overview(
             print(f"  └── ... {len(functions) - limit} more")
         print()
 
+    related_contracts = {selected.get("name"), *(selected.get("ancestors") or [])}
+    inherited_declarations = [
+        item for item in nodes.values()
+        if item.get("contract") in related_contracts
+    ]
     storage = [
-        item for item in declared
+        item for item in inherited_declarations
         if item.get("kind") in {"mapping", "state_variable", "function_pointer"}
         and item.get("storage_class") not in {"constant", "immutable", "transient"}
     ]
     transient = [
-        item for item in declared
+        item for item in inherited_declarations
         if item.get("kind") in {"mapping", "state_variable", "function_pointer"}
         and item.get("storage_class") == "transient"
     ]
     constants = [
-        item for item in declared
+        item for item in inherited_declarations
         if item.get("kind") == "state_variable"
         and item.get("storage_class") in {"constant", "immutable"}
     ]
@@ -516,6 +521,7 @@ def _render_contract_overview(
         and (
             edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
             or edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}
+            or edge.get("implementation_resolution") in {"UNRESOLVED", "AMBIGUOUS"}
         )
     ]
     if unresolved:
