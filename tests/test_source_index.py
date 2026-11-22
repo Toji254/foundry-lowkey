@@ -370,6 +370,7 @@ class SourceIndexTests(unittest.TestCase):
             if item.get("qualified_name") in {"NameA.resolve(uint256)", "NameB.resolve(uint256)"}
         }
         self.assertEqual(set(ambiguous_edge["candidates"]), ambiguous_targets)
+        self.assertGreaterEqual(index["summary"]["ambiguous"], 1)
 
     def test_flow_distinguishes_payable_capability_from_transfer_attempts(self):
         temporary, root = self.fixture()
@@ -695,6 +696,10 @@ class SourceIndexTests(unittest.TestCase):
             edge.get("kind") == "WRITES" and edge.get("to") == deployed_at["id"]
             for edge in index["edges"]
         ))
+        self.assertGreaterEqual(index["summary"]["persistent_storage"], 0)
+        self.assertGreaterEqual(index["summary"]["transient_storage"], 0)
+        self.assertGreaterEqual(index["summary"]["constants"], 1)
+        self.assertGreaterEqual(index["summary"]["immutables"], 1)
 
     def test_repeated_queries_use_the_content_addressed_cache(self):
         temporary, root = self.fixture()
