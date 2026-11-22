@@ -227,6 +227,16 @@ def _struct_fields(source: str, start: int, end: int, pairs: dict[int, int]):
                 yield match.group(1), field_match.group(1), field_type, offset
 
 
+def _at_source_level(source: str, offset: int) -> bool:
+    depth = 0
+    for char in source[:offset]:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depth == 0
+
+
 def _at_contract_depth(source: str, body_start: int, offset: int) -> bool:
     """Return true only for a declaration directly inside a contract body."""
     depth = 0
@@ -637,6 +647,14 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "provenance": source_provenance.get(path, "unclassified"),
         })
         pairs = _brace_pairs(clean)
+        file_using_libraries = [
+            {"library": using.group(1), "for_type": using.group(2), "offset": using.start()}
+            for using in re.finditer(
+                r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*;",
+                clean,
+            )
+            if _at_source_level(clean, using.start())
+        ]
         contract_pattern = re.compile(
             r"\b(?P<kind>abstract\s+contract|contract|interface|library)\s+"
             r"(?P<name>[A-Za-z_]\w*)\b(?P<header>[^{};]*)\{"
@@ -665,7 +683,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 "source": source, "clean": clean,
                 "declaration_kind": match.group("kind"),
                 "provenance": source_provenance.get(path, "unclassified"),
-                "using_libraries": [
+                "using_libraries": file_using_libraries + [
                     {"library": using.group(1), "for_type": using.group(2), "offset": using.start()}
                     for using in re.finditer(
                         r"\busing\s+([A-Za-z_]\w*)\s+for\s+([A-Za-z_]\w*|\*)\s*;",
