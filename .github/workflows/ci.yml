@@ -121,6 +121,13 @@ jobs:
         run: python -m unittest tests/test_solidity_cheatsheet.py -v
       - name: Security regression benchmark
         run: python -m unittest tests/test_benchmark.py -v
+      - name: Reproduce AST acceptance failures individually
+        run: |
+          python -m unittest discover -s tests -p test_source_ast.py -k test_ast_declaration_references_replace_lexical_same_name_resolution -v
+          python -m unittest discover -s tests -p test_source_ast.py -k test_ast_storage_mapping_write_and_compound_write_are_declaration_resolved -v
+          python -m unittest discover -s tests -p test_source_ast.py -k test_ast_storage_parameter_tracks_library_mutation_back_to_mapping -v
+      - name: Focused compiler AST regression suite
+        run: python -m unittest discover -s tests -p test_source_ast.py -v
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
