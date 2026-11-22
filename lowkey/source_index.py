@@ -236,7 +236,7 @@ def _edge(
     **extra: Any,
 ) -> dict[str, Any]:
     value = {
-        "id": f"{kind}:{source_id}:{target_id}:{_line(source, offset)}",
+        "id": f"{kind}:{source_id}:{target_id}:{_line(source, offset)}:{offset}",
         "kind": kind,
         "from": source_id,
         "to": target_id,
@@ -303,11 +303,11 @@ def _mapping_inner_type(type_name: str) -> str | None:
     if closing is None:
         return None
     inside = type_name[opening + 1:closing]
-    parts = _split_top_level(inside, "=")
+    parts = re.split(r"\\s*=>\\s*", inside, maxsplit=1)
     if len(parts) < 2:
         return None
-    # mapping key => value
-    return parts[-1].strip()
+    # Split the first top-level key/value delimiter; nested mapping values stay intact.
+    return parts[1].strip()
 
 
 def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dict[str, Any]:
@@ -349,6 +349,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         source_units.append((display_path, source, path))
 
     source_units.sort(key=lambda item: item[0].casefold())
+    source_by_path = {path: source for path, source, _absolute in source_units}
     build_config = ""
     config_path = root_path / "foundry.toml"
     try:
@@ -599,7 +600,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         if func["kind"] != "function":
             continue
         path = func["file"]
-        source = next((item[1] for item in source_units if item[0] == path), "")
+        source = source_by_path.get(path, "")
         body = func["body"]
         if not body:
             continue
