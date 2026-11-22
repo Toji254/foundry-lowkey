@@ -41,6 +41,11 @@ class SourceLinkTests(unittest.TestCase):
             """
             pragma solidity ^0.8.20;
             abstract contract BaseLink {
+                uint256 public inheritedSeed = 7;
+                address public baseOwner;
+                constructor() {
+                    baseOwner = msg.sender;
+                }
                 function baseAction() public virtual {}
             }
             """,
@@ -159,6 +164,24 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("FUNCTIONS", text)
         self.assertIn("STORAGE", text)
         self.assertIn("INTERNAL CALLS", text)
+
+    def test_derived_contract_overview_includes_base_initializers_and_constructor_writes(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("STATE INITIALIZERS", rendered)
+        self.assertIn("inheritedSeed", rendered)
+        self.assertIn("initialization context=BaseLink", rendered)
+        self.assertIn("baseOwner", rendered)
+        self.assertIn("BaseLink.constructor()", rendered)
 
     def test_contract_reads_and_writes_filters_show_direct_and_indirect_effects(self):
         temporary, root = self.fixture()
