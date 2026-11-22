@@ -95,6 +95,9 @@ def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
             detail += f" · {edge['persistence']}"
         if edge.get("alias"):
             detail += f" (via storage alias {edge['alias']})"
+        if edge.get("via"):
+            via_names = [nodes.get(item, {}).get("qualified_name", item) for item in edge["via"]]
+            detail += " · via " + " -> ".join(via_names)
     elif edge.get("via"):
         via_names = [nodes.get(item, {}).get("qualified_name", item) for item in edge["via"]]
         detail = " via " + " -> ".join(via_names)
@@ -319,10 +322,24 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         _render_edges("IMPORTED BY", imported_by[:limit], nodes, reverse=True)
         _render_edges("LIBRARY EXTENSIONS", library_uses[:limit], nodes)
         _render_edges("USED BY", library_used_by[:limit], nodes, reverse=True)
+        related_contracts = {
+            selected.get("name"),
+            *(selected.get("ancestors") or []),
+        }
         related_functions = {
             item["id"] for item in nodes.values()
-            if item.get("kind") == "function" and item.get("contract") == selected.get("name")
+            if item.get("kind") in {"function", "modifier"}
+            and item.get("contract") in related_contracts
         }
+        inherited_functions = [
+            item for item in nodes.values()
+            if item.get("kind") == "function"
+            and item.get("contract") in set(selected.get("ancestors") or [])
+        ]
+        if inherited_functions and only in (None, "calls"):
+            print("INHERITED FUNCTIONS")
+            for item in sorted(inherited_functions, key=lambda value: (value.get("contract", ""), value.get("line", 0), value.get("qualified_name", "")))[:limit]:
+                print(f"  {_symbol_label(item)}  {_location(item)}")
         contract_edges = [
             edge for edge in (index.get("edges") or [])
             if edge.get("from") in related_functions
@@ -346,9 +363,16 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             edge for edge in contract_edges
             if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "UNRESOLVED_MUTATION"}
         ]
+        constructor_ids = {
+            item["id"] for item in nodes.values()
+            if item.get("kind") == "function"
+            and item.get("name") == "constructor"
+            and item.get("contract") in related_contracts
+        }
         state_initializers = [
             edge for edge in (index.get("edges") or [])
-            if edge.get("kind") == "INITIALIZES" and edge.get("from") == selected["id"]
+            if edge.get("kind") == "INITIALIZES"
+            and (edge.get("from") == selected["id"] or edge.get("from") in constructor_ids)
         ]
         transient_reads = [edge for edge in contract_edges if edge.get("kind") == "TRANSIENT_READS"]
         if only in (None, "calls"):
