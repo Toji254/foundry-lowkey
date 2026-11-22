@@ -108,7 +108,7 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertIn("Repository", output)
             self.assertIn("IRepository", output)
             self.assertIn("FixedPoint", output)
-            self.assertIn("not a risk ranking", output)
+            self.assertIn("not a risk or severity ranking", output)
             application_section = output.split("SHARED BUILDING BLOCKS", 1)[0]
             self.assertNotIn("IRepository", application_section)
             self.assertNotIn("FixedPoint", application_section)
