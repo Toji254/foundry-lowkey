@@ -1082,12 +1082,16 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             if not re.search(r"\boverride\b", func["header"]):
                 continue
-            candidates = [
-                inherited for inherited in functions
-                if inherited["contract"] in contract.get("ancestors", contract["bases"])
-                and inherited["kind"] == "function"
-                and inherited["signature"] == func["signature"]
-            ]
+            candidates: list[dict[str, Any]] = []
+            for base_name in contract.get("ancestors", contract["bases"]):
+                candidates = [
+                    inherited for inherited in functions
+                    if inherited["contract"] == base_name
+                    and inherited["kind"] == "function"
+                    and inherited["signature"] == func["signature"]
+                ]
+                if candidates:
+                    break
             target = candidates[0]["id"] if len(candidates) == 1 else f"override:{contract['name']}.{func['signature']}"
             edges.append(_edge(
                 "OVERRIDES", func["id"], target, func["file"],
@@ -1116,12 +1120,37 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         params_shadow = set(func["parameters"])
 
         if func["kind"] == "function":
-            for modifier in known_modifiers:
-                if re.search(rf"\b{re.escape(modifier['name'])}\b", func["header"]):
+            modifier_names = sorted({item["name"] for item in known_modifiers})
+            for modifier_name in modifier_names:
+                if not re.search(rf"\b{re.escape(modifier_name)}\b", func["header"]):
+                    continue
+                candidates = [
+                    item for item in known_modifiers
+                    if item["contract"] == scope and item["file"] == path
+                    and item["name"] == modifier_name
+                ]
+                inherited_modifier = False
+                if not candidates:
+                    for base_name in func["bases"]:
+                        candidates = [
+                            item for item in known_modifiers
+                            if item["contract"] == base_name and item["name"] == modifier_name
+                        ]
+                        if candidates:
+                            inherited_modifier = True
+                            break
+                if len(candidates) == 1:
                     edges.append(_edge(
-                        "APPLIES_MODIFIER", func["id"], modifier["id"], path, source,
+                        "APPLIES_MODIFIER", func["id"], candidates[0]["id"], path, source,
                         func["source_offset"],
-                        resolution="DIRECT" if modifier["contract"] == scope else "INFERRED",
+                        resolution="INFERRED" if inherited_modifier else "DIRECT",
+                    ))
+                elif len(candidates) > 1:
+                    edges.append(_edge(
+                        "APPLIES_MODIFIER", func["id"], f"modifier-name:{scope}.{modifier_name}",
+                        path, source, func["source_offset"],
+                        resolution="UNRESOLVED",
+                        candidates=[item["id"] for item in candidates],
                     ))
 
         local_functions = function_by_scope_name
@@ -1204,11 +1233,24 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             if method in {"call", "delegatecall", "staticcall", "push", "pop"}:
                 continue
             if receiver == "super":
-                inherited = []
+                inherited: list[dict[str, Any]] = []
                 for base_name in func["bases"]:
-                    inherited.extend(item for item in local_functions.get((base_name, method), []) if item["kind"] == "function")
+                    inherited = [
+                        item for item in local_functions.get((base_name, method), [])
+                        if item["kind"] == "function"
+                    ]
+                    if inherited:
+                        break
                 if len(inherited) == 1:
                     edges.append(_edge("CALLS", func["id"], inherited[0]["id"], path, source, body_absolute + call.start(), resolution="DIRECT", dispatch="SUPER", implementation_resolution="DIRECT"))
+                    continue
+                if len(inherited) > 1:
+                    edges.append(_edge(
+                        "CALLS", func["id"], f"function-name:super.{method}",
+                        path, source, body_absolute + call.start(),
+                        resolution="UNRESOLVED", candidates=[item["id"] for item in inherited],
+                        dispatch="SUPER",
+                    ))
                     continue
 
             # Resolve static Library.method(...) and using Library for Type
