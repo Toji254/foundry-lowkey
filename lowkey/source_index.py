@@ -1502,6 +1502,20 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
 
     # Asset-flow observations distinguish capability, source-level attempts,
     # and unresolved low-level behavior. No static result is runtime proof.
+    erc20_type_names = {"IERC20", "IERC20Metadata", "ERC20"}
+
+    def is_erc20_type(type_name: str) -> bool:
+        simple = re.sub(r"\b(memory|calldata|storage|payable|external|internal)\b", " ", type_name)
+        simple = re.sub(r"(?:\[\s*\])+$", "", simple)
+        simple = re.sub(r"\s+", " ", simple).strip()
+        if simple in erc20_type_names:
+            return True
+        candidates = contract_by_name.get(simple, [])
+        if len(candidates) != 1:
+            return False
+        ancestors = set(candidates[0].get("ancestors") or candidates[0].get("bases") or [])
+        return bool(ancestors & erc20_type_names)
+
     for func in functions:
         if func["kind"] != "function":
             continue
@@ -1527,12 +1541,18 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         token_names = {
             item["name"] for item in state_variables
             if item["contract"] in {func["contract"], *func.get("bases", [])}
-            and re.search(r"\b(?:I?ERC20|ERC20|IERC20Metadata)\b", item.get("type", ""))
+            and is_erc20_type(item.get("type", ""))
         }
         token_names.update(
-            name for name, type_name in (func.get("parameter_types") or {}).items()
-            if re.search(r"\b(?:I?ERC20|ERC20|IERC20Metadata)\b", (func.get("parameter_declared_types") or {}).get(name, type_name))
+            name for name, type_name in (func.get("parameter_declared_types") or {}).items()
+            if is_erc20_type(type_name)
         )
+        for local_token in re.finditer(
+            r"\b(?P<type>[A-Za-z_]\w*(?:\s*\[\s*\])?)\s+(?:memory\s+|calldata\s+)?(?P<name>[A-Za-z_]\w*)\s*=",
+            body,
+        ):
+            if is_erc20_type(local_token.group("type")):
+                token_names.add(local_token.group("name"))
 
         eth_call = re.compile(
             r"(?P<recipient>payable\s*\(\s*address\s*\(\s*this\s*\)\s*\)"
