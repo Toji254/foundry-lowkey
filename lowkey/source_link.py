@@ -17,7 +17,16 @@ except ImportError:  # pragma: no cover - package-style import
 
 ONLY_KINDS = {
     "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS", "REVERTS"},
-    "storage": {"READS", "WRITES", "USES_TYPE", "ALIASES_STORAGE", "UNRESOLVED_STORAGE", "INITIALIZES"},
+    "storage": {
+        "READS", "WRITES", "DELETES", "MUTATES", "TRANSIENT_READS",
+        "TRANSIENT_WRITES", "TRANSIENT_DELETES", "USES_TYPE",
+        "ALIASES_STORAGE", "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION", "INITIALIZES",
+    },
+    "reads": {"READS", "TRANSIENT_READS"},
+    "writes": {
+        "WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES",
+        "TRANSIENT_DELETES", "INITIALIZES", "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION",
+    },
     "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY"},
     "assets": {"ASSET_FLOW"},
 }
@@ -75,10 +84,17 @@ def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
             detail += f" · implementation {edge['implementation_resolution']}"
     elif edge.get("kind") == "CALLS" and edge.get("implementation_resolution"):
         detail = f" · dispatch {edge.get('dispatch', 'unknown')} / implementation {edge['implementation_resolution']}"
-    elif edge.get("kind") in {"READS", "WRITES", "ALIASES_STORAGE"} and edge.get("access_path"):
+    elif edge.get("kind") in {
+        "READS", "WRITES", "DELETES", "MUTATES", "TRANSIENT_READS",
+        "TRANSIENT_WRITES", "TRANSIENT_DELETES", "ALIASES_STORAGE",
+    } and edge.get("access_path"):
         detail = f" [{edge['access_path']}]"
+        if edge.get("operation"):
+            detail += f" · op={edge['operation']}"
+        if edge.get("persistence"):
+            detail += f" · {edge['persistence']}"
         if edge.get("alias"):
-            detail += f" (storage alias {edge['alias']})"
+            detail += f" (via storage alias {edge['alias']})"
     elif edge.get("via"):
         via_names = [nodes.get(item, {}).get("qualified_name", item) for item in edge["via"]]
         detail = " via " + " -> ".join(via_names)
@@ -96,7 +112,8 @@ def _selected_edges(
     selected: dict[str, dict[str, Any]] = {}
     frontier = {node["id"]}
     visited = set(frontier)
-    for _level in range(max(1, depth)):
+    traversal_levels = max(1, depth + 1) if node.get("kind") == "contract" else max(1, depth)
+    for _level in range(traversal_levels):
         next_frontier: set[str] = set()
         for edge in edges:
             if edge.get("via") and len(edge.get("via") or []) > depth + 1:
@@ -130,6 +147,37 @@ def _selected_edges(
         item.get("kind", ""),
         item.get("to", ""),
     ))
+
+
+
+def _depth_has_more_calls(node: dict[str, Any], edges: list[dict[str, Any]], depth: int) -> bool:
+    """Return whether bounded call traversal stopped before a known next hop."""
+    if node.get("kind") == "contract":
+        starts = [
+            edge.get("to") for edge in edges
+            if edge.get("kind") == "DECLARES" and edge.get("from") == node.get("id")
+        ]
+        queue = [(item, 0) for item in starts if item]
+    else:
+        queue = [(node.get("id"), 0)]
+    visited = {item for item, _ in queue}
+    while queue:
+        current, level = queue.pop(0)
+        outgoing = [
+            edge for edge in edges
+            if edge.get("kind") == "CALLS" and edge.get("from") == current
+            and edge.get("resolution") in {"DIRECT", "INFERRED"}
+        ]
+        if level >= depth and any(edge.get("to") not in visited for edge in outgoing):
+            return True
+        if level >= depth:
+            continue
+        for edge in outgoing:
+            target = edge.get("to")
+            if target and target not in visited:
+                visited.add(target)
+                queue.append((target, level + 1))
+    return False
 
 
 def _print_inventory_warning(index: dict[str, Any]) -> None:
@@ -204,6 +252,17 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
                 and nodes.get(edge.get("to"), {}).get("kind") in {"function", "modifier"}
             ]
+        elif only in {"reads", "writes"}:
+            effect_kinds = ONLY_KINDS[only]
+            affected_functions = {
+                edge.get("from") for edge in (index.get("edges") or [])
+                if edge.get("kind") in effect_kinds and edge.get("from") in nodes
+            }
+            declared = [
+                edge for edge in (index.get("edges") or [])
+                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
+                and edge.get("to") in affected_functions
+            ]
         elif only == "assets":
             asset_functions = {
                 edge.get("from") for edge in (index.get("edges") or [])
@@ -275,17 +334,30 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             contract_edges.extend(
                 edge for edge in edges
                 if edge.get("from") not in related_functions
-                and edge.get("kind") in {"CALLS", "READS", "WRITES", "ASSET_FLOW", "EXTERNAL_CALL"}
+                and edge.get("kind") in {
+                "CALLS", "READS", "WRITES", "DELETES", "MUTATES",
+                "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+                "INITIALIZES", "UNRESOLVED_MUTATION", "ASSET_FLOW", "EXTERNAL_CALL",
+            }
             )
         calls = [edge for edge in contract_edges if edge.get("kind") == "CALLS"]
         storage_reads = [edge for edge in contract_edges if edge.get("kind") == "READS"]
-        storage_writes = [edge for edge in contract_edges if edge.get("kind") == "WRITES"]
-        state_initializers = [edge for edge in (index.get("edges") or []) if edge.get("kind") == "INITIALIZES" and edge.get("from") == selected["id"]]
+        storage_writes = [
+            edge for edge in contract_edges
+            if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "UNRESOLVED_MUTATION"}
+        ]
+        state_initializers = [
+            edge for edge in (index.get("edges") or [])
+            if edge.get("kind") == "INITIALIZES" and edge.get("from") == selected["id"]
+        ]
+        transient_reads = [edge for edge in contract_edges if edge.get("kind") == "TRANSIENT_READS"]
         if only in (None, "calls"):
             _render_edges("INTERNAL CALLS", calls[:limit], nodes)
-        if only in (None, "storage"):
+        if only in (None, "storage", "reads"):
             _render_edges("STORAGE READS", storage_reads[:limit], nodes)
-            _render_edges("STORAGE WRITES", storage_writes[:limit], nodes)
+            _render_edges("TRANSIENT READS", transient_reads[:limit], nodes)
+        if only in (None, "storage", "writes"):
+            _render_edges("STATE MUTATIONS / WRITES", storage_writes[:limit], nodes)
             _render_edges("STATE INITIALIZERS", state_initializers[:limit], nodes)
         extras = [
             edge for edge in contract_edges
@@ -309,6 +381,11 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("OVERRIDDEN BY", "OVERRIDES", "incoming"),
             ("STORAGE READS", "READS", "outgoing"),
             ("STORAGE WRITES", "WRITES", "outgoing"),
+            ("DELETES", "DELETES", "outgoing"),
+            ("TRANSIENT WRITES", "TRANSIENT_WRITES", "outgoing"),
+            ("TRANSIENT DELETES", "TRANSIENT_DELETES", "outgoing"),
+            ("TRANSIENT READS", "TRANSIENT_READS", "outgoing"),
+            ("UNRESOLVED MUTATIONS", "UNRESOLVED_MUTATION", "outgoing"),
             ("INITIALIZES", "INITIALIZES", "outgoing"),
             ("EMITS", "EMITS", "outgoing"),
             ("REVERTS", "REVERTS", "outgoing"),
@@ -329,6 +406,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
             ("WRITTEN BY", "WRITES", "incoming"),
+            ("DELETED BY", "DELETES", "incoming"),
+            ("TRANSIENTLY WRITTEN BY", "TRANSIENT_WRITES", "incoming"),
+            ("TRANSIENTLY DELETED BY", "TRANSIENT_DELETES", "incoming"),
             ("INITIALIZED BY", "INITIALIZES", "incoming"),
             ("ALIASED BY", "ALIASES_STORAGE", "incoming"),
             ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
@@ -358,6 +438,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
 
     print()
     print(f"GRAPH     {index.get('summary', {}).get('relationships', 0)} relationship(s) indexed across {index.get('summary', {}).get('files', 0)} Solidity file(s)")
+    if selected.get("kind") in {"contract", "function"} and _depth_has_more_calls(selected, index.get("edges") or [], depth):
+        print(f"DEPTH     Additional nested call relationships exist beyond --depth {depth}; increase --depth to follow them.")
     print("LIMITS    Static source links do not prove execution, success, storage-slot identity, or an external implementation.")
     _print_inventory_warning(index)
     if len(edges) > limit:
@@ -493,7 +575,7 @@ def run_flow(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     if not values or values[0] in {"-h", "--h", "--help", "help"}:
-        print("Usage: lk link TARGET [--depth N] [--only calls|storage|imports|assets]")
+        print("Usage: lk link TARGET [--depth N] [--only calls|storage|reads|writes|imports|assets]")
         print("       lk fn --flow in|out|both --asset eth|erc20|all")
         return 0 if values else 2
     command, rest = values[0], values[1:]
