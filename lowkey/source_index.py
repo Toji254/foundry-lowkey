@@ -300,6 +300,94 @@ def _has_local_shadow(body: str, name: str) -> bool:
     return bool(pattern.search(body))
 
 
+def _signature_parameter_types(signature: str) -> list[str]:
+    opening = signature.find("(")
+    closing = signature.rfind(")")
+    if opening < 0 or closing < opening:
+        return []
+    return _split_top_level(signature[opening + 1:closing])
+
+
+def _infer_expression_type(
+    expression: str,
+    function: dict[str, Any],
+    state_variables: list[dict[str, Any]],
+    contract: str,
+    file_path: str,
+    body: str,
+    before_offset: int,
+) -> str | None:
+    """Infer only common, explicit Solidity expression types; otherwise return unknown."""
+    value = expression.strip()
+    while value.startswith("(") and value.endswith(")"):
+        closing = _matching(value, 0, "(", ")")
+        if closing != len(value) - 1:
+            break
+        value = value[1:-1].strip()
+
+    cast = re.match(
+        r"^(address|bool|string|bytes(?:[1-9]|[12]\d|3[0-2])?|u?int(?:\d+)?)\s*\(",
+        value,
+    )
+    if cast:
+        return _canonical_parameter(cast.group(1))
+    if value in {"msg.sender", "tx.origin", "address(this)", "address(0)"}:
+        return "address"
+    if value == "msg.value":
+        return "uint256"
+    if value in {"true", "false"}:
+        return "bool"
+    if re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
+        return "address"
+    if re.fullmatch(r"0x[0-9a-fA-F]{64}", value):
+        return "bytes32"
+
+    parameter_types = function.get("parameter_types") or {}
+    if value in parameter_types:
+        return str(parameter_types[value])
+
+    local_prefix = body[:before_offset]
+    local_match = None
+    for match in re.finditer(
+        r"\b(?P<type>[A-Za-z_]\w*(?:\s*\[[^\]]*\])*)\s+"
+        r"(?:(?:memory|storage|calldata)\s+)?(?P<name>[A-Za-z_]\w*)\b",
+        local_prefix,
+    ):
+        if match.group("name") == value:
+            local_match = match
+    if local_match:
+        return _canonical_parameter(local_match.group("type"))
+
+    state_matches = [
+        item for item in state_variables
+        if item.get("contract") in {contract, *function.get("bases", [])}
+        and item.get("file") == file_path
+        and item.get("name") == value
+    ]
+    if len(state_matches) == 1:
+        return _canonical_parameter(str(state_matches[0].get("type", "")))
+    return None
+
+
+def _filter_overloads_by_arguments(
+    candidates: list[dict[str, Any]],
+    argument_types: list[str | None],
+) -> list[dict[str, Any]]:
+    if len(candidates) <= 1:
+        return candidates
+    matched: list[dict[str, Any]] = []
+    for candidate in candidates:
+        parameter_types = _signature_parameter_types(str(candidate.get("signature", "")))
+        if len(parameter_types) != len(argument_types):
+            continue
+        if all(
+            inferred is None or inferred == expected
+            for inferred, expected in zip(argument_types, parameter_types)
+        ):
+            matched.append(candidate)
+    return matched or candidates
+
+
 def _nearest_inherited(
     candidates: list[dict[str, Any]],
     ancestor_depths: dict[str, int],
@@ -1256,7 +1344,20 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             if callee_name in {"function", "modifier"}:
                 continue
-            candidates = [item for item in local_functions.get((scope, callee_name), []) if item["kind"] == "function" and item["file"] == path]
+            params_open = call.end() - 1
+            params_close = _matching(body, params_open, "(", ")")
+            arguments = _split_top_level(body[params_open + 1:params_close]) if params_close is not None else []
+            argument_types = [
+                _infer_expression_type(
+                    argument, func, state_variables, scope, path, body, call.start()
+                )
+                for argument in arguments
+            ]
+            candidates = [
+                item for item in local_functions.get((scope, callee_name), [])
+                if item["kind"] == "function" and item["file"] == path
+            ]
+            candidates = _filter_overloads_by_arguments(candidates, argument_types)
             if not candidates:
                 inherited = [
                     item for item in functions
@@ -1265,6 +1366,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     and item["kind"] == "function"
                 ]
                 candidates = _nearest_inherited(inherited, func.get("ancestor_depths") or {})
+                candidates = _filter_overloads_by_arguments(candidates, argument_types)
             if len(candidates) == 1:
                 target_func = candidates[0]
                 has_override = any(
