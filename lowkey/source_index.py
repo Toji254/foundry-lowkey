@@ -1794,7 +1794,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 assignment = re.match(r"(?:\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
-                is_write = bool(assignment or prefix_assignment or deletion)
+                is_write = bool(
+                    assignment or prefix_assignment or deletion
+                    or member_name in {"push", "pop"}
+                )
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment)
                 relations = ["WRITES"] if is_write else ["READS"]
                 if is_compound:
@@ -2092,19 +2095,38 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         if item["kind"] == "APPLIES_MODIFIER" and item["resolution"] in {"DIRECT", "INFERRED"}:
             direct_modifiers.setdefault(item["from"], []).append(item)
     function_by_id = {item["id"]: item for item in functions}
-    effect_keys = {
-        (item.get("from"), item.get("to"), item.get("kind"), item.get("direction"))
-        for item in edges
-    }
+    # Deduplicate inherited effects by the concrete source edge, not just the
+    # target variable. Two helper accesses may touch different mapping keys or
+    # struct fields and both paths are valuable to an auditor.
+    effect_keys = {(item.get("from"), item.get("id")) for item in edges}
     for start_id, start_func in function_by_id.items():
         queue: list[tuple[str, list[str], int]] = [(start_id, [start_id], 0)]
-        # Modifiers execute as part of the decorated function. Seed their bodies
-        # into the bounded traversal, but preserve APPLIES_MODIFIER as the edge.
-        queue.extend(
-            (item["to"], [start_id, item["to"]], 1)
-            for item in direct_modifiers.get(start_id, [])
-            if item["to"] in function_by_id
-        )
+        # Modifiers execute as part of the decorated function. Their direct
+        # reads/writes are effects of the decorated function, even when the
+        # modifier makes no helper call (the common "guard += 1; _;" pattern).
+        for modifier_edge in direct_modifiers.get(start_id, []):
+            modifier_id = modifier_edge["to"]
+            if modifier_id not in function_by_id:
+                continue
+            modifier_chain = [start_id, modifier_id]
+            for effect in direct_effects.get(modifier_id, []):
+                if effect["kind"] == "ASSET_FLOW" and effect.get("status") == "CAPABILITY":
+                    continue
+                effect_key = (start_id, effect.get("id"))
+                if effect_key in effect_keys:
+                    continue
+                inherited = dict(effect)
+                inherited.update({
+                    "id": f"INFERRED:{start_id}:{effect['id']}",
+                    "from": start_id,
+                    "resolution": "INFERRED",
+                    "evidence": "MODIFIER_EXECUTION_PROPAGATION",
+                    "via": modifier_chain,
+                    "detail": "Effect occurs in a modifier applied to this function; execution is still conditional on reaching the modifier body.",
+                })
+                edges.append(inherited)
+                effect_keys.add(effect_key)
+            queue.append((modifier_id, modifier_chain, 1))
         visited = {start_id}
         while queue:
             current, chain, depth = queue.pop(0)
@@ -2119,11 +2141,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 for effect in direct_effects.get(target, []):
                     if effect["kind"] == "ASSET_FLOW" and effect.get("status") == "CAPABILITY":
                         continue
-                    effect_key = (start_id, effect.get("to"), effect.get("kind"), effect.get("direction"))
+                    effect_key = (start_id, effect.get("id"))
                     if effect_key not in effect_keys:
                         inherited = dict(effect)
                         inherited.update({
-                            "id": f"INFERRED:{start_id}:{effect['to']}:{effect['kind']}",
+                            "id": f"INFERRED:{start_id}:{effect['id']}",
                             "from": start_id,
                             "resolution": "INFERRED",
                             "evidence": "CALL_GRAPH_PROPAGATION",
