@@ -22,7 +22,7 @@ ONLY_KINDS = {
         "TRANSIENT_WRITES", "TRANSIENT_DELETES", "USES_TYPE",
         "ALIASES_STORAGE", "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION", "INITIALIZES",
     },
-    "reads": {"READS", "TRANSIENT_READS"},
+    "reads": {"READS", "TRANSIENT_READS", "READS_CONSTANT", "READS_IMMUTABLE"},
     "writes": {
         "WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES",
         "TRANSIENT_DELETES", "INITIALIZES", "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION",
@@ -85,7 +85,7 @@ def _edge_label(edge: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
     elif edge.get("kind") == "CALLS" and edge.get("implementation_resolution"):
         detail = f" · dispatch {edge.get('dispatch', 'unknown')} / implementation {edge['implementation_resolution']}"
     elif edge.get("kind") in {
-        "READS", "WRITES", "DELETES", "MUTATES", "TRANSIENT_READS",
+        "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES", "MUTATES", "TRANSIENT_READS",
         "TRANSIENT_WRITES", "TRANSIENT_DELETES", "ALIASES_STORAGE",
     } and edge.get("access_path"):
         detail = f" [{edge['access_path']}]"
@@ -308,6 +308,11 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
     if selected.get("provenance"):
         print(f"ORIGIN    {str(selected['provenance']).upper()}")
     print(f"KIND      {selected.get('kind', 'symbol').upper()}")
+    if selected.get("storage_class"):
+        persistence = str(selected["storage_class"])
+        print(f"PERSISTENCE {persistence.upper()}")
+        if persistence in {"constant", "immutable"}:
+            print("NOTE      This value is not an ordinary persistent EVM storage slot.")
     print(f"EVIDENCE  {index.get('parser', 'UNKNOWN')} static source analysis (not runtime execution)")
     ast_report = index.get("ast") or {}
     if ast_report:
@@ -450,6 +455,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             )
         calls = [edge for edge in contract_edges if edge.get("kind") == "CALLS"]
         storage_reads = [edge for edge in contract_edges if edge.get("kind") == "READS"]
+        value_references = [
+            edge for edge in contract_edges
+            if edge.get("kind") in {"READS_CONSTANT", "READS_IMMUTABLE"}
+        ]
         storage_writes = [
             edge for edge in contract_edges
             if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "UNRESOLVED_MUTATION"}
@@ -471,6 +480,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         if only in (None, "storage", "reads"):
             _render_edges("STORAGE READS", storage_reads[:limit], nodes)
             _render_edges("TRANSIENT READS", transient_reads[:limit], nodes)
+        if only in (None, "reads"):
+            _render_edges("CONSTANT / IMMUTABLE REFERENCES", value_references[:limit], nodes)
         if only in (None, "storage", "writes"):
             _render_edges("STATE MUTATIONS / WRITES", storage_writes[:limit], nodes)
             _render_edges("STATE INITIALIZERS", state_initializers[:limit], nodes)
@@ -495,6 +506,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("OVERRIDES", "OVERRIDES", "outgoing"),
             ("OVERRIDDEN BY", "OVERRIDES", "incoming"),
             ("STORAGE READS", "READS", "outgoing"),
+            ("CONSTANT REFERENCES", "READS_CONSTANT", "outgoing"),
+            ("IMMUTABLE REFERENCES", "READS_IMMUTABLE", "outgoing"),
             ("STORAGE WRITES", "WRITES", "outgoing"),
             ("DELETES", "DELETES", "outgoing"),
             ("TRANSIENT WRITES", "TRANSIENT_WRITES", "outgoing"),
@@ -523,6 +536,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
     elif selected.get("kind") in {"mapping", "state_variable", "function_pointer"}:
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
+            ("CONSTANT REFERENCED BY", "READS_CONSTANT", "incoming"),
+            ("IMMUTABLE REFERENCED BY", "READS_IMMUTABLE", "incoming"),
             ("TRANSIENTLY READ BY", "TRANSIENT_READS", "incoming"),
             ("WRITTEN BY", "WRITES", "incoming"),
             ("DELETED BY", "DELETES", "incoming"),
