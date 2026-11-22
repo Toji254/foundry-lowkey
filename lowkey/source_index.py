@@ -303,7 +303,7 @@ def _mapping_inner_type(type_name: str) -> str | None:
     if closing is None:
         return None
     inside = type_name[opening + 1:closing]
-    parts = re.split(r"\\s*=>\\s*", inside, maxsplit=1)
+    parts = re.split(r"\s*=>\s*", inside, maxsplit=1)
     if len(parts) < 2:
         return None
     # Split the first top-level key/value delimiter; nested mapping values stay intact.
@@ -608,7 +608,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         scope = func["contract"]
         known_modifiers = [
             item for item in functions
-            if item["kind"] == "modifier" and item["contract"] == scope
+            if item["kind"] == "modifier" and item["contract"] == scope and item["file"] == path
         ]
         params_shadow = set(func["parameters"])
 
@@ -627,11 +627,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 continue
             if callee_name in {"function", "modifier"}:
                 continue
-            candidates = local_functions.get((scope, callee_name), [])
+            candidates = [item for item in local_functions.get((scope, callee_name), []) if item["kind"] == "function" and item["file"] == path]
             if not candidates:
                 inherited = []
                 for base_name in func["bases"]:
-                    inherited.extend(local_functions.get((base_name, callee_name), []))
+                    inherited.extend(item for item in local_functions.get((base_name, callee_name), []) if item["kind"] == "function")
                 candidates = inherited
             if len(candidates) == 1:
                 target_func = candidates[0]
@@ -654,10 +654,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         )
         for call in member_pattern.finditer(body):
             receiver, method = call.group("receiver"), call.group("name")
+            if method in {"call", "delegatecall", "staticcall"}:
+                continue
             if receiver == "super":
                 inherited = []
                 for base_name in func["bases"]:
-                    inherited.extend(local_functions.get((base_name, method), []))
+                    inherited.extend(item for item in local_functions.get((base_name, method), []) if item["kind"] == "function")
                 if len(inherited) == 1:
                     edges.append(_edge("CALLS", func["id"], inherited[0]["id"], path, source, body_absolute + call.start(), resolution="INFERRED"))
                     continue
@@ -674,7 +676,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 resolution="UNRESOLVED", operation=low_level.group(1),
             ))
 
-        for variable in [item for item in state_variables if item["contract"] == scope]:
+        for variable in [item for item in state_variables if item["contract"] == scope and item["file"] == path]:
             if variable["name"] in params_shadow:
                 continue
             if re.search(rf"\b(?:[A-Za-z_]\w*\s+)+(?:memory|storage|calldata\s+)?{re.escape(variable['name'])}\b", body):
