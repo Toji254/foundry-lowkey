@@ -1116,10 +1116,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 func["source_offset"], status="CAPABILITY", asset="eth",
                 direction="in", detail="Payable entry point; does not prove ETH was retained or received in any execution.",
             ))
-        if re.search(r"\\bmsg\\s*\\.\\s*value\\b", body):
+        if re.search(r"\bmsg\s*\.\s*value\b", body):
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
-                offset + re.search(r"\\bmsg\\s*\\.\\s*value\\b", body).start(),
+                offset + re.search(r"\bmsg\s*\.\s*value\b", body).start(),
                 status="INPUT_VALUE_REFERENCED", asset="eth", direction="in",
                 detail="The function references msg.value. This identifies a source-level value input, not retained balance or a runtime observation.",
             ))
@@ -1127,12 +1127,12 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         # Native ETH through value-bearing CALL, address.transfer/send,
         # value-bearing deployment, and SELFDESTRUCT beneficiary paths.
         eth_call = re.compile(
-            r"(?P<recipient>msg\\.sender|tx\\.origin|address\\s*\\([^)]*\\)|payable\\s*\\([^)]*\\)|[A-Za-z_]\\w*)"
-            r"\\s*\\.\\s*call\\s*\\{\\s*value\\s*:\\s*(?P<amount>[^}]+)\\}"
+            r"(?P<recipient>msg\.sender|tx\.origin|address\s*\([^)]*\)|payable\s*\([^)]*\)|[A-Za-z_]\w*)"
+            r"\s*\.\s*call\s*\{\s*value\s*:\s*(?P<amount>[^}]+)\}"
         )
         for match in eth_call.finditer(body):
             recipient = match.group("recipient").strip()
-            compact_recipient = re.sub(r"\\s+", "", recipient)
+            compact_recipient = re.sub(r"\s+", "", recipient)
             if compact_recipient in {"address(this)", "payable(address(this))"}:
                 continue
             edges.append(_edge(
@@ -1146,21 +1146,21 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         token_names = {
             item["name"] for item in state_variables
             if item["contract"] in {func["contract"], *func["bases"]}
-            and re.search(r"\\b(?:I?ERC20|ERC20|IERC20Metadata)\\b", item.get("type", ""))
+            and re.search(r"\b(?:I?ERC20|ERC20|IERC20Metadata)\b", item.get("type", ""))
         }
         native_transfer = re.compile(
-            r"(?P<recipient>payable\\s*\\([^)]*\\)|address\\s*\\([^)]*\\)|[A-Za-z_]\\w*)"
-            r"\\s*\\.\\s*(?P<method>transfer|send)\\s*\\(\\s*(?P<amount>[^)]*)\\)"
+            r"(?P<recipient>payable\s*\([^)]*\)|address\s*\([^)]*\)|[A-Za-z_]\w*)"
+            r"\s*\.\s*(?P<method>transfer|send)\s*\(\s*(?P<amount>[^)]*)\)"
         )
         for match in native_transfer.finditer(body):
             recipient, method = match.group("recipient").strip(), match.group("method")
             # ERC20.transfer has the same method name. Its typed receiver is
             # handled by the ERC20 adapter below, never as native ETH.
-            receiver_match = re.search(r"([A-Za-z_]\\w*)\\s*\\.\\s*$", body[:match.start()])
+            receiver_match = re.search(r"([A-Za-z_]\w*)\s*\.\s*$", body[:match.start()])
             receiver_name = receiver_match.group(1) if receiver_match else ""
             if receiver_name in token_names:
                 continue
-            compact_recipient = re.sub(r"\\s+", "", recipient)
+            compact_recipient = re.sub(r"\s+", "", recipient)
             if compact_recipient in {"address(this)", "payable(address(this))"}:
                 continue
             edges.append(_edge(
@@ -1172,7 +1172,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             ))
 
         deployment_value = re.compile(
-            r"\\bnew\\s+(?P<contract>[A-Za-z_]\\w*)\\s*\\{\\s*value\\s*:\\s*(?P<amount>[^}]+)\\}"
+            r"\bnew\s+(?P<contract>[A-Za-z_]\w*)\s*\{\s*value\s*:\s*(?P<amount>[^}]+)\}"
         )
         for match in deployment_value.finditer(body):
             edges.append(_edge(
@@ -1183,7 +1183,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 detail="Value-bearing contract creation sends ETH to the new contract; deployment and constructor success are not runtime-proven.",
             ))
 
-        for match in re.finditer(r"\\bselfdestruct\\s*\\(", body):
+        for match in re.finditer(r"\bselfdestruct\s*\(", body):
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
                 offset + match.start(), asset="eth", direction="out",
@@ -1193,9 +1193,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             ))
 
         token_call = re.compile(
-            r"\\b(?P<token>[A-Za-z_]\\w*)\\s*\\.\\s*"
-            r"(?P<method>safeTransferFrom|transferFrom|safeTransfer|transfer)\\s*"
-            r"\\((?P<args>[^;{}]*)\\)"
+            r"\b(?P<token>[A-Za-z_]\w*)\s*\.\s*"
+            r"(?P<method>safeTransferFrom|transferFrom|safeTransfer|transfer)\s*"
+            r"\((?P<args>[^;{}]*)\)"
         )
         for match in token_call.finditer(body):
             token_name = match.group("token")
@@ -1207,8 +1207,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             recipient = args[0].strip() if args else "UNRESOLVED"
             if method in {"transferFrom", "safeTransferFrom"} and len(args) >= 2:
                 sender, recipient = args[0].strip(), args[1].strip()
-                sender_expr = re.sub(r"\\s+", "", sender)
-                recipient_expr = re.sub(r"\\s+", "", recipient)
+                sender_expr = re.sub(r"\s+", "", sender)
+                recipient_expr = re.sub(r"\s+", "", recipient)
                 if sender_expr in {"address(this)", "payable(address(this))"} and recipient_expr in {"address(this)", "payable(address(this))"}:
                     direction = "unresolved"
                 elif sender_expr in {"address(this)", "payable(address(this))"}:
@@ -1227,7 +1227,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 detail="Token call identified from an ERC20-typed state variable; transfer success is not proven.",
             ))
 
-        if re.search(r"\\bassembly\\b", body) and re.search(r"\\b(call|delegatecall|create|create2)\\b", body):
+        if re.search(r"\bassembly\b", body) and re.search(r"\b(call|delegatecall|create|create2)\b", body):
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:unknown", path, source,
                 offset + body.find("assembly"), asset="unknown",
