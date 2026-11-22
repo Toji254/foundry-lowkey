@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - package-style import
     from lowkey import project_tools
 
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -354,14 +354,89 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
     root_path = project_tools.project_root(root).resolve()
     try:
         inventory = project_tools.solidity_source_inventory(root_path)
-        base_graph = project_tools.build_dependency_graph(root_path)
     except Exception as error:
         raise SourceIndexError(f"Could not build the Solidity source inventory: {error}") from error
 
+    failures = list(inventory.get("uninspected") or [])
+    build_config = ""
+    config_path = root_path / "foundry.toml"
+    try:
+        build_config = config_path.read_text(encoding="utf-8")
+    except OSError:
+        pass
+
+    # Fingerprint the current first-party inventory before constructing the
+    # dependency graph. This allows a repeat query to skip that graph entirely.
+    root_manifest: list[dict[str, str]] = []
+    inventory_bytes = 0
+    for item in inventory.get("files") or []:
+        relative = str(item.get("path") or "")
+        absolute = (root_path / relative).resolve()
+        try:
+            raw = absolute.read_bytes()
+        except OSError as error:
+            failures.append({"path": relative, "phase": "cache-validation", "error": str(error)})
+            continue
+        inventory_bytes += len(raw)
+        root_manifest.append({
+            "path": str(absolute),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        })
+    root_manifest.sort(key=lambda item: item["path"])
+
+    fingerprint_data = {
+        "version": CACHE_VERSION,
+        "root": str(root_path),
+        "foundry": build_config,
+        "root_manifest": root_manifest,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    cached_path = _cache_path(fingerprint)
+
+    if use_cache and inventory.get("complete") and not failures:
+        cached = _load_cache(cached_path, fingerprint)
+        if cached is not None and cached.get("root_manifest") == root_manifest:
+            cached_import_edges = [
+                edge for edge in cached.get("edges") or []
+                if edge.get("kind") == "IMPORTS"
+            ]
+            # An unresolved import can become resolvable without modifying a
+            # file already in this cache, so do not use a cache with one.
+            imports_are_resolved = all(
+                edge.get("resolution") != "UNRESOLVED" for edge in cached_import_edges
+            )
+            manifest_valid = True
+            for entry in cached.get("source_manifest") or []:
+                try:
+                    current_hash = hashlib.sha256(Path(entry["path"]).read_bytes()).hexdigest()
+                except (OSError, KeyError, TypeError):
+                    manifest_valid = False
+                    break
+                if current_hash != entry.get("sha256"):
+                    manifest_valid = False
+                    break
+            if imports_are_resolved and manifest_valid:
+                cached["inventory"] = {
+                    "complete": not failures,
+                    "uninspected": failures,
+                    "files_inspected": len(root_manifest),
+                    "files_discovered": inventory.get("files_discovered", len(root_manifest)),
+                }
+                cached["cache"] = {"status": "HIT", "fingerprint": fingerprint}
+                return cached
+
+    try:
+        base_graph = project_tools.build_dependency_graph(root_path)
+    except Exception as error:
+        raise SourceIndexError(f"Could not build the project dependency graph: {error}") from error
+
     source_units: list[tuple[str, str, Path]] = []
     source_provenance: dict[str, str] = {}
-    failures = list(inventory.get("uninspected") or [])
     known_source_paths: set[Path] = set()
+    source_raw_hashes: dict[str, str] = {}
+    source_total_bytes = inventory_bytes
     for item in base_graph.get("nodes") or []:
         if item.get("language") != "solidity":
             continue
@@ -374,6 +449,10 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             if len(data) > project_tools.SOLIDITY_SOURCE_MAX_FILE_BYTES:
                 failures.append({"path": relative, "phase": "size-limit", "error": "Source exceeds the per-file inventory limit."})
                 continue
+            if source_total_bytes + len(data) > project_tools.SOLIDITY_SOURCE_MAX_TOTAL_BYTES:
+                failures.append({"path": relative, "phase": "inventory-budget", "error": "Source index would exceed the 128 MiB project source budget."})
+                continue
+            source_total_bytes += len(data)
             source = data.decode("utf-8-sig")
         except (OSError, UnicodeError) as error:
             failures.append({"path": relative, "phase": "read", "error": str(error)})
@@ -384,6 +463,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             display_path = os.path.relpath(path, root_path).replace(os.sep, "/")
         source_units.append((display_path, source, path))
         source_provenance[display_path] = "first-party"
+        source_raw_hashes[str(path.resolve())] = hashlib.sha256(data).hexdigest()
         known_source_paths.add(path.resolve())
 
     # Load only Solidity files explicitly imported by indexed project files.
@@ -417,43 +497,17 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         display_path = os.path.relpath(target_path, root_path).replace(os.sep, "/")
         source_units.append((display_path, source, target_path))
         source_provenance[display_path] = "third-party"
+        source_raw_hashes[str(target_path)] = hashlib.sha256(data).hexdigest()
         known_source_paths.add(target_path)
         external_total_bytes += len(data)
         external_file_count += 1
 
     source_units.sort(key=lambda item: item[0].casefold())
     source_by_path = {path: source for path, source, _absolute in source_units}
-    build_config = ""
-    config_path = root_path / "foundry.toml"
-    try:
-        build_config = config_path.read_text(encoding="utf-8")
-    except OSError:
-        pass
-    fingerprint_data = {
-        "version": CACHE_VERSION,
-        "root": str(root_path),
-        "foundry": build_config,
-        "sources": [(path, hashlib.sha256(source.encode("utf-8")).hexdigest()) for path, source, _ in source_units],
-        "imports": base_graph.get("edges") or [],
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_data, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()
-    cached_path = _cache_path(fingerprint)
-    if use_cache:
-        cached = _load_cache(cached_path, fingerprint)
-        if cached is not None:
-            cached_inventory = cached.get("inventory") or {}
-            cached_failures = cached_inventory.get("uninspected") or []
-            merged_failures = failures + cached_failures
-            cached["inventory"] = {
-                "complete": not merged_failures,
-                "uninspected": merged_failures,
-                "files_inspected": len(source_units),
-                "files_discovered": inventory.get("files_discovered", len(source_units)),
-            }
-            cached["cache"] = {"status": "HIT", "fingerprint": fingerprint}
-            return cached
+    source_manifest = [
+        {"path": path, "sha256": digest}
+        for path, digest in sorted(source_raw_hashes.items())
+    ]
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -1467,6 +1521,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "edges": edges,
             "summary": index["summary"],
             "inventory": index["inventory"],
+            "root_manifest": root_manifest,
+            "source_manifest": source_manifest,
         })
     return index
 
