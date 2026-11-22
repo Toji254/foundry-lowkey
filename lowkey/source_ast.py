@@ -238,11 +238,9 @@ def _load_matched_units(
                 "build_info": path.name,
             })
 
-    # Prefer the first stable build-info result for each identical current source.
-    unique: dict[str, dict[str, Any]] = {}
-    for unit in units:
-        unique.setdefault(unit["path"], unit)
-    return list(unique.values()), stale, warnings
+    # Keep compilation identity: declaration IDs are unique only within one
+    # solc compilation, not across separate build-info JSON files.
+    return units, stale, warnings
 
 
 def apply_solc_ast_call_edges(
@@ -274,7 +272,7 @@ def apply_solc_ast_call_edges(
         if item.get("kind") in {"function", "modifier"}
     ]
     graph_nodes = {item.get("id"): item for item in nodes}
-    declaration_map: dict[int, dict[str, Any]] = {}
+    declaration_map: dict[tuple[str, int], dict[str, Any]] = {}
     ast_function_records: list[dict[str, Any]] = []
     ast_covered: set[str] = set()
     ast_virtual: dict[str, bool] = {}
@@ -297,7 +295,7 @@ def apply_solc_ast_call_edges(
         matched_contracts += 1
         contract_ast_id = contract_ast.get("id")
         try:
-            declaration_map[int(contract_ast_id)] = contract_graph
+            declaration_map[(unit["build_info"], int(contract_ast_id))] = contract_graph
         except (TypeError, ValueError):
             pass
 
@@ -317,7 +315,7 @@ def apply_solc_ast_call_edges(
                 continue
             ast_id = child.get("id")
             try:
-                declaration_map[int(ast_id)] = graph_function
+                declaration_map[(unit["build_info"], int(ast_id))] = graph_function
             except (TypeError, ValueError):
                 continue
             ast_covered.add(graph_function["id"])
@@ -380,7 +378,7 @@ def apply_solc_ast_call_edges(
             if node_type == "FunctionCall":
                 callee = _unwrap_callee(value.get("expression"))
                 target_ast_id = _referenced_id(callee)
-                target = declaration_map.get(target_ast_id) if target_ast_id is not None else None
+                target = declaration_map.get((unit["build_info"], target_ast_id)) if target_ast_id is not None else None
                 if target is not None and target.get("kind") in {"function", "modifier"}:
                     span = _src_range(value)
                     if span is not None:
@@ -427,7 +425,7 @@ def apply_solc_ast_call_edges(
             elif node_type == "ModifierInvocation":
                 modifier_name = value.get("modifierName")
                 target_ast_id = _referenced_id(modifier_name)
-                target = declaration_map.get(target_ast_id) if target_ast_id is not None else None
+                target = declaration_map.get((unit["build_info"], target_ast_id)) if target_ast_id is not None else None
                 if target is not None and target.get("kind") == "modifier":
                     span = _src_range(value)
                     if span is not None:
