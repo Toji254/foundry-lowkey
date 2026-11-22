@@ -449,13 +449,18 @@ def apply_solc_ast_call_edges(
 
         walk(function_ast)
 
-    # Remove a lexical edge only when the AST resolves the same declaration at
-    # the same source site. Other lexical unresolved/dynamic edges remain intact.
-    ast_site_counts: dict[tuple[str, str, int, str, str], int] = {}
-    for caller_id, path, line, _column, kind, target_id in ast_sites:
-        bucket = (caller_id, path, line, kind, target_id)
-        ast_site_counts[bucket] = ast_site_counts.get(bucket, 0) + 1
-    lexical_bucket_counts: dict[tuple[str, str, int, str, str], int] = {}
+    # Remove a lexical relationship only when an AST-resolved declaration
+    # occupies the same caller/source site. This also corrects a lexical edge
+    # that resolved to the wrong same-named declaration.
+    ast_locations = {
+        (caller_id, path, line, column, kind)
+        for caller_id, path, line, column, kind, _target_id in ast_sites
+    }
+    ast_line_counts: dict[tuple[str, str, int, str], int] = {}
+    for caller_id, path, line, _column, kind, _target_id in ast_sites:
+        bucket = (caller_id, path, line, kind)
+        ast_line_counts[bucket] = ast_line_counts.get(bucket, 0) + 1
+    lexical_line_counts: dict[tuple[str, str, int, str], int] = {}
     for edge in edges:
         if edge.get("kind") not in {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER"}:
             continue
@@ -465,9 +470,8 @@ def apply_solc_ast_call_edges(
             str(source_ref.get("file") or ""),
             int(source_ref.get("line") or 0),
             str(edge.get("kind") or ""),
-            str(edge.get("to") or ""),
         )
-        lexical_bucket_counts[bucket] = lexical_bucket_counts.get(bucket, 0) + 1
+        lexical_line_counts[bucket] = lexical_line_counts.get(bucket, 0) + 1
 
     filtered_edges = []
     for edge in edges:
@@ -477,21 +481,17 @@ def apply_solc_ast_call_edges(
             str(source_ref.get("file") or ""),
             int(source_ref.get("line") or 0),
             str(edge.get("kind") or ""),
-            str(edge.get("to") or ""),
         )
-        exact_site = bucket[:1] + bucket[1:3] + (
-            int(source_ref.get("column") or 0),
-        ) + bucket[3:]
-        ast_has_same_site = exact_site in ast_sites
+        exact_site = bucket[:3] + (int(source_ref.get("column") or 0),) + bucket[3:]
         if (
             edge.get("from") in ast_covered
             and edge.get("kind") in {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER"}
             and edge.get("resolution") in {"DIRECT", "INFERRED"}
             and (
-                ast_has_same_site
+                exact_site in ast_locations
                 or (
-                    ast_site_counts.get(bucket) == 1
-                    and lexical_bucket_counts.get(bucket) == 1
+                    ast_line_counts.get(bucket) == 1
+                    and lexical_line_counts.get(bucket) == 1
                 )
             )
         ):
