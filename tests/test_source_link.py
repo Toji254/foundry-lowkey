@@ -114,6 +114,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("_debit(address,uint256)", text)
         self.assertIn("STORAGE WRITES", text)
         self.assertIn("ASSET FLOW / CAPABILITY", text)
+        self.assertIn("ORIGIN    FIRST-PARTY", text)
 
     def test_mapping_link_includes_key_path_and_accessors(self):
         temporary, root = self.fixture()
