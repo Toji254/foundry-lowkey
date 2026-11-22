@@ -6,7 +6,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 
@@ -77,6 +77,7 @@ class ProjectVerbosityTests(unittest.TestCase):
                     return_value={"total": 0, "reviews": 0, "confirmed": 0, "candidates": 0},
                 ),
                 redirect_stdout(output),
+                redirect_stderr(output),
             ):
                 code = lk.run_project_map({}, args)
         finally:
