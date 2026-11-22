@@ -967,9 +967,11 @@ def render_project_index(
     if entries:
         for entry in entries[:limit]:
             declaration_kind = str(entry["declaration_kind"]).replace("_", " ")
-            print(f"  {entry['name']} ({declaration_kind})")
-            print(f"    {entry['source']}")
-            print(f"    {entry['functions']} functions · {entry['storage_items']} storage items")
+            print(
+                f"  {entry['name']} ({declaration_kind})  "
+                f"{entry['source']}  "
+                f"[{entry['functions']} functions · {entry['storage_items']} storage]"
+            )
         if len(entries) > limit:
             print(f"  ... {len(entries) - limit} more; use --limit {min(500, len(entries))} to show more")
     else:
