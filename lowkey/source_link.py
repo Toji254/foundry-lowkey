@@ -411,6 +411,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("FUNCTIONS", {"function"}),
             ("MODIFIERS", {"modifier"}),
             ("STORAGE", {"mapping", "state_variable", "function_pointer"}),
+            ("TRANSIENT STORAGE", {"mapping", "state_variable", "function_pointer"}),
             ("CONSTANTS / IMMUTABLES", {"state_variable"}),
             ("STRUCTURES", {"struct", "struct_field"}),
             ("ENUMS", {"enum", "enum_value"}),
@@ -422,11 +423,11 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 and (
                     title == "CONSTANTS / IMMUTABLES"
                     and nodes.get(edge["to"], {}).get("storage_class") in {"constant", "immutable"}
-                    or title != "CONSTANTS / IMMUTABLES"
-                    and (
-                        title != "STORAGE"
-                        or nodes.get(edge["to"], {}).get("storage_class") not in {"constant", "immutable"}
-                    )
+                    or title == "TRANSIENT STORAGE"
+                    and nodes.get(edge["to"], {}).get("storage_class") == "transient"
+                    or title == "STORAGE"
+                    and nodes.get(edge["to"], {}).get("storage_class") not in {"constant", "immutable", "transient"}
+                    or title not in {"CONSTANTS / IMMUTABLES", "TRANSIENT STORAGE", "STORAGE"}
                 )
             ]
             if items:
