@@ -22235,8 +22235,31 @@ def run_project_map(config, args):
     if project_tools is None:
         return fail("Project tools are not installed. Re-run install.sh from this checkout.")
 
-    json_mode = any(str(item).lower() in {"json", "--json"} for item in args)
-    selectors = [str(item).strip() for item in args if str(item).lower() not in {"json", "--json"}]
+    json_mode = False
+    verbosity = 0
+    selectors = []
+    for raw_item in args:
+        item = str(raw_item).strip()
+        lowered = item.lower()
+        if lowered in {"json", "--json"}:
+            json_mode = True
+        elif lowered in {"-v", "--verbose"}:
+            verbosity = max(verbosity, 1)
+        elif lowered in {"-vv", "--very-verbose"}:
+            verbosity = 2
+        else:
+            selectors.append(item)
+
+    unknown_options = [
+        item for item in selectors
+        if item.startswith("-")
+        and item.lower() not in {"--workspace", "-h", "--help"}
+    ]
+    if unknown_options:
+        return fail(
+            f"Error: unknown lk project option '{unknown_options[0]}'. "
+            "Use 'lk project --h' for usage."
+        )
 
     # Resolve the workspace from the real working directory, not from the
     # active-project selection. This keeps explicit project selectors useful
@@ -22250,15 +22273,14 @@ def run_project_map(config, args):
 
     if selectors and selectors[0].lower() in {"-h", "--help", "help"}:
         print("Usage:")
-        print("  lk project")
-        print("  lk project <number>")
-        print("  lk project <path>")
-        print("  lk project --workspace")
-        print("  lk project <number> --json")
-        print("  lk project <path> --json")
+        print("  lk project [number|path] [-v|-vv] [--json]")
+        print("  lk project --workspace [--json]")
         print("")
-        print("A workspace gives Lowkey the big picture; a project opens the full contract/dependency/security map.")
-        print("Use a number or path when you want to switch the active project and inspect it.")
+        print("Default: concise project overview and structural navigation.")
+        print("  -v   Expand the architecture relationships.")
+        print("  -vv  Show the complete technical map and call-site report.")
+        print("  --json  Emit the complete machine-readable project graph.")
+        print("The overview is derived from the detected source graph; connectivity is not a security score.")
         return 0
 
     if workspace_container and (in_multi_workspace or (selectors and selectors[0].lower() in {"--workspace", "workspace"})):
@@ -22360,10 +22382,8 @@ def run_project_map(config, args):
         return fail("Error: Lowkey could not resolve the current project root.")
 
     try:
-        if json_mode:
-            with redirect_stdout(io.StringIO()):
-                result = project_tools.render_project_map(root)
-        else:
+        map_output = io.StringIO()
+        with redirect_stdout(map_output):
             result = project_tools.render_project_map(root)
         _sync_security_patterns(root)
         result["security_patterns"] = _security_pattern_summary(root)
@@ -22378,6 +22398,11 @@ def run_project_map(config, args):
         if json_mode:
             print(json.dumps(result, indent=2, default=str))
             return 0
+
+        if verbosity >= 2:
+            print(map_output.getvalue(), end="")
+        else:
+            project_tools.render_project_overview(result, verbosity=verbosity)
 
         pattern_summary = result.get("security_patterns", {})
         print("")
@@ -22876,13 +22901,17 @@ COMMAND_HELP = {
     ),
     "project": _help_entry(
         "Explain a project or monorepo in plain English: purpose, contracts, tests, dependencies, and audit scope.",
-        "lk project [number|path|--workspace] [--json]",
+        "lk project [number|path|--workspace] [-v|-vv] [--json]",
         "lk project 2",
         "Use it at the start of an audit so you know which package is the application scope and which packages are dependencies/tooling.",
         children={
             "--workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace --h", "Use it before choosing a primary audit project in a monorepo."),
         },
-        options=[("--json", "Print machine-readable project data.", "lk project 2 --json")],
+        options=[
+            ("-v", "Expand the overview with first-party architecture relationships.", "lk project -v"),
+            ("-vv", "Show the complete technical map and call-site report.", "lk project -vv"),
+            ("--json", "Print the complete machine-readable project graph.", "lk project 2 --json"),
+        ],
         related=["lk projects", "lk system", "lk deps"],
     ),
     "projects": _help_entry(
