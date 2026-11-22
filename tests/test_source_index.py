@@ -323,6 +323,7 @@ class SourceIndexTests(unittest.TestCase):
 
         invoke = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.invokeCallback(function,uint256)")
         stored = next(item for item in index["nodes"] if item.get("qualified_name") == "Vault.invokeStoredCallback(uint256)")
+        self.assertFalse(any(item.get("qualified_name") == "Vault.fallback(uint256)" for item in index["nodes"]))
         edges = index["edges"]
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == invoke["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == stored["id"] and edge["resolution"] == "UNRESOLVED" and edge.get("call_kind") == "dynamic-function-pointer" for edge in edges))
