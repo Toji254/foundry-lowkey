@@ -129,7 +129,7 @@ class SourceIndexTests(unittest.TestCase):
             temporary.cleanup()
 
         self.assertEqual(index["parser"], "LEXICAL")
-        self.assertEqual(index["summary"]["contracts"], 3)
+        self.assertEqual(index["summary"]["contracts"], 4)
         self.assertTrue(find_symbols(index, "Vault"))
         self.assertEqual(
             len(find_symbols(index, "Vault.withdraw(uint256)")),
