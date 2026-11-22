@@ -97,15 +97,22 @@ def _selected_edges(
     for _level in range(max(1, depth)):
         next_frontier: set[str] = set()
         for edge in edges:
-            if allowed is not None and edge.get("kind") not in allowed:
+            declaration_traversal = (
+                node.get("kind") == "contract"
+                and _level == 0
+                and edge.get("kind") == "DECLARES"
+                and edge.get("from") == node["id"]
+            )
+            if allowed is not None and edge.get("kind") not in allowed and not declaration_traversal:
                 continue
             if edge.get("from") in frontier or edge.get("to") in frontier:
-                selected[edge["id"]] = edge
+                if not declaration_traversal:
+                    selected[edge["id"]] = edge
                 if edge.get("kind") == "CALLS":
                     other = edge.get("to") if edge.get("from") in frontier else edge.get("from")
                     if other not in visited:
                         next_frontier.add(other)
-                elif node.get("kind") == "contract" and _level == 0 and edge.get("kind") == "DECLARES" and edge.get("from") == node["id"]:
+                elif declaration_traversal:
                     # A contract overview starts traversal from its declared functions.
                     if edge.get("to") not in visited:
                         next_frontier.add(edge.get("to"))
@@ -192,8 +199,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ]
             if items:
                 print(title)
-                for item in items:
+                for item in items[:limit]:
                     print(f"  {_symbol_label(item)}  {_location(item)}")
+                if len(items) > limit:
+                    print(f"  ... {len(items) - limit} more item(s)")
         file_node = next((item for item in nodes.values() if item.get("kind") == "file" and item.get("name") == selected.get("file")), None)
         file_imports = [edge for edge in (index.get("edges") or []) if file_node and edge.get("kind") == "IMPORTS" and edge.get("from") == file_node.get("id") and (only is None or only == "imports")]
         imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"] + file_imports
@@ -258,7 +267,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 and ((direction == "outgoing" and edge.get("from") == selected["id"])
                      or (direction == "incoming" and edge.get("to") == selected["id"]))
             ]
-            _render_edges(heading, values, nodes, reverse=(direction == "incoming"))
+            _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
         unresolved = [edge for edge in edges if edge.get("resolution") == "UNRESOLVED"]
         _render_edges("UNRESOLVED TARGETS", unresolved, nodes)
     elif selected.get("kind") in {"mapping", "state_variable"}:
