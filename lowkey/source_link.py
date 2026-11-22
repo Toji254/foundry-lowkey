@@ -195,6 +195,83 @@ def _print_inventory_warning(index: dict[str, Any]) -> None:
         print(f"  ... {len(failures) - 10} more uninspected item(s)")
 
 
+def _render_call_tree(
+    selected: dict[str, Any],
+    edges: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    *,
+    depth: int,
+    limit: int,
+) -> None:
+    """Render a bounded call tree without following dynamic or external targets."""
+    outgoing: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for edge in edges:
+        if edge.get("kind") == "CALLS":
+            outgoing[str(edge.get("from") or "")].append(edge)
+
+    def ordered(parent_id: str) -> list[dict[str, Any]]:
+        return sorted(outgoing.get(parent_id, []), key=lambda edge: (
+            (edge.get("source") or {}).get("file", ""),
+            (edge.get("source") or {}).get("line", 0),
+            (edge.get("source") or {}).get("column", 0),
+            nodes.get(str(edge.get("to") or ""), {}).get("qualified_name", str(edge.get("to") or "")),
+        ))
+
+    if not ordered(str(selected.get("id") or "")):
+        return
+
+    print("CALL CHAIN")
+    print(f"  {_symbol_label(selected)}")
+    emitted = 0
+    depth_limited = False
+    output_limited = False
+    expanded: set[str] = {str(selected.get("id") or "")}
+
+    def walk(parent_id: str, level: int, prefix: str, stack: tuple[str, ...]) -> None:
+        nonlocal emitted, depth_limited, output_limited
+        children = ordered(parent_id)
+        for index, edge in enumerate(children):
+            if emitted >= limit:
+                output_limited = True
+                return
+            is_last = index == len(children) - 1
+            branch = "└──" if is_last else "├──"
+            target_id = str(edge.get("to") or "")
+            target = nodes.get(target_id)
+            resolution = str(edge.get("resolution") or "UNRESOLVED")
+            if target is None:
+                label = f"UNRESOLVED TARGET {target_id}"
+            else:
+                label = _symbol_label(target)
+            print(f"{prefix}{branch} {label}  [{resolution}]  {_location(edge)}")
+            emitted += 1
+            if target is None:
+                continue
+            if target_id in stack:
+                print(f"{prefix}{'    ' if is_last else '│   '}↳ recursive cycle; traversal stopped")
+                continue
+            child_edges = ordered(target_id)
+            if not child_edges:
+                continue
+            if level >= depth:
+                depth_limited = True
+                continue
+            if target_id in expanded:
+                print(f"{prefix}{'    ' if is_last else '│   '}↳ also reached through another call path")
+                continue
+            expanded.add(target_id)
+            child_prefix = prefix + ("    " if is_last else "│   ")
+            walk(target_id, level + 1, child_prefix, stack + (target_id,))
+            if output_limited:
+                return
+
+    walk(str(selected.get("id") or ""), 1, "  ", (str(selected.get("id") or ""),))
+    if depth_limited:
+        print(f"  DEPTH: additional nested calls exist beyond --depth {depth}; increase the depth to follow them.")
+    if output_limited:
+        print(f"  OUTPUT: call tree limited to {limit} edge(s); increase --limit to expand it.")
+
+
 def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int = 1, limit: int = 80, as_json: bool = False) -> int:
     candidates = find_symbols(index, target)
     if not candidates:
@@ -438,11 +515,15 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                      or (direction == "incoming" and edge.get("to") == selected["id"]))
             ]
             _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
+        _render_call_tree(
+            selected, index.get("edges") or [], nodes, depth=depth, limit=limit,
+        )
         unresolved = [edge for edge in edges if edge.get("resolution") == "UNRESOLVED"]
         _render_edges("UNRESOLVED TARGETS", unresolved[:limit], nodes)
     elif selected.get("kind") in {"mapping", "state_variable", "function_pointer"}:
         for heading, kind, direction in (
             ("READ BY", "READS", "incoming"),
+            ("TRANSIENTLY READ BY", "TRANSIENT_READS", "incoming"),
             ("WRITTEN BY", "WRITES", "incoming"),
             ("DELETED BY", "DELETES", "incoming"),
             ("TRANSIENTLY WRITTEN BY", "TRANSIENT_WRITES", "incoming"),
