@@ -114,13 +114,24 @@ def _canonical_parameter(raw: str) -> str:
 
 
 def _parameter_names(raw: str) -> set[str]:
-    names: set[str] = set()
+    return {item["name"] for item in _parameter_descriptors(raw) if item.get("name")}
+
+
+def _parameter_descriptors(raw: str) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
     for item in _split_top_level(raw):
         value = re.sub(r"\b(memory|calldata|storage|indexed|payable)\b", " ", item)
-        parts = re.findall(r"[A-Za-z_]\w*", value)
-        if len(parts) >= 2:
-            names.add(parts[-1])
-    return names
+        value = re.sub(r"\s+", " ", value).strip()
+        parts = value.split()
+        if not parts:
+            continue
+        name = ""
+        type_name = value
+        if len(parts) > 1 and re.fullmatch(r"[A-Za-z_]\w*", parts[-1]):
+            name = parts[-1]
+            type_name = " ".join(parts[:-1])
+        result.append({"name": name, "type": _canonical_parameter(type_name)})
+    return result
 
 
 def _function_body_open(source: str, after_parameters: int) -> tuple[int | None, int | None]:
@@ -653,6 +664,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "visibility": visibility_match.group(1) if visibility_match else "UNSPECIFIED",
                     "mutability": mutability_match.group(1) if mutability_match else "nonpayable",
                     "parameters": sorted(_parameter_names(raw_params)),
+                    "parameter_types": {item["name"]: item["type"] for item in _parameter_descriptors(raw_params) if item.get("name")},
                     "body_start": body_open + 1 if body_open is not None else None,
                     "body_end": body_close,
                     "body": clean[body_open + 1:body_close] if body_open is not None and body_close is not None else "",
