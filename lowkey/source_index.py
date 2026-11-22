@@ -120,7 +120,7 @@ def _parameter_names(raw: str) -> set[str]:
 def _parameter_descriptors(raw: str) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     for item in _split_top_level(raw):
-        value = re.sub(r"\b(memory|calldata|storage|indexed|payable)\b", " ", item)
+        value = re.sub(r"\b(memory|calldata|storage|indexed)\b", " ", item)
         value = re.sub(r"\s+", " ", value).strip()
         parts = value.split()
         if not parts:
@@ -130,7 +130,11 @@ def _parameter_descriptors(raw: str) -> list[dict[str, str]]:
         if len(parts) > 1 and re.fullmatch(r"[A-Za-z_]\w*", parts[-1]):
             name = parts[-1]
             type_name = " ".join(parts[:-1])
-        result.append({"name": name, "type": _canonical_parameter(type_name)})
+        result.append({
+            "name": name,
+            "type": _canonical_parameter(type_name),
+            "declared_type": re.sub(r"\s+", " ", type_name).strip(),
+        })
     return result
 
 
@@ -665,6 +669,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "mutability": mutability_match.group(1) if mutability_match else "nonpayable",
                     "parameters": sorted(_parameter_names(raw_params)),
                     "parameter_types": {item["name"]: item["type"] for item in _parameter_descriptors(raw_params) if item.get("name")},
+                    "parameter_declared_types": {item["name"]: item["declared_type"] for item in _parameter_descriptors(raw_params) if item.get("name")},
                     "body_start": body_open + 1 if body_open is not None else None,
                     "body_end": body_close,
                     "body": clean[body_open + 1:body_close] if body_open is not None and body_close is not None else "",
@@ -1145,7 +1150,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         }
         token_names.update(
             name for name, type_name in (func.get("parameter_types") or {}).items()
-            if re.search(r"\b(?:I?ERC20|ERC20|IERC20Metadata)\b", type_name)
+            if re.search(r"\b(?:I?ERC20|ERC20|IERC20Metadata)\b", (func.get("parameter_declared_types") or {}).get(name, type_name))
         )
 
         eth_call = re.compile(
@@ -1175,9 +1180,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         }
         payable_names.update(
             name for name, type_name in (func.get("parameter_types") or {}).items()
-            if re.search(r"\baddress\s+payable\b", type_name)
+            if re.search(r"\baddress\s+payable\b", (func.get("parameter_declared_types") or {}).get(name, type_name))
         )
-        native_receiver = r"payable\s*\([^)]*\)|" + "|".join(
+        native_receiver = r"payable\s*\(\s*address\s*\(\s*this\s*\)\s*\)|payable\s*\([^)]*\)|" + "|".join(
             re.escape(name) for name in sorted(payable_names, key=len, reverse=True)
         ) if payable_names else r"payable\s*\([^)]*\)"
         native_method = re.compile(
