@@ -428,7 +428,11 @@ contract Engine is IOracle, Ownable {}
             self.assertIn("BountyArena", rendered)
             self.assertIn("Low-level calls", rendered)
             self.assertIn("Generated PoCs/tests/scripts are evidence", rendered)
-            self.assertNotIn("LowkeyPoC_BountyArena.s.sol", rendered.split("1. WHAT IS THE PROTOCOL?")[1].split("2. HOW")[0])
+            application_section = rendered.split(
+                "1. CONTRACT DECLARATIONS IN THE APPLICATION GRAPH", 1
+            )[1].split("2. HOW DOES IT DEPEND ON OTHER CODE?", 1)[0]
+            self.assertNotIn("LowkeyPoC_BountyArena.s.sol", application_section)
+            self.assertNotIn("Poc_locked_ether.t.sol", application_section)
             self.assertEqual(result["human"]["contracts"][0][0], "BountyArena")
 
     def test_graph_render_explains_call_evidence_trust(self):
@@ -481,8 +485,8 @@ contract Engine is IOracle, Ownable {}
                 ],
             )
             rendered = output.getvalue()
-            self.assertIn('src/nested/Vault.sol:4: target.call("");', rendered)
-            self.assertIn('src/nested/Vault.sol:5: target.delegatecall("");', rendered)
+            self.assertIn('src/nested/Vault.sol:4: .call("");', rendered)
+            self.assertIn('src/nested/Vault.sol:5: .delegatecall("");', rendered)
 
     def test_solidity_compiler_versions_use_numeric_semver_order(self):
         with tempfile.TemporaryDirectory() as tmp:
