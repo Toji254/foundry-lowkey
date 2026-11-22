@@ -92,10 +92,13 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("Capability negotiation:", capability_view.stdout)
 
             source_index = pathlib.Path(home) / ".lowkey" / "source_index.py"
+            source_ast = pathlib.Path(home) / ".lowkey" / "source_ast.py"
             source_link = pathlib.Path(home) / ".lowkey" / "source_link.py"
             self.assertTrue(source_index.is_file())
+            self.assertTrue(source_ast.is_file())
             self.assertTrue(source_link.is_file())
             self.assertIn(str(source_index), install_manifest["files"])
+            self.assertIn(str(source_ast), install_manifest["files"])
             self.assertIn(str(source_link), install_manifest["files"])
 
             source_fixture = pathlib.Path(home) / "source-link-fixture"
