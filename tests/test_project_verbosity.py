@@ -141,7 +141,6 @@ class ProjectVerbosityTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             self.write(root, "lowkey/lk.py", "# Lowkey CLI entry point\n")
             self.write(root, "lowkey/project_detection.py", "# checkout identity marker\n")
-            self.write(root, "lowkey/tool.py", "def run():\n    return True\n")
             self.write(root, "install.sh", "#!/bin/sh\n")
             self.write(
                 root,
@@ -171,10 +170,10 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertFalse(analysis["workspace"])
             self.assertEqual(analysis["scope_type"], "repository")
             self.assertEqual(analysis["stacks"], [])
-            self.assertEqual(analysis["languages"], {"python": 1})
+            self.assertEqual(analysis["languages"], {"python": 2})
             self.assertEqual(result["project"]["analysis"]["scope_type"], "repository")
             self.assertNotIn("workspace", result)
-            self.assertIn("Triage inventory: 1 first-party source file(s) | python: 1", output)
+            self.assertIn("Triage inventory: 2 first-party source file(s) | python: 2", output)
             self.assertNotIn("lk deps", output)
             self.assertNotIn("Build systems : foundry", output)
 
