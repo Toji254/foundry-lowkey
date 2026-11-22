@@ -476,8 +476,9 @@ def _emit_ast_storage_effects(
 
         if node_type == "Assignment":
             operator = str(value.get("operator") or "=")
-            left_mode = "WRITES" if operator == "=" else "WRITES"
-            walk(value.get("leftHandSide"), left_mode, operator)
+            walk(value.get("leftHandSide"), "WRITES", operator)
+            if operator != "=":
+                walk(value.get("leftHandSide"), "READS", "read-for-update")
             walk(value.get("rightHandSide"), "READS", None)
             for key, child in value.items():
                 if key not in {"leftHandSide", "rightHandSide"}:
@@ -490,6 +491,7 @@ def _emit_ast_storage_effects(
                 walk(value.get("subExpression"), "DELETES", "delete")
             elif operator in {"++", "--"}:
                 walk(value.get("subExpression"), "WRITES", operator)
+                walk(value.get("subExpression"), "READS", "read-for-update")
             else:
                 walk(value.get("subExpression"), "READS", None)
             for key, child in value.items():
@@ -520,8 +522,18 @@ def _emit_ast_storage_effects(
                 # The outermost access expression emits the whole path. Its
                 # base expression is visited only through index expressions.
                 emit(value, mode, operation)
-                if node_type == "IndexAccess":
-                    walk(value.get("indexExpression"), "READS", None)
+
+                def visit_index_expressions(access_node: Any) -> None:
+                    if not isinstance(access_node, dict):
+                        return
+                    access_kind = access_node.get("nodeType")
+                    if access_kind == "IndexAccess":
+                        visit_index_expressions(access_node.get("baseExpression"))
+                        walk(access_node.get("indexExpression"), "READS", None)
+                    elif access_kind == "MemberAccess":
+                        visit_index_expressions(access_node.get("expression"))
+
+                visit_index_expressions(value)
                 return
 
         for child in _ast_children(value):
