@@ -109,6 +109,10 @@ class ProjectVerbosityTests(unittest.TestCase):
             self.assertIn("IRepository", output)
             self.assertIn("FixedPoint", output)
             self.assertIn("not a risk or severity ranking", output)
+            self.assertIn("WHERE TO START", output)
+            self.assertIn("lk sources --scope application", output)
+            self.assertIn("lk deps", output)
+            self.assertIn("lk audit", output)
             application_section = output.split("SHARED BUILDING BLOCKS", 1)[0]
             self.assertNotIn("IRepository", application_section)
             self.assertNotIn("FixedPoint", application_section)
@@ -218,6 +222,10 @@ class ProjectVerbosityTests(unittest.TestCase):
 
             self.assertIn("LOWKEY PROJECT OVERVIEW", output)
             self.assertIn("cairo", output.lower())
+            self.assertIn("Source-role breakdown is unavailable", output)
+            self.assertIn("Solidity low-level call-site counts are not applicable", output)
+            self.assertIn("lk doctor", output)
+            self.assertNotIn("lk sources --scope application", output)
             self.assertNotIn("Solidity source files", output)
             self.assertNotIn("Vault", output)
 
