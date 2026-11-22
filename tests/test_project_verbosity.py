@@ -222,9 +222,8 @@ class ProjectVerbosityTests(unittest.TestCase):
 
             self.assertIn("LOWKEY PROJECT OVERVIEW", output)
             self.assertIn("cairo", output.lower())
-            self.assertIn("Source-role breakdown is unavailable", output)
             self.assertIn("Solidity low-level call-site counts are not applicable", output)
-            self.assertIn("lk doctor", output)
+            self.assertIn("lk audit", output)
             self.assertNotIn("lk sources --scope application", output)
             self.assertNotIn("Solidity source files", output)
             self.assertNotIn("Vault", output)
