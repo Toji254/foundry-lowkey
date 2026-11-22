@@ -1322,11 +1322,23 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
 
         # Raw EVM calls and CREATE opcodes need operand-level decoding. Keep
         # these visible instead of guessing the recipient, value, or slot.
-        if re.search(r"\bassembly\b", body):
-            assembly_start = body.find("assembly")
-            for operation in re.finditer(r"\b(call|callcode|delegatecall|staticcall|create|create2|selfdestruct|sload|sstore)\s*\(", body[assembly_start:]):
+        assembly_pattern = re.compile(r"\bassembly\b(?:\s*\([^)]*\))?\s*\{")
+        for assembly_match in assembly_pattern.finditer(body):
+            assembly_open = assembly_match.end() - 1
+            assembly_close = _matching(body, assembly_open, "{", "}")
+            if assembly_close is None:
+                failures.append({
+                    "path": path, "phase": "assembly-parse",
+                    "error": f"Unclosed assembly block in {func['qualified_name']} at line {_line(source, offset + assembly_match.start())}.",
+                })
+                continue
+            assembly_body = body[assembly_open + 1:assembly_close]
+            for operation in re.finditer(
+                r"\b(call|callcode|delegatecall|staticcall|create|create2|selfdestruct|sload|sstore)\s*\(",
+                assembly_body,
+            ):
                 opcode = operation.group(1).lower()
-                absolute_offset = offset + assembly_start + operation.start()
+                absolute_offset = offset + assembly_open + 1 + operation.start()
                 if opcode in {"sload", "sstore"}:
                     edges.append(_edge(
                         "UNRESOLVED_STORAGE", func["id"], f"storage-slot:{opcode}",
@@ -1334,14 +1346,21 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                         operation=opcode,
                         detail="Assembly storage access is visible, but the slot expression is not mapped to a Solidity declaration by this lexical pass.",
                     ))
-                elif opcode in {"call", "callcode", "delegatecall", "staticcall", "create", "create2", "selfdestruct"}:
+                else:
                     edges.append(_edge(
-                        "ASSET_FLOW", func["id"], f"asset:unknown:{opcode}",
-                        path, source, absolute_offset, asset="unknown",
-                        direction="unresolved", status="ASSEMBLY_UNRESOLVED",
+                        "EXTERNAL_CALL", func["id"], f"assembly-opcode:{opcode}",
+                        path, source, absolute_offset, resolution="UNRESOLVED",
                         operation=opcode,
-                        detail="Assembly contains a potentially value-moving EVM operation; decode operands and runtime context before assigning asset direction.",
+                        detail="Assembly EVM operation requires operand and runtime-context decoding.",
                     ))
+                    if opcode in {"call", "callcode", "delegatecall", "create", "create2", "selfdestruct"}:
+                        edges.append(_edge(
+                            "ASSET_FLOW", func["id"], f"asset:unknown:{opcode}",
+                            path, source, absolute_offset, asset="unknown",
+                            direction="unresolved", status="ASSEMBLY_UNRESOLVED",
+                            operation=opcode,
+                            detail="Assembly contains a potentially value-moving EVM operation; decode operands and runtime context before assigning asset direction.",
+                        ))
 
     # Add inferred storage/asset relationships through bounded internal call chains.
     direct_calls: dict[str, list[dict[str, Any]]] = {}
