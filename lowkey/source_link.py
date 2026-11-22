@@ -304,6 +304,283 @@ def _render_call_tree(
         print(f"  OUTPUT: call tree limited to {limit} edge(s); increase --limit to expand it.")
 
 
+
+def _short_function_label(node: dict[str, Any]) -> str:
+    label = _symbol_label(node)
+    contract = node.get("contract")
+    if contract and label.startswith(contract + "."):
+        return label[len(contract) + 1:]
+    return label
+
+
+def _render_contract_overview(
+    selected: dict[str, Any],
+    index: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    *,
+    limit: int,
+) -> None:
+    """Render the deliberately small, first-screen contract navigation view."""
+    all_edges = index.get("edges") or []
+    declared_edges = [
+        edge for edge in all_edges
+        if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
+    ]
+    declared = [nodes[edge["to"]] for edge in declared_edges if edge.get("to") in nodes]
+
+    print(f"CONTRACT: {selected.get('name', '?')}")
+    print(f"SOURCE:   {_location(selected)}")
+    print("EVIDENCE: static source relationships; not runtime execution")
+    print()
+
+    inheritance = [
+        edge for edge in all_edges
+        if edge.get("kind") == "INHERITS" and edge.get("from") == selected["id"]
+    ]
+    if inheritance:
+        print("INHERITANCE")
+        for edge in inheritance[:limit]:
+            target = nodes.get(edge.get("to"), {})
+            print(f"  └── {_symbol_label(target)}")
+        print()
+
+    file_node = next(
+        (
+            item for item in nodes.values()
+            if item.get("kind") == "file"
+            and item.get("name") == selected.get("file")
+        ),
+        None,
+    )
+    imports = [
+        edge for edge in all_edges
+        if edge.get("kind") == "IMPORTS"
+        and file_node
+        and edge.get("from") == file_node.get("id")
+    ]
+    if imports:
+        print("IMPORTS")
+        for edge in imports[:limit]:
+            print(f"  ├── {_symbol_label(nodes.get(edge.get('to'), {}))}")
+        print()
+
+    functions = sorted(
+        (item for item in declared if item.get("kind") == "function"),
+        key=lambda item: (
+            item.get("visibility") not in {"external", "public"},
+            item.get("line", 0),
+            item.get("name", ""),
+        ),
+    )
+    if functions:
+        print("FUNCTIONS")
+        for item in functions[:limit]:
+            print(f"  ├── {_short_function_label(item)}")
+        if len(functions) > limit:
+            print(f"  └── ... {len(functions) - limit} more")
+        print()
+
+    storage = [
+        item for item in declared
+        if item.get("kind") in {"mapping", "state_variable", "function_pointer"}
+        and item.get("storage_class") not in {"constant", "immutable", "transient"}
+    ]
+    transient = [
+        item for item in declared
+        if item.get("kind") in {"mapping", "state_variable", "function_pointer"}
+        and item.get("storage_class") == "transient"
+    ]
+    constants = [
+        item for item in declared
+        if item.get("kind") == "state_variable"
+        and item.get("storage_class") in {"constant", "immutable"}
+    ]
+    for heading, values in (
+        ("STORAGE", storage),
+        ("TRANSIENT STORAGE", transient),
+        ("CONSTANTS / IMMUTABLES", constants),
+    ):
+        if values:
+            print(heading)
+            for item in values[:limit]:
+                print(f"  ├── {item.get('name', '?')}")
+            if len(values) > limit:
+                print(f"  └── ... {len(values) - limit} more")
+            print()
+
+    related_contracts = {selected.get("name"), *(selected.get("ancestors") or [])}
+    related_functions = {
+        item.get("id") for item in nodes.values()
+        if item.get("kind") in {"function", "modifier"}
+        and item.get("contract") in related_contracts
+    }
+    external_edges = [
+        edge for edge in all_edges
+        if edge.get("kind") == "EXTERNAL_CALL"
+        and edge.get("from") in related_functions
+    ]
+    external_targets = []
+    for edge in external_edges:
+        target = nodes.get(edge.get("to"), {})
+        label = (
+            edge.get("receiver")
+            or target.get("contract")
+            or target.get("name")
+            or edge.get("method")
+            or "unresolved external target"
+        )
+        if label not in external_targets:
+            external_targets.append(label)
+    if external_targets:
+        print("EXTERNAL INTERACTIONS")
+        for label in external_targets[:limit]:
+            print(f"  ├── {label}")
+        if len(external_targets) > limit:
+            print(f"  └── ... {len(external_targets) - limit} more")
+        print()
+
+    asset_edges = [
+        edge for edge in all_edges
+        if edge.get("kind") == "ASSET_FLOW"
+        and edge.get("from") in related_functions
+    ]
+    asset_groups = set()
+    for edge in asset_edges:
+        asset = str(edge.get("asset") or "unknown").upper()
+        direction = str(edge.get("direction") or "unresolved").lower()
+        if direction in {"in", "both"}:
+            asset_groups.add(f"Potential {asset} inflows")
+        if direction in {"out", "both"}:
+            asset_groups.add(f"Potential {asset} outflows")
+        if direction not in {"in", "out", "both"}:
+            asset_groups.add(f"Potential {asset} movement (direction unresolved)")
+    if asset_groups:
+        print("ASSET MOVEMENT")
+        for label in sorted(asset_groups):
+            print(f"  ├── {label}")
+        print()
+
+    unresolved = [
+        edge for edge in all_edges
+        if edge.get("from") in related_functions
+        and (
+            edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+            or edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}
+        )
+    ]
+    if unresolved:
+        print("UNRESOLVED")
+        seen = set()
+        for edge in unresolved[:limit]:
+            source = nodes.get(edge.get("from"), {})
+            detail = (
+                edge.get("receiver")
+                or edge.get("detail")
+                or edge.get("operation")
+                or edge.get("kind", "relationship").replace("_", " ").lower()
+            )
+            label = f"{_short_function_label(source)}: {detail}"
+            if label not in seen:
+                print(f"  └── {label}")
+                seen.add(label)
+        if len(unresolved) > limit:
+            print(f"  ... {len(unresolved) - limit} more unresolved relationship(s)")
+        print()
+
+    if not any((inheritance, imports, functions, storage, transient, constants, external_targets, asset_groups, unresolved)):
+        print("No declared relationships were found for this contract.")
+    _print_inventory_warning(index)
+
+
+def _render_mapping_view(
+    selected: dict[str, Any],
+    index: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    *,
+    limit: int,
+) -> None:
+    """Render a mapping as a compact declaration/access/struct map."""
+    all_edges = index.get("edges") or []
+    print(f"MAPPING: {selected.get('qualified_name') or selected.get('name', '?')}")
+    print()
+    print("TYPE")
+    print(f"  {selected.get('type') or 'unknown'}")
+    print()
+    if selected.get("mapping_keys"):
+        print("KEY TYPES")
+        print("  " + " -> ".join(selected["mapping_keys"]))
+        print()
+    print("DECLARED")
+    print(f"  {_location(selected)}")
+
+    access_edges = [
+        edge for edge in all_edges
+        if edge.get("to") == selected.get("id")
+        and edge.get("kind") in {
+            "READS", "WRITES", "DELETES", "MUTATES",
+            "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+        }
+    ]
+    read_edges = [edge for edge in access_edges if edge.get("kind") in {"READS", "TRANSIENT_READS"}]
+    write_edges = [edge for edge in access_edges if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES"}]
+
+    def render_access(heading: str, values: list[dict[str, Any]]) -> None:
+        if not values:
+            return
+        print()
+        print(heading)
+        seen = set()
+        for edge in values:
+            function = nodes.get(edge.get("from"), {})
+            label = _short_function_label(function) if function else "unresolved function"
+            if label in seen:
+                continue
+            seen.add(label)
+            print(f"  ├── {label}")
+            access_path = edge.get("access_path")
+            if access_path:
+                print(f"  │   {access_path}")
+            if len(seen) >= limit:
+                break
+
+    render_access("READ BY", read_edges)
+    render_access("WRITTEN BY", write_edges)
+
+    value_type = selected.get("mapping_value_type")
+    if value_type:
+        struct_nodes = [
+            item for item in nodes.values()
+            if item.get("kind") == "struct"
+            and (
+                item.get("name") == value_type
+                or (item.get("qualified_name") or "").endswith("." + value_type)
+            )
+            and item.get("contract") == selected.get("contract")
+        ]
+        if not struct_nodes:
+            struct_nodes = [
+                item for item in nodes.values()
+                if item.get("kind") == "struct" and item.get("name") == value_type
+            ]
+        if struct_nodes:
+            struct_node = struct_nodes[0]
+            fields = [
+                nodes[edge["to"]] for edge in all_edges
+                if edge.get("kind") == "DECLARES"
+                and edge.get("from") == struct_node.get("id")
+                and edge.get("to") in nodes
+            ]
+            print()
+            print(f"STRUCT: {value_type}")
+            for field in fields[:limit]:
+                print(f"  ├── {field.get('name', '?')}")
+            if len(fields) > limit:
+                print(f"  └── ... {len(fields) - limit} more")
+    print()
+    print("NOTE: mapping key examples are source expressions, not computed EVM storage slots.")
+    _print_inventory_warning(index)
+
+
 def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int | None = None, limit: int = 80, as_json: bool = False) -> int:
     candidates = find_symbols(index, target)
     if not candidates:
@@ -395,185 +672,39 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         print("BASES     " + ", ".join(selected["bases"]))
     print()
 
-    if selected.get("kind") == "contract":
+    if selected.get("kind") == "contract" and only is None:
+        _render_contract_overview(selected, index, nodes, limit=min(limit, 24))
+    elif selected.get("kind") == "contract":
+        # Explicit filters remain detailed: they are intentional drill-downs.
         declared = [edge for edge in edges if edge.get("kind") == "DECLARES"]
-        if only == "storage":
-            declared = [
-                edge for edge in (index.get("edges") or [])
-                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
-                and nodes.get(edge.get("to"), {}).get("kind") in {"mapping", "state_variable", "function_pointer", "struct", "struct_field"}
-                and nodes.get(edge.get("to"), {}).get("storage_class") not in {"constant", "immutable"}
-            ]
-        elif only == "calls":
-            declared = [
-                edge for edge in (index.get("edges") or [])
-                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
-                and nodes.get(edge.get("to"), {}).get("kind") in {"function", "modifier"}
-            ]
-        elif only in {"reads", "writes"}:
-            effect_kinds = ONLY_KINDS[only]
-            affected_functions = {
-                edge.get("from") for edge in (index.get("edges") or [])
-                if edge.get("kind") in effect_kinds and edge.get("from") in nodes
-            }
-            declared = [
-                edge for edge in (index.get("edges") or [])
-                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
-                and edge.get("to") in affected_functions
-            ]
-        elif only == "assets":
-            asset_functions = {
-                edge.get("from") for edge in (index.get("edges") or [])
-                if edge.get("kind") == "ASSET_FLOW"
-            }
-            declared = [
-                edge for edge in (index.get("edges") or [])
-                if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]
-                and edge.get("to") in asset_functions
-            ]
-        elif only == "imports":
-            declared = []
         for title, kinds in (
             ("FUNCTIONS", {"function"}),
-            ("MODIFIERS", {"modifier"}),
             ("STORAGE", {"mapping", "state_variable", "function_pointer"}),
-            ("TRANSIENT STORAGE", {"mapping", "state_variable", "function_pointer"}),
-            ("CONSTANTS / IMMUTABLES", {"state_variable"}),
             ("STRUCTURES", {"struct", "struct_field"}),
             ("ENUMS", {"enum", "enum_value"}),
             ("EVENTS / ERRORS", {"event", "custom_error"}),
         ):
-            items = [
-                nodes.get(edge["to"], {}) for edge in declared
-                if nodes.get(edge["to"], {}).get("kind") in kinds
-                and (
-                    title == "CONSTANTS / IMMUTABLES"
-                    and nodes.get(edge["to"], {}).get("storage_class") in {"constant", "immutable"}
-                    or title == "TRANSIENT STORAGE"
-                    and nodes.get(edge["to"], {}).get("storage_class") == "transient"
-                    or title == "STORAGE"
-                    and nodes.get(edge["to"], {}).get("storage_class") not in {"constant", "immutable", "transient"}
-                    or title not in {"CONSTANTS / IMMUTABLES", "TRANSIENT STORAGE", "STORAGE"}
-                )
-            ]
+            items = [nodes.get(edge["to"], {}) for edge in declared if nodes.get(edge["to"], {}).get("kind") in kinds]
             if items:
                 print(title)
                 for item in items[:limit]:
                     print(f"  {_symbol_label(item)}  {_location(item)}")
-                if len(items) > limit:
-                    print(f"  ... {len(items) - limit} more item(s)")
-        file_node = next((item for item in nodes.values() if item.get("kind") == "file" and item.get("name") == selected.get("file")), None)
-        file_imports = [
-            edge for edge in (index.get("edges") or [])
-            if file_node and edge.get("kind") == "IMPORTS"
-            and edge.get("from") == file_node.get("id")
-            and (only is None or only == "imports")
-        ]
-        imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"] + file_imports
-        imported_by = [
-            edge for edge in (index.get("edges") or [])
-            if file_node and edge.get("kind") == "IMPORTS"
-            and edge.get("to") == file_node.get("id")
-            and (only is None or only == "imports")
-        ]
-        inheritance = [edge for edge in edges if edge.get("kind") == "INHERITS"]
-        inherits = [edge for edge in inheritance if edge.get("from") == selected["id"]]
-        inherited_by = [edge for edge in inheritance if edge.get("to") == selected["id"]]
-        libraries = [edge for edge in edges if edge.get("kind") == "USES_LIBRARY"]
-        library_uses = [edge for edge in libraries if edge.get("from") == selected["id"]]
-        library_used_by = [edge for edge in libraries if edge.get("to") == selected["id"]]
-        _render_edges("INHERITS", inherits[:limit], nodes)
-        _render_edges("INHERITED BY", inherited_by[:limit], nodes, reverse=True)
-        _render_edges("IMPORTS", imports[:limit], nodes)
-        _render_edges("IMPORTED BY", imported_by[:limit], nodes, reverse=True)
-        _render_edges("LIBRARY EXTENSIONS", library_uses[:limit], nodes)
-        _render_edges("USED BY", library_used_by[:limit], nodes, reverse=True)
-        related_contracts = {
-            selected.get("name"),
-            *(selected.get("ancestors") or []),
-        }
+        _render_edges("INHERITS", [edge for edge in edges if edge.get("kind") == "INHERITS" and edge.get("from") == selected["id"]][:limit], nodes)
+        _render_edges("IMPORTS", [edge for edge in edges if edge.get("kind") == "IMPORTS"][:limit], nodes)
+        related_contracts = {selected.get("name"), *(selected.get("ancestors") or [])}
         related_functions = {
             item["id"] for item in nodes.values()
-            if item.get("kind") in {"function", "modifier"}
-            and item.get("contract") in related_contracts
+            if item.get("kind") in {"function", "modifier"} and item.get("contract") in related_contracts
         }
-        inherited_functions = [
-            item for item in nodes.values()
-            if item.get("kind") == "function"
-            and item.get("contract") in set(selected.get("ancestors") or [])
-        ]
-        if inherited_functions and only in (None, "calls"):
-            print("INHERITED FUNCTIONS")
-            for item in sorted(inherited_functions, key=lambda value: (value.get("contract", ""), value.get("line", 0), value.get("qualified_name", "")))[:limit]:
-                print(f"  {_symbol_label(item)}  {_location(item)}")
-        contract_edges = [
-            edge for edge in (index.get("edges") or [])
-            if edge.get("from") in related_functions
-            and (not edge.get("via") or len(edge.get("via") or []) <= depth + 1)
-        ]
-        # Include direct function relationships in the contract overview. A
-        # larger --depth additionally exposes nested helper relationships.
-        if depth > 1:
-            contract_edges.extend(
-                edge for edge in edges
-                if edge.get("from") not in related_functions
-                and edge.get("kind") in {
-                "CALLS", "READS", "WRITES", "DELETES", "MUTATES",
-                "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
-                "INITIALIZES", "UNRESOLVED_MUTATION", "ASSET_FLOW", "EXTERNAL_CALL",
-            }
-            )
-        calls = [edge for edge in contract_edges if edge.get("kind") == "CALLS"]
-        storage_reads = [edge for edge in contract_edges if edge.get("kind") == "READS"]
-        value_references = [
-            edge for edge in contract_edges
-            if edge.get("kind") in {"READS_CONSTANT", "READS_IMMUTABLE"}
-        ]
-        storage_writes = [
-            edge for edge in contract_edges
-            if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "UNRESOLVED_MUTATION"}
-        ]
-        related_contract_ids = {
-            item["id"] for item in nodes.values()
-            if item.get("kind") == "contract"
-            and item.get("name") in related_contracts
-        }
-        constructor_ids = {
-            item["id"] for item in nodes.values()
-            if item.get("kind") == "function"
-            and item.get("name") == "constructor"
-            and item.get("contract") in related_contracts
-        }
-        state_initializers = [
-            edge for edge in (index.get("edges") or [])
-            if edge.get("kind") == "INITIALIZES"
-            and (
-                edge.get("from") in related_contract_ids
-                or edge.get("from") in constructor_ids
-            )
-        ]
-        transient_reads = [edge for edge in contract_edges if edge.get("kind") == "TRANSIENT_READS"]
+        contract_edges = [edge for edge in index.get("edges") or [] if edge.get("from") in related_functions]
         if only in (None, "calls"):
-            _render_edges("INTERNAL CALLS", calls[:limit], nodes)
+            _render_edges("INTERNAL CALLS", [edge for edge in contract_edges if edge.get("kind") == "CALLS"][:limit], nodes)
         if only in (None, "storage", "reads"):
-            _render_edges("STORAGE READS", storage_reads[:limit], nodes)
-            _render_edges("TRANSIENT READS", transient_reads[:limit], nodes)
-        if only in (None, "reads"):
-            _render_edges("CONSTANT / IMMUTABLE REFERENCES", value_references[:limit], nodes)
+            _render_edges("STORAGE READS", [edge for edge in contract_edges if edge.get("kind") in {"READS", "TRANSIENT_READS"}][:limit], nodes)
         if only in (None, "storage", "writes"):
-            _render_edges("STATE MUTATIONS / WRITES", storage_writes[:limit], nodes)
-            _render_edges("STATE INITIALIZERS", state_initializers[:limit], nodes)
-        extras = [
-            edge for edge in contract_edges
-            if edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}
-            and (only is None or edge.get("kind") in ONLY_KINDS.get(only, set()))
-        ]
-        _render_edges("EXTERNAL INTERACTIONS / ASSET PATHS", extras[:limit], nodes)
-        unresolved = [
-            edge for edge in edges + extras + file_imports
-            if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
-        ]
-        _render_edges("UNRESOLVED / AMBIGUOUS", unresolved[:limit], nodes)
+            _render_edges("STATE MUTATIONS / WRITES", [edge for edge in contract_edges if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES"}][:limit], nodes)
+        if only in (None, "assets"):
+            _render_edges("EXTERNAL INTERACTIONS / ASSET PATHS", [edge for edge in contract_edges if edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}][:limit], nodes)
     elif selected.get("kind") in {"function", "modifier"}:
         group_map = [
             ("CALLED BY", "CALLS", "incoming"),
@@ -614,36 +745,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
         ]
         _render_edges("UNRESOLVED / AMBIGUOUS TARGETS", unresolved[:limit], nodes)
-    elif selected.get("kind") in {"mapping", "state_variable", "function_pointer"}:
-        for heading, kind, direction in (
-            ("READ BY", "READS", "incoming"),
-            ("CONSTANT REFERENCED BY", "READS_CONSTANT", "incoming"),
-            ("IMMUTABLE REFERENCED BY", "READS_IMMUTABLE", "incoming"),
-            ("TRANSIENTLY READ BY", "TRANSIENT_READS", "incoming"),
-            ("WRITTEN BY", "WRITES", "incoming"),
-            ("DELETED BY", "DELETES", "incoming"),
-            ("TRANSIENTLY WRITTEN BY", "TRANSIENT_WRITES", "incoming"),
-            ("TRANSIENTLY DELETED BY", "TRANSIENT_DELETES", "incoming"),
-            ("INITIALIZED BY", "INITIALIZES", "incoming"),
-            ("ALIASED BY", "ALIASES_STORAGE", "incoming"),
-            ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
-            ("USES TYPE", "USES_TYPE", "outgoing"),
-        ):
-            values = [
-                edge for edge in edges if edge.get("kind") == kind
-                and ((direction == "outgoing" and edge.get("from") == selected["id"])
-                     or (direction == "incoming" and edge.get("to") == selected["id"]))
-            ]
-            _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
-        type_edges = [edge for edge in edges if edge.get("kind") == "USES_TYPE" and edge.get("from") == selected["id"]]
-        struct_ids = {edge.get("to") for edge in type_edges}
-        struct_fields = [edge for edge in index.get("edges") or [] if edge.get("kind") == "DECLARES" and edge.get("from") in struct_ids]
-        _render_edges("STRUCT FIELDS", struct_fields, nodes)
-        if selected.get("mapping_keys"):
-            print("MAPPING KEYS       " + " -> ".join(selected["mapping_keys"]))
-        if selected.get("mapping_value_type"):
-            print(f"MAPPING VALUE TYPE  {selected['mapping_value_type']}")
-            print("NOTE: declared mapping type is not a runtime storage-slot calculation.")
+    elif selected.get("kind") == "mapping":
+        _render_mapping_view(selected, index, nodes, limit=min(limit, 24))
+    elif selected.get("kind") in {"state_variable", "function_pointer"}:
+        _render_mapping_view(selected, index, nodes, limit=min(limit, 24))
     else:
         outgoing, incoming = _edge_groups(selected, edges, nodes)
         for kind, values in sorted(outgoing.items()):
