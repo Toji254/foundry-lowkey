@@ -845,7 +845,9 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             add_node({
                 "id": type_id, "kind": "type", "name": type_name,
                 "qualified_name": type_name, "file": path,
-                "line": _line(source, offset), "evidence": "LEXICAL_SOURCE",
+                "line": _line(source, offset),
+                "provenance": source_provenance.get(path, "unclassified"),
+                "evidence": "LEXICAL_SOURCE",
             })
         return type_id
 
