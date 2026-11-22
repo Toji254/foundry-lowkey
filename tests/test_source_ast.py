@@ -21,8 +21,8 @@ class SourceAstTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
-    def _src(self, source: str, text: str) -> str:
-        start = source.index(text)
+    def _src(self, source: str, text: str, start_after: int = 0) -> str:
+        start = source.index(text, start_after)
         return f"{len(source[:start].encode('utf-8'))}:{len(text.encode('utf-8'))}:0"
 
     def _fixture(self, *, stale: bool = False):
@@ -82,7 +82,7 @@ class SourceAstTests(unittest.TestCase):
                 "nodeType": "Identifier",
                 "name": "onlyAdmin",
                 "referencedDeclaration": 5,
-                "src": self._src(source, "onlyAdmin"),
+                "src": self._src(source, "onlyAdmin", source.index("function withdraw")),
             },
             "arguments": [],
             "src": self._src(source, "onlyAdmin"),
@@ -144,7 +144,7 @@ class SourceAstTests(unittest.TestCase):
                     "name": "_debit",
                     "visibility": "internal",
                     "virtual": False,
-                    "src": self._src(source, "function _debit() internal {}"),
+                    "src": self._src(source, "function _debit() internal {}", debit_start + 1),
                     "body": {"id": 40, "nodeType": "Block", "statements": [], "src": self._src(source, "{}")},
                 },
             ],
