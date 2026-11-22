@@ -245,6 +245,296 @@ def _load_matched_units(
     return units, stale, warnings
 
 
+
+def _match_storage_declaration(
+    candidates: list[dict[str, Any]],
+    *,
+    path: str,
+    contract: str,
+    name: str,
+    ast_node: dict[str, Any],
+    source: str,
+) -> dict[str, Any] | None:
+    span = _src_range(ast_node)
+    if span is None:
+        return None
+    char_start = _byte_to_char_offset(source, span[0])
+    line, _column = _line_column(source, char_start)
+    matches = [
+        item for item in candidates
+        if item.get("file") == path
+        and item.get("contract") == contract
+        and item.get("name") == name
+    ]
+    exact = [item for item in matches if item.get("source_offset") == char_start]
+    if len(exact) == 1:
+        return exact[0]
+    on_line = [item for item in matches if item.get("line") == line]
+    return on_line[0] if len(on_line) == 1 else None
+
+
+def _storage_expression(
+    expression: Any,
+    *,
+    build_info: str,
+    declarations: dict[tuple[str, int], dict[str, Any]],
+    aliases: dict[tuple[str, int], dict[str, Any]],
+    source: str,
+) -> dict[str, Any] | None:
+    if not isinstance(expression, dict):
+        return None
+    node_type = expression.get("nodeType")
+
+    if node_type == "Identifier":
+        declaration_id = _referenced_id(expression)
+        if declaration_id is None:
+            return None
+        target = declarations.get((build_info, declaration_id))
+        if target is not None and target.get("kind") in {
+            "mapping", "state_variable", "function_pointer",
+        }:
+            return {
+                "target": target,
+                "path": str(target.get("name") or ""),
+                "keys": [],
+                "fields": [],
+                "alias": None,
+            }
+        alias = aliases.get((build_info, declaration_id))
+        if alias is not None:
+            return {
+                "target": alias["target"],
+                "path": alias["path"],
+                "keys": list(alias.get("keys") or []),
+                "fields": list(alias.get("fields") or []),
+                "alias": alias.get("alias"),
+            }
+        return None
+
+    if node_type == "IndexAccess":
+        base = _storage_expression(
+            expression.get("baseExpression"),
+            build_info=build_info, declarations=declarations,
+            aliases=aliases, source=source,
+        )
+        if base is None:
+            return None
+        index_expression = expression.get("indexExpression")
+        index_span = _src_range(index_expression) if isinstance(index_expression, dict) else None
+        index_text = "?"
+        if index_span is not None:
+            start = _byte_to_char_offset(source, index_span[0])
+            end = _byte_to_char_offset(source, index_span[0] + index_span[1])
+            index_text = source[start:end].strip() or "?"
+        base["path"] += f"[{index_text}]"
+        base["keys"].append(index_text)
+        return base
+
+    if node_type == "MemberAccess":
+        base = _storage_expression(
+            expression.get("expression"),
+            build_info=build_info, declarations=declarations,
+            aliases=aliases, source=source,
+        )
+        if base is None:
+            return None
+        member_name = str(expression.get("memberName") or "")
+        if not member_name:
+            return None
+        base["path"] += f".{member_name}"
+        member_id = _referenced_id(expression)
+        field = declarations.get((build_info, member_id)) if member_id is not None else None
+        if field is not None and field.get("kind") == "struct_field":
+            base["fields"].append(field)
+        return base
+
+    return None
+
+
+def _emit_ast_storage_effects(
+    function_ast: dict[str, Any],
+    caller: dict[str, Any],
+    *,
+    unit: dict[str, Any],
+    declarations: dict[tuple[str, int], dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> int:
+    """Emit AST-backed storage reads/writes with referenced state declarations."""
+    source = unit["source"]
+    build_info = unit["build_info"]
+    aliases: dict[tuple[str, int], dict[str, Any]] = {}
+    emitted = 0
+
+    def emit(expression: dict[str, Any], mode: str, operation: str | None = None) -> None:
+        nonlocal emitted
+        access = _storage_expression(
+            expression, build_info=build_info, declarations=declarations,
+            aliases=aliases, source=source,
+        )
+        if access is None:
+            return
+        span = _src_range(expression)
+        if span is None:
+            return
+        start = _byte_to_char_offset(source, span[0])
+        line, column = _line_column(source, start)
+        target = access["target"]
+        persistence = str(target.get("storage_class") or "persistent")
+        if persistence == "transient":
+            mode = {
+                "READS": "TRANSIENT_READS",
+                "WRITES": "TRANSIENT_WRITES",
+                "DELETES": "TRANSIENT_DELETES",
+            }.get(mode, mode)
+        relation_targets = [(target, None)] + [
+            (field, field.get("name")) for field in access["fields"]
+        ]
+        for node, field_name in relation_targets:
+            edge_kind = mode
+            edge = {
+                "id": (
+                    f"SOLC_AST_STORAGE:{edge_kind}:{caller['id']}:"
+                    f"{node['id']}:{unit['path']}:{start}:{column}"
+                ),
+                "kind": edge_kind,
+                "from": caller["id"],
+                "to": node["id"],
+                "resolution": "DIRECT",
+                "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+                "source": {"file": unit["path"], "line": line, "column": column},
+                "variable": target.get("name"),
+                "access_path": access["path"],
+                "keys": list(access["keys"]),
+                "member": field_name,
+                "operation": operation or ("read" if mode.endswith("READS") else "write"),
+                "mutation_kind": (
+                    "DELETE" if mode == "DELETES" else
+                    "COMPOUND_ASSIGNMENT" if operation and operation not in {"=", "tuple="} else
+                    "ASSIGNMENT" if mode.endswith("WRITES") else "READ"
+                ),
+                "persistence": persistence,
+            }
+            if access.get("alias"):
+                edge["alias"] = access["alias"]
+            edges.append(edge)
+            emitted += 1
+
+    def walk(value: Any, mode: str = "READS", operation: str | None = None) -> None:
+        if isinstance(value, list):
+            for child in value:
+                walk(child, mode, operation)
+            return
+        if not isinstance(value, dict):
+            return
+
+        node_type = value.get("nodeType")
+        if node_type == "VariableDeclarationStatement":
+            initial = value.get("initialValue")
+            for declaration in value.get("declarations") or []:
+                if not isinstance(declaration, dict):
+                    continue
+                if declaration.get("storageLocation") != "storage":
+                    continue
+                declaration_id = declaration.get("id")
+                initial_access = _storage_expression(
+                    initial, build_info=build_info, declarations=declarations,
+                    aliases=aliases, source=source,
+                )
+                if declaration_id is not None and initial_access is not None:
+                    try:
+                        aliases[(build_info, int(declaration_id))] = {
+                            **initial_access, "alias": declaration.get("name"),
+                        }
+                        span = _src_range(value)
+                        if span is not None:
+                            start = _byte_to_char_offset(source, span[0])
+                            line, column = _line_column(source, start)
+                            edges.append({
+                                "id": f"SOLC_AST_ALIAS:{caller['id']}:{initial_access['target']['id']}:{unit['path']}:{start}",
+                                "kind": "ALIASES_STORAGE",
+                                "from": caller["id"],
+                                "to": initial_access["target"]["id"],
+                                "resolution": "DIRECT",
+                                "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+                                "source": {"file": unit["path"], "line": line, "column": column},
+                                "alias": declaration.get("name"),
+                                "access_path": initial_access["path"],
+                            })
+                            nonlocal_alias_count[0] += 1
+                    except (TypeError, ValueError):
+                        pass
+            # A storage-reference initializer aliases a slot; it does not copy
+            # the full stored value into a temporary local variable.
+            if any(
+                isinstance(item, dict) and item.get("storageLocation") == "storage"
+                for item in value.get("declarations") or []
+            ):
+                for key, child in value.items():
+                    if key not in {"initialValue", "declarations"}:
+                        walk(child, mode, operation)
+                return
+
+        if node_type == "Assignment":
+            operator = str(value.get("operator") or "=")
+            left_mode = "WRITES" if operator == "=" else "WRITES"
+            walk(value.get("leftHandSide"), left_mode, operator)
+            walk(value.get("rightHandSide"), "READS", None)
+            for key, child in value.items():
+                if key not in {"leftHandSide", "rightHandSide"}:
+                    walk(child, mode, operation)
+            return
+
+        if node_type == "UnaryOperation":
+            operator = str(value.get("operator") or "")
+            if operator == "delete":
+                walk(value.get("subExpression"), "DELETES", "delete")
+            elif operator in {"++", "--"}:
+                walk(value.get("subExpression"), "WRITES", operator)
+            else:
+                walk(value.get("subExpression"), "READS", None)
+            for key, child in value.items():
+                if key != "subExpression":
+                    walk(child, mode, operation)
+            return
+
+        if node_type == "FunctionCall":
+            expression = value.get("expression")
+            if isinstance(expression, dict) and expression.get("nodeType") == "MemberAccess":
+                member_name = str(expression.get("memberName") or "")
+                if member_name in {"push", "pop"}:
+                    walk(expression.get("expression"), "WRITES", f"array.{member_name}")
+                    for argument in value.get("arguments") or []:
+                        walk(argument, "READS", None)
+                    return
+            walk(expression, "READS", None)
+            for argument in value.get("arguments") or []:
+                walk(argument, "READS", None)
+            return
+
+        if node_type in {"Identifier", "IndexAccess", "MemberAccess"}:
+            access = _storage_expression(
+                value, build_info=build_info, declarations=declarations,
+                aliases=aliases, source=source,
+            )
+            if access is not None:
+                # The outermost access expression emits the whole path. Its
+                # base expression is visited only through index expressions.
+                emit(value, mode, operation)
+                if node_type == "IndexAccess":
+                    walk(value.get("indexExpression"), "READS", None)
+                return
+
+        for child in _ast_children(value):
+            walk(child, mode, operation)
+
+    # This mutable counter is kept separate from effect edges because aliases
+    # are useful graph evidence even though they are not themselves mutations.
+    nonlocal_alias_count = [0]
+    walk(function_ast)
+    return emitted + nonlocal_alias_count[0]
+
+
+
 def apply_solc_ast_call_edges(
     root: str | Path,
     source_by_path: dict[str, str],
