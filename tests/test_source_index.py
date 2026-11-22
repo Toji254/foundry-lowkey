@@ -35,6 +35,19 @@ class SourceIndexTests(unittest.TestCase):
         )
         self.write(
             root,
+            "src/SafeERC20.sol",
+            """
+            pragma solidity ^0.8.20;
+            import "./IERC20.sol";
+            library SafeERC20 {
+                function safeTransfer(IERC20 token, address to, uint256 amount) internal {
+                    token.transfer(to, amount);
+                }
+            }
+            """,
+        )
+        self.write(
+            root,
             "src/BaseVault.sol",
             """
             pragma solidity ^0.8.20;
@@ -51,8 +64,10 @@ class SourceIndexTests(unittest.TestCase):
             pragma solidity ^0.8.20;
             import "./IERC20.sol";
             import "./BaseVault.sol";
+            import "./SafeERC20.sol";
 
             contract Vault is BaseVault {
+                using SafeERC20 for IERC20;
                 struct Position {
                     address owner;
                     uint256 debt;
@@ -72,7 +87,7 @@ class SourceIndexTests(unittest.TestCase):
 
                 function withdraw(uint256 amount) external onlyOwner nonReentrant {
                     _update(msg.sender, amount);
-                    token.transfer(msg.sender, amount);
+                    token.safeTransfer(msg.sender, amount);
                     (bool ok,) = msg.sender.call{value: amount}("");
                     require(ok);
                     emit Withdrawn(msg.sender, amount);
@@ -124,6 +139,8 @@ class SourceIndexTests(unittest.TestCase):
         self.assertEqual(len(mapping), 1)
         self.assertEqual(mapping[0]["kind"], "mapping")
         self.assertIn("mapping(uint256 => Position)", mapping[0]["type"])
+        self.assertEqual(mapping[0]["mapping_keys"], ["address", "uint256"])
+        self.assertEqual(mapping[0]["mapping_value_type"], "Position")
         self.assertTrue(find_symbols(index, "Vault.Position.debt") == [])
 
     def test_direct_calls_storage_access_modifiers_and_events_are_linked(self):
@@ -140,6 +157,9 @@ class SourceIndexTests(unittest.TestCase):
         edges = index["edges"]
 
         self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == withdraw_id and edge["to"] == update_id for edge in edges))
+        library_functions = [item for item in index["nodes"] if item.get("qualified_name") == "SafeERC20.safeTransfer(IERC20,address,uint256)"]]
+        self.assertEqual(len(library_functions), 1)
+        self.assertTrue(any(edge["kind"] == "CALLS" and edge["from"] == withdraw_id and edge["to"] == library_functions[0]["id"] and edge.get("call_kind") == "using-for extension" for edge in edges))
         self.assertTrue(any(edge["kind"] == "APPLIES_MODIFIER" and edge["from"] == withdraw_id for edge in edges))
         self.assertTrue(any(edge["kind"] == "EMITS" and edge["from"] == withdraw_id for edge in edges))
         self.assertTrue(any(edge["kind"] == "WRITES" and edge["from"] == update_id for edge in edges))
