@@ -1600,8 +1600,74 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     return result
 
 
+_PROJECT_SUPPORT_PARTS = {
+    "test", "tests", "script", "scripts", "deploy", "deployment",
+    "fixtures", "fixture", "mocks", "mock", "harness", "harnesses",
+    "benchmarks", "benchmark", "docs", "doc", "out", "cache",
+    "artifacts", "broadcast", "node_modules", ".audit",
+}
+_PROJECT_INTERFACE_PARTS = {"interface", "interfaces"}
+_PROJECT_LIBRARY_PARTS = {"lib", "libs", "library", "libraries"}
+_PROJECT_INFRASTRUCTURE_PARTS = {
+    "access", "base", "common", "helpers", "math", "primitives",
+    "security", "shared", "standards", "token", "utils", "utility",
+}
+
+
+def _project_source_role(
+    node: dict[str, Any],
+    *,
+    support_paths: set[str] | None = None,
+) -> str:
+    """Classify a graph node for navigation, not for security judgement.
+
+    Classification uses source declarations and generic path conventions.
+    It deliberately does not infer protocol-specific names or risk levels.
+    """
+    path = str(node.get("file") or "").replace("\\", "/").lstrip("./")
+    if not path:
+        return "unclassified"
+
+    parts = [part.lower() for part in path.split("/") if part]
+    directories = parts[:-1]
+    if (support_paths and path in support_paths) or any(
+        part in _PROJECT_SUPPORT_PARTS for part in directories
+    ):
+        return "support"
+
+    declarations = [
+        item for item in (node.get("declarations") or [])
+        if isinstance(item, dict)
+    ]
+    kinds = {
+        str(item.get("kind") or "").strip().lower()
+        for item in declarations
+        if item.get("kind")
+    }
+
+    if "interface" in kinds or any(
+        part in _PROJECT_INTERFACE_PARTS for part in directories
+    ):
+        return "interface"
+    if "library" in kinds or any(
+        part in _PROJECT_LIBRARY_PARTS for part in directories
+    ):
+        return "library"
+    if any(part in _PROJECT_INFRASTRUCTURE_PARTS for part in directories):
+        return "infrastructure"
+    if kinds:
+        return "application"
+
+    source_roots = {
+        "src", "source", "sources", "contracts", "programs", "vyper",
+    }
+    if any(part in source_roots for part in directories):
+        return "application"
+    return "unclassified"
+
+
 def _project_structural_navigation(result: dict[str, Any]) -> dict[str, Any]:
-    """Rank source units by resolved first-party import/inheritance connectivity."""
+    """Rank application and shared units separately by source-graph connectivity."""
     graph = result.get("graph") or {}
     human = result.get("human") or {}
     nodes = [
@@ -1610,10 +1676,13 @@ def _project_structural_navigation(result: dict[str, Any]) -> dict[str, Any]:
     ]
     by_file = {str(node["file"]): node for node in nodes}
     support = {str(path) for path in (human.get("support_files") or [])}
+    roles = {
+        path: _project_source_role(node, support_paths=support)
+        for path, node in by_file.items()
+    }
 
     declarations_by_name: dict[str, set[str]] = {}
-    for node in nodes:
-        path = str(node["file"])
+    for path, node in by_file.items():
         for declaration in node.get("declarations") or []:
             if not isinstance(declaration, dict):
                 continue
@@ -1647,45 +1716,77 @@ def _project_structural_navigation(result: dict[str, Any]) -> dict[str, Any]:
             outgoing.setdefault(source, set()).add(destination)
             incoming.setdefault(destination, set()).add(source)
 
-    rows = []
-    for path, node in by_file.items():
-        if path in support:
-            continue
-        inbound = incoming.get(path, set())
-        outbound = outgoing.get(path, set())
-        connections = len(inbound) + len(outbound)
-        if connections <= 0:
-            continue
-        names = [
-            str(item.get("name"))
-            for item in (node.get("declarations") or [])
-            if isinstance(item, dict) and item.get("name")
-        ]
-        label = ", ".join(names[:2]) + (" ..." if len(names) > 2 else "") if names else path
-        rows.append({
-            "file": path,
-            "label": label,
-            "incoming": sorted(inbound, key=str.casefold),
-            "outgoing": sorted(outbound, key=str.casefold),
-            "connections": connections,
-        })
-
-    rows.sort(
-        key=lambda item: (
-            -item["connections"],
-            -len(item["incoming"]),
-            -len(item["outgoing"]),
-            item["file"].casefold(),
+    def rank_rows(allowed_roles: set[str]) -> list[dict[str, Any]]:
+        rows = []
+        for path, node in by_file.items():
+            role = roles.get(path, "unclassified")
+            if role not in allowed_roles:
+                continue
+            inbound = incoming.get(path, set())
+            outbound = outgoing.get(path, set())
+            connections = len(inbound) + len(outbound)
+            if connections <= 0:
+                continue
+            names = [
+                str(item.get("name"))
+                for item in (node.get("declarations") or [])
+                if isinstance(item, dict) and item.get("name")
+            ]
+            label = (
+                ", ".join(names[:2]) + (" ..." if len(names) > 2 else "")
+                if names else path
+            )
+            rows.append({
+                "file": path,
+                "label": label,
+                "role": role,
+                "incoming": sorted(inbound, key=str.casefold),
+                "outgoing": sorted(outbound, key=str.casefold),
+                "connections": connections,
+            })
+        rows.sort(
+            key=lambda item: (
+                -item["connections"],
+                -len(item["incoming"]),
+                -len(item["outgoing"]),
+                item["file"].casefold(),
+            )
         )
-    )
-    return {"rows": rows}
+        return rows
+
+    return {
+        "rows": rank_rows({"application"}),
+        "shared_rows": rank_rows({"interface", "library", "infrastructure"}),
+        "other_rows": rank_rows({"unclassified"}),
+        "roles": roles,
+    }
+
+
+def _project_pretty_kind(value: object) -> str:
+    raw = str(value or "unknown").strip()
+    if raw.lower() == "unknown":
+        return "Unknown"
+    return " ".join(part.capitalize() for part in raw.replace("_", "-").split("-"))
+
+
+def _project_display_name(node: dict[str, Any] | None, fallback: str) -> str:
+    if not node:
+        return fallback
+    declarations = node.get("declarations") or []
+    names = [
+        str(item.get("name"))
+        for item in declarations
+        if isinstance(item, dict) and item.get("name")
+    ]
+    return ", ".join(names[:2]) or fallback
 
 
 def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> None:
-    """Render a concise, language-neutral overview from an already-built project graph.
+    """Render a useful, language-neutral project orientation report.
 
-    verbosity=0 is the compact default; verbosity=1 adds relationship detail.
-    The legacy full report remains available from render_project_map().
+    verbosity=0 is the decision-oriented overview; verbosity=1 expands the
+    architecture relationships. The legacy full report remains available
+    from render_project_map(), and JSON output is assembled by the CLI.
     """
     if verbosity not in {0, 1}:
         raise ValueError("overview verbosity must be 0 or 1")
@@ -1695,7 +1796,14 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     graph = result.get("graph") or {}
     human = result.get("human") or {}
     graph_summary = graph.get("summary") or {}
-    nodes = [node for node in (graph.get("nodes") or []) if isinstance(node, dict)]
+    nodes = [
+        node for node in (graph.get("nodes") or [])
+        if isinstance(node, dict) and node.get("file")
+    ]
+    edges = [
+        edge for edge in (graph.get("edges") or [])
+        if isinstance(edge, dict)
+    ]
 
     languages = project.get("languages") or sorted({
         str(node.get("language"))
@@ -1705,119 +1813,246 @@ def render_project_overview(result: dict[str, Any], *, verbosity: int = 0) -> No
     if isinstance(languages, str):
         languages = [languages]
     language_label = ", ".join(str(item) for item in languages) or "not detected"
-    stack = str(project.get("kind") or "unknown")
+    build_systems = project.get("build_systems") or []
+    if isinstance(build_systems, str):
+        build_systems = [build_systems]
+    build_label = ", ".join(str(item) for item in build_systems) or "not detected"
+
+    compiler_versions = [
+        str(item) for item in (project.get("solidity_compilers") or [])
+        if item
+    ]
+    vyper_compiler = project.get("vyper_compiler")
+    compiler_parts = []
+    if compiler_versions:
+        compiler_parts.append("Solidity " + ", ".join(compiler_versions))
+    if vyper_compiler:
+        compiler_parts.append("Vyper " + str(vyper_compiler))
+    compiler_label = "; ".join(compiler_parts) or "not detected"
+
     analysis = project.get("analysis") or {}
     analysis_status = str(analysis.get("analysis_status") or "not assessed")
     coverage = str(analysis.get("coverage") or "not recorded")
-
     source_units = int(graph_summary.get("files", len(nodes)) or 0)
     declared_units = sum(1 for node in nodes if node.get("declarations"))
-    declared_symbols = sum(len(node.get("declarations") or []) for node in nodes)
-    support_units = len(human.get("support_files") or [])
+    declared_symbols = sum(
+        len(node.get("declarations") or []) for node in nodes
+    )
 
-    edges = graph.get("edges") or []
+    navigation = _project_structural_navigation(result)
+    roles = navigation["roles"]
+    role_counts = {
+        role: sum(1 for value in roles.values() if value == role)
+        for role in (
+            "application", "interface", "library", "infrastructure",
+            "support", "unclassified",
+        )
+    }
+
     import_edges = [edge for edge in edges if edge.get("kind") == "import"]
-    inheritance_edges = [edge for edge in edges if edge.get("kind") == "inherits"]
-    unresolved = list(human.get("unresolved") or graph.get("unresolved") or [])
-    total_imports = int(graph_summary.get("imports", len(import_edges)) or 0)
-    unresolved_count = len(unresolved)
-    resolved_count = max(0, total_imports - unresolved_count)
-    external_count = int(graph_summary.get("external_imports", 0) or 0)
+    support_import_edges = [
+        edge for edge in import_edges
+        if roles.get(str(edge.get("from") or ""), "unclassified") == "support"
+    ]
+    production_import_edges = [
+        edge for edge in import_edges
+        if roles.get(str(edge.get("from") or ""), "unclassified") != "support"
+    ]
 
-    low_level = list(human.get("low_level_calls") or [])
-    heuristic_calls = list(human.get("heuristic_external_calls") or [])
-    hotspots = _project_structural_navigation(result)["rows"]
+    def dependency_counts(items: list[dict[str, Any]]) -> tuple[int, int, int, int]:
+        total = len(items)
+        resolved = sum(1 for edge in items if edge.get("resolved"))
+        unresolved = total - resolved
+        external = sum(
+            1 for edge in items
+            if edge.get("external") and edge.get("resolved")
+        )
+        return total, resolved, unresolved, external
+
+    production_counts = dependency_counts(production_import_edges)
+    support_counts = dependency_counts(support_import_edges)
+    inheritance_edges = [
+        edge for edge in edges if edge.get("kind") == "inherits"
+        and roles.get(str(edge.get("from") or ""), "unclassified") != "support"
+    ]
+
+    # Use the application-graph call inventory. An empty list is meaningful:
+    # do not fall back to whole-graph calls or unresolved imports.
+    low_level = list(human.get("low_level_calls", []) or [])
+    heuristic_calls = list(human.get("heuristic_external_calls", []) or [])
+    app_rows = navigation["rows"]
+    shared_rows = navigation["shared_rows"]
+    other_rows = navigation["other_rows"]
 
     print("LOWKEY PROJECT OVERVIEW")
     print("=" * 72)
-    print(f"Project    : {project.get('root') or graph.get('root') or 'unknown'}")
-    print(f"Stack      : {stack}")
-    print(f"Languages  : {language_label}")
-    print(f"Analysis   : {analysis_status} (coverage: {coverage})")
+    print(f"Project       : {project.get('root') or graph.get('root') or 'unknown'}")
+    print(f"Type          : {_project_pretty_kind(project.get('kind'))}")
+    print(f"Languages     : {language_label}")
+    print(f"Build systems : {build_label}")
+    print(f"Compiler(s)   : {compiler_label}")
+    if result.get("workspace"):
+        workspace = result["workspace"]
+        print(
+            f"Workspace     : {workspace.get('project_count', 0)} project(s) "
+            f"under {workspace.get('root', 'unknown')}"
+        )
 
     print("")
-    print("SOURCE MAP")
+    print("ANALYSIS HEALTH")
     print("-" * 72)
+    print(f"Status        : {analysis_status}")
+    print(f"Coverage      : {coverage}")
     print(
-        f"Source units: {source_units} | Declared units: {declared_units} "
-        f"| Declared symbols: {declared_symbols} | Support units: {support_units}"
+        f"Source units  : {source_units} mapped | {declared_units} "
+        f"with declarations | {declared_symbols} declared symbols"
+    )
+    analyzed_sources = project.get("source_file_count")
+    if analyzed_sources is not None:
+        print(f"Analyzer scope: {int(analyzed_sources)} source file(s) reported")
+
+    print("")
+    print("PROJECT STRUCTURE")
+    print("-" * 72)
+    print(f"Application contracts/modules : {role_counts['application']}")
+    print(f"Interfaces                    : {role_counts['interface']}")
+    print(f"Libraries                     : {role_counts['library']}")
+    print(f"Shared infrastructure          : {role_counts['infrastructure']}")
+    print(f"Tests/support/tooling           : {role_counts['support']}")
+    if role_counts["unclassified"]:
+        print(f"Unclassified source units       : {role_counts['unclassified']}")
+    print(
+        "Roles are inferred from declarations and generic path conventions; "
+        "they are navigation hints, not semantic guarantees."
     )
 
     print("")
     print("DEPENDENCY HEALTH")
     print("-" * 72)
     print(
-        f"Imports: {total_imports} total | {resolved_count} resolved "
-        f"| {unresolved_count} unresolved | {external_count} external"
+        "Production graph imports : "
+        f"{production_counts[0]} total | {production_counts[1]} resolved | "
+        f"{production_counts[2]} unresolved | {production_counts[3]} external"
     )
-    print(f"Inheritance relationships: {len(inheritance_edges)}")
-    if unresolved:
-        print("Unresolved import examples:")
-        for edge in unresolved[:3]:
-            print(f"  - {edge.get('from', 'unknown')} -> {edge.get('to', 'unknown')}")
-
-    print("")
-    print("SECURITY-RELEVANT SYNTAX")
-    print("-" * 72)
-    print(f"Low-level call syntax matches: {len(low_level)}")
     print(
-        f"Other call-like patterns: {len(heuristic_calls)} "
-        "(heuristic only; not vulnerability findings)"
+        "Support/test imports     : "
+        f"{support_counts[0]} total | {support_counts[1]} resolved | "
+        f"{support_counts[2]} unresolved | {support_counts[3]} external"
     )
+    print(f"Production inheritance   : {len(inheritance_edges)} relationship(s)")
+
+    unresolved_production = [
+        edge for edge in production_import_edges if not edge.get("resolved")
+    ]
+    unresolved_support = [
+        edge for edge in support_import_edges if not edge.get("resolved")
+    ]
+    if unresolved_production:
+        print("Unresolved production imports:")
+        for edge in unresolved_production[:3]:
+            print(
+                f"  - {edge.get('from', 'unknown')} -> "
+                f"{edge.get('to', 'unknown')}"
+            )
+    if unresolved_support:
+        print("Unresolved support/test imports (not production dependencies):")
+        for edge in unresolved_support[:3]:
+            print(
+                f"  - {edge.get('from', 'unknown')} -> "
+                f"{edge.get('to', 'unknown')}"
+            )
+    if not unresolved_production and not unresolved_support:
+        print("No unresolved imports were recorded in the mapped source graph.")
 
     print("")
-    print("STRUCTURAL NAVIGATION")
+    print("APPLICATION ARCHITECTURE")
     print("-" * 72)
-    print("Most connected application source units (imports/inheritance only; not a risk ranking):")
-    limit = 8 if verbosity == 1 else 4
-    if hotspots:
-        for row in hotspots[:limit]:
+    print(
+        "Most connected application components "
+        "(imports/inheritance only; not a risk or severity ranking):"
+    )
+    limit = 8 if verbosity == 1 else 5
+    if app_rows:
+        for row in app_rows[:limit]:
             print(
                 f"  - {row['label']} [{row['file']}] "
-                f"({len(row['incoming'])} incoming, {len(row['outgoing'])} outgoing)"
+                f"({len(row['incoming'])} used by, "
+                f"{len(row['outgoing'])} dependencies)"
             )
     else:
-        print("  No resolved first-party import/inheritance links were available.")
+        print("  No connected application contracts/modules were identified.")
+    print("")
+    print("SHARED BUILDING BLOCKS")
+    print("-" * 72)
+    print("Interfaces, libraries and common infrastructure are shown separately:")
+    if shared_rows:
+        for row in shared_rows[:(6 if verbosity == 1 else 4)]:
+            print(
+                f"  - {row['label']} [{row['file']}] "
+                f"({len(row['incoming'])} consumers, "
+                f"{len(row['outgoing'])} dependencies; {row['role']})"
+            )
+    else:
+        print("  No connected shared building blocks were identified.")
 
-    if verbosity == 1 and hotspots:
-        print("")
-        print("RELATIONSHIP DETAIL")
-        print("-" * 72)
-        by_file = {str(node.get("file")): node for node in nodes if node.get("file")}
-        for row in hotspots[:limit]:
-            print(f"{row['label']} [{row['file']}]")
-            outgoing = row["outgoing"][:4]
-            incoming = row["incoming"][:4]
-            if outgoing:
-                print("  References:")
-                for path in outgoing:
-                    target = by_file.get(path) or {}
-                    target_names = [
-                        str(item.get("name"))
-                        for item in (target.get("declarations") or [])
-                        if isinstance(item, dict) and item.get("name")
-                    ]
-                    name = ", ".join(target_names[:2]) or path
-                    print(f"    -> {name} [{path}]")
-            if incoming:
-                print("  Referenced by:")
-                for path in incoming:
-                    source = by_file.get(path) or {}
-                    source_names = [
-                        str(item.get("name"))
-                        for item in (source.get("declarations") or [])
-                        if isinstance(item, dict) and item.get("name")
-                    ]
-                    name = ", ".join(source_names[:2]) or path
-                    print(f"    <- {name} [{path}]")
-            if not outgoing and not incoming:
-                print("  No resolved first-party links.")
+    if verbosity == 1:
+        by_file = {str(node["file"]): node for node in nodes}
+
+        def print_relationships(title: str, rows: list[dict[str, Any]], cap: int) -> None:
+            print("")
+            print(title)
+            print("-" * 72)
+            if not rows:
+                print("  No resolved first-party relationships are available.")
+                return
+            for row in rows[:cap]:
+                print(f"{row['label']} [{row['file']}]")
+                dependencies = row["outgoing"][:5]
+                consumers = row["incoming"][:4]
+                if dependencies:
+                    print("  Depends on:")
+                    for path in dependencies:
+                        target = by_file.get(path)
+                        label = _project_display_name(target, path)
+                        role = roles.get(path, "unclassified")
+                        print(f"    -> {label} [{role}: {path}]")
+                if consumers:
+                    print("  Referenced by:")
+                    for path in consumers:
+                        source = by_file.get(path)
+                        label = _project_display_name(source, path)
+                        print(f"    <- {label} [{path}]")
+                if not dependencies and not consumers:
+                    print("  No resolved first-party links.")
+
+        print_relationships("RELATIONSHIP DETAIL — APPLICATION COMPONENTS", app_rows, 8)
+        print_relationships("SHARED COMPONENT RELATIONSHIPS", shared_rows, 6)
+        if other_rows:
+            print("")
+            print("UNCLASSIFIED CONNECTED SOURCE UNITS")
+            print("-" * 72)
+            for row in other_rows[:5]:
+                print(f"  - {row['label']} [{row['file']}]")
+
+    print("")
+    print("SECURITY ORIENTATION")
+    print("-" * 72)
+    print(f"Low-level call syntax matches : {len(low_level)}")
+    print(
+        f"Heuristic call-like patterns : {len(heuristic_calls)} "
+        "(leads only; not vulnerability findings)"
+    )
+    print(
+        "A zero pattern count is not proof of safety; check source coverage, "
+        "runtime reachability and test evidence."
+    )
 
     print("")
     print("HOW TO EXPAND")
     print("-" * 72)
-    print("  lk project -v    Expanded architecture relationships")
+    print("  lk project -v    Expanded component relationships and shared dependencies")
     print("  lk project -vv   Full technical map and call-site report")
+    print("  lk project --json  Complete machine-readable graph")
     print("  Connectivity is a navigation aid, not a security or severity score.")
 
 
