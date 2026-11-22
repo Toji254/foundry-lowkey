@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - package-style import
 
 ONLY_KINDS = {
     "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"},
-    "storage": {"READS", "WRITES", "USES_TYPE", "ALIASES_STORAGE"},
+    "storage": {"READS", "WRITES", "USES_TYPE", "ALIASES_STORAGE", "UNRESOLVED_STORAGE"},
     "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY"},
     "assets": {"ASSET_FLOW"},
 }
@@ -248,6 +248,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("STORAGE READS", "READS", "outgoing"),
             ("STORAGE WRITES", "WRITES", "outgoing"),
             ("STORAGE ALIASES", "ALIASES_STORAGE", "outgoing"),
+            ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
             ("EMITS", "EMITS", "outgoing"),
             ("ASSET FLOW / CAPABILITY", "ASSET_FLOW", "outgoing"),
         ]
@@ -265,6 +266,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("READ BY", "READS", "incoming"),
             ("WRITTEN BY", "WRITES", "incoming"),
             ("ALIASED BY", "ALIASES_STORAGE", "incoming"),
+            ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
             ("USES TYPE", "USES_TYPE", "outgoing"),
         ):
             values = [
