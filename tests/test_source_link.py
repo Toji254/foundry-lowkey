@@ -84,6 +84,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("MAPPING VALUE TYPE", text)
         self.assertIn("READ BY", text)
         self.assertIn("WRITTEN BY", text)
+        self.assertIn("balances[who]", text)
 
     def test_contract_link_shows_importable_overview(self):
         temporary, root = self.fixture()
