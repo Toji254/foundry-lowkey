@@ -647,7 +647,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 func = {
                     "id": function_id, "kind": func_kind, "name": function_name,
                     "signature": signature, "qualified_name": f"{name}.{signature}",
-                    "contract": name, "file": path,
+                    "contract": name, "contract_kind": contract["declaration_kind"], "file": path,
                     "line": _line(source, function_match.start()),
                     "header": header_text,
                     "visibility": visibility_match.group(1) if visibility_match else "UNSPECIFIED",
@@ -865,10 +865,48 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     call_kind="library-or-extension",
                 ))
                 continue
+
+            # A typed interface/contract call resolves to its declared method,
+            # not the code executing at the target address. Keep implementation
+            # resolution explicitly UNRESOLVED (proxy/dynamic dispatch may apply).
+            receiver_vars = [
+                item for item in state_variables
+                if item["contract"] in {scope, *func["bases"]}
+                and item["name"] == receiver
+            ]
+            declared_type = receiver_vars[0].get("type", "").replace(" payable", "").strip() if len(receiver_vars) == 1 else ""
+            type_contracts = contract_by_name.get(declared_type, []) if declared_type else []
+            typed_methods = [
+                item for item in functions
+                if item["contract"] == declared_type
+                and item["name"] == method
+                and item["kind"] == "function"
+            ] if len(type_contracts) == 1 else []
+            if len(typed_methods) == 1:
+                typed = typed_methods[0]
+                edges.append(_edge(
+                    "EXTERNAL_CALL", func["id"], typed["id"], path, source,
+                    body_absolute + call.start(),
+                    resolution="DIRECT", receiver=receiver, method=method,
+                    target_kind=typed.get("contract_kind", "declared-type"),
+                    implementation_resolution="UNRESOLVED",
+                    detail="The declared interface/contract method is identified; the implementation at the runtime address is not.",
+                ))
+                continue
+            if len(typed_methods) > 1:
+                edges.append(_edge(
+                    "EXTERNAL_CALL", func["id"], f"external:{declared_type}.{method}",
+                    path, source, body_absolute + call.start(),
+                    resolution="UNRESOLVED", receiver=receiver, method=method,
+                    candidates=[item["id"] for item in typed_methods],
+                    implementation_resolution="UNRESOLVED",
+                ))
+                continue
             edges.append(_edge(
                 "EXTERNAL_CALL", func["id"], f"external:{receiver}.{method}",
                 path, source, body_absolute + call.start(),
                 resolution="UNRESOLVED", receiver=receiver, method=method,
+                implementation_resolution="UNRESOLVED",
             ))
 
         for low_level in re.finditer(r"\.\s*(call|delegatecall|staticcall)\s*(?:\{[^}]*\})?\s*\(", body):
