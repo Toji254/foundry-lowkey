@@ -586,10 +586,19 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         })
     root_manifest.sort(key=lambda item: item["path"])
 
+    resolution_inputs: dict[str, str] = {}
+    for config_name in ("remappings.txt", "soldeer.lock", ".gitmodules"):
+        try:
+            resolution_inputs[config_name] = (root_path / config_name).read_text(encoding="utf-8")
+        except OSError:
+            resolution_inputs[config_name] = ""
+
     fingerprint_data = {
         "version": CACHE_VERSION,
         "root": str(root_path),
         "foundry": build_config,
+        "foundry_profile": os.environ.get("FOUNDRY_PROFILE", "default"),
+        "resolution_inputs": resolution_inputs,
         "root_manifest": root_manifest,
     }
     fingerprint = hashlib.sha256(
