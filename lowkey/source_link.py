@@ -233,13 +233,31 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
                 if len(items) > limit:
                     print(f"  ... {len(items) - limit} more item(s)")
         file_node = next((item for item in nodes.values() if item.get("kind") == "file" and item.get("name") == selected.get("file")), None)
-        file_imports = [edge for edge in (index.get("edges") or []) if file_node and edge.get("kind") == "IMPORTS" and edge.get("from") == file_node.get("id") and (only is None or only == "imports")]
+        file_imports = [
+            edge for edge in (index.get("edges") or [])
+            if file_node and edge.get("kind") == "IMPORTS"
+            and edge.get("from") == file_node.get("id")
+            and (only is None or only == "imports")
+        ]
         imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"] + file_imports
+        imported_by = [
+            edge for edge in (index.get("edges") or [])
+            if file_node and edge.get("kind") == "IMPORTS"
+            and edge.get("to") == file_node.get("id")
+            and (only is None or only == "imports")
+        ]
         inheritance = [edge for edge in edges if edge.get("kind") == "INHERITS"]
+        inherits = [edge for edge in inheritance if edge.get("from") == selected["id"]]
+        inherited_by = [edge for edge in inheritance if edge.get("to") == selected["id"]]
         libraries = [edge for edge in edges if edge.get("kind") == "USES_LIBRARY"]
-        _render_edges("INHERITANCE", inheritance[:limit], nodes)
+        library_uses = [edge for edge in libraries if edge.get("from") == selected["id"]]
+        library_used_by = [edge for edge in libraries if edge.get("to") == selected["id"]]
+        _render_edges("INHERITS", inherits[:limit], nodes)
+        _render_edges("INHERITED BY", inherited_by[:limit], nodes, reverse=True)
         _render_edges("IMPORTS", imports[:limit], nodes)
-        _render_edges("LIBRARY EXTENSIONS", libraries[:limit], nodes)
+        _render_edges("IMPORTED BY", imported_by[:limit], nodes, reverse=True)
+        _render_edges("LIBRARY EXTENSIONS", library_uses[:limit], nodes)
+        _render_edges("USED BY", library_used_by[:limit], nodes, reverse=True)
         related_functions = {
             item["id"] for item in nodes.values()
             if item.get("kind") == "function" and item.get("contract") == selected.get("name")
@@ -284,6 +302,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             ("CALLS", "CALLS", "outgoing"),
             ("EXTERNAL CALLS", "EXTERNAL_CALL", "outgoing"),
             ("MODIFIERS", "APPLIES_MODIFIER", "outgoing"),
+            ("APPLIED TO", "APPLIES_MODIFIER", "incoming"),
             ("OVERRIDES", "OVERRIDES", "outgoing"),
             ("OVERRIDDEN BY", "OVERRIDES", "incoming"),
             ("STORAGE READS", "READS", "outgoing"),
