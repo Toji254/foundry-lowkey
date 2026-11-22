@@ -1822,7 +1822,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 assignment = re.match(r"(\*\*=|<<=|>>=|\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=|>))", after)
                 prefix_assignment = re.search(r"(?:\+\+|--)\s*$", before)
                 deletion = re.search(r"\bdelete\s*$", before)
-                array_mutation = member_name in {"push", "pop"}
+                array_type = variable.get("mapping_value_type") or variable.get("type", "")
+                array_mutation = (
+                    member_name in {"push", "pop"}
+                    and bool(re.search(r"\\[\\s*\\]\\s*$", array_type))
+                )
                 is_write = bool(assignment or prefix_assignment or deletion or array_mutation)
                 is_compound = bool(assignment and assignment.group(0) != "=") or bool(prefix_assignment) or member_name == "pop"
                 operation = (
