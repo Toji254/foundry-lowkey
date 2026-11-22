@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - package-style import
 ONLY_KINDS = {
     "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER"},
     "storage": {"READS", "WRITES", "USES_TYPE"},
-    "imports": {"IMPORTS", "INHERITS"},
+    "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY"},
     "assets": {"ASSET_FLOW"},
 }
 
@@ -39,7 +39,8 @@ def _symbol_label(node: dict[str, Any]) -> str:
     if kind == "function":
         return node.get("qualified_name") or node.get("signature") or node.get("name", "?")
     if kind == "contract":
-        return f"{node.get('name', '?')} (contract)"
+        declaration_kind = str(node.get("declaration_kind") or "contract").replace("_", " ")
+        return f"{node.get('name', '?')} ({declaration_kind})"
     return node.get("qualified_name") or node.get("name", "?")
 
 
@@ -191,8 +192,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         file_imports = [edge for edge in (index.get("edges") or []) if file_node and edge.get("kind") == "IMPORTS" and edge.get("from") == file_node.get("id") and (only is None or only == "imports")]
         imports = [edge for edge in edges if edge.get("kind") == "IMPORTS"] + file_imports
         inheritance = [edge for edge in edges if edge.get("kind") == "INHERITS"]
+        libraries = [edge for edge in edges if edge.get("kind") == "USES_LIBRARY"]
         _render_edges("INHERITANCE", inheritance, nodes)
         _render_edges("IMPORTS", imports, nodes)
+        _render_edges("LIBRARY EXTENSIONS", libraries, nodes)
         related_functions = {
             item["id"] for item in nodes.values()
             if item.get("kind") == "function" and item.get("contract") == selected.get("name")
