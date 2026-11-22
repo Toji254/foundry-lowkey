@@ -371,11 +371,8 @@ def run_flow(argv: list[str]) -> int:
     parser.add_argument("--flow", choices=("in", "out", "both"), required=True)
     parser.add_argument("--asset", choices=("eth", "erc20", "all"), default="all")
     parser.add_argument("--root", default=".")
-    parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    if args.depth < 1 or args.depth > 10:
-        parser.error("--depth must be between 1 and 10")
     try:
         index = build_source_index(args.root)
     except (SourceIndexError, OSError, ValueError) as error:
@@ -383,7 +380,7 @@ def run_flow(argv: list[str]) -> int:
         return 2
 
     nodes = _node_map(index)
-    functions = {key: item for key, item in nodes.items() if item.get("kind") == "function"}
+    functions = {key: item for key, item in nodes.items() if item.get("kind") in {"function", "modifier"}}
     flows = [edge for edge in index.get("edges") or [] if edge.get("kind") == "ASSET_FLOW"]
     selected = []
     for edge in flows:
@@ -391,9 +388,9 @@ def run_flow(argv: list[str]) -> int:
         direction = edge.get("direction", "unresolved")
         if args.asset != "all" and asset != args.asset:
             continue
-        if args.flow == "in" and direction != "in":
+        if args.flow == "in" and direction not in {"in", "both"}:
             continue
-        if args.flow == "out" and direction != "out":
+        if args.flow == "out" and direction not in {"out", "both"}:
             continue
         selected.append(edge)
     selected.sort(key=lambda item: (
