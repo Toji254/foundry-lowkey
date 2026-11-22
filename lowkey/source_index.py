@@ -1225,6 +1225,57 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     variable.get("source_offset", 0), type_name=type_name,
                 ))
 
+    # Struct fields and enum-typed storage are linked to their declared
+    # user-defined type where the name is unique in the owning contract.
+    for node in list(nodes):
+        if node.get("kind") != "struct_field":
+            continue
+        field_type = re.sub(r"\s+(memory|calldata|storage|payable)\b", " ", node.get("type", ""))
+        field_type = re.sub(r"(?:\[\s*\])+$", "", field_type)
+        field_type = re.sub(r"\s+", " ", field_type).strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", field_type):
+            continue
+        typed_contracts = contract_by_name.get(field_type, [])
+        enum_matches = [
+            candidate for candidate in nodes
+            if candidate.get("kind") == "enum"
+            and candidate.get("name") == field_type
+            and candidate.get("contract") == node.get("contract")
+        ]
+        candidates = typed_contracts if len(typed_contracts) == 1 else enum_matches
+        if len(candidates) == 1:
+            edges.append(_edge(
+                "USES_TYPE", node["id"], candidates[0]["id"],
+                node["file"], source_by_path.get(node["file"], ""),
+                max(0, node.get("line", 1) - 1),
+                type_name=field_type,
+            ))
+
+    for variable in state_variables:
+        type_name = re.sub(r"\s+payable\b", "", variable.get("type", "")).strip()
+        type_name = re.sub(r"(?:\[\s*\])+$", "", type_name).strip()
+        if variable.get("kind") == "mapping":
+            type_name = variable.get("mapping_value_type") or ""
+        if not re.fullmatch(r"[A-Za-z_]\w*", type_name):
+            continue
+        if any(
+            edge.get("kind") == "USES_TYPE" and edge.get("from") == variable["id"]
+            for edge in edges
+        ):
+            continue
+        enum_matches = [
+            candidate for candidate in nodes
+            if candidate.get("kind") == "enum"
+            and candidate.get("name") == type_name
+            and candidate.get("contract") == variable.get("contract")
+        ]
+        if len(enum_matches) == 1:
+            edges.append(_edge(
+                "USES_TYPE", variable["id"], enum_matches[0]["id"],
+                variable["file"], source_by_path.get(variable["file"], ""),
+                variable.get("source_offset", 0), type_name=type_name,
+            ))
+
     for func in functions:
         for parameter_name, declared_type in (func.get("parameter_declared_types") or {}).items():
             simple_type = re.sub(r"\b(memory|calldata|storage|payable|external|internal)\b", " ", declared_type)
