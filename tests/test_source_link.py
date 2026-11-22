@@ -164,6 +164,10 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("FUNCTIONS", text)
         self.assertIn("STORAGE", text)
         self.assertIn("INTERNAL CALLS", text)
+        self.assertIn("persistent=", text)
+        self.assertIn("transient=", text)
+        self.assertIn("ambiguous=", text)
+        self.assertIn("unresolved=", text)
 
     def test_derived_contract_overview_includes_base_initializers_and_constructor_writes(self):
         temporary, root = self.fixture()
