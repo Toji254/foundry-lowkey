@@ -102,6 +102,8 @@ def _canonical_parameter(raw: str) -> str:
     value = re.sub(r"\s+", " ", value).strip()
     if not value:
         return "?"
+    if value.startswith("function(") or value.startswith("function ("):
+        return "function"
     # The final identifier is a parameter name when a type precedes it.
     parts = value.split()
     if len(parts) > 1 and re.fullmatch(r"[A-Za-z_]\w*", parts[-1]):
@@ -507,10 +509,11 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             qualified = f"{name}"
             contract_id = _node_id("contract", path, qualified)
             header = match.group("header") or ""
+            inheritance_match = re.search(r"\bis\b", header)
             bases = [
                 part.strip().split("(", 1)[0].strip()
-                for part in re.split(r",", header.split("is", 1)[1])
-            ] if re.search(r"\bis\b", header) else []
+                for part in _split_top_level(header[inheritance_match.end():])
+            ] if inheritance_match else []
             contract = {
                 "id": contract_id, "kind": "contract", "name": name,
                 "qualified_name": qualified, "file": path,
@@ -823,13 +826,14 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         ]
         params_shadow = set(func["parameters"])
 
-        for modifier in known_modifiers:
-            if re.search(rf"\b{re.escape(modifier['name'])}\b", func["header"]):
-                edges.append(_edge(
-                    "APPLIES_MODIFIER", func["id"], modifier["id"], path, source,
-                    func["source_offset"],
-                    resolution="DIRECT" if modifier["contract"] == scope else "INFERRED",
-                ))
+        if func["kind"] == "function":
+            for modifier in known_modifiers:
+                if re.search(rf"\b{re.escape(modifier['name'])}\b", func["header"]):
+                    edges.append(_edge(
+                        "APPLIES_MODIFIER", func["id"], modifier["id"], path, source,
+                        func["source_offset"],
+                        resolution="DIRECT" if modifier["contract"] == scope else "INFERRED",
+                    ))
 
         local_functions = function_by_scope_name
         dynamic_pointer_names = {
