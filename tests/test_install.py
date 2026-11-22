@@ -174,6 +174,25 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk cheat", help_result.stdout)
             self.assertIn("lk ai status", help_result.stdout)
             self.assertIn("lk memory status", help_result.stdout)
+            self.assertIn("lk link Vault", help_result.stdout)
+            self.assertIn("lk fn --flow", help_result.stdout)
+
+            link_help = subprocess.run(
+                [str(installed_lk), "link", "--help"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(link_help.returncode, 0, link_help.stdout + link_help.stderr)
+            self.assertIn("lk link", link_help.stdout)
+            self.assertIn("--depth", link_help.stdout)
+            self.assertIn("--only", link_help.stdout)
+
+            flow_help = subprocess.run(
+                [str(installed_lk), "fn", "--flow", "--help"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(flow_help.returncode, 0, flow_help.stdout + flow_help.stderr)
+            self.assertIn("--asset", flow_help.stdout)
+            self.assertIn("erc20", flow_help.stdout)
 
             ai_status = subprocess.run(
                 [str(installed_lk), "ai", "status", "--json"], cwd=ROOT, env=env,
