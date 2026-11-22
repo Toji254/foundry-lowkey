@@ -173,7 +173,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("mapping(address => mapping(uint256 => Position))", rendered)
         self.assertIn("KEY TYPES", rendered)
         self.assertIn("address -> uint256", rendered)
-        self.assertIn("positions[msg.sender][id]", rendered)
+        self.assertIn("positions[msg.sender][id].debt", rendered)
         self.assertIn("READ BY", rendered)
         self.assertIn("getPosition(uint256)", rendered)
         self.assertIn("WRITTEN BY", rendered)
