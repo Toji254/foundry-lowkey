@@ -608,6 +608,11 @@ class SourceAstTests(unittest.TestCase):
         ]
         self.assertEqual(len(library_writes), 1)
         self.assertEqual(library_writes[0].get("access_path"), "positions[user].debt")
+        self.assertEqual(library_writes[0].get("index_kinds"), ["mapping"])
+        self.assertEqual(library_writes[0].get("index_types"), ["address"])
+        self.assertEqual(library_writes[0].get("mapping_key_types"), ["address"])
+        self.assertEqual(library_writes[0].get("mapping_depth"), 1)
+        self.assertEqual(library_writes[0].get("terminal_type"), "uint256")
         self.assertEqual(library_writes[0].get("operation"), "+=")
         self.assertEqual(library_writes[0].get("resolution"), "INFERRED")
         self.assertIn(caller["id"], library_writes[0].get("via", []))
