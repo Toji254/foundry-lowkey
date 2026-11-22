@@ -26105,7 +26105,7 @@ _NEXT_COMMANDS = {
     "read": ["lk functions", "lk send <function> [args] --preview", "lk wizard <function> [values...]"],
     "send": ["lk receipt", "lk trace", "lk last tx", "lk changes <function> [values...]"],
     "wizard": ["lk last tx", "lk receipt", "lk trace", "lk changes <function> [values...]"],
-    "project": ["lk targets", "lk recon", "lk deps", "lk risk"],
+    "project": [],  # Project orientation prints feature-aware next steps itself.
     "projects": ["lk project", "lk targets", "lk doctor"],
     "system": ["lk project", "lk doctor", "lk lab"],
     "rpc": ["lk status", "lk chain", "lk doctor"],
