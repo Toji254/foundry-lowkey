@@ -373,8 +373,8 @@ def _filter_overloads_by_arguments(
     candidates: list[dict[str, Any]],
     argument_types: list[str | None],
 ) -> list[dict[str, Any]]:
-    if len(candidates) <= 1:
-        return candidates
+    if not candidates:
+        return []
     matched: list[dict[str, Any]] = []
     for candidate in candidates:
         parameter_types = _signature_parameter_types(str(candidate.get("signature", "")))
@@ -385,7 +385,42 @@ def _filter_overloads_by_arguments(
             for inferred, expected in zip(argument_types, parameter_types)
         ):
             matched.append(candidate)
-    return matched or candidates
+    if matched:
+        return matched
+    # If every argument type was inferred, a mismatch is meaningful: do not
+    # silently fall back to an unrelated overload. With partial information,
+    # keep candidates visible as unresolved possibilities.
+    if argument_types and all(item is not None for item in argument_types):
+        return []
+    return candidates
+
+
+def _select_callable_declarations(
+    candidates: list[dict[str, Any]],
+    function: dict[str, Any],
+    scope: str,
+    file_path: str,
+    argument_types: list[str | None],
+) -> list[dict[str, Any]]:
+    """Prefer local declarations; otherwise nearest inherited declarations per signature."""
+    if not candidates:
+        return []
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in candidates:
+        grouped.setdefault(str(item.get("signature", "")), []).append(item)
+    selected: list[dict[str, Any]] = []
+    for group in grouped.values():
+        local = [
+            item for item in group
+            if item.get("contract") == scope and item.get("file") == file_path
+        ]
+        if local:
+            selected.extend(local)
+        else:
+            selected.extend(_nearest_inherited(
+                group, function.get("ancestor_depths") or {}
+            ))
+    return _filter_overloads_by_arguments(selected, argument_types)
 
 
 def _nearest_inherited(
@@ -1353,20 +1388,18 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 )
                 for argument in arguments
             ]
-            candidates = [
-                item for item in local_functions.get((scope, callee_name), [])
-                if item["kind"] == "function" and item["file"] == path
+            callable_candidates = [
+                item for item in functions
+                if item["name"] == callee_name
+                and item["kind"] == "function"
+                and (
+                    (item["contract"] == scope and item["file"] == path)
+                    or item["contract"] in func.get("bases", [])
+                )
             ]
-            candidates = _filter_overloads_by_arguments(candidates, argument_types)
-            if not candidates:
-                inherited = [
-                    item for item in functions
-                    if item["contract"] in func["bases"]
-                    and item["name"] == callee_name
-                    and item["kind"] == "function"
-                ]
-                candidates = _nearest_inherited(inherited, func.get("ancestor_depths") or {})
-                candidates = _filter_overloads_by_arguments(candidates, argument_types)
+            candidates = _select_callable_declarations(
+                callable_candidates, func, scope, path, argument_types
+            )
             if len(candidates) == 1:
                 target_func = candidates[0]
                 has_override = any(
@@ -1422,17 +1455,28 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     # ASSET_FLOW below rather than a generic contract call.
                     continue
             if receiver == "super":
+                super_open = call.end() - 1
+                super_close = _matching(body, super_open, "(", ")")
+                super_args = _split_top_level(body[super_open + 1:super_close]) if super_close is not None else []
+                super_arg_types = [
+                    _infer_expression_type(
+                        argument, func, state_variables, scope, path, body, call.start()
+                    )
+                    for argument in super_args
+                ]
                 inherited = [
                     item for item in functions
                     if item["contract"] in func["bases"]
                     and item["name"] == method
                     and item["kind"] == "function"
                 ]
-                inherited = _nearest_inherited(inherited, func.get("ancestor_depths") or {})
+                inherited = _select_callable_declarations(
+                    inherited, func, "", path, super_arg_types
+                )
                 if len(inherited) == 1:
                     edges.append(_edge("CALLS", func["id"], inherited[0]["id"], path, source, body_absolute + call.start(), resolution="DIRECT", dispatch="SUPER", implementation_resolution="DIRECT"))
                     continue
-                if len(inherited) > 1:
+                if len(inherited) > 1 or not inherited:
                     edges.append(_edge(
                         "CALLS", func["id"], f"function-name:super.{method}",
                         path, source, body_absolute + call.start(),
