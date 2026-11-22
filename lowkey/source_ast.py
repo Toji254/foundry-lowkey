@@ -1151,7 +1151,10 @@ def apply_solc_ast_call_edges(
         )
         if (
             edge.get("from") in ast_covered
-            and edge.get("evidence") != "SOLC_AST_STORAGE_DECLARATION_REFERENCE"
+            and edge.get("evidence") not in {
+                "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+                "SOLC_AST_STORAGE_REFERENCE_ARGUMENT",
+            }
             and edge.get("kind") in {
                 "READS", "READS_CONSTANT", "READS_IMMUTABLE",
                 "WRITES", "DELETES", "MUTATES",
