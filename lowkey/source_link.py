@@ -673,9 +673,8 @@ def _analysis_basis(index: dict[str, Any]) -> str:
     functions = int(ast.get("functions") or 0)
     if functions:
         return (
-            "SOLC AST + lexical links "
-            f"({functions} AST function(s), {int(ast.get('call_edges') or 0)} call edge(s), "
-            f"{int(ast.get('storage_edges') or 0)} storage edge(s))"
+            "AST ENRICHMENT IN INDEX "
+            f"({functions} matched function(s); edge evidence is labelled in detail views)"
         )
     if not ast.get("available"):
         return "LEXICAL ONLY (no compatible Foundry compiler build-info was available)"
@@ -807,6 +806,19 @@ def _group_effects(
     return result
 
 
+def _edge_evidence_label(values: list[dict[str, Any]]) -> str:
+    evidence = [str(edge.get("evidence") or "") for edge in values]
+    has_ast = any(item.startswith("SOLC_AST") for item in evidence)
+    has_other = any(item and not item.startswith("SOLC_AST") for item in evidence)
+    if has_ast and has_other:
+        return "AST + lexical"
+    if has_ast:
+        return "AST"
+    if has_other:
+        return "lexical"
+    return "unclassified"
+
+
 def _render_grouped_effects(
     heading: str,
     values: list[dict[str, Any]],
@@ -833,7 +845,8 @@ def _render_grouped_effects(
         if group["helper"]:
             detail_counts.append(f"{group['helper']} via helpers")
         suffix = " · ".join(detail_counts) or f"{len(group['edges'])} access(es)"
-        print(f"  • {label}  ({suffix})")
+        evidence_label = _edge_evidence_label(group["edges"])
+        print(f"  • {label}  ({suffix})  [{evidence_label}]")
         if group["access_paths"]:
             print("      path: " + " | ".join(group["access_paths"][:3]))
             if len(group["access_paths"]) > 3:
