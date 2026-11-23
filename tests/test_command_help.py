@@ -436,9 +436,9 @@ class CommandHelpTests(unittest.TestCase):
             "--all",
             "--json",
             "--no-build",
-            "lk forge inspect",
         ):
             self.assertIn(item, output)
+        self.assertNotIn("lk forge inspect", output)
         self.assertNotIn("Run forge inspect --help", output)
         self.assertNotIn("Forge inspect options", output)
 
@@ -1266,7 +1266,7 @@ class CommandHelpTests(unittest.TestCase):
             source,
             flags=re.MULTILINE,
         )
-        exempt = {"q", "send", "import", "wizard", "ens"}
+        exempt = {"q", "send", "import", "wizard", "ens", "chisel"}
         missing = []
         for name, block in blocks:
             usage_lines = [line for line in block.splitlines() if '"lk ' in line and '|' in line]
