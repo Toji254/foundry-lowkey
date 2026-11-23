@@ -180,7 +180,7 @@ def _function_scope_edges(
             selected[str(edge.get("id") or id(edge))] = edge
         elif (
             edge.get("to") == root_id
-            and edge.get("kind") in {"CALLS", "APPLIES_MODIFIER"}
+            and edge.get("kind") in {"CALLS", "APPLIES_MODIFIER", "OVERRIDES"}
         ):
             # Show direct callers/decorators of the selected function without
             # pulling their other calls, storage effects, or unresolved targets.
@@ -1058,6 +1058,18 @@ def _render_function_details(
             and edge.get("from") in function_ids
         ]
         _render_edges("SECURITY GATES / MODIFIERS", modifiers[:limit], nodes)
+        overrides = [
+            edge for edge in edges
+            if edge.get("kind") == "OVERRIDES"
+            and edge.get("from") == selected_id
+        ]
+        overridden_by = [
+            edge for edge in edges
+            if edge.get("kind") == "OVERRIDES"
+            and edge.get("to") == selected_id
+        ]
+        _render_edges("OVERRIDES", overrides[:limit], nodes)
+        _render_edges("OVERRIDDEN BY", overridden_by[:limit], nodes, reverse=True)
         if calls or any(edge.get("kind") == "CALLS" for edge in edges if edge.get("from") != selected_id):
             _render_call_tree(selected, index.get("edges") or [], nodes, depth=depth, limit=limit)
         print()
