@@ -883,11 +883,7 @@ def select_anvil_actor(config,index,name):
     if index<0:
         return fail("Error: Anvil account index cannot be negative.")
     if index == 0:
-        return fail(
-            "Error: Anvil account 0 is reserved for Lowkey's internal lab-deployer. "
-            "Select it with 'lk actor 0' if you need the deployer signer; "
-            "assign user-facing actors to account 1 or higher."
-        )
+        return fail("Error: Anvil account 0 is reserved for Lowkey's lab deployer. Use account 1+ for user actors.")
     if not name:
         return fail("Error: actor name cannot be empty.")
     info=anvil_rpc_info(config)
@@ -923,12 +919,7 @@ def select_anvil_actor(config,index,name):
             if assigned_address == assigned_index:
                 assigned_address = None
         else:
-            return fail(
-                f"Error: Anvil account {index} is already assigned to '{assigned_index}'. "
-                f"Use 'lk actor {assigned_index}' to select that existing profile, or "
-                "run 'lk actor reset 2' to remove saved Anvil actor profiles before assigning new names. "
-                "Private-key/environment wallet profiles and the internal lab-deployer are preserved."
-            )
+            return fail(f"Error: Anvil account {index} is already assigned to '{assigned_index}'.")
     if assigned_address and assigned_address!=name:
         previous=config.get("wallets",{}).get(assigned_address)
         replaceable = (
@@ -940,12 +931,7 @@ def select_anvil_actor(config,index,name):
         if replaceable:
             config.setdefault("wallets",{}).pop(assigned_address,None)
         else:
-            return fail(
-                f"Error: address {address} is already assigned to '{assigned_address}'. "
-                f"Use 'lk actor {assigned_address}' to select that existing profile, or "
-                "run 'lk actor reset 2' to remove saved Anvil actor profiles before assigning new names. "
-                "Private-key/environment wallet profiles and the internal lab-deployer are preserved."
-            )
+            return fail(f"Error: address {address} is already assigned to '{assigned_address}'.")
     existing=config.get('wallets',{}).get(name)
     if existing and not wallet_is_internal(name, existing):
         if (
@@ -2309,6 +2295,8 @@ def _function_usage():
         "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
         "  -r, --risk                 Show compact audit-review flags.\n"
         "  Default output labels function mutability and detected native-ETH flow.\n"
+        "  It also lists compiler-backed state variables with source visibility and storage slots.\n"
+        "  Solidity private/internal visibility does not hide data stored on-chain.\n"
         "  PAYABLE means the function can receive ETH; attach it separately from its arguments.\n"
         "  Example: lk send <function> [args...] --eth 2  (attaches 2 ETH).\n"
         "  SENDS ETH includes detected CALL/value, payable transfer/send, CREATE and SELFDESTRUCT patterns.\n"
@@ -2647,6 +2635,254 @@ def _function_source_file(artifact, root, contract_name=None):
     except OSError:
         return path, []
     return path, _solidity_function_source_index(source)
+
+def _solidity_state_variable_index(source, contract_name=None):
+    """Index top-level Solidity state declarations; source supplies visibility."""
+    source = str(source or "")
+    masked = _strip_scan_comments(source, "solidity")
+    for contract_match in re.finditer(r"\b(?:contract|interface|library)\s+([A-Za-z_]\w*)\b", masked):
+        if contract_name and contract_match.group(1) != str(contract_name):
+            continue
+        opening = masked.find("{", contract_match.end())
+        if opening < 0:
+            continue
+        closing = _matching_delimiter(masked, opening, "{", "}")
+        if closing is None:
+            continue
+
+        declarations = []
+        statement_start = opening + 1
+        index = statement_start
+        parens = brackets = braces = 0
+        quote = ""
+        escape = False
+        while index < closing:
+            char = masked[index]
+            if quote:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == quote:
+                    quote = ""
+                index += 1
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                index += 1
+                continue
+            if char == "{" and parens == 0 and brackets == 0 and braces == 0:
+                prefix = masked[statement_start:index].strip()
+                if re.match(r"^(?:function|constructor|modifier|receive|fallback|struct|enum)\b", prefix):
+                    block_end = _matching_delimiter(masked, index, "{", "}")
+                    if block_end is None or block_end >= closing:
+                        break
+                    index = block_end + 1
+                    statement_start = index
+                    continue
+                braces += 1
+            elif char == "}" and braces:
+                braces -= 1
+            elif char == "(":
+                parens += 1
+            elif char == ")" and parens:
+                parens -= 1
+            elif char == "[":
+                brackets += 1
+            elif char == "]" and brackets:
+                brackets -= 1
+            elif char == ";" and parens == 0 and brackets == 0 and braces == 0:
+                statement = masked[statement_start:index].strip()
+                excluded = r"function|event|error|using|type|import|pragma|constructor|modifier|receive|fallback"
+                if statement and not re.match(r"^(?:" + excluded + r")\b", statement):
+                    declaration_head = statement
+                    p_depth = b_depth = c_depth = 0
+                    q = ""
+                    esc = False
+                    assignment = None
+                    for offset, token in enumerate(statement):
+                        if q:
+                            if esc:
+                                esc = False
+                            elif token == "\\":
+                                esc = True
+                            elif token == q:
+                                q = ""
+                            continue
+                        if token in {"'", '"'}:
+                            q = token
+                            continue
+                        if token == "(":
+                            p_depth += 1
+                        elif token == ")" and p_depth:
+                            p_depth -= 1
+                        elif token == "[":
+                            b_depth += 1
+                        elif token == "]" and b_depth:
+                            b_depth -= 1
+                        elif token == "{":
+                            c_depth += 1
+                        elif token == "}" and c_depth:
+                            c_depth -= 1
+                        elif (
+                            token == "=" and p_depth == 0 and b_depth == 0 and c_depth == 0
+                            and (offset + 1 >= len(statement) or statement[offset + 1] != ">")
+                            and (offset == 0 or statement[offset - 1] not in "=!<>")
+                            and (offset + 1 >= len(statement) or statement[offset + 1] != "=")
+                        ):
+                            assignment = offset
+                            break
+                    if assignment is not None:
+                        declaration_head = statement[:assignment].strip()
+
+                    variable_match = re.search(
+                        r"(?P<name>[A-Za-z_]\w*)\s*(?:(?:\[[^\]]*\]\s*)*)$",
+                        declaration_head,
+                    )
+                    if variable_match:
+                        variable_name = variable_match.group("name")
+                        prefix = declaration_head[:variable_match.start()].strip()
+                        type_text = re.sub(r"\boverride(?:\s*\([^)]*\))?", " ", prefix)
+                        type_text = re.sub(
+                            r"\b(?:public|private|internal|constant|immutable|payable|memory|calldata|storage)\b",
+                            " ", type_text,
+                        )
+                        type_text = " ".join(type_text.split()).strip()
+                        if type_text:
+                            visibility_match = re.search(r"\b(public|private|internal)\b", prefix)
+                            declarations.append({
+                                "name": variable_name,
+                                "type": type_text,
+                                "visibility": visibility_match.group(1) if visibility_match else "internal",
+                                "constant": bool(re.search(r"\bconstant\b", prefix)),
+                                "immutable": bool(re.search(r"\bimmutable\b", prefix)),
+                                "line": source.count("\n", 0, statement_start) + 1,
+                            })
+                statement_start = index + 1
+            index += 1
+        return declarations
+    return []
+
+
+def _state_variable_layout_data(config, artifact):
+    """Return storage types/entries, preferring the selected target artifact."""
+    layout = artifact.get("storageLayout", {}) if isinstance(artifact, dict) else {}
+    storage = layout.get("storage", []) if isinstance(layout, dict) else []
+    types = layout.get("types", {}) if isinstance(layout, dict) else {}
+    if isinstance(storage, list) and storage:
+        return types if isinstance(types, dict) else {}, storage
+    fallback_types, fallback_storage = storage_layout_details(config)
+    return (
+        fallback_types if isinstance(fallback_types, dict) else {},
+        fallback_storage if isinstance(fallback_storage, list) else [],
+    )
+
+
+def _function_state_variable_records(config, artifact, source_path, contract_name, getter_names):
+    """Combine compiler slots with source-level visibility and declaration metadata."""
+    types, storage = _state_variable_layout_data(config, artifact)
+    source_index = {}
+    if source_path:
+        try:
+            source = Path(source_path).read_text(encoding="utf-8", errors="replace")
+            for declaration in _solidity_state_variable_index(source, contract_name):
+                source_index.setdefault(declaration["name"], []).append(declaration)
+        except OSError:
+            pass
+
+    records = []
+    stored_names = set()
+    for entry in storage:
+        if not isinstance(entry, dict) or not entry.get("label"):
+            continue
+        name = str(entry["label"])
+        stored_names.add(name)
+        candidates = source_index.get(name, [])
+        declaration = candidates[0] if len(candidates) == 1 else None
+        visibility = (
+            declaration.get("visibility", "unknown")
+            if declaration else
+            "ambiguous" if len(candidates) > 1 else "unknown"
+        )
+        type_id = entry.get("type")
+        type_info = types.get(type_id, {}) if isinstance(types, dict) else {}
+        if not isinstance(type_info, dict):
+            type_info = {}
+        type_label = storage_type_label(types, type_id) if types else ""
+        type_label = type_label or (declaration or {}).get("type") or str(type_id or "unknown")
+        try:
+            number_of_bytes = int(str(type_info.get("numberOfBytes") or "32"), 0)
+        except (TypeError, ValueError):
+            number_of_bytes = 32
+        encoding = str(type_info.get("encoding") or "")
+        declared_type = str((declaration or {}).get("type") or "").lower()
+        composite = (
+            encoding in {"mapping", "dynamic_array", "bytes"}
+            or bool(type_info.get("members"))
+            or "base" in type_info
+            or number_of_bytes > 32
+            or declared_type.startswith("mapping")
+            or "[]" in declared_type
+        )
+        getter = name in getter_names
+        records.append({
+            "name": name, "type": type_label, "visibility": visibility,
+            "slot": str(entry.get("slot", "—")), "offset": int(entry.get("offset") or 0),
+            "access": "ABI GETTER" if getter else "RAW STORAGE",
+            "getter": getter, "composite": composite, "storage": True,
+            "source": f"{source_path}:{declaration['line']}" if source_path and declaration else str(source_path or "source unavailable"),
+            "type_id": type_id,
+        })
+
+    # Constants and immutables are state declarations too, but have no ordinary slots.
+    for name, candidates in source_index.items():
+        if name in stored_names:
+            continue
+        for declaration in candidates:
+            if not (declaration.get("constant") or declaration.get("immutable")):
+                continue
+            getter = name in getter_names
+            access = "ABI GETTER" if getter else "COMPILE-TIME" if declaration.get("constant") else "DEPLOYED CODE"
+            records.append({
+                "name": name, "type": declaration.get("type") or "unknown",
+                "visibility": declaration.get("visibility") or "unknown",
+                "slot": "—", "offset": 0, "access": access,
+                "getter": getter, "composite": False, "storage": False, "type_id": None,
+                "source": f"{source_path}:{declaration['line']}" if source_path else "source unavailable",
+            })
+    return records
+
+
+def _print_state_variable_inventory(records, verbose=False):
+    """Render compiler-backed state declarations separately from ABI functions."""
+    if not records:
+        return
+    print()
+    print(f"STATE VARIABLES: {len(records)}")
+    print("─" * 78)
+    if verbose:
+        for record in records:
+            print(f"\n[{record['name']}]")
+            print(f"  type       : {record['type']}")
+            print(f"  visibility : {record['visibility']}")
+            print(f"  slot       : {record['slot']} (byte offset {record['offset']})" if record["storage"] else "  slot       : not stored in ordinary contract storage")
+            print(f"  access     : {record['access']}")
+            print(f"  source     : {record['source']}")
+        return
+    name_width = min(max(4, max(len(str(item["name"])) for item in records)), 24)
+    type_width = min(max(4, max(len(str(item["type"])) for item in records)), 32)
+    visibility_width = max(len("VISIBILITY"), max(len(str(item["visibility"])) for item in records))
+    slot_width = max(len("SLOT"), max(len(str(item["slot"])) for item in records))
+    headers = ["VARIABLE", "TYPE", "VISIBILITY", "SLOT", "ACCESS"]
+    widths = [name_width, type_width, visibility_width, slot_width, 14]
+    print("  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))))
+    print("-" * (sum(widths) + 2 * (len(headers) - 1)))
+    for record in records:
+        cells = [
+            str(record["name"])[:name_width], str(record["type"])[:type_width],
+            str(record["visibility"]), str(record["slot"]), str(record["access"]),
+        ]
+        print("  ".join(cells[index].ljust(widths[index]) for index in range(len(cells))))
 
 def _function_storage_labels(target, config, artifact):
     labels = set()
@@ -3254,15 +3490,15 @@ def run_functions(config, args=None):
         entry for entry in abi
         if isinstance(entry, dict) and entry.get("type") in {"receive", "fallback"}
     ]
-    if not functions and not abi_entrypoints:
-        return fail("Error: No ABI functions or receive/fallback entrypoints loaded for the current target.")
-
     getter_names = storage_getter_names(target, config, functions)
     artifact_path, artifact = _function_inventory_artifact(target, config)
     source_root = Path(root).resolve()
     source_contract = artifact.get("contractName") or config.get("target_contract")
     source_path, source_decls = _function_source_file(artifact, source_root, source_contract)
     storage_labels = _function_storage_labels(target, config, artifact)
+    state_variables = _function_state_variable_records(config, artifact, source_path, source_contract, getter_names)
+    if not functions and not abi_entrypoints and not state_variables:
+        return fail("Error: No ABI functions, entrypoints, or compiler-backed state variables loaded for the current target.")
     method_ids = artifact.get("methodIdentifiers") or (
         artifact.get("evm", {}).get("methodIdentifiers") if isinstance(artifact.get("evm"), dict) else {}
     )
@@ -3274,8 +3510,15 @@ def run_functions(config, args=None):
         for item in functions
     ]
     records = [record for record in records if _function_matches_filter(record, options)]
+    state_records = list(state_variables)
+    if options.get("visibility"):
+        state_records = [record for record in state_records if record["visibility"].lower() == options["visibility"]]
     if query:
         records = sorted(records, key=lambda record: function_score(record["item"], query), reverse=True)[:8]
+        state_records = [
+            record for record in state_records
+            if query.lower() in record["name"].lower() or query.lower() in record["type"].lower()
+        ][:8]
 
     if options.get("verbose"):
         _print_function_inventory(
@@ -3284,6 +3527,7 @@ def run_functions(config, args=None):
             source_path=source_path,
             verbose=True,
         )
+        _print_state_variable_inventory(state_records, verbose=True)
         for entry in abi_entrypoints:
             kind = str(entry.get("type"))
             source_entry = next((decl for decl in source_decls if decl.get("name") == kind), None)
@@ -3305,6 +3549,8 @@ def run_functions(config, args=None):
             source_path=source_path,
             show_risk=options.get("risk", False),
         )
+        if options.get("visibility"):
+            _print_state_variable_inventory(state_records)
         return 0
 
     write_records = [
@@ -3372,6 +3618,8 @@ def run_functions(config, args=None):
                 _function_print_wrapped("        via       ", mechanism)
                 _function_print_wrapped("        recipient ", outflow["destination"])
                 _function_print_wrapped("        amount    ", outflow["amount"])
+
+    _print_state_variable_inventory(state_records)
 
     if abi_entrypoints:
         print()
@@ -17353,7 +17601,12 @@ def decode_storage_member(raw, type_id, types, offset=0):
         return f"0x{value_int:040x}"
     if lowered=="bool":
         return "true" if value_int else "false"
-    if lowered.startswith("uint") or lowered.startswith("int") or lowered.startswith("enum "):
+    if lowered.startswith("int"):
+        bits = width * 8
+        if bits and value_int & (1 << (bits - 1)):
+            value_int -= 1 << bits
+        return str(value_int)
+    if lowered.startswith("uint") or lowered.startswith("enum "):
         return str(value_int)
     return "0x"+format(value_int,"064x")
 
@@ -20627,6 +20880,161 @@ def format_storage_read(config, slot, raw):
     return "\n".join(lines)
 
 
+def run_state_variable_read(config, args):
+    """Read one named scalar state variable through its compiled storage slot."""
+    values = [str(value).strip() for value in (args or [])]
+    if not values:
+        return None
+    root = audit_context.foundry_project_root()
+    target_config = dict(config)
+    target_config["abi_paths"] = dict(config.get("abi_paths") or {})
+    target_config["project_roots"] = dict(config.get("project_roots") or {})
+    target = target_config.get("target") or active_project_target(target_config, root)
+
+    if len(values) >= 2:
+        explicit = values[0] if is_address(values[0]) else None
+        if explicit is None:
+            try:
+                explicit = resolve_target_ref(target_config, values[0], root=root)
+            except Exception:
+                explicit = None
+        if explicit:
+            target = explicit
+            values.pop(0)
+
+    if not target or len(values) != 1:
+        return None
+    variable_name = values[0]
+    if not variable_name or variable_name.startswith("-") or "(" in variable_name or ")" in variable_name:
+        return None
+    target_config["target"] = target
+    abi = load_abi(target, target_config)
+    if abi and matching_functions(abi, variable_name):
+        return None
+
+    artifact_path = resolve_abi_path(target_config, target) or auto_abi_path(target, target_config, root=root)
+    artifact = read_artifact(artifact_path) if artifact_path else {}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    if artifact.get("contractName") and not target_config.get("target_contract"):
+        target_config["target_contract"] = artifact["contractName"]
+    types, storage = _state_variable_layout_data(target_config, artifact)
+    matches = [entry for entry in storage if isinstance(entry, dict) and str(entry.get("label") or "") == variable_name]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        return fail(
+            f"State variable '{variable_name}' is ambiguous in the compiled storage layout. "
+            "Use 'lk slots <slot>' or 'lk layout <ContractName>' to inspect the exact declarations."
+        )
+
+    entry = matches[0]
+    type_id = entry.get("type")
+    type_info = types.get(type_id, {}) if isinstance(types, dict) else {}
+    if not isinstance(type_info, dict) or not type_info:
+        return fail(
+            f"Lowkey found '{variable_name}' in the storage layout but could not resolve its compiler type. "
+            "Run 'forge build' and retry; Lowkey will not guess how to decode a raw slot."
+        )
+    type_label = storage_type_label(types, type_id)
+    encoding = str(type_info.get("encoding") or "")
+    try:
+        number_of_bytes = int(str(type_info.get("numberOfBytes") or "32"), 0)
+    except (TypeError, ValueError):
+        number_of_bytes = 32
+    if encoding != "inplace" or type_info.get("members") or "base" in type_info or number_of_bytes > 32:
+        return fail(
+            f"'{variable_name}' is a composite {type_label} state variable, not one scalar storage value. "
+            "Use 'lk mapping' for mapping entries, or 'lk slots'/'lk storage' to inspect its layout."
+        )
+
+    normalized_type = type_label.lower()
+    supported_scalar = (
+        normalized_type in {"address", "bool"}
+        or normalized_type.startswith(("uint", "int", "enum ", "contract "))
+    )
+    decoding_type_id = type_id
+    visited = set()
+    while not supported_scalar and isinstance(type_info.get("underlying"), str):
+        if decoding_type_id in visited:
+            break
+        visited.add(decoding_type_id)
+        decoding_type_id = type_info["underlying"]
+        type_info = types.get(decoding_type_id, {})
+        normalized_type = storage_type_label(types, decoding_type_id).lower()
+        supported_scalar = (
+            normalized_type in {"address", "bool"}
+            or normalized_type.startswith(("uint", "int", "enum ", "contract "))
+        )
+    if not supported_scalar:
+        return fail(
+            f"Lowkey found '{variable_name}' ({type_label}) but does not yet have a safe scalar decoder for this type. "
+            "Use 'lk storage <slot>' to inspect the raw word without a guessed interpretation."
+        )
+
+    slot_number = storage_slot_int(entry.get("slot"))
+    if slot_number is None or slot_number < 0:
+        return fail(f"Compiler storage layout has an invalid slot for '{variable_name}'.")
+    try:
+        offset = int(str(entry.get("offset") or "0"), 0)
+    except (TypeError, ValueError):
+        offset = 0
+
+    blocked = _target_health_block(
+        target_config, target, variable_name, "storage", [str(slot_number)], capture=False
+    )
+    if blocked is not None:
+        return blocked
+    result = run_cast(["st", str(slot_number)], target_config, capture=True)
+    result_code = getattr(result, "code", 0)
+    raw = str(result).strip()
+    if result_code != 0:
+        print(raw or f"Could not read storage slot {slot_number}.", file=sys.stderr)
+        return result_code
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", raw):
+        return fail(
+            f"Cast returned an unexpected value for '{variable_name}' at slot {slot_number}; "
+            "the raw result was not a 32-byte storage word."
+        )
+
+    value = decode_storage_member(raw, decoding_type_id, types, offset)
+    enum_value = _humanize_storage_enum(value, type_id, types, variable_name)
+    if enum_value:
+        value = enum_value
+    elif value == "none":
+        value = "none"
+    elif is_address(value):
+        value = apply_labels(value, target_config)
+
+    source_contract = artifact.get("contractName") or target_config.get("target_contract")
+    source_path, _function_decls = _function_source_file(artifact, Path(root).resolve(), source_contract)
+    visibility = "unknown"
+    if source_path:
+        try:
+            source_text = Path(source_path).read_text(encoding="utf-8", errors="replace")
+            candidates = [
+                item for item in _solidity_state_variable_index(source_text, source_contract)
+                if item.get("name") == variable_name
+            ]
+            if len(candidates) == 1:
+                visibility = candidates[0].get("visibility", "unknown")
+            elif len(candidates) > 1:
+                visibility = "ambiguous"
+        except OSError:
+            pass
+
+    print("STATE VARIABLE READ")
+    print("===================")
+    print(f"Name:       {variable_name}")
+    print(f"Type:       {type_label}")
+    print(f"Visibility: {visibility}")
+    print(f"Storage:    slot {slot_number}, byte offset {offset}")
+    print(f"Value:      {value}")
+    print(f"Raw:        {raw}")
+    if visibility in {"private", "internal"}:
+        print("Note:       Solidity visibility limits contract-level access; it does not hide on-chain storage.")
+    return 0
+
 def run_raw(config,args):
     if not args:
         return fail("Usage: lk raw <cast-subcommand> [args...]")
@@ -23002,24 +23410,24 @@ COMMAND_HELP = {
     ),
     "actor": _help_entry(
         "Name/select a local Anvil account.",
-        "lk actor <index> <name> | lk actor <name> | lk actor reset [1|2]",
-        "lk actor 1 Alice",
+        "lk actor <index> <name> | lk actor <name> | lk actor reset 1 | lk actor reset 2",
+        "lk actor 0 Alice",
         "Use it when you want readable role names instead of anonymous Anvil slots.",
         forms=[
-            ("lk actor <index> <name>", "Give an Anvil account a readable role name (account 1+; 0 is reserved).", "lk actor 1 Alice"),
+            ("lk actor <index> <name>", "Give an Anvil account a readable role name.", "lk actor 0 Alice"),
             ("lk actor <name>", "Switch to an actor profile you already created.", "lk actor Alice"),
-            ("lk actor reset 1", "Clear the active actor without deleting saved Anvil profiles.", "lk actor reset 1"),
-            ("lk actor reset 2", "Remove saved Anvil actor profiles; preserve key/env wallets and the internal lab-deployer.", "lk actor reset 2"),
+            ("lk actor reset 1", "Clear the active actor without deleting the saved profile.", "lk actor reset 1"),
+            ("lk actor reset 2", "Clear the active actor and remove saved actor names.", "lk actor reset 2"),
         ],
         children={
             "reset": _help_entry(
-                "Reset actor selection or saved Anvil actor profiles.",
-                "lk actor reset [1|2]",
-                "lk actor reset 2",
-                "Omitting the mode (or using 1) clears only the active actor. Mode 2 removes Anvil actor profiles but preserves private-key/environment wallets and the internal lab-deployer.",
+                "Reset actor state with an explicit preservation level.",
+                "lk actor reset 1 | lk actor reset 2",
+                "lk actor reset 1",
+                "Use 1 to clear the active actor while keeping names, or 2 to clear names too.",
                 forms=[
-                    ("lk actor reset 1", "Clear active actor state but preserve saved Anvil actor profiles.", "lk actor reset 1"),
-                    ("lk actor reset 2", "Remove saved Anvil actor profiles; preserve private-key/environment wallets and the internal lab-deployer.", "lk actor reset 2"),
+                    ("lk actor reset 1", "Clear active actor state but preserve saved actor names.", "lk actor reset 1"),
+                    ("lk actor reset 2", "Clear active actor state and remove saved actor names.", "lk actor reset 2"),
                 ],
             ),
         },
@@ -23196,7 +23604,7 @@ COMMAND_HELP = {
             ("encode", "Build the data for the function call without sending it.", "lk wizard setValue 10 encode"),
             ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard setValue"),
             ("TARGET", "A target must already be selected before wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
-            ("ACTOR", "Transactions use the current actor. For example, select Anvil account 1 as Alice with lk actor 1 Alice.", "lk actor 1 Alice"),
+            ("ACTOR", "Transactions use the current actor. For example, select Anvil account 0 as Alice with lk actor 0 Alice.", "lk actor 0 Alice"),
             ("ATTACH ETH", "Wizard does not have an ETH-value flag. To send ETH with a function call, use lk send --value or for a local test use lk probe --value.", "lk send setValue 10 --value 1ether"),
         ],
         related=["lk ask", "lk read", "lk send", "lk probe"],
@@ -24153,7 +24561,7 @@ COMMAND_HELP.update({
         ],
         options=[
             ("TARGET", "A target must already be selected before the wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
-            ("ACTOR", "Transactions use the current actor. Select Anvil account 1 as Alice with this command.", "lk actor 1 Alice"),
+            ("ACTOR", "Transactions use the current actor. Select Anvil account 0 as Alice with this command.", "lk actor 0 Alice"),
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard setValue 10 send"),
             ("encode", "Only build the call data. Nothing is sent. Lowkey builds calldata without broadcasting a transaction.", "lk wizard setValue 10 encode"),
@@ -25878,8 +26286,7 @@ PROJECT / TARGET SETUP
   lk wallet list                    List signer profiles.
   lk wallet set-env <name> <ENV>    Use a private key from an environment variable.
   lk actor                          Show current actor/accounts.
-  lk actor <index> <name>           Name an Anvil account (1+; account 0 is reserved). Example: lk actor 1 Alice
-  lk actor reset [1|2]              Clear selection; 2 removes saved Anvil actor profiles only.
+  lk actor <index> <name>           Name an Anvil account. Example: lk actor 0 Alice
   lk actors                         List available Anvil actors.
   lk impersonate <address> [name]   Use an existing account on a local fork.
   lk as <actor> <command> [args]    Run one command as another actor.
@@ -26790,57 +27197,48 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             mode = str(args[1]).strip() if len(args) > 1 else "1"
             if mode not in {"1", "2"} or len(args) > 2:
                 return fail(
-                    "Usage: lk actor reset [1|2]\n"
-                    "  omitted or 1 = clear active actor state, keep saved Anvil actor profiles\n"
-                    "  2 = remove saved Anvil actor profiles; preserve private-key/env wallets and lab-deployer"
+                    "Usage: lk actor reset 1 | lk actor reset 2\n"
+                    "  1 = clear active actor state, keep actor names\n"
+                    "  2 = clear active actor state and remove actor names"
                 )
 
             previous = config.get("actor")
             if mode == "1":
                 config["actor"] = None
                 save_config(config)
-                guidance = (
-                    " To remove saved Anvil actor profiles, run 'lk actor reset 2'; "
-                    "private-key/environment wallet profiles and the internal lab-deployer are preserved."
-                )
                 if previous:
                     print(
                         f"Actor reset 1: no active actor "
-                        f"(profile '{previous}' was kept).{guidance}"
+                        f"(profile '{previous}' was kept)."
                     )
                 else:
-                    print(f"Actor reset 1: no active actor (profiles kept).{guidance}")
+                    print("Actor reset 1: no active actor (profiles kept).")
                 return 0
 
-            # Full reset removes only disposable local Anvil actor profiles.
-            # Private-key and environment-backed wallets are credentials, not
-            # actor labels, and must survive an actor reset.
-            removed_actor_profiles = 0
+            # Full reset: remove configured local actor profiles and their
+            # address labels, but leave unrelated wallets/targets untouched.
+            actor_names = set(config.get("wallets", {}).keys())
             labels = config.setdefault("labels", {})
 
             for name, entry in list(config.get("wallets", {}).items()):
                 if wallet_is_internal(name, entry):
+                    # The lab deployer is Lowkey infrastructure, not a user
+                    # actor; keep it available for deployment/bootstrap.
                     continue
-                source = str(entry.get("source") or "") if isinstance(entry, dict) else ""
-                if source not in {"anvil-default", "anvil-impersonated"}:
-                    continue
+
                 address = str(entry.get("address") or "") if isinstance(entry, dict) else ""
                 if address:
                     labels.pop(address, None)
                     labels.pop(address.lower(), None)
                 config["wallets"].pop(name, None)
-                removed_actor_profiles += 1
 
             config["actor"] = None
             save_config(config)
-            if removed_actor_profiles:
-                print(
-                    f"Actor reset 2: no active actor; removed "
-                    f"{removed_actor_profiles} saved Anvil actor profile(s)."
-                )
+
+            if actor_names:
+                print("Actor reset 2: active actor and saved actor names cleared.")
             else:
-                print("Actor reset 2: no active actor; no saved Anvil actor profiles to remove.")
-            print("Preserved: private-key/environment wallet profiles and Lowkey's internal lab-deployer.")
+                print("Actor reset 2: no actor profiles were configured.")
             return 0
         elif len(args)==1 and args[0].isdigit():
             return select_existing_anvil_actor(config,args[0])
@@ -26897,6 +27295,9 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         warning = _read_state_change_warning(args, config)
         if warning:
             return fail(warning)
+        state_read = run_state_variable_read(config, args)
+        if state_read is not None:
+            return state_read
         return run_cast(["call",*args],config)
     elif cmd in {"send"}:
         return run_cast(["send",*args],config)
