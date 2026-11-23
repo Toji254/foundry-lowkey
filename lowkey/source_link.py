@@ -277,7 +277,13 @@ def _render_call_tree(
                 label = f"{resolution} TARGET {target_id}"
             else:
                 label = _symbol_label(target)
-            print(f"{prefix}{branch} {label}  [{resolution}]  {_location(edge)}")
+            status_parts = [resolution]
+            if edge.get("dispatch"):
+                status_parts.append(f"dispatch {str(edge['dispatch']).lower()}")
+            if edge.get("implementation_resolution"):
+                status_parts.append(f"implementation {str(edge['implementation_resolution']).lower()}")
+            status = " · ".join(status_parts)
+            print(f"{prefix}{branch} {label}  [{status}]  {_location(edge)}")
             emitted += 1
             if target is None:
                 continue
@@ -1149,6 +1155,12 @@ def _render_function_view(
             print("  No internal calls were statically identified.")
         print()
         _render_modifiers(modifiers, nodes, root_id, limit=limit)
+        if detail == "calls":
+            unresolved_calls = [
+                edge for edge in scoped_edges
+                if edge.get("kind") in {"CALLS", "APPLIES_MODIFIER"}
+            ]
+            _render_unresolved_relationships(unresolved_calls, nodes, limit=limit)
 
     if detail in {"storage", "all"}:
         _render_grouped_effects("STORAGE READS", read_values, nodes, root_id, paths, limit=limit)
@@ -1167,6 +1179,12 @@ def _render_function_view(
         _render_asset_flows(asset_values, limit=limit)
         _render_event_and_revert_edges("EVENTS", event_values, nodes, limit=limit)
         _render_event_and_revert_edges("REVERT CONDITIONS", revert_values, nodes, limit=limit)
+        if detail == "external":
+            unresolved_external = [
+                edge for edge in scoped_edges
+                if edge.get("kind") == "EXTERNAL_CALL"
+            ]
+            _render_unresolved_relationships(unresolved_external, nodes, limit=limit)
 
     if detail == "all":
         _render_unresolved_relationships(scoped_edges, nodes, limit=limit)
