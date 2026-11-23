@@ -1087,6 +1087,42 @@ def _render_unresolved_relationships(
     print()
 
 
+def _render_function_glance(
+    *,
+    root_id: str,
+    root_calls: list[dict[str, Any]],
+    helpers: list[str],
+    depth: int,
+    read_groups: list[dict[str, Any]],
+    constant_groups: list[dict[str, Any]],
+    immutable_groups: list[dict[str, Any]],
+    write_groups: list[dict[str, Any]],
+    external_keys: set[tuple[str, str, str]],
+    asset_keys: set[tuple[str, str, str]],
+    modifiers: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+) -> None:
+    """Give both summary and full views the same concise orientation."""
+    print("AT A GLANCE")
+    print(
+        f"  FLOW      {len({str(edge.get('to') or edge.get('id')) for edge in root_calls})} direct call target(s) "
+        f"· {len(helpers)} reachable helper/modifier(s) · depth {depth}"
+    )
+    print(
+        f"  STATE     {len(read_groups) + len(constant_groups) + len(immutable_groups)} unique read target(s) "
+        f"· {len(write_groups)} unique write target(s)"
+    )
+    if external_keys or asset_keys:
+        print(f"  EXTERNAL  {len(external_keys)} boundary/boundaries · {len(asset_keys)} asset path type(s)")
+    root_modifiers = [edge for edge in modifiers if edge.get("from") == root_id]
+    guard_names = list(dict.fromkeys(
+        _symbol_label(nodes.get(str(edge.get("to") or ""), {})) for edge in root_modifiers
+    ))
+    if guard_names:
+        print("  GUARDS    " + ", ".join(guard_names[:4]))
+    print()
+
+
 def _render_function_view(
     selected: dict[str, Any],
     index: dict[str, Any],
@@ -1130,26 +1166,13 @@ def _render_function_view(
     }
 
     if detail == "summary":
-        print("AT A GLANCE")
-        print(
-            f"  FLOW      {len({str(edge.get('to') or edge.get('id')) for edge in root_calls})} direct call target(s) "
-            f"· {len(helpers)} reachable helper/modifier(s) · depth {depth}"
+        _render_function_glance(
+            root_id=root_id, root_calls=root_calls, helpers=helpers, depth=depth,
+            read_groups=read_groups, constant_groups=constant_groups,
+            immutable_groups=immutable_groups, write_groups=write_groups,
+            external_keys=external_keys, asset_keys=asset_keys,
+            modifiers=modifiers, nodes=nodes,
         )
-        print(
-            f"  STATE     {len(read_groups) + len(constant_groups) + len(immutable_groups)} unique read target(s) "
-            f"· {len(write_groups)} unique write target(s)"
-        )
-        if external_keys or asset_keys:
-            print(f"  EXTERNAL  {len(external_keys)} boundary/boundaries · {len(asset_keys)} asset path type(s)")
-        if modifiers:
-            labels = []
-            for edge in modifiers:
-                label = _symbol_label(nodes.get(str(edge.get("to") or ""), {}))
-                if label not in labels:
-                    labels.append(label)
-            print("  GUARDS    " + ", ".join(labels[:4]))
-        print()
-
         print("CALL FLOW")
         if root_calls:
             _render_call_tree(
@@ -1188,6 +1211,15 @@ def _render_function_view(
             print(f"SCOPE     Additional resolved call paths exist beyond --depth {depth}.")
         _print_inventory_warning(index)
         return
+
+    if detail == "all":
+        _render_function_glance(
+            root_id=root_id, root_calls=root_calls, helpers=helpers, depth=depth,
+            read_groups=read_groups, constant_groups=constant_groups,
+            immutable_groups=immutable_groups, write_groups=write_groups,
+            external_keys=external_keys, asset_keys=asset_keys,
+            modifiers=modifiers, nodes=nodes,
+        )
 
     if detail in {"calls", "all"}:
         callers = [
