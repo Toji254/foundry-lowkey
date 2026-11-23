@@ -202,7 +202,7 @@ def _depth_has_more_calls(node: dict[str, Any], edges: list[dict[str, Any]], dep
         current, level = queue.pop(0)
         outgoing = [
             edge for edge in edges
-            if edge.get("kind") == "CALLS" and edge.get("from") == current
+            if edge.get("kind") in {"CALLS", "APPLIES_MODIFIER"} and edge.get("from") == current
             and edge.get("resolution") in {"DIRECT", "INFERRED"}
         ]
         if level >= depth and any(edge.get("to") not in visited for edge in outgoing):
@@ -1091,7 +1091,7 @@ def _render_function_view(
     if detail == "summary":
         print("AT A GLANCE")
         print(
-            f"  FLOW      {len({str(edge.get('to') or edge.get('id')) for edge in root_calls})} direct call(s) "
+            f"  FLOW      {len({str(edge.get('to') or edge.get('id')) for edge in root_calls})} direct call target(s) "
             f"· {len(helpers)} reachable helper/modifier(s) · depth {depth}"
         )
         print(
@@ -1198,12 +1198,6 @@ def _render_function_view(
     print("  Relationships are static source findings, not proof of runtime execution, success, or deployed external implementation.")
     print(f"  Scope: entrypoint plus {len(helpers)} resolved local function/modifier target(s), maximum depth {depth}.")
     _print_inventory_warning(index)
-    propagation = index.get("effect_propagation") or {}
-    if propagation.get("truncated_frontiers"):
-        print(
-            "  Index effect-propagation cap reached at "
-            f"{propagation['truncated_frontiers']} frontier(s); effects beyond the configured cap may be missing."
-        )
 
 
 def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int | None = None, limit: int = 24, as_json: bool = False, detail: str = "summary") -> int:
