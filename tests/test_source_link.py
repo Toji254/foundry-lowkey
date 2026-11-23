@@ -133,6 +133,7 @@ class SourceLinkTests(unittest.TestCase):
         text = output.getvalue()
         self.assertEqual(status, 0)
         self.assertIn("LOWKEY // SOURCE LINK", text)
+        self.assertIn("AT A GLANCE", text)
         self.assertIn("CALLS", text)
         self.assertIn("_debit(address,uint256)", text)
         self.assertIn("STORAGE WRITES", text)
@@ -464,6 +465,163 @@ class SourceLinkTests(unittest.TestCase):
         self.assertLess(len(rendered.splitlines()), 40)
         self.assertNotIn("GRAPH     ", rendered)
 
+
+    def test_only_filter_is_rejected_for_function_targets(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)", only="writes")
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(status, 2)
+        self.assertIn("--only filters contract relationships", output.getvalue())
+
+    def test_function_details_scope_unresolved_targets_to_reachable_functions(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            unrelated = next(
+                item for item in index["nodes"]
+                if item.get("qualified_name") == "ImportedMath.plus(uint256,uint256)"
+            )
+            index["edges"].append({
+                "id": "UNRESOLVED:unrelated-number-sub",
+                "kind": "CALLS",
+                "from": unrelated["id"],
+                "to": "external:number.sub",
+                "resolution": "UNRESOLVED",
+                "source": {"file": "lib/audit/ImportedMath.sol", "line": 7, "column": 1},
+                "detail": "Unrelated library call used only to prove scope isolation.",
+            })
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)", detail="all")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertNotIn("number.sub", rendered)
+        self.assertIn("UNRESOLVED TARGETS", rendered)
+        self.assertIn("reachable scope", rendered)
+
+    def test_function_storage_detail_groups_accesses_by_state_declaration(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            getter = next(
+                item for item in index["nodes"]
+                if item.get("qualified_name") == "Graph.getPosition(uint256)"
+            )
+            original = next(
+                edge for edge in index["edges"]
+                if edge.get("from") == getter["id"] and edge.get("kind") == "READS"
+            )
+            duplicate = dict(original)
+            duplicate["id"] = "SYNTHETIC:DUPLICATE:READ"
+            duplicate["source"] = {
+                **original.get("source", {}),
+                "line": int(original.get("source", {}).get("line", 1)) + 1,
+            }
+            index["edges"].append(duplicate)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.getPosition(uint256)", detail="storage")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("Graph.positions  (2 direct)  [lexical]", rendered)
+        self.assertEqual(rendered.count("Graph.positions"), 1)
+
+    def test_ast_storage_context_edges_survive_scope_without_propagation_clones(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            nodes = {item["id"]: item for item in index["nodes"]}
+            entry = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.withdraw(uint256)")
+            helper = next(item for item in nodes.values() if item.get("qualified_name") == "Graph._debit(address,uint256)")
+            balance = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.balances")
+            positions = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.positions")
+            unrelated_entry = next(
+                item for item in nodes.values()
+                if item.get("qualified_name") == "ImportedMath.plus(uint256,uint256)"
+            )
+            index["edges"].extend([
+                {
+                    "id": "AST:storage:helper-context",
+                    "kind": "WRITES",
+                    "from": helper["id"],
+                    "to": balance["id"],
+                    "resolution": "INFERRED",
+                    "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+                    "source": {"file": "src/Graph.sol", "line": 104, "column": 21},
+                    "access_path": "balances[user]",
+                    "operation": "assignment",
+                    "persistence": "persistent",
+                    "via": [entry["id"], helper["id"]],
+                },
+                {
+                    "id": "PROPAGATED:storage:helper-context",
+                    "kind": "WRITES",
+                    "from": entry["id"],
+                    "to": balance["id"],
+                    "resolution": "INFERRED",
+                    "evidence": "CALL_GRAPH_PROPAGATION",
+                    "source": {"file": "src/Graph.sol", "line": 104, "column": 21},
+                    "access_path": "balances[user]",
+                    "operation": "assignment",
+                    "persistence": "persistent",
+                    "via": [entry["id"], helper["id"]],
+                },
+                {
+                    "id": "AST:storage:unrelated-caller-context",
+                    "kind": "WRITES",
+                    "from": helper["id"],
+                    "to": positions["id"],
+                    "resolution": "INFERRED",
+                    "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+                    "source": {"file": "src/Graph.sol", "line": 105, "column": 21},
+                    "access_path": "positions[user]",
+                    "operation": "assignment",
+                    "persistence": "persistent",
+                    "via": [unrelated_entry["id"], helper["id"]],
+                },
+            ])
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)", detail="storage")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("Graph.balances  (2 via helpers)  [AST + lexical]", rendered)
+        self.assertEqual(rendered.count("Graph.balances"), 2)  # one read group and one write group
+        self.assertNotIn("Graph.positions", rendered)
+
+    def test_function_summary_includes_reachable_helper_effects(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("AT A GLANCE", rendered)
+        self.assertIn("lastDebitAmount", rendered)
+        self.assertIn("balances", rendered)
+        self.assertIn("[helper]", rendered)
+        self.assertNotIn("relationships=", rendered)
+        self.assertNotIn("RESOLUTION ambiguous=", rendered)
 
     def test_link_help_documents_flags_use_cases_and_copy_paste_examples(self):
         help_text = _link_parser().format_help()
