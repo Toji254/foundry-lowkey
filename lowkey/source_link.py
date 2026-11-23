@@ -725,7 +725,7 @@ def _function_analysis_label(index: dict[str, Any]) -> str:
     report = index.get("ast") or {}
     matched_functions = int(report.get("functions") or 0)
     if matched_functions:
-        return f"AST ENRICHED · {matched_functions} function(s) matched · static only"
+        return f"PROJECT AST AVAILABLE · {matched_functions} function(s) matched; target coverage not asserted"
     build_info_files = int(report.get("build_info_files") or 0)
     if not report.get("available") or build_info_files == 0:
         return "LEXICAL ONLY · no Foundry build-info found"
@@ -740,7 +740,12 @@ def _render_function_header(
 ) -> None:
     """Render a compact and truthful header shared by summary and detail views."""
     print("LOWKEY // SOURCE TRACE")
-    print(f"TARGET    {_symbol_label(selected)}")
+    contract = str(selected.get("contract") or "")
+    function_name = str(selected.get("name") or _symbol_label(selected))
+    concise_target = f"{contract}.{function_name}" if contract else function_name
+    print(f"TARGET    {concise_target}")
+    if selected.get("signature"):
+        print(f"SIGNATURE {selected['signature']}")
     print(f"SOURCE    {_location(selected)}")
     if selected.get("provenance"):
         print(f"ORIGIN    {str(selected['provenance']).upper()}")
@@ -772,7 +777,7 @@ def _effect_groups(
     values: list[dict[str, Any]],
     nodes: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Deduplicate accesses by source site and group them by state declaration."""
+    """Group every access to the same declaration into one auditor-readable row."""
     grouped: dict[str, dict[str, Any]] = {}
     seen_sites: set[tuple[str, str, str, int, int, str]] = set()
     for edge in values:
@@ -795,7 +800,6 @@ def _effect_groups(
             "label": "",
             "access_paths": [],
             "locations": [],
-            "helpers": [],
             "resolutions": set(),
             "accesses": 0,
         })
@@ -806,15 +810,29 @@ def _effect_groups(
         location = _location(edge)
         if location not in group["locations"]:
             group["locations"].append(location)
-        resolution = str(edge.get("resolution") or "UNKNOWN")
-        group["resolutions"].add(resolution)
+        group["resolutions"].add(str(edge.get("resolution") or "UNKNOWN"))
         group["label"] = _symbol_label(group["target"]) if group["target"] else (
             access_path or target_id or "unresolved state reference"
         )
 
-    return sorted(grouped.values(), key=lambda item: (
-        item.get("label", ""), item.get("kind", "")
-    ))
+    return sorted(grouped.values(), key=lambda item: item.get("label", ""))
+
+
+_EFFECT_OPERATION_LABELS = {
+    "READS": "READ",
+    "READS_CONSTANT": "CONSTANT READ",
+    "READS_IMMUTABLE": "IMMUTABLE READ",
+    "WRITES": "WRITE",
+    "DELETES": "DELETE",
+    "MUTATES": "MUTATE",
+    "TRANSIENT_READS": "TRANSIENT READ",
+    "TRANSIENT_WRITES": "TRANSIENT WRITE",
+    "TRANSIENT_DELETES": "TRANSIENT DELETE",
+    "INITIALIZES": "INITIALIZE",
+    "ALIASES_STORAGE": "STORAGE ALIAS",
+    "UNRESOLVED_STORAGE": "UNRESOLVED SLOT ACCESS",
+    "UNRESOLVED_MUTATION": "UNRESOLVED MUTATION",
+}
 
 
 def _render_grouped_effects(
@@ -830,11 +848,15 @@ def _render_grouped_effects(
     accesses = sum(item["accesses"] for item in groups)
     print(f"{heading}  ({len(groups)} state item(s) · {accesses} access(es))")
     for group in groups[:limit]:
-        parts = [f"{group['label']} · {group['accesses']} access(es)"]
-        paths = group["access_paths"][:2]
-        locations = group["locations"][:2]
+        operations = sorted({
+            _EFFECT_OPERATION_LABELS.get(kind, kind.replace("_", " "))
+            for kind in group["kinds"]
+        })
+        parts = [f"{group['label']} · {' / '.join(operations)} · {group['accesses']} access(es)"]
+        paths = group["access_paths"][:3]
+        locations = group["locations"][:3]
         if paths:
-            parts.append("path " + ", ".join(paths))
+            parts.append("paths " + ", ".join(paths))
         if locations:
             parts.append("at " + ", ".join(locations))
         resolutions = group["resolutions"]
@@ -852,6 +874,7 @@ def _render_grouped_effects(
     if len(groups) > limit:
         print(f"  ... {len(groups) - limit} more state item(s)")
     print()
+
 
 
 def _function_scope_ids(
@@ -903,25 +926,19 @@ def _render_function_summary(
         edge for edge in edges
         if edge.get("from") in function_ids and edge.get("kind") == "EMITS"
     ]
-    effect_kinds = {
-        "READS", "READS_CONSTANT", "READS_IMMUTABLE", "TRANSIENT_READS",
-        "WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES",
-        "TRANSIENT_DELETES", "INITIALIZES",
-    }
+    effect_kinds = set(_EFFECT_OPERATION_LABELS)
     effects = [
         edge for edge in edges
         if edge.get("from") in function_ids and edge.get("kind") in effect_kinds
     ]
-    reads = [
-        edge for edge in effects
-        if edge.get("kind") in {"READS", "READS_CONSTANT", "READS_IMMUTABLE", "TRANSIENT_READS"}
-    ]
-    writes = [
-        edge for edge in effects
-        if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "INITIALIZES"}
-    ]
-    read_groups = _effect_groups(reads, nodes)
-    write_groups = _effect_groups(writes, nodes)
+    groups = _effect_groups(effects, nodes)
+    read_kinds = {"READS", "READS_CONSTANT", "READS_IMMUTABLE", "TRANSIENT_READS"}
+    write_kinds = {
+        "WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES",
+        "TRANSIENT_DELETES", "INITIALIZES",
+    }
+    read_count = sum(bool(group["kinds"] & read_kinds) for group in groups)
+    write_count = sum(bool(group["kinds"] & write_kinds) for group in groups)
     modifiers = [edge for edge in direct if edge.get("kind") == "APPLIES_MODIFIER"]
     asset_flows = [
         edge for edge in edges
@@ -936,7 +953,7 @@ def _render_function_summary(
     print("AT A GLANCE")
     print(
         f"  {len(calls)} internal call(s) · {len(external)} external boundary/boundaries · "
-        f"{len(read_groups)} state item(s) read · {len(write_groups)} written"
+        f"{read_count} state item(s) read · {write_count} written"
     )
     print(
         f"  {len(modifiers)} entry guard(s) · {len(events)} event emission(s)"
@@ -958,12 +975,10 @@ def _render_function_summary(
         print("  No internal calls were statically identified.")
     print()
 
-    if reads or writes:
-        print("STATE TOUCHPOINTS")
-        if reads:
-            _render_grouped_effects("READS", reads, nodes, limit=min(limit, 4))
-        if writes:
-            _render_grouped_effects("WRITES", writes, nodes, limit=min(limit, 4))
+    if effects:
+        _render_grouped_effects(
+            "STATE TOUCHPOINTS", effects, nodes, limit=min(limit, 4)
+        )
 
     if external:
         print("EXTERNAL BOUNDARIES")
@@ -1000,6 +1015,7 @@ def _render_function_summary(
     print()
     print("LIMITS  Static source analysis; reachability is not proof of execution or success.")
     _print_inventory_warning(index)
+
 
 
 def _render_function_details(
@@ -1039,54 +1055,16 @@ def _render_function_details(
         print()
 
     if active in {"storage", "all"}:
-        read_kinds = {"READS"}
-        constant_kinds = {"READS_CONSTANT"}
-        immutable_kinds = {"READS_IMMUTABLE"}
-        write_kinds = {"WRITES", "DELETES", "MUTATES"}
-        transient_write_kinds = {"TRANSIENT_WRITES", "TRANSIENT_DELETES"}
         state_edges = [
             edge for edge in edges
             if edge.get("from") in function_ids
+            and edge.get("kind") in _EFFECT_OPERATION_LABELS
         ]
         _render_grouped_effects(
-            "STORAGE READS",
-            [edge for edge in state_edges if edge.get("kind") in read_kinds],
-            nodes, limit=limit,
-        )
-        _render_grouped_effects(
-            "CONSTANT REFERENCES",
-            [edge for edge in state_edges if edge.get("kind") in constant_kinds],
-            nodes, limit=limit,
-        )
-        _render_grouped_effects(
-            "IMMUTABLE REFERENCES",
-            [edge for edge in state_edges if edge.get("kind") in immutable_kinds],
-            nodes, limit=limit,
-        )
-        _render_grouped_effects(
-            "STORAGE WRITES",
-            [edge for edge in state_edges if edge.get("kind") in write_kinds],
-            nodes, limit=limit,
-        )
-        _render_grouped_effects(
-            "TRANSIENT STORAGE",
-            [edge for edge in state_edges if edge.get("kind") in transient_write_kinds | {"TRANSIENT_READS"}],
-            nodes, limit=limit,
-        )
-        _render_grouped_effects(
-            "UNRESOLVED STORAGE / MUTATIONS",
-            [edge for edge in state_edges if edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}],
-            nodes, limit=limit,
-        )
-        _render_grouped_effects(
-            "STORAGE ALIASES",
-            [edge for edge in state_edges if edge.get("kind") == "ALIASES_STORAGE"],
-            nodes, limit=limit,
-        )
-        _render_grouped_effects(
-            "INITIALIZERS",
-            [edge for edge in state_edges if edge.get("kind") == "INITIALIZES"],
-            nodes, limit=limit,
+            "STATE EFFECTS",
+            state_edges,
+            nodes,
+            limit=limit,
         )
 
     if active in {"external", "all"}:
