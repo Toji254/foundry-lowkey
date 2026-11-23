@@ -133,6 +133,7 @@ class SourceLinkTests(unittest.TestCase):
         text = output.getvalue()
         self.assertEqual(status, 0)
         self.assertIn("LOWKEY // SOURCE LINK", text)
+        self.assertIn("AT A GLANCE", text)
         self.assertIn("CALLS", text)
         self.assertIn("_debit(address,uint256)", text)
         self.assertIn("STORAGE WRITES", text)
@@ -534,7 +535,7 @@ class SourceLinkTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("Graph.positions  (2 direct)", rendered)
+        self.assertIn("Graph.positions  (2 direct)  [lexical]", rendered)
         self.assertEqual(rendered.count("Graph.positions"), 1)
 
     def test_ast_storage_context_edges_survive_scope_without_propagation_clones(self):
@@ -581,7 +582,7 @@ class SourceLinkTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("Graph.balances  (2 via helpers)", rendered)
+        self.assertIn("Graph.balances  (2 via helpers)  [AST + lexical]", rendered)
         self.assertEqual(rendered.count("Graph.balances"), 2)  # one read group and one write group
 
     def test_function_summary_includes_reachable_helper_effects(self):
