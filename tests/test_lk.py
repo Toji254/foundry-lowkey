@@ -5434,7 +5434,7 @@ contract Pool {
         result = self.run_cli("--h")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("LOWKEY", result.stdout)
-        self.assertIn("lk actor 0 Alice", result.stdout)
+        self.assertIn("lk actor 1 Alice", result.stdout)
         self.assertIn("lk lab [Contract] --ai-review", result.stdout)
         self.assertIn("lk ai --h", result.stdout)
 
