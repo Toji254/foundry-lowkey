@@ -843,8 +843,10 @@ def _render_grouped_effects(
 def _render_function_header(
     selected: dict[str, Any],
     index: dict[str, Any],
+    *,
+    detail: str,
 ) -> None:
-    print("LOWKEY // SOURCE LINK")
+    print("LOWKEY // SOURCE TRACE" if detail == "summary" else "LOWKEY // SOURCE LINK")
     print(f"FUNCTION  {_symbol_label(selected)}")
     print(f"SOURCE    {_location(selected)}")
     if selected.get("provenance"):
@@ -995,7 +997,7 @@ def _render_unresolved_relationships(
         )
         unique.setdefault(key, edge)
     if not unique:
-        print("UNRESOLVED TARGETS  none in the reachable local call/modifier scope")
+        print("UNRESOLVED TARGETS  none in reachable scope (local calls and modifiers only)")
         print()
         return
     print(f"UNRESOLVED TARGETS  ({len(unique)} in reachable scope)")
@@ -1121,7 +1123,7 @@ def _render_function_view(
         ]
         if callers:
             _render_edges("CALLED BY", callers[:limit], nodes, reverse=True)
-        print("CALL FLOW")
+        print("INTERNAL CALLS / CALL FLOW")
         if root_calls:
             _render_call_tree(selected, index.get("edges") or [], nodes, depth=depth, limit=limit)
         else:
@@ -1209,9 +1211,8 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         }, indent=2, sort_keys=True))
         return 0
 
-    compact_function = function_target and detail == "summary" and only is None
     if function_target:
-        _render_function_header(selected, index)
+        _render_function_header(selected, index, detail=detail)
     elif not (selected.get("kind") == "contract" and only is None):
         print("LOWKEY // SOURCE LINK")
         print(f"TARGET    {_symbol_label(selected)}")
