@@ -559,6 +559,12 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("STATE EFFECTS", rendered)
         self.assertIn("Graph.balances", rendered)
         self.assertIn("Graph.lastDebitAmount", rendered)
+        self.assertIn("READ / WRITE", rendered)
+        self.assertEqual(
+            sum("Graph.balances" in line for line in rendered.splitlines()),
+            1,
+            "reads and writes to one declaration must share one detail row",
+        )
         self.assertNotIn("unrelatedCaller", rendered)
         self.assertNotIn("GRAPH     ", rendered)
         self.assertNotIn("INDEX     ", rendered)
