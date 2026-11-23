@@ -92,16 +92,9 @@ def prepare(target: str, attacker: str, amount: str) -> None:
     if not re.fullmatch(r"0x[0-9a-fA-F]+", calldata):
         raise RuntimeError(f"cast returned invalid setup calldata: {calldata!r}")
 
-    # Replay control and attack from the same Anvil snapshot with the same
-    # setup-block timestamp. Timestamp remains part of the strict pre-state
-    # equality check; the fixture makes the scenarios actually comparable.
-    latest = rpc("eth_getBlockByNumber", ["latest", False])
-    if not isinstance(latest, dict) or not latest.get("timestamp"):
-        raise RuntimeError("Could not read the latest Anvil block timestamp.")
-    setup_timestamp = int(str(latest["timestamp"]), 16) + 1
-    rpc("evm_setNextBlockTimestamp", [setup_timestamp])
-    print(f"PREPARE_BLOCK_TIMESTAMP {setup_timestamp}")
-
+    # Setup uses an ordinary owner transaction only. The outer P0 fixture
+    # configures Anvil's fixed block-timestamp interval once before either
+    # matched scenario; this preparation command never overrides EVM time.
     tx_hash, receipt = send_and_wait(owner, target, calldata)
     if str(receipt.get("status") or "").lower() not in {"0x1", "1"}:
         raise RuntimeError(f"Owner-only scenario preparation reverted: {tx_hash}")

@@ -303,6 +303,17 @@ def exercise_fallback_takeover(
     run([lk, "target", "reset"], root, env)
     run([lk, "target", contract, address], root, env)
 
+    # Configure a deterministic node-level clock before Lowkey snapshots the
+    # matched scenarios. The 1-second block timestamp interval is part of the
+    # Anvil test environment, not scenario preparation; the control and attack
+    # both revert to the same snapshot and therefore mine their setup block at
+    # the same timestamp. This is deliberately outside prepare_argv.
+    run(
+        [cast, "rpc", "anvil_setBlockTimestampInterval", "1", "--rpc-url", RPC],
+        root, env,
+    )
+    print("ANVIL TEST CLOCK: fixed 1-second block timestamp interval")
+
     account_output = run(
         [cast, "rpc", "eth_accounts", "--rpc-url", RPC], root, env
     ).stdout.strip()
