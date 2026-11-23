@@ -1048,6 +1048,8 @@ SOURCE MAP OPTIONS  (use without TARGET)
                    Example: lk link --type interface
   --page N         Move through the 24-item pages. Example: lk link --page 2
   --all            Show every matching declaration in one compact list.
+                   Use it when you need the complete filtered inventory.
+                   Example: lk link --all
 
 TARGET OPTIONS
   --only FILTER    Narrow a contract's relationships:
@@ -1071,7 +1073,7 @@ FUNCTION / MODIFIER OPTIONS
 OUTPUT
   --json           Emit structured JSON for scripts and downstream tooling.
                    Example: lk link --search Vault --json
-  -h, --help       Show this reference.
+  -h, --h, --help  Show this reference.
 
 COMMON INVESTIGATION SEQUENCE
   lk link --search Position

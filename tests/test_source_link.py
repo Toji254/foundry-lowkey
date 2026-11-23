@@ -471,6 +471,7 @@ class SourceLinkTests(unittest.TestCase):
         for option in (
             "--root", "--depth", "--only", "--detail", "--limit",
             "--search", "--type", "--page", "--all", "--json",
+            "-h", "--h", "--help",
         ):
             self.assertIn(option, help_text)
 
