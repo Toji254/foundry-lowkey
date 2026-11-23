@@ -1070,7 +1070,7 @@ def _render_unresolved_relationships(
         )
         unique.setdefault(key, edge)
     if not unique:
-        print("UNRESOLVED TARGETS  none in reachable scope (local calls and modifiers only)")
+        print("UNRESOLVED TARGETS  none in this function's reachable scope")
         print()
         return
     print(f"UNRESOLVED TARGETS  ({len(unique)} in reachable scope)")
