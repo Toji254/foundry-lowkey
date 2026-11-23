@@ -24402,17 +24402,19 @@ COMMAND_HELP = {
 
 
 def _native_forge_help(command: str, summary: str, example: str) -> dict:
-    return _help_entry(
+    entry = _help_entry(
         summary,
         f"lk {command} [forge-options...]",
-        example,
+        f"lk {command} --h",
         f"Use it when you need Forge's native '{command}' capability while keeping Lowkey's project routing and command surface.",
         options=[
-            ("Forge options", "Pass options supported by your installed Forge version. Ask Forge directly for its authoritative option list; Lowkey does not reimplement these flags.", f"forge {command} --help"),
-            ("Forwarding", "Lowkey forwards the remaining arguments to the native Forge command. These are upstream Forge options, not Lowkey-owned flags, and may vary by installed version.", f"forge {command} --help"),
+            ("Installed Forge options", "Lowkey displays the options supported by your installed Forge version inside this help page. Pass the options you need after lk " + command + ".", f"lk {command} --h"),
+            ("Argument forwarding", "Lowkey forwards arguments after the command to Forge. These are native Forge options, not extra Lowkey flags; the installed option list is shown below.", f"lk {command} --h"),
         ],
         related=["lk forge", "lk doctor"],
     )
+    entry["native_help"] = {"binary": "forge", "args": [command]}
+    return entry
 
 
 # Native Forge commands routed through bin/lk deserve first-class Lowkey help too.
@@ -25890,24 +25892,122 @@ def _apply_command_help_audit_catalog():
         if isinstance(child, dict):
             child["options"] = list(pipeline_poc_options)
 
-    # Every root and nested help page gets an explicit invocation example.
-    # Commands with no extra options say so honestly in OPTIONS / MODES.
-    def complete(entries, prefix=()):
-        for name, entry in entries.items():
-            if not entry.get("forms"):
-                usage = str(entry.get("usage") or "lk " + " ".join((*prefix, name)))
-                summary = str(entry.get("summary") or "Run this Lowkey command.")
-                example = str(entry.get("example") or usage)
-                entry["forms"] = [
-                    (usage, "Standard invocation: " + summary, example)
-                ]
-            complete(entry.get("children") or {}, (*prefix, name))
-
-    complete(COMMAND_HELP)
 
 
 _apply_command_help_audit_catalog()
 
+
+_NATIVE_HELP_SOURCES = {
+    "forge": ("forge", []),
+    "build": ("forge", ["build"]),
+    "test": ("forge", ["test"]),
+    "script": ("forge", ["script"]),
+    "coverage": ("forge", ["coverage"]),
+    "lint": ("forge", ["lint"]),
+    "fmt": ("forge", ["fmt"]),
+    "create": ("forge", ["create"]),
+    "fuzz": ("forge", ["test"]),
+    "invariant": ("forge", ["test"]),
+    "mutate": ("forge", ["test"]),
+    "symbolic": ("forge", ["test"]),
+    "brutalize": ("forge", ["test"]),
+    "trace": ("cast", ["run"]),
+    "replay": ("cast", ["run"]),
+    "logs": ("cast", ["logs"]),
+    "raw": ("cast", []),
+    "4byte": ("cast", ["4byte"]),
+    "4byte-calldata": ("cast", ["4byte-calldata"]),
+    "4byte-event": ("cast", ["4byte-event"]),
+    "access-list": ("cast", ["access-list"]),
+    "constructor-args": ("cast", ["constructor-args"]),
+    "creation-code": ("cast", ["creation-code"]),
+    "decode-calldata": ("cast", ["decode-calldata"]),
+    "abi-encode": ("cast", ["abi-encode"]),
+    "admin": ("cast", ["admin"]),
+    "implementation": ("cast", ["implementation"]),
+    "interface": ("cast", ["interface"]),
+    "c": ("cast", ["call"]),
+    "s": ("cast", ["send"]),
+    "chisel": ("chisel", []),
+    "slither": ("slither", []),
+    "fork": ("anvil", []),
+}
+for _help_command, (_help_binary, _help_args) in _NATIVE_HELP_SOURCES.items():
+    if _help_command in COMMAND_HELP and not COMMAND_HELP[_help_command].get("native_help"):
+        COMMAND_HELP[_help_command]["native_help"] = {
+            "binary": _help_binary,
+            "args": list(_help_args),
+        }
+
+_NATIVE_HELP_REDIRECT_RE = re.compile(
+    r"\b(?:forge|cast|anvil|chisel|slither)(?:\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\s+--help\b",
+    re.IGNORECASE,
+)
+_NATIVE_HELP_REDIRECT_SENTENCE_RE = re.compile(
+    r"[^.\n]*\b(?:forge|cast|anvil|chisel|slither)(?:\s+(?:[A-Za-z0-9_-]+|<[^>]+>))?\s+--help[^.\n]*\.?",
+    re.IGNORECASE,
+)
+_LOWKEY_NATIVE_HELP_REDIRECT_RE = re.compile(
+    r"\blk\s+(forge|raw)\s+<[^>]+>\s+--help\b",
+    re.IGNORECASE,
+)
+
+def _rewrite_native_help_references(entries, prefix=()):
+    for name, entry in entries.items():
+        command_path = " ".join((*prefix, str(name)))
+        lowkey_help = "lk " + command_path + " --h"
+
+        if _NATIVE_HELP_REDIRECT_RE.search(str(entry.get("example") or "")) or _LOWKEY_NATIVE_HELP_REDIRECT_RE.search(str(entry.get("example") or "")):
+            entry["example"] = lowkey_help
+
+        for field in ("summary", "usage", "use"):
+            value = entry.get(field)
+            if isinstance(value, str):
+                value = _NATIVE_HELP_REDIRECT_SENTENCE_RE.sub(
+                    "Lowkey displays the installed tool's supported options inside this help page.",
+                    value,
+                )
+                value = _LOWKEY_NATIVE_HELP_REDIRECT_RE.sub(
+                    lambda match: "lk " + match.group(1).lower() + " --h",
+                    value,
+                )
+                entry[field] = value
+
+        for field in ("forms", "options", "notes"):
+            rewritten = []
+            for row in entry.get(field) or []:
+                values = list(row)
+                for index, value in enumerate(values):
+                    value = str(value)
+                    passthrough = _LOWKEY_NATIVE_HELP_REDIRECT_RE.search(value)
+                    if passthrough:
+                        tool = passthrough.group(1).lower()
+                        if index == 0:
+                            value = "lk " + tool + " --h"
+                        elif index == 1:
+                            value = "Lowkey displays the installed " + ("Forge" if tool == "forge" else "Cast") + " options in this help page."
+                        else:
+                            value = "lk " + tool + " --h"
+                    if _NATIVE_HELP_REDIRECT_RE.search(value):
+                        if index == 2:
+                            value = lowkey_help
+                        else:
+                            value = _NATIVE_HELP_REDIRECT_SENTENCE_RE.sub(
+                                "Lowkey displays the installed tool's supported options inside this help page.",
+                                value,
+                            )
+                    values[index] = value
+                rewritten.append(tuple(values))
+            entry[field] = rewritten
+
+        if isinstance(entry.get("related"), list):
+            entry["related"] = [
+                value for value in entry["related"]
+                if str(value).strip().lower() != "lk forge inspect"
+            ]
+        _rewrite_native_help_references(entry.get("children") or {}, (*prefix, str(name)))
+
+_rewrite_native_help_references(COMMAND_HELP)
 
 HELP_ALIASES = {
     "cheats": "cheat",
@@ -26016,6 +26116,74 @@ def _help_suggestions(command, limit=3):
             scored.append((ratio, candidate))
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [candidate for _, candidate in scored[:limit]]
+
+_NATIVE_HELP_OUTPUT_CACHE = {}
+
+
+def _native_help_reference(entry):
+    """Read installed native CLI help so Lowkey can display it in-place."""
+    spec = entry.get("native_help") if isinstance(entry, dict) else None
+    if not isinstance(spec, dict):
+        return None
+    binary_name = str(spec.get("binary") or "").strip()
+    args = spec.get("args") if isinstance(spec.get("args"), list) else []
+    if not binary_name:
+        return {"available": False, "message": "No native executable was configured."}
+
+    cache_key = (binary_name, tuple(str(item) for item in args))
+    if cache_key in _NATIVE_HELP_OUTPUT_CACHE:
+        return _NATIVE_HELP_OUTPUT_CACHE[cache_key]
+    binary = shutil.which(binary_name)
+    if not binary:
+        result = {"available": False, "message": f"{binary_name} is not installed or is not available on PATH."}
+        _NATIVE_HELP_OUTPUT_CACHE[cache_key] = result
+        return result
+
+    command = [binary, *[str(item) for item in args], "--help"]
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+            start_new_session=(os.name == "posix"),
+        )
+        output = str(completed.stdout or "").strip()
+        output = re.sub(r"\x1b\[[0-9;]*m", "", output)
+        if output:
+            result = {"available": True, "output": output, "returncode": completed.returncode}
+        else:
+            result = {"available": False, "message": f"{binary_name} returned an empty help page (exit code {completed.returncode})."}
+    except subprocess.TimeoutExpired:
+        result = {"available": False, "message": f"{binary_name} did not return its help page within 10 seconds."}
+    except OSError as exc:
+        result = {"available": False, "message": f"Could not read {binary_name} help: {exc}"}
+
+    _NATIVE_HELP_OUTPUT_CACHE[cache_key] = result
+    return result
+
+
+def _render_native_help_reference(entry):
+    spec = entry.get("native_help") if isinstance(entry, dict) else None
+    if not isinstance(spec, dict):
+        return
+    binary_name = str(spec.get("binary") or "native tool")
+    args = spec.get("args") if isinstance(spec.get("args"), list) else []
+    label = " ".join([binary_name, *[str(item) for item in args]]).strip()
+    print("")
+    print("INSTALLED TOOL OPTIONS")
+    print("----------------------")
+    print(f"  Lowkey reads the options for {label} from the tool installed on this machine.")
+    print("  These options are displayed here; you do not need to leave the lk help menu.")
+    result = _native_help_reference(entry)
+    if not result or not result.get("available"):
+        print(f"  Unavailable: {(result or {}).get('message', 'native help source is not configured')}")
+        print("  The Lowkey usage, examples and options above are still available.")
+        return
+    for line in str(result.get("output") or "").splitlines():
+        print("  " + line.rstrip())
 
 def _render_command_help(path):
     entry, resolved, unknown = _help_entry_for_path(path)
@@ -26155,6 +26323,8 @@ def _render_command_help(path):
     else:
         print("  No additional command-specific flags or modes are registered.")
         print("  Global --ai and help flags are available; see AI GUIDANCE and HELP TIP below.")
+
+    _render_native_help_reference(entry)
 
     if shown_path.split()[0].lower() != "ai":
         print("")
