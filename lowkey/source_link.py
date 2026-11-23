@@ -742,9 +742,14 @@ def _function_scope_edges(
     reachable: dict[str, int],
 ) -> list[dict[str, Any]]:
     """Use original source edges from reachable functions; omit propagated clones."""
+    propagation_evidence = {
+        "CALL_GRAPH_PROPAGATION",
+        "MODIFIER_EXECUTION_PROPAGATION",
+    }
     return [
         edge for edge in (index.get("edges") or [])
-        if edge.get("from") in reachable and not edge.get("via")
+        if edge.get("from") in reachable
+        and edge.get("evidence") not in propagation_evidence
     ]
 
 
