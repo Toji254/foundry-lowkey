@@ -106,6 +106,11 @@ class SourceLinkTests(unittest.TestCase):
                 function _recordDebit(address user, uint256 amount) internal {
                     lastDebitAmount = amount;
                 }
+                function unrelatedCaller(address target) external {
+                    _debit(msg.sender, 1);
+                    (bool ok,) = target.call("");
+                    require(ok);
+                }
                 function recurse(uint256 count) internal {
                     if (count > 0) recurse(count - 1);
                 }
@@ -510,6 +515,53 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("OUT", text)
         self.assertIn("withdraw(uint256)", text)
         self.assertNotIn("deposit()", text)
+
+
+
+    def test_function_summary_groups_helper_effects_by_state_declaration(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("ANALYSIS  LEXICAL ONLY", rendered)
+        self.assertIn("no Foundry build-info found", rendered)
+        self.assertIn("AT A GLANCE", rendered)
+        self.assertIn("Graph.balances", rendered)
+        self.assertIn("Graph.lastDebitAmount", rendered)
+        self.assertIn("helper effects from", rendered)
+        self.assertEqual(
+            sum("Graph.balances" in line for line in rendered.splitlines()),
+            1,
+            "a state declaration should appear once in the summary, not once per access path",
+        )
+
+    def test_function_detail_is_scoped_to_selected_entrypoint_and_callees(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)", detail="all")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("LOWKEY // SOURCE TRACE", rendered)
+        self.assertIn("CALL CHAIN", rendered)
+        self.assertIn("STORAGE WRITES", rendered)
+        self.assertIn("Graph.balances", rendered)
+        self.assertIn("Graph.lastDebitAmount", rendered)
+        self.assertNotIn("unrelatedCaller", rendered)
+        self.assertNotIn("GRAPH     ", rendered)
+        self.assertNotIn("INDEX     ", rendered)
 
 
 if __name__ == "__main__":
