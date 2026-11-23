@@ -556,7 +556,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("LOWKEY // SOURCE TRACE", rendered)
         self.assertIn("CALL CHAIN", rendered)
-        self.assertIn("STORAGE WRITES", rendered)
+        self.assertIn("STATE EFFECTS", rendered)
         self.assertIn("Graph.balances", rendered)
         self.assertIn("Graph.lastDebitAmount", rendered)
         self.assertNotIn("unrelatedCaller", rendered)
