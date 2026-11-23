@@ -698,7 +698,7 @@ def _render_function_summary(
 
     if calls:
         print(f"CALL FLOW  (up to depth {min(depth, 2)}; first {min(limit, 8)} links)")
-        _render_call_tree(selected, all_edges, nodes, depth=min(depth, 2), limit=min(limit, 8))
+        _render_call_tree(selected, all_edges, nodes, depth=1, limit=min(limit, 4))
     else:
         print("CALL FLOW")
         print("  No internal calls were statically identified.")
@@ -753,10 +753,8 @@ def _render_function_summary(
 
     label = _symbol_label(selected)
     print("DRILL DOWN")
-    print(f"  lk trace source '{label}' --detail calls")
-    print(f"  lk trace source '{label}' --detail storage")
-    print(f"  lk trace source '{label}' --detail external")
-    print(f"  lk trace source '{label}' --detail all --depth {min(10, max(depth + 1, 4))}")
+    print("  MORE       --detail calls | storage | external | all")
+    print(f"  EXAMPLE    lk trace source '{label}' --detail all --depth {min(10, max(depth + 1, 4))}")
     print()
     print("EVIDENCE  Static source analysis only; this does not prove execution or success.")
     _print_inventory_warning(index)
@@ -1133,6 +1131,7 @@ def render_project_index(
 
     print("LOWKEY // SOURCE MAP")
     print(f"{summary.get('files', 0)} Solidity files · {len(entries)} declarations · {summary.get('functions', 0)} functions")
+    print("AVAILABLE CONTRACTS")
     filters = []
     if needle:
         filters.append(f"search: {search}")
