@@ -137,10 +137,10 @@ class SourceLinkTests(unittest.TestCase):
             temporary.cleanup()
         text = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("LOWKEY // SOURCE LINK", text)
+        self.assertIn("LOWKEY // SOURCE TRACE", text)
         self.assertIn("CALLS", text)
         self.assertIn("_debit(address,uint256)", text)
-        self.assertIn("STORAGE WRITES", text)
+        self.assertIn("STATE EFFECTS", text)
         self.assertIn("ASSET FLOW / CAPABILITY", text)
         self.assertIn("ORIGIN    FIRST-PARTY", text)
 
@@ -416,8 +416,8 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("TRANSIENT STORAGE", contract_output.getvalue())
         self.assertIn("transientCounter", contract_output.getvalue())
         self.assertEqual(function_status, 0)
-        self.assertIn("CONSTANT REFERENCES", function_output.getvalue())
-        self.assertIn("IMMUTABLE REFERENCES", function_output.getvalue())
+        self.assertIn("CONSTANT READ", function_output.getvalue())
+        self.assertIn("IMMUTABLE READ", function_output.getvalue())
 
     def test_bare_link_supports_search_type_filter_and_pagination(self):
         temporary, root = self.fixture()
