@@ -537,6 +537,53 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("2 access(es)", rendered)
         self.assertEqual(rendered.count("Graph.positions"), 1)
 
+    def test_ast_storage_context_edges_survive_scope_without_propagation_clones(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            nodes = {item["id"]: item for item in index["nodes"]}
+            entry = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.withdraw(uint256)")
+            helper = next(item for item in nodes.values() if item.get("qualified_name") == "Graph._debit(address,uint256)")
+            balance = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.balances")
+            index["edges"].extend([
+                {
+                    "id": "AST:storage:helper-context",
+                    "kind": "WRITES",
+                    "from": helper["id"],
+                    "to": balance["id"],
+                    "resolution": "INFERRED",
+                    "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+                    "source": {"file": "src/Graph.sol", "line": 104, "column": 21},
+                    "access_path": "balances[user]",
+                    "operation": "assignment",
+                    "persistence": "persistent",
+                    "via": [entry["id"], helper["id"]],
+                },
+                {
+                    "id": "PROPAGATED:storage:helper-context",
+                    "kind": "WRITES",
+                    "from": entry["id"],
+                    "to": balance["id"],
+                    "resolution": "INFERRED",
+                    "evidence": "CALL_GRAPH_PROPAGATION",
+                    "source": {"file": "src/Graph.sol", "line": 104, "column": 21},
+                    "access_path": "balances[user]",
+                    "operation": "assignment",
+                    "persistence": "persistent",
+                    "via": [entry["id"], helper["id"]],
+                },
+            ])
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)", detail="storage")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("Graph.balances  (2 via helpers)", rendered)
+        self.assertEqual(rendered.count("Graph.balances"), 1)
+
     def test_function_summary_includes_reachable_helper_effects(self):
         temporary, root = self.fixture()
         try:
