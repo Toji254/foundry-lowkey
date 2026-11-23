@@ -465,6 +465,19 @@ class SourceLinkTests(unittest.TestCase):
         self.assertNotIn("GRAPH     ", rendered)
 
 
+    def test_only_filter_is_rejected_for_function_targets(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)", only="writes")
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(status, 2)
+        self.assertIn("--only filters contract relationships", output.getvalue())
+
     def test_function_details_scope_unresolved_targets_to_reachable_functions(self):
         temporary, root = self.fixture()
         try:
@@ -522,7 +535,6 @@ class SourceLinkTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertEqual(status, 0)
         self.assertIn("2 access(es)", rendered)
-        self.assertEqual(rendered.count("Graph.positions"), 1)
         self.assertEqual(rendered.count("Graph.positions"), 1)
 
     def test_function_summary_includes_reachable_helper_effects(self):
