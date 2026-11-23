@@ -1193,7 +1193,7 @@ def _render_function_view(
         print("CALL FLOW")
         if root_calls:
             _render_call_tree(
-                selected, index.get("edges") or [], nodes,
+                selected, scoped_edges, nodes,
                 depth=min(depth, 2), limit=min(limit, 8),
             )
         else:
@@ -1247,7 +1247,7 @@ def _render_function_view(
             _render_edges("CALLED BY", callers[:limit], nodes, reverse=True)
         print("INTERNAL CALLS / CALL FLOW")
         if root_calls:
-            _render_call_tree(selected, index.get("edges") or [], nodes, depth=depth, limit=limit)
+            _render_call_tree(selected, scoped_edges, nodes, depth=depth, limit=limit)
         else:
             print("  No internal calls were statically identified.")
         print()
