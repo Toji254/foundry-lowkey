@@ -127,7 +127,7 @@ class SourceLinkTests(unittest.TestCase):
             index = self._index(root)
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                status = render_link(index, "Graph.withdraw(uint256)")
+                status = render_link(index, "Graph.withdraw(uint256)", detail="all")
         finally:
             temporary.cleanup()
         text = output.getvalue()
@@ -186,6 +186,7 @@ class SourceLinkTests(unittest.TestCase):
         finally:
             temporary.cleanup()
         self.assertEqual(status, 0)
+        self.assertIn("AT A GLANCE", output.getvalue())
         self.assertIn("CALL CHAIN", output.getvalue())
         self.assertIn("Graph._debit(address,uint256)", output.getvalue())
 
@@ -351,10 +352,10 @@ class SourceLinkTests(unittest.TestCase):
             index = self._index(root)
             nested_output = io.StringIO()
             with contextlib.redirect_stdout(nested_output):
-                nested_status = render_link(index, "Graph.withdraw(uint256)")
+                nested_status = render_link(index, "Graph.withdraw(uint256)", detail="all")
             recursive_output = io.StringIO()
             with contextlib.redirect_stdout(recursive_output):
-                recursive_status = render_link(index, "Graph.recurse(uint256)", depth=5)
+                recursive_status = render_link(index, "Graph.recurse(uint256)", depth=5, detail="all")
         finally:
             temporary.cleanup()
 
@@ -396,7 +397,7 @@ class SourceLinkTests(unittest.TestCase):
                 contract_status = render_link(index, "ValueKinds")
             function_output = io.StringIO()
             with contextlib.redirect_stdout(function_output):
-                function_status = render_link(index, "ValueKinds.readValues()")
+                function_status = render_link(index, "ValueKinds.readValues()", detail="all")
         finally:
             temporary.cleanup()
 
@@ -411,6 +412,57 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(function_status, 0)
         self.assertIn("CONSTANT REFERENCES", function_output.getvalue())
         self.assertIn("IMMUTABLE REFERENCES", function_output.getvalue())
+
+    def test_bare_link_supports_search_type_filter_and_pagination(self):
+        temporary, root = self.fixture()
+        try:
+            for name in ("Alpha", "Beta", "Gamma"):
+                (root / "src" / f"{name}.sol").write_text(
+                    f"pragma solidity ^0.8.20; contract {name} {{ uint256 value; }}",
+                    encoding="utf-8",
+                )
+            page_output = io.StringIO()
+            with contextlib.redirect_stdout(page_output):
+                page_status = main(["link", "--root", str(root), "--limit", "2", "--page", "2"])
+            search_output = io.StringIO()
+            with contextlib.redirect_stdout(search_output):
+                search_status = main(["link", "--root", str(root), "--search", "Graph"])
+            type_output = io.StringIO()
+            with contextlib.redirect_stdout(type_output):
+                type_status = main(["link", "--root", str(root), "--type", "library"])
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(page_status, 0)
+        self.assertIn("PAGE    2/", page_output.getvalue())
+        self.assertIn("showing 2 of", page_output.getvalue())
+        self.assertEqual(search_status, 0)
+        self.assertIn("Graph (contract)", search_output.getvalue())
+        self.assertIn("showing 1 of 1", search_output.getvalue())
+        self.assertEqual(type_status, 0)
+        self.assertIn("ImportedMath", type_output.getvalue())
+        self.assertNotIn("Graph", type_output.getvalue())
+
+    def test_function_default_view_is_compact_and_has_clear_drilldowns(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("LOWKEY // SOURCE TRACE", rendered)
+        self.assertIn("AT A GLANCE", rendered)
+        self.assertIn("CALL FLOW", rendered)
+        self.assertIn("--detail calls", rendered)
+        self.assertIn("--detail storage", rendered)
+        self.assertLess(len(rendered.splitlines()), 40)
+        self.assertNotIn("GRAPH     ", rendered)
+
 
     def test_flow_filter_separates_payable_capability_from_eth_out(self):
         temporary, root = self.fixture()

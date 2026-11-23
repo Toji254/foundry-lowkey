@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -425,7 +426,7 @@ def _render_contract_overview(
         ),
     )
     if functions:
-        print("FUNCTIONS")
+        print(f"FUNCTIONS ({len(functions)} total)")
         for item in functions[:limit]:
             print(f"  ├── {_short_function_label(item)}")
         if len(functions) > limit:
@@ -452,13 +453,17 @@ def _render_contract_overview(
         if item.get("kind") == "state_variable"
         and item.get("storage_class") in {"constant", "immutable"}
     ]
+    print("AT A GLANCE")
+    print(f"  {len(functions)} declared functions · {len(storage)} persistent state items · {len(transient)} transient items · {len(constants)} constants / immutables")
+    print()
+
     for heading, values in (
         ("STORAGE", storage),
         ("TRANSIENT STORAGE", transient),
         ("CONSTANTS / IMMUTABLES", constants),
     ):
         if values:
-            print(heading)
+            print(f"{heading} ({len(values)} total)")
             for item in values[:limit]:
                 print(f"  ├── {item.get('name', '?')}")
             if len(values) > limit:
@@ -545,6 +550,14 @@ def _render_contract_overview(
             print(f"  ... {len(unresolved) - limit} more unresolved relationship(s)")
         print()
 
+    print("EXPLORE")
+    print(f"  lk link {selected.get('name', '?')} --only calls")
+    print(f"  lk link {selected.get('name', '?')} --only storage")
+    print(f"  lk link {selected.get('name', '?')} --only reads")
+    print(f"  lk link {selected.get('name', '?')} --only writes")
+    print(f"  lk link {selected.get('name', '?')} --only imports")
+    print(f"  lk link {selected.get('name', '?')} --only assets")
+    print()
     if not any((bases, imported_labels, inherited_by, used_by, functions, storage, transient, constants, external_targets, asset_groups, unresolved)):
         print("No declared relationships were found for this contract.")
     _print_inventory_warning(index)
@@ -638,7 +651,118 @@ def _render_mapping_view(
     _print_inventory_warning(index)
 
 
-def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int | None = None, limit: int = 80, as_json: bool = False) -> int:
+def _render_function_summary(
+    selected: dict[str, Any], index: dict[str, Any], edges: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]], *, depth: int, limit: int,
+) -> None:
+    """Render the first-screen function investigation; keep full evidence opt-in."""
+    all_edges = index.get("edges") or []
+    direct = [edge for edge in all_edges if edge.get("from") == selected.get("id")]
+    read_kinds = {"READS", "READS_CONSTANT", "READS_IMMUTABLE", "TRANSIENT_READS"}
+    write_kinds = {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "INITIALIZES"}
+    calls = [edge for edge in direct if edge.get("kind") == "CALLS"]
+    external = [edge for edge in direct if edge.get("kind") == "EXTERNAL_CALL"]
+    modifiers = [edge for edge in direct if edge.get("kind") == "APPLIES_MODIFIER"]
+    reads = [edge for edge in direct if edge.get("kind") in read_kinds]
+    writes = [edge for edge in direct if edge.get("kind") in write_kinds]
+    emits = [edge for edge in direct if edge.get("kind") == "EMITS"]
+    asset_flows = [edge for edge in direct if edge.get("kind") == "ASSET_FLOW"]
+    unresolved = [
+        edge for edge in direct
+        if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+        or edge.get("implementation_resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+        or edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}
+    ]
+    propagated = [edge for edge in edges if selected.get("id") in (edge.get("via") or [])]
+    helper_reads = sum(edge.get("kind") in read_kinds for edge in propagated)
+    helper_writes = sum(edge.get("kind") in write_kinds for edge in propagated)
+
+    print("AT A GLANCE")
+    print(f"  Internal calls       {len(calls)}")
+    print(f"  External boundaries  {len(external)}")
+    print(f"  State reads          {len(reads)}")
+    print(f"  State writes         {len(writes)}")
+    print(f"  Events emitted       {len(emits)}")
+    print(f"  Modifiers            {len(modifiers)}")
+    if helper_reads or helper_writes:
+        print(f"  Helper effects       {helper_reads} reads · {helper_writes} writes (within depth {depth})")
+    if asset_flows:
+        potential = sorted({
+            f"{str(edge.get('asset') or 'unknown').upper()} {str(edge.get('direction') or 'unresolved').upper()}"
+            for edge in asset_flows
+        })
+        print("  Asset paths          " + ", ".join(potential[:3]))
+    if unresolved:
+        print(f"  Unresolved targets   {len(unresolved)} (inspect before relying on the path)")
+    print()
+
+    if calls:
+        print(f"CALL FLOW  (up to depth {min(depth, 2)}; first {min(limit, 8)} links)")
+        _render_call_tree(selected, all_edges, nodes, depth=min(depth, 2), limit=min(limit, 8))
+    else:
+        print("CALL FLOW")
+        print("  No internal calls were statically identified.")
+    print()
+
+    def distinct_paths(values: list[dict[str, Any]]) -> list[str]:
+        result: list[str] = []
+        for edge in values:
+            label = str(edge.get("access_path") or "")
+            if not label:
+                target = nodes.get(str(edge.get("to") or ""), {})
+                label = str(target.get("qualified_name") or target.get("name") or "")
+            if label and label not in result:
+                result.append(label)
+        return result
+
+    read_paths = distinct_paths(reads)
+    write_paths = distinct_paths(writes)
+    if read_paths or write_paths:
+        print("STATE TOUCHPOINTS  (direct effects in this function)")
+        for heading, paths, total in (("Reads", read_paths, len(reads)), ("Writes", write_paths, len(writes))):
+            if not paths:
+                continue
+            print(f"  {heading} ({total} access(es))")
+            for path in paths[:4]:
+                print(f"    - {path}")
+            if len(paths) > 4:
+                print(f"    - ... {len(paths) - 4} more distinct item(s)")
+        print()
+
+    if external:
+        print("EXTERNAL BOUNDARIES")
+        for edge in external[:4]:
+            receiver = str(edge.get("receiver") or "external target")
+            method = str(edge.get("method") or edge.get("operation") or "call")
+            resolution = str(edge.get("implementation_resolution") or edge.get("resolution") or "UNRESOLVED")
+            print(f"  {receiver}.{method}  [{resolution}]  {_location(edge)}")
+        if len(external) > 4:
+            print(f"  ... {len(external) - 4} more boundary/boundaries")
+        print()
+
+    if emits:
+        event_names = []
+        for edge in emits:
+            label = _symbol_label(nodes.get(str(edge.get("to") or ""), {}))
+            if label not in event_names:
+                event_names.append(label)
+        print("EVENTS")
+        for label in event_names[:4]:
+            print(f"  - {label}")
+        print()
+
+    label = _symbol_label(selected)
+    print("DRILL DOWN")
+    print(f"  lk trace source '{label}' --detail calls")
+    print(f"  lk trace source '{label}' --detail storage")
+    print(f"  lk trace source '{label}' --detail external")
+    print(f"  lk trace source '{label}' --detail all --depth {min(10, max(depth + 1, 4))}")
+    print()
+    print("EVIDENCE  Static source analysis only; this does not prove execution or success.")
+    _print_inventory_warning(index)
+
+
+def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int | None = None, limit: int = 24, as_json: bool = False, detail: str = "summary") -> int:
     candidates = find_symbols(index, target)
     if not candidates:
         print(f"UNRESOLVED: no source symbol matched '{target}'.")
@@ -654,6 +778,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         return 2
 
     selected = candidates[0]
+    if detail != "summary" and selected.get("kind") not in {"function", "modifier"}:
+        print("DETAIL OPTION: --detail applies to function or modifier targets; use --only for contract views.")
+        return 2
     if depth is None:
         # Function investigations should reveal a useful nested call chain by
         # default; contract overviews stay shallow and summarized.
@@ -673,7 +800,32 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         }, indent=2, sort_keys=True))
         return 0
 
-    if not (selected.get("kind") == "contract" and only is None):
+    compact_function = selected.get("kind") in {"function", "modifier"} and detail == "summary" and only is None
+    if compact_function:
+        print("LOWKEY // SOURCE TRACE")
+        print(f"TARGET    {_symbol_label(selected)}")
+        print(f"SOURCE    {_location(selected)}")
+        if selected.get("provenance"):
+            print(f"ORIGIN    {str(selected['provenance']).upper()}")
+        visibility = selected.get("visibility")
+        mutability = selected.get("mutability")
+        if visibility or mutability:
+            print(f"ENTRY     {visibility or 'unknown'} · {mutability or 'unknown'}")
+        modifiers = [
+            edge for edge in (index.get("edges") or [])
+            if edge.get("kind") == "APPLIES_MODIFIER" and edge.get("from") == selected.get("id")
+        ]
+        if modifiers:
+            names = [_symbol_label(nodes.get(str(edge.get("to") or ""), {})) for edge in modifiers[:4]]
+            print("GUARDS    " + ", ".join(names))
+        ast_report = index.get("ast") or {}
+        ast_values = [int(ast_report.get(key) or 0) for key in ("functions", "call_edges", "modifier_edges", "storage_edges")]
+        parser_name = str(index.get("parser") or "unknown").upper()
+        method = f"{parser_name} source scan"
+        method += " · AST enrichment unavailable" if not any(ast_values) else " + AST enrichment"
+        print(f"METHOD    {method}")
+        print()
+    elif not (selected.get("kind") == "contract" and only is None):
         print("LOWKEY // SOURCE LINK")
         print(f"TARGET    {_symbol_label(selected)}")
         print(f"SOURCE    {_location(selected)}")
@@ -731,7 +883,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         print()
     
     if selected.get("kind") == "contract" and only is None:
-        _render_contract_overview(selected, index, nodes, limit=min(limit, 24))
+        _render_contract_overview(selected, index, nodes, limit=min(limit, 8))
     elif selected.get("kind") == "contract":
         # Explicit filters remain detailed: they are intentional drill-downs.
         declared = [edge for edge in (index.get("edges") or []) if edge.get("kind") == "DECLARES" and edge.get("from") == selected["id"]]
@@ -780,45 +932,48 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         if only in (None, "assets"):
             _render_edges("EXTERNAL INTERACTIONS / ASSET PATHS", [edge for edge in contract_edges if edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}][:limit], nodes)
     elif selected.get("kind") in {"function", "modifier"}:
-        group_map = [
-            ("CALLED BY", "CALLS", "incoming"),
-            ("CALLS", "CALLS", "outgoing"),
-            ("EXTERNAL CALLS", "EXTERNAL_CALL", "outgoing"),
-            ("MODIFIERS", "APPLIES_MODIFIER", "outgoing"),
-            ("APPLIED TO", "APPLIES_MODIFIER", "incoming"),
-            ("OVERRIDES", "OVERRIDES", "outgoing"),
-            ("OVERRIDDEN BY", "OVERRIDES", "incoming"),
-            ("STORAGE READS", "READS", "outgoing"),
-            ("CONSTANT REFERENCES", "READS_CONSTANT", "outgoing"),
-            ("IMMUTABLE REFERENCES", "READS_IMMUTABLE", "outgoing"),
-            ("STORAGE WRITES", "WRITES", "outgoing"),
-            ("DELETES", "DELETES", "outgoing"),
-            ("TRANSIENT WRITES", "TRANSIENT_WRITES", "outgoing"),
-            ("TRANSIENT DELETES", "TRANSIENT_DELETES", "outgoing"),
-            ("TRANSIENT READS", "TRANSIENT_READS", "outgoing"),
-            ("UNRESOLVED MUTATIONS", "UNRESOLVED_MUTATION", "outgoing"),
-            ("INITIALIZES", "INITIALIZES", "outgoing"),
-            ("EMITS", "EMITS", "outgoing"),
-            ("REVERTS", "REVERTS", "outgoing"),
-            ("STORAGE ALIASES", "ALIASES_STORAGE", "outgoing"),
-            ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing"),
-            ("ASSET FLOW / CAPABILITY", "ASSET_FLOW", "outgoing"),
-        ]
-        for heading, kind, direction in group_map:
-            values = [
-                edge for edge in edges if edge.get("kind") == kind
-                and ((direction == "outgoing" and edge.get("from") == selected["id"])
-                     or (direction == "incoming" and edge.get("to") == selected["id"]))
+        if detail == "summary" and only is None:
+            _render_function_summary(selected, index, edges, nodes, depth=depth, limit=min(limit, 12))
+        else:
+            active_detail = "all" if detail == "summary" else detail
+            group_map = [
+                ("CALLED BY", "CALLS", "incoming", "calls"),
+                ("CALLS", "CALLS", "outgoing", "calls"),
+                ("EXTERNAL CALLS", "EXTERNAL_CALL", "outgoing", "external"),
+                ("MODIFIERS", "APPLIES_MODIFIER", "outgoing", "calls"),
+                ("APPLIED TO", "APPLIES_MODIFIER", "incoming", "calls"),
+                ("OVERRIDES", "OVERRIDES", "outgoing", "calls"),
+                ("OVERRIDDEN BY", "OVERRIDES", "incoming", "calls"),
+                ("STORAGE READS", "READS", "outgoing", "storage"),
+                ("CONSTANT REFERENCES", "READS_CONSTANT", "outgoing", "storage"),
+                ("IMMUTABLE REFERENCES", "READS_IMMUTABLE", "outgoing", "storage"),
+                ("STORAGE WRITES", "WRITES", "outgoing", "storage"),
+                ("DELETES", "DELETES", "outgoing", "storage"),
+                ("TRANSIENT WRITES", "TRANSIENT_WRITES", "outgoing", "storage"),
+                ("TRANSIENT DELETES", "TRANSIENT_DELETES", "outgoing", "storage"),
+                ("TRANSIENT READS", "TRANSIENT_READS", "outgoing", "storage"),
+                ("UNRESOLVED MUTATIONS", "UNRESOLVED_MUTATION", "outgoing", "storage"),
+                ("INITIALIZES", "INITIALIZES", "outgoing", "storage"),
+                ("EMITS", "EMITS", "outgoing", "external"),
+                ("REVERTS", "REVERTS", "outgoing", "external"),
+                ("STORAGE ALIASES", "ALIASES_STORAGE", "outgoing", "storage"),
+                ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing", "storage"),
+                ("ASSET FLOW / CAPABILITY", "ASSET_FLOW", "outgoing", "external"),
             ]
-            _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
-        _render_call_tree(
-            selected, index.get("edges") or [], nodes, depth=depth, limit=limit,
-        )
-        unresolved = [
-            edge for edge in edges
-            if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
-        ]
-        _render_edges("UNRESOLVED / AMBIGUOUS TARGETS", unresolved[:limit], nodes)
+            for heading, kind, direction, category in group_map:
+                if active_detail != "all" and category != active_detail:
+                    continue
+                values = [
+                    edge for edge in edges if edge.get("kind") == kind
+                    and ((direction == "outgoing" and edge.get("from") == selected["id"])
+                         or (direction == "incoming" and edge.get("to") == selected["id"]))
+                ]
+                _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
+            if active_detail in {"calls", "all"}:
+                _render_call_tree(selected, index.get("edges") or [], nodes, depth=depth, limit=limit)
+            if active_detail == "all":
+                unresolved = [edge for edge in edges if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}]
+                _render_edges("UNRESOLVED / AMBIGUOUS TARGETS", unresolved[:limit], nodes)
     elif selected.get("kind") == "mapping":
         _render_mapping_view(selected, index, nodes, limit=min(limit, 24))
     elif selected.get("kind") in {"state_variable", "function_pointer"}:
@@ -830,7 +985,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for kind, values in sorted(incoming.items()):
             _render_edges("REFERENCED BY " + kind.replace("_", " "), values[:limit], nodes, reverse=True)
 
-    if not (selected.get("kind") == "contract" and only is None):
+    if not (selected.get("kind") == "contract" and only is None) and not compact_function:
         print()
         print(f"GRAPH     {index.get('summary', {}).get('relationships', 0)} relationship(s) indexed across {index.get('summary', {}).get('files', 0)} Solidity file(s)")
         if selected.get("kind") in {"contract", "function"} and _depth_has_more_calls(selected, index.get("edges") or [], depth):
@@ -882,54 +1037,60 @@ def _render_edges(heading: str, edges: list[dict[str, Any]], nodes: dict[str, di
 def _link_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lk link",
-        description="Map Solidity contracts, functions, storage, calls, and asset paths from source.",
+        description="Explore Solidity declarations, relationships, and source-level effects.",
         epilog="""Examples:
-  lk link Vault                  Show the compact contract relationship map.
-  lk link Vault.withdraw         Trace one function and its connected relationships.
-  lk link Vault.positions        Show mapping keys, readers, writers, and struct fields.
-  lk link Vault --only writes    Drill into state mutations and initializers.
+  lk link                              Browse the source map (24 entries per page).
+  lk link --search Vault               Find matching contracts and files.
+  lk link --type interface             Show interfaces only.
+  lk link --page 2                     Continue through the source map.
+  lk link --all                        Print every declaration in a compact list.
+  lk link Vault                        Show a compact contract overview.
+  lk trace source Vault.increasePosition
+  lk trace source Vault.increasePosition --detail storage
+  lk trace source Vault.increasePosition --detail all --depth 4
 
-Static analysis only: no compilation or transaction execution. Potential asset
-movement and unresolved targets are labelled; source relationships are not proof
-of runtime behavior.""",
+Use --detail calls|storage|external|all to expand a function investigation.
+Static analysis only: source relationships do not prove runtime execution.""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
-    parser.add_argument("target", nargs="?", help="contract, function, mapping, or state variable; omit to list available contracts")
+    parser.add_argument("target", nargs="?", help="contract, function, mapping, or state variable; omit to browse the source map")
     parser.add_argument("--root", default=".")
     parser.add_argument("--depth", type=int, default=None)
     parser.add_argument("--only", choices=sorted(ONLY_KINDS))
-    parser.add_argument("--limit", type=int, default=80)
+    parser.add_argument("--detail", choices=("summary", "calls", "storage", "external", "all"), default="summary",
+                        help="function view: summary (default), calls, storage, external, or all")
+    parser.add_argument("--limit", type=int, default=24, help="maximum items per detail section (default: 24)")
+    parser.add_argument("--search", help="filter the source map by declaration name or file path")
+    parser.add_argument("--type", dest="declaration_type", choices=("contract", "interface", "library"),
+                        help="filter the source map by declaration kind")
+    page_group = parser.add_mutually_exclusive_group()
+    page_group.add_argument("--page", type=int, help="source-map page number")
+    page_group.add_argument("--all", dest="show_all", action="store_true",
+                            help="show all matching source-map entries")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("-h", "--h", "--help", action="help", help="show this help")
     return parser
 
 
 def render_project_index(
-    index: dict[str, Any],
-    *,
-    limit: int = 40,
-    as_json: bool = False,
+    index: dict[str, Any], *, limit: int = 24, page: int = 1,
+    search: str | None = None, declaration_type: str | None = None,
+    show_all: bool = False, as_json: bool = False,
 ) -> int:
-    """List selectable source contracts when lk link is run without a target."""
+    """Browse a searchable, paginated source map without dumping the whole index."""
     nodes = _node_map(index)
     all_nodes = list(nodes.values())
     contracts = sorted(
         (item for item in all_nodes if item.get("kind") == "contract"),
-        key=lambda item: (
-            str(item.get("file") or ""),
-            int(item.get("line") or 0),
-            str(item.get("name") or ""),
-        ),
+        key=lambda item: (str(item.get("file") or ""), int(item.get("line") or 0), str(item.get("name") or "")),
     )
-
     entries = []
     for contract in contracts:
         name = str(contract.get("name") or "?")
         declared = [
             item for item in all_nodes
-            if item.get("contract") == name
-            and item.get("file") == contract.get("file")
+            if item.get("contract") == name and item.get("file") == contract.get("file")
         ]
         function_count = sum(item.get("kind") in {"function", "modifier"} for item in declared)
         storage_count = sum(
@@ -937,67 +1098,101 @@ def render_project_index(
             and item.get("storage_class") not in {"constant", "immutable", "transient"}
             for item in declared
         )
+        declaration_kind = str(contract.get("declaration_kind") or "contract").replace("_", " ")
         entries.append({
-            "name": name,
-            "declaration_kind": contract.get("declaration_kind") or "contract",
-            "source": _location(contract),
-            "functions": function_count,
-            "storage_items": storage_count,
+            "name": name, "declaration_kind": declaration_kind, "source": _location(contract),
+            "functions": function_count, "storage_items": storage_count,
             "origin": contract.get("provenance") or "unknown",
         })
 
+    needle = str(search or "").strip().casefold()
+    filtered = [
+        entry for entry in entries
+        if (not needle or needle in entry["name"].casefold() or needle in entry["source"].casefold())
+        and (not declaration_type or declaration_type.casefold() in entry["declaration_kind"].casefold())
+    ]
+    total = len(filtered)
+    pages = max(1, (total + limit - 1) // limit)
+    if show_all:
+        limit, page, pages = max(1, total), 1, 1
+    if page < 1 or page > pages:
+        print(f"PAGE OUT OF RANGE: choose a page between 1 and {pages}.")
+        return 2
+    visible = filtered[(page - 1) * limit:(page - 1) * limit + limit]
     summary = index.get("summary") or {}
+
     if as_json:
         print(json.dumps({
-            "contracts": entries[:limit],
-            "total_contracts": len(entries),
-            "shown": min(len(entries), limit),
-            "summary": {
-                "files": summary.get("files", 0),
-                "functions": summary.get("functions", 0),
-            },
+            "contracts": visible, "total_contracts": len(entries), "filtered_contracts": total,
+            "shown": len(visible), "page": page, "pages": pages,
+            "search": search, "type": declaration_type,
+            "summary": {"files": summary.get("files", 0), "functions": summary.get("functions", 0)},
             "inventory": index.get("inventory"),
         }, indent=2, sort_keys=True))
         return 0
 
     print("LOWKEY // SOURCE MAP")
-    print("AVAILABLE CONTRACTS")
-    print(f"  {len(entries)} contract/interface/library declaration(s) found")
+    print(f"{summary.get('files', 0)} Solidity files · {len(entries)} declarations · {summary.get('functions', 0)} functions")
+    filters = []
+    if needle:
+        filters.append(f"search: {search}")
+    if declaration_type:
+        filters.append(f"type: {declaration_type}")
+    print("FILTER  " + (" · ".join(filters) if filters else "all declarations"))
+    if total == 0:
+        print("No declarations matched. Try a shorter name or remove a filter.")
+        print()
+        print("Examples: lk link --search Vault  |  lk link --type interface")
+        _print_inventory_warning(index)
+        return 0
+
+    print(f"PAGE    {page}/{pages} · showing {len(visible)} of {total} matching declarations")
     print()
-    if entries:
-        for entry in entries[:limit]:
-            declaration_kind = str(entry["declaration_kind"]).replace("_", " ")
-            print(
-                f"  {entry['name']} ({declaration_kind})  "
-                f"{entry['source']}  "
-                f"[{entry['functions']} functions · {entry['storage_items']} storage]"
-            )
-        if len(entries) > limit:
-            print(f"  ... {len(entries) - limit} more; use --limit {min(500, len(entries))} to show more")
-    else:
-        print("  No Solidity contracts, interfaces, or libraries were discovered.")
-        source_files = sorted({
-            str(item.get("name") or item.get("file") or "")
-            for item in all_nodes if item.get("kind") == "file"
-        })
-        if source_files:
-            print()
-            print("SOURCE FILES")
-            for path in source_files[:limit]:
-                print(f"  {path}")
-            if len(source_files) > limit:
-                print(f"  ... {len(source_files) - limit} more")
+    current_folder = None
+    for entry in visible:
+        source_path, _, line = entry["source"].rpartition(":")
+        folder = str(Path(source_path).parent).replace("\\", "/")
+        if folder != current_folder:
+            current_folder = folder
+            print(f"{folder}/")
+        file_name = Path(source_path).name
+        label = f"{entry['name']} ({entry['declaration_kind']})"
+        print(f"  {label:<42} {entry['functions']:>3} fn  {entry['storage_items']:>3} state  {file_name}:{line}")
+
+    filter_args = []
+    if search:
+        filter_args.extend(["--search", shlex.quote(str(search))])
+    if declaration_type:
+        filter_args.extend(["--type", str(declaration_type)])
+    suffix = (" " + " ".join(filter_args)) if filter_args else ""
     print()
-    print("EXPLORE")
-    print("  lk link ContractName")
-    print("  lk link ContractName.functionName")
-    print("  lk link ContractName.mappingName")
-    print("  lk trace source ContractName.functionName")
-    print("  lk link ContractName --only calls|storage|reads|writes|imports|assets")
+    if page < pages:
+        print(f"NEXT PAGE   lk link --page {page + 1}{suffix}")
+    if page > 1:
+        print(f"PREVIOUS    lk link --page {page - 1}{suffix}")
+    if total > len(visible):
+        print(f"SHOW ALL    lk link --all{suffix}")
+    if not needle:
+        print("FIND        lk link --search Vault")
+    if not declaration_type:
+        print("FILTER      lk link --type interface")
+    print("OPEN        lk link ContractName")
     print()
-    print("EVIDENCE: static source relationships, not runtime execution.")
+    print("EVIDENCE    Static source relationships; not runtime execution.")
     _print_inventory_warning(index)
     return 0
+
+
+def run_project_index_args(args: argparse.Namespace) -> int:
+    try:
+        index = build_source_index(args.root)
+    except (SourceIndexError, OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    return render_project_index(
+        index, limit=args.limit, page=args.page or 1, search=args.search,
+        declaration_type=args.declaration_type, show_all=args.show_all, as_json=args.json,
+    )
 
 
 def run_link(argv: list[str]) -> int:
@@ -1007,16 +1202,26 @@ def run_link(argv: list[str]) -> int:
         parser.error("--depth must be between 1 and 10")
     if args.limit < 1 or args.limit > 500:
         parser.error("--limit must be between 1 and 500")
-    if not args.target and (args.depth is not None or args.only is not None):
-        parser.error("--depth and --only require a target; run 'lk link' to list available contracts")
+    if not args.target:
+        if args.depth is not None or args.only is not None or args.detail != "summary":
+            parser.error("--depth, --only, and --detail require a target; run 'lk link' to browse")
+        if args.page is not None and args.page < 1:
+            parser.error("--page must be at least 1")
+        return run_project_index_args(args)
+    if args.page is not None or args.show_all or args.search or args.declaration_type:
+        parser.error("--page, --all, --search, and --type are source-map options; omit TARGET")
+    if args.detail != "summary" and args.only is not None:
+        parser.error("--detail is for function views; use --only for contract filters")
     try:
         index = build_source_index(args.root)
     except (SourceIndexError, OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
-    if not args.target:
-        return render_project_index(index, limit=min(args.limit, 40), as_json=args.json)
-    return render_link(index, args.target, only=args.only, depth=args.depth, limit=args.limit, as_json=args.json)
+    return render_link(
+        index=index, target=args.target, only=args.only, depth=args.depth,
+        limit=args.limit, as_json=args.json, detail=args.detail,
+    )
+
 
 
 def run_flow(argv: list[str]) -> int:
@@ -1090,8 +1295,9 @@ def run_flow(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     if not values or values[0] in {"-h", "--h", "--help", "help"}:
-        print("Usage: lk link [TARGET] [--depth N] [--only calls|storage|reads|writes|imports|assets]")
-        print("       lk trace source TARGET [--depth N]")
+        print("Usage: lk link [TARGET] [--detail summary|calls|storage|external|all]")
+        print("       lk link [--search TEXT] [--type contract|interface|library] [--page N|--all]")
+        print("       lk trace source TARGET [--detail calls|storage|external|all]")
         print("       lk fn --flow in|out|both --asset eth|erc20|all")
         return 0 if values else 2
     command, rest = values[0], values[1:]
