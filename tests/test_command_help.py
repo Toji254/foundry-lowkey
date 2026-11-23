@@ -1166,7 +1166,7 @@ class CommandHelpTests(unittest.TestCase):
         cases = {
             "actor": (
                 "lk actor reset",
-                "Clear the active actor without deleting the saved profile.",
+                "Clear the active actor without deleting saved Anvil profiles.",
             ),
             "rpc": ("lk rpc reset", "Return to automatic RPC detection."),
             "abi": ("lk abi auto", "Auto-discover and load an ABI for the selected target."),
