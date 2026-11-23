@@ -534,7 +534,7 @@ class SourceLinkTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("2 access(es)", rendered)
+        self.assertIn("Graph.positions  (2 direct)", rendered)
         self.assertEqual(rendered.count("Graph.positions"), 1)
 
     def test_ast_storage_context_edges_survive_scope_without_propagation_clones(self):
@@ -582,7 +582,7 @@ class SourceLinkTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertEqual(status, 0)
         self.assertIn("Graph.balances  (2 via helpers)", rendered)
-        self.assertEqual(rendered.count("Graph.balances"), 1)
+        self.assertEqual(rendered.count("Graph.balances"), 2)  # one read group and one write group
 
     def test_function_summary_includes_reachable_helper_effects(self):
         temporary, root = self.fixture()
