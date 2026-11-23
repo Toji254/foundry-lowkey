@@ -753,7 +753,7 @@ def _render_function_summary(
 
     label = _symbol_label(selected)
     print("DRILL DOWN")
-    print("  MORE       --detail calls | storage | external | all")
+    print("  OPTIONS    --detail calls · --detail storage · --detail external · --detail all")
     print(f"  EXAMPLE    lk trace source '{label}' --detail all --depth {min(10, max(depth + 1, 4))}")
     print()
     print("EVIDENCE  Static source analysis only; this does not prove execution or success.")
