@@ -651,109 +651,515 @@ def _render_mapping_view(
     _print_inventory_warning(index)
 
 
-def _render_function_summary(
-    selected: dict[str, Any], index: dict[str, Any], edges: list[dict[str, Any]],
-    nodes: dict[str, dict[str, Any]], *, depth: int, limit: int,
-) -> None:
-    """Render the first-screen function investigation; keep full evidence opt-in."""
-    all_edges = index.get("edges") or []
-    direct = [edge for edge in all_edges if edge.get("from") == selected.get("id")]
-    read_kinds = {"READS", "READS_CONSTANT", "READS_IMMUTABLE", "TRANSIENT_READS"}
-    write_kinds = {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "INITIALIZES"}
-    calls = [edge for edge in direct if edge.get("kind") == "CALLS"]
-    external = [edge for edge in direct if edge.get("kind") == "EXTERNAL_CALL"]
-    modifiers = [edge for edge in direct if edge.get("kind") == "APPLIES_MODIFIER"]
-    reads = [edge for edge in direct if edge.get("kind") in read_kinds]
-    writes = [edge for edge in direct if edge.get("kind") in write_kinds]
-    emits = [edge for edge in direct if edge.get("kind") == "EMITS"]
-    asset_flows = [edge for edge in direct if edge.get("kind") == "ASSET_FLOW"]
-    unresolved = [
-        edge for edge in direct
-        if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
-        or edge.get("implementation_resolution") in {"UNRESOLVED", "AMBIGUOUS"}
-        or edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}
-    ]
-    propagated = [edge for edge in edges if selected.get("id") in (edge.get("via") or [])]
-    helper_reads = sum(edge.get("kind") in read_kinds for edge in propagated)
-    helper_writes = sum(edge.get("kind") in write_kinds for edge in propagated)
+READ_EDGE_KINDS = {"READS", "TRANSIENT_READS"}
+CONSTANT_EDGE_KINDS = {"READS_CONSTANT"}
+IMMUTABLE_EDGE_KINDS = {"READS_IMMUTABLE"}
+WRITE_EDGE_KINDS = {
+    "WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+}
+EXECUTION_EDGE_KINDS = {"CALLS", "APPLIES_MODIFIER"}
 
-    print("AT A GLANCE")
-    print(f"  Calls {len(calls)} · external {len(external)} · reads {len(reads)} · writes {len(writes)}")
-    print(f"  Events {len(emits)} · modifiers {len(modifiers)}")
-    if helper_reads or helper_writes:
-        print(f"  Helper effects       {helper_reads} reads · {helper_writes} writes (within depth {depth})")
-    if asset_flows:
-        potential = sorted({
-            f"{str(edge.get('asset') or 'unknown').upper()} {str(edge.get('direction') or 'unresolved').upper()}"
-            for edge in asset_flows
-        })
-        print("  Asset paths          " + ", ".join(potential[:3]))
-    if unresolved:
-        print(f"  Unresolved targets   {len(unresolved)} (inspect before relying on the path)")
-    print()
 
-    if calls:
-        print(f"CALL FLOW  (up to depth {min(depth, 2)}; first {min(limit, 8)} links)")
-        _render_call_tree(selected, all_edges, nodes, depth=1, limit=min(limit, 4))
-    else:
-        print("CALL FLOW")
-        print("  No internal calls were statically identified.")
-    print()
+def _analysis_basis(index: dict[str, Any]) -> str:
+    """Describe the evidence actually used for this source index."""
+    ast = index.get("ast") or {}
+    functions = int(ast.get("functions") or 0)
+    if functions:
+        return (
+            "SOLC AST + lexical links "
+            f"({functions} AST function(s), {int(ast.get('call_edges') or 0)} call edge(s), "
+            f"{int(ast.get('storage_edges') or 0)} storage edge(s))"
+        )
+    if not ast.get("available"):
+        return "LEXICAL ONLY (no compatible Foundry compiler build-info was available)"
+    stale = int(ast.get("stale_units") or 0)
+    if stale:
+        return f"LEXICAL ONLY ({stale} stale compiler source unit(s) ignored)"
+    matched = int(ast.get("matched_units") or 0)
+    if not matched:
+        return "LEXICAL ONLY (compiler build-info did not match the current source files)"
+    return "LEXICAL ONLY (no compiler AST function declarations matched this source inventory)"
 
-    def distinct_paths(values: list[dict[str, Any]]) -> list[str]:
-        result: list[str] = []
-        for edge in values:
-            label = str(edge.get("access_path") or "")
-            if not label:
-                target = nodes.get(str(edge.get("to") or ""), {})
-                label = str(target.get("qualified_name") or target.get("name") or "")
-            if label and label not in result:
-                result.append(label)
-        return result
 
-    read_paths = distinct_paths(reads)
-    write_paths = distinct_paths(writes)
-    if read_paths or write_paths:
-        print("STATE TOUCHPOINTS  (direct effects in this function)")
-        for heading, paths, total in (("Reads", read_paths, len(reads)), ("Writes", write_paths, len(writes))):
-            if not paths:
+def _function_execution_scope(
+    selected: dict[str, Any],
+    index: dict[str, Any],
+    *,
+    depth: int,
+) -> tuple[dict[str, int], dict[str, list[str]]]:
+    """Return functions/modifiers reachable from this entrypoint via resolved local edges."""
+    nodes = _node_map(index)
+    executable_ids = {
+        node_id for node_id, node in nodes.items()
+        if node.get("kind") in {"function", "modifier"}
+    }
+    outgoing: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for edge in index.get("edges") or []:
+        if (
+            edge.get("kind") in EXECUTION_EDGE_KINDS
+            and edge.get("resolution") in {"DIRECT", "INFERRED"}
+            and edge.get("from") in executable_ids
+            and edge.get("to") in executable_ids
+        ):
+            outgoing[str(edge["from"])].append(edge)
+
+    root_id = str(selected.get("id") or "")
+    levels = {root_id: 0}
+    paths = {root_id: [root_id]}
+    queue = [root_id]
+    while queue:
+        current = queue.pop(0)
+        current_depth = levels[current]
+        if current_depth >= depth:
+            continue
+        ordered = sorted(
+            outgoing.get(current, []),
+            key=lambda edge: (
+                (edge.get("source") or {}).get("file", ""),
+                (edge.get("source") or {}).get("line", 0),
+                str(edge.get("to") or ""),
+            ),
+        )
+        for edge in ordered:
+            target = str(edge.get("to") or "")
+            if target in levels:
                 continue
-            print(f"  {heading} ({total} access(es))")
-            for path in paths[:4]:
-                print(f"    - {path}")
-            if len(paths) > 4:
-                print(f"    - ... {len(paths) - 4} more distinct item(s)")
-        print()
+            levels[target] = current_depth + 1
+            paths[target] = paths[current] + [target]
+            queue.append(target)
+    return levels, paths
 
-    if external:
-        print("EXTERNAL BOUNDARIES")
-        for edge in external[:4]:
-            receiver = str(edge.get("receiver") or "external target")
-            method = str(edge.get("method") or edge.get("operation") or "call")
-            resolution = str(edge.get("implementation_resolution") or edge.get("resolution") or "UNRESOLVED")
-            print(f"  {receiver}.{method}  [{resolution}]  {_location(edge)}")
-        if len(external) > 4:
-            print(f"  ... {len(external) - 4} more boundary/boundaries")
-        print()
 
-    if emits:
-        event_names = []
-        for edge in emits:
-            label = _symbol_label(nodes.get(str(edge.get("to") or ""), {}))
-            if label not in event_names:
-                event_names.append(label)
-        print("EVENTS")
-        for label in event_names[:4]:
-            print(f"  - {label}")
-        print()
+def _function_scope_edges(
+    index: dict[str, Any],
+    reachable: dict[str, int],
+) -> list[dict[str, Any]]:
+    """Use original source edges from reachable functions; omit propagated clones."""
+    return [
+        edge for edge in (index.get("edges") or [])
+        if edge.get("from") in reachable and not edge.get("via")
+    ]
 
-    label = _symbol_label(selected)
-    print("DRILL DOWN")
-    print("  OPTIONS    --detail calls · --detail storage · --detail external · --detail all")
-    print(f"  EXAMPLE    lk trace source '{label}' --detail all --depth {min(10, max(depth + 1, 4))}")
+
+def _group_effects(
+    values: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    root_id: str,
+    paths: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    """Group source accesses by declaration, retaining counts and source evidence."""
+    groups: dict[str, dict[str, Any]] = {}
+    for edge in values:
+        target_id = str(edge.get("to") or "")
+        target = nodes.get(target_id, {})
+        key = target_id or str(edge.get("access_path") or edge.get("id") or "unresolved")
+        group = groups.setdefault(key, {
+            "target": target,
+            "edges": [],
+            "access_paths": [],
+            "helpers": [],
+            "call_paths": [],
+            "locations": [],
+            "direct": 0,
+            "helper": 0,
+        })
+        group["edges"].append(edge)
+        access_path = str(edge.get("access_path") or "")
+        if access_path and access_path not in group["access_paths"]:
+            group["access_paths"].append(access_path)
+        source_function = str(edge.get("from") or "")
+        if source_function == root_id:
+            group["direct"] += 1
+        else:
+            group["helper"] += 1
+            helper = nodes.get(source_function, {})
+            helper_label = _short_function_label(helper) if helper else source_function
+            if helper_label not in group["helpers"]:
+                group["helpers"].append(helper_label)
+            call_path = paths.get(source_function, [])
+            path_label = " -> ".join(
+                _short_function_label(nodes.get(item, {}))
+                for item in call_path[1:]
+            )
+            if path_label and path_label not in group["call_paths"]:
+                group["call_paths"].append(path_label)
+        location = _location(edge)
+        if location not in group["locations"]:
+            group["locations"].append(location)
+
+    result = list(groups.values())
+    result.sort(key=lambda group: (
+        str(group["target"].get("qualified_name") or group["target"].get("name") or ""),
+        group["locations"][0] if group["locations"] else "",
+    ))
+    return result
+
+
+def _render_grouped_effects(
+    heading: str,
+    values: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    root_id: str,
+    paths: dict[str, list[str]],
+    *,
+    limit: int,
+) -> int:
+    if not values:
+        return 0
+    groups = _group_effects(values, nodes, root_id, paths)
+    access_count = sum(len(group["edges"]) for group in groups)
+    print(f"{heading}  ({len(groups)} variable(s) · {access_count} access(es))")
+    for group in groups[:limit]:
+        target = group["target"]
+        label = (
+            str(target.get("qualified_name") or target.get("name"))
+            if target else str(group["access_paths"][0] if group["access_paths"] else "unresolved storage target")
+        )
+        detail_counts = []
+        if group["direct"]:
+            detail_counts.append(f"{group['direct']} direct")
+        if group["helper"]:
+            detail_counts.append(f"{group['helper']} via helpers")
+        suffix = " · ".join(detail_counts) or f"{len(group['edges'])} access(es)"
+        print(f"  • {label}  ({suffix})")
+        if group["access_paths"]:
+            print("      path: " + " | ".join(group["access_paths"][:3]))
+            if len(group["access_paths"]) > 3:
+                print(f"      ... {len(group['access_paths']) - 3} more access path(s)")
+        if group["helpers"]:
+            print("      in:   " + ", ".join(group["helpers"][:4]))
+            if len(group["helpers"]) > 4:
+                print(f"      ... {len(group['helpers']) - 4} more helper(s)")
+        if group["locations"]:
+            print("      at:   " + ", ".join(group["locations"][:3]))
+            if len(group["locations"]) > 3:
+                print(f"      ... {len(group['locations']) - 3} more source location(s)")
+    if len(groups) > limit:
+        print(f"  ... {len(groups) - limit} more variable(s); increase --limit to expand.")
     print()
-    print("EVIDENCE  Static source analysis only; this does not prove execution or success.")
+    return len(groups)
+
+
+def _render_function_header(
+    selected: dict[str, Any],
+    index: dict[str, Any],
+) -> None:
+    print("LOWKEY // SOURCE LINK")
+    print(f"FUNCTION  {_symbol_label(selected)}")
+    print(f"SOURCE    {_location(selected)}")
+    if selected.get("provenance"):
+        print(f"ORIGIN    {str(selected['provenance']).upper()}")
+    visibility = selected.get("visibility") or "unknown"
+    mutability = selected.get("mutability") or "unknown"
+    print(f"ENTRY     {visibility} · {mutability}")
+    print(f"ANALYSIS  {_analysis_basis(index)}")
+    print()
+
+
+def _render_modifiers(
+    values: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    root_id: str,
+    *,
+    limit: int,
+) -> None:
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for edge in values:
+        key = (str(edge.get("from") or ""), str(edge.get("to") or ""))
+        unique.setdefault(key, edge)
+    if not unique:
+        return
+    print(f"MODIFIERS / GUARDS  ({len(unique)} relationship(s))")
+    for edge in list(unique.values())[:limit]:
+        owner = nodes.get(str(edge.get("from") or ""), {})
+        modifier = nodes.get(str(edge.get("to") or ""), {})
+        owner_label = "entrypoint" if edge.get("from") == root_id else _short_function_label(owner)
+        modifier_label = _symbol_label(modifier) if modifier else str(edge.get("to") or "unresolved modifier")
+        print(f"  • {owner_label}  →  {modifier_label}  [{edge.get('resolution', 'UNRESOLVED')}]")
+    if len(unique) > limit:
+        print(f"  ... {len(unique) - limit} more modifier relationship(s)")
+    print()
+
+
+def _render_external_boundaries(
+    values: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    paths: dict[str, list[str]],
+    *,
+    limit: int,
+) -> None:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for edge in values:
+        receiver = str(edge.get("receiver") or "external target")
+        method = str(edge.get("method") or edge.get("operation") or "call")
+        target = str(edge.get("to") or "")
+        grouped.setdefault((receiver, method, target), []).append(edge)
+    if not grouped:
+        return
+    print(f"EXTERNAL BOUNDARIES  ({len(grouped)} unique boundary/boundaries)")
+    for (receiver, method, target), group in list(grouped.items())[:limit]:
+        first = group[0]
+        destination = nodes.get(target, {})
+        resolution = str(first.get("implementation_resolution") or first.get("resolution") or "UNRESOLVED")
+        print(f"  • {receiver}.{method}  [{resolution}]")
+        if destination:
+            print(f"      declared interface: {_symbol_label(destination)}")
+        owners = []
+        for edge in group:
+            owner_id = str(edge.get("from") or "")
+            owner = nodes.get(owner_id, {})
+            label = "entrypoint" if not paths.get(owner_id, [owner_id])[1:] else _short_function_label(owner)
+            if label not in owners:
+                owners.append(label)
+        print("      from: " + ", ".join(owners[:4]))
+        locations = list(dict.fromkeys(_location(edge) for edge in group))
+        if locations:
+            print("      at:   " + ", ".join(locations[:3]))
+    if len(grouped) > limit:
+        print(f"  ... {len(grouped) - limit} more external boundary/boundaries")
+    print()
+
+
+def _render_asset_flows(values: list[dict[str, Any]], *, limit: int) -> None:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for edge in values:
+        key = (
+            str(edge.get("asset") or "unknown").upper(),
+            str(edge.get("direction") or "unresolved").upper(),
+            str(edge.get("status") or "unknown").upper(),
+        )
+        grouped.setdefault(key, []).append(edge)
+    if not grouped:
+        return
+    print(f"ASSET FLOW / CAPABILITY  ({len(grouped)} distinct path type(s))")
+    for (asset, direction, status), group in list(grouped.items())[:limit]:
+        print(f"  • {asset} {direction} · {status}  ({len(group)} source site(s))")
+        locations = list(dict.fromkeys(_location(edge) for edge in group))
+        if locations:
+            print("      at: " + ", ".join(locations[:3]))
+    if len(grouped) > limit:
+        print(f"  ... {len(grouped) - limit} more asset path type(s)")
+    print()
+
+
+def _render_event_and_revert_edges(
+    heading: str,
+    values: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    *,
+    limit: int,
+) -> None:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for edge in values:
+        target = nodes.get(str(edge.get("to") or ""), {})
+        label = _symbol_label(target) if target else str(edge.get("detail") or edge.get("to") or "unknown")
+        grouped.setdefault(label, []).append(edge)
+    if not grouped:
+        return
+    total = sum(len(group) for group in grouped.values())
+    print(f"{heading}  ({len(grouped)} unique target(s) · {total} source site(s))")
+    for label, group in list(grouped.items())[:limit]:
+        locations = list(dict.fromkeys(_location(edge) for edge in group))
+        print(f"  • {label}  ({len(group)} site(s))")
+        if locations:
+            print("      at: " + ", ".join(locations[:3]))
+    if len(grouped) > limit:
+        print(f"  ... {len(grouped) - limit} more target(s)")
+    print()
+
+
+def _render_unresolved_relationships(
+    values: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    *,
+    limit: int,
+) -> None:
+    relevant = [
+        edge for edge in values
+        if edge.get("kind") in {
+            "CALLS", "APPLIES_MODIFIER", "EXTERNAL_CALL",
+            "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION",
+        }
+        and (
+            edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+            or edge.get("implementation_resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+        )
+    ]
+    unique: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for edge in relevant:
+        key = (
+            str(edge.get("kind") or ""),
+            str(edge.get("to") or ""),
+            _location(edge),
+            str(edge.get("method") or edge.get("operation") or ""),
+        )
+        unique.setdefault(key, edge)
+    if not unique:
+        print("UNRESOLVED TARGETS  none in the reachable local call/modifier scope")
+        print()
+        return
+    print(f"UNRESOLVED TARGETS  ({len(unique)} in reachable scope)")
+    for edge in list(unique.values())[:limit]:
+        target = str(edge.get("to") or "unknown target")
+        kind = str(edge.get("kind") or "relationship").replace("_", " ").lower()
+        note = str(edge.get("detail") or edge.get("symbol") or "")
+        resolution = str(edge.get("implementation_resolution") or edge.get("resolution") or "UNRESOLVED")
+        print(f"  • {kind}: {target}  [{resolution}]  {_location(edge)}")
+        if note:
+            print(f"      {note}")
+    if len(unique) > limit:
+        print(f"  ... {len(unique) - limit} more unresolved relationship(s)")
+    print()
+
+
+def _render_function_view(
+    selected: dict[str, Any],
+    index: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    *,
+    detail: str,
+    depth: int,
+    limit: int,
+) -> None:
+    """Render a scoped function investigation; group repeated state by declaration."""
+    root_id = str(selected.get("id") or "")
+    reachable, paths = _function_execution_scope(selected, index, depth=depth)
+    scoped_edges = _function_scope_edges(index, reachable)
+    root_calls = [
+        edge for edge in scoped_edges
+        if edge.get("from") == root_id and edge.get("kind") == "CALLS"
+    ]
+    helpers = [item for item in reachable if item != root_id]
+    modifiers = [edge for edge in scoped_edges if edge.get("kind") == "APPLIES_MODIFIER"]
+
+    read_values = [edge for edge in scoped_edges if edge.get("kind") in READ_EDGE_KINDS]
+    constant_values = [edge for edge in scoped_edges if edge.get("kind") in CONSTANT_EDGE_KINDS]
+    immutable_values = [edge for edge in scoped_edges if edge.get("kind") in IMMUTABLE_EDGE_KINDS]
+    write_values = [edge for edge in scoped_edges if edge.get("kind") in WRITE_EDGE_KINDS]
+    external_values = [edge for edge in scoped_edges if edge.get("kind") == "EXTERNAL_CALL"]
+    asset_values = [edge for edge in scoped_edges if edge.get("kind") == "ASSET_FLOW"]
+    event_values = [edge for edge in scoped_edges if edge.get("kind") == "EMITS"]
+    revert_values = [edge for edge in scoped_edges if edge.get("kind") == "REVERTS"]
+
+    read_groups = _group_effects(read_values, nodes, root_id, paths)
+    constant_groups = _group_effects(constant_values, nodes, root_id, paths)
+    immutable_groups = _group_effects(immutable_values, nodes, root_id, paths)
+    write_groups = _group_effects(write_values, nodes, root_id, paths)
+    external_keys = {
+        (str(edge.get("receiver") or ""), str(edge.get("method") or edge.get("operation") or ""), str(edge.get("to") or ""))
+        for edge in external_values
+    }
+    asset_keys = {
+        (str(edge.get("asset") or "unknown"), str(edge.get("direction") or "unresolved"), str(edge.get("status") or "unknown"))
+        for edge in asset_values
+    }
+
+    if detail == "summary":
+        print("AT A GLANCE")
+        print(
+            f"  FLOW      {len({str(edge.get('to') or edge.get('id')) for edge in root_calls})} direct call(s) "
+            f"· {len(helpers)} reachable helper/modifier(s) · depth {depth}"
+        )
+        print(
+            f"  STATE     {len(read_groups) + len(constant_groups) + len(immutable_groups)} unique read target(s) "
+            f"· {len(write_groups)} unique write target(s)"
+        )
+        if external_keys or asset_keys:
+            print(f"  EXTERNAL  {len(external_keys)} boundary/boundaries · {len(asset_keys)} asset path type(s)")
+        if modifiers:
+            labels = []
+            for edge in modifiers:
+                label = _symbol_label(nodes.get(str(edge.get("to") or ""), {}))
+                if label not in labels:
+                    labels.append(label)
+            print("  GUARDS    " + ", ".join(labels[:4]))
+        print()
+
+        print("CALL FLOW")
+        if root_calls:
+            _render_call_tree(
+                selected, index.get("edges") or [], nodes,
+                depth=min(depth, 2), limit=min(limit, 8),
+            )
+        else:
+            print("  No internal calls were statically identified.")
+        print()
+
+        _render_grouped_effects(
+            "STATE READS", read_values, nodes, root_id, paths, limit=min(limit, 4),
+        )
+        _render_grouped_effects(
+            "CONSTANT REFERENCES", constant_values, nodes, root_id, paths, limit=min(limit, 4),
+        )
+        _render_grouped_effects(
+            "IMMUTABLE REFERENCES", immutable_values, nodes, root_id, paths, limit=min(limit, 4),
+        )
+        _render_grouped_effects(
+            "STORAGE WRITES", write_values, nodes, root_id, paths, limit=min(limit, 4),
+        )
+        if external_values:
+            _render_external_boundaries(external_values, nodes, paths, limit=3)
+        if asset_values:
+            _render_asset_flows(asset_values, limit=3)
+        print("NEXT")
+        label = _symbol_label(selected)
+        print(f"  lk link '{label}' --detail calls")
+        print(f"  lk link '{label}' --detail storage")
+        print(f"  lk link '{label}' --detail external")
+        print(f"  lk link '{label}' --detail all")
+        print()
+        print("EVIDENCE  Static source relationships only; this does not prove execution or success.")
+        if _depth_has_more_calls(selected, index.get("edges") or [], depth):
+            print(f"SCOPE     Additional resolved call paths exist beyond --depth {depth}.")
+        _print_inventory_warning(index)
+        return
+
+    if detail in {"calls", "all"}:
+        callers = [
+            edge for edge in (index.get("edges") or [])
+            if edge.get("kind") == "CALLS" and edge.get("to") == root_id
+        ]
+        if callers:
+            _render_edges("CALLED BY", callers[:limit], nodes, reverse=True)
+        print("CALL FLOW")
+        if root_calls:
+            _render_call_tree(selected, index.get("edges") or [], nodes, depth=depth, limit=limit)
+        else:
+            print("  No internal calls were statically identified.")
+        print()
+        _render_modifiers(modifiers, nodes, root_id, limit=limit)
+
+    if detail in {"storage", "all"}:
+        _render_grouped_effects("STORAGE READS", read_values, nodes, root_id, paths, limit=limit)
+        _render_grouped_effects("CONSTANT REFERENCES", constant_values, nodes, root_id, paths, limit=limit)
+        _render_grouped_effects("IMMUTABLE REFERENCES", immutable_values, nodes, root_id, paths, limit=limit)
+        _render_grouped_effects("STORAGE WRITES", write_values, nodes, root_id, paths, limit=limit)
+        unresolved_storage = [
+            edge for edge in scoped_edges
+            if edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}
+        ]
+        if unresolved_storage:
+            _render_unresolved_relationships(unresolved_storage, nodes, limit=limit)
+
+    if detail in {"external", "all"}:
+        _render_external_boundaries(external_values, nodes, paths, limit=limit)
+        _render_asset_flows(asset_values, limit=limit)
+        _render_event_and_revert_edges("EVENTS", event_values, nodes, limit=limit)
+        _render_event_and_revert_edges("REVERT CONDITIONS", revert_values, nodes, limit=limit)
+
+    if detail == "all":
+        _render_unresolved_relationships(scoped_edges, nodes, limit=limit)
+
+    print("ANALYSIS LIMITS")
+    print("  Relationships are static source findings, not proof of runtime execution, success, or deployed external implementation.")
+    print(f"  Scope: entrypoint plus {len(helpers)} resolved local function/modifier target(s), maximum depth {depth}.")
     _print_inventory_warning(index)
+    propagation = index.get("effect_propagation") or {}
+    if propagation.get("truncated_frontiers"):
+        print(
+            "  Index effect-propagation cap reached at "
+            f"{propagation['truncated_frontiers']} frontier(s); effects beyond the configured cap may be missing."
+        )
 
 
 def render_link(index: dict[str, Any], target: str, *, only: str | None = None, depth: int | None = None, limit: int = 24, as_json: bool = False, detail: str = "summary") -> int:
@@ -781,10 +1187,19 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         depth = 3 if selected.get("kind") in {"function", "modifier"} else 1
     nodes = _node_map(index)
     edges = _selected_edges(selected, index.get("edges") or [], only=only, depth=depth)
+    function_target = selected.get("kind") in {"function", "modifier"}
     if as_json:
+        json_edges = edges
+        if function_target:
+            reachable, _paths = _function_execution_scope(selected, index, depth=depth)
+            json_edges = _function_scope_edges(index, reachable)
         print(json.dumps({
             "target": selected,
-            "edges": edges[:limit],
+            "edges": json_edges[:limit],
+            "scope": {
+                "kind": "reachable_local_call_and_modifier_graph" if function_target else "selected_relationship_graph",
+                "max_depth": depth,
+            },
             "inventory": index.get("inventory"),
             "summary": index.get("summary"),
             "parser": index.get("parser"),
@@ -794,31 +1209,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         }, indent=2, sort_keys=True))
         return 0
 
-    compact_function = selected.get("kind") in {"function", "modifier"} and detail == "summary" and only is None
-    if compact_function:
-        print("LOWKEY // SOURCE TRACE")
-        print(f"TARGET    {_symbol_label(selected)}")
-        print(f"SOURCE    {_location(selected)}")
-        if selected.get("provenance"):
-            print(f"ORIGIN    {str(selected['provenance']).upper()}")
-        visibility = selected.get("visibility")
-        mutability = selected.get("mutability")
-        if visibility or mutability:
-            print(f"ENTRY     {visibility or 'unknown'} · {mutability or 'unknown'}")
-        modifiers = [
-            edge for edge in (index.get("edges") or [])
-            if edge.get("kind") == "APPLIES_MODIFIER" and edge.get("from") == selected.get("id")
-        ]
-        if modifiers:
-            names = [_symbol_label(nodes.get(str(edge.get("to") or ""), {})) for edge in modifiers[:4]]
-            print("GUARDS    " + ", ".join(names))
-        ast_report = index.get("ast") or {}
-        ast_values = [int(ast_report.get(key) or 0) for key in ("functions", "call_edges", "modifier_edges", "storage_edges")]
-        parser_name = str(index.get("parser") or "unknown").upper()
-        method = f"{parser_name} source scan"
-        method += " · AST enrichment unavailable" if not any(ast_values) else " + AST enrichment"
-        print(f"METHOD    {method}")
-        print()
+    compact_function = function_target and detail == "summary" and only is None
+    if function_target:
+        _render_function_header(selected, index)
     elif not (selected.get("kind") == "contract" and only is None):
         print("LOWKEY // SOURCE LINK")
         print(f"TARGET    {_symbol_label(selected)}")
@@ -925,49 +1318,10 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
             _render_edges("STATE MUTATIONS / WRITES", [edge for edge in contract_edges if edge.get("kind") in {"WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES", "TRANSIENT_DELETES"}][:limit], nodes)
         if only in (None, "assets"):
             _render_edges("EXTERNAL INTERACTIONS / ASSET PATHS", [edge for edge in contract_edges if edge.get("kind") in {"EXTERNAL_CALL", "ASSET_FLOW"}][:limit], nodes)
-    elif selected.get("kind") in {"function", "modifier"}:
-        if detail == "summary" and only is None:
-            _render_function_summary(selected, index, edges, nodes, depth=depth, limit=min(limit, 12))
-        else:
-            active_detail = "all" if detail == "summary" else detail
-            group_map = [
-                ("CALLED BY", "CALLS", "incoming", "calls"),
-                ("CALLS", "CALLS", "outgoing", "calls"),
-                ("EXTERNAL CALLS", "EXTERNAL_CALL", "outgoing", "external"),
-                ("MODIFIERS", "APPLIES_MODIFIER", "outgoing", "calls"),
-                ("APPLIED TO", "APPLIES_MODIFIER", "incoming", "calls"),
-                ("OVERRIDES", "OVERRIDES", "outgoing", "calls"),
-                ("OVERRIDDEN BY", "OVERRIDES", "incoming", "calls"),
-                ("STORAGE READS", "READS", "outgoing", "storage"),
-                ("CONSTANT REFERENCES", "READS_CONSTANT", "outgoing", "storage"),
-                ("IMMUTABLE REFERENCES", "READS_IMMUTABLE", "outgoing", "storage"),
-                ("STORAGE WRITES", "WRITES", "outgoing", "storage"),
-                ("DELETES", "DELETES", "outgoing", "storage"),
-                ("TRANSIENT WRITES", "TRANSIENT_WRITES", "outgoing", "storage"),
-                ("TRANSIENT DELETES", "TRANSIENT_DELETES", "outgoing", "storage"),
-                ("TRANSIENT READS", "TRANSIENT_READS", "outgoing", "storage"),
-                ("UNRESOLVED MUTATIONS", "UNRESOLVED_MUTATION", "outgoing", "storage"),
-                ("INITIALIZES", "INITIALIZES", "outgoing", "storage"),
-                ("EMITS", "EMITS", "outgoing", "external"),
-                ("REVERTS", "REVERTS", "outgoing", "external"),
-                ("STORAGE ALIASES", "ALIASES_STORAGE", "outgoing", "storage"),
-                ("UNRESOLVED ASSEMBLY STORAGE", "UNRESOLVED_STORAGE", "outgoing", "storage"),
-                ("ASSET FLOW / CAPABILITY", "ASSET_FLOW", "outgoing", "external"),
-            ]
-            for heading, kind, direction, category in group_map:
-                if active_detail != "all" and category != active_detail:
-                    continue
-                values = [
-                    edge for edge in edges if edge.get("kind") == kind
-                    and ((direction == "outgoing" and edge.get("from") == selected["id"])
-                         or (direction == "incoming" and edge.get("to") == selected["id"]))
-                ]
-                _render_edges(heading, values[:limit], nodes, reverse=(direction == "incoming"))
-            if active_detail in {"calls", "all"}:
-                _render_call_tree(selected, index.get("edges") or [], nodes, depth=depth, limit=limit)
-            if active_detail == "all":
-                unresolved = [edge for edge in edges if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}]
-                _render_edges("UNRESOLVED / AMBIGUOUS TARGETS", unresolved[:limit], nodes)
+    elif function_target:
+        _render_function_view(
+            selected, index, nodes, detail=detail, depth=depth, limit=limit,
+        )
     elif selected.get("kind") == "mapping":
         _render_mapping_view(selected, index, nodes, limit=min(limit, 24))
     elif selected.get("kind") in {"state_variable", "function_pointer"}:
@@ -979,7 +1333,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         for kind, values in sorted(incoming.items()):
             _render_edges("REFERENCED BY " + kind.replace("_", " "), values[:limit], nodes, reverse=True)
 
-    if not (selected.get("kind") == "contract" and only is None) and not compact_function:
+    if not (selected.get("kind") == "contract" and only is None) and not function_target:
         print()
         print(f"GRAPH     {index.get('summary', {}).get('relationships', 0)} relationship(s) indexed across {index.get('summary', {}).get('files', 0)} Solidity file(s)")
         if selected.get("kind") in {"contract", "function"} and _depth_has_more_calls(selected, index.get("edges") or [], depth):
