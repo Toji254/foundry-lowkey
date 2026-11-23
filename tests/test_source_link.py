@@ -599,7 +599,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("AT A GLANCE", rendered)
         self.assertIn("lastDebitAmount", rendered)
         self.assertIn("balances", rendered)
-        self.assertIn("via helpers", rendered)
+        self.assertIn("[helper]", rendered)
         self.assertNotIn("relationships=", rendered)
         self.assertNotIn("RESOLUTION ambiguous=", rendered)
 
