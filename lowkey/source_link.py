@@ -944,10 +944,18 @@ def _render_function_summary(
         edge for edge in edges
         if edge.get("from") in function_ids and edge.get("kind") == "ASSET_FLOW"
     ]
+    helper_ids: set[str] = set()
+    for edge in effects:
+        via = [str(item) for item in (edge.get("via") or [])]
+        if selected_id in via:
+            root_position = via.index(selected_id)
+            helper_ids.update(via[root_position + 1:])
+        source_id = str(edge.get("from") or "")
+        if source_id != selected_id and source_id in nodes:
+            helper_ids.add(source_id)
     helper_names = sorted({
-        str(nodes.get(str(edge.get("from") or ""), {}).get("name") or "")
-        for edge in effects
-        if edge.get("from") != selected_id and str(edge.get("from") or "") in nodes
+        str(nodes.get(helper_id, {}).get("name") or "")
+        for helper_id in helper_ids
     } - {""})
 
     print("AT A GLANCE")
