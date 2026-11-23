@@ -736,7 +736,7 @@ def _function_analysis_label(index: dict[str, Any]) -> str:
 
 def _render_function_header(
     selected: dict[str, Any], index: dict[str, Any],
-    nodes: dict[str, dict[str, Any]],
+    nodes: dict[str, dict[str, Any]], *, depth: int,
 ) -> None:
     """Render a compact and truthful header shared by summary and detail views."""
     print("LOWKEY // SOURCE TRACE")
@@ -770,6 +770,7 @@ def _render_function_header(
             print(f"          ... {len(guard_names) - 4} more")
 
     print(f"ANALYSIS  {_function_analysis_label(index)}")
+    print(f"SCOPE     entrypoint + resolved calls/modifiers · depth {depth}; callers are context only")
     print()
 
 
@@ -861,12 +862,18 @@ def _render_grouped_effects(
             parts.append("at " + ", ".join(locations))
         resolutions = group["resolutions"]
         if "UNRESOLVED" in resolutions or "AMBIGUOUS" in resolutions:
-            status = "UNRESOLVED"
-        elif "INFERRED" in resolutions and "DIRECT" not in resolutions:
+            status = "INCLUDES UNRESOLVED"
+        elif "INFERRED" in resolutions and "DIRECT" in resolutions:
+            status = "MIXED EVIDENCE"
+        elif "INFERRED" in resolutions:
             status = "INFERRED"
         else:
             status = "DIRECT"
         parts.append(status)
+        if len(group["access_paths"]) > len(paths):
+            parts.append(f"+{len(group['access_paths']) - len(paths)} more paths")
+        if len(group["locations"]) > len(locations):
+            parts.append(f"+{len(group['locations']) - len(locations)} more locations")
         print(textwrap.fill(
             " · ".join(parts), width=112,
             initial_indent="  ", subsequent_indent="    ",
@@ -976,7 +983,7 @@ def _render_function_summary(
         print("  Asset movement: " + ", ".join(assets[:3]))
     print()
 
-    print("CALL FLOW")
+    print("CALL FLOW  (first hop; expand with --detail calls)")
     if calls:
         _render_call_tree(selected, index.get("edges") or [], nodes, depth=1, limit=min(limit, 4))
     else:
@@ -1058,6 +1065,12 @@ def _render_function_details(
             and edge.get("from") in function_ids
         ]
         _render_edges("SECURITY GATES / MODIFIERS", modifiers[:limit], nodes)
+        applied_to = [
+            edge for edge in edges
+            if edge.get("kind") == "APPLIES_MODIFIER"
+            and edge.get("to") == selected_id
+        ]
+        _render_edges("APPLIED TO", applied_to[:limit], nodes, reverse=True)
         overrides = [
             edge for edge in edges
             if edge.get("kind") == "OVERRIDES"
@@ -1230,7 +1243,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
 
     compact_function = selected.get("kind") in {"function", "modifier"} and detail == "summary" and only is None
     if selected.get("kind") in {"function", "modifier"}:
-        _render_function_header(selected, index, nodes)
+        _render_function_header(selected, index, nodes, depth=depth)
     elif not (selected.get("kind") == "contract" and only is None):
         print("LOWKEY // SOURCE LINK")
         print(f"TARGET    {_symbol_label(selected)}")
