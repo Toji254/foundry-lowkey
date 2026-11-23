@@ -523,7 +523,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("2 access(es)", rendered)
         self.assertEqual(rendered.count("Graph.positions"), 1)
-        self.assertIn("via helpers", rendered) if "via helpers" in rendered else None
+        self.assertEqual(rendered.count("Graph.positions"), 1)
 
     def test_function_summary_includes_reachable_helper_effects(self):
         temporary, root = self.fixture()
