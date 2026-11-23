@@ -204,7 +204,7 @@ def _selected_edges(
     nodes: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if node.get("kind") in {"function", "modifier"}:
-        scoped = _function_scope_edges(node, edges, nodes or _node_map({"nodes": []}) if nodes is None else nodes, depth=depth)
+        scoped = _function_scope_edges(node, edges, nodes or {}, depth=depth)
         allowed = ONLY_KINDS.get(only) if only else None
         if allowed is not None:
             scoped = [
@@ -872,11 +872,27 @@ def _function_scope_ids(
     edges: list[dict[str, Any]],
     nodes: dict[str, dict[str, Any]],
 ) -> set[str]:
-    result = {str(selected.get("id") or "")}
-    for edge in edges:
-        source_id = str(edge.get("from") or "")
-        if source_id in nodes and nodes[source_id].get("kind") in {"function", "modifier"}:
-            result.add(source_id)
+    """Resolve the forward-only function/modifier execution scope in a scoped edge set."""
+    root_id = str(selected.get("id") or "")
+    result = {root_id}
+    queue = [root_id]
+    while queue:
+        current = queue.pop(0)
+        for edge in edges:
+            if (
+                edge.get("from") != current
+                or edge.get("kind") not in {"CALLS", "APPLIES_MODIFIER"}
+                or edge.get("resolution") not in {"DIRECT", "INFERRED"}
+            ):
+                continue
+            target_id = str(edge.get("to") or "")
+            target = nodes.get(target_id)
+            if (
+                target_id and target_id not in result and target
+                and target.get("kind") in {"function", "modifier"}
+            ):
+                result.add(target_id)
+                queue.append(target_id)
     return result
 
 
@@ -1036,7 +1052,7 @@ def _render_function_details(
         print()
 
     if active in {"storage", "all"}:
-        read_kinds = {"READS", "TRANSIENT_READS"}
+        read_kinds = {"READS"}
         constant_kinds = {"READS_CONSTANT"}
         immutable_kinds = {"READS_IMMUTABLE"}
         write_kinds = {"WRITES", "DELETES", "MUTATES"}
@@ -1141,9 +1157,12 @@ def _render_function_details(
     if active == "all":
         unresolved = [
             edge for edge in edges
-            if edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
-            or edge.get("implementation_resolution") in {"UNRESOLVED", "AMBIGUOUS"}
-            or edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}
+            if edge.get("from") in function_ids
+            and (
+                edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+                or edge.get("implementation_resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+                or edge.get("kind") in {"UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION"}
+            )
         ]
         if unresolved:
             print(f"UNRESOLVED WITHIN THIS CALL PATH ({len(unresolved)} relationship(s))")
