@@ -739,17 +739,34 @@ def _function_execution_scope(
 def _function_scope_edges(
     index: dict[str, Any],
     reachable: dict[str, int],
+    root_id: str,
 ) -> list[dict[str, Any]]:
-    """Use original source edges from reachable functions; omit propagated clones."""
+    """Keep reachable source edges and only AST storage contexts rooted here."""
     propagation_evidence = {
         "CALL_GRAPH_PROPAGATION",
         "MODIFIER_EXECUTION_PROPAGATION",
     }
-    return [
-        edge for edge in (index.get("edges") or [])
-        if edge.get("from") in reachable
-        and edge.get("evidence") not in propagation_evidence
-    ]
+    scoped = []
+    for edge in index.get("edges") or []:
+        if edge.get("from") not in reachable:
+            continue
+        if edge.get("evidence") in propagation_evidence:
+            continue
+        via = edge.get("via") or []
+        if via:
+            # AST storage-reference contexts are emitted once per caller. A
+            # shared helper may also have contexts rooted at unrelated callers;
+            # those must not leak into this entrypoint's state summary.
+            if (
+                edge.get("evidence") != "SOLC_AST_STORAGE_DECLARATION_REFERENCE"
+                or not isinstance(via, list)
+                or not via
+                or via[0] != root_id
+                or any(item not in reachable for item in via)
+            ):
+                continue
+        scoped.append(edge)
+    return scoped
 
 
 def _group_effects(
@@ -1135,7 +1152,7 @@ def _render_function_view(
     """Render a scoped function investigation; group repeated state by declaration."""
     root_id = str(selected.get("id") or "")
     reachable, paths = _function_execution_scope(selected, index, depth=depth)
-    scoped_edges = _function_scope_edges(index, reachable)
+    scoped_edges = _function_scope_edges(index, reachable, root_id)
     root_calls = [
         edge for edge in scoped_edges
         if edge.get("from") == root_id and edge.get("kind") == "CALLS"
@@ -1308,7 +1325,7 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         json_edges = edges
         if function_target:
             reachable, _paths = _function_execution_scope(selected, index, depth=depth)
-            json_edges = _function_scope_edges(index, reachable)
+            json_edges = _function_scope_edges(index, reachable, root_id)
         print(json.dumps({
             "target": selected,
             "edges": json_edges[:limit],
