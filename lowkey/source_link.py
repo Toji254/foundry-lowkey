@@ -1039,6 +1039,7 @@ def _link_parser() -> argparse.ArgumentParser:
   lk link                                      Browse the source map (24 per page).
   lk link Vault                                See the contract overview.
   lk link Vault.positions                      Inspect a mapping and its readers/writers.
+  lk link ContractName.mappingName              Inspect mapping keys, readers and writers.
   lk trace source Vault.increasePosition       Trace source calls and state touchpoints.
 
 SOURCE MAP OPTIONS  (use without TARGET)
@@ -1245,7 +1246,9 @@ def render_project_index(
         print("  FIND      lk link --search Vault")
     if not declaration_type:
         print("  FILTER    lk link --type interface")
-    print("  OPEN      lk link ContractName")
+    print("  CONTRACT  lk link ContractName")
+    print("  FUNCTION  lk trace source ContractName.functionName")
+    print("  MAPPING   lk link ContractName.mappingName")
     print()
     print("EVIDENCE    Static source relationships; not runtime execution.")
     _print_inventory_warning(index)

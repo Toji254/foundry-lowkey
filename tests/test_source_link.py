@@ -485,6 +485,7 @@ class SourceLinkTests(unittest.TestCase):
             "lk link Vault --depth 3",
             "lk trace source Vault.increasePosition --detail storage",
             "lk link Vault --only writes --limit 60",
+            "lk link ContractName.mappingName",
             "lk link --search Vault --json",
         ):
             self.assertIn(example, help_text)
