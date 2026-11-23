@@ -773,7 +773,7 @@ def _effect_groups(
     nodes: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Deduplicate accesses by source site and group them by state declaration."""
-    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    grouped: dict[str, dict[str, Any]] = {}
     seen_sites: set[tuple[str, str, str, int, int, str]] = set()
     for edge in values:
         target_id = str(edge.get("to") or "")
@@ -788,9 +788,9 @@ def _effect_groups(
         if site in seen_sites:
             continue
         seen_sites.add(site)
-        key = (kind, target_id or access_path or str(edge.get("id") or "unknown"))
+        key = target_id or access_path or str(edge.get("id") or "unknown")
         group = grouped.setdefault(key, {
-            "kind": kind,
+            "kinds": set(),
             "target": nodes.get(target_id, {}),
             "label": "",
             "access_paths": [],
@@ -799,6 +799,7 @@ def _effect_groups(
             "resolutions": set(),
             "accesses": 0,
         })
+        group["kinds"].add(kind)
         group["accesses"] += 1
         if access_path and access_path not in group["access_paths"]:
             group["access_paths"].append(access_path)
@@ -807,14 +808,6 @@ def _effect_groups(
             group["locations"].append(location)
         resolution = str(edge.get("resolution") or "UNKNOWN")
         group["resolutions"].add(resolution)
-        for function_id in edge.get("via") or []:
-            function_name = nodes.get(str(function_id), {}).get("name")
-            if function_name and function_name not in group["helpers"]:
-                group["helpers"].append(function_name)
-        source_function = nodes.get(str(edge.get("from") or ""), {})
-        if source_function.get("id") and source_function.get("kind") in {"function", "modifier"}:
-            if source_function.get("name") and source_function.get("name") not in group["helpers"]:
-                group["helpers"].append(source_function["name"])
         group["label"] = _symbol_label(group["target"]) if group["target"] else (
             access_path or target_id or "unresolved state reference"
         )
@@ -840,16 +833,10 @@ def _render_grouped_effects(
         parts = [f"{group['label']} · {group['accesses']} access(es)"]
         paths = group["access_paths"][:2]
         locations = group["locations"][:2]
-        helpers = [
-            name for name in group["helpers"]
-            if name not in {str(group["target"].get("name") or "")}
-        ][:2]
         if paths:
             parts.append("path " + ", ".join(paths))
         if locations:
             parts.append("at " + ", ".join(locations))
-        if helpers:
-            parts.append("via " + ", ".join(helpers))
         resolutions = group["resolutions"]
         if "UNRESOLVED" in resolutions or "AMBIGUOUS" in resolutions:
             status = "UNRESOLVED"
