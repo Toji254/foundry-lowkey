@@ -465,6 +465,85 @@ class SourceLinkTests(unittest.TestCase):
         self.assertNotIn("GRAPH     ", rendered)
 
 
+    def test_function_details_scope_unresolved_targets_to_reachable_functions(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            unrelated = next(
+                item for item in index["nodes"]
+                if item.get("qualified_name") == "ImportedMath.plus(uint256,uint256)"
+            )
+            index["edges"].append({
+                "id": "UNRESOLVED:unrelated-number-sub",
+                "kind": "CALLS",
+                "from": unrelated["id"],
+                "to": "external:number.sub",
+                "resolution": "UNRESOLVED",
+                "source": {"file": "lib/audit/ImportedMath.sol", "line": 7, "column": 1},
+                "detail": "Unrelated library call used only to prove scope isolation.",
+            })
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)", detail="all")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertNotIn("number.sub", rendered)
+        self.assertIn("UNRESOLVED TARGETS", rendered)
+        self.assertIn("reachable scope", rendered)
+
+    def test_function_storage_detail_groups_accesses_by_state_declaration(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            getter = next(
+                item for item in index["nodes"]
+                if item.get("qualified_name") == "Graph.getPosition(uint256)"
+            )
+            original = next(
+                edge for edge in index["edges"]
+                if edge.get("from") == getter["id"] and edge.get("kind") == "READS"
+            )
+            duplicate = dict(original)
+            duplicate["id"] = "SYNTHETIC:DUPLICATE:READ"
+            duplicate["source"] = {
+                **original.get("source", {}),
+                "line": int(original.get("source", {}).get("line", 1)) + 1,
+            }
+            index["edges"].append(duplicate)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.getPosition(uint256)", detail="storage")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("2 access(es)", rendered)
+        self.assertEqual(rendered.count("Graph.positions"), 1)
+        self.assertIn("via helpers", rendered) if "via helpers" in rendered else None
+
+    def test_function_summary_includes_reachable_helper_effects(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.withdraw(uint256)")
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("AT A GLANCE", rendered)
+        self.assertIn("lastDebitAmount", rendered)
+        self.assertIn("balances", rendered)
+        self.assertIn("via helpers", rendered)
+        self.assertNotIn("relationships=", rendered)
+        self.assertNotIn("RESOLUTION ambiguous=", rendered)
+
     def test_link_help_documents_flags_use_cases_and_copy_paste_examples(self):
         help_text = _link_parser().format_help()
 
