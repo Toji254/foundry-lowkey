@@ -866,6 +866,34 @@ def _print_wrapped_field(label: str, value: str, *, width: int = 96) -> None:
         print(line)
 
 
+def _render_summary_effects(
+    heading: str,
+    values: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    root_id: str,
+    paths: dict[str, list[str]],
+    *,
+    limit: int = 5,
+) -> None:
+    """Show unique state targets without forensic paths on the first screen."""
+    if not values:
+        return
+    groups = _group_effects(values, nodes, root_id, paths)
+    labels = []
+    for group in groups[:limit]:
+        target = group["target"]
+        label = str(target.get("qualified_name") or target.get("name") or "unresolved target")
+        if group["direct"] and group["helper"]:
+            label += " [direct + helper]"
+        elif group["helper"]:
+            label += " [helper]"
+        else:
+            label += " [direct]"
+        labels.append(label)
+    if len(groups) > limit:
+        labels.append(f"+{len(groups) - limit} more")
+    print(f"{heading}  ({len(groups)} unique): " + "; ".join(labels))
+
 def _render_function_header(
     selected: dict[str, Any],
     index: dict[str, Any],
@@ -1119,22 +1147,24 @@ def _render_function_view(
             print("  No internal calls were statically identified.")
         print()
 
-        _render_grouped_effects(
-            "STATE READS", read_values, nodes, root_id, paths, limit=min(limit, 4),
-        )
-        _render_grouped_effects(
-            "CONSTANT REFERENCES", constant_values, nodes, root_id, paths, limit=min(limit, 4),
-        )
-        _render_grouped_effects(
-            "IMMUTABLE REFERENCES", immutable_values, nodes, root_id, paths, limit=min(limit, 4),
-        )
-        _render_grouped_effects(
-            "STORAGE WRITES", write_values, nodes, root_id, paths, limit=min(limit, 4),
-        )
+        _render_summary_effects("READS", read_values, nodes, root_id, paths)
+        _render_summary_effects("CONSTANTS", constant_values, nodes, root_id, paths)
+        _render_summary_effects("IMMUTABLES", immutable_values, nodes, root_id, paths)
+        _render_summary_effects("WRITES", write_values, nodes, root_id, paths)
         if external_values:
             _render_external_boundaries(external_values, nodes, paths, limit=3)
         if asset_values:
             _render_asset_flows(asset_values, limit=3)
+        if event_values:
+            event_names = list(dict.fromkeys(
+                _symbol_label(nodes.get(str(edge.get("to") or ""), {})) for edge in event_values
+            ))
+            print(f"EVENTS  ({len(event_names)}): " + ", ".join(event_names[:5]))
+        if revert_values:
+            revert_names = list(dict.fromkeys(
+                str(edge.get("detail") or edge.get("to") or "revert condition") for edge in revert_values
+            ))
+            print(f"REVERTS ({len(revert_names)}): " + "; ".join(revert_names[:3]))
         print("NEXT")
         label = _symbol_label(selected)
         for view in ("calls", "storage", "external", "all"):
