@@ -546,6 +546,11 @@ class SourceLinkTests(unittest.TestCase):
             entry = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.withdraw(uint256)")
             helper = next(item for item in nodes.values() if item.get("qualified_name") == "Graph._debit(address,uint256)")
             balance = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.balances")
+            positions = next(item for item in nodes.values() if item.get("qualified_name") == "Graph.positions")
+            unrelated_entry = next(
+                item for item in nodes.values()
+                if item.get("qualified_name") == "ImportedMath.plus(uint256,uint256)"
+            )
             index["edges"].extend([
                 {
                     "id": "AST:storage:helper-context",
@@ -573,6 +578,19 @@ class SourceLinkTests(unittest.TestCase):
                     "persistence": "persistent",
                     "via": [entry["id"], helper["id"]],
                 },
+                {
+                    "id": "AST:storage:unrelated-caller-context",
+                    "kind": "WRITES",
+                    "from": helper["id"],
+                    "to": positions["id"],
+                    "resolution": "INFERRED",
+                    "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+                    "source": {"file": "src/Graph.sol", "line": 105, "column": 21},
+                    "access_path": "positions[user]",
+                    "operation": "assignment",
+                    "persistence": "persistent",
+                    "via": [unrelated_entry["id"], helper["id"]],
+                },
             ])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
@@ -584,6 +602,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("Graph.balances  (2 via helpers)  [AST + lexical]", rendered)
         self.assertEqual(rendered.count("Graph.balances"), 2)  # one read group and one write group
+        self.assertNotIn("Graph.positions", rendered)
 
     def test_function_summary_includes_reachable_helper_effects(self):
         temporary, root = self.fixture()
