@@ -678,12 +678,8 @@ def _render_function_summary(
     helper_writes = sum(edge.get("kind") in write_kinds for edge in propagated)
 
     print("AT A GLANCE")
-    print(f"  Internal calls       {len(calls)}")
-    print(f"  External boundaries  {len(external)}")
-    print(f"  State reads          {len(reads)}")
-    print(f"  State writes         {len(writes)}")
-    print(f"  Events emitted       {len(emits)}")
-    print(f"  Modifiers            {len(modifiers)}")
+    print(f"  Calls {len(calls)} · external {len(external)} · reads {len(reads)} · writes {len(writes)}")
+    print(f"  Events {len(emits)} · modifiers {len(modifiers)}")
     if helper_reads or helper_writes:
         print(f"  Helper effects       {helper_reads} reads · {helper_writes} writes (within depth {depth})")
     if asset_flows:
@@ -1035,41 +1031,112 @@ def _render_edges(heading: str, edges: list[dict[str, Any]], nodes: dict[str, di
 def _link_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lk link",
-        description="Explore Solidity declarations, relationships, and source-level effects.",
-        epilog="""Examples:
-  lk link                              Browse the source map (24 entries per page).
-  lk link --search Vault               Find matching contracts and files.
-  lk link --type interface             Show interfaces only.
-  lk link --page 2                     Continue through the source map.
-  lk link --all                        Print every declaration in a compact list.
-  lk link Vault                        Show a compact contract overview.
-  lk trace source Vault.increasePosition
-  lk trace source Vault.increasePosition --detail storage
-  lk trace source Vault.increasePosition --detail all --depth 4
+        description=(
+            "Browse a Solidity project or inspect one contract, function, modifier, "
+            "mapping, or state variable. The default screens stay compact; detail is opt-in."
+        ),
+        epilog="""QUICK START
+  lk link                                      Browse the source map (24 per page).
+  lk link Vault                                See the contract overview.
+  lk link Vault.positions                      Inspect a mapping and its readers/writers.
+  lk trace source Vault.increasePosition       Trace source calls and state touchpoints.
 
-Use --detail calls|storage|external|all to expand a function investigation.
-Static analysis only: source relationships do not prove runtime execution.""",
+SOURCE MAP OPTIONS  (use without TARGET)
+  --root DIR       Scan another project. Example: lk link --root ../protocol
+  --search TEXT    Find by declaration name or file path. Example: lk link --search Vault
+  --type KIND      Keep contract, interface, or library declarations only.
+                   Example: lk link --type interface
+  --page N         Move through the 24-item pages. Example: lk link --page 2
+  --all            Show every matching declaration in one compact list.
+
+TARGET OPTIONS
+  --only FILTER    Narrow a contract's relationships:
+                   calls = internal calls; storage = reads and writes;
+                   reads = reads only; writes = mutations and initializers;
+                   imports = imports and inheritance; assets = external/asset paths.
+                   Example: lk link Vault --only writes
+  --depth N        Bound source-call traversal (1-10). Function default is 3;
+                   contract default is 1. Increase it to follow deeper helpers.
+                   Example: lk link Vault --depth 3
+
+FUNCTION / MODIFIER OPTIONS
+  --detail VIEW    summary (default), calls, storage, external, or all.
+                   Use calls for caller/callee flow, storage for state effects,
+                   external for boundaries/events/assets, or all for the full view.
+                   Example: lk trace source Vault.increasePosition --detail storage
+  --limit N        Cap items shown in each detail section (1-500; default: 24).
+                   Increase it when a section reports omitted entries.
+                   Example: lk link Vault --only writes --limit 60
+
+OUTPUT
+  --json           Emit structured JSON for scripts and downstream tooling.
+                   Example: lk link --search Vault --json
+  -h, --help       Show this reference.
+
+COMMON INVESTIGATION SEQUENCE
+  lk link --search Position
+  lk link PositionManager
+  lk link PositionManager --only writes --depth 3
+  lk trace source PositionManager.increasePosition --detail all --depth 4
+
+RULES
+  --search, --type, --page and --all are source-map options and cannot be
+  combined with TARGET. --detail applies only to functions and modifiers.
+  Source links are static analysis: they do not prove execution, success,
+  storage-slot identity, or the implementation behind an external address.
+  Incomplete source coverage is reported; unresolved relationships stay visible.""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
-    parser.add_argument("target", nargs="?", help="contract, function, mapping, or state variable; omit to browse the source map")
-    parser.add_argument("--root", default=".")
-    parser.add_argument("--depth", type=int, default=None)
-    parser.add_argument("--only", choices=sorted(ONLY_KINDS))
-    parser.add_argument("--detail", choices=("summary", "calls", "storage", "external", "all"), default="summary",
-                        help="function view: summary (default), calls, storage, external, or all")
-    parser.add_argument("--limit", type=int, default=24, help="maximum items per detail section (default: 24)")
-    parser.add_argument("--search", help="filter the source map by declaration name or file path")
-    parser.add_argument("--type", dest="declaration_type", choices=("contract", "interface", "library"),
-                        help="filter the source map by declaration kind")
+    parser.add_argument(
+        "target", nargs="?",
+        help="contract, function, modifier, mapping, or state variable; omit to browse the source map",
+    )
+    parser.add_argument(
+        "--root", metavar="DIR", default=".",
+        help="project root to scan (default: current directory); use outside the project root",
+    )
+    parser.add_argument(
+        "--depth", metavar="N", type=int, default=None,
+        help="maximum call traversal depth, 1-10 (function default 3; contract default 1)",
+    )
+    parser.add_argument(
+        "--only", metavar="FILTER", choices=sorted(ONLY_KINDS),
+        help="contract relationship filter: calls, storage, reads, writes, imports, or assets",
+    )
+    parser.add_argument(
+        "--detail", metavar="VIEW",
+        choices=("summary", "calls", "storage", "external", "all"), default="summary",
+        help="function view: summary (default), calls, storage, external, or all",
+    )
+    parser.add_argument(
+        "--limit", metavar="N", type=int, default=24,
+        help="maximum items per detail section, 1-500 (default: 24)",
+    )
+    parser.add_argument(
+        "--search", metavar="TEXT",
+        help="source-map filter by declaration name or source path (requires no TARGET)",
+    )
+    parser.add_argument(
+        "--type", dest="declaration_type", metavar="KIND",
+        choices=("contract", "interface", "library"),
+        help="source-map filter by declaration kind (requires no TARGET)",
+    )
     page_group = parser.add_mutually_exclusive_group()
-    page_group.add_argument("--page", type=int, help="source-map page number")
-    page_group.add_argument("--all", dest="show_all", action="store_true",
-                            help="show all matching source-map entries")
-    parser.add_argument("--json", action="store_true")
+    page_group.add_argument(
+        "--page", metavar="N", type=int,
+        help="source-map page number (requires no TARGET)",
+    )
+    page_group.add_argument(
+        "--all", dest="show_all", action="store_true",
+        help="show all matching source-map declarations (requires no TARGET)",
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="emit machine-readable JSON instead of terminal formatting",
+    )
     parser.add_argument("-h", "--h", "--help", action="help", help="show this help")
     return parser
-
 
 def render_project_index(
     index: dict[str, Any], *, limit: int = 24, page: int = 1,
@@ -1171,11 +1238,12 @@ def render_project_index(
         print(f"PREVIOUS    lk link --page {page - 1}{suffix}")
     if total > len(visible):
         print(f"SHOW ALL    lk link --all{suffix}")
+    print("EXPLORE")
     if not needle:
-        print("FIND        lk link --search Vault")
+        print("  FIND      lk link --search Vault")
     if not declaration_type:
-        print("FILTER      lk link --type interface")
-    print("OPEN        lk link ContractName")
+        print("  FILTER    lk link --type interface")
+    print("  OPEN      lk link ContractName")
     print()
     print("EVIDENCE    Static source relationships; not runtime execution.")
     _print_inventory_warning(index)

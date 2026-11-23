@@ -59,7 +59,9 @@ if [[ "$#" -eq 1 ]]; then
             cat <<'LOWKEY_SOURCE_HELP'
 
 Source relationship navigation:
-  lk link                       List available contracts and source locations
+  lk link                       Browse available contracts and source locations
+  lk link --help                 Full flags, use cases and copy-paste examples
+  lk trace source --help         Source-call investigation options
   lk link Vault
   lk link Vault.withdraw
   lk link Vault.positions

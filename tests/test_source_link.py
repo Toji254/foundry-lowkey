@@ -14,7 +14,7 @@ if str(LOWKEY) not in sys.path:
     sys.path.insert(0, str(LOWKEY))
 
 from source_index import build_source_index
-from source_link import main, render_link, run_flow
+from source_link import _link_parser, main, render_link, run_flow
 
 
 class SourceLinkTests(unittest.TestCase):
@@ -464,6 +464,35 @@ class SourceLinkTests(unittest.TestCase):
         self.assertLess(len(rendered.splitlines()), 40)
         self.assertNotIn("GRAPH     ", rendered)
 
+
+    def test_link_help_documents_flags_use_cases_and_copy_paste_examples(self):
+        help_text = _link_parser().format_help()
+
+        for option in (
+            "--root", "--depth", "--only", "--detail", "--limit",
+            "--search", "--type", "--page", "--all", "--json",
+        ):
+            self.assertIn(option, help_text)
+
+        for example in (
+            "lk link --root ../protocol",
+            "lk link --search Vault",
+            "lk link --type interface",
+            "lk link --page 2",
+            "lk link --all",
+            "lk link Vault --only writes",
+            "lk link Vault --depth 3",
+            "lk trace source Vault.increasePosition --detail storage",
+            "lk link Vault --only writes --limit 60",
+            "lk link --search Vault --json",
+        ):
+            self.assertIn(example, help_text)
+
+        self.assertIn("Scan another project", help_text)
+        self.assertIn("Use calls for caller/callee flow", help_text)
+        self.assertIn("Increase it when a section reports omitted entries", help_text)
+        self.assertIn("requires no TARGET", help_text)
+        self.assertIn("Function default is 3", help_text)
 
     def test_flow_filter_separates_payable_capability_from_eth_out(self):
         temporary, root = self.fixture()
