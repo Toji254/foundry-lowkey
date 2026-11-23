@@ -236,20 +236,20 @@ class SourceAstTests(unittest.TestCase):
         set_src = self._src(source, "function set(address user, uint256 amount) external {\n                balances[user] = amount;\n            }")
         increase_src = self._src(source, "function increase(address user, uint256 amount) external {\n                balances[user] += amount;\n            }")
 
-        def ident(name, referenced, snippet):
+        def ident(name, referenced, snippet, start_after=0):
             return {
                 "id": referenced + 100,
                 "nodeType": "Identifier",
                 "name": name,
                 "referencedDeclaration": referenced,
-                "src": self._src(source, snippet),
+                "src": self._src(source, snippet, start_after),
             }
 
         def access_and_assignment(operator, expression):
             index_access = {
                 "id": 30 if operator == "=" else 40,
                 "nodeType": "IndexAccess",
-                "baseExpression": ident("balances", 10, "balances"),
+                "baseExpression": ident("balances", 10, "balances", source.index(expression)),
                 "indexExpression": {
                     "id": 31 if operator == "=" else 41,
                     "nodeType": "Identifier",
@@ -472,7 +472,7 @@ class SourceAstTests(unittest.TestCase):
                     "nodeType": "Identifier",
                     "name": "position",
                     "referencedDeclaration": parameter_id,
-                    "src": span("position", library_start),
+                    "src": span("position", source.index("position.debt")),
                 },
                 "memberName": "debt",
                 "referencedDeclaration": field_id,
@@ -483,7 +483,7 @@ class SourceAstTests(unittest.TestCase):
                 "nodeType": "Identifier",
                 "name": "amount",
                 "referencedDeclaration": 33,
-                "src": span("amount", library_start),
+                "src": span("amount", source.index("position.debt")),
             },
             "src": span("position.debt += amount", library_start),
         }

@@ -5440,7 +5440,7 @@ def inspect_reproduction_command(root, argv):
         "rpc_balance_override":r"\b(?:anvil|hardhat)_setBalance\b|\bevm_setAccountBalance\b",
         "rpc_code_override":r"\b(?:anvil|hardhat)_setCode\b|\bevm_setAccountCode\b",
         "rpc_impersonation":r"\b(?:anvil|hardhat)_impersonateAccount\b|\bev[m]?_unlockUnknownAccount\b",
-        "rpc_time_override":r"\b(?:anvil|hardhat)_setNextBlockTimestamp\b|\bevm_setNextBlockTimestamp\b|\b(?:anvil|hardhat)_setBlockTimestamp\b",
+        "rpc_time_override":r"\b(?:anvil|hardhat)_(?:setNextBlockTimestamp|setBlockTimestamp(?:Interval)?|removeBlockTimestampInterval)\b|\bevm_setNextBlockTimestamp\b",
     }
     findings=[]
     inspected=[]

@@ -130,9 +130,10 @@ class InstallSmokeTests(unittest.TestCase):
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(linked_function.returncode, 0, linked_function.stdout + linked_function.stderr)
-            self.assertIn("LOWKEY // SOURCE LINK", linked_function.stdout)
+            self.assertIn("LOWKEY // SOURCE TRACE", linked_function.stdout)
             self.assertIn("FlowVault.withdraw(uint256)", linked_function.stdout)
-            self.assertIn("TRANSFER ATTEMPT", linked_function.stdout)
+            self.assertIn("EXTERNAL BOUNDARIES", linked_function.stdout)
+            self.assertIn("ETH OUT", linked_function.stdout)
             self.assertIn("ORIGIN    FIRST-PARTY", linked_function.stdout)
 
             linked_mapping = subprocess.run(

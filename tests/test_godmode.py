@@ -1242,6 +1242,26 @@ class GodmodeTests(unittest.TestCase):
             self.assertIn("rpc_balance_override", kinds)
             self.assertIn("scripts/replay.py", result["inspected_scripts"])
 
+    def test_replay_script_scanner_blocks_rpc_timestamp_interval_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            replay = scripts / "replay.py"
+            replay.write_text(
+                'rpc("anvil_setBlockTimestampInterval", [1])\n'
+                'rpc("anvil_removeBlockTimestampInterval", [])\n',
+                encoding="utf-8",
+            )
+            result = godmode.inspect_reproduction_command(
+                root, [sys.executable, "scripts/replay.py"]
+            )
+            self.assertTrue(result["blocked"])
+            self.assertIn(
+                "rpc_time_override",
+                {item["kind"] for item in result["state_fabrication_calls"]},
+            )
+
     def test_reprove_blocks_state_override_in_replay_script_before_rpc_or_execution(self):
         from unittest.mock import patch
 

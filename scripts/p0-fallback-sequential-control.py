@@ -91,6 +91,10 @@ def prepare(target: str, attacker: str, amount: str) -> None:
     calldata = encoded.stdout.strip()
     if not re.fullmatch(r"0x[0-9a-fA-F]+", calldata):
         raise RuntimeError(f"cast returned invalid setup calldata: {calldata!r}")
+
+    # Setup uses an ordinary owner transaction only. The outer P0 fixture
+    # configures Anvil's fixed block-timestamp interval once before either
+    # matched scenario; this preparation command never overrides EVM time.
     tx_hash, receipt = send_and_wait(owner, target, calldata)
     if str(receipt.get("status") or "").lower() not in {"0x1", "1"}:
         raise RuntimeError(f"Owner-only scenario preparation reverted: {tx_hash}")
