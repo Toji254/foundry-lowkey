@@ -144,7 +144,7 @@ class SourceAstTests(unittest.TestCase):
                     "name": "_debit",
                     "visibility": "internal",
                     "virtual": False,
-                    "src": self._src(source, "function _debit() internal {}", debit_start + 1),
+                    "src": self._src(source, "function _debit() internal {}", debit_start),
                     "body": {"id": 40, "nodeType": "Block", "statements": [], "src": self._src(source, "{}")},
                 },
             ],
@@ -162,7 +162,7 @@ class SourceAstTests(unittest.TestCase):
                 "name": "_debit",
                 "visibility": "internal",
                 "virtual": False,
-                "src": self._src(source, "function _debit() internal {}",),
+                "src": self._src(source, "function _debit() internal {}", other_debit_start),
                 "body": {"id": 41, "nodeType": "Block", "statements": [], "src": self._src(source, "{}")},
             }],
         }

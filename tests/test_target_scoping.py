@@ -475,6 +475,7 @@ class TargetScopingTests(unittest.TestCase):
             with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
                  patch.object(lk, "_project_target_entries", return_value=entries), \
                  patch.object(lk, "_target_entry_is_protocol", return_value=True), \
+                 patch.object(lk, "_live_target_state", return_value={"status": "RPC_UNAVAILABLE"}), \
                  patch.object(lk, "save_config"), \
                  patch.object(lk.audit_context, "set_target"):
                 code = lk.dispatch_command("target", ["2"], config)

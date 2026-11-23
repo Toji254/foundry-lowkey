@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import pathlib
 import sys
 import tempfile
@@ -13,7 +14,7 @@ if str(LOWKEY) not in sys.path:
     sys.path.insert(0, str(LOWKEY))
 
 from source_index import build_source_index
-from source_link import render_link, run_flow
+from source_link import main, render_link, run_flow
 
 
 class SourceLinkTests(unittest.TestCase):
@@ -76,12 +77,16 @@ class SourceLinkTests(unittest.TestCase):
             contract Graph is BaseLink {
                 using LinkLib for uint256;
                 using ImportedMath for uint256;
+                struct Position { address owner; uint256 collateral; uint256 debt; }
                 mapping(address => uint256) public balances;
+                mapping(address => mapping(uint256 => Position)) public positions;
                 event Paid(address indexed user, uint256 amount);
                 function deposit() external payable {
                     balances[msg.sender] += msg.value;
                 }
                 function baseAction() public override {}
+                function setPosition(uint256 id) external { positions[msg.sender][id].debt = 1; }
+                function getPosition(uint256 id) external view returns (uint256) { return positions[msg.sender][id].debt; }
                 function thirdPartyUse(uint256 value) external pure returns (uint256) {
                     return value.plus(1);
                 }
@@ -134,6 +139,56 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("ASSET FLOW / CAPABILITY", text)
         self.assertIn("ORIGIN    FIRST-PARTY", text)
 
+    def test_bare_link_lists_available_contracts_and_how_to_explore_them(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "--root", str(root)])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("AVAILABLE CONTRACTS", rendered)
+        self.assertIn("Graph (contract)", rendered)
+        self.assertIn("BaseLink (abstract contract)", rendered)
+        self.assertIn("ImportedMath (library)", rendered)
+        self.assertIn("src/Graph.sol:", rendered)
+        self.assertIn("EXPLORE", rendered)
+        self.assertIn("lk link ContractName.mappingName", rendered)
+        self.assertNotIn("relationships=", rendered)
+        self.assertLess(len(rendered.splitlines()), 45)
+
+    def test_bare_link_supports_json_project_index(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "--root", str(root), "--json"])
+        finally:
+            temporary.cleanup()
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(status, 0)
+        self.assertGreater(payload["total_contracts"], 0)
+        self.assertTrue(any(item["name"] == "Graph" for item in payload["contracts"]))
+
+    def test_trace_source_alias_renders_a_function_call_tree(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main([
+                    "trace", "source", "Graph.withdraw(uint256)",
+                    "--root", str(root),
+                ])
+        finally:
+            temporary.cleanup()
+        self.assertEqual(status, 0)
+        self.assertIn("CALL CHAIN", output.getvalue())
+        self.assertIn("Graph._debit(address,uint256)", output.getvalue())
+
     def test_mapping_link_includes_key_path_and_accessors(self):
         temporary, root = self.fixture()
         try:
@@ -145,16 +200,38 @@ class SourceLinkTests(unittest.TestCase):
             temporary.cleanup()
         text = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("MAPPING KEYS", text)
+        self.assertIn("KEY TYPES", text)
         self.assertIn("address", text)
-        self.assertIn("MAPPING VALUE TYPE", text)
+        self.assertIn("KEY EXAMPLES", text)
         self.assertIn("READ BY", text)
         self.assertIn("WRITTEN BY", text)
         self.assertIn("balances[msg.sender]", text)
         self.assertIn("balances[user]", text)
-        self.assertIn("indexes=mapping[address]", text)
-        self.assertIn("mapping-depth=1", text)
-        self.assertIn("value-type=uint256", text)
+        self.assertNotIn("indexes=", text)
+        self.assertNotIn("mapping-depth=", text)
+
+    def test_nested_mapping_view_shows_key_path_readers_writers_and_struct_fields(self):
+        temporary, root = self.fixture()
+        try:
+            index = self._index(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = render_link(index, "Graph.positions")
+        finally:
+            temporary.cleanup()
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("mapping(address => mapping(uint256 => Position))", rendered)
+        self.assertIn("KEY TYPES", rendered)
+        self.assertIn("address -> uint256", rendered)
+        self.assertIn("positions[msg.sender][id].debt", rendered)
+        self.assertIn("READ BY", rendered)
+        self.assertIn("getPosition(uint256)", rendered)
+        self.assertIn("WRITTEN BY", rendered)
+        self.assertIn("setPosition(uint256)", rendered)
+        self.assertIn("STRUCT: Position", rendered)
+        self.assertIn("collateral", rendered)
+        self.assertIn("debt", rendered)
 
     def test_contract_link_shows_importable_overview(self):
         temporary, root = self.fixture()
@@ -169,11 +246,11 @@ class SourceLinkTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("FUNCTIONS", text)
         self.assertIn("STORAGE", text)
-        self.assertIn("INTERNAL CALLS", text)
-        self.assertIn("persistent=", text)
-        self.assertIn("transient=", text)
-        self.assertIn("ambiguous=", text)
-        self.assertIn("unresolved=", text)
+        self.assertIn("INHERITANCE", text)
+        self.assertIn("IMPORTS", text)
+        self.assertNotIn("INTERNAL CALLS", text)
+        self.assertNotIn("relationships=", text)
+        self.assertLess(len(text.splitlines()), 65)
 
     def test_derived_contract_overview_includes_base_initializers_and_constructor_writes(self):
         temporary, root = self.fixture()
@@ -181,7 +258,7 @@ class SourceLinkTests(unittest.TestCase):
             index = self._index(root)
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                status = render_link(index, "Graph")
+                status = render_link(index, "Graph", only="writes")
         finally:
             temporary.cleanup()
 
@@ -225,7 +302,7 @@ class SourceLinkTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         rendered = output.getvalue()
-        self.assertIn("ORIGIN    THIRD-PARTY", rendered)
+        self.assertIn("ORIGIN:   THIRD-PARTY", rendered)
         self.assertIn("USED BY", rendered)
         self.assertIn("Graph (contract)", rendered)
         imported_function = next(
