@@ -6,6 +6,7 @@ import argparse
 import json
 import shlex
 import sys
+import textwrap
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -840,6 +841,20 @@ def _render_grouped_effects(
     return len(groups)
 
 
+def _print_wrapped_field(label: str, value: str, *, width: int = 96) -> None:
+    prefix = f"{label:<10}"
+    wrapped = textwrap.wrap(
+        value,
+        width=max(40, width),
+        initial_indent=prefix,
+        subsequent_indent=" " * len(prefix),
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    for line in wrapped or [prefix.rstrip()]:
+        print(line)
+
+
 def _render_function_header(
     selected: dict[str, Any],
     index: dict[str, Any],
@@ -847,14 +862,20 @@ def _render_function_header(
     detail: str,
 ) -> None:
     print("LOWKEY // SOURCE TRACE" if detail == "summary" else "LOWKEY // SOURCE LINK")
-    print(f"FUNCTION  {_symbol_label(selected)}")
+    contract = str(selected.get("contract") or "")
+    name = str(selected.get("name") or "unknown")
+    function_name = f"{contract}.{name}" if contract else name
+    _print_wrapped_field("FUNCTION", function_name)
+    signature = str(selected.get("signature") or "")
+    if signature:
+        _print_wrapped_field("SIGNATURE", signature.replace(",", ", "))
     print(f"SOURCE    {_location(selected)}")
     if selected.get("provenance"):
         print(f"ORIGIN    {str(selected['provenance']).upper()}")
     visibility = selected.get("visibility") or "unknown"
     mutability = selected.get("mutability") or "unknown"
     print(f"ENTRY     {visibility} · {mutability}")
-    print(f"ANALYSIS  {_analysis_basis(index)}")
+    _print_wrapped_field("ANALYSIS", _analysis_basis(index))
     print()
 
 
@@ -1105,10 +1126,8 @@ def _render_function_view(
             _render_asset_flows(asset_values, limit=3)
         print("NEXT")
         label = _symbol_label(selected)
-        print(f"  lk link '{label}' --detail calls")
-        print(f"  lk link '{label}' --detail storage")
-        print(f"  lk link '{label}' --detail external")
-        print(f"  lk link '{label}' --detail all")
+        for view in ("calls", "storage", "external", "all"):
+            _print_wrapped_field("  lk", f"link '{label}' --detail {view}")
         print()
         print("EVIDENCE  Static source relationships only; this does not prove execution or success.")
         if _depth_has_more_calls(selected, index.get("edges") or [], depth):
@@ -1180,6 +1199,9 @@ def render_link(index: dict[str, Any], target: str, *, only: str | None = None, 
         return 2
 
     selected = candidates[0]
+    if only is not None and selected.get("kind") in {"function", "modifier"}:
+        print("OPTION ERROR: --only filters contract relationships; use --detail for function views.")
+        return 2
     if detail != "summary" and selected.get("kind") not in {"function", "modifier"}:
         print("DETAIL OPTION: --detail applies to function or modifier targets; use --only for contract views.")
         return 2
