@@ -262,6 +262,21 @@ for arg in "$@"; do
     esac
 done
 
+# A Hardhat test may be the first project command. Prepare its declared local
+# dependencies before handing execution back to the existing native LK router.
+# Exit 3 means "not a Hardhat project" and preserves the old routing unchanged.
+if [[ "${1:-}" == "test" ]]; then
+    if python3 "$HOME/.lowkey/hardhat_tools.py" prepare; then
+        exec python3 "$HOME/.lowkey/lk.py" "$@"
+    else
+        status=$?
+        if [[ "$status" -ne 3 ]]; then
+            exit "$status"
+        fi
+    fi
+    exec python3 "$HOME/.lowkey/lk.py" "$@"
+fi
+
 if [[ "${1:-}" == "forge" ]]; then
     shift
     exec python3 "$HOME/.lowkey/command_wrapper.py" "forge" -- python3 "$HOME/.lowkey/forge_tools.py" "$@"
