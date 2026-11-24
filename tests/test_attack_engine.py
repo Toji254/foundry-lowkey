@@ -377,9 +377,10 @@ class AttackEngineTests(unittest.TestCase):
         payload = json.loads(path.read_text(encoding="utf-8"))
         payload.update({
             "net_profit_wei": None,
-            "net_profit_usd_18": 1,
+            "net_profit_usd_18": 5,
             "net_profit_unit": "USD_18",
-            "net_profit_value": 1,
+            "net_profit_value": 5,
+            "gross_balance_delta_wei": 0,
             "gas_cost_in_portfolio_delta": True,
             "source_fork_verification": {
                 **payload["source_fork_verification"],
@@ -390,15 +391,15 @@ class AttackEngineTests(unittest.TestCase):
                 "quote_currency": "USD",
                 "source_state_verified": False,
                 "native_price": {"price_usd_18": 10**18},
-                "tokens": [{"value_delta_usd_18": 2}],
-                "token_value_delta_usd_18": 2,
+                "tokens": [{"value_delta_usd_18": 10}],
+                "token_value_delta_usd_18": 10,
             },
             "economic_valuation": {
                 "native_delta_usd_18": 0,
-                "token_delta_usd_18": 2,
+                "token_delta_usd_18": 10,
                 "external_gas_cost_usd_18": 0,
-                "prior_cost_usd_18": 1,
-                "net_profit_usd_18": 1,
+                "prior_cost_usd_18": 5,
+                "net_profit_usd_18": 5,
                 "native_gross_delta_wei": 0,
                 "actual_transaction_gas_cost_wei": 5,
                 "gas_cost_in_portfolio_delta": True,
