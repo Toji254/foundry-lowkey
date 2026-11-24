@@ -126,7 +126,7 @@ class HardhatCleanTests(unittest.TestCase):
                 return_value=(root, {"root": str(root), "backend": "hardhat"}),
             ), patch.object(hardhat_tools.bootstrap, "_is_hardhat_scope", return_value=True), \
                  patch.object(hardhat_tools, "_local_hardhat", return_value=binary), \
-                 patch.object(hardhat_tools, "_node_context", return_value=(env, None)), \
+                 patch.object(hardhat_tools, "_execution_environment", return_value=(env, None)), \
                  patch.object(hardhat_tools, "_run", return_value=0) as runner:
                 self.assertEqual(hardhat_tools.run_clean(["--help"]), 0)
             runner.assert_called_once_with([str(binary), "clean", "--help"], root, env)
