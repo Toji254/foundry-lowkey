@@ -400,7 +400,9 @@ def _ensure_hardhat_binary(
         "An existing lockfile is honored; without one, the package manager "
         "will resolve package.json ranges and create the initial lockfile."
     )
-    code = project_detection.bootstrap_project(info, reason=reason)
+    code = project_detection.bootstrap_project(
+        info, reason=reason, safe_node_install=True
+    )
     if code != 0:
         return root, info, None, code
 
