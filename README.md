@@ -116,7 +116,14 @@ lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 
 lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --prior-cost-wei 1000000000000000
 ~~~
 
+# Optional: include explicitly declared ERC20/ERC4626 balances in USD 1e-18
+lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --source-rpc-url "$SOURCE_ARCHIVE_RPC_URL" --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --prior-cost-wei 1000000000000000 --portfolio-manifest .audit/portfolio.json
+~~~
+
+
 lk reprove --prior-cost-wei subtracts measured setup expenditure in addition to replay gas. Its default is zero; do not leave it at zero when deployment, funding, or other attack setup costs were incurred. lk control --validate is read-only and does not execute either scenario. lk steps currently executes a generic sequence for its 15 registered labels; it does not implement 15 separate protocol-specific generators. Generic flash_borrow and reenter callback Steps remain fail-closed with backend_unsupported.
+
+Token-denominated accounting is opt-in. The project-relative manifest must list every ERC20/ERC4626 asset, its underlying asset where relevant, and auditor-selected Chainlink USD feeds. Freshness and pinned pre-attack rounds are checked; missing/stale data or source mismatches refuse valuation. Without an independent `--source-rpc-url`, the report remains local-only and cannot become deployment `PROFITABLE`. See [docs/token-portfolio-economics.md](docs/token-portfolio-economics.md) for schema, measurement policy and limits.
 
 lk godmode is an orchestrator, not an automatic vulnerability verdict. It reports skipped, blocked, and review-required stages explicitly. A fixture-level local proof remains fixture evidence; it is not proof against an authenticated production deployment.
 
