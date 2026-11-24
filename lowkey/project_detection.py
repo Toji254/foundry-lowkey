@@ -1204,6 +1204,7 @@ def bootstrap_project(
     force: bool = False,
     reason: str = "prepare",
     required_paths: Sequence[str] = (),
+    safe_node_install: bool = False,
 ) -> int:
     """Prepare the selected project through Lowkey's shared bootstrap engine."""
     if run_shared_bootstrap is None:
@@ -1223,8 +1224,12 @@ def bootstrap_project(
             reason=reason,
             timeout=timeout,
             required_paths=required_paths,
+            safe_node_install=safe_node_install,
         )
-    return run_shared_bootstrap(info, force=force, reason=reason, timeout=timeout)
+    return run_shared_bootstrap(
+        info, force=force, reason=reason, timeout=timeout,
+        safe_node_install=safe_node_install,
+    )
 
 
 def bootstrap_status(info: dict[str, Any]) -> dict[str, Any]:
