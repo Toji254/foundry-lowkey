@@ -331,10 +331,13 @@ class HardhatHelpTests(unittest.TestCase):
         )
 
     def test_hardhat_prepare_rejects_unknown_options(self):
-        with patch.object(hardhat_tools, "_selected_project") as selected:
-            code, output = self.capture(hardhat_tools.run_prepare, ["--unknown"])
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error), patch.object(
+            hardhat_tools, "_selected_project"
+        ) as selected:
+            code = hardhat_tools.run_prepare(["--unknown"])
         self.assertEqual(code, 2)
-        self.assertIn("does not accept command-specific options", output)
+        self.assertIn("does not accept command-specific options", error.getvalue())
         selected.assert_not_called()
 
     def test_hardhat_prepare_help_explains_lockfile_behavior(self):
