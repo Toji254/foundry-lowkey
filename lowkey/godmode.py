@@ -1217,6 +1217,7 @@ GODMODE_HELP_GUIDES = {
             "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222",
             "Use --tx-hash <hash> to inspect an already-mined transaction instead of passing --argv-json.",
             "Repeat --profit-address for every relevant portfolio account (attacker, gas payer, payout recipient).",
+            "Add --portfolio-manifest .audit/portfolio.json to value explicitly declared ERC20/ERC4626 assets with pinned USD feeds.",
             "Use --non-economic with --semantic-check-argv-json and --semantic-test when the invariant is not profit-based."
         ],
         "arguments": [
@@ -1231,6 +1232,7 @@ GODMODE_HELP_GUIDES = {
             "--tx-hash HASH — inspect a mined tx instead of executing --argv-json.",
             "--prior-cost-wei N — verified prior setup/deployment/funding cost in wei; default: 0.",
             "--source-rpc-url URL — independent read-only archive RPC for source-anchor/funding checks.",
+            "--portfolio-manifest FILE — optional project-relative schema-1 JSON declaration of ERC20/ERC4626 assets, native/USD feed, token/USD feeds and freshness limits.",
             "--prestate-slot ADDRESS:SLOT — repeat to include extra storage slots in source/fork comparisons.",
             "--argv-json JSON — JSON string array for the replay command; never shell-evaluated.",
             "--support-file FILE — repeat for imported support files.",
@@ -1244,12 +1246,14 @@ GODMODE_HELP_GUIDES = {
             "Start with a reproducible harness and pinned fork block.",
             "Run against local Anvil using verified target and profit addresses.",
             "Supply prior costs when they exist; otherwise reported net profit may subtract replay gas only.",
+            "When using --portfolio-manifest, declare every measured asset and a defensible USD feed; ERC4626 shares are priced through the declared underlying asset.",
+            "Use --source-rpc-url for independently verified asset/feed prestate; without it the result remains local-only.",
             "Inspect source identity, prestate, trace, storage evidence and semantic/economic policy before promotion."
         ],
         "output": [
             "JSON replay evidence at .audit/godmode/reprove.json and stdout."
         ],
-        "limits": "A local fixture is not production deployment proof. The workflow rejects direct state/balance/code/time overrides and caller impersonation as fork-reproduction setup. Include all relevant accounts and costs.",
+        "limits": "A local fixture is not production deployment proof. Portfolio valuation is opt-in, limited to explicitly declared ERC20/ERC4626 assets, and depends on auditor-selected USD feeds; no automatic asset discovery, liquidity or off-chain liability inference is claimed. Source-verified profitability requires an independent source RPC that confirms every declared asset, feed and prestate read. The workflow rejects direct state/balance/code/time overrides and caller impersonation as fork-reproduction setup.",
         "related": [
             "lk control --h",
             "lk fidelity --h",
