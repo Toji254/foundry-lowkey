@@ -1880,7 +1880,8 @@ def run_bootstrap(
         # Refresh dependency discovery even after a partial failure so remaining
         # non-submodule bootstrap work can still be planned from current state.
         plan = bootstrap_plan(
-            info, root, force=force, reason=reason, required_paths=required_paths
+            info, root, force=force, reason=reason, required_paths=required_paths,
+            safe_node_install=safe_node_install,
         )
         if stage_failed:
             break
