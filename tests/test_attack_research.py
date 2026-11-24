@@ -142,15 +142,20 @@ class AttackResearchTests(unittest.TestCase):
 
 
     def test_source_redaction_failure_refuses_instead_of_sending_raw_source(self):
-        with patch(
-            "lowkey.ai_harness._redact_sensitive_source",
-            side_effect=RuntimeError("redactor unavailable"),
-        ):
-            with self.assertRaisesRegex(
-                attack_research.AttackResearchError,
-                "Sensitive-source redaction failed",
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "src" / "Vault.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(SOURCE, encoding="utf-8")
+            with patch(
+                "lowkey.ai_harness._redact_sensitive_source",
+                side_effect=RuntimeError("redactor unavailable"),
             ):
-                attack_research._collect_sources(self.root)
+                with self.assertRaisesRegex(
+                    attack_research.AttackResearchError,
+                    "Sensitive-source redaction failed",
+                ):
+                    attack_research._collect_sources(root)
 
 
 if __name__ == "__main__":
