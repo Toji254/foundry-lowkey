@@ -239,7 +239,7 @@ GODMODE_HELP_GUIDES = {
             ".audit/godmode/provenance.json — hash of the saved report and run context.",
             "lk report — creates .audit/godmode/report.md, the readable version."
         ],
-        "limits": "Source matches and AI-generated hypotheses are investigation leads, not confirmed vulnerabilities. --multi-agent is source-only and does not execute target code or contact RPC; it sends redacted source excerpts to the configured provider, and candidates still require native proof plus human disposition. coverage_complete applies only to recorded in-scope units and is not a security clearance. Active attack execution remains opt-in and local-Anvil-only.",
+        "limits": "Source matches and AI-generated hypotheses are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED is the normal report status until all proof gates are complete; it does not mean the command crashed. --multi-agent is source-only and does not execute target code or contact RPC; it sends redacted source excerpts to the configured provider, and candidates still require native proof plus human disposition. coverage_complete applies only to recorded in-scope units and is not a security clearance. Active attack execution remains opt-in and local-Anvil-only.",
         "related": [
             "lk targets",
             "lk break --h",
