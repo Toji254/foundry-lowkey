@@ -29,9 +29,12 @@ Anvil's nested callTracer adapter derives this field using EVM message-sender se
 
 ## Storage evidence levels
 
-- exact: Forge Vm.AccountAccess.storageAccesses observations associated with an ordered account-access context.
-- partial: Anvil prestateTracer transaction-level changed slots. Lowkey attaches those observations only to the root event; it does not guess which nested frame touched a slot.
+- exact (Forge): Vm.AccountAccess.storageAccesses observations associated with an ordered account-access context.
+- exact (Anvil): opcode-level SLOAD/SSTORE accesses from structLogs, attributed to callTracer frames by call type, target and depth. CALL/STATICCALL use the callee storage context; DELEGATECALL/CALLCODE retain the caller storage context. Exactness is refused if a storage opcode has an invalid stack slot or cannot be mapped to a call frame.
+- partial: Anvil prestateTracer transaction-level changed slots. Lowkey attaches those observations only to the root event; it does not guess which nested frame touched a slot. Read-only accesses are absent from this backend.
 - declared_only: no measured storage trace is available. Manifest-declared slots do not become trace-derived observations.
+
+Anvil structLogs records exact access identity and ordering, but some clients do not expose the previous value for SSTORE or the post-SLOAD stack result in every trace shape. Such values remain null. `lk trace-parity` separately reports `exact_comparable`, `accesses_matched_values_incomplete`, `mismatch`, or `degraded`; it never fills missing values or treats them as zero.
 
 A trace can have exact call-tree parity while storage parity remains degraded. The two results are reported separately.
 
@@ -44,7 +47,7 @@ lk trace-parity .audit/forge-control.json .audit/anvil-control.json \\
   --root . --forge-scenario attack --anvil-scenario attack
 \`\`\`
 
-The command writes .audit/godmode/trace-parity.json by default and returns:
+The command writes .audit/godmode/trace-parity.json by default. When both artifacts contain exact per-frame storage support, it compares access counts, account, slot, read/write kind, and every value exposed by both backends. It returns:
 
 - MATCHED: all compared call-tree/calldata fields were present and equal.
 - MISMATCH: at least one field or event count differed.

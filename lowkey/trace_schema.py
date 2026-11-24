@@ -139,7 +139,7 @@ def build_trace_event(
     if not isinstance(backend, str) or not backend.strip():
         raise ValueError("TraceEvent backend is required.")
     backend = backend.strip().lower()
-    if backend not in {"anvil-calltracer", "anvil-prestate-diff", "forge-state-diff"}:
+    if backend not in {"anvil-calltracer", "anvil-structlog", "anvil-prestate-diff", "forge-state-diff"}:
         raise ValueError(f"Unsupported TraceEvent backend '{backend}'.")
     if storage_support not in STORAGE_SUPPORT:
         raise ValueError("TraceEvent storage_support must be exact, partial or declared_only.")
@@ -321,11 +321,12 @@ def normalize_calltracer(
     *,
     storage_support: str = "declared_only",
     partial_storage: Mapping[int, list[dict[str, Any]]] | None = None,
+    per_access_storage: Mapping[int, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Normalize flattened callTracer rows, optionally attaching transaction-level partial storage.
+    """Normalize callTracer rows with optional partial or exact opcode storage.
 
-    prestateTracer has no call-frame attribution. A slot may be attached only
-    to the root transaction event and is explicitly marked partial.
+    prestateTracer changes remain root-level partial evidence. Per-access
+    storage is exact only when supplied by the fail-closed structLogs adapter.
     """
     if isinstance(calls, Mapping):
         calls = flatten_calltracer(calls)
@@ -335,16 +336,18 @@ def normalize_calltracer(
         raise ValueError("callTracer storage_support must be declared_only or partial.")
     rows = []
     partial_storage = partial_storage or {}
+    per_access_storage = per_access_storage or {}
     for index, call in enumerate(calls):
         if not isinstance(call, Mapping):
             raise ValueError(f"callTracer event #{index} must be an object.")
         error = call.get("error")
+        has_exact_observation = index in per_access_storage
         has_partial_observation = storage_support == "partial" and index in partial_storage
-        event_support = "partial" if has_partial_observation else "declared_only"
-        event_storage = partial_storage[index] if has_partial_observation else None
+        event_support = "exact" if has_exact_observation else ("partial" if has_partial_observation else "declared_only")
+        event_storage = per_access_storage[index] if has_exact_observation else (partial_storage[index] if has_partial_observation else None)
         rows.append(build_trace_event(
             seq=index,
-            backend="anvil-calltracer",
+            backend="anvil-structlog" if has_exact_observation else "anvil-calltracer",
             kind=call.get("type"),
             accessor=call.get("accessor", call.get("from")),
             account=call.get("to") or call.get("created_address") or call.get("createdAddress"),

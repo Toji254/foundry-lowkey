@@ -31,10 +31,15 @@ def _validate_events(
         missing = [field for field in TRACE_FIELDS if field not in event]
         if missing:
             raise ValueError(f"{label} trace event #{index} is missing canonical fields: {', '.join(missing)}")
-        if event.get("backend") != expected_backend:
+        backend = event.get("backend")
+        backend_ok = (
+            backend in {"anvil-calltracer", "anvil-structlog"}
+            if expected_backend == "anvil" else backend == expected_backend
+        )
+        if not backend_ok:
             raise ValueError(
                 f"{label} trace event #{index} must come from {expected_backend}; "
-                f"received {event.get('backend')!r}."
+                f"received {backend!r}."
             )
         normalized.append(build_trace_event(
             seq=event["seq"],
@@ -63,7 +68,7 @@ def compare_trace_events(
     surfaced as a degradation, not silently treated as a full parity match.
     """
     forge = _validate_events(forge_events, "Forge", "forge-state-diff")
-    anvil = _validate_events(anvil_events, "Anvil", "anvil-calltracer")
+    anvil = _validate_events(anvil_events, "Anvil", "anvil")
     mismatches: list[dict[str, Any]] = []
     unknowns: list[dict[str, Any]] = []
     if not forge or not anvil:
@@ -106,15 +111,58 @@ def compare_trace_events(
                     "anvil": b,
                 })
 
+    storage_mismatches: list[dict[str, Any]] = []
+    storage_values_incomplete = False
+    exact_storage_pairs = 0
+    for index in range(min(len(forge), len(anvil))):
+        left, right = forge[index], anvil[index]
+        if left["storage_support"] != "exact" or right["storage_support"] != "exact":
+            continue
+        exact_storage_pairs += 1
+        left_rows, right_rows = left["storage"] or [], right["storage"] or []
+        if len(left_rows) != len(right_rows):
+            storage_mismatches.append({
+                "seq": index,
+                "dimension": "storage_access_count",
+                "forge": len(left_rows),
+                "anvil": len(right_rows),
+            })
+            continue
+        for access_index, (a, b) in enumerate(zip(left_rows, right_rows)):
+            for field in ("account", "slot", "is_write"):
+                if a.get(field) != b.get(field):
+                    storage_mismatches.append({
+                        "seq": index,
+                        "access": access_index,
+                        "dimension": field,
+                        "forge": a.get(field),
+                        "anvil": b.get(field),
+                    })
+            for field in ("previous_value", "new_value"):
+                av, bv = a.get(field), b.get(field)
+                if av is None or bv is None:
+                    storage_values_incomplete = True
+                elif av != bv:
+                    storage_mismatches.append({
+                        "seq": index,
+                        "access": access_index,
+                        "dimension": field,
+                        "forge": av,
+                        "anvil": bv,
+                    })
+
     forge_support = sorted({event["storage_support"] for event in forge})
     anvil_support = sorted({event["storage_support"] for event in anvil})
     forge_exact = bool(forge) and all(x == "exact" for x in forge_support)
     anvil_exact = bool(anvil) and all(x == "exact" for x in anvil_support)
-    storage_parity = "exact_comparable" if forge_exact and anvil_exact else (
-        "degraded" if forge_support != anvil_support or not anvil_exact else "comparable"
-    )
+    if storage_mismatches:
+        storage_parity = "mismatch"
+    elif forge_exact and anvil_exact and exact_storage_pairs:
+        storage_parity = "accesses_matched_values_incomplete" if storage_values_incomplete else "exact_comparable"
+    else:
+        storage_parity = "degraded" if forge_support != anvil_support or not anvil_exact else "comparable"
 
-    status = "MISMATCH" if mismatches else ("INCOMPLETE" if unknowns else "MATCHED")
+    status = "MISMATCH" if mismatches or storage_mismatches else ("INCOMPLETE" if unknowns else "MATCHED")
     return {
         "schema_version": TRACE_SCHEMA_VERSION,
         "status": status,
@@ -124,6 +172,9 @@ def compare_trace_events(
         "anvil_event_count": len(anvil),
         "compared_fields": list(_COMPARE_FIELDS),
         "mismatches": mismatches,
+        "storage_mismatches": storage_mismatches,
+        "storage_exact_event_pairs": exact_storage_pairs,
+        "storage_values_incomplete": storage_values_incomplete,
         "unknowns": unknowns,
         "storage_parity": storage_parity,
         "storage_support": {
@@ -132,7 +183,7 @@ def compare_trace_events(
         },
         "limitations": [
             "Forge state-diff provides ordered per-access storage observations.",
-            "Anvil prestateTracer provides transaction-level changed slots and cannot attribute them to individual call frames.",
+            "Anvil prestateTracer provides transaction-level changed slots; Anvil structLogs can provide per-frame SLOAD/SSTORE slot accesses when frame alignment is complete.",
             "A MATCHED call-tree result does not upgrade partial or declared-only storage evidence.",
         ],
     }
