@@ -7509,8 +7509,6 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
         else:
             print("  Function: raw contract call (no matching ABI function)")
     print(f"  ETH attached: {attached_value}")
-    _print_transaction_gas_context(gas_context)
-
     if rows:
         print("")
         print("FUNCTION INPUTS")
@@ -7544,6 +7542,7 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
         calldata=encoded,
         calldata_resolved=bool(signature and len(rows) == len(function_item.get("inputs") or [])),
     )
+    _print_transaction_gas_context(gas_context)
 
     if encoded and len(encoded) >= 10:
         byte_length = max(0, (len(encoded) - 2) // 2)
@@ -7564,6 +7563,7 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
     print("IMPORTANT")
     print("  Preview prepares the call only. It does not execute or simulate the contract.")
     print("  We cannot know whether the contract accepts it until we run it and inspect the result.")
+
 
 
 
