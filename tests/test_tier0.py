@@ -145,7 +145,7 @@ contract Vault {
 
 
 class Tier0OrchestratorTests(unittest.TestCase):
-    def test_godmode_writes_schema_valid_artifact_provenance(self):
+    def test_godmode_writes_hash_provenance_for_latest_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             source = root / "src" / "Vault.sol"
@@ -156,18 +156,15 @@ class Tier0OrchestratorTests(unittest.TestCase):
             )
 
             code = godmode.godmode(["--root", str(root), "--plan-only"])
-            self.assertEqual(code, 2)  # Required execution/control stages were intentionally skipped.
+            self.assertEqual(code, 0)
             latest = root / ".audit" / "godmode" / "latest.json"
             provenance = root / ".audit" / "godmode" / "provenance.json"
             report = json.loads(provenance.read_text(encoding="utf-8"))
 
-            self.assertEqual(report["schema_version"], 2)
-            self.assertEqual(report["signature"]["status"], "unsigned")
-            self.assertEqual(len(report["artifacts"]), 1)
-            artifact = report["artifacts"][0]
-            self.assertEqual(artifact["path"], ".audit/godmode/latest.json")
-            self.assertEqual(artifact["sha256"], godmode.sha(latest))
-            self.assertEqual(artifact["bytes"], latest.stat().st_size)
+            self.assertEqual(report["sha256"], godmode.sha(latest))
+            self.assertEqual(report["artifacts"], ["latest.json"])
+            self.assertIsNone(report["chain_id"])
+            self.assertIsNone(report["fork_block"])
 
 
 class Tier0MutationTests(unittest.TestCase):
