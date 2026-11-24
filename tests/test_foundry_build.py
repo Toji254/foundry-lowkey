@@ -115,11 +115,11 @@ class FoundryBuildPlannerTests(unittest.TestCase):
     def test_hardhat_first_test_command_prepares_missing_local_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "hardhat.config.js", "module.exports = {};\\n")
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
             self.write(
                 root,
                 "package.json",
-                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\\n',
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
             )
             info = {
                 "root": str(root),
@@ -146,11 +146,11 @@ class FoundryBuildPlannerTests(unittest.TestCase):
     def test_hardhat_prepare_skips_install_when_local_binary_already_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "hardhat.config.js", "module.exports = {};\\n")
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
             self.write(
                 root,
                 "package.json",
-                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\\n',
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
             )
             info = {
                 "root": str(root),
