@@ -1026,9 +1026,28 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Send the function as a transaction using the current actor.", output)
         self.assertIn("A target must already be selected.", output)
         self.assertIn("Transactions use the current actor.", output)
-        self.assertIn("lk actor 0 Alice", output)
+        self.assertIn("lk actor 1 Alice", output)
         self.assertIn("Wizard does not have an ETH-value flag.", output)
         self.assertIn("lk send", output)
+
+
+    def test_actor_help_uses_valid_account_example_and_explains_reset_modes(self):
+        code, output = self.capture_dispatch("actor", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk actor 1 Alice", output)
+        self.assertNotIn("lk actor 0 Alice", output)
+        self.assertIn("lk actor reset 2", output)
+        self.assertIn("internal lab-deployer", output.lower())
+
+    def test_root_help_explains_actor_reset_and_reserved_account_zero(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        self.assertIn("lk actor reset [1|2]", rendered)
+        self.assertIn("account 0 is reserved", rendered)
+        self.assertIn("lk actor 1 Alice", rendered)
+        self.assertNotIn("lk actor 0 Alice", rendered)
 
     def test_leaf_help_has_parent_navigation(self):
         code, output = self.capture_dispatch("generate", "test", "--h")
