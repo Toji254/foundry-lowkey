@@ -50,8 +50,10 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "experience_memory.py").exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "trace_evidence.py").exists())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "attack_engine.py").exists())
+            token_economics = pathlib.Path(home) / ".lowkey" / "token_economics.py"
+            self.assertTrue(token_economics.exists())
             trace_import = subprocess.run(
-                ["python3", "-c", "import forge_state_diff, godmode, attack_engine; print('TRACE_IMPORT_OK')"],
+                ["python3", "-c", "import forge_state_diff, godmode, attack_engine, token_economics; print('TRACE_IMPORT_OK')"],
                 cwd=ROOT,
                 env={**env, "PYTHONPATH": str(pathlib.Path(home) / ".lowkey")},
                 capture_output=True,
@@ -59,6 +61,13 @@ class InstallSmokeTests(unittest.TestCase):
             )
             self.assertEqual(trace_import.returncode, 0, trace_import.stdout + trace_import.stderr)
             self.assertIn("TRACE_IMPORT_OK", trace_import.stdout)
+
+            reprove_help = subprocess.run(
+                [str(installed_lk), "reprove", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(reprove_help.returncode, 0, reprove_help.stdout + reprove_help.stderr)
+            self.assertIn("--portfolio-manifest", reprove_help.stdout)
 
             attack_inventory = subprocess.run(
                 [str(installed_lk), "attack", "engines", "--json"],
@@ -74,6 +83,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertEqual(len(pack_paths), 10)
             install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertIn(str(shared_context), install_manifest["files"])
+            self.assertIn(str(token_economics), install_manifest["files"])
             for installed_path in [archetype_dir / "__init__.py", archetype_dir / "_index.py", *pack_paths]:
                 self.assertIn(str(installed_path), install_manifest["files"])
             fixture_source = ROOT / "tests" / "fixtures" / "acceptance" / "p3-genericity" / "vault"
