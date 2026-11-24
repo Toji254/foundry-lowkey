@@ -144,27 +144,81 @@ def evaluate_evidence_requirements(
         "missing": missing,
     }
 
-def evaluate_economic_policy(family, net_profit_wei=None, *, non_economic=False, semantic_invariant_verified=False):
+def evaluate_economic_policy(
+    family, net_profit_wei=None, *, net_profit_usd_18=None,
+    non_economic=False, semantic_invariant_verified=False,
+):
+    """Require positive, typed net profit for economic families.
+
+    Native-only reproof retains its wei metric. An explicitly declared token
+    portfolio may instead supply an integer USD 1e-18 metric. Booleans are not
+    accepted as integers, and the report always names the selected unit.
+    """
     family = normalize_family(family)
     requested_non_economic = bool(non_economic or family in NON_ECONOMIC_FAMILIES)
     if requested_non_economic:
         if not semantic_invariant_verified:
-            return {"accepted": False, "economic": False, "net_profit_wei": net_profit_wei,
-                    "reason": "A non-economic result requires a separately executed, passing semantic invariant.",
-                    "promotion_cap": "SIMULATED_BREAK"}
-        return {"accepted": True, "economic": False, "net_profit_wei": net_profit_wei,
-                "reason": "Semantic impact was asserted; no profitability is claimed.",
-                "promotion_cap": "SIMULATED_BREAK"}
-    if not isinstance(net_profit_wei, int):
-        return {"accepted": False, "economic": True, "net_profit_wei": net_profit_wei,
+            return {
+                "accepted": False,
+                "economic": False,
+                "net_profit_wei": net_profit_wei,
+                "net_profit_usd_18": net_profit_usd_18,
+                "reason": "A non-economic result requires a separately executed, passing semantic invariant.",
+                "promotion_cap": "SIMULATED_BREAK",
+            }
+        return {
+            "accepted": True,
+            "economic": False,
+            "net_profit_wei": net_profit_wei,
+            "net_profit_usd_18": net_profit_usd_18,
+            "reason": "Semantic impact was asserted; no profitability is claimed.",
+            "promotion_cap": "SIMULATED_BREAK",
+        }
+
+    if net_profit_usd_18 is not None:
+        metric = net_profit_usd_18
+        unit = "USD_18"
+        if type(metric) is not int:
+            return {
+                "accepted": False,
+                "economic": True,
+                "net_profit_wei": None,
+                "net_profit_usd_18": metric,
+                "reason": "Portfolio economic proof requires an integer USD 1e-18 net-profit value.",
+                "promotion_cap": "OBSERVED",
+            }
+    else:
+        metric = net_profit_wei
+        unit = "wei"
+        if type(metric) is not int:
+            return {
+                "accepted": False,
+                "economic": True,
+                "net_profit_wei": metric,
+                "net_profit_usd_18": None,
                 "reason": "Economic attack families require a measured integer net-profit value.",
-                "promotion_cap": "OBSERVED"}
-    if net_profit_wei <= 0:
-        return {"accepted": False, "economic": True, "net_profit_wei": net_profit_wei,
-                "reason": "Net profit after measured costs must be positive for an economic proof.",
-                "promotion_cap": "OBSERVED"}
-    return {"accepted": True, "economic": True, "net_profit_wei": net_profit_wei,
-            "reason": "Measured net profit is positive.", "promotion_cap": None}
+                "promotion_cap": "OBSERVED",
+            }
+
+    if metric <= 0:
+        return {
+            "accepted": False,
+            "economic": True,
+            "net_profit_wei": net_profit_wei,
+            "net_profit_usd_18": net_profit_usd_18,
+            "net_profit_unit": unit,
+            "reason": "Net profit after measured costs must be positive for an economic proof.",
+            "promotion_cap": "OBSERVED",
+        }
+    return {
+        "accepted": True,
+        "economic": True,
+        "net_profit_wei": net_profit_wei,
+        "net_profit_usd_18": net_profit_usd_18,
+        "net_profit_unit": unit,
+        "reason": "Measured net profit is positive.",
+        "promotion_cap": None,
+    }
 
 def forge_promotion_status(proof, *, passed: bool) -> str:
     """Cap Forge structural evidence without discarding verified fork identity."""
