@@ -78,7 +78,7 @@ class BootstrapTests(unittest.TestCase):
             self.write(
                 root,
                 "package.json",
-                '{"private":true,"devDependencies":{"hardhat":"^2.6.1"}}\\n',
+                '{"private":true,"devDependencies":{"hardhat":"^2.6.1"}}\n',
             )
             info = {
                 "root": str(root),
@@ -116,9 +116,9 @@ class BootstrapTests(unittest.TestCase):
             self.write(
                 root,
                 "package.json",
-                '{"private":true,"devDependencies":{"hardhat":"^2.6.1"}}\\n',
+                '{"private":true,"devDependencies":{"hardhat":"^2.6.1"}}\n',
             )
-            self.write(root, "package-lock.json", '{"lockfileVersion":3}\\n')
+            self.write(root, "package-lock.json", '{"lockfileVersion":3}\n')
             info = {
                 "root": str(root),
                 "backend": "hardhat",
