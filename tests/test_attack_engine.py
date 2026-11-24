@@ -336,6 +336,37 @@ class AttackEngineTests(unittest.TestCase):
                 "portfolio_manifest_sha256": "6" * 64,
             },
         }
+        portfolio_manifest = {
+            "schema_version": 1,
+            "quote_currency": "USD",
+            "max_price_age_seconds": 3600,
+            "native": {"oracle": "0x" + "77" * 20},
+            "tokens": [{
+                "kind": "erc20",
+                "address": "0x" + "55" * 20,
+                "symbol": "TKN",
+                "oracle": "0x" + "66" * 20,
+            }],
+        }
+        manifest_path = self.root / ".audit" / "portfolio.json"
+        manifest_path.write_text(json.dumps(portfolio_manifest), encoding="utf-8")
+        manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        payload["token_portfolio"]["native_price"] = {
+            "feed": "0x" + "77" * 20,
+            "feed_code_sha256": "8" * 64,
+            "feed_code_source_verified": True,
+            "source_round_verified": True,
+            "price_usd_18": 10**18,
+        }
+        asset = payload["token_portfolio"]["tokens"][0]
+        asset["token"] = "0x" + "55" * 20
+        asset["symbol"] = "TKN"
+        asset["oracle"].update({
+            "feed": "0x" + "66" * 20,
+            "feed_code_sha256": "9" * 64,
+        })
+        payload["economic_valuation"]["portfolio_manifest"] = ".audit/portfolio.json"
+        payload["economic_valuation"]["portfolio_manifest_sha256"] = manifest_sha256
         report_path = self.root / ".audit" / "godmode" / "reprove.json"
         report_path.write_text(json.dumps(payload), encoding="utf-8")
         result = engine._validate_reproof(
@@ -346,6 +377,16 @@ class AttackEngineTests(unittest.TestCase):
         self.assertEqual(result["net_profit_usd_18"], 10 * 10**18 - 5)
         self.assertEqual(result["net_profit_unit"], "USD_18")
 
+        payload["token_portfolio"]["tokens"][0]["token"] = "0x" + "99" * 20
+        report_path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(engine.AttackEngineError, "hashed manifest"):
+            engine._validate_reproof(
+                {"reproof_file": ".audit/godmode/reprove.json"},
+                root=self.root, target=self.target, family="economic",
+                impact_mode="economic", label="reproof",
+            )
+
+        payload["token_portfolio"]["tokens"][0]["token"] = "0x" + "55" * 20
         payload["economic_valuation"]["external_gas_cost_usd_18"] = 4
         report_path.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaisesRegex(engine.AttackEngineError, "does not reconcile"):
