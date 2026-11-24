@@ -51,11 +51,11 @@ class FoundryBuildPlannerTests(unittest.TestCase):
     def test_native_hardhat_build_bootstraps_missing_local_dependencies_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "hardhat.config.js", "module.exports = {};\\n")
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
             self.write(
                 root,
                 "package.json",
-                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\\n',
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
             )
             info = {
                 "root": str(root),
@@ -86,11 +86,11 @@ class FoundryBuildPlannerTests(unittest.TestCase):
     def test_native_hardhat_build_stops_when_dependency_bootstrap_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "hardhat.config.js", "module.exports = {};\\n")
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
             self.write(
                 root,
                 "package.json",
-                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\\n',
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
             )
             info = {
                 "root": str(root),
