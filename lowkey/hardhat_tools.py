@@ -954,6 +954,10 @@ def run_prepare(argv: Sequence[str] = (), *, reason: str = "test") -> int:
     if any(str(value).lower() in {"-h", "--h", "--help", "help"} for value in argv):
         print(_render_help("prepare"))
         return 0
+    if argv:
+        print("lk hardhat prepare does not accept command-specific options.", file=sys.stderr)
+        print("Usage: lk hardhat prepare", file=sys.stderr)
+        return 2
 
     root, info = _selected_project()
     try:
