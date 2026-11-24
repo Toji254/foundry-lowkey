@@ -35,6 +35,9 @@ contract Vault {
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             (root / "Vault.sol").write_text(self._vault_source(), encoding="utf-8")
+            test_dir = root / "test"
+            test_dir.mkdir()
+            (test_dir / "Proof.t.sol").write_text("contract ProofTest {}\n", encoding="utf-8")
 
             first = godmode.cheat_fingerprints(root)
             second = godmode.cheat_fingerprints(root)
@@ -42,6 +45,8 @@ contract Vault {
             self.assertEqual(first["schema_version"], 2)
             self.assertEqual(first["algorithm"], "Aho-Corasick over normalized Solidity tokens")
             self.assertGreater(first["patterns"], 0)
+            self.assertEqual(first["scan_status"], "completed")
+            self.assertEqual(first["files_scanned"], 2, "Source and Solidity test harness files must both be scanned")
             self.assertEqual(first["pattern_hashes"], second["pattern_hashes"])
             self.assertTrue(all(len(row["pattern_id"]) == 20 for row in first["pattern_hashes"]))
 
@@ -86,6 +91,22 @@ contract Vault {
             self.assertEqual(match["key_expression"], "msg . sender")
             self.assertLess(match["read_line"], match["call_line"])
             self.assertLess(match["call_line"], match["write_line"])
+
+    def test_fingerprint_marks_incomplete_shared_inventory_for_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "Vault.sol"
+            source.write_text(self._vault_source(), encoding="utf-8")
+            inventory = {
+                "root": root,
+                "files": [source],
+                "contents": {source: source.read_text(encoding="utf-8")},
+                "failures": [{"path": "Unreadable.sol", "phase": "read", "scope": "source"}],
+            }
+            result = godmode.cheat_fingerprints(root, inventory=inventory)
+            self.assertEqual(result["scan_status"], "review")
+            self.assertEqual(result["files_scanned"], 1)
+            self.assertEqual(len(result["inspection_failures"]), 1)
 
     def test_fingerprint_does_not_treat_local_assignment_as_mapping_write(self):
         source = """contract Vault {
