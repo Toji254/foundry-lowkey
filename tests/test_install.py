@@ -18,6 +18,61 @@ class InstallSmokeTests(unittest.TestCase):
             "install.sh must retain its executable bit because CI and users invoke ./install.sh",
         )
 
+    def test_hardhat_test_prepares_dependencies_before_native_test_router(self):
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "hardhat_tools.py").write_text(
+                "print('HARDHAT_PREPARE')\\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "lk.py").write_text(
+                "import sys\\nprint('NATIVE_TEST', *sys.argv[1:])\\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "bin" / "lk"), "test", "--match-test", "testFoo"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertLess(
+                result.stdout.index("HARDHAT_PREPARE"),
+                result.stdout.index("NATIVE_TEST"),
+            )
+            self.assertIn("NATIVE_TEST test --match-test testFoo", result.stdout)
+
+    def test_non_hardhat_test_keeps_existing_native_router(self):
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "hardhat_tools.py").write_text(
+                "raise SystemExit(3)\\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "lk.py").write_text(
+                "import sys\\nprint('NATIVE_TEST', *sys.argv[1:])\\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "bin" / "lk"), "test", "--match-test", "testFoo"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("NATIVE_TEST test --match-test testFoo", result.stdout)
+
+
     def test_install_publishes_current_runtime_and_manifest(self):
         with tempfile.TemporaryDirectory() as home:
             env = os.environ.copy()
