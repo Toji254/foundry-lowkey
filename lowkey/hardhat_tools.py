@@ -535,7 +535,10 @@ def _inspect_local_configuration(
                 continue
 
             template = next(
-                (candidate for candidate in _config_template_candidates(target) if candidate.is_file()),
+                (
+                    candidate for candidate in _config_template_candidates(target)
+                    if candidate.is_file() and not candidate.is_symlink()
+                ),
                 None,
             )
             if template is None:

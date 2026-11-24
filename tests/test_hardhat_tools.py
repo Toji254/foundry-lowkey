@@ -146,6 +146,26 @@ class HardhatReadinessTests(unittest.TestCase):
             )
             self.assertEqual((root / "env.json").stat().st_mode & 0o777, 0o600)
 
+    def test_symlinked_config_template_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "repo"
+            root.mkdir()
+            self.make_hardhat_project(root)
+            outside = base / "host-secret.json"
+            outside.write_text('{"PRIVATE_KEY":"must-not-read"}\n', encoding="utf-8")
+            template = root / "env.example.json"
+            template.unlink()
+            template.symlink_to(outside)
+
+            ready, findings = hardhat_tools._inspect_local_configuration(
+                root, create_ignored_templates=True
+            )
+
+            self.assertFalse(ready)
+            self.assertEqual(findings[0]["status"], "missing")
+            self.assertFalse((root / "env.json").exists())
+
     def test_existing_env_config_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
