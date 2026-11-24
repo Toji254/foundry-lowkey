@@ -381,6 +381,80 @@ def _selected_project() -> tuple[Path, dict]:
     return root, info
 
 
+def _ensure_hardhat_binary(
+    root: Path,
+    info: dict,
+    *,
+    reason: str,
+) -> tuple[Path, dict, Path | None, int]:
+    """Prepare repository-declared dependencies once when local Hardhat is absent."""
+    binary = _local_hardhat(root)
+    if binary is not None:
+        return root, info, binary, 0
+
+    print(
+        f"Hardhat was detected for {root}, but its project-local executable is missing."
+    )
+    print(
+        "Lowkey is preparing the dependencies declared by this project. "
+        "An existing lockfile is honored; without one, the package manager "
+        "will resolve package.json ranges and create the initial lockfile."
+    )
+    code = project_detection.bootstrap_project(info, reason=reason)
+    if code != 0:
+        return root, info, None, code
+
+    root, info = _selected_project()
+    binary = _local_hardhat(root)
+    if binary is None:
+        print(
+            "REVIEW NEEDED: dependency preparation completed, but the "
+            "repository-local Hardhat executable is still missing.",
+            file=sys.stderr,
+        )
+        return root, info, None, 2
+    return root, info, binary, 0
+
+
+def run_prepare(argv: Sequence[str] = (), *, reason: str = "test") -> int:
+    """Ensure a Hardhat project is ready before delegating to Lowkey's native router.
+
+    Exit code 3 means this is not a Hardhat project; the launcher should keep
+    using its existing native command router.
+    """
+    if any(str(value).lower() in {"-h", "--h", "--help", "help"} for value in argv):
+        print("Usage: lk hardhat prepare")
+        print("Prepares declared project dependencies only when the local Hardhat binary is missing.")
+        return 0
+
+    root, info = _selected_project()
+    try:
+        hardhat_scope = bootstrap._is_hardhat_scope(info, root)
+    except Exception:
+        hardhat_scope = False
+    if not hardhat_scope:
+        return 3
+
+    _root, _info, _binary, code = _ensure_hardhat_binary(root, info, reason=reason)
+    return code
+
+
+def _execution_environment(root: Path) -> tuple[dict[str, str] | None, str | None]:
+    """Resolve the project's declared Node runtime without imposing Hardhat 3's floor."""
+    try:
+        env, pin = bootstrap.runtime_environment(root)
+        status = bootstrap.node_runtime_status(root)
+    except Exception as exc:
+        return None, f"Could not resolve this project's Node environment: {exc}"
+    if not status.get("matched", True):
+        required = status.get("required") or pin or "the declared project Node version"
+        return None, (
+            f"Project runtime pin {required} cannot be satisfied by an already-installed Node runtime. "
+            "Lowkey will not install or switch Node versions automatically."
+        )
+    return env, None
+
+
 def run_clean(argv: Sequence[str]) -> int:
     root, info = _selected_project()
     backend = str(info.get("backend") or info.get("kind") or "").lower()
@@ -402,20 +476,14 @@ def run_clean(argv: Sequence[str]) -> int:
     if not hardhat_scope:
         return forge_tools.main(["clean", *list(argv)])
 
-    binary = _local_hardhat(root)
-    if binary is None:
-        print(
-            f"Hardhat project detected at {root}, but its local executable is missing.",
-            file=sys.stderr,
-        )
-        print(
-            "Run 'lk hardhat init' for a new project or restore its declared npm dependencies. "
-            "Lowkey will not use a global Hardhat installation.",
-            file=sys.stderr,
-        )
-        return 2
+    root, info, binary, prepare_code = _ensure_hardhat_binary(
+        root, info, reason="clean"
+    )
+    if prepare_code != 0:
+        return prepare_code
+    assert binary is not None
 
-    env, error = _node_context(root)
+    env, error = _execution_environment(root)
     if error:
         print(error, file=sys.stderr)
         return 2
@@ -439,6 +507,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_init(rest)
     if command == "clean":
         return run_clean(rest)
+    if command == "prepare":
+        return run_prepare(rest)
     print(f"Unknown lk hardhat command: {command}", file=sys.stderr)
     print(_render_help(), file=sys.stderr)
     return 2
