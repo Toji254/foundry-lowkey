@@ -49,7 +49,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in bootstrap.py lk.py command_wrapper.py capability_registry.py forge_tools.py generator.py slither_tools.py audit_context.py shared_context.py fixture_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py source_index.py source_ast.py source_link.py question_engine.py workflow_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py test_repair.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py attack_library.py attack_catalog.py attack_engine.py attack_research.py attack_synthesis.py protocol_graph.py multiwave_audit.py godmode.py arithmetic_review.py proof_evidence.py forge_state_diff.py trace_evidence.py trace_schema.py trace_parity.py storage_trace.py abi_support.py setup_reasoner.py foundry_build.py hardhat_tools.py workspace_tools.py source_risk.py finding_explainer.py block_tools.py; do
+for file in bootstrap.py lk.py command_wrapper.py capability_registry.py forge_tools.py generator.py slither_tools.py audit_context.py shared_context.py fixture_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py source_index.py source_ast.py source_link.py question_engine.py workflow_engine.py analysis_adapters.py verification_adapters.py test_generation.py test_generation_analysis.py generation_plugins.py behavioral_validation.py verification_benchmark.py verification_cli.py signal_investigation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py ai_harness.py test_repair.py provider_adapters.py agent_runtime.py evidence_ledger.py security_review.py error_context.py error_advisor.py test_planner.py experience_memory.py ai_workflow.py jev_engine.py attack_library.py attack_catalog.py attack_engine.py attack_research.py attack_synthesis.py protocol_graph.py multiwave_audit.py godmode.py arithmetic_review.py proof_evidence.py forge_state_diff.py trace_evidence.py trace_schema.py trace_parity.py storage_trace.py abi_support.py setup_reasoner.py foundry_build.py hardhat_tools.py workspace_tools.py source_risk.py finding_explainer.py block_tools.py token_economics.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
@@ -143,6 +143,7 @@ cp "$STAGE_DIR/workspace_tools.py" "$TARGET_LOWKEY_DIR/workspace_tools.py"
 cp "$STAGE_DIR/source_risk.py" "$TARGET_LOWKEY_DIR/source_risk.py"
 cp "$STAGE_DIR/finding_explainer.py" "$TARGET_LOWKEY_DIR/finding_explainer.py"
 cp "$STAGE_DIR/block_tools.py" "$TARGET_LOWKEY_DIR/block_tools.py"
+cp "$STAGE_DIR/token_economics.py" "$TARGET_LOWKEY_DIR/token_economics.py"
 mkdir -p "$TARGET_LOWKEY_DIR/templates"
 cp "$STAGE_DIR/templates/step_harness.sol.tmpl" "$TARGET_LOWKEY_DIR/templates/step_harness.sol.tmpl"
 mkdir -p "$TARGET_LOWKEY_DIR/archetypes"
@@ -262,6 +263,7 @@ installed = {
     str(lowkey_dir / "source_risk.py"): sha256(lowkey_dir / "source_risk.py"),
     str(lowkey_dir / "finding_explainer.py"): sha256(lowkey_dir / "finding_explainer.py"),
     str(lowkey_dir / "block_tools.py"): sha256(lowkey_dir / "block_tools.py"),
+    str(lowkey_dir / "token_economics.py"): sha256(lowkey_dir / "token_economics.py"),
     str(lowkey_dir / "archetypes" / "__init__.py"): sha256(lowkey_dir / "archetypes" / "__init__.py"),
     str(lowkey_dir / "archetypes" / "_index.py"): sha256(lowkey_dir / "archetypes" / "_index.py"),
     str(lowkey_dir / "archetypes" / "vault4626.json"): sha256(lowkey_dir / "archetypes" / "vault4626.json"),
