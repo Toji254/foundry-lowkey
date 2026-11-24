@@ -223,12 +223,14 @@ GODMODE_HELP_GUIDES = {
             "--control-manifest FILE — advanced matched attack/control JSON manifest. Normally leave this alone; Lowkey's standard source scan does not need it. Use only with --attack after preparing and freezing the experiment; see lk control --h.",
             "--mutation-manifest FILE — advanced JSON recipe for deliberate source mutations and repeated test runs. Normally leave this alone; use it after a test suite exists. It requires command (for example [\"forge\", \"test\"]) and mutants entries with id, file, before, and after.",
             "--coverage-source FILE — optional Solidity file to measure (for example src/Token.sol). Use after you have relevant tests; coverage shows executed lines, not whether the tests assert the correct property.",
+            "--multi-agent — explicitly send redacted first-party source excerpts to the configured AI provider for source-only multi-wave reconnaissance, hunting, coverage criticism and candidate challenge. The agents do not build, test, use RPC, deploy, sign or broadcast.",
+            "--agent-budget N — bound multi-agent model invocations to 4–64 calls. Requires --multi-agent; lower budgets can produce an explicitly incomplete result.",
             "--plan-only — force a strictly local source scan. It disables RPC reads, attacks, mutation tests and coverage even when target/RPC context is remembered. Use this when you explicitly want no chain access."
         ],
         "workflow": [
             "1. Run lk godmode. Lowkey finds the project root automatically and scans its source.",
             "2. If the project has a remembered target and RPC, Godmode adds read-only chain inspection. If not, it stays source-only. Neither mode sends transactions.",
-            "3. Review the potential source leads. Counts are code matches, not vulnerability totals. Use --ai-review only when you explicitly want selected source excerpts reviewed by the configured AI provider.",
+            "3. Review the potential source leads. Counts are code matches, not vulnerability totals. Use --ai-review for a single semantic review or --multi-agent for a bounded multi-wave review; both explicitly send selected redacted source excerpts to the configured AI provider.",
             "4. Run lk report to create a readable Markdown report. It separates candidate findings, attack outcomes, proof gaps and navigation markers. You do not need to pass --root for the detected project.",
             "5. Only when you deliberately want active testing, run lk godmode --attack on local Anvil. The target/RPC can be taken from the current project's saved context."
         ],
@@ -237,7 +239,7 @@ GODMODE_HELP_GUIDES = {
             ".audit/godmode/provenance.json — hash of the saved report and run context.",
             "lk report — creates .audit/godmode/report.md, the readable version."
         ],
-        "limits": "Source matches are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED means this run has not completed all proof gates; it does not mean the command crashed. Read-only inspection is safe to run automatically when the project has a remembered target/RPC. Active attack execution remains opt-in and local-Anvil-only. AI-assisted source review is separately opt-in with --ai-review; selected source excerpts are sent to the configured provider and its findings remain unverified.",
+        "limits": "Source matches and AI-generated hypotheses are investigation leads, not confirmed vulnerabilities. --multi-agent is source-only and does not execute target code or contact RPC; it sends redacted source excerpts to the configured provider, and candidates still require native proof plus human disposition. coverage_complete applies only to recorded in-scope units and is not a security clearance. Active attack execution remains opt-in and local-Anvil-only.",
         "related": [
             "lk targets",
             "lk break --h",
