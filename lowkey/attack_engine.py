@@ -413,11 +413,15 @@ def _validate_reproof(
             for index, asset in enumerate(token_assets):
                 oracle = asset.get("oracle") if isinstance(asset, dict) else None
                 if (
-                    not isinstance(oracle, dict)
+                    not isinstance(asset, dict)
+                    or asset.get("kind") not in {"erc20", "erc4626"}
+                    or not isinstance(oracle, dict)
                     or oracle.get("feed_code_source_verified") is not True
                     or oracle.get("source_round_verified") is not True
+                    or not isinstance(oracle.get("feed_code_sha256"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", oracle["feed_code_sha256"]) is None
                     or not isinstance(asset.get("token_code_sha256"), str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", asset["token_code_sha256"])
+                    or re.fullmatch(r"[0-9a-f]{64}", asset["token_code_sha256"]) is None
                 ):
                     raise AttackEngineError(
                         f"{label} portfolio asset {index} lacks a source-verified token/feed identity.",
@@ -425,7 +429,7 @@ def _validate_reproof(
                     )
                 if asset.get("kind") == "erc4626" and (
                     not isinstance(asset.get("asset_code_sha256"), str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", asset["asset_code_sha256"])
+                    or re.fullmatch(r"[0-9a-f]{64}", asset["asset_code_sha256"]) is None
                 ):
                     raise AttackEngineError(
                         f"{label} ERC-4626 asset {index} lacks a source-verified underlying identity.",
@@ -442,6 +446,74 @@ def _validate_reproof(
                     "portfolio_source_unverified",
                 )
 
+            manifest_hash = valuation.get("portfolio_manifest_sha256")
+            manifest_path = safe_relative_file(
+                root, valuation.get("portfolio_manifest"), f"{label}.portfolio_manifest"
+            )
+            if (
+                not isinstance(manifest_hash, str)
+                or re.fullmatch(r"[0-9a-f]{64}", manifest_hash) is None
+                or _sha256_file(manifest_path) != manifest_hash
+            ):
+                raise AttackEngineError(
+                    f"{label} portfolio manifest hash does not match the retained manifest.",
+                    "portfolio_manifest_mismatch",
+                )
+            try:
+                try:
+                    from . import token_economics
+                except ImportError:
+                    import token_economics
+                portfolio_spec = token_economics.load_portfolio_manifest(
+                    json.loads(manifest_path.read_text(encoding="utf-8"))
+                )
+            except (ImportError, OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                raise AttackEngineError(
+                    f"{label} retained portfolio manifest is invalid: {exc}",
+                    "portfolio_manifest_mismatch",
+                ) from exc
+
+            native_price = token_portfolio.get("native_price")
+            if (
+                not isinstance(native_price, dict)
+                or native_price.get("feed") != portfolio_spec["native"]["oracle"]
+                or native_price.get("feed_code_source_verified") is not True
+                or native_price.get("source_round_verified") is not True
+                or not isinstance(native_price.get("feed_code_sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", native_price["feed_code_sha256"]) is None
+            ):
+                raise AttackEngineError(
+                    f"{label} native/USD feed identity is not independently source-verified.",
+                    "portfolio_source_unverified",
+                )
+
+            declared = {item["address"]: item for item in portfolio_spec["tokens"]}
+            reported = {item.get("token"): item for item in token_assets}
+            if len(reported) != len(token_assets) or set(reported) != set(declared):
+                raise AttackEngineError(
+                    f"{label} reported portfolio assets do not exactly match the hashed manifest.",
+                    "portfolio_manifest_mismatch",
+                )
+            for address, declared_asset in declared.items():
+                reported_asset = reported[address]
+                expected_feed = (
+                    declared_asset["oracle"] if declared_asset["kind"] == "erc20"
+                    else declared_asset["asset_oracle"]
+                )
+                if (
+                    reported_asset.get("kind") != declared_asset["kind"]
+                    or reported_asset.get("symbol") != declared_asset["symbol"]
+                    or reported_asset.get("oracle", {}).get("feed") != expected_feed
+                    or (
+                        declared_asset["kind"] == "erc4626"
+                        and reported_asset.get("asset") != declared_asset["asset"]
+                    )
+                ):
+                    raise AttackEngineError(
+                        f"{label} reported token, underlying or oracle differs from the hashed manifest.",
+                        "portfolio_manifest_mismatch",
+                    )
+
             def signed_usd_metric(metric: Any, metric_label: str) -> int:
                 if type(metric) is not int:
                     raise AttackEngineError(
@@ -449,7 +521,6 @@ def _validate_reproof(
                     )
                 return metric
 
-            native_price = token_portfolio.get("native_price")
             if (
                 not isinstance(native_price, dict)
                 or type(native_price.get("price_usd_18")) is not int
