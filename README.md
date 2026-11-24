@@ -44,6 +44,19 @@ lk report
 
 The capability inventory uses three honest states: `implemented` means the command has a working local workflow; `partial` means it produces a useful lead, starter, bounded measurement, or needs protocol-specific input; `adapter-required` means an external runtime/provider integration is not available and Lowkey will stop rather than fake a result. A registered capability is not automatically an automated exploit.
 
+
+### Multi-wave AI source review
+
+For a deeper source-only review, opt into separate AI roles for protocol reconnaissance, focused EVM hunting, coverage criticism, and independent candidate challenge:
+
+~~~bash
+lk godmode --root . --multi-agent --profile standard --agent-budget 16
+~~~
+
+Use `quick`, `standard`, or `deep` profiles. The default call budgets are bounded; `--agent-budget` can explicitly set 4–64 model invocations. `light` maps to `quick` and `balanced` maps to `standard`.
+
+This sends redacted source excerpts to the configured AI provider. The agents do not execute builds/tests or contact RPC endpoints. Results are source-level candidates only; a surviving AI review never counts as a confirmed vulnerability and does not bypass native Foundry/Anvil proof, control, fidelity, economic, or human-disposition gates. Runs and the coverage ledger are stored under `.audit/godmode/multiwave/`. A `coverage_complete` result covers only the recorded in-scope units and is not a security clearance.
+
 ### P1 command reference and help
 
 The Godmode commands are included in the root lk --help catalog. Every Godmode command accepts the help spellings --h, --help, -h, and help. Use a command's help page for its complete positional arguments, options, defaults, and examples:

@@ -78,10 +78,10 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "Only capabilities marked implemented are considered available; partial and adapter-required entries remain skipped.",
     },
     "godmode": {
-        "summary": "Audit the Solidity source under --root, report source-level security leads, and optionally inspect a deployed target. It does not send a transaction by default.",
-        "when": "Start here when you do not know which Godmode subcommand to use. Run it on the project folder first; add a target address and RPC only when you also want read-only on-chain reconnaissance.",
-        "example": "START HERE — source-only scan (no address or RPC needed):\n  lk godmode --root .\n\nExplicit static-only plan (no RPC, attack, mutation or coverage execution):\n  lk godmode --root . --plan-only\n\nAdd read-only on-chain reconnaissance:\n  lk godmode 0xYourTargetAddress --root . --rpc-url http://127.0.0.1:8545\n\nOpt into local-Anvil attack exploration only after reviewing the target and controls:\n  lk godmode 0xYourTargetAddress --root . --rpc-url http://127.0.0.1:8545 --attack --control-manifest .audit/control.json",
-        "limits": "Static matches are review leads, not confirmed vulnerabilities. --attack invokes lk break and is restricted to a local Anvil RPC; it can execute transactions on that disposable chain. --plan-only skips RPC, attack, mutation and coverage execution but still writes .audit/godmode/latest.json and provenance.json. A BREAK still requires matched control and independent evidence.",
+        "summary": "Audit Solidity/EVM source, inspect optional deployed targets, and optionally run a coverage-led multi-wave source review with independent AI roles. Static and AI results remain leads, not confirmed vulnerabilities.",
+        "when": "Start with lk godmode --root . for local reconnaissance. Add --multi-agent only when you explicitly want source excerpts sent to the configured AI provider for independent hunting, coverage criticism and candidate challenge.",
+        "example": "START HERE — local source scan:\\n  lk godmode --root .\\n\\nMulti-wave source review (AI opt-in):\\n  lk godmode --root . --multi-agent --profile standard --agent-budget 16\\n\\nRead-only on-chain reconnaissance:\\n  lk godmode 0xYourTargetAddress --root . --rpc-url http://127.0.0.1:8545\\n\\nLocal-Anvil attack exploration requires a separate explicit opt-in:\\n  lk godmode 0xYourTargetAddress --root . --rpc-url http://127.0.0.1:8545 --attack --control-manifest .audit/control.json",
+        "limits": "Multi-agent review is source-only: it does not build, test, use RPC, deploy, sign or broadcast. AI candidates never receive confirmed proof status; they still require native LK evidence gates and human disposition. --attack invokes lk break and is restricted to local Anvil. --plan-only cannot be combined with --multi-agent.",
     },
     "control": {
         "summary": "Compare an attack against a sequential control using matched execution evidence and a frozen experiment specification.",
@@ -223,12 +223,14 @@ GODMODE_HELP_GUIDES = {
             "--control-manifest FILE — advanced matched attack/control JSON manifest. Normally leave this alone; Lowkey's standard source scan does not need it. Use only with --attack after preparing and freezing the experiment; see lk control --h.",
             "--mutation-manifest FILE — advanced JSON recipe for deliberate source mutations and repeated test runs. Normally leave this alone; use it after a test suite exists. It requires command (for example [\"forge\", \"test\"]) and mutants entries with id, file, before, and after.",
             "--coverage-source FILE — optional Solidity file to measure (for example src/Token.sol). Use after you have relevant tests; coverage shows executed lines, not whether the tests assert the correct property.",
+            "--multi-agent — explicitly send redacted first-party source excerpts to the configured AI provider for source-only multi-wave reconnaissance, hunting, coverage criticism and candidate challenge. The agents do not build, test, use RPC, deploy, sign or broadcast.",
+            "--agent-budget N — bound multi-agent model invocations to 4–64 calls. Requires --multi-agent; lower budgets can produce an explicitly incomplete result.",
             "--plan-only — force a strictly local source scan. It disables RPC reads, attacks, mutation tests and coverage even when target/RPC context is remembered. Use this when you explicitly want no chain access."
         ],
         "workflow": [
             "1. Run lk godmode. Lowkey finds the project root automatically and scans its source.",
             "2. If the project has a remembered target and RPC, Godmode adds read-only chain inspection. If not, it stays source-only. Neither mode sends transactions.",
-            "3. Review the potential source leads. Counts are code matches, not vulnerability totals. Use --ai-review only when you explicitly want selected source excerpts reviewed by the configured AI provider.",
+            "3. Review the potential source leads. Counts are code matches, not vulnerability totals. Use --ai-review for a single semantic review or --multi-agent for a bounded multi-wave review; both explicitly send selected redacted source excerpts to the configured AI provider.",
             "4. Run lk report to create a readable Markdown report. It separates candidate findings, attack outcomes, proof gaps and navigation markers. You do not need to pass --root for the detected project.",
             "5. Only when you deliberately want active testing, run lk godmode --attack on local Anvil. The target/RPC can be taken from the current project's saved context."
         ],
@@ -237,7 +239,7 @@ GODMODE_HELP_GUIDES = {
             ".audit/godmode/provenance.json — hash of the saved report and run context.",
             "lk report — creates .audit/godmode/report.md, the readable version."
         ],
-        "limits": "Source matches are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED means this run has not completed all proof gates; it does not mean the command crashed. Read-only inspection is safe to run automatically when the project has a remembered target/RPC. Active attack execution remains opt-in and local-Anvil-only. AI-assisted source review is separately opt-in with --ai-review; selected source excerpts are sent to the configured provider and its findings remain unverified.",
+        "limits": "Source matches and AI-generated hypotheses are investigation leads, not confirmed vulnerabilities. REVIEW_REQUIRED is the normal report status until all proof gates are complete; it does not mean the command crashed. --multi-agent is source-only and does not execute target code or contact RPC; it sends redacted source excerpts to the configured provider, and candidates still require native proof plus human disposition. coverage_complete applies only to recorded in-scope units and is not a security clearance. Active attack execution remains opt-in and local-Anvil-only.",
         "related": [
             "lk targets",
             "lk break --h",
@@ -6531,9 +6533,17 @@ def godmode(args):
     p.add_argument("--mutation-manifest", help="Mutation-test manifest to execute as an optional test-sensitivity check.")
     p.add_argument("--coverage-source", help="Solidity source file whose target lines should be checked with Forge coverage.")
     p.add_argument("--plan-only", action="store_true", help="Static source scan only: skip RPC, attack, mutation and coverage execution; still save a local report.")
+    p.add_argument("--multi-agent", action="store_true", help="Opt into coverage-led, multi-wave Solidity/EVM source review with independent hunters, critics and candidate verifiers.")
+    p.add_argument("--agent-budget", type=int, help="Maximum AI invocations for --multi-agent (4..64).")
     ns=p.parse_args(args)
     if ns.plan_only and ns.attack:
         p.error("--plan-only cannot be combined with --attack; remove one of the flags.")
+    if ns.plan_only and ns.multi_agent:
+        p.error("--plan-only cannot be combined with --multi-agent; remove one of the flags.")
+    if ns.agent_budget is not None and not ns.multi_agent:
+        p.error("--agent-budget requires --multi-agent.")
+    if ns.ai_review and ns.multi_agent:
+        p.error("Use either --ai-review or --multi-agent for this run, not both.")
     if ns.control_manifest and not ns.attack:
         p.error("--control-manifest is only used by the attack workflow; add --attack or remove --control-manifest.")
     root=resolve_godmode_root(ns.root)
@@ -6741,9 +6751,51 @@ def godmode(args):
         stages.append({"name":"target-coverage","status":"completed" if rc==0 else "review","exit_code":rc})
     else:
         stages.append({"name":"target-coverage","status":"not-run","reason":"No target source line scope was supplied."})
+    multiwave_result = None
+    if ns.multi_agent:
+        try:
+            try:
+                from . import multiwave_audit
+            except ImportError:
+                import multiwave_audit
+            audit_profile = {"light": "quick", "balanced": "standard", "deep": "deep"}[ns.profile]
+            multiwave_result = multiwave_audit.run_multiwave_audit(
+                root,
+                profile=audit_profile,
+                max_agent_calls=ns.agent_budget,
+            )
+            audit_state = multiwave_result.get("status")
+            audit_stage_status = (
+                "completed" if audit_state == "coverage_complete"
+                else "blocked" if audit_state == "blocked"
+                else "review"
+            )
+            stages.append({
+                "name": "multiwave-smart-contract-audit",
+                "status": audit_stage_status,
+                "reason": multiwave_result.get("stopped_reason"),
+                "run_id": multiwave_result.get("run_id"),
+                "report": multiwave_result.get("report"),
+                "coverage_units": multiwave_result.get("coverage_units"),
+                "candidate_findings": multiwave_result.get("candidate_findings"),
+                "waves_completed": multiwave_result.get("waves_completed"),
+            })
+        except Exception as exc:
+            multiwave_result = {
+                "status": "blocked",
+                "stopped_reason": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            stages.append({
+                "name": "multiwave-smart-contract-audit",
+                "status": "blocked",
+                "reason": multiwave_result["stopped_reason"],
+            })
+
     requested_stages = set()
     if ns.ai_review:
         requested_stages.add("ai-review")
+    if ns.multi_agent:
+        requested_stages.add("multiwave-smart-contract-audit")
     if target and selected_rpc and not ns.plan_only:
         requested_stages.add("onchain-recon")
     if ns.attack:
@@ -6765,6 +6817,7 @@ def godmode(args):
              "profile":ns.profile,"stages":stages,"signals":maps,"cheat_fingerprints":cheat,
              "findings":findings,"source_security_findings":source_findings,"slither_findings":slither_findings,"ai_findings":ai_findings,
              "source_inventory": coverage_report,
+             "multiwave_audit": multiwave_result,
              "onchain":onchain,"overall_status":"REVIEW_REQUIRED",
              "proof_gate":["attack must demonstrate a measurable security-property delta","matched sequential control must pass",
                "target lines must be covered","harness mutation score must meet threshold","net profit must remain positive after costs",
