@@ -214,10 +214,13 @@ class BlockToolsTests(unittest.TestCase):
 
     def test_installer_stages_compiles_installs_and_hashes_block_module(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
-        self.assertIn("finding_explainer.py block_tools.py; do", script)
+        self.assertIn("finding_explainer.py block_tools.py token_economics.py; do", script)
         self.assertIn('"$STAGE_DIR/block_tools.py"', script)
         self.assertIn('cp "$STAGE_DIR/block_tools.py" "$TARGET_LOWKEY_DIR/block_tools.py"', script)
         self.assertIn('str(lowkey_dir / "block_tools.py"): sha256(lowkey_dir / "block_tools.py")', script)
+        self.assertIn('"$STAGE_DIR/token_economics.py"', script)
+        self.assertIn('cp "$STAGE_DIR/token_economics.py" "$TARGET_LOWKEY_DIR/token_economics.py"', script)
+        self.assertIn('str(lowkey_dir / "token_economics.py"): sha256(lowkey_dir / "token_economics.py")', script)
         self.assertIn('- $TARGET_LOWKEY_DIR/block_tools.py', script)
 
 
