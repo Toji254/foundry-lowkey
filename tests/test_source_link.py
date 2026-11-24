@@ -681,7 +681,7 @@ class SourceLinkTests(unittest.TestCase):
                 "--all",
                 "--json",
                 "requires no TARGET",
-                "does not prove execution",
+                "do not prove execution",
             ):
                 self.assertIn(item, rendered)
 
