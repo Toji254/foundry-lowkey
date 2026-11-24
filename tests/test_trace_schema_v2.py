@@ -272,5 +272,99 @@ class TraceSchemaV2Tests(unittest.TestCase):
         self.assertEqual(report["mismatches"][0]["dimension"], "event_count")
 
 
+    def test_anvil_structlog_storage_is_exact_and_frame_attributed(self):
+        access = {
+            "account": B,
+            "slot": SLOT,
+            "previous_value": WORD1,
+            "new_value": WORD2,
+            "is_write": True,
+            "reverted": False,
+        }
+        events = normalize_calltracer(
+            [
+                {"type": "CALL", "from": A, "to": B, "depth": 0,
+                 "value": "0x0", "input": "0x12345678"},
+                {"type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
+                 "value": "0x0", "input": "0xaabbccdd"},
+            ],
+            per_access_storage={0: [access], 1: []},
+        )
+        self.assertEqual(events[0]["backend"], "anvil-structlog")
+        self.assertEqual(events[0]["storage_support"], "exact")
+        self.assertEqual(events[0]["storage"][0]["account"], B)
+        self.assertEqual(events[1]["storage"], [])
+
+    def test_storage_parity_compares_exact_per_access_records(self):
+        access = {
+            "account": B,
+            "slot": SLOT,
+            "previous_value": WORD1,
+            "new_value": WORD2,
+            "is_write": True,
+            "reverted": False,
+        }
+        anvil = normalize_calltracer(
+            [
+                {"type": "CALL", "from": A, "to": B, "depth": 0,
+                 "value": "0x0", "input": "0x12345678"},
+                {"type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
+                 "value": "0x0", "input": "0xaabbccdd"},
+            ],
+            per_access_storage={0: [access], 1: []},
+        )
+        report = compare_trace_events(forge_trace(), anvil)
+        self.assertEqual(report["status"], "MATCHED")
+        self.assertEqual(report["storage_parity"], "exact_comparable")
+        self.assertEqual(report["storage_exact_event_pairs"], 2)
+        self.assertEqual(report["storage_mismatches"], [])
+
+    def test_storage_parity_rejects_a_different_anvil_slot(self):
+        access = {
+            "account": B,
+            "slot": WORD2,
+            "previous_value": WORD1,
+            "new_value": WORD2,
+            "is_write": True,
+            "reverted": False,
+        }
+        anvil = normalize_calltracer(
+            [
+                {"type": "CALL", "from": A, "to": B, "depth": 0,
+                 "value": "0x0", "input": "0x12345678"},
+                {"type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
+                 "value": "0x0", "input": "0xaabbccdd"},
+            ],
+            per_access_storage={0: [access], 1: []},
+        )
+        report = compare_trace_events(forge_trace(), anvil)
+        self.assertEqual(report["status"], "MISMATCH")
+        self.assertEqual(report["storage_parity"], "mismatch")
+        self.assertEqual(report["storage_mismatches"][0]["dimension"], "slot")
+
+    def test_storage_access_match_does_not_invent_unavailable_values(self):
+        access = {
+            "account": B,
+            "slot": SLOT,
+            "previous_value": None,
+            "new_value": None,
+            "is_write": True,
+            "reverted": False,
+        }
+        anvil = normalize_calltracer(
+            [
+                {"type": "CALL", "from": A, "to": B, "depth": 0,
+                 "value": "0x0", "input": "0x12345678"},
+                {"type": "DELEGATECALL", "from": B, "to": A, "depth": 1,
+                 "value": "0x0", "input": "0xaabbccdd"},
+            ],
+            per_access_storage={0: [access], 1: []},
+        )
+        report = compare_trace_events(forge_trace(), anvil)
+        self.assertEqual(report["status"], "MATCHED")
+        self.assertEqual(report["storage_parity"], "accesses_matched_values_incomplete")
+        self.assertTrue(report["storage_values_incomplete"])
+
+
 if __name__ == "__main__":
     unittest.main()
