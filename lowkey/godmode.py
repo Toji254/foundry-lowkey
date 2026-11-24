@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import struct
+import socket
+import pwd
+import platform
+import ipaddress
 import queue
 import signal
 import json
@@ -132,10 +137,10 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "The scanner is static and can miss aliases, wrappers, or custom state manipulation.",
     },
     "sandbox": {
-        "summary": "Run an untrusted command in an isolated, network-disabled bubblewrap copy of the project.",
-        "when": "Use it before executing untrusted build/test steps when bubblewrap is installed.",
-        "example": "lk sandbox --root . --timeout 300 -- forge test",
-        "limits": "If bubblewrap is unavailable, Lowkey refuses to run the command unsandboxed.",
+        "summary": "Run an untrusted command in a disposable bubblewrap workspace with seccomp syscall filtering, cgroup CPU/memory/process/file limits, and network isolation or an IP allowlist.",
+        "when": "Use it before executing untrusted build/test steps. Network is disabled by default; opt into a narrow hostname/IP allowlist only when a sandboxed build genuinely needs one RPC destination.",
+        "example": "lk sandbox --root . --timeout 300 --cpu-seconds 180 --memory-mb 2048 -- forge test",
+        "limits": "Requires bubblewrap and systemd-run cgroup controls. Allowlisting additionally requires sudo and cgroup v2. Lowkey refuses to run with weaker limits or unrestricted networking; allowed IPs permit all ports.",
     },
     "cheat-fingerprint": {
         "summary": "Scan source for dangerous cheatcode and state-fabrication sequences that can weaken exploit evidence.",
@@ -7760,6 +7765,259 @@ def steps(args):
 
 
 
+def _sandbox_seccomp_filter():
+    """Build a small architecture-checked seccomp-BPF denylist for dangerous syscalls."""
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        audit_arch = 0xC000003E
+        denied = {
+            "ptrace": 101, "mount": 165, "umount2": 166, "pivot_root": 155,
+            "setns": 308, "unshare": 272, "bpf": 321, "perf_event_open": 298,
+            "keyctl": 250, "add_key": 248, "request_key": 249, "userfaultfd": 323,
+            "kexec_load": 246, "reboot": 169, "init_module": 175, "finit_module": 313,
+            "delete_module": 176, "open_by_handle_at": 304, "name_to_handle_at": 303,
+            "process_vm_readv": 310, "process_vm_writev": 311,
+            "io_uring_setup": 425, "io_uring_enter": 426, "io_uring_register": 427,
+        }
+    elif machine in {"aarch64", "arm64"}:
+        audit_arch = 0xC00000B7
+        denied = {
+            "ptrace": 117, "mount": 40, "umount2": 39, "pivot_root": 41,
+            "setns": 268, "unshare": 97, "bpf": 280, "perf_event_open": 241,
+            "keyctl": 219, "add_key": 217, "request_key": 218, "userfaultfd": 282,
+            "kexec_load": 104, "reboot": 142, "init_module": 105, "finit_module": 273,
+            "delete_module": 106, "open_by_handle_at": 265, "name_to_handle_at": 264,
+            "process_vm_readv": 270, "process_vm_writev": 271,
+            "io_uring_setup": 425, "io_uring_enter": 426, "io_uring_register": 427,
+        }
+    else:
+        raise RuntimeError("No audited seccomp syscall table for architecture: " + machine)
+
+    instructions = []
+    pack = lambda code, jt, jf, value: struct.pack("=HBBI", code, jt, jf, value)
+    instructions.append(pack(0x20, 0, 0, 4))               # load seccomp_data.arch
+    instructions.append(pack(0x15, 1, 0, audit_arch))      # expected architecture?
+    instructions.append(pack(0x06, 0, 0, 0x80000000))       # kill on ABI mismatch
+    instructions.append(pack(0x20, 0, 0, 0))               # load syscall number
+    for syscall_number in sorted(set(denied.values())):
+        instructions.append(pack(0x15, 0, 1, syscall_number))
+        instructions.append(pack(0x06, 0, 0, 0x00050000 | 1))  # EPERM
+    instructions.append(pack(0x06, 0, 0, 0x7FFF0000))      # allow remaining syscalls
+    return b"".join(instructions), sorted(denied)
+
+def _sandbox_resolve_allowlist(hosts):
+    addresses = set()
+    unresolved = []
+    for host in hosts:
+        value = str(host).strip()
+        if not value or any(char in value for char in "/?#@"):
+            raise ValueError("Allowlisted hosts must be plain hostnames or IP addresses: " + repr(host))
+        try:
+            addresses.add(str(ipaddress.ip_address(value)))
+            continue
+        except ValueError:
+            pass
+        try:
+            for item in socket.getaddrinfo(value, None, type=socket.SOCK_STREAM):
+                addresses.add(str(ipaddress.ip_address(item[4][0])))
+        except OSError:
+            unresolved.append(value)
+    if unresolved:
+        raise ValueError("Could not resolve allowlisted host(s); refusing a partial network policy: " + ", ".join(unresolved))
+    if not addresses:
+        raise ValueError("Network allowlist is empty.")
+    return sorted(addresses)
+
+def sandbox(args):
+    p = LowkeyArgumentParser(prog="lk sandbox")
+    p.add_argument("--root", default=".")
+    p.add_argument("--timeout", type=int, default=300)
+    p.add_argument("--cpu-seconds", type=int, default=300)
+    p.add_argument("--memory-mb", type=int, default=4096)
+    p.add_argument("--file-size-mb", type=int, default=512)
+    p.add_argument("--nofile", type=int, default=256)
+    p.add_argument("--processes", type=int, default=512, help="Maximum processes/threads in this sandbox's systemd cgroup TasksMax.")
+    p.add_argument("--readonly-workspace", action="store_true", help="Mount the disposable project copy read-only.")
+    p.add_argument("--network", choices=("none", "allowlist"), default="none")
+    p.add_argument("--allow-host", action="append", default=[], help="Allow this hostname/IP when --network allowlist is selected. All ports to resolved IPs are allowed.")
+    p.add_argument("command", nargs=argparse.REMAINDER)
+    ns = p.parse_args(args)
+
+    if not ns.command or ns.command[0] != "--":
+        raise ValueError("Usage: lk sandbox [options] -- <command> [args]")
+    if min(ns.timeout, ns.cpu_seconds, ns.memory_mb, ns.file_size_mb, ns.nofile, ns.processes) < 1:
+        raise ValueError("Sandbox time, CPU, memory, file-size, nofile, and process limits must all be positive.")
+    if ns.network == "none" and ns.allow_host:
+        raise ValueError("--allow-host requires --network allowlist.")
+    if ns.network == "allowlist" and not ns.allow_host:
+        raise ValueError("--network allowlist requires at least one --allow-host.")
+
+    root = root_path(ns.root)
+    if not shutil.which("bwrap"):
+        raise RuntimeError("bubblewrap is unavailable; refusing unsandboxed execution.")
+    if not shutil.which("systemd-run"):
+        raise RuntimeError("Sandbox resource isolation requires systemd-run cgroup controls; refusing a weaker fallback.")
+    if ns.network == "allowlist":
+        if not shutil.which("sudo"):
+            raise RuntimeError("Network allowlisting requires sudo; refusing an unrestricted network fallback.")
+        if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
+            raise RuntimeError("Network allowlisting requires cgroup v2; refusing an unrestricted network fallback.")
+        allow_ips = _sandbox_resolve_allowlist(ns.allow_host)
+        resolver_ips = []
+        resolv_conf = Path("/etc/resolv.conf")
+        if resolv_conf.is_file():
+            for line in resolv_conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "nameserver":
+                    try:
+                        resolver_ips.append(str(ipaddress.ip_address(parts[1])))
+                    except ValueError:
+                        pass
+        allow_ips = sorted(set(allow_ips + resolver_ips))
+    else:
+        allow_ips = []
+
+    temporary = Path(tempfile.mkdtemp(prefix="lk-sandbox-"))
+    work = temporary / "project"
+    try:
+        def ignore_sensitive(directory, names):
+            ignored = []
+            for name in names:
+                lower = name.lower()
+                if name in {".git", ".audit", "node_modules", "out", "cache", "__pycache__", ".venv", "venv"}:
+                    ignored.append(name)
+                elif lower.startswith(".env") or any(
+                    token in lower for token in ("credential", "keystore", "private_key", "wallet.json", "id_rsa", "id_ed25519", ".npmrc")
+                ):
+                    ignored.append(name)
+            return ignored
+
+        shutil.copytree(root, work, ignore=ignore_sensitive, symlinks=True)
+        home = Path.home()
+        home_args = []
+        if str(home).startswith("/home/"):
+            home_args += ["--dir", "/home"]
+        if str(home) != "/":
+            home_args += ["--dir", str(home)]
+        foundry_bin = home / ".foundry" / "bin"
+        if foundry_bin.is_dir():
+            home_args += ["--dir", str(home / ".foundry"), "--ro-bind", str(foundry_bin), str(foundry_bin)]
+        svm = home / ".svm"
+        if svm.is_dir():
+            home_args += ["--dir", str(home / ".svm"), "--ro-bind", str(svm), str(svm)]
+
+        seccomp_bytes, denied_names = _sandbox_seccomp_filter()
+        # systemd-run creates a new service process: an FD passed to its client
+        # is not inherited by the transient service. Open the filter in a small
+        # trusted wrapper before exec'ing bubblewrap in that service.
+        seccomp_file = temporary / "seccomp.filter"
+        seccomp_file.write_bytes(seccomp_bytes)
+        seccomp_argument = "3"
+
+        path_value = str(foundry_bin) + ":/usr/local/bin:/usr/bin:/bin"
+        workspace_mount = "--ro-bind" if ns.readonly_workspace else "--bind"
+        runtime_mount_args = []
+        # A minimal bwrap root does not inherit host /bin, /sbin or ELF loader
+        # directories just because those paths exist on the host. Bind the
+        # existing runtime paths read-only into the disposable namespace.
+        for runtime_path in ("/bin", "/sbin", "/lib", "/lib64"):
+            if Path(runtime_path).exists():
+                runtime_mount_args.extend(["--ro-bind", runtime_path, runtime_path])
+
+        bwrap_argv = [
+            "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+            "--seccomp", seccomp_argument, "--clearenv", "--setenv", "HOME", str(home),
+            "--setenv", "PATH", path_value, "--ro-bind", "/usr", "/usr",
+            "--ro-bind", "/etc", "/etc", *runtime_mount_args,
+            "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", *home_args, "--dir", "/workspace",
+            workspace_mount, str(work), "/workspace", "--chdir", "/workspace",
+            "--", *ns.command[1:],
+        ]
+        if ns.network == "none":
+            bwrap_argv.insert(2, "--unshare-net")
+
+        # Per-sandbox cgroup controls apply in both network modes. Network-none
+        # additionally uses a fresh network namespace; allowlist mode relies on
+        # systemd's cgroup IP filter and therefore needs the system manager.
+        resource_properties = [
+            "--property=Type=exec",
+            "--property=LimitCPU=" + str(ns.cpu_seconds) + "s",
+            "--property=LimitAS=" + str(ns.memory_mb * 1024 * 1024),
+            "--property=MemoryMax=" + str(ns.memory_mb * 1024 * 1024),
+            "--property=LimitFSIZE=" + str(ns.file_size_mb * 1024 * 1024),
+            "--property=LimitNOFILE=" + str(ns.nofile),
+            "--property=TasksMax=" + str(ns.processes),
+            "--property=RuntimeMaxSec=" + str(ns.timeout) + "s",
+        ]
+        seccomp_wrapper = [
+            "/bin/bash", "-c", 'exec 3< "$1"; shift; exec "$@"',
+            "lowkey-sandbox-seccomp", str(seccomp_file), *bwrap_argv,
+        ]
+        if ns.network == "allowlist":
+            current_user = pwd.getpwuid(os.getuid()).pw_name
+            outer_argv = [
+                "sudo", "systemd-run", "--system", "--wait", "--pipe", "--collect",
+                "--property=User=" + current_user,
+                "--property=IPAddressDeny=any",
+                *resource_properties,
+            ]
+            outer_argv.extend("--property=IPAddressAllow=" + address for address in allow_ips)
+        else:
+            outer_argv = [
+                "systemd-run", "--user", "--wait", "--pipe", "--collect",
+                *resource_properties,
+            ]
+        outer_argv.extend(["--", *seccomp_wrapper])
+
+        proc = subprocess.Popen(
+            outer_argv,
+            cwd=str(root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            pass_fds=(),
+            start_new_session=True,
+        )
+        # RuntimeMaxSec is the authoritative service timeout; give the
+        # systemd-run client a short grace period to receive the unit result.
+        client_timeout = ns.timeout + 5
+        try:
+            stdout_text, stderr_text = proc.communicate(timeout=client_timeout)
+        except subprocess.TimeoutExpired:
+            print("SANDBOX: TIMEOUT after " + str(ns.timeout) + " seconds; terminating process group", file=sys.stderr)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                proc.terminate()
+            try:
+                stdout_text, stderr_text = proc.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    proc.kill()
+                stdout_text, stderr_text = proc.communicate()
+            if stdout_text:
+                print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+            if stderr_text:
+                print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
+            return 124
+        print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
+        print("SANDBOX SECCOMP: active; denied syscalls: " + ", ".join(denied_names))
+        print("SANDBOX LIMITS: cgroup MemoryMax=" + str(ns.memory_mb) + "MiB TasksMax=" + str(ns.processes) + " LimitCPU=" + str(ns.cpu_seconds) + "s file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile))
+        if stdout_text:
+            print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+        if stderr_text:
+            print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
+        return proc.returncode
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
 def main(argv=None):
     a=list(sys.argv[1:] if argv is None else argv)
     if not a or a[0] in HELP_FLAGS:
@@ -7813,46 +8071,7 @@ def main(argv=None):
                 ev=evidence_ledger.append_event(root,"fidelity_record",{"strength":ns.strength,"cheatcodes":ns.cheatcode,"created_at":now()}); print("Recorded "+ev["event_id"]); return 0
             rows=[e for e in evidence_ledger.read_events(root) if e.get("event_type")=="fidelity_record"]; return output(rows)
         except ImportError as exc: raise RuntimeError(str(exc))
-    if cmd=="sandbox":
-        p=LowkeyArgumentParser(prog="lk sandbox"); p.add_argument("--root",default="."); p.add_argument("--timeout",type=int,default=300); p.add_argument("command",nargs=argparse.REMAINDER); ns=p.parse_args(rest)
-        root=root_path(ns.root)
-        if not shutil.which("bwrap"): raise RuntimeError("bubblewrap unavailable; refusing unsandboxed execution.")
-        if not ns.command or ns.command[0]!="--": raise ValueError("Usage: lk sandbox -- <command> [args]")
-        temp=Path(tempfile.mkdtemp(prefix="lk-sandbox-")); work=temp/"project"
-        try:
-            def ignore_sensitive(directory,names):
-                ignored=[]
-                for name in names:
-                    lower=name.lower()
-                    if name in {".git",".audit","node_modules","out","cache","__pycache__",".venv","venv"}:
-                        ignored.append(name)
-                    elif lower.startswith(".env") or any(token in lower for token in ("credential","keystore","private_key","wallet.json","id_rsa","id_ed25519",".npmrc")):
-                        ignored.append(name)
-                return ignored
-            shutil.copytree(root,work,ignore=ignore_sensitive)
-            home=Path.home()
-            home_args=[]
-            # Build an isolated home path inside the sandbox; do not expose the
-            # host home directory. Only Foundry executables and solc versions
-            # are selectively mounted read-only.
-            if str(home).startswith("/home/"):
-                home_args += ["--dir","/home"]
-            if str(home)!="/":
-                home_args += ["--dir",str(home)]
-            foundry_bin=home/".foundry"/"bin"
-            if foundry_bin.is_dir():
-                home_args += ["--dir",str(home/".foundry"),"--ro-bind",str(foundry_bin),str(foundry_bin)]
-            svm=home/".svm"
-            if svm.is_dir():
-                home_args += ["--dir",str(home/".svm"),"--ro-bind",str(svm),str(svm)]
-            path_value=str(foundry_bin)+":/usr/local/bin:/usr/bin:/bin"
-            argv=["bwrap","--die-with-parent","--unshare-net","--unshare-pid","--unshare-ipc","--unshare-uts",
-                  "--clearenv","--setenv","HOME",str(home), "--setenv","PATH",path_value,
-                  "--ro-bind","/usr","/usr","--ro-bind","/etc","/etc","--dev","/dev","--proc","/proc",
-                  "--tmpfs","/tmp",*home_args,"--bind",str(work),"/workspace","--chdir","/workspace","--",*ns.command[1:]]
-            proc=run(argv,root,ns.timeout)
-            print(proc.stdout,end=""); print(proc.stderr,file=sys.stderr,end=""); return proc.returncode
-        finally: shutil.rmtree(temp,ignore_errors=True)
+    if cmd=="sandbox": return sandbox(rest)
     if cmd=="cheat-fingerprint": return fingerprint(rest)
     if cmd in {"fallback-map","oracle-map","reentrancy-graph","sig-matrix","init-frontrun","custody","cross-vm","cfg"}: return source_cmd(cmd,rest)
     if cmd in {"proxy-resolve","storage-infer","selectors-full"}: return rpc_command(cmd,rest)
