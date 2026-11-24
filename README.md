@@ -57,6 +57,27 @@ Use `quick`, `standard`, or `deep` profiles. The default call budgets are bounde
 
 This sends redacted source excerpts to the configured AI provider. The agents do not execute builds/tests or contact RPC endpoints. Results are source-level candidates only; a surviving AI review never counts as a confirmed vulnerability and does not bypass native Foundry/Anvil proof, control, fidelity, economic, or human-disposition gates. Runs and the coverage ledger are stored under `.audit/godmode/multiwave/`. A `coverage_complete` result covers only the recorded in-scope units and is not a security clearance.
 
+
+### Compiler-backed protocol graph and attack research
+
+After a clean Foundry build with compiler metadata, inspect the separate compiler-AST and saved runtime-trace evidence layers:
+
+~~~bash
+forge build --build-info --ast
+lk archetype classify --root . --json
+~~~
+
+For optional AI-assisted hypothesis research and graph-constrained chain synthesis:
+
+~~~bash
+lk attack research --root . --contract Vault --function withdraw --max-candidates 5
+lk attack synthesize --root . --max-stages 4
+~~~
+
+Research sends bounded, redacted source excerpts to the configured AI provider. Citations are checked against exact source lines and file hashes. Synthesis only joins hypotheses where compiler-AST call or state-dependency candidate edges connect their mapped functions. It never writes or runs tests, signs or sends transactions, or confirms a vulnerability. Every proposed chain remains blocked until a target-specific adapter and its own paired control, rollback, mutation and independent reproof acceptance exist.
+
+Compiler AST relationships are static candidates. Runtime call edges are drawn only from validated saved canonical traces. Neither layer claims full reachability or path-sensitive data-flow proof.
+
 ### P1 command reference and help
 
 The Godmode commands are included in the root lk --help catalog. Every Godmode command accepts the help spellings --h, --help, -h, and help. Use a command's help page for its complete positional arguments, options, defaults, and examples:
