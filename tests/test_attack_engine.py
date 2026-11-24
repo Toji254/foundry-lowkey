@@ -298,9 +298,11 @@ class AttackEngineTests(unittest.TestCase):
             "prior_cost_wei": 2,
             "total_cost_wei": 5,
             "net_profit_wei": None,
-            "net_profit_usd_18": 5 * 10**18,
+            "net_profit_usd_18": 10 * 10**18 - 5,
             "net_profit_unit": "USD_18",
-            "net_profit_value": 5 * 10**18,
+            "net_profit_value": 10 * 10**18 - 5,
+            "gross_balance_delta_wei": 0,
+            "gas_cost_in_portfolio_delta": False,
             "source_fork_verification": {
                 "verified": True,
                 "source_chain_id": "0x1",
@@ -311,9 +313,13 @@ class AttackEngineTests(unittest.TestCase):
             "token_portfolio": {
                 "quote_currency": "USD",
                 "source_state_verified": True,
+                "valuation_block": 100,
+                "native_price": {"price_usd_18": 10**18},
+                "token_value_delta_usd_18": 10 * 10**18,
                 "tokens": [{
                     "kind": "erc20",
                     "token_code_sha256": "5" * 64,
+                    "value_delta_usd_18": 10 * 10**18,
                     "oracle": {
                         "feed_code_source_verified": True,
                         "source_round_verified": True,
@@ -322,10 +328,11 @@ class AttackEngineTests(unittest.TestCase):
             },
             "economic_valuation": {
                 "native_delta_usd_18": 0,
+                "native_gross_delta_wei": 0,
                 "token_delta_usd_18": 10 * 10**18,
-                "external_gas_cost_usd_18": 3 * 10**18,
-                "prior_cost_usd_18": 2 * 10**18,
-                "net_profit_usd_18": 5 * 10**18,
+                "external_gas_cost_usd_18": 3,
+                "prior_cost_usd_18": 2,
+                "net_profit_usd_18": 10 * 10**18 - 5,
                 "portfolio_manifest_sha256": "6" * 64,
             },
         }
@@ -336,10 +343,10 @@ class AttackEngineTests(unittest.TestCase):
             root=self.root, target=self.target, family="economic",
             impact_mode="economic", label="reproof",
         )
-        self.assertEqual(result["net_profit_usd_18"], 5 * 10**18)
+        self.assertEqual(result["net_profit_usd_18"], 10 * 10**18 - 5)
         self.assertEqual(result["net_profit_unit"], "USD_18")
 
-        payload["economic_valuation"]["external_gas_cost_usd_18"] = 4 * 10**18
+        payload["economic_valuation"]["external_gas_cost_usd_18"] = 4
         report_path.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaisesRegex(engine.AttackEngineError, "does not reconcile"):
             engine._validate_reproof(
@@ -348,7 +355,7 @@ class AttackEngineTests(unittest.TestCase):
                 impact_mode="economic", label="reproof",
             )
 
-        payload["economic_valuation"]["external_gas_cost_usd_18"] = 3 * 10**18
+        payload["economic_valuation"]["external_gas_cost_usd_18"] = 3
         payload["token_portfolio"]["tokens"][0]["oracle"]["source_round_verified"] = False
         report_path.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaisesRegex(engine.AttackEngineError, "source-verified"):
