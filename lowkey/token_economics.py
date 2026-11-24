@@ -128,12 +128,23 @@ def _price_round(
         source_verified = True
     round_id, answer_word, started_at, updated_at, answered_in_round = values
     answer = answer_word - (1 << 256) if answer_word >= (1 << 255) else answer_word
-    if round_id <= 0 or answer <= 0:
-        raise TokenEconomicsError("USD price feed round ID and answer must be positive.")
+    max_uint80 = (1 << 80) - 1
+    if not 0 < round_id <= max_uint80 or not 0 <= answered_in_round <= max_uint80:
+        raise TokenEconomicsError("USD price feed roundId and answeredInRound must fit uint80.")
+    if answer <= 0:
+        raise TokenEconomicsError("USD price feed answer must be positive.")
     if answered_in_round < round_id:
         raise TokenEconomicsError("USD price feed round is incomplete (answeredInRound < roundId).")
-    if started_at <= 0 or updated_at <= 0 or updated_at > block_timestamp:
-        raise TokenEconomicsError("USD price feed timestamps are missing or after the pinned block.")
+    if (
+        type(block_timestamp) is not int
+        or block_timestamp <= 0
+        or started_at <= 0
+        or updated_at < started_at
+        or updated_at > block_timestamp
+    ):
+        raise TokenEconomicsError(
+            "USD price feed timestamps are missing, inverted, or after the pinned block."
+        )
     age = block_timestamp - updated_at
     if age > max_age_seconds:
         raise TokenEconomicsError(
@@ -157,6 +168,10 @@ def _price_round(
 
 
 def _value_delta_usd_18(delta_raw: int, decimals: int, price_usd_18: int) -> int:
+    if type(delta_raw) is not int or type(decimals) is not int or type(price_usd_18) is not int:
+        raise TokenEconomicsError("Token valuation inputs must be integers.")
+    if not 0 <= decimals <= 36 or price_usd_18 <= 0:
+        raise TokenEconomicsError("Token valuation requires supported decimals and a positive USD price.")
     numerator = delta_raw * price_usd_18
     denominator = 10 ** decimals
     if numerator >= 0:
@@ -336,14 +351,23 @@ def measure_token_portfolio(
                 rpc, local_url, source_url, address, _ERC4626_ASSET,
                 before_block, token["symbol"] + " asset()",
             )
-            # ABI address return occupies the low 160 bits of one word.
-            if "0x" + format(asset_call & ((1 << 160) - 1), "040x") != asset:
+            # ABI address is left-padded: the upper 96 bits must be zero.
+            if asset_call >> 160:
+                raise TokenEconomicsError(
+                    f"{token['symbol']} ERC-4626 asset() returned a malformed ABI address word."
+                )
+            if "0x" + format(asset_call, "040x") != asset:
                 raise TokenEconomicsError(f"{token['symbol']} ERC-4626 asset() does not match the declared underlying asset.")
-            vault_asset_after = _word(
+            vault_asset_after_word = _word(
                 _call(rpc, local_url, address, _ERC4626_ASSET, after_block,
                       token["symbol"] + " post-state asset()"),
                 token["symbol"] + " post-state asset()",
-            ) & ((1 << 160) - 1)
+            )
+            if vault_asset_after_word >> 160:
+                raise TokenEconomicsError(
+                    f"{token['symbol']} post-state asset() returned a malformed ABI address word."
+                )
+            vault_asset_after = vault_asset_after_word
             if "0x" + format(vault_asset_after, "040x") != asset:
                 raise TokenEconomicsError(
                     f"{token['symbol']} ERC-4626 asset() changed during the measured transaction."
@@ -479,6 +503,8 @@ def net_portfolio_profit_usd_18(
     prior_cost_wei: int = 0,
 ) -> dict[str, int]:
     """Combine native and token deltas in USD 1e-18, subtracting non-portfolio costs."""
+    if type(native_delta_wei) is not int or type(token_value_delta_usd_18) is not int:
+        raise TokenEconomicsError("Native and token portfolio deltas must be signed integers.")
     gas = _uint(external_gas_cost_wei, "external_gas_cost_wei")
     prior = _uint(prior_cost_wei, "prior_cost_wei")
     native_value = value_native_delta_usd_18(native_delta_wei, native_price)
