@@ -560,6 +560,13 @@ Legacy aliases such as `signals`, `investigate`, `try`, `c`, `s`, and `state-dif
 
 Plain `lk audit` detects and uses an existing Anvil node but never starts one. `lk audit auto` is the autonomous local mode: it starts a project-owned Anvil when needed, binds a safe local actor, resolves a project target when possible, and may deploy a zero-constructor-argument local artifact without inventing constructor values. Both modes collect audit evidence without inventing PoCs; `--checks` adds Slither and optional lint/geiger checks. When an explicit PoC request lacks calldata or an impact assertion, Lowkey returns a review-required result instead of writing a placeholder.
 
+### Transaction sends are previewed before approval
+
+Every `lk send` now shows the prepared sender, destination or contract function, decoded inputs, attached ETH value, and an available read-only `eth_estimateGas` / fee quote before asking for explicit approval. If the RPC cannot estimate gas or provide a fee quote, Lowkey reports it as unavailable; it never substitutes zero. This preview is not proof that a transaction will succeed or that the contract action is safe.
+
+Use `--preview` / `--dry-run` to stop before broadcasting. `--yes` explicitly bypasses the preview and prompt for reviewed automation or tests. `--repeat` and `--actors` preview once and ask once for the full sequence; `--actors` rejects signer overrides so the selected Anvil account remains the actual sender.
+
+
 ## Actors
 
 Use actor names so your audit notes read like an attack story instead of a wall of addresses.

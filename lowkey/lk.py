@@ -7306,6 +7306,169 @@ def _print_read_only_call_summary(config, target, function_item, command, actor=
     print("This is an eth_call simulation: it does not mine a transaction or save state changes.")
 
 
+def _transaction_preview_gas(config, command, target, function_item, raw_values, actor=None, direct_eth_transfer=False, calldata=None, calldata_resolved=False):
+    """Estimate gas with a read-only RPC call; never signs or broadcasts."""
+    rpc = _preview_option_value(command, "--rpc-url") or effective_rpc(config, target=target)
+    if not rpc:
+        return {"available": False, "reason": "no RPC URL is available for an estimate"}
+
+    sender = _preview_option_value(command, "--from")
+    if not sender and actor:
+        try:
+            sender = actor_address(config, actor)
+        except Exception:
+            sender = None
+
+    tx = {}
+    if is_address(sender):
+        tx["from"] = sender
+    if is_address(target):
+        tx["to"] = target
+
+    value_wei = _send_value_as_wei(command)
+    if value_wei is None:
+        return {"available": False, "reason": "the attached ETH value could not be converted to wei safely"}
+    if value_wei:
+        tx["value"] = hex(value_wei)
+
+    if direct_eth_transfer:
+        tx["data"] = "0x"
+    elif isinstance(function_item, dict):
+        rows = _preview_argument_rows(config, function_item, raw_values)
+        inputs = function_item.get("inputs") or []
+        if len(rows) != len(inputs):
+            return {"available": False, "reason": "function arguments could not be matched to the loaded ABI"}
+        if calldata_resolved:
+            if not isinstance(calldata, str) or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
+                return {"available": False, "reason": "prepared calldata is unavailable; gas estimation was not attempted"}
+            tx["data"] = calldata
+        else:
+            try:
+                code, output, error = cast_output([
+                    "cast", "calldata", format_signature(function_item),
+                    *[row[4] for row in rows],
+                ])
+            except Exception as error:
+                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(error))}"}
+            calldata = str(output or "").strip()
+            if code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
+                detail = error or output or "Cast did not return valid calldata"
+                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(detail))}"}
+            tx["data"] = calldata
+    else:
+        raw_data = str(command[3]).strip() if len(command) > 3 else ""
+        if re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", raw_data):
+            tx["data"] = raw_data
+        elif raw_data and not raw_data.startswith("-"):
+            # A full function signature is sufficient for Cast to encode a
+            # call even when the selected artifact/ABI is unavailable.
+            try:
+                code, output, error = cast_output([
+                    "cast", "calldata", raw_data, *[str(value) for value in raw_values or []],
+                ])
+            except Exception as error:
+                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(error))}"}
+            calldata = str(output or "").strip()
+            if code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
+                detail = error or output or "Cast could not encode the supplied function signature"
+                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(detail))}"}
+            tx["data"] = calldata
+        elif raw_values:
+            return {"available": False, "reason": "function calldata is ambiguous without an ABI or full function signature"}
+        else:
+            tx["data"] = "0x"
+
+    response = _rpc_json_response(rpc, "eth_estimateGas", [tx], timeout=2.0)
+    if not isinstance(response, dict):
+        return {"available": False, "reason": "RPC did not return an estimate response"}
+    if response.get("transport_error"):
+        return {"available": False, "reason": redact_secrets(str(response["transport_error"]))}
+    rpc_error = response.get("error")
+    if rpc_error is not None:
+        detail = rpc_error.get("message") if isinstance(rpc_error, dict) else str(rpc_error)
+        return {"available": False, "reason": redact_secrets(str(detail or "RPC rejected eth_estimateGas"))}
+    gas_estimate = _hex_to_int(response.get("result"))
+    if gas_estimate is None or gas_estimate <= 0:
+        return {"available": False, "reason": "RPC returned a missing or invalid gas estimate"}
+
+    gas_limit_raw = _preview_option_value(command, "--gas-limit") or _preview_option_value(command, "--gas")
+    gas_limit = _hex_to_int(gas_limit_raw) if gas_limit_raw is not None else None
+
+    max_fee_raw = _preview_option_value(command, "--max-fee-per-gas")
+    gas_price_raw = _preview_option_value(command, "--gas-price")
+    fee_price_wei = None
+    fee_label = None
+    fee_reason = None
+    if max_fee_raw is not None:
+        fee_price_wei = _send_value_as_wei(["--value", max_fee_raw])
+        fee_label = "Maximum fee at the supplied max-fee-per-gas"
+        if fee_price_wei is None:
+            fee_reason = "the supplied max-fee-per-gas value could not be parsed"
+    elif gas_price_raw is not None:
+        fee_price_wei = _send_value_as_wei(["--value", gas_price_raw])
+        fee_label = "Approximate fee at the supplied gas price"
+        if fee_price_wei is None:
+            fee_reason = "the supplied gas-price value could not be parsed"
+    else:
+        price_response = _rpc_json_response(rpc, "eth_gasPrice", [], timeout=2.0)
+        if isinstance(price_response, dict) and not price_response.get("error") and not price_response.get("transport_error"):
+            fee_price_wei = _hex_to_int(price_response.get("result"))
+            fee_label = "Approximate fee at the current RPC gasPrice quote"
+        else:
+            detail = (
+                price_response.get("error", {}).get("message")
+                if isinstance(price_response, dict) and isinstance(price_response.get("error"), dict)
+                else price_response.get("transport_error")
+                if isinstance(price_response, dict)
+                else None
+            )
+            fee_reason = redact_secrets(str(detail or "RPC gas-price quote unavailable"))
+
+    fee_wei = gas_estimate * fee_price_wei if fee_price_wei is not None and fee_price_wei >= 0 else None
+    priority_raw = _preview_option_value(command, "--priority-gas-price") or _preview_option_value(command, "--max-priority-fee-per-gas")
+    priority_wei = _send_value_as_wei(["--value", priority_raw]) if priority_raw is not None else None
+    return {
+        "available": True,
+        "gas_estimate": gas_estimate,
+        "gas_limit": gas_limit,
+        "gas_limit_raw": gas_limit_raw,
+        "fee_price_wei": fee_price_wei,
+        "fee_wei": fee_wei,
+        "fee_label": fee_label,
+        "fee_reason": fee_reason,
+        "priority_fee_wei": priority_wei,
+    }
+
+
+def _print_transaction_gas_context(gas):
+    print("")
+    print("GAS CONTEXT")
+    print("-----------")
+    if not isinstance(gas, dict) or not gas.get("available"):
+        reason = gas.get("reason") if isinstance(gas, dict) else None
+        print(f"Estimated gas: unavailable — {reason or 'no reliable estimate'}")
+        print("Fee estimate: unavailable; Lowkey does not treat missing gas data as zero.")
+        print("Review the RPC and transaction inputs before deciding whether to continue.")
+        return
+    estimate = int(gas["gas_estimate"])
+    print(f"Estimated gas: {estimate:,} units (read-only RPC eth_estimateGas)")
+    if gas.get("gas_limit_raw") is not None:
+        rendered_limit = gas.get("gas_limit")
+        print(f"Gas limit override: {rendered_limit:,} units" if rendered_limit is not None else f"Gas limit override: {gas['gas_limit_raw']}")
+    else:
+        print("Gas limit: automatic (no explicit --gas-limit override)")
+    if gas.get("fee_wei") is not None:
+        print(f"{gas.get('fee_label') or 'Estimated fee'}: {gas['fee_wei']:,} wei (~{_wei_to_eth(gas['fee_wei'])} ETH)")
+        print("Fee figure is an estimate/quote, not a guaranteed final charge.")
+    else:
+        print(f"Fee estimate: unavailable — {gas.get('fee_reason') or 'no gas-price quote'}")
+        print("Gas units are not an ETH fee; check the selected network's fee market.")
+    if gas.get("priority_fee_wei") is not None:
+        print(f"Priority fee setting: {gas['priority_fee_wei']:,} wei per gas")
+    print("Actual gas used and fee are known only after the mined receipt.")
+
+
+
 def _print_transaction_preview(config, command, target, function_item, raw_values, actor=None, direct_eth_transfer=False):
     """Render a learner-friendly transaction plan; this does not simulate execution."""
     contract_name = (
@@ -7329,7 +7492,6 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
     rows = _preview_argument_rows(config, function_item, raw_values)
     attached_value = _preview_option_value(command, "--value")
     attached_value = attached_value if attached_value is not None else "0 ETH (no ETH attached)"
-
     print("TRANSACTION PREVIEW — NOT SENT")
     print("==============================")
     print("Nothing has been broadcast. This screen describes the transaction Lowkey prepared.")
@@ -7347,6 +7509,7 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
         else:
             print("  Function: raw contract call (no matching ABI function)")
     print(f"  ETH attached: {attached_value}")
+    _print_transaction_gas_context(gas_context)
 
     if rows:
         print("")
@@ -7374,6 +7537,13 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
                 encoded = candidate
         except Exception:
             encoded = None
+
+    gas_context = _transaction_preview_gas(
+        config, command, target, function_item, raw_values, actor,
+        direct_eth_transfer=direct_eth_transfer,
+        calldata=encoded,
+        calldata_resolved=bool(signature and len(rows) == len(function_item.get("inputs") or [])),
+    )
 
     if encoded and len(encoded) >= 10:
         byte_length = max(0, (len(encoded) - 2) // 2)
@@ -7746,7 +7916,7 @@ def run_cast(args,config,capture=False):
     if cast_cmd == "send" and preview:
         _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
         return 0
-    if cast_cmd == "send" and (confirm or (config.get("confirm_sends") and not bypass)):
+    if cast_cmd == "send" and not bypass:
         _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
@@ -16502,7 +16672,7 @@ def split_lab_options(args):
     return values,actor,value,keep,repeat
 
 def run_multi_actor_send(config, args):
-    """Send the same call from up to ten live Anvil accounts as separate transactions."""
+    """Review once, then send one separate transaction from each selected Anvil account."""
     info = anvil_rpc_info(config)
     raw_accounts = info.get("accounts", []) if isinstance(info, dict) else []
     detected_count = len(raw_accounts) if isinstance(raw_accounts, list) else 0
@@ -16522,19 +16692,22 @@ def run_multi_actor_send(config, args):
             "with --as/--actor for N transactions from one identity."
         )
 
-    rpc = info.get("url")
-    print("MULTI-ACTOR SEND")
-    print("================")
-    print(f"Anvil RPC: {rpc}")
-    print(f"Accounts detected: {detected_count}")
-    print(f"Accounts used:     {len(accounts)} (maximum 10)")
-    print("Each account sends a separate transaction, so msg.sender changes per call.")
-    print("")
+    raw_args = list(args or [])
+    signer_overrides = {"--from", "--private-key", "--keystore", "--mnemonic", "--mnemonic-derivation-path", "--ledger", "--trezor"}
+    for token in raw_args:
+        option = str(token).split("=", 1)[0]
+        if option in signer_overrides:
+            return fail(
+                f"Error: --actors selects each Anvil sender itself; remove {option} so one signer cannot override the per-account identity."
+            )
+    preview_only = any(token in raw_args for token in {"--preview", "--dry-run"})
+    bypass_confirmation = "--yes" in raw_args
+    send_args = [
+        token for token in raw_args
+        if token not in {"--preview", "--dry-run", "--confirm", "--yes"}
+    ]
 
-    overall_code = 0
-    successes = 0
-    failures = 0
-    for index, address in enumerate(accounts):
+    def actor_config_for(index, address):
         actor_name = f"anvil-{index}"
         actor_config = dict(config)
         actor_config["_ephemeral"] = True
@@ -16544,17 +16717,65 @@ def run_multi_actor_send(config, args):
             "source": "anvil-impersonated",
             "address": address,
         }
+        return actor_config
 
-        result = run_cast(["send", *args], actor_config, capture=True)
+    rpc = info.get("url")
+    print("MULTI-ACTOR SEND")
+    print("================")
+    print(f"Anvil RPC: {rpc}")
+    print(f"Accounts detected: {detected_count}")
+    print(f"Accounts used:     {len(accounts)} (maximum 10)")
+    print("Each account sends a separate transaction, so msg.sender changes per call.")
+    print("The batch is not atomic; earlier transactions remain mined if a later send fails.")
+    for index, address in enumerate(accounts):
+        print(f"  anvil-{index}: {address}")
+    print("")
+
+    first_actor_config = actor_config_for(0, accounts[0])
+    if preview_only or not bypass_confirmation:
+        preview_result = run_cast(
+            ["send", *send_args, "--preview"],
+            first_actor_config,
+            capture=False,
+        )
+        preview_code = getattr(preview_result, "code", preview_result)
+        try:
+            preview_code = int(preview_code)
+        except (TypeError, ValueError):
+            preview_code = 1
+        if preview_code != 0:
+            return preview_code
+        if preview_only:
+            return 0
+        try:
+            answer = input(
+                f"Send one transaction from each of {len(accounts)} listed Anvil accounts? [y/N] "
+            ).strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in {"y", "yes"}:
+            print("Batch cancelled. No transactions were sent.")
+            return 0
+        print("Batch confirmation accepted. Each send will wait for its own receipt.")
+    else:
+        print("Explicit --yes supplied: preview and confirmation are bypassed for this batch.")
+
+    overall_code = 0
+    successes = 0
+    failures = 0
+    confirmed_args = [*send_args, "--yes"]
+    for index, address in enumerate(accounts):
+        actor_config = actor_config_for(index, address)
+        result = run_cast(["send", *confirmed_args], actor_config, capture=True)
         code = getattr(result, "code", 0)
         output = str(result).strip()
 
         print(f"ACCOUNT {index}: {address}")
         if code == 0:
-            print(format_send_summary(output, actor_config, args[0] if args else None))
+            print(format_send_summary(output, actor_config, send_args[0] if send_args else None))
             successes += 1
         else:
-            print(f"Status:    FAILED")
+            print("Status:    FAILED")
             if output:
                 print(output)
             failures += 1
@@ -16566,6 +16787,8 @@ def run_multi_actor_send(config, args):
     print(f"Attempted:  {len(accounts)}")
     print(f"Succeeded:  {successes}")
     print(f"Failed:     {failures}")
+    if failures:
+        print("Earlier transactions remain mined; a later failure does not roll back the batch.")
     return overall_code
 
 
@@ -16690,9 +16913,9 @@ def run_repeated_send(config, args, repeat_count, capture=False):
     preview = any(token in raw for token in {"--preview", "--dry-run"})
     explicit_confirm = "--confirm" in raw
     bypass_confirm = "--yes" in raw
-    needs_confirm = explicit_confirm or (
-        bool(config.get("confirm_sends")) and not bypass_confirm
-    )
+    # A repeated batch is still a set of real transactions. Preview and ask
+    # once by default; --yes is the explicit non-interactive escape hatch.
+    needs_confirm = not bypass_confirm
 
     emit("\n".join([
         "REPEATED SEND",
@@ -23505,14 +23728,14 @@ COMMAND_HELP = {
             ("--eth <amount>", "Another spelling of --value. A unitless amount is interpreted as ETH; explicit wei/gwei/ether units remain unchanged.", "lk send contribute --eth 0.001"),
             ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send release 0xd9c5... --actor Alice"),
             ("--as <name>", "Another spelling of --actor.", "lk send release 0xd9c5... --as attacker"),
-            ("--actors", "Send the same call from each detected Anvil account, up to 10 accounts. These are separate transactions with different msg.sender values.", "lk send contribute --eth 0.001 --actors"),
-            ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
+            ("--actors", "Preview one transaction and ask once before sending a separate transaction from each of up to 10 Anvil accounts. Signer overrides are rejected; each account changes msg.sender.", "lk send contribute --eth 0.001 --actors"),
+            ("--preview", "Show the prepared transaction, function inputs and available read-only gas/fee estimate without broadcasting.", "lk send release 0xd9c5... --preview"),
             ("--verbose", "Show the redacted Cast command alongside Lowkey's readable transaction preview.", "lk send release 0xd9c5... --preview --verbose"),
             ("--dry-run", "Another spelling of --preview.", "lk send release 0xd9c5... --dry-run"),
-            ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send release 0xd9c5... --confirm"),
-            ("--repeat <N>", "Send the same call N times as the same selected actor, using N separate sequential transactions. Each send waits for its receipt before the next; N must be 1–100.", "lk send AttackTarget --repeat 10 --as attacker"),
-            ("--times <N>", "Alias for --repeat; sends N separate transactions from the same selected actor (maximum 100).", "lk send AttackTarget --times 10 --as attacker"),
-            ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send release 0xd9c5... --yes"),
+            ("--confirm", "Explicitly request the approval prompt; ordinary sends already preview and ask unless --yes is supplied.", "lk send release 0xd9c5... --confirm"),
+            ("--repeat <N>", "Preview once and ask for approval before sending the same call N times as the same selected actor, using N separate sequential transactions. Each waits for its receipt; N must be 1–100. Use --yes only for deliberate automation.", "lk send AttackTarget --repeat 10 --as attacker"),
+            ("--times <N>", "Alias for --repeat; previews and asks once before N separate sequential transactions from the same selected actor (maximum 100), unless --yes is supplied.", "lk send AttackTarget --times 10 --as attacker"),
+            ("--yes", "Explicitly bypass the preview and confirmation prompt. Reserve this for reviewed automation and tests.", "lk send release 0xd9c5... --yes"),
         ],
         argument_types=[
             ("address / address payable / contract", "Pass a 0x-prefixed 20-byte address. Solidity address payable and contract-typed parameters use the same ABI address representation.", "lk send transfer 0x1111111111111111111111111111111111111111 100"),
