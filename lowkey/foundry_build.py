@@ -675,13 +675,54 @@ def render_plan(plan: dict[str, Any]) -> str:
 
 
 def _run_native_fallback(argv: Sequence[str]) -> int:
+    requested = Path.cwd().expanduser().resolve()
+    try:
+        info = project_detection.detect_project(requested)
+    except Exception as exc:
+        info = {}
+        print(f"Lowkey build: project detection could not be refreshed before native fallback: {exc}", file=sys.stderr)
+
+    project = Path((info or {}).get("root") or requested).expanduser().resolve()
+    try:
+        hardhat_scope = bootstrap._is_hardhat_scope(info, project)
+    except Exception:
+        hardhat_scope = False
+
+    # The shared project bootstrap already knows how to install repository-owned
+    # Node dependencies (frozen when a lockfile exists) and how to detect a
+    # partially restored Hardhat install. The native build fallback previously
+    # skipped that preparation step, so lk build failed before the local
+    # Hardhat command could be selected.
+    if hardhat_scope and bootstrap._local_hardhat_binary(project) is None:
+        print(
+            "Hardhat was detected, but its project-local executable is missing. "
+            "Preparing the dependencies declared by this repository."
+        )
+        bootstrap_code = project_detection.bootstrap_project(info, reason="build")
+        if bootstrap_code != 0:
+            return bootstrap_code
+
+        try:
+            info = project_detection.detect_project(project)
+        except Exception as exc:
+            print(f"REVIEW NEEDED: could not re-detect Hardhat after dependency preparation: {exc}", file=sys.stderr)
+            return 2
+        project = Path((info or {}).get("root") or project).expanduser().resolve()
+        if bootstrap._local_hardhat_binary(project) is None:
+            print(
+                "REVIEW NEEDED: dependency preparation completed, but the "
+                "repository-local Hardhat executable is still missing.",
+                file=sys.stderr,
+            )
+            return 2
+
     script = Path(__file__).resolve().with_name("lk.py")
     if not script.is_file():
         print("Lowkey build: this is not a Foundry package and the native project router is unavailable.", file=sys.stderr)
         return 2
     return subprocess.run(
         [sys.executable, str(script), "build", *argv],
-        cwd=Path.cwd(), check=False,
+        cwd=requested, check=False,
     ).returncode
 
 
