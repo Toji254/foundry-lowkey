@@ -79,6 +79,7 @@ if [[ "$#" -eq 1 ]]; then
 
 Hardhat project setup:
   lk hardhat init
+  lk hardhat doctor           Read-only Hardhat readiness report
   lk build
   lk test
   lk clean

@@ -1529,6 +1529,17 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
             ),
         }
 
+    if "hh502" in lowered or "couldn't download compiler version list" in lowered:
+        return {
+            "category": "compiler_download",
+            "repairable": False,
+            "reason": (
+                "Hardhat could not fetch Solidity compiler metadata. This is a compiler-host "
+                "network/download failure, not evidence of missing npm dependencies. Lowkey "
+                "will not reinstall packages, change the Solidity version, or disable TLS."
+            ),
+        }
+
     if any(re.search(pattern, lowered) for pattern in TOOLCHAIN_FAILURE_PATTERNS):
         return {
             "category": "toolchain_mismatch",

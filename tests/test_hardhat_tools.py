@@ -113,6 +113,147 @@ class HardhatInitTests(unittest.TestCase):
             self.assertEqual(test[1], [str(binary), "test"])
 
 
+class HardhatReadinessTests(unittest.TestCase):
+    def make_hardhat_project(self, root: Path, *, ignored: bool = True):
+        (root / "hardhat.config.js").write_text(
+            'const config = require("./env.json");\nmodule.exports = {};\n',
+            encoding="utf-8",
+        )
+        (root / "env.example.json").write_text(
+            '{"RPC_URL":"https://example.invalid","PRIVATE_KEY":"replace-me"}\n',
+            encoding="utf-8",
+        )
+        hardhat_tools.subprocess.run(
+            ["git", "init", "-q"], cwd=root, capture_output=True, text=True, check=True
+        )
+        if ignored:
+            (root / ".gitignore").write_text("env.json\n", encoding="utf-8")
+
+    def test_ignored_env_template_is_copied_atomically_with_private_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_hardhat_project(root)
+
+            ready, findings = hardhat_tools._inspect_local_configuration(
+                root, create_ignored_templates=True
+            )
+
+            self.assertTrue(ready)
+            self.assertEqual([item["status"] for item in findings], ["copied"])
+            self.assertEqual(
+                json.loads((root / "env.json").read_text(encoding="utf-8"))["RPC_URL"],
+                "https://example.invalid",
+            )
+            self.assertEqual((root / "env.json").stat().st_mode & 0o777, 0o600)
+
+    def test_existing_env_config_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_hardhat_project(root)
+            original = '{"PRIVATE_KEY":"do-not-replace"}\n'
+            (root / "env.json").write_text(original, encoding="utf-8")
+
+            ready, findings = hardhat_tools._inspect_local_configuration(
+                root, create_ignored_templates=True
+            )
+
+            self.assertTrue(ready)
+            self.assertEqual(findings[0]["status"], "existing")
+            self.assertEqual((root / "env.json").read_text(encoding="utf-8"), original)
+
+    def test_config_template_is_not_copied_when_destination_is_not_git_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_hardhat_project(root, ignored=False)
+
+            ready, findings = hardhat_tools._inspect_local_configuration(
+                root, create_ignored_templates=True
+            )
+
+            self.assertFalse(ready)
+            self.assertEqual(findings[0]["status"], "not_ignored")
+            self.assertFalse((root / "env.json").exists())
+
+    def test_missing_config_without_example_is_reported_before_hardhat_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "hardhat.config.js").write_text(
+                'require("./env.json");\nmodule.exports = {};\n',
+                encoding="utf-8",
+            )
+
+            ready, findings = hardhat_tools._inspect_local_configuration(
+                root, create_ignored_templates=True
+            )
+
+            self.assertFalse(ready)
+            self.assertEqual(findings[0]["status"], "missing")
+
+    def test_invalid_json_template_is_not_copied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_hardhat_project(root)
+            (root / "env.example.json").write_text("{invalid json\n", encoding="utf-8")
+
+            ready, findings = hardhat_tools._inspect_local_configuration(
+                root, create_ignored_templates=True
+            )
+
+            self.assertFalse(ready)
+            self.assertEqual(findings[0]["status"], "invalid_template")
+            self.assertFalse((root / "env.json").exists())
+
+    def test_hardhat_node_engine_mismatch_is_advisory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "node_modules" / "hardhat" / "package.json"
+            package.parent.mkdir(parents=True)
+            package.write_text(
+                json.dumps({
+                    "name": "hardhat",
+                    "version": "2.12.0",
+                    "engines": {"node": "^14.0.0 || ^16.0.0 || ^18.0.0"},
+                }),
+                encoding="utf-8",
+            )
+            binary = root / "node_modules" / ".bin" / "hardhat"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("", encoding="utf-8")
+
+            with patch.object(
+                hardhat_tools.bootstrap, "runtime_environment",
+                return_value=({"PATH": "/usr/bin"}, None),
+            ), patch.object(
+                hardhat_tools.shutil, "which", return_value="/usr/bin/node"
+            ), patch.object(
+                hardhat_tools.subprocess, "run",
+                return_value=SimpleNamespace(returncode=0, stdout="v24.22.1", stderr=""),
+            ):
+                status = hardhat_tools._hardhat_runtime_status(root, binary)
+
+            self.assertEqual(status["status"], "warning")
+            self.assertIn("outside", status["message"])
+            self.assertIn("will not downgrade", status["message"])
+
+    def test_doctor_is_read_only_when_example_config_is_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_hardhat_project(root)
+            info = {"root": str(root), "backend": "hardhat", "stacks": ["hardhat"]}
+            with patch.object(
+                hardhat_tools, "_selected_project", return_value=(root, info)
+            ), patch.object(
+                hardhat_tools, "_local_hardhat", return_value=None
+            ), patch.object(
+                hardhat_tools.bootstrap, "bootstrap_status",
+                return_value={"actions": []},
+            ):
+                code = hardhat_tools.run_doctor([])
+
+            self.assertEqual(code, 0)
+            self.assertFalse((root / "env.json").exists())
+
+
 class HardhatCleanTests(unittest.TestCase):
     def test_hardhat_clean_uses_project_local_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -127,8 +268,10 @@ class HardhatCleanTests(unittest.TestCase):
             ), patch.object(hardhat_tools.bootstrap, "_is_hardhat_scope", return_value=True), \
                  patch.object(hardhat_tools, "_local_hardhat", return_value=binary), \
                  patch.object(hardhat_tools, "_execution_environment", return_value=(env, None)), \
+                 patch.object(hardhat_tools, "prepare_readiness", return_value=0) as readiness, \
                  patch.object(hardhat_tools, "_run", return_value=0) as runner:
                 self.assertEqual(hardhat_tools.run_clean(["--help"]), 0)
+            readiness.assert_called_once_with(root, binary)
             runner.assert_called_once_with([str(binary), "clean", "--help"], root, env)
 
     def test_foundry_clean_preserves_existing_forge_handler(self):

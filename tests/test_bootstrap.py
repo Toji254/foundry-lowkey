@@ -14,6 +14,15 @@ spec.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_hardhat_hh502_is_classified_as_network_not_dependency_failure(self):
+        result = bootstrap.classify_build_failure(
+            "Error HH502: Couldn't download compiler version list",
+            ["node_modules/.bin/hardhat", "compile"],
+        )
+        self.assertEqual(result["category"], "compiler_download")
+        self.assertFalse(result["repairable"])
+        self.assertIn("will not reinstall packages", result["reason"])
+
     def write(self, root, relative, text):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)

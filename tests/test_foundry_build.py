@@ -75,11 +75,13 @@ class FoundryBuildPlannerTests(unittest.TestCase):
                     "run",
                     return_value=SimpleNamespace(returncode=0),
                 ) as run,
+                patch.object(foundry_build.hardhat_tools, "prepare_readiness", return_value=0) as readiness,
             ):
                 code = foundry_build._run_native_fallback(["--verbose"])
 
             self.assertEqual(code, 0)
             prepare.assert_called_once_with(info, reason="build", safe_node_install=True)
+            readiness.assert_called_once_with(root.resolve(), binary)
             command = run.call_args.args[0]
             self.assertEqual(command[1:], [str(ROOT / "lowkey" / "lk.py"), "build", "--verbose"])
             self.assertEqual(pathlib.Path(run.call_args.kwargs["cwd"]), pathlib.Path.cwd())
@@ -137,11 +139,13 @@ class FoundryBuildPlannerTests(unittest.TestCase):
                     "bootstrap_project",
                     return_value=0,
                 ) as prepare,
+                patch.object(hardhat_tools, "prepare_readiness", return_value=0) as readiness,
             ):
                 code = hardhat_tools.run_prepare(reason="test")
 
             self.assertEqual(code, 0)
             prepare.assert_called_once_with(info, reason="test", safe_node_install=True)
+            readiness.assert_called_once_with(root, binary)
 
     def test_hardhat_prepare_skips_install_when_local_binary_already_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,11 +168,13 @@ class FoundryBuildPlannerTests(unittest.TestCase):
                 patch.object(hardhat_tools, "_selected_project", return_value=(root, info)),
                 patch.object(hardhat_tools, "_local_hardhat", return_value=binary),
                 patch.object(hardhat_tools.project_detection, "bootstrap_project") as prepare,
+                patch.object(hardhat_tools, "prepare_readiness", return_value=0) as readiness,
             ):
                 code = hardhat_tools.run_prepare(reason="test")
 
             self.assertEqual(code, 0)
             prepare.assert_not_called()
+            readiness.assert_called_once_with(root, binary)
 
     def test_non_hardhat_native_build_fallback_does_not_bootstrap_node_dependencies(self):
         with tempfile.TemporaryDirectory() as tmp:

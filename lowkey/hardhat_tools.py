@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Hardhat lifecycle integration for Lowkey.
+"""Hardhat lifecycle integration and project readiness checks for Lowkey.
 
-Hardhat remains project-local. This module only initializes a project and
-routes operations that need Hardhat-specific handling; build/test continue
-through Lowkey's existing repository-native project planner.
+Hardhat remains project-local. Build, test, and clean share the same safe
+preflight for repository dependencies, local config, and runtime compatibility.
 """
 from __future__ import annotations
 
@@ -246,6 +245,7 @@ def _render_help() -> str:
         "",
         "  lk hardhat init [--template NAME] [--esm]",
         "  lk hardhat init --templates",
+        "  lk hardhat doctor",
         "",
         "Initializes Hardhat 3 in the current directory. The default template is",
         "'minimal'. Hardhat remains a project-local dependency; Lowkey does not",
@@ -418,6 +418,419 @@ def _ensure_hardhat_binary(
     return root, info, binary, 0
 
 
+
+SENSITIVE_LOCAL_CONFIG_NAMES = {
+    ".env",
+    ".env.local",
+    "env.json",
+    "secrets.json",
+    "credentials.json",
+}
+LOCAL_CONFIG_IMPORT_RE = re.compile(
+    r"""(?:require\s*\(\s*|from\s+|import\s*)["'](\.{1,2}/[^"']+)["']"""
+)
+
+
+def _hardhat_config_paths(root: Path) -> list[Path]:
+    return [root / name for name in CONFIG_NAMES if (root / name).is_file()]
+
+
+def _sensitive_local_config(target: Path) -> bool:
+    name = target.name.lower()
+    return (
+        name in SENSITIVE_LOCAL_CONFIG_NAMES
+        or name.endswith((".local.json", ".local.env"))
+    )
+
+
+def _git_ignores_target(root: Path, target: Path) -> bool:
+    """Only copy private config templates to a destination Git already ignores."""
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        if top.returncode != 0 or not top.stdout.strip():
+            return False
+        repository = Path(top.stdout.strip()).resolve()
+        relative = target.resolve().relative_to(repository)
+        ignored = subprocess.run(
+            ["git", "-C", str(repository), "check-ignore", "-q", "--", relative.as_posix()],
+            cwd=str(repository),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        return ignored.returncode == 0
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def _config_template_candidates(target: Path) -> list[Path]:
+    if target.name.startswith("."):
+        return [
+            target.with_name(target.name + ".example"),
+            target.with_name(target.name + ".sample"),
+        ]
+    return [
+        target.with_name(f"{target.stem}.example{target.suffix}"),
+        target.with_name(f"{target.stem}.sample{target.suffix}"),
+        target.with_name(target.name + ".example"),
+        target.with_name(target.name + ".sample"),
+    ]
+
+
+def _inspect_local_configuration(
+    root: Path,
+    *,
+    create_ignored_templates: bool,
+) -> tuple[bool, list[dict[str, str]]]:
+    """Inspect static sensitive config imports; optionally copy safe ignored templates.
+
+    The copy is exclusive, mode 0600, and never replaces an existing file.
+    Lowkey does not synthesize values or print configuration contents.
+    """
+    findings: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    for config in _hardhat_config_paths(root):
+        try:
+            source = config.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in LOCAL_CONFIG_IMPORT_RE.finditer(source):
+            imported = match.group(1)
+            if not imported.lower().endswith((".json", ".env")):
+                continue
+            target = (config.parent / imported).resolve()
+            try:
+                target.relative_to(root.resolve())
+            except ValueError:
+                continue
+            if not _sensitive_local_config(target) or target in seen:
+                continue
+            seen.add(target)
+
+            if target.is_file():
+                if target.suffix.lower() == ".json":
+                    try:
+                        json.loads(target.read_text(encoding="utf-8"))
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        findings.append({
+                            "status": "invalid",
+                            "target": str(target.relative_to(root)),
+                            "message": f"local config exists but is not valid JSON: {exc}",
+                        })
+                        continue
+                findings.append({
+                    "status": "existing",
+                    "target": str(target.relative_to(root)),
+                    "message": "required local configuration is present",
+                })
+                continue
+
+            template = next(
+                (candidate for candidate in _config_template_candidates(target) if candidate.is_file()),
+                None,
+            )
+            if template is None:
+                findings.append({
+                    "status": "missing",
+                    "target": str(target.relative_to(root)),
+                    "message": "required local configuration is missing and no example template was found",
+                })
+                continue
+
+            if template.suffix.lower() == ".json":
+                try:
+                    payload = template.read_bytes()
+                    json.loads(payload.decode("utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    findings.append({
+                        "status": "invalid_template",
+                        "target": str(target.relative_to(root)),
+                        "template": str(template.relative_to(root)),
+                        "message": f"example template is not valid JSON: {exc}",
+                    })
+                    continue
+            else:
+                try:
+                    payload = template.read_bytes()
+                except OSError as exc:
+                    findings.append({
+                        "status": "template_unreadable",
+                        "target": str(target.relative_to(root)),
+                        "template": str(template.relative_to(root)),
+                        "message": f"cannot read example template: {exc}",
+                    })
+                    continue
+
+            if not create_ignored_templates:
+                findings.append({
+                    "status": "template_available",
+                    "target": str(target.relative_to(root)),
+                    "template": str(template.relative_to(root)),
+                    "message": "a matching example exists; the build path can copy it only if Git ignores the destination",
+                })
+                continue
+
+            if not _git_ignores_target(root, target):
+                findings.append({
+                    "status": "not_ignored",
+                    "target": str(target.relative_to(root)),
+                    "template": str(template.relative_to(root)),
+                    "message": "refusing to create local credentials/config because Git does not ignore the destination",
+                })
+                continue
+
+            descriptor = None
+            try:
+                descriptor = os.open(
+                    str(target),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                with os.fdopen(descriptor, "wb") as handle:
+                    descriptor = None
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                findings.append({
+                    "status": "copied",
+                    "target": str(target.relative_to(root)),
+                    "template": str(template.relative_to(root)),
+                    "message": "copied example to Git-ignored local config with mode 0600; review placeholders before network/deployment actions",
+                })
+            except FileExistsError:
+                findings.append({
+                    "status": "existing",
+                    "target": str(target.relative_to(root)),
+                    "message": "local configuration appeared during preparation; it was not overwritten",
+                })
+            except OSError as exc:
+                findings.append({
+                    "status": "copy_failed",
+                    "target": str(target.relative_to(root)),
+                    "template": str(template.relative_to(root)),
+                    "message": f"could not create local config safely: {exc}",
+                })
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+
+    ready = all(item["status"] in {"existing", "copied"} for item in findings)
+    return ready, findings
+
+
+def _hardhat_package_metadata(root: Path, binary: Path | None) -> dict | None:
+    candidates: list[Path] = []
+    if binary is not None:
+        try:
+            candidates.extend(parent / "package.json" for parent in binary.resolve().parents)
+        except OSError:
+            pass
+    boundary = bootstrap.dependency_boundary(root)
+    candidates.extend([
+        boundary / "node_modules" / "hardhat" / "package.json",
+        root / "node_modules" / "hardhat" / "package.json",
+    ])
+    seen: set[Path] = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("name") == "hardhat":
+            return data
+    return None
+
+
+def _hardhat_runtime_status(root: Path, binary: Path | None) -> dict:
+    """Compare the active Node runtime with the installed Hardhat package's engines."""
+    package = _hardhat_package_metadata(root, binary)
+    if package is None:
+        return {"status": "unknown", "message": "installed Hardhat package metadata could not be located"}
+    engines = package.get("engines") if isinstance(package.get("engines"), dict) else {}
+    required = engines.get("node")
+    if not required:
+        return {
+            "status": "unknown",
+            "hardhat_version": package.get("version"),
+            "message": "this Hardhat package does not declare a Node engine range",
+        }
+
+    try:
+        env, _pin = bootstrap.runtime_environment(root)
+        node = shutil.which("node", path=env.get("PATH"))
+        if not node:
+            return {"status": "unknown", "message": "Node.js executable could not be resolved"}
+        result = subprocess.run(
+            [node, "--version"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=8,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"status": "unknown", "message": f"could not inspect Node.js runtime: {exc}"}
+
+    actual_text = (result.stdout or result.stderr).strip()
+    actual = _parse_version(actual_text)
+    if result.returncode != 0 or actual is None:
+        return {"status": "unknown", "message": "Node.js version could not be determined"}
+    compatible = bootstrap._node_satisfies(actual_text, str(required))
+    version = str(package.get("version") or "unknown")
+    if compatible:
+        return {
+            "status": "compatible",
+            "node": actual_text,
+            "hardhat_version": version,
+            "engine": str(required),
+            "message": f"Node {actual_text} satisfies Hardhat {version} engine range {required}",
+        }
+    return {
+        "status": "warning",
+        "node": actual_text,
+        "hardhat_version": version,
+        "engine": str(required),
+        "message": (
+            f"Node {actual_text} is outside Hardhat {version}'s declared Node range {required}. "
+            "This is a compatibility warning, not proof that compilation will fail. "
+            "Lowkey will not downgrade or switch Node automatically."
+        ),
+    }
+
+
+def prepare_readiness(root: Path, binary: Path) -> int:
+    """Run safe Hardhat preflight checks shared by build, test, and clean."""
+    root = root.expanduser().resolve()
+    print("\nLOWKEY PROJECT READINESS")
+    print("========================")
+    print(f"Project : {root}")
+    # An explicit project Node pin is a hard project requirement. Hardhat's
+    # own engines.node range is checked separately below and remains advisory
+    # so historical audit toolchains are not silently replaced or blocked.
+    try:
+        pin_status = bootstrap.node_runtime_status(root)
+    except Exception as exc:
+        print(f"REVIEW NEEDED: could not inspect the project's declared Node pin: {exc}", file=sys.stderr)
+        return 2
+    if not pin_status.get("matched", True):
+        required = pin_status.get("required") or "the declared Node runtime"
+        print(
+            f"REVIEW NEEDED: project Node requirement {required} cannot be satisfied by an already-installed runtime. "
+            "Lowkey will not download or switch Node versions automatically.",
+            file=sys.stderr,
+        )
+        return 2
+
+    ready, findings = _inspect_local_configuration(
+        root, create_ignored_templates=True
+    )
+    for item in findings:
+        status = {
+            "existing": "PASS",
+            "copied": "PREPARED",
+            "template_available": "READY TO PREPARE",
+        }.get(item["status"], "REVIEW NEEDED")
+        print(f"{status:<16} {item['target']}: {item['message']}")
+        if item.get("template"):
+            print(f"                 template: {item['template']}")
+    if not findings:
+        print("PASS             no missing sensitive local config imports detected")
+
+    runtime = _hardhat_runtime_status(root, binary)
+    if runtime["status"] == "warning":
+        print(f"WARN             {runtime['message']}", file=sys.stderr)
+    elif runtime["status"] == "compatible":
+        print(f"PASS             {runtime['message']}")
+    else:
+        print(f"WARN             {runtime['message']}", file=sys.stderr)
+
+    if not ready:
+        print(
+            "REVIEW NEEDED: Hardhat configuration prerequisites are incomplete. "
+            "No existing local file was overwritten and no credentials were invented.",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
+def run_doctor(argv: Sequence[str] = ()) -> int:
+    """Read-only Hardhat readiness report; never installs or writes project files."""
+    if any(str(value).lower() in {"-h", "--h", "--help", "help"} for value in argv):
+        print("Usage: lk hardhat doctor")
+        print("Read-only checks: dependencies, required local config, and Node compatibility.")
+        return 0
+    if argv:
+        print("Usage: lk hardhat doctor", file=sys.stderr)
+        return 2
+
+    root, info = _selected_project()
+    try:
+        is_hardhat = bootstrap._is_hardhat_scope(info, root)
+    except Exception:
+        is_hardhat = False
+    if not is_hardhat:
+        print("This directory is not detected as a Hardhat project.", file=sys.stderr)
+        return 3
+
+    print("\nLOWKEY HARDHAT DOCTOR")
+    print("====================")
+    print(f"Project : {root}")
+    binary = _local_hardhat(root)
+    if binary is None:
+        print("MISSING  project-local Hardhat executable")
+        plan = bootstrap.bootstrap_status(info, root)
+        for action in plan.get("actions", []):
+            print(f"PLAN     {' '.join(str(part) for part in action.get('command', []))}")
+            print(f"         {action.get('evidence', '')}")
+    else:
+        print(f"PASS     project-local Hardhat: {binary}")
+
+    _config_ready, findings = _inspect_local_configuration(
+        root, create_ignored_templates=False
+    )
+    for item in findings:
+        status = "PASS" if item["status"] == "existing" else (
+            "REPAIRABLE" if item["status"] == "template_available" else "REVIEW"
+        )
+        print(f"{status:<10} {item['target']}: {item['message']}")
+        if item.get("template"):
+            print(f"           template: {item['template']}")
+    if not findings:
+        print("PASS     no missing sensitive local config imports detected")
+
+    try:
+        pin_status = bootstrap.node_runtime_status(root)
+    except Exception as exc:
+        pin_status = {"matched": False, "required": "declared runtime", "error": str(exc)}
+    if not pin_status.get("matched", True):
+        print(
+            f"REVIEW     project Node pin {pin_status.get('required') or 'declared runtime'} "
+            "is not satisfied by an installed Node runtime"
+        )
+
+    runtime = _hardhat_runtime_status(root, binary) if binary is not None else {
+        "status": "unknown",
+        "message": "runtime compatibility cannot be checked until local Hardhat is installed",
+    }
+    print(f"{'WARN' if runtime['status'] in {'warning', 'unknown'} else 'PASS'}     {runtime['message']}")
+    print("\nNo files were changed. Run 'lk build' or 'lk test' for safe automatic preparation.")
+    return 0
+
 def run_prepare(argv: Sequence[str] = (), *, reason: str = "test") -> int:
     """Ensure a Hardhat project is ready before delegating to Lowkey's native router.
 
@@ -438,7 +851,9 @@ def run_prepare(argv: Sequence[str] = (), *, reason: str = "test") -> int:
         return 3
 
     _root, _info, _binary, code = _ensure_hardhat_binary(root, info, reason=reason)
-    return code
+    if code != 0 or _binary is None:
+        return code or 2
+    return prepare_readiness(_root, _binary)
 
 
 def _execution_environment(root: Path) -> tuple[dict[str, str] | None, str | None]:
@@ -485,6 +900,10 @@ def run_clean(argv: Sequence[str]) -> int:
         return prepare_code
     assert binary is not None
 
+    readiness_code = prepare_readiness(root, binary)
+    if readiness_code != 0:
+        return readiness_code
+
     env, error = _execution_environment(root)
     if error:
         print(error, file=sys.stderr)
@@ -511,6 +930,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_clean(rest)
     if command == "prepare":
         return run_prepare(rest)
+    if command == "doctor":
+        return run_doctor(rest)
     print(f"Unknown lk hardhat command: {command}", file=sys.stderr)
     print(_render_help(), file=sys.stderr)
     return 2

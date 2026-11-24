@@ -25,6 +25,7 @@ import project_tools
 import audit_context
 import forge_tools
 import bootstrap
+import hardhat_tools
 
 GIB = 1024 ** 3
 IGNORED = {
@@ -693,7 +694,8 @@ def _run_native_fallback(argv: Sequence[str]) -> int:
     # partially restored Hardhat install. The native build fallback previously
     # skipped that preparation step, so lk build failed before the local
     # Hardhat command could be selected.
-    if hardhat_scope and bootstrap._local_hardhat_binary(project) is None:
+    binary = bootstrap._local_hardhat_binary(project) if hardhat_scope else None
+    if hardhat_scope and binary is None:
         print(
             "Hardhat was detected, but its project-local executable is missing. "
             "Preparing the dependencies declared by this repository."
@@ -710,13 +712,26 @@ def _run_native_fallback(argv: Sequence[str]) -> int:
             print(f"REVIEW NEEDED: could not re-detect Hardhat after dependency preparation: {exc}", file=sys.stderr)
             return 2
         project = Path((info or {}).get("root") or project).expanduser().resolve()
-        if bootstrap._local_hardhat_binary(project) is None:
+        binary = bootstrap._local_hardhat_binary(project)
+        if binary is None:
             print(
                 "REVIEW NEEDED: dependency preparation completed, but the "
                 "repository-local Hardhat executable is still missing.",
                 file=sys.stderr,
             )
             return 2
+
+    if hardhat_scope:
+        if binary is None:
+            print(
+                "REVIEW NEEDED: Hardhat dependency preparation did not produce "
+                "a project-local executable.",
+                file=sys.stderr,
+            )
+            return 2
+        readiness_code = hardhat_tools.prepare_readiness(project, binary)
+        if readiness_code != 0:
+            return readiness_code
 
     script = Path(__file__).resolve().with_name("lk.py")
     if not script.is_file():
