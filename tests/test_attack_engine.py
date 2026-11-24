@@ -365,8 +365,8 @@ class AttackEngineTests(unittest.TestCase):
             self._evidence("control", family="economic"),
             manifest,
         )
-        self.assertEqual(result["reproof"]["net_profit_usd_18"], net_profit)
-        self.assertEqual(result["reproof"]["net_profit_unit"], "USD_18")
+        self.assertEqual(result["independent_reproof"]["net_profit_usd_18"], net_profit)
+        self.assertEqual(result["independent_reproof"]["net_profit_unit"], "USD_18")
 
     def test_economic_mode_rejects_usd_portfolio_source_or_arithmetic_mismatch(self):
         self._write_reproof(semantic=False, profitable=True)
