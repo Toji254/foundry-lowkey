@@ -79,7 +79,7 @@ class FoundryBuildPlannerTests(unittest.TestCase):
                 code = foundry_build._run_native_fallback(["--verbose"])
 
             self.assertEqual(code, 0)
-            prepare.assert_called_once_with(info, reason="build")
+            prepare.assert_called_once_with(info, reason="build", safe_node_install=True)
             command = run.call_args.args[0]
             self.assertEqual(command[1:], [str(ROOT / "lowkey" / "lk.py"), "build", "--verbose"])
             self.assertEqual(pathlib.Path(run.call_args.kwargs["cwd"]), pathlib.Path.cwd())
@@ -109,7 +109,7 @@ class FoundryBuildPlannerTests(unittest.TestCase):
                 code = foundry_build._run_native_fallback([])
 
             self.assertEqual(code, 1)
-            prepare.assert_called_once_with(info, reason="build")
+            prepare.assert_called_once_with(info, reason="build", safe_node_install=True)
             run.assert_not_called()
 
     def test_hardhat_first_test_command_prepares_missing_local_binary(self):
