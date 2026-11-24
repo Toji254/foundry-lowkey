@@ -11,6 +11,13 @@ INSTALL = ROOT / "install.sh"
 
 
 class InstallSmokeTests(unittest.TestCase):
+    def test_install_script_is_executable(self):
+        self.assertTrue(INSTALL.is_file(), "install.sh must exist in the repository checkout")
+        self.assertTrue(
+            os.access(INSTALL, os.X_OK),
+            "install.sh must retain its executable bit because CI and users invoke ./install.sh",
+        )
+
     def test_install_publishes_current_runtime_and_manifest(self):
         with tempfile.TemporaryDirectory() as home:
             env = os.environ.copy()
@@ -20,7 +27,7 @@ class InstallSmokeTests(unittest.TestCase):
             env["XDG_STATE_HOME"] = str(pathlib.Path(home) / ".local" / "state")
 
             result = subprocess.run(
-                ["bash", str(INSTALL)],
+                [str(INSTALL)],
                 cwd=ROOT,
                 env=env,
                 capture_output=True,
