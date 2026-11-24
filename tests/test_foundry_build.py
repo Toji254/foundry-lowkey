@@ -82,7 +82,7 @@ class FoundryBuildPlannerTests(unittest.TestCase):
             prepare.assert_called_once_with(info, reason="build")
             command = run.call_args.args[0]
             self.assertEqual(command[1:], [str(ROOT / "lowkey" / "lk.py"), "build", "--verbose"])
-            self.assertEqual(pathlib.Path(run.call_args.kwargs["cwd"]), root)
+            self.assertEqual(pathlib.Path(run.call_args.kwargs["cwd"]), pathlib.Path.cwd())
 
     def test_native_hardhat_build_stops_when_dependency_bootstrap_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
