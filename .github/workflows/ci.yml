@@ -1656,7 +1656,7 @@ jobs:
 
           # Create two independent records. The ID book must capture contract IDs,
           # not confuse them with the transaction hashes.
-          lk send createEscrow Bob --eth 2 | tee /tmp/lowkey-escrow-create-1.txt
+          lk send createEscrow Bob --eth 2 --yes | tee /tmp/lowkey-escrow-create-1.txt
           grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-1.txt
           grep -q "POST-TRANSACTION STATE" /tmp/lowkey-escrow-create-1.txt
           grep -q "Created (enum value 0)" /tmp/lowkey-escrow-create-1.txt
@@ -1664,7 +1664,7 @@ jobs:
           grep -q "Escrow ID" /tmp/lowkey-escrow-ids-1.txt
           lk id alias @last firstEscrow
 
-          lk send createEscrow Bob --eth 1 | tee /tmp/lowkey-escrow-create-2.txt
+          lk send createEscrow Bob --eth 1 --yes | tee /tmp/lowkey-escrow-create-2.txt
           grep -q "CreateEscrow(address,uint256)" /tmp/lowkey-escrow-create-2.txt
           lk id alias @last secondEscrow
           lk ids | tee /tmp/lowkey-escrow-ids.txt
@@ -1720,10 +1720,10 @@ jobs:
           lk slots 0 >/tmp/lowkey-escrow-slots-alias.txt
 
           # Bob is the recipient: he may accept, but he must not release.
-          lk as Bob acceptEscrow @firstEscrow | tee /tmp/lowkey-escrow-accept.txt
+          lk as Bob acceptEscrow @firstEscrow --yes | tee /tmp/lowkey-escrow-accept.txt
           grep -q "Accepted (enum value 1)" /tmp/lowkey-escrow-accept.txt
           set +e
-          lk as Bob release @firstEscrow > /tmp/lowkey-escrow-unauthorized-release.txt 2>&1
+          lk as Bob release @firstEscrow --yes > /tmp/lowkey-escrow-unauthorized-release.txt 2>&1
           UNAUTHORIZED_EXIT=$?
           set -e
           test "$UNAUTHORIZED_EXIT" -ne 0
@@ -1731,7 +1731,7 @@ jobs:
           grep -q "Accepted (enum value 1)" /tmp/lowkey-escrow-after-rejected-release.txt
 
           # Alice created the escrow, so she is the only actor allowed to release it.
-          lk as Alice release @firstEscrow | tee /tmp/lowkey-escrow-release.txt
+          lk as Alice release @firstEscrow --yes | tee /tmp/lowkey-escrow-release.txt
           grep -q "Released (enum value 2)" /tmp/lowkey-escrow-release.txt
           lk read getEscrow @firstEscrow | tee /tmp/lowkey-escrow-final-state.txt
           grep -q "Released (enum value 2)" /tmp/lowkey-escrow-final-state.txt
