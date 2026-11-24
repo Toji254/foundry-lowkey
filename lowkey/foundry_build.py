@@ -698,7 +698,9 @@ def _run_native_fallback(argv: Sequence[str]) -> int:
             "Hardhat was detected, but its project-local executable is missing. "
             "Preparing the dependencies declared by this repository."
         )
-        bootstrap_code = project_detection.bootstrap_project(info, reason="build")
+        bootstrap_code = project_detection.bootstrap_project(
+            info, reason="build", safe_node_install=True
+        )
         if bootstrap_code != 0:
             return bootstrap_code
 
