@@ -449,15 +449,62 @@ def _validate_reproof(
                     )
                 return metric
 
+            native_price = token_portfolio.get("native_price")
+            if (
+                not isinstance(native_price, dict)
+                or type(native_price.get("price_usd_18")) is not int
+                or native_price["price_usd_18"] <= 0
+            ):
+                raise AttackEngineError(
+                    f"{label} portfolio has no valid pinned native/USD price.",
+                    "portfolio_source_unverified",
+                )
+            gas_in_delta = payload.get("gas_cost_in_portfolio_delta")
+            if type(gas_in_delta) is not bool:
+                raise AttackEngineError(
+                    f"{label} portfolio does not declare whether gas is already included in native balance deltas."
+                )
+            external_gas_wei = 0 if gas_in_delta else gas_cost
+            denominator = 10**18
+            expected_gas_usd = (
+                external_gas_wei * native_price["price_usd_18"] + denominator - 1
+            ) // denominator
+            expected_prior_usd = (
+                prior_cost * native_price["price_usd_18"] + denominator - 1
+            ) // denominator
+            token_value_sum = 0
+            for index, asset in enumerate(token_assets):
+                asset_value = asset.get("value_delta_usd_18")
+                if type(asset_value) is not int:
+                    raise AttackEngineError(
+                        f"{label} portfolio asset {index} has no signed integer USD value."
+                    )
+                token_value_sum += asset_value
+            reported_token_delta = signed_usd_metric(
+                valuation.get("token_delta_usd_18"), f"{label}.token_delta_usd_18"
+            )
+            reported_native_delta = signed_usd_metric(
+                valuation.get("native_delta_usd_18"), f"{label}.native_delta_usd_18"
+            )
+            reported_external_gas = _wei(
+                valuation.get("external_gas_cost_usd_18"), f"{label}.external_gas_cost_usd_18"
+            )
+            reported_prior_cost = _wei(
+                valuation.get("prior_cost_usd_18"), f"{label}.prior_cost_usd_18"
+            )
             expected_net = (
-                signed_usd_metric(valuation.get("native_delta_usd_18"), f"{label}.native_delta_usd_18")
-                + signed_usd_metric(valuation.get("token_delta_usd_18"), f"{label}.token_delta_usd_18")
-                - _wei(valuation.get("external_gas_cost_usd_18"), f"{label}.external_gas_cost_usd_18")
-                - _wei(valuation.get("prior_cost_usd_18"), f"{label}.prior_cost_usd_18")
+                reported_native_delta + reported_token_delta
+                - reported_external_gas - reported_prior_cost
             )
             manifest_hash = valuation.get("portfolio_manifest_sha256")
             if (
-                net_profit_usd_18 <= 0
+                token_value_sum != reported_token_delta
+                or token_portfolio.get("token_value_delta_usd_18") != reported_token_delta
+                or valuation.get("native_gross_delta_wei") != payload.get("gross_balance_delta_wei")
+                or token_portfolio.get("valuation_block") != payload.get("fork_parent_block")
+                or reported_external_gas != expected_gas_usd
+                or reported_prior_cost != expected_prior_usd
+                or net_profit_usd_18 <= 0
                 or expected_net != net_profit_usd_18
                 or valuation.get("net_profit_usd_18") != net_profit_usd_18
                 or payload.get("net_profit_value") != net_profit_usd_18
