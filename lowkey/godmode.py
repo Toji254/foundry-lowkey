@@ -108,10 +108,10 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "The 15 family labels share a generic executable sequence; they are not 15 protocol-specific exploit generators. Generic flash_borrow and reenter callback steps remain backend_unsupported.",
     },
     "reprove": {
-        "summary": "Re-run a PoC on a cheatcode-free local fork and calculate portfolio profit from a mined transaction receipt.",
-        "when": "Use it after a candidate exploit has a reproducible harness and you need transaction, trace, gas, storage, and net-cost evidence.",
-        "example": "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --prior-cost-wei 1000000000000000",
-        "limits": "Pass verified prior deployment/funding/setup expenditure through --prior-cost-wei. Without it, net profit subtracts replay gas only. A local fixture is not production-deployment proof.",
+        "summary": "Re-run a PoC on a cheatcode-free local fork and calculate net native-ETH profit or an explicitly declared ERC20/ERC4626 portfolio value.",
+        "when": "Use it after a candidate exploit has a reproducible harness and you need transaction, trace, storage, gas, and net-cost evidence.",
+        "example": "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --portfolio-manifest .audit/portfolio.json --source-rpc-url $SOURCE_ARCHIVE_RPC_URL --argv-json '[\"forge\",\"test\",\"--match-test\",\"testExploit\"]'",
+        "limits": "Token valuation is opt-in and requires explicit assets and Chainlink USD feeds. Source-verified PROFITABLE promotion requires independent source checks for every declared asset/feed; without --source-rpc-url the result remains local-only. Feed suitability and undeclared assets remain auditor assumptions.",
     },
     "mutation-score": {
         "summary": "Run a per-family mutation campaign and fail closed on surviving, invalid, timed-out, errored, or unscored mutants.",
@@ -1216,6 +1216,7 @@ GODMODE_HELP_GUIDES = {
         "variations": [
             "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222",
             "Use --tx-hash <hash> to inspect an already-mined transaction instead of passing --argv-json.",
+            "Use --portfolio-manifest .audit/portfolio.json to opt into explicit ERC20/ERC4626 USD valuation; this never enables source verification by itself.",
             "Repeat --profit-address for every relevant portfolio account (attacker, gas payer, payout recipient).",
             "Use --non-economic with --semantic-check-argv-json and --semantic-test when the invariant is not profit-based."
         ],
@@ -1230,7 +1231,8 @@ GODMODE_HELP_GUIDES = {
             "--root DIR — project root; default: .",
             "--tx-hash HASH — inspect a mined tx instead of executing --argv-json.",
             "--prior-cost-wei N — verified prior setup/deployment/funding cost in wei; default: 0.",
-            "--source-rpc-url URL — independent read-only archive RPC for source-anchor/funding checks.",
+            "--source-rpc-url URL — independent read-only archive RPC for source-anchor/funding and every declared portfolio asset/feed.",
+            "--portfolio-manifest FILE — optional project-relative ERC20/ERC4626 portfolio manifest with explicit USD price feeds.",
             "--prestate-slot ADDRESS:SLOT — repeat to include extra storage slots in source/fork comparisons.",
             "--argv-json JSON — JSON string array for the replay command; never shell-evaluated.",
             "--support-file FILE — repeat for imported support files.",
