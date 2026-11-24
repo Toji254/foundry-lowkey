@@ -467,7 +467,7 @@ class CliConsistencyTests(unittest.TestCase):
             with redirect_stdout(output):
                 result = lk.run_multi_actor_send(
                     config,
-                    ["contribute", "--value", "1"],
+                    ["contribute", "--value", "1", "--yes"],
                 )
 
         self.assertEqual(result, 0)
@@ -641,12 +641,12 @@ class CliConsistencyTests(unittest.TestCase):
             with redirect_stdout(output):
                 result = lk.run_repeated_send(
                     config,
-                    ["AttackTarget", "--actor", "attacker"],
+                    ["AttackTarget", "--actor", "attacker", "--yes"],
                     3,
                 )
         self.assertEqual(result, 0)
         self.assertEqual(len(calls), 3)
-        self.assertTrue(all(args == ["send", "AttackTarget", "--actor", "attacker"] for args, _actor, _capture in calls))
+        self.assertTrue(all(args == ["send", "AttackTarget", "--actor", "attacker", "--yes"] for args, _actor, _capture in calls))
         self.assertTrue(all(actor == "Alice" for _args, actor, _capture in calls))
         self.assertTrue(all(capture is False for _args, _actor, capture in calls))
         rendered = output.getvalue()
@@ -667,7 +667,7 @@ class CliConsistencyTests(unittest.TestCase):
             with redirect_stdout(output):
                 result = lk.run_repeated_send(
                     {"actor": "Alice"},
-                    ["AttackTarget"],
+                    ["AttackTarget", "--yes"],
                     5,
                 )
         self.assertEqual(result, 1)
@@ -767,6 +767,200 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("separate sequential transactions", rendered)
         self.assertIn("--actors", rendered)
         self.assertIn("msg.sender", rendered)
+        self.assertIn("approval", rendered.lower())
+        self.assertIn("--yes", rendered)
+
+
+    def test_send_requires_preview_and_approval_by_default(self):
+        target = "0x" + "9" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }]
+        config = {"target": target, "target_contract": "Vault", "actor": None, "wallets": {}}
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "prepare_cast_call_arguments", side_effect=lambda _config, _item, values: values), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "_print_transaction_preview") as preview, \
+             patch.object(lk, "cast_output") as cast, \
+             patch("builtins.input", return_value="n") as prompt:
+            result = lk.run_cast(["send", "setValue", "10"], config)
+        self.assertEqual(result, 0)
+        preview.assert_called_once()
+        prompt.assert_called_once()
+        cast.assert_not_called()
+
+    def test_send_yes_is_the_explicit_confirmation_bypass(self):
+        target = "0x" + "9" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }]
+        config = {"target": target, "target_contract": "Vault", "actor": None, "wallets": {}}
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "prepare_cast_call_arguments", side_effect=lambda _config, _item, values: values), \
+             patch.object(lk, "cast_output", return_value=(0, "", "")) as cast, \
+             patch.object(lk, "_print_transaction_preview") as preview:
+            result = lk.run_cast(["send", "setValue", "10", "--yes"], config, capture=True)
+        self.assertEqual(result.code, 0)
+        preview.assert_not_called()
+        cast.assert_called_once()
+
+    def test_transaction_preview_gas_uses_read_only_rpc_and_real_fee_quote(self):
+        target = "0x" + "9" * 40
+        sender = "0x" + "1" * 40
+        rpc = "http://127.0.0.1:8545"
+        item = {
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "payable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }
+        command = [
+            "cast", "send", target, "setValue(uint256)", "10",
+            "--from", sender, "--value", "1ether", "--rpc-url", rpc,
+        ]
+        with patch.object(lk, "cast_output", return_value=(0, "0x12345678", "")), \
+             patch.object(lk, "_rpc_json_response", side_effect=[
+                 {"result": "0x5208"},
+                 {"result": "0x3b9aca00"},
+             ]) as request:
+            gas = lk._transaction_preview_gas(
+                {"rpc": rpc}, command, target, item, ["10"], direct_eth_transfer=False
+            )
+        self.assertTrue(gas["available"])
+        self.assertEqual(gas["gas_estimate"], 21_000)
+        self.assertEqual(gas["fee_wei"], 21_000 * 1_000_000_000)
+        estimate_tx = request.call_args_list[0].args[2][0]
+        self.assertEqual(estimate_tx["from"], sender)
+        self.assertEqual(estimate_tx["to"], target)
+        self.assertEqual(estimate_tx["value"], hex(10**18))
+        self.assertEqual(estimate_tx["data"], "0x12345678")
+        self.assertEqual(request.call_args_list[0].args[1], "eth_estimateGas")
+        self.assertEqual(request.call_args_list[1].args[1], "eth_gasPrice")
+
+    def test_transaction_preview_does_not_turn_failed_gas_estimate_into_zero(self):
+        target = "0x" + "9" * 40
+        with patch.object(lk, "_rpc_json_response", return_value={
+            "error": {"message": "execution reverted"}
+        }):
+            gas = lk._transaction_preview_gas(
+                {"rpc": "http://127.0.0.1:8545"},
+                ["cast", "send", target, "--rpc-url", "http://127.0.0.1:8545"],
+                target,
+                None,
+                [],
+            )
+        self.assertFalse(gas["available"])
+        self.assertIn("execution reverted", gas["reason"])
+
+    def test_transaction_preview_encodes_full_signature_when_abi_is_unavailable(self):
+        target = "0x" + "9" * 40
+        rpc = "http://127.0.0.1:8545"
+        with patch.object(lk, "cast_output", return_value=(0, "0x12345678", "")), \
+             patch.object(lk, "_rpc_json_response", side_effect=[
+                 {"result": "0x5208"},
+                 {"result": "0x3b9aca00"},
+             ]) as request:
+            gas = lk._transaction_preview_gas(
+                {"rpc": rpc},
+                ["cast", "send", target, "setValue(uint256)", "10", "--rpc-url", rpc],
+                target,
+                None,
+                ["10"],
+            )
+        self.assertTrue(gas["available"])
+        self.assertEqual(request.call_args_list[0].args[2][0]["data"], "0x12345678")
+
+    def test_transaction_preview_refuses_ambiguous_unencoded_function_data(self):
+        target = "0x" + "9" * 40
+        with patch.object(lk, "cast_output", return_value=(1, "", "unknown function")), \
+             patch.object(lk, "_rpc_json_response") as request:
+            gas = lk._transaction_preview_gas(
+                {"rpc": "http://127.0.0.1:8545"},
+                ["cast", "send", target, "setValue", "10", "--rpc-url", "http://127.0.0.1:8545"],
+                target,
+                None,
+                ["10"],
+            )
+        self.assertFalse(gas["available"])
+        self.assertIn("calldata encoding failed", gas["reason"])
+        request.assert_not_called()
+
+    def test_repeated_send_confirms_once_by_default(self):
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append((list(args), config.get("actor"), capture))
+            print("Preview only" if "--preview" in args else "Status: SUCCESS")
+            return 0
+
+        with patch.object(lk, "run_cast", side_effect=fake_run_cast), \
+             patch("builtins.input", return_value="y") as prompt:
+            result = lk.run_repeated_send({"actor": "Alice"}, ["AttackTarget"], 2)
+        self.assertEqual(result, 0)
+        prompt.assert_called_once()
+        self.assertEqual(len(calls), 3)
+        self.assertIn("--preview", calls[0][0])
+        self.assertTrue(all("--yes" in call[0] for call in calls[1:]))
+
+    def test_multi_actor_send_previews_and_confirms_once_before_any_broadcast(self):
+        accounts = ["0x" + "1" * 40, "0x" + "2" * 40]
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append((list(args), config.get("actor"), capture))
+            return 0
+
+        with patch.object(lk, "anvil_rpc_info", return_value={
+            "accounts": accounts, "url": "http://127.0.0.1:8545"
+        }), patch.object(lk, "run_cast", side_effect=fake_run_cast), \
+             patch("builtins.input", return_value="n") as prompt:
+            result = lk.run_multi_actor_send({}, ["setValue", "10"])
+        self.assertEqual(result, 0)
+        prompt.assert_called_once()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--preview", calls[0][0])
+        self.assertEqual(calls[0][1], "anvil-0")
+        self.assertFalse(calls[0][2])
+
+    def test_multi_actor_send_uses_per_account_identity_after_one_approval(self):
+        accounts = ["0x" + "1" * 40, "0x" + "2" * 40]
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append((list(args), config.get("actor"), capture))
+            return 0 if "--preview" in args else lk.CommandResult("transactionHash 0x" + "a" * 64, 0)
+
+        with patch.object(lk, "anvil_rpc_info", return_value={
+            "accounts": accounts, "url": "http://127.0.0.1:8545"
+        }), patch.object(lk, "run_cast", side_effect=fake_run_cast), \
+             patch.object(lk, "format_send_summary", return_value="TRANSACTION SUMMARY"), \
+             patch("builtins.input", return_value="y") as prompt:
+            result = lk.run_multi_actor_send({}, ["setValue", "10"])
+        self.assertEqual(result, 0)
+        prompt.assert_called_once()
+        self.assertEqual(len(calls), 3)
+        self.assertIn("--preview", calls[0][0])
+        self.assertEqual([call[1] for call in calls[1:]], ["anvil-0", "anvil-1"])
+        self.assertTrue(all("--yes" in call[0] and call[2] for call in calls[1:]))
+
+    def test_multi_actor_send_rejects_explicit_signer_override(self):
+        with patch.object(lk, "anvil_rpc_info", return_value={
+            "accounts": ["0x" + "1" * 40], "url": "http://127.0.0.1:8545"
+        }), patch.object(lk, "fail", return_value=2) as failure, \
+             patch.object(lk, "run_cast") as cast:
+            result = lk.run_multi_actor_send({}, ["setValue", "10", "--from", "0x" + "2" * 40])
+        self.assertEqual(result, 2)
+        failure.assert_called_once()
+        cast.assert_not_called()
 
 
 if __name__ == "__main__":
