@@ -2559,16 +2559,24 @@ def _mapping_call_write_sequences(token_rows, file_name):
     return sorted(results, key=lambda item: (item["file"], item["read_line"], item["call_line"], item["write_line"]))
 
 
-def cheat_fingerprints(root):
+def cheat_fingerprints(root, inventory=None):
     """Scan source once per file with hashed Aho-Corasick signatures and sequence correlation."""
     root = Path(root).resolve()
+    if inventory is None:
+        inventory = _collect_source_inventory(root, include_tests=True)
+    inventory_root = Path(inventory.get("root", root)).resolve()
+    if inventory_root != root:
+        raise ValueError("Fingerprint inventory belongs to a different project root.")
     unique = _cheat_catalog_patterns()
     automaton = AhoCorasick([(pattern_id, row["tokens"]) for pattern_id, row in unique.items()])
     hits = []
     sequences = []
 
-    for path in files(root):
-        source = path.read_text(encoding="utf-8", errors="replace")
+    scanned_files = _inventory_paths(inventory, include_tests=True)
+    for path in scanned_files:
+        source = inventory.get("contents", {}).get(path)
+        if not isinstance(source, str):
+            continue
         rows = _solidity_token_records(source)
         tokens = [row["value"] for row in rows]
         relative = path.relative_to(root).as_posix()
@@ -2604,10 +2612,14 @@ def cheat_fingerprints(root):
         ],
         "hits": hits,
         "ordered_sequences": sequences,
+        "files_scanned": len(scanned_files),
+        "scan_status": "review" if inventory.get("failures") else "completed",
+        "inspection_failures": list(inventory.get("failures") or []),
         "meaning": "Fingerprint and ordered source matches are investigation leads, never vulnerability verdicts.",
         "limitations": [
             "Source-level token analysis is heuristic and does not resolve inheritance, aliasing, modifiers, or dynamic dispatch.",
             "An ordered mapping-read/call/write sequence is not proof that the call reaches attacker-controlled code.",
+            "An incomplete source inventory remains review-required; missing files are not treated as clean.",
             "Use a generated harness, execution trace, sequential control, mutation test, and reproof before claiming a break.",
         ],
     }
