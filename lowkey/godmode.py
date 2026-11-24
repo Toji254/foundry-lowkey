@@ -2613,7 +2613,7 @@ def cheat_fingerprints(root, inventory=None):
         "hits": hits,
         "ordered_sequences": sequences,
         "files_scanned": len(scanned_files),
-        "scan_status": "review" if inventory.get("failures") else "completed",
+        "scan_status": _source_inventory_status(inventory),
         "inspection_failures": list(inventory.get("failures") or []),
         "meaning": "Fingerprint and ordered source matches are investigation leads, never vulnerability verdicts.",
         "limitations": [
@@ -5836,9 +5836,10 @@ def fingerprint(args):
         write_json(out, data)
         print("Fingerprint report: " + str(out.relative_to(root)))
         print("Ordered mapping/call/write sequences: " + str(len(data.get("ordered_sequences") or [])))
+        print("Source scan: " + str(data.get("scan_status", "unknown")))
     else:
         print(json.dumps(data, indent=2))
-    return 0
+    return 0 if data.get("scan_status") == "completed" else 1
 
 
 def economic(args):
