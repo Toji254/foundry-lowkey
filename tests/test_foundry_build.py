@@ -141,7 +141,7 @@ class FoundryBuildPlannerTests(unittest.TestCase):
                 code = hardhat_tools.run_prepare(reason="test")
 
             self.assertEqual(code, 0)
-            prepare.assert_called_once_with(info, reason="test")
+            prepare.assert_called_once_with(info, reason="test", safe_node_install=True)
 
     def test_hardhat_prepare_skips_install_when_local_binary_already_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
