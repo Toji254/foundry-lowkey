@@ -697,6 +697,11 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("not the same as 'lk trace <TX>'", rendered)
         self.assertIn("--detail <VIEW>", rendered)
         self.assertIn("--depth <N>", rendered)
+        self.assertIn("--search <TEXT>", rendered)
+        self.assertIn("--type <KIND>", rendered)
+        self.assertIn("--page <N>", rendered)
+        self.assertIn("--all", rendered)
+        self.assertIn("When TARGET is omitted", rendered)
         self.assertIn("lk trace source 'PositionManager.increasePosition(uint256)'", rendered)
 
     def test_fn_asset_flow_help_explains_direction_asset_and_scope(self):

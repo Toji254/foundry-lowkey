@@ -293,7 +293,7 @@ def _render_help(command: str | None = None) -> str:
             "usage": "lk hardhat doctor",
             "example": "lk hardhat doctor",
             "forms": [
-                ("lk hardhat doctor", "Report whether local Hardhat is present, required local config files exist, and the selected Node runtime matches declared requirements.", "lk hardhat doctor"),
+                ("lk hardhat doctor", "Report whether local Hardhat is present, required local config files exist, the project Node pin is met, and the installed Hardhat package's Node engine range is satisfied.", "lk hardhat doctor"),
             ],
             "options": [],
             "related": ("lk hardhat prepare", "lk build", "lk test", "lk clean"),
@@ -321,14 +321,14 @@ def _render_help(command: str | None = None) -> str:
         },
         "clean": {
             "what": "Remove generated build artifacts using the native cleaner selected for the current project.",
-            "when": "Use it when you need a fresh compile after changing source/compiler inputs or when generated artifacts are stale.",
+            "when": "Run it from the selected project/package directory when you need to remove stale build artifacts before rebuilding. In a workspace, enter the member you intend to clean first.",
             "usage": "lk clean [NATIVE CLEANER OPTIONS]",
             "example": "lk clean",
             "forms": [
                 ("lk clean", "Run the selected native cleaner. Hardhat projects use their project-local Hardhat binary; Foundry projects use Forge.", "lk clean"),
             ],
             "options": [
-                ("[NATIVE CLEANER OPTIONS]", "No Lowkey-specific clean flags are defined. Extra arguments are passed unchanged to the selected cleaner; only use flags supported by that project's cleaner.", "lk clean"),
+                ("[NATIVE CLEANER OPTIONS]", "No Lowkey-specific clean flags are defined. Extra arguments are passed unchanged to the selected native cleaner; use only flags supported by that tool.", "cd packages/protocol && lk clean"),
             ],
             "related": ("lk build", "lk test", "lk hardhat doctor", "lk project"),
             "notes": [

@@ -1573,7 +1573,7 @@ def _render_link_help(command: str = "lk link") -> str:
                 "Use it to understand a function's source-level execution path before writing a "
                 "test or following a real transaction. It is not the same as 'lk trace <TX>'."
             ),
-            usage="lk trace source <TARGET> [OPTIONS]",
+            usage="lk trace source [TARGET] [OPTIONS]",
             example="lk trace source 'PositionManager.increasePosition(uint256)' --detail all --depth 4",
             forms=[
                 (
@@ -1591,12 +1591,21 @@ def _render_link_help(command: str = "lk link") -> str:
                     "Choose which relationship sections to show; summary is the default.",
                     "lk trace source Vault.withdraw --detail storage",
                 ),
+                (
+                    "lk trace source --search <TEXT> [--type <KIND>]",
+                    "With no TARGET, browse/filter the source map instead of tracing one declaration.",
+                    "lk trace source --search Position --type contract",
+                ),
             ],
             options=[
                 ("--root <DIR>", "Scan a different project root. Defaults to the current directory.", "lk trace source Vault.withdraw --root ../protocol"),
                 ("--depth <N>", "Limit call traversal to 1-10 levels. Function default is 3; contract default is 1.", "lk trace source Vault.withdraw --depth 5"),
                 ("--detail <VIEW>", "Choose summary, calls, storage, external, or all. Applies to function/modifier views.", "lk trace source Vault.withdraw --detail external"),
                 ("--only <FILTER>", "Filter relationship kinds: calls, storage, reads, writes, imports, or assets. Use this for contract relationship views, not together with a non-summary --detail.", "lk trace source Vault --only writes"),
+                ("--search <TEXT>", "Without TARGET, filter source-map declarations by name or source path.", "lk trace source --search Position"),
+                ("--type <KIND>", "Without TARGET, restrict source-map declarations to contract, interface, or library.", "lk trace source --type interface"),
+                ("--page <N>", "Without TARGET, show one source-map page (starts at 1); cannot be combined with --all.", "lk trace source --page 2"),
+                ("--all", "Without TARGET, show all matching source-map declarations; cannot be combined with --page.", "lk trace source --search Position --all"),
                 ("--limit <N>", "Cap items shown in each detail section (1-500; default 24).", "lk trace source Vault.withdraw --limit 60"),
                 ("--json", "Emit structured relationship data for scripts and downstream tooling.", "lk trace source Vault.withdraw --json"),
             ],
@@ -1604,6 +1613,7 @@ def _render_link_help(command: str = "lk link") -> str:
             notes=(
                 "This is static source analysis. It does not prove that a path executed or that an external call succeeded.",
                 "Unresolved relationships and incomplete source coverage remain visible; they are not silently treated as safe.",
+                "When TARGET is omitted, --search, --type, --page, and --all browse the source map. With TARGET, use --only, --depth, and --detail for declaration relationships.",
             ),
         )
 
@@ -1657,10 +1667,10 @@ def _render_link_help(command: str = "lk link") -> str:
             ("--only <FILTER>", "Filter contract relationships: calls (internal calls), storage (reads and writes), reads, writes (mutations/initializers), imports (imports/inheritance), or assets (external/asset paths).", "lk link Vault --only writes"),
             ("--detail <VIEW>", "Function/modifier view: summary (default), calls, storage, external, or all. Use this instead of --only for a detailed function view.", "lk link Vault.withdraw --detail storage"),
             ("--limit <N>", "Set source-map entries per page and cap items in detail sections (1-500; default 24).", "lk link --search Vault --limit 50"),
-            ("--search <TEXT>", "Filter source-map declarations by name or source path. Requires no TARGET.", "lk link --search Position"),
-            ("--type <KIND>", "Keep contract, interface, or library declarations only. Requires no TARGET.", "lk link --type interface"),
-            ("--page <N>", "Show one source-map page (starts at 1). Requires no TARGET and cannot be combined with --all.", "lk link --page 2"),
-            ("--all", "Show every matching source-map declaration in one compact list. Requires no TARGET and cannot be combined with --page.", "lk link --search Vault --all"),
+            ("--search <TEXT>", "Filter source-map declarations by name or source path; requires no TARGET.", "lk link --search Position"),
+            ("--type <KIND>", "Keep contract, interface, or library declarations only; requires no TARGET.", "lk link --type interface"),
+            ("--page <N>", "Show one source-map page (starts at 1); requires no TARGET and cannot be combined with --all.", "lk link --page 2"),
+            ("--all", "Show every matching source-map declaration in one compact list; requires no TARGET and cannot be combined with --page.", "lk link --search Vault --all"),
             ("--json", "Emit structured JSON instead of terminal formatting.", "lk link --search Vault --json"),
         ],
         related=("lk trace source <TARGET>", "lk fn --flow both --asset all", "lk sources --scope application", "lk trace <TX>"),
@@ -1692,7 +1702,7 @@ def _render_flow_help() -> str:
             ("lk fn --flow both", "Show both incoming and outgoing asset paths.", "lk fn --flow both --asset all"),
         ],
         options=[
-            ("--flow <in|out|both>", "Required direction filter. in = incoming, out = outgoing, both = either direction.", "lk fn --flow out"),
+            ("--flow <in|out|both>", "This is the required direction filter. in = incoming, out = outgoing, both = either direction.", "lk fn --flow out"),
             ("--asset <eth|erc20|all>", "Choose the asset class. Defaults to all.", "lk fn --flow both --asset erc20"),
             ("--root <DIR>", "Scan another project root. Defaults to the current directory.", "lk fn --flow out --root ../protocol"),
             ("--json", "Emit machine-readable matching flow edges.", "lk fn --flow out --asset eth --json"),
@@ -1746,9 +1756,9 @@ FUNCTION / MODIFIER OPTIONS
                    external for boundaries/events/assets, or all for the full view.
                    Example: lk trace source Vault.increasePosition --detail storage
   --limit N        Maximum source-map declarations per page and items per detail
-                   section (1-500; default: 24). Increase it when a section reports omitted entries,
-                   or when you want more source-map declarations on each page.
-                   Example: lk link --search Vault --limit 60
+                   section (1-500; default: 24). Increase it when a section reports omitted entries.
+                   Examples: lk link --search Vault --limit 60
+                             lk link Vault --only writes --limit 60
 
 OUTPUT
   --json           Emit structured JSON for scripts and downstream tooling.
