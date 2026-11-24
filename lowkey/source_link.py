@@ -9,7 +9,7 @@ import sys
 import textwrap
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 try:
     from source_index import SourceIndexError, build_source_index, find_symbols
@@ -1514,12 +1514,204 @@ def _render_edges(heading: str, edges: list[dict[str, Any]], nodes: dict[str, di
             print("  " + _edge_label(edge, nodes))
 
 
+
+HELP_FLAGS = {"-h", "--h", "--help", "help"}
+
+
+def _render_help_page(
+    command: str,
+    *,
+    what: str,
+    when: str,
+    usage: str,
+    example: str,
+    forms: Sequence[tuple[str, str, str]],
+    options: Sequence[tuple[str, str, str]],
+    related: Sequence[str],
+    notes: Sequence[str] = (),
+) -> str:
+    """Render source-navigation help in the same learn-by-doing layout as lk send."""
+    lines = [
+        f"LOWKEY HELP  •  {command}",
+        "=" * 72,
+        f"What it does: {what}",
+        f"When to use: {when}",
+        f"Usage: {usage}",
+        f"Example: {example}",
+        "",
+        "COMMAND VARIATIONS",
+        "------------------",
+    ]
+    for invocation, description, sample in forms:
+        lines.extend([f"  {invocation}", f"      {description}", f"      Example: {sample}"])
+    lines.extend(["", "OPTIONS / MODES", "---------------"])
+    for flag, description, sample in options:
+        lines.extend([f"  {flag}", f"      {description}", f"      Example: {sample}"])
+    if notes:
+        lines.extend(["", "HOW TO READ THE RESULT", "----------------------"])
+        lines.extend(f"  {note}" for note in notes)
+    lines.extend(["", "RELATED COMMANDS", "----------------"])
+    lines.extend(f"  {item}" for item in related)
+    lines.extend([
+        "",
+        "HELP TIP",
+        "  Help is safe and read-only. It does not send transactions or change project state.",
+        "  Accepted forms: --h, --help, -h, help.",
+    ])
+    return "\n".join(lines)
+
+
+def _render_link_help(command: str = "lk link") -> str:
+    if command == "lk trace source":
+        return _render_help_page(
+            command,
+            what=(
+                "Walk the statically indexed source-call relationships for one contract, "
+                "function, or modifier and show its reachable calls and state/asset touchpoints."
+            ),
+            when=(
+                "Use it to understand a function's source-level execution path before writing a "
+                "test or following a real transaction. It is not the same as 'lk trace <TX>'."
+            ),
+            usage="lk trace source <TARGET> [OPTIONS]",
+            example="lk trace source 'PositionManager.increasePosition(uint256)' --detail all --depth 4",
+            forms=[
+                (
+                    "lk trace source <Contract.function>",
+                    "Trace the function's statically resolved callees, state effects, and external boundaries.",
+                    "lk trace source Vault.withdraw",
+                ),
+                (
+                    "lk trace source '<Contract.function(types...)>'",
+                    "Select one overload by its full parameter types. Single quotes protect the signature from shell parsing.",
+                    "lk trace source 'Vault.withdraw(uint256)'",
+                ),
+                (
+                    "lk trace source <Contract.function> --detail <VIEW>",
+                    "Choose which relationship sections to show; summary is the default.",
+                    "lk trace source Vault.withdraw --detail storage",
+                ),
+            ],
+            options=[
+                ("--root <DIR>", "Scan a different project root. Defaults to the current directory.", "lk trace source Vault.withdraw --root ../protocol"),
+                ("--depth <N>", "Limit call traversal to 1-10 levels. Function default is 3; contract default is 1.", "lk trace source Vault.withdraw --depth 5"),
+                ("--detail <VIEW>", "Choose summary, calls, storage, external, or all. Applies to function/modifier views.", "lk trace source Vault.withdraw --detail external"),
+                ("--only <FILTER>", "Filter relationship kinds: calls, storage, reads, writes, imports, or assets. Use this for contract relationship views, not together with a non-summary --detail.", "lk trace source Vault --only writes"),
+                ("--limit <N>", "Cap items shown in each detail section (1-500; default 24).", "lk trace source Vault.withdraw --limit 60"),
+                ("--json", "Emit structured relationship data for scripts and downstream tooling.", "lk trace source Vault.withdraw --json"),
+            ],
+            related=("lk link Vault", "lk trace <TX>", "lk fn --flow both --asset all", "lk sources --scope application"),
+            notes=(
+                "This is static source analysis. It does not prove that a path executed or that an external call succeeded.",
+                "Unresolved relationships and incomplete source coverage remain visible; they are not silently treated as safe.",
+            ),
+        )
+
+    return _render_help_page(
+        command,
+        what=(
+            "Browse the Solidity source map or inspect one contract, function, modifier, "
+            "mapping, or state variable and the relationships Lowkey can resolve from source."
+        ),
+        when=(
+            "Start here when you need to find a declaration, understand who calls a function, "
+            "or see which code reads and writes a piece of state before building a test."
+        ),
+        usage="lk link [TARGET] [OPTIONS]  |  lk link [SOURCE-MAP OPTIONS]",
+        example="lk link Vault.positions",
+        forms=[
+            (
+                "lk link",
+                "Browse the source map. The default page shows up to 24 declarations.",
+                "lk link",
+            ),
+            (
+                "lk link <Contract>",
+                "See a contract overview and its source relationships.",
+                "lk link PositionManager --only writes --depth 3",
+            ),
+            (
+                "lk link <Contract.function>",
+                "Inspect a function or modifier, including its callers/callees and state touchpoints.",
+                "lk link PositionManager.increasePosition",
+            ),
+            (
+                "lk link '<Contract.function(types...)>'",
+                "Select a specific function overload by its full ABI parameter types.",
+                "lk link 'Vault.withdraw(uint256)'",
+            ),
+            (
+                "lk link <Contract.mapping>",
+                "Inspect mapping keys, readers, writers, and related state paths.",
+                "lk link Vault.positions",
+            ),
+            (
+                "lk link --search <TEXT> [--type <KIND>]",
+                "Filter the source map by declaration name or source path; do not supply TARGET.",
+                "lk link --search Position --type contract",
+            ),
+        ],
+        options=[
+            ("--root <DIR>", "Scan another project. Defaults to the current directory.", "lk link --root ../protocol"),
+            ("--depth <N>", "Limit call traversal to 1-10 levels. Function/modifier default is 3; contract default is 1.", "lk link Vault --depth 3"),
+            ("--only <FILTER>", "Filter contract relationships: calls (internal calls), storage (reads and writes), reads, writes (mutations/initializers), imports (imports/inheritance), or assets (external/asset paths).", "lk link Vault --only writes"),
+            ("--detail <VIEW>", "Function/modifier view: summary (default), calls, storage, external, or all. Use this instead of --only for a detailed function view.", "lk link Vault.withdraw --detail storage"),
+            ("--limit <N>", "Set source-map entries per page and cap items in detail sections (1-500; default 24).", "lk link --search Vault --limit 50"),
+            ("--search <TEXT>", "Filter source-map declarations by name or source path. Requires no TARGET.", "lk link --search Position"),
+            ("--type <KIND>", "Keep contract, interface, or library declarations only. Requires no TARGET.", "lk link --type interface"),
+            ("--page <N>", "Show one source-map page (starts at 1). Requires no TARGET and cannot be combined with --all.", "lk link --page 2"),
+            ("--all", "Show every matching source-map declaration in one compact list. Requires no TARGET and cannot be combined with --page.", "lk link --search Vault --all"),
+            ("--json", "Emit structured JSON instead of terminal formatting.", "lk link --search Vault --json"),
+        ],
+        related=("lk trace source <TARGET>", "lk fn --flow both --asset all", "lk sources --scope application", "lk trace <TX>"),
+        notes=(
+            "Source-map options (--search, --type, --page, --all) are used without TARGET. --page and --all are mutually exclusive.",
+            "--detail applies to function/modifier views. A non-summary --detail cannot be combined with --only.",
+            "Static links do not prove execution, transaction success, storage-slot identity, or the implementation behind an external address.",
+            "Incomplete source coverage and unresolved relationships are reported rather than hidden.",
+        ),
+    )
+
+
+def _render_flow_help() -> str:
+    return _render_help_page(
+        "lk fn --flow",
+        what=(
+            "Filter Lowkey's static asset-flow graph to functions that appear to receive "
+            "or send ETH/ERC-20 assets in the indexed Solidity source."
+        ),
+        when=(
+            "Use it to locate likely deposit, withdrawal, transfer, and payout paths before "
+            "reviewing accounting or testing value movement. This is separate from 'lk fn <filter>'."
+        ),
+        usage="lk fn --flow <in|out|both> [--asset <eth|erc20|all>] [--root DIR] [--json]",
+        example="lk fn --flow out --asset eth",
+        forms=[
+            ("lk fn --flow in", "Show statically identified incoming asset paths.", "lk fn --flow in --asset eth"),
+            ("lk fn --flow out", "Show statically identified outgoing asset paths.", "lk fn --flow out --asset erc20"),
+            ("lk fn --flow both", "Show both incoming and outgoing asset paths.", "lk fn --flow both --asset all"),
+        ],
+        options=[
+            ("--flow <in|out|both>", "Required direction filter. in = incoming, out = outgoing, both = either direction.", "lk fn --flow out"),
+            ("--asset <eth|erc20|all>", "Choose the asset class. Defaults to all.", "lk fn --flow both --asset erc20"),
+            ("--root <DIR>", "Scan another project root. Defaults to the current directory.", "lk fn --flow out --root ../protocol"),
+            ("--json", "Emit machine-readable matching flow edges.", "lk fn --flow out --asset eth --json"),
+        ],
+        related=("lk fn --h", "lk link <Contract.function>", "lk trace source <TARGET>", "lk trace <TX>"),
+        notes=(
+            "The result is static source evidence. It does not prove that a transfer happened, succeeded, or moved the displayed amount at runtime.",
+            "Use 'lk trace <TX>' and transaction/state-diff evidence to inspect an actual execution.",
+        ),
+    )
+
+
 def _link_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lk link",
         description=(
-            "Browse a Solidity project or inspect one contract, function, modifier, "
-            "mapping, or state variable. The default screens stay compact; detail is opt-in."
+            "What it does: Browse the source map or inspect one declaration and its statically resolved relationships.\n"
+            "When to use: Find callers, state readers/writers, imports, and asset paths before testing.\n"
+            "Static source evidence is not proof that a path executed."
         ),
         epilog="""QUICK START
   lk link                                      Browse the source map (24 per page).
@@ -1553,9 +1745,10 @@ FUNCTION / MODIFIER OPTIONS
                    Use calls for caller/callee flow, storage for state effects,
                    external for boundaries/events/assets, or all for the full view.
                    Example: lk trace source Vault.increasePosition --detail storage
-  --limit N        Cap items shown in each detail section (1-500; default: 24).
-                   Increase it when a section reports omitted entries.
-                   Example: lk link Vault --only writes --limit 60
+  --limit N        Maximum source-map declarations per page and items per detail
+                   section (1-500; default: 24). Increase it when a section reports omitted entries,
+                   or when you want more source-map declarations on each page.
+                   Example: lk link --search Vault --limit 60
 
 OUTPUT
   --json           Emit structured JSON for scripts and downstream tooling.
@@ -1600,7 +1793,7 @@ RULES
     )
     parser.add_argument(
         "--limit", metavar="N", type=int, default=24,
-        help="maximum items per detail section, 1-500 (default: 24)",
+        help="maximum source-map entries per page and items per detail section, 1-500 (default: 24)",
     )
     parser.add_argument(
         "--search", metavar="TEXT",
@@ -1753,7 +1946,10 @@ def run_project_index_args(args: argparse.Namespace) -> int:
     )
 
 
-def run_link(argv: list[str]) -> int:
+def run_link(argv: list[str], *, help_command: str = "lk link") -> int:
+    if any(str(value).lower() in HELP_FLAGS for value in argv):
+        print(_render_link_help(help_command))
+        return 0
     parser = _link_parser()
     args = parser.parse_args(argv)
     if args.depth is not None and (args.depth < 1 or args.depth > 10):
@@ -1783,16 +1979,24 @@ def run_link(argv: list[str]) -> int:
 
 
 def run_flow(argv: list[str]) -> int:
+    if any(str(value).lower() in HELP_FLAGS for value in argv):
+        print(_render_flow_help())
+        return 0
     parser = argparse.ArgumentParser(
-        prog="lk fn",
-        description="Filter the shared static asset-flow graph. Static transfer attempts are not runtime proof.",
+        prog="lk fn --flow",
+        description=(
+            "Filter static ETH/ERC-20 asset-flow candidates. This is separate from "
+            "the ordinary 'lk fn <filter>' function inventory."
+        ),
+        epilog="Examples:\n  lk fn --flow in --asset eth\n  lk fn --flow out --asset erc20\n  lk fn --flow both --asset all --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
+    parser.add_argument("--flow", choices=("in", "out", "both"), required=True, help="required direction: incoming, outgoing, or both")
+    parser.add_argument("--asset", choices=("eth", "erc20", "all"), default="all", help="asset class to include (default: all)")
+    parser.add_argument("--root", default=".", help="project root to scan (default: current directory)")
+    parser.add_argument("--json", action="store_true", help="emit structured flow-edge data")
     parser.add_argument("-h", "--h", "--help", action="help", help="show this help")
-    parser.add_argument("--flow", choices=("in", "out", "both"), required=True)
-    parser.add_argument("--asset", choices=("eth", "erc20", "all"), default="all")
-    parser.add_argument("--root", default=".")
-    parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         index = build_source_index(args.root)
@@ -1852,17 +2056,32 @@ def run_flow(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
-    if not values or values[0] in {"-h", "--h", "--help", "help"}:
-        print("Usage: lk link [TARGET] [--detail summary|calls|storage|external|all]")
-        print("       lk link [--search TEXT] [--type contract|interface|library] [--page N|--all]")
-        print("       lk trace source TARGET [--detail calls|storage|external|all]")
-        print("       lk fn --flow in|out|both --asset eth|erc20|all")
+    if not values or str(values[0]).lower() in HELP_FLAGS:
+        print(_render_help_page(
+            "lk source relationships",
+            what="Navigate Solidity declarations, trace source-level calls, and filter asset-flow paths.",
+            when="Use these commands to map code relationships before running tests or following transaction traces.",
+            usage="lk link | lk link <TARGET> | lk trace source <TARGET> | lk fn --flow <in|out|both>",
+            example="lk link Vault",
+            forms=[
+                ("lk link [TARGET]", "Browse the source map or inspect a declaration.", "lk link Vault.positions"),
+                ("lk trace source <TARGET>", "Follow statically resolved source calls and state touchpoints.", "lk trace source Vault.withdraw"),
+                ("lk fn --flow <in|out|both>", "Filter incoming/outgoing asset-flow candidates.", "lk fn --flow out --asset eth"),
+            ],
+            options=[
+                ("lk link --h", "Explain source-map and declaration inspection options.", "lk link --h"),
+                ("lk trace source --h", "Explain source-call traversal options.", "lk trace source --h"),
+                ("lk fn --flow --h", "Explain asset-flow filter modes.", "lk fn --flow --h"),
+            ],
+            related=("lk sources", "lk fn --h", "lk trace <TX>"),
+            notes=("These commands inspect source statically. Use transaction traces and state diffs to establish what actually executed.",),
+        ))
         return 0 if values else 2
     command, rest = values[0], values[1:]
     if command == "link":
         return run_link(rest)
     if command == "trace" and rest and rest[0] == "source":
-        return run_link(rest[1:])
+        return run_link(rest[1:], help_command="lk trace source")
     if command == "flow":
         return run_flow(rest)
     print(f"Unknown source-relationship command: {command}", file=sys.stderr)

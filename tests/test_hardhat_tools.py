@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -274,6 +276,85 @@ class HardhatReadinessTests(unittest.TestCase):
             self.assertFalse((root / "env.json").exists())
 
 
+class HardhatHelpTests(unittest.TestCase):
+    def capture(self, callback, *args):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = callback(*args)
+        return code, output.getvalue()
+
+    def assert_send_style_page(self, output, title, required):
+        for section in (
+            f"LOWKEY HELP  •  {title}",
+            "What it does:",
+            "When to use:",
+            "Usage:",
+            "Example:",
+            "COMMAND VARIATIONS",
+            "OPTIONS / MODES",
+            "RELATED COMMANDS",
+            "HELP TIP",
+        ):
+            self.assertIn(section, output)
+        for item in required:
+            self.assertIn(item, output)
+
+    def test_hardhat_root_help_explains_available_commands(self):
+        code, output = self.capture(hardhat_tools.main, ["--h"])
+        self.assertEqual(code, 0)
+        self.assert_send_style_page(
+            output,
+            "lk hardhat",
+            ("lk hardhat init", "lk hardhat doctor", "lk hardhat prepare", "lk clean"),
+        )
+
+    def test_hardhat_init_help_explains_template_and_esm_side_effects(self):
+        with patch.object(hardhat_tools, "_node_context") as node_context:
+            code, output = self.capture(hardhat_tools.main, ["init", "--h"])
+        self.assertEqual(code, 0)
+        node_context.assert_not_called()
+        self.assert_send_style_page(
+            output,
+            "lk hardhat init",
+            ("--template <NAME>", "--templates", "--esm", ".package.json.lowkey-pre-hardhat-esm"),
+        )
+
+    def test_hardhat_doctor_help_is_read_only_and_never_selects_project(self):
+        with patch.object(hardhat_tools, "_selected_project") as selected:
+            code, output = self.capture(hardhat_tools.main, ["doctor", "--h"])
+        self.assertEqual(code, 0)
+        selected.assert_not_called()
+        self.assert_send_style_page(
+            output,
+            "lk hardhat doctor",
+            ("read-only", "Node engine range", "does not create env.json"),
+        )
+
+    def test_hardhat_prepare_help_explains_lockfile_behavior(self):
+        with patch.object(hardhat_tools, "_selected_project") as selected:
+            code, output = self.capture(hardhat_tools.main, ["prepare", "--h"])
+        self.assertEqual(code, 0)
+        selected.assert_not_called()
+        self.assert_send_style_page(
+            output,
+            "lk hardhat prepare",
+            ("package-lock.json", "initial lockfile", "does not rewrite package.json"),
+        )
+
+    def test_clean_help_is_shown_before_project_detection_or_cleaning(self):
+        for flag in ("--h", "--help", "-h", "help"):
+            with patch.object(hardhat_tools, "_selected_project") as selected:
+                code, output = self.capture(hardhat_tools.run_clean, [flag])
+            self.assertEqual(code, 0)
+            selected.assert_not_called()
+            self.assert_send_style_page(
+                output,
+                "lk clean",
+                ("Foundry projects use Forge", "generated artifacts/cache", "does not delete Solidity source files"),
+            )
+
+
+
 class HardhatCleanTests(unittest.TestCase):
     def test_hardhat_clean_uses_project_local_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,9 +371,9 @@ class HardhatCleanTests(unittest.TestCase):
                  patch.object(hardhat_tools, "_execution_environment", return_value=(env, None)), \
                  patch.object(hardhat_tools, "prepare_readiness", return_value=0) as readiness, \
                  patch.object(hardhat_tools, "_run", return_value=0) as runner:
-                self.assertEqual(hardhat_tools.run_clean(["--help"]), 0)
+                self.assertEqual(hardhat_tools.run_clean([]), 0)
             readiness.assert_called_once_with(root, binary)
-            runner.assert_called_once_with([str(binary), "clean", "--help"], root, env)
+            runner.assert_called_once_with([str(binary), "clean"], root, env)
 
     def test_foundry_clean_preserves_existing_forge_handler(self):
         with tempfile.TemporaryDirectory() as tmp:

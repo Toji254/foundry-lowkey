@@ -654,6 +654,80 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("requires no TARGET", help_text)
         self.assertIn("Function default is 3", help_text)
 
+    def test_link_help_uses_send_style_and_explains_every_option(self):
+        for flag in ("--h", "--help", "-h", "help"):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main(["link", flag])
+            rendered = output.getvalue()
+            self.assertEqual(code, 0)
+            for item in (
+                "LOWKEY HELP  •  lk link",
+                "What it does:",
+                "When to use:",
+                "Usage: lk link",
+                "COMMAND VARIATIONS",
+                "OPTIONS / MODES",
+                "RELATED COMMANDS",
+                "HELP TIP",
+                "--root <DIR>",
+                "--depth <N>",
+                "--only <FILTER>",
+                "--detail <VIEW>",
+                "--limit <N>",
+                "--search <TEXT>",
+                "--type <KIND>",
+                "--page <N>",
+                "--all",
+                "--json",
+                "requires no TARGET",
+                "does not prove execution",
+            ):
+                self.assertIn(item, rendered)
+
+    def test_trace_source_help_explains_static_vs_runtime_trace(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["trace", "source", "--h"])
+        rendered = output.getvalue()
+
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk trace source", rendered)
+        self.assertIn("source-level execution path", rendered)
+        self.assertIn("not the same as 'lk trace <TX>'", rendered)
+        self.assertIn("--detail <VIEW>", rendered)
+        self.assertIn("--depth <N>", rendered)
+        self.assertIn("lk trace source 'PositionManager.increasePosition(uint256)'", rendered)
+
+    def test_fn_asset_flow_help_explains_direction_asset_and_scope(self):
+        for flag in ("--h", "--help", "-h", "help"):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = run_flow([flag])
+            rendered = output.getvalue()
+
+            self.assertEqual(code, 0)
+            self.assertIn("LOWKEY HELP  •  lk fn --flow", rendered)
+            self.assertIn("required direction", rendered)
+            self.assertIn("--flow <in|out|both>", rendered)
+            self.assertIn("--asset <eth|erc20|all>", rendered)
+            self.assertIn("--root <DIR>", rendered)
+            self.assertIn("--json", rendered)
+            self.assertIn("separate from 'lk fn <filter>'", rendered)
+            self.assertIn("does not prove that a transfer happened", rendered)
+
+    def test_source_relationship_root_help_points_to_specific_menus(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["--h"])
+        rendered = output.getvalue()
+
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk source relationships", rendered)
+        self.assertIn("lk link --h", rendered)
+        self.assertIn("lk trace source --h", rendered)
+        self.assertIn("lk fn --flow --h", rendered)
+
     def test_flow_filter_separates_payable_capability_from_eth_out(self):
         temporary, root = self.fixture()
         try:

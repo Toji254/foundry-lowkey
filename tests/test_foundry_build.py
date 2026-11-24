@@ -37,6 +37,14 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         self.assertIn("--lazy", rendered)
         self.assertIn("mutually exclusive", rendered)
         self.assertIn("lk build --lazy", rendered)
+        for item in (
+            "What it does:", "When to use:", "COMMAND VARIATIONS",
+            "OPTIONS / MODES", "RELATED COMMANDS", "HELP TIP",
+            "--root <DIR>", "--member <MEMBER>", "--scope <full|production|tests|scripts|target>",
+            "--target <CONTRACT>", "--low-memory", "--plan", "--json",
+            "--guide", "--lazy", "FORGE OPTIONS",
+        ):
+            self.assertIn(item, rendered)
 
     def test_build_help_long_alias_lists_ai_failure_modes_without_running_build(self):
         import contextlib

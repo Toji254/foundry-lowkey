@@ -238,35 +238,147 @@ def _run(command: Sequence[str], root: Path, env: dict[str, str]) -> int:
     return int(completed.returncode or 0)
 
 
-def _render_help() -> str:
-    return "\n".join([
-        "LOWKEY HELP  •  lk hardhat",
-        "=" * 64,
+def _render_help(command: str | None = None) -> str:
+    """Render actionable help for the Hardhat lifecycle commands."""
+    pages = {
+        "hardhat": {
+            "what": "Initialize a Hardhat project or inspect/prepare an existing project's local Hardhat toolchain.",
+            "when": "Use this for a repository that actually uses Hardhat. Normal build, test, and clean commands remain lk build, lk test, and lk clean.",
+            "usage": "lk hardhat <init|doctor|prepare|clean>",
+            "example": "lk hardhat doctor",
+            "forms": [
+                ("lk hardhat init", "Create a new Hardhat project with the minimal template. Refuses to overwrite an existing Hardhat config.", "lk hardhat init"),
+                ("lk hardhat init --templates", "List initializer templates supported by the installed Hardhat initializer.", "lk hardhat init --templates"),
+                ("lk hardhat doctor", "Show a read-only report of dependencies, local config, project Node pins, and Hardhat's Node engine range.", "lk hardhat doctor"),
+                ("lk hardhat prepare", "Prepare repository-declared dependencies when the project-local Hardhat executable is missing. May create the initial lockfile when none exists.", "lk hardhat prepare"),
+                ("lk clean", "Clean generated build artifacts using the selected native cleaner. Foundry takes precedence in mixed Foundry/Hardhat projects.", "lk clean"),
+            ],
+            "options": [
+                ("--template <NAME>", "Choose an initializer template. The default is minimal; use --templates to list available choices.", "lk hardhat init --template minimal"),
+                ("--templates", "List available initializer templates without initializing the project.", "lk hardhat init --templates"),
+                ("--esm", "Explicitly migrate an existing package.json to ESM. Lowkey first saves the original as .package.json.lowkey-pre-hardhat-esm; review existing JavaScript scripts because CommonJS files may need .cjs.", "lk hardhat init --esm"),
+            ],
+            "related": ("lk hardhat doctor", "lk build", "lk test", "lk clean", "lk project"),
+            "notes": [
+                "Hardhat remains a project-local dependency. Lowkey does not install a global Hardhat executable.",
+                "Initialization is for a new Hardhat project. Existing hardhat.config.* files are not overwritten.",
+                "Doctor is read-only. Prepare/build/test may install only dependencies declared by the repository and honor its lockfile.",
+            ],
+        },
+        "init": {
+            "what": "Initialize a new Hardhat project through Hardhat's project initializer. The default template is minimal.",
+            "when": "Use it once when starting a new Hardhat project that does not already have a hardhat.config.* file.",
+            "usage": "lk hardhat init [--template NAME] [--esm]  |  lk hardhat init --templates",
+            "example": "lk hardhat init --template minimal",
+            "forms": [
+                ("lk hardhat init", "Create a new project using the minimal template.", "lk hardhat init"),
+                ("lk hardhat init --template <NAME>", "Create a project from a selected template.", "lk hardhat init --template minimal"),
+                ("lk hardhat init --templates", "List available templates. Does not create the project.", "lk hardhat init --templates"),
+            ],
+            "options": [
+                ("--template <NAME>", "Initializer template name. Defaults to minimal.", "lk hardhat init --template minimal"),
+                ("--templates", "Show the template catalogue instead of creating a project.", "lk hardhat init --templates"),
+                ("--esm", "Explicitly set an existing package.json to ESM after preserving its original contents in .package.json.lowkey-pre-hardhat-esm. This can affect existing .js scripts.", "lk hardhat init --esm"),
+            ],
+            "related": ("lk hardhat doctor", "lk build", "lk test"),
+            "notes": [
+                "Lowkey refuses to initialize over an existing Hardhat config.",
+                "Hardhat is installed project-locally; Lowkey does not install a global Hardhat binary.",
+                "If package.json is CommonJS, Hardhat 3 requires an explicit ESM migration decision. Lowkey does not silently change it.",
+            ],
+        },
+        "doctor": {
+            "what": "Inspect Hardhat project readiness without installing packages or changing project files.",
+            "when": "Run it before your first build/test, after changing Node versions, or when a Hardhat command fails during setup.",
+            "usage": "lk hardhat doctor",
+            "example": "lk hardhat doctor",
+            "forms": [
+                ("lk hardhat doctor", "Report whether local Hardhat is present, required local config files exist, and the selected Node runtime matches declared requirements.", "lk hardhat doctor"),
+            ],
+            "options": [],
+            "related": ("lk hardhat prepare", "lk build", "lk test", "lk clean"),
+            "notes": [
+                "Doctor is read-only: it does not create env.json, install dependencies, edit package.json, or switch Node versions.",
+                "A Hardhat engine mismatch is reported as a warning; a project-declared Node pin that cannot be satisfied is a review blocker.",
+                "The report checks only statically identifiable relative config imports. It cannot infer runtime-generated config requirements or supply secrets.",
+            ],
+        },
+        "prepare": {
+            "what": "Ensure a detected Hardhat project has its repository-local Hardhat executable and pass the shared readiness checks.",
+            "when": "Use it explicitly when you want to prepare dependencies before running a build/test. lk build and lk test do this automatically.",
+            "usage": "lk hardhat prepare",
+            "example": "lk hardhat prepare",
+            "forms": [
+                ("lk hardhat prepare", "Check the project-local binary; if it is missing, prepare dependencies from the package manager and lockfile declared by the project.", "lk hardhat prepare"),
+            ],
+            "options": [],
+            "related": ("lk hardhat doctor", "lk build", "lk test"),
+            "notes": [
+                "If package-lock.json exists, Lowkey uses the lockfile-based install. If no lockfile exists, it generates the initial lockfile before installing.",
+                "This command may modify node_modules and create the initial lockfile when missing. It does not rewrite package.json or change dependency versions.",
+                "If the project is not detected as Hardhat, Lowkey leaves the normal native command route unchanged.",
+            ],
+        },
+        "clean": {
+            "what": "Remove generated build artifacts using the native cleaner selected for the current project.",
+            "when": "Use it when you need a fresh compile after changing source/compiler inputs or when generated artifacts are stale.",
+            "usage": "lk clean [NATIVE CLEANER OPTIONS]",
+            "example": "lk clean",
+            "forms": [
+                ("lk clean", "Run the selected native cleaner. Hardhat projects use their project-local Hardhat binary; Foundry projects use Forge.", "lk clean"),
+            ],
+            "options": [
+                ("[NATIVE CLEANER OPTIONS]", "No Lowkey-specific clean flags are defined. Extra arguments are passed unchanged to the selected cleaner; only use flags supported by that project's cleaner.", "lk clean"),
+            ],
+            "related": ("lk build", "lk test", "lk hardhat doctor", "lk project"),
+            "notes": [
+                "In a mixed Foundry/Hardhat repository, Foundry has cleaning precedence.",
+                "On Hardhat projects, Lowkey may prepare missing declared dependencies and create the initial lockfile before cleaning. It may also copy a required example config only when Git ignores the destination.",
+                "The native cleaner removes its generated artifacts/cache. Lowkey does not delete Solidity source files, package manifests, lockfiles, or existing local credentials/config.",
+            ],
+        },
+    }
+    page = pages.get(command or "hardhat", pages["hardhat"])
+    title = "lk hardhat" if command is None or command == "hardhat" else (
+        "lk clean" if command == "clean" else f"lk hardhat {command}"
+    )
+    lines = [
+        f"LOWKEY HELP  •  {title}",
+        "=" * 72,
+        f"What it does: {page['what']}",
+        f"When to use: {page['when']}",
+        f"Usage: {page['usage']}",
+        f"Example: {page['example']}",
         "",
-        "  lk hardhat init [--template NAME] [--esm]",
-        "  lk hardhat init --templates",
-        "  lk hardhat doctor",
+        "COMMAND VARIATIONS",
+        "------------------",
+    ]
+    for invocation, description, sample in page["forms"]:
+        lines.extend([f"  {invocation}", f"      {description}", f"      Example: {sample}"])
+    lines.extend(["", "OPTIONS / MODES", "---------------"])
+    if page["options"]:
+        for flag, description, sample in page["options"]:
+            lines.extend([f"  {flag}", f"      {description}", f"      Example: {sample}"])
+    else:
+        lines.append("  No command-specific options. Only the standard help flags are accepted.")
+    lines.extend(["", "RELATED COMMANDS", "----------------"])
+    lines.extend(f"  {item}" for item in page["related"])
+    lines.extend(["", "IMPORTANT NOTES", "---------------"])
+    lines.extend(f"  {item}" for item in page["notes"])
+    lines.extend([
         "",
-        "Initializes Hardhat 3 in the current directory. The default template is",
-        "'minimal'. Hardhat remains a project-local dependency; Lowkey does not",
-        "install a global Hardhat executable.",
-        "",
-        "--esm  Explicitly migrate an existing package.json to ESM. Lowkey first",
-        "       preserves the original as .package.json.lowkey-pre-hardhat-esm.",
-        "       Review existing .js files because CommonJS scripts may need .cjs.",
-        "",
-        "After initialization, use the normal Lowkey commands:",
-        "  lk build",
-        "  lk test",
-        "  lk clean",
+        "HELP TIP",
+        "  Help is read-only. It does not initialize, install, clean, deploy, or send transactions.",
+        "  Accepted forms: --h, --help, -h, help.",
     ])
+    return "\n".join(lines)
 
 
 def run_init(argv: Sequence[str]) -> int:
     root = Path.cwd().resolve()
     values = list(argv)
-    if any(value in {"-h", "--help", "--h"} for value in values):
-        print(_render_help())
+    if any(str(value).lower() in {"-h", "--help", "--h", "help"} for value in values):
+        print(_render_help("init"))
         return 0
 
     allow_esm = "--esm" in values
@@ -774,8 +886,7 @@ def prepare_readiness(root: Path, binary: Path) -> int:
 def run_doctor(argv: Sequence[str] = ()) -> int:
     """Read-only Hardhat readiness report; never installs or writes project files."""
     if any(str(value).lower() in {"-h", "--h", "--help", "help"} for value in argv):
-        print("Usage: lk hardhat doctor")
-        print("Read-only checks: dependencies, required local config, and Node compatibility.")
+        print(_render_help("doctor"))
         return 0
     if argv:
         print("Usage: lk hardhat doctor", file=sys.stderr)
@@ -841,8 +952,7 @@ def run_prepare(argv: Sequence[str] = (), *, reason: str = "test") -> int:
     using its existing native command router.
     """
     if any(str(value).lower() in {"-h", "--h", "--help", "help"} for value in argv):
-        print("Usage: lk hardhat prepare")
-        print("Prepares declared project dependencies only when the local Hardhat binary is missing.")
+        print(_render_help("prepare"))
         return 0
 
     root, info = _selected_project()
@@ -876,6 +986,9 @@ def _execution_environment(root: Path) -> tuple[dict[str, str] | None, str | Non
 
 
 def run_clean(argv: Sequence[str]) -> int:
+    if any(str(value).lower() in {"-h", "--help", "--h", "help"} for value in argv):
+        print(_render_help("clean"))
+        return 0
     root, info = _selected_project()
     backend = str(info.get("backend") or info.get("kind") or "").lower()
     stacks = {str(value).lower() for value in (info.get("stacks") or [])}
