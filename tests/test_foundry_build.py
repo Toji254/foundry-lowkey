@@ -4,6 +4,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import sys
@@ -46,6 +47,90 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("--guide", output.getvalue())
         self.assertIn("--lazy", output.getvalue())
+
+    def test_native_hardhat_build_bootstraps_missing_local_dependencies_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.js", "module.exports = {};\\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\\n',
+            )
+            info = {
+                "root": str(root),
+                "kind": "hardhat",
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+            binary = root / "node_modules" / ".bin" / "hardhat"
+
+            with (
+                patch.object(project_detection, "detect_project", side_effect=[info, info]),
+                patch.object(foundry_build.bootstrap, "_local_hardhat_binary", side_effect=[None, binary]),
+                patch.object(project_detection, "bootstrap_project", return_value=0) as prepare,
+                patch.object(
+                    foundry_build.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(returncode=0),
+                ) as run,
+            ):
+                code = foundry_build._run_native_fallback(["--verbose"])
+
+            self.assertEqual(code, 0)
+            prepare.assert_called_once_with(info, reason="build")
+            command = run.call_args.args[0]
+            self.assertEqual(command[1:], [str(ROOT / "lowkey" / "lk.py"), "build", "--verbose"])
+            self.assertEqual(pathlib.Path(run.call_args.kwargs["cwd"]), root)
+
+    def test_native_hardhat_build_stops_when_dependency_bootstrap_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.js", "module.exports = {};\\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\\n',
+            )
+            info = {
+                "root": str(root),
+                "kind": "hardhat",
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+
+            with (
+                patch.object(project_detection, "detect_project", return_value=info),
+                patch.object(foundry_build.bootstrap, "_local_hardhat_binary", return_value=None),
+                patch.object(project_detection, "bootstrap_project", return_value=1) as prepare,
+                patch.object(foundry_build.subprocess, "run") as run,
+            ):
+                code = foundry_build._run_native_fallback([])
+
+            self.assertEqual(code, 1)
+            prepare.assert_called_once_with(info, reason="build")
+            run.assert_not_called()
+
+    def test_non_hardhat_native_build_fallback_does_not_bootstrap_node_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            info = {"root": str(root), "kind": "generic", "backend": "generic", "stacks": []}
+
+            with (
+                patch.object(project_detection, "detect_project", return_value=info),
+                patch.object(project_detection, "bootstrap_project") as prepare,
+                patch.object(
+                    foundry_build.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(returncode=0),
+                ) as run,
+            ):
+                code = foundry_build._run_native_fallback([])
+
+            self.assertEqual(code, 0)
+            prepare.assert_not_called()
+            run.assert_called_once()
+
 
     def test_collect_resources_reads_ram_swap_zram_psi_and_cgroup(self):
         with tempfile.TemporaryDirectory() as tmp:
