@@ -23,11 +23,11 @@ class InstallSmokeTests(unittest.TestCase):
             lowkey_dir = pathlib.Path(home) / ".lowkey"
             lowkey_dir.mkdir()
             (lowkey_dir / "hardhat_tools.py").write_text(
-                "print('HARDHAT_PREPARE')\\n",
+                "print('HARDHAT_PREPARE')\n",
                 encoding="utf-8",
             )
             (lowkey_dir / "lk.py").write_text(
-                "import sys\\nprint('NATIVE_TEST', *sys.argv[1:])\\n",
+                "import sys\nprint('NATIVE_TEST', *sys.argv[1:])\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
@@ -52,11 +52,11 @@ class InstallSmokeTests(unittest.TestCase):
             lowkey_dir = pathlib.Path(home) / ".lowkey"
             lowkey_dir.mkdir()
             (lowkey_dir / "hardhat_tools.py").write_text(
-                "raise SystemExit(3)\\n",
+                "raise SystemExit(3)\n",
                 encoding="utf-8",
             )
             (lowkey_dir / "lk.py").write_text(
-                "import sys\\nprint('NATIVE_TEST', *sys.argv[1:])\\n",
+                "import sys\nprint('NATIVE_TEST', *sys.argv[1:])\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
