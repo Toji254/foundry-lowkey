@@ -108,6 +108,24 @@ contract Vault {
             self.assertEqual(result["files_scanned"], 1)
             self.assertEqual(len(result["inspection_failures"]), 1)
 
+    def test_fingerprint_cli_returns_nonzero_when_inventory_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "Vault.sol"
+            source.write_text(self._vault_source(), encoding="utf-8")
+            inventory = {
+                "root": root,
+                "files": [source],
+                "contents": {source: source.read_text(encoding="utf-8")},
+                "failures": [{"path": "Unreadable.sol", "phase": "read", "scope": "source"}],
+            }
+            with patch.object(godmode, "_collect_source_inventory", return_value=inventory):
+                code = godmode.fingerprint(["--root", str(root), "--output", ".audit/fingerprints.json"])
+            self.assertEqual(code, 1)
+            report = json.loads((root / ".audit" / "fingerprints.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["scan_status"], "review")
+            self.assertEqual(report["inspection_failures"][0]["path"], "Unreadable.sol")
+
     def test_fingerprint_does_not_treat_local_assignment_as_mapping_write(self):
         source = """contract Vault {
     mapping(address => uint256) internal balances;
