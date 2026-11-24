@@ -32,8 +32,8 @@ lk init-frontrun
 lk proxy-resolve 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
 lk storage-infer 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
 lk selectors-full 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
-lk target-coverage src/Vault.sol --start-line 40 --end-line 95
-lk provenance .audit/godmode/latest.json
+lk target-coverage src/Vault.sol --root . --start-line 40 --end-line 95 --match-path test/Vault.t.sol --min-percent 85
+lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 100
 lk economic --gross-wei 1000000000000000000 --gas-used 180000 --max-fee-wei 20000000000
 lk time
 lk token-weird
@@ -85,11 +85,11 @@ lk control .audit/control.json --root . --rpc-url http://127.0.0.1:8545 --valida
 # Render a typed Step[] manifest and write both the harness and refusal location
 lk steps .audit/steps.json --root . --output test/GeneratedSteps.t.sol --refusal-output .audit/steps-refusal.json
 
-# Enforce the configured mutation score
-lk mutation-score .audit/mutations.json --min-score 0.90 --timeout 300
+# Enforce one complete, family-scoped mutation campaign
+lk mutation-score .audit/reentrancy-mutations.json --root . --family reentrancy --min-score 0.90 --timeout 300
 
-# Record selected artifact hashes and run provenance
-lk provenance .audit/godmode/latest.json --chain-id 31337 --fork-block 100
+# Record and sign selected evidence artifacts (private key stays outside the repo)
+lk provenance .audit/godmode/latest.json --root . --chain-id 31337 --fork-block 100 --signing-key ~/.config/lowkey/provenance.pem
 
 # Reproduce on a pinned local fork and include verified prior setup costs
 lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --prior-cost-wei 1000000000000000
@@ -98,6 +98,33 @@ lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-bl
 lk reprove --prior-cost-wei subtracts measured setup expenditure in addition to replay gas. Its default is zero; do not leave it at zero when deployment, funding, or other attack setup costs were incurred. lk control --validate is read-only and does not execute either scenario. lk steps currently executes a generic sequence for its 15 registered labels; it does not implement 15 separate protocol-specific generators. Generic flash_borrow and reenter callback Steps remain fail-closed with backend_unsupported.
 
 lk godmode is an orchestrator, not an automatic vulnerability verdict. It reports skipped, blocked, and review-required stages explicitly. A fixture-level local proof remains fixture evidence; it is not proof against an authenticated production deployment.
+
+### Tier 0 evidence gates
+
+The four commands below are deliberately stricter than their basic reporting counterparts:
+
+~~~bash
+# Hash cheat-topic patterns and find ordered mapping-read -> external-call -> mapping-write candidates
+lk cheat-fingerprint --root . --output .audit/godmode/cheat-fingerprints.json
+
+# Measure fresh LCOV only for the selected source lines and tests; fail below 85%
+lk target-coverage src/Vault.sol --root . --start-line 40 --end-line 95 --match-path test/Vault.t.sol --min-percent 85
+
+# Score one vulnerability family; every declared mutant must have a valid result
+lk mutation-score .audit/reentrancy-mutations.json --root . --family reentrancy --min-score 0.90
+
+# Verify the signed manifest with a public key pinned outside the project
+install -m 644 .audit/godmode/provenance.json.pub.pem ~/.config/lowkey/trusted-provenance.pub.pem
+lk provenance --root . --verify .audit/godmode/provenance.json --public-key ~/.config/lowkey/trusted-provenance.pub.pem
+~~~
+
+A mutation manifest must identify one family and use unique IDs for every mutant. The gate fails when rows are missing or duplicated, totals disagree, the baseline fails, or any mutant is invalid, times out, errors, or remains unscored. Invalid outcomes are not quietly removed from the denominator.
+
+Target coverage removes stale LCOV output before running Forge. It can filter by test name or path and fails when there are no executable lines or the selected lines do not meet `--min-percent`. Coverage is only execution reachability; it does not prove that an assertion checks the right security invariant.
+
+Fingerprinting excludes comments and correlates source-token ordering. A reported sequence is an investigation lead, not proof of attacker control, runtime reachability or exploitability. Incomplete source inventory is reported as review-required and makes the direct fingerprint command exit nonzero.
+
+For provenance, keep the private signing key outside the project. The public key copied to `~/.config/lowkey/trusted-provenance.pub.pem` must be pinned through an independent trusted channel; a public-key sidecar shipped beside the manifest is not a trust anchor. Signature and artifact-hash verification establish integrity relative to that trusted key, not correctness of the experiment.
 
 ### Sequential control is mandatory for BREAK
 
