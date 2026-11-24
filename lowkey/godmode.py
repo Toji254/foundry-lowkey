@@ -5977,6 +5977,8 @@ def provenance(args):
         else:
             signature_path = signature_path.resolve()
         public_path = public_path.resolve()
+        if public_path.is_relative_to(root):
+            raise ValueError("Trusted public key must be outside --root and pinned through an independent channel.")
         if not signature_path.is_relative_to(root) or not signature_path.is_file():
             raise ValueError("Detached signature must be an existing file inside --root.")
         if not public_path.is_file():
@@ -6405,9 +6407,10 @@ def fingerprint(args):
         write_json(out, data)
         print("Fingerprint report: " + str(out.relative_to(root)))
         print("Ordered mapping/call/write sequences: " + str(len(data.get("ordered_sequences") or [])))
+        print("Source scan: " + str(data.get("scan_status", "unknown")))
     else:
         print(json.dumps(data, indent=2))
-    return 0
+    return 0 if data.get("scan_status") == "completed" else 1
 def economic(args):
     p=LowkeyArgumentParser(prog="lk economic"); p.add_argument("--gross-wei",type=int,required=True); p.add_argument("--gas-used",type=int,required=True); p.add_argument("--max-fee-wei",type=int,required=True); p.add_argument("--pool-fee-bps",type=int,default=0); p.add_argument("--slippage-bps",type=int,default=0); p.add_argument("--capital-cost-wei",type=int,default=0); ns=p.parse_args(args)
     vals=[ns.gross_wei,ns.gas_used,ns.max_fee_wei,ns.pool_fee_bps,ns.slippage_bps,ns.capital_cost_wei]
