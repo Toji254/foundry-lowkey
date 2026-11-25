@@ -15,6 +15,7 @@ if str(LOWKEY) not in sys.path:
 
 from source_index import build_source_index
 from source_link import _link_parser, main, render_link, run_flow
+from source_graph import build_protocol_graph
 
 
 class SourceLinkTests(unittest.TestCase):
@@ -145,7 +146,7 @@ class SourceLinkTests(unittest.TestCase):
         try:
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                status = main(["link", "--root", str(root)])
+                status = main(["link", "--root", str(root), "--list"])
         finally:
             temporary.cleanup()
 
@@ -162,12 +163,97 @@ class SourceLinkTests(unittest.TestCase):
         self.assertNotIn("relationships=", rendered)
         self.assertLess(len(rendered.splitlines()), 45)
 
+    def test_bare_link_defaults_to_protocol_relationship_graph(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "--root", str(root)])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("LOWKEY // PROTOCOL GRAPH", rendered)
+        self.assertIn("CONTRACT CONNECTIONS", rendered)
+        self.assertIn("[Graph]", rendered)
+        self.assertIn("INHERITS", rendered)
+        self.assertNotIn("AVAILABLE CONTRACTS", rendered)
+        self.assertNotIn("ImportedMath", rendered)
+
+    def test_graph_json_contains_nodes_and_relationship_edges(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "--root", str(root), "--format", "json"])
+        finally:
+            temporary.cleanup()
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(status, 0)
+        self.assertTrue(any(item["label"] == "Graph" for item in payload["nodes"]))
+        self.assertTrue(any(item["kind"] == "INHERITS" for item in payload["edges"]))
+        self.assertIn("limitations", payload)
+
+    def test_html_graph_export_is_offline_and_writes_under_project_root(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "--root", str(root), "--format", "html"])
+            html_path = root / ".lowkey" / "link-graph.html"
+            self.assertTrue(html_path.is_file())
+            document = html_path.read_text(encoding="utf-8")
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(status, 0)
+        self.assertIn("GRAPH SAVED", output.getvalue())
+        self.assertIn("<svg", document)
+        self.assertIn("Graph", document)
+        self.assertIn("STATIC SOURCE EVIDENCE", document)
+        self.assertNotIn("https://", document)
+        self.assertNotIn("__GRAPH_DATA__", document)
+
+    def test_focused_contract_graph_keeps_neighbourhood_and_existing_overview(self):
+        temporary, root = self.fixture()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["link", "Graph", "--root", str(root), "--depth", "1"])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("FOCUS  Graph", rendered)
+        self.assertIn("CONTRACT: Graph", rendered)
+        self.assertIn("INHERITANCE", rendered)
+
+    def test_graph_can_include_third_party_dependencies_explicitly(self):
+        temporary, root = self.fixture()
+        try:
+            default_output = io.StringIO()
+            with contextlib.redirect_stdout(default_output):
+                default_status = main(["link", "--root", str(root)])
+            third_party_output = io.StringIO()
+            with contextlib.redirect_stdout(third_party_output):
+                third_party_status = main(["link", "--root", str(root), "--include-third-party"])
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(default_status, 0)
+        self.assertEqual(third_party_status, 0)
+        self.assertNotIn("ImportedMath", default_output.getvalue())
+        self.assertIn("ImportedMath", third_party_output.getvalue())
+
     def test_bare_link_supports_json_project_index(self):
         temporary, root = self.fixture()
         try:
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                status = main(["link", "--root", str(root), "--json"])
+                status = main(["link", "--root", str(root), "--list", "--json"])
         finally:
             temporary.cleanup()
 
