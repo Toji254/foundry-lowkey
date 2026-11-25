@@ -1676,7 +1676,8 @@ def _abi_sample_literal(param, depth=0, context=None):
             if element.get("type") in {"string", "bytes", "address"}:
                 value = json.dumps(value)
             values.append(value)
-        return "[" + ",".join(values) + "]"
+        separator = "," if element.get("type") == "string" else ", "
+        return "[" + separator.join(values) + "]"
 
     if raw_type.startswith("tuple"):
         components = param.get("components") or []

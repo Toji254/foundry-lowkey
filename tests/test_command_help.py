@@ -1466,7 +1466,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Unsigned whole number", rendered)
         self.assertIn("ProposalOptions : string[]", rendered)
         self.assertIn("Dynamic array", rendered)
-        self.assertIn('["Yes", "No"]', rendered)
+        self.assertIn('["Yes","No","Abstain"]', rendered)
         self.assertIn("COPY, EDIT VALUES, RUN", rendered)
         self.assertIn("READY-TO-COPY COMMAND", rendered)
         self.assertIn("lk send createProposal \"HI\" 86400 '[\"Yes\",\"No\",\"Abstain\"]' --preview", rendered)
