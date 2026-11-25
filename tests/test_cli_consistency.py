@@ -410,7 +410,10 @@ class CliConsistencyTests(unittest.TestCase):
             "eth_blockNumber": "0x2a",
         }
 
-        def fake_rpc(_url, method, _params):
+        rpc_calls = []
+
+        def fake_rpc(_url, method, params):
+            rpc_calls.append((method, params))
             return responses[method]
 
         with patch.object(lk, "effective_rpc", return_value=rpc), \
@@ -429,6 +432,15 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertEqual(state["rpc_origin"], "https://rpc.example:8545")
         self.assertTrue(state["rpc_fingerprint"].startswith("sha256:"))
         self.assertEqual(state["verification"], "MATCHED")
+        self.assertLess(
+            [method for method, _ in rpc_calls].index("eth_chainId"),
+            [method for method, _ in rpc_calls].index("eth_getCode"),
+        )
+        self.assertLess(
+            [method for method, _ in rpc_calls].index("eth_blockNumber"),
+            [method for method, _ in rpc_calls].index("eth_getCode"),
+        )
+        self.assertIn(("eth_getCode", [target, "0x2a"]), rpc_calls)
 
     def test_manual_target_validation_can_return_read_only_provenance_snapshot(self):
         target = "0x" + "4" * 40
