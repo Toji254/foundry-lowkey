@@ -3635,6 +3635,160 @@ def _compiler_ast_effects_for_function(index, function_node):
     return "COVERED", selected
 
 
+def _function_graph_boundary_edges(index, function_node):
+    """Return bounded call/control boundaries reachable from one declaration.
+
+    Resolved local calls are traversed. External calls and unresolved/ambiguous
+    call edges are returned as evidence, not silently discarded. Lexical
+    relationships remain labelled as source-graph evidence.
+    """
+    if not isinstance(function_node, dict) or not function_node.get("id"):
+        return {"edges": [], "unresolved": [], "truncated": False}
+
+    node_id = str(function_node["id"])
+    nodes = {
+        str(item.get("id")): item
+        for item in (index.get("nodes") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    edges = [item for item in (index.get("edges") or []) if isinstance(item, dict)]
+    outgoing = {}
+    for edge in edges:
+        source = str(edge.get("from") or "")
+        if source:
+            outgoing.setdefault(source, []).append(edge)
+
+    propagation = index.get("effect_propagation") or {}
+    try:
+        max_depth = int(propagation.get("max_depth") or 8)
+    except (TypeError, ValueError):
+        max_depth = 8
+    max_depth = max(1, min(max_depth, 32))
+
+    queue = [(node_id, 0)]
+    visited = {node_id}
+    selected = {}
+    truncated = False
+    while queue:
+        current, depth = queue.pop(0)
+        relationships = outgoing.get(current, [])
+        next_functions = []
+        for edge in relationships:
+            kind = str(edge.get("kind") or "")
+            resolution = str(edge.get("resolution") or "UNRESOLVED").upper()
+            target_id = str(edge.get("to") or "")
+            target_node = nodes.get(target_id) or {}
+
+            if (
+                kind in {"CALLS", "APPLIES_MODIFIER"}
+                and resolution in {"DIRECT", "INFERRED"}
+                and target_id in nodes
+                and target_node.get("kind") in {"function", "modifier"}
+                and target_id not in visited
+            ):
+                next_functions.append((target_id, depth + 1))
+                continue
+
+            is_external_boundary = kind == "EXTERNAL_CALL"
+            is_unresolved_relationship = (
+                kind in {"CALLS", "APPLIES_MODIFIER"}
+                and resolution in {"UNRESOLVED", "AMBIGUOUS"}
+            )
+            is_unresolved_mutation = kind == "UNRESOLVED_MUTATION"
+            if is_external_boundary or is_unresolved_relationship or is_unresolved_mutation:
+                edge_id = str(edge.get("id") or "")
+                if edge_id:
+                    selected[edge_id] = edge
+
+        if next_functions and depth >= max_depth:
+            truncated = True
+            continue
+        for target_id, next_depth in next_functions:
+            if target_id in visited:
+                continue
+            visited.add(target_id)
+            queue.append((target_id, next_depth))
+
+    # Collapse duplicate lexical/AST reports at the same source boundary. If
+    # both exist, retain the compiler-AST relationship as the stronger source.
+    evidence_rank = {
+        "SOLC_AST_DECLARATION_REFERENCE": 0,
+        "SOLC_AST_STORAGE_DECLARATION_REFERENCE": 0,
+        "SOLC_AST_STORAGE_REFERENCE_ARGUMENT": 0,
+        "LEXICAL_SOURCE": 1,
+    }
+    deduplicated = {}
+    for edge in selected.values():
+        location = edge.get("source") or {}
+        key = (
+            edge.get("from"), edge.get("kind"),
+            location.get("file"), location.get("line"), location.get("column"),
+            edge.get("receiver"), edge.get("method"), edge.get("operation"),
+        )
+        current = deduplicated.get(key)
+        rank = evidence_rank.get(str(edge.get("evidence") or ""), 2)
+        current_rank = evidence_rank.get(str((current or {}).get("evidence") or ""), 2)
+        if current is None or rank < current_rank:
+            deduplicated[key] = edge
+
+    result = list(deduplicated.values())
+    result.sort(key=lambda item: (
+        str((item.get("source") or {}).get("file") or ""),
+        int((item.get("source") or {}).get("line") or 0),
+        int((item.get("source") or {}).get("column") or 0),
+        str(item.get("kind") or ""),
+        str(item.get("id") or ""),
+    ))
+    unresolved = [
+        edge for edge in result
+        if str(edge.get("resolution") or "").upper() in {"UNRESOLVED", "AMBIGUOUS"}
+        or str(edge.get("implementation_resolution") or "").upper() == "UNRESOLVED"
+        or edge.get("kind") == "UNRESOLVED_MUTATION"
+    ]
+    return {"edges": result, "unresolved": unresolved, "truncated": truncated}
+
+
+def _format_function_graph_boundary(edge, nodes):
+    """Format one external or unresolved call boundary with its evidence limits."""
+    node_map = nodes if isinstance(nodes, dict) else {}
+    kind = str(edge.get("kind") or "CALL")
+    target = node_map.get(str(edge.get("to") or ""), {})
+    subject = (
+        target.get("qualified_name") or target.get("name")
+        or edge.get("method") or edge.get("to") or "unknown target"
+    )
+    resolution = str(edge.get("resolution") or "UNRESOLVED").upper()
+    implementation = str(edge.get("implementation_resolution") or "").upper()
+    evidence = str(edge.get("evidence") or "UNKNOWN")
+    location = edge.get("source") or {}
+    source_ref = (
+        f"{location.get('file') or 'source'}:"
+        f"{location.get('line') or '?'}:"
+        f"{location.get('column') or '?'}"
+    )
+    detail = f"{kind} {subject}"
+    if edge.get("receiver"):
+        detail += f" via {edge['receiver']}"
+    if edge.get("operation"):
+        detail += f" ({edge['operation']})"
+    if edge.get("call_kind"):
+        detail += f" [{edge['call_kind']}]"
+    if resolution in {"UNRESOLVED", "AMBIGUOUS"}:
+        detail += f" — {resolution}"
+    if implementation == "UNRESOLVED":
+        detail += " — runtime implementation UNRESOLVED"
+    if evidence.startswith("SOLC_AST_"):
+        marker = "[COMPILER AST]"
+    elif evidence == "LEXICAL_SOURCE":
+        marker = "[LEXICAL SOURCE GRAPH]"
+    else:
+        marker = f"[{evidence}]"
+    extra = " ".join(str(edge.get("detail") or "").split())
+    if extra:
+        detail += f"; {extra}"
+    return f"{marker} {detail} @ {source_ref}"
+
+
 def _format_compiler_ast_effect(edge, nodes):
     kind = str(edge.get("kind") or "EFFECT")
     node_map = nodes if isinstance(nodes, dict) else {}
@@ -3712,15 +3866,35 @@ def _print_compiler_ast_effects(root, contract_name, source_path, records):
         status, effects = _compiler_ast_effects_for_function(index, node)
         if status != "COVERED":
             print("    AST COVERAGE: NOT PROVEN for this declaration; lexical notes above remain best-effort.")
-            continue
-        print("    AST COVERAGE: MATCHED current compiler declaration.")
-        if not effects:
-            print("    AST EFFECTS: no declaration-resolved call/storage edges recorded; absence is not proof of no side effects.")
-            continue
-        for effect in effects[:12]:
-            print("    " + _format_compiler_ast_effect(effect, nodes))
-        if len(effects) > 12:
-            print(f"    ... {len(effects) - 12} additional AST-backed effect edge(s) omitted.")
+        else:
+            print("    AST COVERAGE: MATCHED current compiler declaration.")
+            if not effects:
+                print("    AST EFFECTS: no declaration-resolved call/storage edges recorded; absence is not proof of no side effects.")
+            else:
+                for effect in effects[:12]:
+                    print("    " + _format_compiler_ast_effect(effect, nodes))
+                if len(effects) > 12:
+                    print(f"    ... {len(effects) - 12} additional AST-backed effect edge(s) omitted.")
+
+        boundaries = _function_graph_boundary_edges(index, node)
+        if boundaries["edges"]:
+            print("    CALL / EXTERNAL / UNRESOLVED BOUNDARIES:")
+            for boundary in boundaries["edges"][:12]:
+                print("      " + _format_function_graph_boundary(boundary, nodes))
+            if len(boundaries["edges"]) > 12:
+                print(f"      ... {len(boundaries['edges']) - 12} additional boundary edge(s) omitted.")
+        if boundaries["unresolved"] or boundaries["truncated"]:
+            reasons = []
+            if boundaries["unresolved"]:
+                reasons.append(f"{len(boundaries['unresolved'])} unresolved or runtime-dependent boundary(s)")
+            if boundaries["truncated"]:
+                reasons.append("resolved helper traversal reached its depth limit")
+            print("    ANALYSIS STATUS: PARTIALLY ANALYSED — " + "; ".join(reasons) + ".")
+            print("      Do not interpret missing effects as proof that no state or asset changes occur.")
+        elif status == "COVERED":
+            print("    ANALYSIS STATUS: no unresolved boundary was recorded in the traversed static source graph; runtime behavior is not proven.")
+        else:
+            print("    ANALYSIS STATUS: UNVERIFIED — compiler AST coverage is not established.")
 
 
 def run_functions(config, args=None):
