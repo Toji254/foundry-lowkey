@@ -489,9 +489,30 @@ def _setup(cwd: Path, env: dict[str, str]) -> int:
     print(f"  Source units : {evidence['source_units']}")
     print(f"  With AST     : {evidence['with_ast']}")
     print("  Verification : PASS — compiler AST nodes were found.")
-    print("\nNEXT")
-    print("  lk fn -v")
-    print("  Review AST coverage and declaration matching in the report.")
+    print("\nCOMPILER-BACKED FUNCTION ANALYSIS")
+    analysis = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("lk.py")),
+            "fn",
+            "-v",
+        ],
+        cwd=str(cwd),
+        env=env,
+        check=False,
+    )
+    if analysis.returncode != 0:
+        raise AstSetupError(
+            "Compiler AST output was generated, but the verbose function "
+            f"analysis exited with code {analysis.returncode}. "
+            "Run 'lk fn -v' to inspect the project analysis."
+        )
+
+    print("\nAST setup and compiler-backed function analysis completed.")
+    print(
+        "Review the report's AST MATCH and ANALYSIS STATUS fields; "
+        "AST presence alone does not prove every declaration was matched."
+    )
     return 0
 
 
