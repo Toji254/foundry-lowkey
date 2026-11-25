@@ -1515,6 +1515,52 @@ def canonical_type(param):
     return raw
 
 
+def _abi_input_summary(param, guide=None):
+    """Return a compact one-line description for the interactive ask table."""
+    if not isinstance(param, dict):
+        return "ABI metadata unavailable; inspect source."
+
+    raw_type = str(param.get("type") or "").strip()
+    internal_type = str(param.get("internalType") or "").strip()
+    array_match = re.fullmatch(r"(.+)\[([0-9]*)\]", raw_type)
+    if array_match:
+        element = dict(param)
+        element["type"] = array_match.group(1)
+        element_summary = _abi_input_summary(element)
+        count = array_match.group(2)
+        if count:
+            return f"Array of {element_summary.lower()} (exactly {count})"
+        return f"Array of {element_summary.lower()} (one JSON argument)"
+    if raw_type.startswith("tuple"):
+        fields = [
+            f"{component.get('name') or f'field{index}'}:{canonical_type(component)}"
+            for index, component in enumerate(param.get("components") or [], 1)
+            if isinstance(component, dict)
+        ]
+        return "Struct/tuple" + (": " + ", ".join(fields) if fields else " value")
+    if internal_type.lower().startswith("enum "):
+        return "Enum ordinal; check member order in source"
+    if re.fullmatch(r"uint[0-9]*", raw_type):
+        return "Unsigned integer"
+    if re.fullmatch(r"int[0-9]*", raw_type):
+        return "Signed integer"
+    if raw_type == "bool":
+        return "true or false"
+    if raw_type == "address":
+        return "20-byte Ethereum address"
+    if raw_type == "string":
+        return "UTF-8 text"
+    if raw_type == "bytes":
+        return "0x-prefixed hex bytes"
+    if re.fullmatch(r"bytes[0-9]+", raw_type):
+        return f"0x hex; exactly {int(raw_type[5:])} bytes"
+    if raw_type == "function":
+        return "24-byte function pointer"
+    if raw_type in {"fixed", "ufixed"} or re.fullmatch(r"u?fixed[0-9]+x[0-9]+", raw_type):
+        return "Fixed-point numeric value"
+    return (guide or {}).get("expects") or "Check the Solidity declaration"
+
+
 def _abi_input_guide(param):
     """Describe one ABI input and build a Cast-compatible example token.
 
@@ -29156,7 +29202,7 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     canonical = _canonical_help_command(command)
     raw_args = [str(item).strip().lower() for item in (args or [])]
     machine_readable = any(item == "--json" or item == "json" for item in raw_args)
-    if machine_readable or canonical in {"raw", "batch", "ai"}:
+    if machine_readable or canonical in {"raw", "batch", "ai", "ask"}:
         return
 
     items = []
@@ -29629,54 +29675,50 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         item=matches[0]
         signature = format_signature(item)
         inputs = item.get("inputs",[]) or []
-        print(f"Function: {signature}")
-        print("INPUT GUIDE")
-        if not inputs:
-            print("  This function takes no input arguments.")
-            examples = []
-        else:
-            examples = []
-            for index,param in enumerate(inputs,1):
-                name = str(param.get("name") or f"arg{index}")
-                abi_type = canonical_type(param)
-                guide = _abi_input_guide(param)
-                print(f"  {index}. {name} : {abi_type}")
-                print(f"     Expects: {guide['expects']}")
-                if guide.get("example"):
-                    print(f"     Example: {guide['example']}")
-                    examples.append(guide["example"])
-                else:
-                    examples.append(None)
-                    print("     Example: not generated safely for this ABI type.")
-                for note in guide.get("notes") or []:
-                    print(f"     Note: {note}")
-                for component in guide.get("components") or []:
-                    print(f"     Field: {component}")
+        print(_function_terminal_style("LOWKEY / ASK", "heading"))
+        print(_function_terminal_style(signature, "muted"))
         print("")
-        if all(value is not None for value in examples):
-            print("COPY, EDIT VALUES, RUN")
-            print("  This is a normal Lowkey command. Change the sample values directly, then paste the command.")
-            overloaded = [
-                candidate for candidate in funcs
-                if str(candidate.get("name") or "").casefold() == str(item.get("name") or "").casefold()
+        if inputs:
+            print(_function_terminal_style("ARGUMENTS", "heading"))
+            examples = []
+            names = [
+                str(param.get("name") or f"arg{index}")
+                for index, param in enumerate(inputs, 1)
             ]
-            command_function = signature if len(overloaded) > 1 else str(item.get("name") or signature)
+            types = [canonical_type(param) for param in inputs]
+            name_width = min(max(len(name) for name in names), 24)
+            type_width = min(max(len(abi_type) for abi_type in types), 16)
+            for index, (param, name, abi_type) in enumerate(zip(inputs, names, types), 1):
+                guide = _abi_input_guide(param)
+                prefix = f"  {index:>2}  {name:<{name_width}}  {abi_type:<{type_width}}  "
+                _function_print_wrapped(prefix, _abi_input_summary(param, guide))
+                examples.append(guide.get("example"))
+        else:
+            print(_function_terminal_style("ARGUMENTS", "heading"))
+            print("  No arguments.")
+            examples = []
+
+        overloaded = [
+            candidate for candidate in funcs
+            if str(candidate.get("name") or "").casefold() == str(item.get("name") or "").casefold()
+        ]
+        command_function = signature if len(overloaded) > 1 else str(item.get("name") or signature)
+        print("")
+        print(_function_terminal_style("PREVIEW COMMAND", "heading"))
+        if all(value is not None for value in examples):
             command = "lk send " + shlex.quote(command_function)
             if examples:
                 command += " " + " ".join(examples)
             command += " --preview"
-            print("")
-            print("READY-TO-COPY COMMAND (preview only; nothing is broadcast)")
-            print(f"  {command}")
+            _function_print_wrapped("  ", command)
+            print(_function_terminal_style("  Preview only; nothing is broadcast. Edit the sample values before running.", "muted"))
         else:
-            print("READY-TO-COPY COMMAND")
-            print("  Lowkey cannot safely generate an example for every input type in this function.")
-            print("  Use the examples above, inspect unsupported types in source, then construct the command manually.")
-        print("")
-        print("ABI LIMIT")
-        print("  ABI types describe the encoded shape, not the business meaning.")
-        print("  For example, uint256 alone cannot tell Lowkey whether a value is seconds, a timestamp, a token amount, or a price.")
-        print("  Contract require checks, enum labels, valid address roles, and application-specific bounds must be verified in source.")
+            print("  No safe example could be generated for every argument.")
+            print("  Check the unsupported argument type in Solidity source before constructing the command.")
+
+        if inputs:
+            print("")
+            print(_function_terminal_style("NOTE", "muted") + "  ABI types describe encoding, not units or contract-specific rules.")
         return 0
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
