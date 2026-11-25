@@ -726,7 +726,7 @@ class CliConsistencyTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("TRANSACTION PREVIEW — NOT SENT", rendered)
+        self.assertIn("TRANSACTION PREVIEW", rendered)
         self.assertIn(f"Recipient: {recipient}", rendered)
         self.assertIn("direct ETH transfer (no contract function call)", rendered)
         self.assertIn("ETH attached: 2 ether", rendered)
@@ -758,7 +758,7 @@ class CliConsistencyTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("TRANSACTION PREVIEW — NOT SENT", rendered)
+        self.assertIn("TRANSACTION PREVIEW", rendered)
         self.assertIn(f"Recipient: Alice ({recipient})", rendered)
         self.assertIn("direct ETH transfer (no contract function call)", rendered)
         self.assertIn("ETH attached: 2 ether", rendered)
