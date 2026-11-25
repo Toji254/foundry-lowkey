@@ -15865,11 +15865,19 @@ def run_lab(config,args, *, deployment_only=False):
 
     # Backward compatibility: a positional Solidity/Vyper filename is a source
     # selector, not a contract-name query.
-    source_selector_index = 1 if args and str(args[0]).lower() in {"generic", "--generic", "forge", "--forge"} else 0
-    if requested_source is None and source_selector_index < len(args):
-        positional_source = str(args[source_selector_index]).strip()
-        if positional_source.lower().endswith((".sol", ".vy")) and not positional_source.startswith("-"):
-            requested_source = positional_source
+    if requested_source is None:
+        mode_tokens = {"generic", "--generic", "forge", "--forge"}
+        source_selector_index = next(
+            (
+                index for index, argument in enumerate(args)
+                if str(argument).lower().endswith((".sol", ".vy"))
+                and not str(argument).startswith("-")
+                and str(argument).lower() not in mode_tokens
+            ),
+            None,
+        )
+        if source_selector_index is not None:
+            requested_source = str(args[source_selector_index]).strip()
             args = list(args)
             args.pop(source_selector_index)
 
@@ -16007,6 +16015,13 @@ def run_lab(config,args, *, deployment_only=False):
             return fail(f"Error: {exc}", 2)
         target_scope = target_scope_info.target_scope
         source_file = target_scope_info.source_file
+        # A project-root scope is semantically identical to the legacy
+        # project-wide mode. Pass no new kwargs in that case so existing
+        # internal callers and integrations retain their original call shape.
+        effective_target_scope = (
+            None if target_scope == Path(root).resolve() and source_file is None
+            else target_scope
+        )
         print(f"Project root   : {Path(root).resolve()}")
         print(f"Invocation dir : {invocation_dir}")
         print(f"Target scope   : {target_scope}")
@@ -16224,7 +16239,7 @@ def run_lab(config,args, *, deployment_only=False):
         _ai_suggested_primary_contract = validate_ai_primary_contract_suggestion(
             root,
             _ai_primary_contract_proposal,
-            target_scope=target_scope,
+            target_scope=effective_target_scope,
             source_file=source_file,
         )
         if _ai_suggested_primary_contract:
@@ -16313,7 +16328,7 @@ def run_lab(config,args, *, deployment_only=False):
         _ai_suggested_primary_contract,
         _ai_deployment_plan,
         manual_pin=bool(remembered_contract_name),
-        target_scope=target_scope,
+        target_scope=effective_target_scope,
         source_file=source_file,
     )
     if (
@@ -16447,7 +16462,7 @@ def run_lab(config,args, *, deployment_only=False):
             _ai_suggested_primary_contract,
             _ai_deployment_plan,
             manual_pin=bool(remembered_contract_name),
-            target_scope=target_scope,
+            target_scope=effective_target_scope,
             source_file=source_file,
         )
 
@@ -16466,10 +16481,15 @@ def run_lab(config,args, *, deployment_only=False):
             if isinstance(signal, dict) and signal.get("function"):
                 requested = str(signal.get("function")).split("(", 1)[0]
 
+    if effective_target_scope is None and source_file is None:
+        return run_generic_lab(
+            config, root, rpc, accounts, key, requested, mode=mode,
+            deployment_only=deployment_only,
+        )
     return run_generic_lab(
         config, root, rpc, accounts, key, requested, mode=mode,
         deployment_only=deployment_only,
-        target_scope=target_scope,
+        target_scope=effective_target_scope,
         source_file=source_file,
     )
 
