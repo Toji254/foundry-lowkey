@@ -51,7 +51,7 @@ PASS  dependency command: cast receipt
             lk._doctor_compact_summary(report, 0)
 
         rendered = output.getvalue()
-        self.assertIn("STATUS   HEALTHY", rendered)
+        self.assertIn("STATUS   NEEDS ATTENTION", rendered)
         self.assertIn("PROJECT  Voting Contract", rendered)
         self.assertIn("Installed: 2 / 3 registered", rendered)
         self.assertIn("Forge", rendered)
