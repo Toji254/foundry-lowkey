@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 21
+CACHE_VERSION = 22
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -2323,19 +2323,19 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         # treasury.deposit{value: amount}(...). Keep these distinct from
         # low-level .call{value: ...} and contract creation.
         high_level_value_call = re.compile(
-            r"(?P<recipient>this|address\\s*\\(\\s*this\\s*\\)|[A-Za-z_]\\w*(?:\\s*\\([^()]*\\))?)"
-            r"\\s*\\.\\s*(?P<method>[A-Za-z_]\\w*)\\s*\\{(?P<options>[^}]+)\\}\\s*\\("
+            r"(?P<recipient>this|address\s*\(\s*this\s*\)|[A-Za-z_]\w*(?:\s*\([^()]*\))?)"
+            r"\s*\.\s*(?P<method>[A-Za-z_]\w*)\s*\{(?P<options>[^}]+)\}\s*\("
         )
         for match in high_level_value_call.finditer(body):
             if in_asset_assembly(match.start()):
                 continue
             if match.group("method") in {"call", "delegatecall", "staticcall"}:
                 continue
-            value_option = re.search(r"\\bvalue\\s*:\\s*([^,}]+)", match.group("options"))
+            value_option = re.search(r"\bvalue\s*:\s*([^,}]+)", match.group("options"))
             if value_option is None:
                 continue
             recipient = match.group("recipient").strip()
-            recipient_compact = re.sub(r"\\s+", "", recipient)
+            recipient_compact = re.sub(r"\s+", "", recipient)
             self_call = recipient_compact in {"this", "address(this)"}
             edges.append(_edge(
                 "ASSET_FLOW", func["id"], "asset:eth", path, source,
