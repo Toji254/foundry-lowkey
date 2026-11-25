@@ -195,6 +195,8 @@ PASS  dependency command: cast receipt
                  "available": False,
                  "status": "reverted",
                  "reason": "Atleat 2 OPTIONS",
+                 "sender_resolved": True,
+                 "rpc_attempted": True,
              }), \
              patch.object(lk, "_print_transaction_gas_context") as gas_report, \
              patch.object(lk, "cast_output") as cast_output, \
@@ -282,6 +284,7 @@ PASS  dependency command: cast receipt
              patch.object(lk, "_transaction_preview_gas", return_value={
                  "available": True,
                  "sender_resolved": False,
+                 "rpc_attempted": True,
                  "gas_estimate": 50000,
              }), \
              patch.object(lk, "_print_transaction_gas_context") as preflight_report, \
