@@ -77,7 +77,7 @@ class ExplicitRpcContextTests(unittest.TestCase):
                  patch.object(lk.walkthrough, "_write_transaction_evidence"), \
                  patch.object(lk.audit_context, "emit"):
                 result = lk.run_cast(
-                    ["send", target, "--value", "0.01ether", "--rpc-url", explicit_rpc, "--yes"],
+                    ["send", target, "--value", "0.01ether", "--rpc-url", explicit_rpc, "--from", "0x" + "1" * 40, "--yes"],
                     config,
                     capture=True,
                 )
