@@ -174,7 +174,7 @@ class LabTargetScopeTests(unittest.TestCase):
                 "@external\ndef increment():\n    pass\n",
                 encoding="utf-8",
             )
-            artifact_path = root / "out" / "Counter.vy" / "Counter.json"
+            artifact_path = root / ".audit" / "build" / "vyper" / "Counter.json"
             artifact_path.parent.mkdir(parents=True)
             artifact_path.write_text(json.dumps({
                 "contractName": "Counter",
