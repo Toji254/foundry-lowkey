@@ -1529,8 +1529,8 @@ def _abi_input_summary(param, guide=None):
         element_summary = _abi_input_summary(element)
         count = array_match.group(2)
         if count:
-            return f"Array of {element_summary.lower()} (exactly {count})"
-        return f"Array of {element_summary.lower()} (one JSON argument)"
+            return f"{element_summary} array (exactly {count})"
+        return f"{element_summary} array (one JSON argument)"
     if raw_type.startswith("tuple"):
         fields = [
             f"{component.get('name') or f'field{index}'}:{canonical_type(component)}"
