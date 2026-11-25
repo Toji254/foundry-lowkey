@@ -10973,7 +10973,7 @@ def _doctor_compact_summary(report, exit_code):
                 print(f"  WARN verification plugin: {str(error)[:240]}")
                 continue
             plugin = str(error.get("name") or error.get("plugin") or "unknown plugin")
-            detail = str(error.get("error") or error.get("reason") or "registration failed")
+            detail = redact_secrets(str(error.get("error") or error.get("reason") or "registration failed"))
             print(f"  WARN {plugin}: {detail[:240]}")
         if len(plugin_errors) > 3:
             print(f"  ...and {len(plugin_errors) - 3} more plugin issue(s).")
@@ -11012,7 +11012,7 @@ def _doctor_verbose_engine_inventory(root):
         for error in plugin_errors:
             if isinstance(error, dict):
                 name = error.get("name") or error.get("plugin") or "unknown plugin"
-                detail = error.get("error") or error.get("reason") or "registration failed"
+                detail = redact_secrets(str(error.get("error") or error.get("reason") or "registration failed"))
                 print(f"  {name}: {detail}")
             else:
                 print(f"  {error}")
