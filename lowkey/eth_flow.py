@@ -450,20 +450,6 @@ def build_eth_report(
     }
 
 
-def _print_inventory_warning(report: dict[str, Any], *, limit: int) -> None:
-    if report["coverage"]["complete"]:
-        return
-    failures = report["coverage"]["uninspected"]
-    print(f"WARNING  SOURCE COVERAGE INCOMPLETE ({len(failures)} uninspected item(s))")
-    for item in failures[:limit]:
-        print(
-            f"  {item.get('path', '?')} [{item.get('phase', 'unknown')}]: "
-            f"{item.get('error', 'not inspected')}"
-        )
-    if len(failures) > limit:
-        print(f"  ... {len(failures) - limit} more")
-
-
 def _exit_action(edge: dict[str, Any]) -> str:
     status = str(edge.get("status") or "UNKNOWN").replace("_", " ").lower()
     recipient = str(edge.get("recipient") or "").strip()
@@ -480,7 +466,7 @@ def _exit_action(edge: dict[str, Any]) -> str:
         action = status
     amount = edge.get("amount")
     if amount:
-        action += f" {{value: {amount}}}"
+        action += f" (amount={amount})"
     return action
 
 
@@ -527,22 +513,9 @@ def _state_touchpoints(report: dict[str, Any], *, limit: int) -> list[dict[str, 
     return values[:limit]
 
 
-def _print_inventory_warning(report: dict[str, Any], *, limit: int) -> None:
-    if report["coverage"]["complete"]:
-        return
-    failures = report["coverage"]["uninspected"]
-    print(f"WARNING  SOURCE COVERAGE INCOMPLETE ({len(failures)} uninspected item(s))")
-    for item in failures[:limit]:
-        print(
-            f"  {item.get('path', '?')} [{item.get('phase', 'unknown')}]: "
-            f"{item.get('error', 'not inspected')}"
-        )
-    if len(failures) > limit:
-        print(f"  ... {len(failures) - limit} more")
-
 
 def _render(report: dict[str, Any], *, limit: int) -> None:
-    """Render the audit-first terminal view: routes and mechanisms before raw evidence."""
+    """Render the audit-first terminal view: show routes, not every raw edge."""
     summary = report["summary"]
     parser = str(report.get("parser") or "unknown").lower()
     coverage = "complete" if report["coverage"]["complete"] else "INCOMPLETE"
@@ -553,15 +526,15 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
         print(f"SCOPE     {report['contract_filter']} and reachable declared calls")
     print()
     paths = report.get("paths") or []
-    route_count = len(paths)
     more_routes = bool(report.get("truncated"))
+    route_count = len(paths)
     shown_label = f"{route_count}+" if more_routes and route_count else str(route_count)
     print(
-        f"OVERVIEW  {summary['entry_points']} ETH entry points · "
+        f"OVERVIEW  {summary['entry_points']} ingress points · "
         f"{summary['exit_sites']} exit sites · {shown_label} mapped routes"
     )
-    print()
 
+    print()
     print(f"ROUTES TO ETH EXITS  ({min(route_count, limit)} shown)")
     if not paths:
         print("  No resolved public/external call path to a native-ETH exit was found.")
@@ -571,29 +544,35 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
         exit_edge = record.get("exit") or {}
         print(f"      {_location(root)} → {_location(exit_edge)}")
         if record.get("cross_contract_hops"):
-            print("      declared external hop; runtime implementation/address still needs verification")
-    if route_count > limit:
-        print(f"      ... {route_count - limit} more routes in this result")
+            print("      declared external hop; runtime implementation/address needs verification")
     if more_routes:
-        print("      Additional roots/routes were not expanded; raise --limit or --depth.")
+        print("      More routes or roots were not expanded; raise --limit or --depth.")
 
     mechanisms = _exit_mechanisms(report)
     print()
     print(f"EXIT MECHANISMS  ({len(mechanisms)} distinct)")
     if not mechanisms:
         print("  No recognized native-ETH exit mechanism in this scope.")
-    for item in mechanisms[:limit]:
-        suffix = f" · {item['count']} site(s)" if item["count"] > 1 else ""
+    for item in mechanisms[:min(limit, 6)]:
+        suffix = f" · {item['count']} sites" if item["count"] > 1 else ""
         print(f"  {item['label']}{suffix}")
-    if len(mechanisms) > limit:
-        print(f"  ... {len(mechanisms) - limit} more mechanisms")
+    if len(mechanisms) > min(limit, 6):
+        print(f"  ... {len(mechanisms) - min(limit, 6)} more; use --detail")
 
     entries = report.get("entries") or []
+    routed_entry_ids = {
+        str((record.get("entry") or {}).get("id") or "")
+        for record in paths
+    }
+    other_entries = [
+        item for item in entries
+        if str((item.get("function") or {}).get("id") or "") not in routed_entry_ids
+    ]
     print()
-    print(f"ETH ENTRY POINTS  ({len(entries)})")
-    if not entries:
-        print("  No payable/value-reading ABI entry points were identified.")
-    for item in entries[:limit]:
+    print(f"OTHER ETH ENTRY POINTS  ({len(other_entries)})")
+    if not other_entries:
+        print("  All detected ingress points are represented in the routes above.")
+    for item in other_entries[:min(limit, 6)]:
         function = item["function"]
         statuses = {str(edge.get("status")) for edge in item.get("signals") or []}
         labels = []
@@ -601,39 +580,31 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
             labels.append("payable")
         if "VALUE_USAGE" in statuses:
             labels.append("reads msg.value")
-        print(f"  {_compact_function_label(function)}  [{', '.join(labels)}]")
-        print(f"      {_location(function)}")
-    if len(entries) > limit:
-        print(f"  ... {len(entries) - limit} more entry points; use --detail or --limit")
+        print(f"  {_compact_function_label(function)}  [{', '.join(labels)}]  ·  {_location(function)}")
+    if len(other_entries) > min(limit, 6):
+        print(f"  ... {len(other_entries) - min(limit, 6)} more; use --detail")
 
-    touchpoints = _state_touchpoints(report, limit=min(limit, 8))
-    if touchpoints:
-        print()
-        print(f"STATE TOUCHPOINTS  ({len(report.get('accounting') or [])} references, grouped)")
-        for item in touchpoints:
-            kinds = "/".join(sorted(item["kinds"]))
-            functions = ", ".join(sorted(item["functions"])[:2])
-            print(f"  {kinds:<16} {item['name']}  ·  {functions}")
-        print("  These are code references, not proof that a variable stores ETH.")
-
+    review_flags = []
     if report.get("unresolved"):
-        print()
-        print(f"REVIEW FLAGS  {len(report['unresolved'])} unresolved call boundary/boundaries on ETH-related functions")
-        print("  Use --detail to inspect the boundary list and its source locations.")
+        review_flags.append(f"{len(report['unresolved'])} unresolved call boundaries on ETH-related functions")
     if report.get("truncated"):
-        print(f"REVIEW FLAGS  call traversal/output was bounded for {len(report['truncated'])} root(s)")
-    _print_inventory_warning(report, limit=min(limit, 8))
+        review_flags.append(f"traversal bounded for {len(report['truncated'])} roots")
+    if not report["coverage"]["complete"]:
+        review_flags.append("source inventory incomplete")
+    if review_flags:
+        print()
+        print("REVIEW  " + " · ".join(review_flags))
+        print("        Run with --detail to inspect the evidence and source locations.")
 
     print()
     print("NEXT")
-    print("  lk flow eth --detail                 Full evidence and call-boundary view")
+    print("  lk flow eth --detail                 Full accounting and unresolved-call evidence")
     if paths:
         root = paths[0].get("entry") or {}
         print(f"  lk trace source '{_node_label(root)}' --detail all")
     print("  lk link <Contract>                   Inspect a contract's wider relationships")
     print()
-    print("STATIC EVIDENCE ONLY  ·  payable ≠ value received  ·  transfer attempt ≠ transfer succeeded")
-
+    print("STATIC EVIDENCE ONLY  ·  payable ≠ value received  ·  transfer attempt ≠ success")
 
 def _render_detail(report: dict[str, Any], *, limit: int) -> None:
     """Expanded forensic view. Kept separate so the default stays easy to scan."""
@@ -757,7 +728,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".", metavar="DIR", help="project/workspace root (default: current directory)")
     parser.add_argument("--contract", metavar="NAME", help="restrict starting functions to one contract")
     parser.add_argument("--depth", type=int, default=5, choices=range(1, 11), metavar="N", help="maximum source-call hops (default: 5)")
-    parser.add_argument("--limit", type=int, default=8, metavar="N", help="maximum routes shown (1-100; default: 8)")
+    parser.add_argument("--limit", type=int, default=6, metavar="N", help="maximum routes shown (1-100; default: 6)")
     parser.add_argument("--detail", action="store_true", help="show full forensic evidence instead of the concise default view")
     parser.add_argument("--include-tests", action="store_true", help="include test, mock, fixture and harness contracts")
     parser.add_argument("--json", action="store_true", help="emit structured JSON")
