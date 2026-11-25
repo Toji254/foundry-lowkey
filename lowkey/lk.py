@@ -29653,13 +29653,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 label = str(param.get("name") or f"arg{index}")
                 abi_type = canonical_type(param)
                 print(f"  {variable}={value}  # {label} ({abi_type})")
-                command_arguments.append('"        print("")
-        print("ABI LIMIT")
-        print("  ABI types describe the encoded shape, not the business meaning.")
-        print("  For example, uint256 alone cannot tell Lowkey whether a value is seconds, a timestamp, a token amount, or a price.")
-        print("  Contract require checks, enum labels, valid address roles, and application-specific bounds must be verified in source.")
-        return 0
- + variable + '"')
+                command_arguments.append(chr(34) + chr(36) + variable + chr(34))
             command = "lk send " + shlex.quote(signature)
             if command_arguments:
                 command += " " + " ".join(command_arguments)
