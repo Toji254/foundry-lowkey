@@ -14,6 +14,15 @@ spec.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_hardhat_hh502_is_classified_as_network_not_dependency_failure(self):
+        result = bootstrap.classify_build_failure(
+            "Error HH502: Couldn't download compiler version list",
+            ["node_modules/.bin/hardhat", "compile"],
+        )
+        self.assertEqual(result["category"], "compiler_download")
+        self.assertFalse(result["repairable"])
+        self.assertIn("will not reinstall packages", result["reason"])
+
     def write(self, root, relative, text):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +80,75 @@ class BootstrapTests(unittest.TestCase):
                 ["corepack", "pnpm@8", "install", "--frozen-lockfile"],
             )
             self.assertEqual(node_actions[0]["cwd"], root.resolve())
+
+    def test_hardhat_npm_without_lock_uses_script_free_lock_then_ci(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "package.json",
+                '{"private":true,"devDependencies":{"hardhat":"^2.6.1"}}\n',
+            )
+            info = {
+                "root": str(root),
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: name == "npm",
+            ):
+                plan = bootstrap.bootstrap_plan(
+                    info, reason="build", safe_node_install=True
+                )
+
+            actions = [a for a in plan["actions"] if a["kind"] == "node"]
+            self.assertEqual(
+                [a["command"] for a in actions],
+                [
+                    [
+                        "npm", "install", "--package-lock-only",
+                        "--ignore-scripts", "--no-audit", "--no-fund",
+                    ],
+                    [
+                        "npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund",
+                    ],
+                ],
+            )
+            self.assertTrue(all(a["cwd"] == root.resolve() for a in actions))
+
+    def test_hardhat_npm_with_lock_uses_script_free_ci(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "package.json",
+                '{"private":true,"devDependencies":{"hardhat":"^2.6.1"}}\n',
+            )
+            self.write(root, "package-lock.json", '{"lockfileVersion":3}\n')
+            info = {
+                "root": str(root),
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: name == "npm",
+            ):
+                plan = bootstrap.bootstrap_plan(
+                    info, reason="test", safe_node_install=True
+                )
+
+            actions = [a for a in plan["actions"] if a["kind"] == "node"]
+            self.assertEqual(len(actions), 1)
+            self.assertEqual(
+                actions[0]["command"],
+                ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+            )
 
     def test_partial_node_modules_triggers_hardhat_dependency_repair(self):
         with tempfile.TemporaryDirectory() as tmp:
