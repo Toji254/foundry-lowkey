@@ -8325,8 +8325,23 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
         return {"available": False, "reason": redact_secrets(str(response["transport_error"]))}
     rpc_error = response.get("error")
     if rpc_error is not None:
-        detail = rpc_error.get("message") if isinstance(rpc_error, dict) else str(rpc_error)
-        return {"available": False, "reason": redact_secrets(str(detail or "RPC rejected eth_estimateGas"))}
+        detail = str(
+            rpc_error.get("message") if isinstance(rpc_error, dict) else rpc_error
+        ).strip() or "RPC rejected eth_estimateGas"
+        lowered_detail = detail.lower()
+        if "revert" in lowered_detail:
+            decoded = _decode_contract_revert(detail, config=config, target=target)
+            readable = str(decoded.get("reason") or "").strip() if isinstance(decoded, dict) else ""
+            if not readable:
+                match = re.search(r"(?i)execution reverted\s*:??\s*(.*)$", detail)
+                readable = match.group(1).strip() if match else detail
+            return {
+                "available": False,
+                "status": "reverted",
+                "reason": redact_secrets(readable or "the contract reverted during simulation"),
+                "technical": redact_secrets(detail),
+            }
+        return {"available": False, "status": "unavailable", "reason": redact_secrets(detail)}
     gas_estimate = _hex_to_int(response.get("result"))
     if gas_estimate is None or gas_estimate <= 0:
         return {"available": False, "reason": "RPC returned a missing or invalid gas estimate"}
@@ -8382,14 +8397,21 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
 
 def _print_transaction_gas_context(gas):
     print("")
-    print("GAS CONTEXT")
-    print("-----------")
+    print("CONTRACT PREFLIGHT")
+    print("------------------")
+    if isinstance(gas, dict) and gas.get("status") == "reverted":
+        print("Execution simulation: REVERTED (read-only eth_estimateGas)")
+        print(f"Contract reason: {gas.get('reason') or 'the contract rejected the supplied inputs'}")
+        print("Gas estimate: unavailable because the simulated execution reverted.")
+        print("No transaction has been broadcast.")
+        return
     if not isinstance(gas, dict) or not gas.get("available"):
         reason = gas.get("reason") if isinstance(gas, dict) else None
-        print(f"Estimated gas: unavailable — {reason or 'no reliable estimate'}")
-        print("Fee estimate: unavailable; Lowkey does not treat missing gas data as zero.")
-        print("Review the RPC and transaction inputs before deciding whether to continue.")
+        print("Execution simulation: unavailable")
+        print(f"Gas estimate: unavailable — {reason or 'no reliable estimate'}")
+        print("No execution result is available; check the RPC and supplied inputs.")
         return
+    print("Execution simulation: no revert detected (read-only eth_estimateGas; state is not saved).")
     estimate = int(gas["gas_estimate"])
     print(f"Estimated gas: {estimate:,} units (read-only RPC eth_estimateGas)")
     if gas.get("gas_limit_raw") is not None:
@@ -8432,9 +8454,9 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
     rows = _preview_argument_rows(config, function_item, raw_values)
     attached_value = _preview_option_value(command, "--value")
     attached_value = attached_value if attached_value is not None else "0 ETH (no ETH attached)"
-    print("TRANSACTION PREVIEW — NOT SENT")
-    print("==============================")
-    print("Nothing has been broadcast. This screen describes the transaction Lowkey prepared.")
+    print("TRANSACTION PREVIEW")
+    print("===================")
+    print("Prepared only · Nothing has been broadcast.")
     print("")
     print("WHO IS SENDING WHAT")
     print(f"  Sender:   {sender_label}")
@@ -8454,7 +8476,7 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
         print("FUNCTION INPUTS")
         for label, item_type, human_type, display_value, _raw_value in rows:
             print(f"  {label} ({item_type} — {human_type}): {display_value}")
-        print("  These values are function arguments. They do not change who sent the transaction.")
+
 
     if sender and is_address(sender):
         print("")
@@ -8500,9 +8522,13 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
         print("Encoded calldata: Lowkey could not produce a local ABI encoding for these inputs.")
 
     print("")
-    print("IMPORTANT")
-    print("  Preview prepares the call only. It does not execute or simulate the contract.")
-    print("  We cannot know whether the contract accepts it until we run it and inspect the result.")
+    print("SUBMISSION")
+    if gas_context.get("status") == "reverted":
+        print("  BLOCKED: this call reverted during preflight. Correct the inputs before retrying.")
+    else:
+        print("  Not broadcast. Gas estimation is read-only; it does not save contract state.")
+        print("  A successful estimate is not a guarantee that the mined transaction will succeed.")
+    return gas_context
 
 
 
@@ -8854,13 +8880,26 @@ def run_cast(args,config,capture=False):
     if not capture and verbose:
         print(f"DEBUG: Executing -> {safe_cmd}")
     if cast_cmd == "send" and preview:
-        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
+        preview_status = _print_transaction_preview(
+            config, cmd, target, function_item, remaining[1:], actor,
+            direct_eth_transfer=direct_eth_transfer,
+        )
+        if isinstance(preview_status, dict) and preview_status.get("status") == "reverted":
+            record_status(1)
+            return 1
         return 0
     if cast_cmd == "send" and not bypass:
-        _print_transaction_preview(config, cmd, target, function_item, remaining[1:], actor, direct_eth_transfer=direct_eth_transfer)
+        preview_status = _print_transaction_preview(
+            config, cmd, target, function_item, remaining[1:], actor,
+            direct_eth_transfer=direct_eth_transfer,
+        )
+        if isinstance(preview_status, dict) and preview_status.get("status") == "reverted":
+            print("Send cancelled automatically: the contract rejected the read-only preflight.")
+            record_status(1)
+            return 1
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
-        if answer not in {"y","yes"}: print("Transaction cancelled."); return 0
+        if answer not in {"y","yes"}: print("Transaction cancelled. No transaction was broadcast."); return 0
     send_tx_hash = None
     send_receipt = None
     send_transaction = None
@@ -10287,7 +10326,7 @@ def _doctor_tool(name, required=True):
     return False
 
 
-def run_doctor():
+def _run_doctor_detailed():
     failures = 0
     print("LOWKEY DOCTOR")
     print("=" * 72)
@@ -10597,6 +10636,173 @@ def run_doctor():
             print("NOTE  project build: no Solidity/Vyper source files detected.")
 
     return 1 if failures else 0
+
+
+def _doctor_engine_inventory(root):
+    """Return registered verification/security tools without hiding failures."""
+    if verification_cli is None or root is None:
+        return {"engines": [], "error": "verification engine inventory is unavailable"}
+    try:
+        report = verification_cli.engine_inventory(Path(root).resolve())
+        engines = report.get("engines") if isinstance(report, dict) else []
+        return {"engines": engines if isinstance(engines, list) else [], "error": None}
+    except Exception as exc:
+        return {"engines": [], "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _doctor_compact_summary(report, exit_code):
+    """Render the default doctor view as a short health and tool inventory."""
+    lines = str(report or "").splitlines()
+    counts = {"PASS": 0, "FAIL": 0, "WARN": 0, "NOTE": 0}
+    issues = []
+    for index, line in enumerate(lines):
+        match = re.match(r"^(PASS|FAIL|WARN|NOTE)\s+(.+)$", line)
+        if not match:
+            continue
+        status = match.group(1)
+        counts[status] += 1
+        if status in {"FAIL", "WARN"}:
+            label, _, detail = match.group(2).partition(":")
+            why = fix = None
+            for follow in lines[index + 1:index + 14]:
+                if follow.strip().startswith("WHY :"):
+                    why = follow.split("WHY :", 1)[1].strip()
+                elif follow.strip().startswith("FIX :"):
+                    fix = follow.split("FIX :", 1)[1].strip()
+                    break
+            issues.append({"status": status, "label": label.strip(),
+                           "detail": detail.strip(), "why": why, "fix": fix})
+
+    try:
+        root = audit_context.foundry_project_root()
+    except Exception:
+        root = None
+    project_name = Path(root).name if root else "project not detected"
+
+    core_tools = []
+    for name, display in (
+        ("python3", "Python"), ("forge", "Forge"), ("cast", "Cast"),
+        ("anvil", "Anvil"), ("chisel", "Chisel"), ("slither", "Slither"),
+    ):
+        row = next((line for line in lines if re.match(
+            rf"^(PASS|FAIL|WARN|NOTE)\s+{re.escape(name)}:", line
+        )), None)
+        if row is None:
+            continue
+        match = re.match(rf"^(PASS|FAIL|WARN|NOTE)\s+{re.escape(name)}:\s*(.*)$", row)
+        status, detail = match.groups()
+        if status == "PASS":
+            version = detail.rsplit("(", 1)[-1].rstrip(")") if "(" in detail else detail
+            version = re.sub(r"^(?:forge|cast|anvil|chisel) Version:\s*", "", version, flags=re.I)
+            core_tools.append(f"{display} {version}".strip())
+        elif status in {"FAIL", "WARN"}:
+            core_tools.append(f"{display} unavailable")
+
+    engine_report = _doctor_engine_inventory(root)
+    engines = engine_report.get("engines") or []
+    available = [item for item in engines if isinstance(item, dict) and item.get("available")]
+    missing = [item for item in engines if isinstance(item, dict) and not item.get("available")]
+    display_names = {"forge": "Forge", "slither": "Slither", "halmos": "Halmos",
+                     "echidna": "Echidna", "medusa": "Medusa", "certora": "Certora"}
+    rendered = [display_names.get(str(item.get("name") or "").lower(),
+                                  str(item.get("name") or "unknown").replace("_", " ").title())
+                for item in available]
+    build_line = next((line.strip() for line in lines if re.match(
+        r"^(PASS|FAIL|WARN|NOTE)\s+project build:", line
+    )), "Project build: not checked")
+    repair = next((line.split(":", 1)[1].strip() for line in lines if "Repair plan" in line), None)
+
+    print("LOWKEY / DOCTOR")
+    print("=" * 48)
+    print(f"STATUS   {'HEALTHY' if exit_code == 0 else 'NEEDS ATTENTION'}")
+    print(f"PROJECT  {project_name}")
+    print("")
+    print("ENVIRONMENT")
+    print("  " + ("  ·  ".join(core_tools) if core_tools else "Core tool versions unavailable"))
+    print("")
+    print("SECURITY / VERIFICATION TOOLS")
+    if engines:
+        print(f"  Installed: {len(available)} / {len(engines)} registered")
+        if rendered:
+            print("  " + "  ·  ".join(rendered))
+        if missing:
+            missing_names = [display_names.get(str(item.get("name") or "").lower(),
+                                               str(item.get("name") or "unknown"))
+                             for item in missing]
+            print("  Not installed: " + ", ".join(missing_names))
+    elif engine_report.get("error"):
+        print("  Inventory unavailable: " + engine_report["error"])
+    else:
+        print("  No verification adapters were registered.")
+    print("")
+    print("PROJECT HEALTH")
+    print(f"  {build_line}")
+    print("  Workspace: " + (
+        "repair actions available (see verbose report)"
+        if repair and repair.lower() != "none needed" else "ready"
+    ))
+    print(f"  Checks: {counts['PASS']} passed · {counts['FAIL']} failed · {counts['WARN']} warnings")
+    if issues:
+        print("")
+        print("ATTENTION")
+        for issue in issues[:3]:
+            detail = issue["detail"] or issue["why"] or "check failed"
+            print(f"  {issue['status']} {issue['label']}: {detail}")
+            if issue.get("fix"):
+                print(f"    Fix: {issue['fix']}")
+        if len(issues) > 3:
+            print(f"  ...and {len(issues) - 3} more issue(s).")
+    else:
+        print("")
+        print("No blocking issues detected.")
+    print("")
+    if exit_code == 0:
+        print("Use 'lk verification engines' for compatibility details.")
+    print("Run 'lk doctor --verbose' for full paths, dependency checks, and repair diagnostics.")
+
+
+def _doctor_verbose_engine_inventory(root):
+    """Append the detailed registered engine inventory to verbose doctor output."""
+    report = _doctor_engine_inventory(root)
+    print("")
+    print("SECURITY / VERIFICATION ENGINES")
+    print("===============================")
+    if report.get("error"):
+        print(f"Inventory unavailable: {report['error']}")
+        return
+    for engine in report.get("engines") or []:
+        if not isinstance(engine, dict):
+            continue
+        state = "AVAILABLE" if engine.get("available") else "MISSING"
+        name = str(engine.get("name") or "unknown")
+        kinds = ", ".join(str(kind) for kind in engine.get("test_kinds") or []) or "not an executor"
+        print(f"  {state:<9} {name:<12} {kinds}")
+        if engine.get("notes"):
+            print(f"            {engine['notes']}")
+
+
+def run_doctor(args=None):
+    """Run health checks; keep default output compact and retain full diagnostics."""
+    values = [str(value).strip() for value in (args or []) if str(value).strip()]
+    verbose = any(value in {"--verbose", "-v"} for value in values)
+    unknown = [value for value in values if value not in {"--verbose", "-v"}]
+    if unknown:
+        return fail("Usage: lk doctor [--verbose]")
+    captured = io.StringIO()
+    with redirect_stdout(captured):
+        exit_code = _run_doctor_detailed()
+    report = captured.getvalue()
+    if verbose:
+        print(report, end="" if report.endswith("\n") else "\n")
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = None
+        _doctor_verbose_engine_inventory(root)
+    else:
+        _doctor_compact_summary(report, exit_code)
+    return exit_code
+
 
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
