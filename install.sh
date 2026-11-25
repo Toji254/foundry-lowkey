@@ -312,6 +312,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/benchmark.py
   - $TARGET_LOWKEY_DIR/system_model.py
   - $TARGET_LOWKEY_DIR/project_tools.py
+  - $TARGET_LOWKEY_DIR/lab_target_scope.py
   - $TARGET_LOWKEY_DIR/question_engine.py
   - $TARGET_LOWKEY_DIR/workflow_engine.py
   - $TARGET_LOWKEY_DIR/analysis_adapters.py
