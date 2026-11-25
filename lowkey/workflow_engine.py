@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evidence-aware audit checkpoints layered over Lowkey's existing q engine."""
 from __future__ import annotations
-import argparse, hashlib, json, os, subprocess, sys
+import argparse, hashlib, json, os, tempfile, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -44,35 +44,117 @@ def _root(hint=None) -> Path:
     return Path(audit_context.foundry_project_root(hint)).expanduser().resolve()
 
 def _path(root: Path) -> Path:
-    return root / STATE_DIR / STATE_FILE
+    return Path(root).expanduser().resolve() / STATE_DIR / STATE_FILE
+
+
+class WorkflowStateError(RuntimeError):
+    """Unreadable, malformed or unsafe workflow state; never silently reset checkpoints."""
+
+
+def _safe_state_path(root: Path, *, create_parent: bool = False) -> Path:
+    """Resolve the state location while refusing symlinked path components."""
+    root = Path(root).expanduser().resolve()
+    parent = root
+    for component in STATE_DIR.parts:
+        parent = parent / component
+        if parent.is_symlink():
+            raise WorkflowStateError(f"Refusing symlinked workflow state directory: {parent}")
+        resolved = parent.resolve(strict=False)
+        if not resolved.is_relative_to(root):
+            raise WorkflowStateError("Workflow state directory escapes the selected project root.")
+        if create_parent and not parent.exists():
+            parent.mkdir(mode=0o700)
+        if parent.exists() and not parent.is_dir():
+            raise WorkflowStateError(f"Workflow state path component is not a directory: {parent}")
+        # Re-check after directory creation; do not follow a replacement symlink.
+        if parent.is_symlink() or not parent.resolve(strict=False).is_relative_to(root):
+            raise WorkflowStateError(f"Workflow state directory changed to an unsafe path: {parent}")
+    path = parent / STATE_FILE
+    if path.is_symlink():
+        raise WorkflowStateError("Workflow state file is a symlink; refusing to read or overwrite it.")
+    if path.exists() and not path.is_file():
+        raise WorkflowStateError("Workflow state path is not a regular file.")
+    return path
+
 
 def _default(root: Path) -> dict[str, Any]:
     return {"schema_version": 1, "project_root": str(root), "started": False,
             "started_at": None, "baseline": None, "completed": {}, "notes": [],
             "last_build": None, "build_tip_shown": False}
 
-def _load(root: Path) -> dict[str, Any]:
-    try:
-        state = json.loads(_path(root).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _default(root)
-    if not isinstance(state, dict) or state.get("project_root") != str(root):
-        return _default(root)
+
+def _validate_state(state: Any, root: Path) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        raise WorkflowStateError("Workflow state must be a JSON object; refusing to replace it.")
+    version = state.get("schema_version", 1)
+    if type(version) is not int or version != 1:
+        raise WorkflowStateError(f"Unsupported workflow state schema version: {version!r}.")
+    if state.get("project_root") != str(root):
+        raise WorkflowStateError("Workflow state belongs to a different project root; refusing to reset checkpoints.")
     fresh = _default(root)
     fresh.update(state)
-    if not isinstance(fresh.get("completed"), dict): fresh["completed"] = {}
-    if not isinstance(fresh.get("notes"), list): fresh["notes"] = []
+    for field, expected in {"started": bool, "completed": dict, "notes": list, "build_tip_shown": bool}.items():
+        if type(fresh.get(field)) is not expected:
+            raise WorkflowStateError(f"Workflow state field {field!r} is malformed; refusing to replace checkpoints.")
+    if fresh.get("started_at") is not None and not isinstance(fresh.get("started_at"), str):
+        raise WorkflowStateError("Workflow state field 'started_at' is malformed.")
+    for field in ("baseline", "last_build"):
+        if fresh.get(field) is not None and not isinstance(fresh.get(field), dict):
+            raise WorkflowStateError(f"Workflow state field {field!r} is malformed.")
     return fresh
 
+
+def _load(root: Path) -> dict[str, Any]:
+    root = Path(root).expanduser().resolve()
+    path = _safe_state_path(root)
+    if not path.exists():
+        return _default(root)
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WorkflowStateError(
+            f"Workflow state JSON is corrupt at line {exc.lineno}, column {exc.colno}; "
+            "the original file was preserved. Back it up and repair it manually."
+        ) from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise WorkflowStateError(f"Workflow state is unreadable and was preserved: {exc}") from exc
+    return _validate_state(parsed, root)
+
+
 def _save(root: Path, state: dict[str, Any]) -> None:
-    path = _path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    state = dict(state)
-    state["schema_version"] = 1
-    state["project_root"] = str(root)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    root = Path(root).expanduser().resolve()
+    path = _safe_state_path(root, create_parent=True)
+    # _save may be called by code outside the normal load/update path. Never
+    # overwrite existing bytes unless they first pass the same strict reader.
+    if path.exists():
+        _load(root)
+    try:
+        payload = json.dumps(
+            {**dict(state), "schema_version": 1, "project_root": str(root)},
+            indent=2, sort_keys=True,
+        ) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise WorkflowStateError(f"Workflow state cannot be serialized: {exc}") from exc
+    fd, temporary = tempfile.mkstemp(prefix=f".{STATE_FILE}.", dir=str(path.parent))
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Re-check the directory/file path immediately before atomic replacement.
+        path = _safe_state_path(root)
+        os.replace(temporary, path)
+    except (OSError, WorkflowStateError) as exc:
+        raise WorkflowStateError(f"Cannot safely save workflow state: {exc}") from exc
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
 def _snapshot(root: Path) -> dict[str, Any]:
     def git(args):
@@ -732,12 +814,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not _project_ok(root):
         print(f"Not a detected Lowkey audit project: {root}", file=sys.stderr); return 2
     action = args.action or "status"
-    if action == "start": return start(root)
-    if action in {"status", "next"}: print(render(root)); return 0
-    if action == "done": return done(root, args.phase, args.note)
-    if action == "note": return add_note(root, " ".join(args.text), args.phase)
-    if action == "reset": return reset(root)
-    parser.print_help(); return 2
+    try:
+        if action == "start": return start(root)
+        if action in {"status", "next"}: print(render(root)); return 0
+        if action == "done": return done(root, args.phase, args.note)
+        if action == "note": return add_note(root, " ".join(args.text), args.phase)
+        if action == "reset": return reset(root)
+        parser.print_help(); return 2
+    except WorkflowStateError as exc:
+        print(f"Workflow state error: {exc}", file=sys.stderr)
+        return 2
 
 if __name__ == "__main__":
     raise SystemExit(main())

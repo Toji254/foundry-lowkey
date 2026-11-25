@@ -138,4 +138,38 @@ class AuditorWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow_engine.done(self.root, None, "  "), 2)
         self.assertFalse(workflow_engine._load(self.root)["completed"])
 
+    def test_corrupt_state_is_preserved_and_mutations_refuse_to_replace_it(self):
+        state_path = workflow_engine._path(self.root)
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text('{"started": ', encoding="utf-8")
+        before = state_path.read_bytes()
+        with self.assertRaises(workflow_engine.WorkflowStateError):
+            workflow_engine._load(self.root)
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            self.assertEqual(workflow_engine.main(["start"]), 2)
+        self.assertEqual(state_path.read_bytes(), before)
+        self.assertIn("original file was preserved", errors.getvalue())
+
+    def test_workflow_refuses_a_symlinked_state_directory_outside_project(self):
+        outside = self.root.parent / "outside-workflow-state"
+        outside.mkdir()
+        (self.root / ".audit").symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
+            workflow_engine._save(self.root, workflow_engine._default(self.root))
+        self.assertFalse((outside / "workflow").exists())
+
+    def test_workflow_refuses_a_symlinked_state_file_and_preserves_target(self):
+        state_dir = self.root / ".audit" / "workflow"
+        state_dir.mkdir(parents=True)
+        protected = self.root.parent / "protected-workflow-state.json"
+        protected.write_text('{"started":true,"notes":["keep me"]}\n', encoding="utf-8")
+        (state_dir / workflow_engine.STATE_FILE).symlink_to(protected)
+        with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
+            workflow_engine._load(self.root)
+        with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
+            workflow_engine._save(self.root, workflow_engine._default(self.root))
+        self.assertEqual(protected.read_text(encoding="utf-8"), '{"started":true,"notes":["keep me"]}\n')
+
+
 if __name__ == "__main__": unittest.main()
