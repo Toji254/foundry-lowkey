@@ -142,8 +142,10 @@ def _normalize_fork(fork: str) -> str:
 
 
 def _status_for(introduced: str, fork: str) -> str:
+    # The preview profile inherits the latest mainnet profile. Only the
+    # separately registered Glamsterdam candidate opcodes are preview-only.
     if fork == "glamsterdam-preview":
-        return "PREVIEW_ONLY"
+        return "ACTIVE" if introduced in _FORK_RANK else "PREVIEW_ONLY"
     if _FORK_RANK[fork] < _FORK_RANK[introduced]:
         return "NOT_ACTIVE_IN_FORK"
     return "ACTIVE"
