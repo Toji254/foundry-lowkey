@@ -239,5 +239,26 @@ class ProxyInspectionTests(unittest.TestCase):
             self.assertTrue(lk._live_target_is_proxy("http://127.0.0.1:8545", TARGET))
 
 
+    def test_proxy_help_distinguishes_proxy_admin_from_application_governor(self):
+        for command, expected in (
+            ("proxy", ("EIP-1967", "EIP-1167", "gov()", "zero")),
+            ("implementation", ("beacon", "minimal clone", "protocol readiness")),
+            ("admin", ("EIP-1967", "gov()", "UUPS")),
+        ):
+            with self.subTest(command=command):
+                output = []
+                with patch.object(
+                    lk, "print",
+                    side_effect=lambda *args: output.append(" ".join(map(str, args))),
+                    create=True,
+                ):
+                    code = lk._render_command_help([command])
+                self.assertEqual(code, 0)
+                rendered = "\\n".join(output).lower()
+                for phrase in expected:
+                    self.assertIn(phrase.lower(), rendered)
+
+
+
 if __name__ == "__main__":
     unittest.main()
