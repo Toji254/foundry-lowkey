@@ -1469,7 +1469,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn('["Yes", "No"]', rendered)
         self.assertIn("COPY, EDIT VALUES, RUN", rendered)
         self.assertIn("READY-TO-COPY COMMAND", rendered)
-        self.assertIn("lk send createProposal 'Community proposal' 42 '[\\"Yes\\", \\"No\\"]' --preview", rendered)
+        self.assertIn("lk send createProposal \"HI\" 86400 '[\"Yes\",\"No\",\"Abstain\"]' --preview", rendered)
         self.assertNotIn("LK_ARG_", rendered)
         self.assertNotIn("createProposal(string,uint256,string[])", rendered)
         self.assertIn("ABI types describe the encoded shape, not the business meaning.", rendered)

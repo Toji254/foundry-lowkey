@@ -1594,8 +1594,10 @@ def _abi_input_guide(param):
             example = "-7"
         else:
             expects = f"Unsigned whole number from 0 through 2^{bits} - 1; use decimal digits."
-            example = "42"
+            example = "86400" if "deadline" in str(param.get("name") or "").lower() else "42"
         notes = []
+        if not signed and "deadline" in str(param.get("name") or "").lower():
+            notes.append("86400 is only an example integer; the ABI does not tell Lowkey whether the contract expects seconds, a Unix timestamp, or another unit.")
     elif raw_type == "bool":
         expects = "Boolean literal: true or false (lowercase)."
         example = "true"
@@ -1611,7 +1613,7 @@ def _abi_input_guide(param):
         notes = []
     elif raw_type == "string":
         expects = "UTF-8 text. Quote text containing spaces so Bash passes it as one argument."
-        example = "Community proposal"
+        example = "HI" if "title" in str(param.get("name") or "").lower() else "example text"
         notes = []
     elif raw_type == "bytes":
         expects = "Dynamic byte sequence as 0x-prefixed hexadecimal with an even number of hex digits."
@@ -1636,7 +1638,7 @@ def _abi_input_guide(param):
         notes = ["Inspect the Solidity declaration and the installed Cast parser before submitting a value."]
 
     if example is not None:
-        example = shlex.quote(example)
+        example = json.dumps(example, ensure_ascii=False) if raw_type == "string" else shlex.quote(example)
     return {
         "expects": expects,
         "example": example,
@@ -1657,7 +1659,11 @@ def _abi_sample_literal(param, depth=0, context=None):
         element = dict(param)
         element["type"] = array_match.group(1)
         count_text = array_match.group(2)
-        count = 2 if not count_text else int(count_text)
+        param_name = str(param.get("name") or "").lower()
+        is_choice_list = element.get("type") == "string" and any(
+            marker in param_name for marker in ("option", "choice", "answer")
+        )
+        count = (3 if is_choice_list else 2) if not count_text else int(count_text)
         if count > 8:
             return None
         values = []
@@ -1666,11 +1672,11 @@ def _abi_sample_literal(param, depth=0, context=None):
             if value is None:
                 return None
             if element.get("type") == "string":
-                value = "Yes" if value_index == 0 else "No"
+                value = ("Yes", "No", "Abstain")[value_index % 3] if is_choice_list else ("example one" if value_index == 0 else "example two")
             if element.get("type") in {"string", "bytes", "address"}:
                 value = json.dumps(value)
             values.append(value)
-        return "[" + ", ".join(values) + "]"
+        return "[" + ",".join(values) + "]"
 
     if raw_type.startswith("tuple"):
         components = param.get("components") or []
@@ -1685,13 +1691,15 @@ def _abi_sample_literal(param, depth=0, context=None):
     if internal_type.lower().startswith("enum "):
         return "1"
     if re.fullmatch(r"u?int(?:[0-9]+)?", raw_type):
-        return "42" if raw_type.startswith("uint") else "-7"
+        if raw_type.startswith("uint"):
+            return "86400" if "deadline" in str(param.get("name") or "").lower() else "42"
+        return "-7"
     if raw_type == "bool":
         return "true"
     if raw_type == "address":
         return "0x1111111111111111111111111111111111111111"
     if raw_type == "string":
-        return "Yes" if context else "Community proposal"
+        return "Yes" if context else ("HI" if "title" in str(param.get("name") or "").lower() else "example text")
     if raw_type == "bytes":
         return "0x1234"
     if re.fullmatch(r"bytes[0-9]+", raw_type):
