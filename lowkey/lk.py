@@ -26327,6 +26327,31 @@ def _apply_command_help_audit_catalog():
             ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab --generic Vault --ai-review")
         )
 
+        lab_entry["summary"] = "Select or deploy a local audit-lab contract without confusing the project root with the source directory being audited."
+        lab_entry["use"] = "Use this when a repository contains multiple contracts or when you are auditing a nested package and need the correct contract selected."
+        lab_entry["usage"] = "lk lab [--generic <ContractName>] [--scope <path|project>] [--source <file>]"
+        lab_entry["example"] = "lk lab --generic OrderBook --scope contracts/core"
+        scoped_forms = [
+            ("lk lab", "Auto-select one deployable first-party contract from the current invocation directory when it is a valid application scope.", "cd contracts/core && lk lab"),
+            ("lk lab --generic OrderBook", "Select the exact named deployable contract. If it is not in the active scope, Lowkey fails closed instead of substituting another contract.", "lk lab --generic OrderBook"),
+            ("lk lab --scope project --generic OrderBook", "Expand target discovery to the whole project when the current directory is too narrow.", "lk lab --scope project --generic OrderBook"),
+            ("lk lab --scope contracts/core --generic OrderBook", "Restrict candidate discovery to a project-relative application directory; build and dependency resolution still use the project root.", "lk lab --scope contracts/core --generic OrderBook"),
+            ("lk lab --source contracts/core/OrderBook.sol --generic OrderBook", "Restrict selection to declarations in one source file, useful for same-named contracts or ambiguous artifact sets.", "lk lab --source contracts/core/OrderBook.sol --generic OrderBook"),
+        ]
+        lab_forms = lab_entry.setdefault("forms", [])
+        for form in scoped_forms:
+            if form not in lab_forms:
+                lab_forms.append(form)
+        scope_notes = [
+            ("Target scope vs project root", "The invocation directory controls target discovery by default. The canonical project root remains the build and dependency-resolution root, so imports outside the target folder remain available.", "cd contracts/core && lk lab --generic OrderBook"),
+            ("Explicit scope", "Use --scope project for whole-project discovery or --scope <path> for a directory inside the project. Paths that escape the project boundary or cross a symlink outside it are rejected.", "lk lab --scope project --generic OrderBook"),
+            ("No silent substitution", "An explicit contract or source selection must resolve to a unique deployable artifact. Missing or ambiguous requests fail with diagnostics; Lowkey does not silently switch to a different contract.", "lk lab --source contracts/core/OrderBook.sol --generic OrderBook"),
+        ]
+        lab_notes = lab_entry.setdefault("notes", [])
+        for note in scope_notes:
+            if note not in lab_notes:
+                lab_notes.append(note)
+
     # The runtime supports init/actor/add/list/test. A historical help child
     # called "state" was never implemented, so do not advertise it as a command.
     matrix_entry = COMMAND_HELP.get("matrix", {})
