@@ -38,7 +38,11 @@ PASS  dependency command: cast receipt
         ]
         output = io.StringIO()
         with patch.object(lk.audit_context, "foundry_project_root", return_value=Path("/tmp/Voting Contract")), \
-             patch.object(lk, "_doctor_engine_inventory", return_value={"engines": engines, "error": None}), \
+             patch.object(lk, "_doctor_engine_inventory", return_value={
+                 "engines": engines,
+                 "plugin_errors": [{"name": "broken-test-plugin", "error": "factory import failed"}],
+                 "error": None,
+             }), \
              patch.object(lk, "_doctor_supplemental_tool_inventory", return_value=[
                  {"name": "Scarb / Cairo", "path": "/usr/bin/scarb"},
                  {"name": "crytic-compile", "path": "/usr/bin/crytic-compile"},
@@ -53,6 +57,8 @@ PASS  dependency command: cast receipt
         self.assertIn("Forge", rendered)
         self.assertIn("Slither", rendered)
         self.assertIn("Not installed: Halmos", rendered)
+        self.assertIn("Plugin registration warnings: 1", rendered)
+        self.assertIn("broken-test-plugin: factory import failed", rendered)
         self.assertIn("Extra toolchains: 2 detected", rendered)
         self.assertIn("Scarb / Cairo", rendered)
         self.assertIn("crytic-compile", rendered)
