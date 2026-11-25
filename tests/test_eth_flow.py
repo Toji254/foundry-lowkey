@@ -141,6 +141,62 @@ class EthFlowReconTests(unittest.TestCase):
             ):
                 self.assertIn(section, rendered)
 
+
+    def test_internal_payable_helpers_are_not_reported_as_transaction_entry_points(self):
+        temporary, root = self.workspace()
+        try:
+            source = root / "packages" / "vault" / "src" / "Vault.sol"
+            text = source.read_text(encoding="utf-8")
+            text = text.replace(
+                "function deposit() external payable {",
+                "function _internalPayable() internal payable { uint256 received = msg.value; }\n"
+                "                function deposit() external payable {",
+            )
+            source.write_text(text, encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["--root", str(root)])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("Vault.deposit", rendered)
+        self.assertNotIn("Vault._internalPayable", rendered)
+
+    def test_default_view_is_compact_and_groups_duplicate_exit_mechanisms(self):
+        temporary, root = self.workspace()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["--root", str(root)])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("LOWKEY / ETH FLOW", rendered)
+        self.assertIn("OVERVIEW", rendered)
+        self.assertIn("ROUTES TO ETH EXITS", rendered)
+        self.assertIn("EXIT MECHANISMS", rendered)
+        self.assertNotIn("UNRESOLVED CALL BOUNDARIES", rendered)
+        self.assertLess(len(rendered.splitlines()), 55)
+
+    def test_detail_flag_restores_full_forensic_sections(self):
+        temporary, root = self.workspace()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["--root", str(root), "--detail"])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("LOWKEY / ETH FLOW RECON  ·  DETAIL", rendered)
+        self.assertIn("ETH EXIT SITES", rendered)
+        self.assertIn("CALL PATHS TO ETH EXITS", rendered)
+
     def test_unknown_contract_is_a_clear_error(self):
         temporary, root = self.workspace()
         try:
