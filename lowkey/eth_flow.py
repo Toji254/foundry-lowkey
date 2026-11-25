@@ -514,6 +514,20 @@ def _state_touchpoints(report: dict[str, Any], *, limit: int) -> list[dict[str, 
 
 
 
+def _print_inventory_warning(report: dict[str, Any], *, limit: int) -> None:
+    if report["coverage"]["complete"]:
+        return
+    failures = report["coverage"]["uninspected"]
+    print(f"WARNING  SOURCE COVERAGE INCOMPLETE ({len(failures)} uninspected item(s))")
+    for item in failures[:limit]:
+        print(
+            f"  {item.get('path', '?')} [{item.get('phase', 'unknown')}]: "
+            f"{item.get('error', 'not inspected')}"
+        )
+    if len(failures) > limit:
+        print(f"  ... {len(failures) - limit} more")
+
+
 def _render(report: dict[str, Any], *, limit: int) -> None:
     """Render the audit-first terminal view: show routes, not every raw edge."""
     summary = report["summary"]
