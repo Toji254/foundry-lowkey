@@ -25527,25 +25527,8 @@ COMMAND_HELP.update({
     "bind": _native_forge_help("bind", "Generate Rust bindings from the current Forge project interfaces.", "forge bind --help"),
     "bind-json": _native_forge_help("bind-json", "Generate JSON-form binding output from the current Forge project.", "forge bind-json --help"),
     "cache": _native_forge_help("cache", "Manage Forge's compiler/build cache.", "forge cache --help"),
-    "clean": _help_entry(
-        "Remove generated artifacts/cache files for the selected project backend (Foundry or Hardhat).",
-        "lk clean [native-options...]",
-        "lk clean",
-        "Use it before a clean rebuild or when generated compiler output is stale. This removes generated build output, not source files, project configuration, dependencies, or deployed contracts.",
-        forms=[
-            ("lk clean", "Run the native clean command selected for this project. Foundry is preferred when the project contains a Foundry configuration or workspace stack; otherwise Hardhat is used when detected.", "lk clean"),
-            ("lk clean --h", "Show this guide without running a cleaner or changing project files.", "lk clean --h"),
-        ],
-        options=[
-            ("Backend-specific flags", "Lowkey forwards extra arguments to the selected native cleaner. Use 'lk forge clean --help' for Forge flags or 'lk hardhat clean --help' for Hardhat flags.", "lk forge clean --help"),
-        ],
-        notes=[
-            ("What is removed", "The native backend removes its generated build artifacts and cache files; source files, manifests, dependency directories, and on-chain state are not targets of this command.", "lk clean"),
-            ("Mixed projects", "When both Foundry and Hardhat are present, Lowkey preserves the existing Foundry-first clean behavior.", "lk clean"),
-        ],
-        related=["lk build", "lk test", "lk forge"],
-    ),
-    "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "forge compiler --help"),
+    "clean": _native_forge_help("clean", "Remove generated artifacts/cache files for the selected project backend (Foundry or Hardhat).", "forge clean --help"),
+    " "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "forge compiler --help"),
     "completions": _native_forge_help("completions", "Generate shell completion scripts for Forge.", "forge completions --help"),
     "config": _native_forge_help("config", "Inspect or work with Forge configuration.", "forge config --help"),
     "doc": _native_forge_help("doc", "Generate or inspect Forge documentation output.", "forge doc --help"),
@@ -27053,7 +27036,7 @@ _NATIVE_HELP_SOURCES = {
     "chisel": ("chisel", []),
     "slither": ("slither", []),
     "fork": ("anvil", []),
-    "clean": ("forge", ["clean"]),
+
 }
 for _help_command, (_help_binary, _help_args) in _NATIVE_HELP_SOURCES.items():
     if _help_command in COMMAND_HELP and not COMMAND_HELP[_help_command].get("native_help"):
@@ -27177,6 +27160,28 @@ def _help_alias_for(command):
     if not raw or raw == canonical:
         return None
     return raw
+
+
+_CLEAN_HELP_GUIDE_INSTALLED = True
+_clean_help_entry = COMMAND_HELP.get("clean")
+if isinstance(_clean_help_entry, dict):
+    _clean_help_entry.update({
+        "usage": "lk clean [native-options...]",
+        "example": "lk clean",
+        "use": "Use it before a clean rebuild or when generated compiler output is stale. Foundry is preferred when a Foundry project/workspace is detected; otherwise Hardhat is selected when available.",
+        "forms": [
+            ("lk clean", "Run the native clean command selected for this project. Foundry is preferred when the project contains a Foundry configuration or workspace stack; otherwise Hardhat is used when detected.", "lk clean"),
+            ("lk clean --h", "Show this guide without running a cleaner or changing project files.", "lk clean --h"),
+        ],
+        "options": [
+            ("Backend-specific flags", "Lowkey forwards extra arguments to the selected native cleaner. Use 'lk forge clean --help' for Forge flags or 'lk hardhat clean --help' for Hardhat flags.", "lk forge clean --help"),
+        ],
+        "notes": [
+            ("What is removed", "The native backend removes generated build artifacts and cache files; source files, manifests, dependency directories, and on-chain state are not targets of this command.", "lk clean"),
+            ("Mixed projects", "When both Foundry and Hardhat are present, Lowkey preserves the existing Foundry-first clean behavior.", "lk clean"),
+        ],
+        "related": ["lk build", "lk test", "lk forge"],
+    })
 
 def _help_entry_for_path(path):
     if not path:
