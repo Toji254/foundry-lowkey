@@ -49,6 +49,79 @@ class ProxyInspectionTests(unittest.TestCase):
             return "Error: unsupported test call"
         return fake
 
+
+    def test_malformed_eip1967_slot_padding_is_not_treated_as_an_address(self):
+        malformed = "0x" + "1" * 24 + IMPLEMENTATION[2:]
+        self.assertIsNone(lk._address_from_slot(malformed))
+        self.assertEqual(lk._address_from_slot(word(IMPLEMENTATION)), IMPLEMENTATION)
+
+    def test_direct_contract_does_not_report_proxy_admin(self):
+        with patch.object(
+            lk, "run_cast", side_effect=self._run_cast(admin=ADMIN)
+        ), patch.object(lk, "load_abi", return_value=[]):
+            details = lk.inspect_proxy_details({"target": TARGET})
+        self.assertFalse(details["is_proxy"])
+        self.assertIsNone(details["admin"])
+
+    def test_protocol_readiness_reports_zero_dependencies_and_initializer_separately(self):
+        abi = [
+            {"type": "function", "name": "router", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "view"},
+            {"type": "function", "name": "vault", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "view"},
+            {"type": "function", "name": "weth", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "view"},
+            {"type": "function", "name": "usdg", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "view"},
+            {"type": "function", "name": "paused", "inputs": [], "outputs": [{"type": "bool"}], "stateMutability": "view"},
+            {"type": "function", "name": "totalSupply", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
+            {"type": "function", "name": "initialize", "inputs": [{"type": "address"}], "outputs": [], "stateMutability": "nonpayable"},
+        ]
+        values = {
+            "router()": "0x" + "0" * 64,
+            "vault()": "0x" + "0" * 64,
+            "weth()": word(APP_GOV),
+            "usdg()": "Error: execution reverted",
+            "paused()": "false",
+        }
+        def fake(args, _config, capture=False):
+            if args[0] == "call":
+                return values[args[2]]
+            raise AssertionError("unexpected command " + str(args))
+        with patch.object(lk, "run_cast", side_effect=fake):
+            result = lk.inspect_protocol_readiness(
+                {"target": TARGET}, abi, has_code=True
+            )
+        by_name = {item["name"]: item for item in result["getters"]}
+        self.assertEqual(by_name["router"]["status"], "ZERO")
+        self.assertEqual(by_name["vault"]["status"], "ZERO")
+        self.assertEqual(by_name["weth"]["status"], "SET")
+        self.assertEqual(by_name["usdg"]["status"], "UNREADABLE")
+        self.assertEqual(by_name["paused"]["status"], "FALSE")
+        self.assertNotIn("totalSupply", by_name)
+        self.assertEqual(result["initializer_entrypoints"], ["initialize(address)"])
+        self.assertIn("do not establish protocol requirements", result["evidence_limit"])
+
+    def test_initializer_presence_alone_does_not_trigger_configuration_calls_or_proxy_requirement(self):
+        abi = [
+            {"type": "function", "name": "initialize", "inputs": [], "outputs": [], "stateMutability": "nonpayable"},
+        ]
+        with patch.object(lk, "run_cast") as cast:
+            result = lk.inspect_protocol_readiness(
+                {"target": TARGET}, abi, has_code=True
+            )
+        cast.assert_not_called()
+        self.assertEqual(result["initializer_entrypoints"], ["initialize()"])
+        self.assertEqual(result["getters"], [])
+        self.assertNotIn("requires_proxy", result)
+
+    def test_non_view_dependency_named_function_is_never_called_for_readiness(self):
+        abi = [
+            {"type": "function", "name": "router", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "nonpayable"},
+        ]
+        with patch.object(lk, "run_cast") as cast:
+            result = lk.inspect_protocol_readiness(
+                {"target": TARGET}, abi, has_code=True
+            )
+        cast.assert_not_called()
+        self.assertEqual(result["getters"], [])
+
     def test_uups_style_implementation_slot_is_proxy_without_admin(self):
         config = {"target": TARGET}
         with patch.object(
@@ -200,6 +273,7 @@ class ProxyInspectionTests(unittest.TestCase):
             "1 ether", "0x6000", "0x" + "a" * 64, "1", "32"
         ]), \
              patch.object(lk, "inspect_proxy_details", return_value=details), \
+             patch.object(lk, "load_abi", return_value=[]), \
              patch.object(lk, "inspect_clone") as legacy_clone:
             with contextlib.redirect_stdout(output):
                 lk.run_recon({"target": TARGET})
