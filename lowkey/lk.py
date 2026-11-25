@@ -10149,7 +10149,27 @@ def _live_target_state(config, address=None, artifact=None):
         state["status"] = "NO_RPC"
         return state
 
-    code = rpc_json(rpc, "eth_getCode", [address, "latest"])
+    # Capture the network and block identity before reading code. Querying
+    # eth_getCode at the captured block avoids pairing bytecode from one tip
+    # with a block number observed after a concurrent upgrade.
+    chain_id = rpc_json(rpc, "eth_chainId", [])
+    if chain_id is not None:
+        try:
+            state["chain_id"] = str(int(str(chain_id), 16))
+        except (TypeError, ValueError):
+            state["chain_id"] = str(chain_id)
+
+    block_number = rpc_json(rpc, "eth_blockNumber", [])
+    code_block_tag = "latest"
+    if block_number is not None:
+        try:
+            block_number_int = int(str(block_number), 16)
+            state["block_number"] = str(block_number_int)
+            code_block_tag = hex(block_number_int)
+        except (TypeError, ValueError):
+            state["block_number"] = str(block_number)
+
+    code = rpc_json(rpc, "eth_getCode", [address, code_block_tag])
     if code is None:
         state["status"] = "RPC_UNAVAILABLE"
         return state
@@ -10165,20 +10185,6 @@ def _live_target_state(config, address=None, artifact=None):
             if runtime_hash:
                 state["runtime_code_hash"] = runtime_hash
                 state["runtime_code_hash_status"] = "AVAILABLE"
-
-    chain_id = rpc_json(rpc, "eth_chainId", [])
-    if chain_id is not None:
-        try:
-            state["chain_id"] = str(int(str(chain_id), 16))
-        except (TypeError, ValueError):
-            state["chain_id"] = str(chain_id)
-
-    block_number = rpc_json(rpc, "eth_blockNumber", [])
-    if block_number is not None:
-        try:
-            state["block_number"] = str(int(str(block_number), 16))
-        except (TypeError, ValueError):
-            state["block_number"] = str(block_number)
 
     if state["status"] == "DEPLOYED":
         artifact_path = artifact
