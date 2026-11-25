@@ -8454,13 +8454,18 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
 
 def _print_transaction_gas_context(gas):
     print("")
-    print("CONTRACT PREFLIGHT")
-    print("------------------")
+    print("EXECUTION PREFLIGHT")
+    print("-------------------")
+    if isinstance(gas, dict):
+        caller_context = (
+            "explicit sender resolved"
+            if gas.get("sender_resolved") is True
+            else "RPC default caller (intended signer not resolved)"
+        )
+        print(f"Caller context: {caller_context}")
     if isinstance(gas, dict) and gas.get("status") == "reverted":
         print("Execution simulation: REVERTED (read-only eth_estimateGas)")
-        print(f"Contract reason: {gas.get('reason') or 'the contract rejected the supplied inputs'}")
-        if gas.get("sender_resolved") is False:
-            print("Caller context: no explicit sender was resolved; the RPC used its default caller context.")
+        print(f"Execution reason: {gas.get('reason') or 'the call reverted under the simulated caller context'}")
         print("Gas estimate: unavailable because the simulated execution reverted.")
         print("No transaction has been broadcast.")
         return
@@ -8470,7 +8475,10 @@ def _print_transaction_gas_context(gas):
         print(f"Gas estimate: unavailable — {reason or 'no reliable estimate'}")
         print("No execution result is available; check the RPC and supplied inputs.")
         return
-    print("Execution simulation: no revert detected (read-only eth_estimateGas; state is not saved).")
+    if gas.get("sender_resolved") is True:
+        print("Execution simulation: no revert detected for the resolved sender (read-only eth_estimateGas; state is not saved).")
+    else:
+        print("Execution simulation: no revert detected for the RPC default caller; intended signer remains unverified.")
     estimate = int(gas["gas_estimate"])
     print(f"Estimated gas: {estimate:,} units (read-only RPC eth_estimateGas)")
     if gas.get("gas_limit_raw") is not None:
@@ -8948,6 +8956,8 @@ def run_cast(args,config,capture=False):
             direct_eth_transfer=direct_eth_transfer,
         )
         if isinstance(preview_status, dict) and preview_status.get("status") == "reverted":
+            if preview_status.get("sender_resolved") is False:
+                print("Preview blocked: the RPC default caller reverted, but Lowkey could not resolve the intended signer. Supply --from <address> and preview again.")
             record_status(1)
             return 1
         return 0
@@ -8957,7 +8967,10 @@ def run_cast(args,config,capture=False):
             direct_eth_transfer=direct_eth_transfer,
         )
         if isinstance(preview_status, dict) and preview_status.get("status") == "reverted":
-            print("Send cancelled automatically: the contract rejected the read-only preflight.")
+            if preview_status.get("sender_resolved") is False:
+                print("Send blocked: the RPC default caller reverted, but Lowkey could not resolve the intended signer. Supply --from <address> and preview again.")
+            else:
+                print("Send cancelled automatically: the call reverted for the resolved sender during read-only preflight.")
             record_status(1)
             return 1
         try: answer=input("Send transaction? [y/N] ").strip().lower()
@@ -8969,9 +8982,17 @@ def run_cast(args,config,capture=False):
             config, cmd, target, function_item, remaining[1:], actor,
             direct_eth_transfer=direct_eth_transfer,
         )
-        if isinstance(preflight, dict) and preflight.get("status") == "reverted":
+        if isinstance(preflight, dict) and (
+            preflight.get("status") == "reverted"
+            or (preflight.get("available") and preflight.get("sender_resolved") is False)
+        ):
             _print_transaction_gas_context(preflight)
-            print("Send blocked: the read-only preflight detected a revert.")
+            if preflight.get("status") == "reverted" and preflight.get("sender_resolved") is False:
+                print("Send blocked: the RPC default caller reverted, but Lowkey could not resolve the intended signer. Supply --from <address>.")
+            elif preflight.get("status") == "reverted":
+                print("Send blocked: the read-only preflight detected a revert for the resolved sender.")
+            else:
+                print("Send blocked: the estimate used the RPC default caller, not a confirmed signing address. Supply --from <address>.")
             record_status(1)
             return 1
 
