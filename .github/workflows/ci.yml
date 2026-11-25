@@ -1149,6 +1149,7 @@ jobs:
           import json
           import pathlib
           import subprocess
+          import time
           import urllib.request
 
           rpc_url = "http://127.0.0.1:8545"
@@ -1161,6 +1162,17 @@ jobs:
                   raise RuntimeError(f"{method}: {body['error']}")
               return body.get("result")
 
+          def wait_for_receipt(tx_hash, timeout=15):
+              if not tx_hash:
+                  raise RuntimeError("transaction submission returned no hash")
+              deadline = time.monotonic() + timeout
+              while time.monotonic() < deadline:
+                  receipt = rpc("eth_getTransactionReceipt", [tx_hash])
+                  if receipt is not None:
+                      return receipt
+                  time.sleep(0.05)
+              raise TimeoutError(f"transaction {tx_hash} was not mined within {timeout}s")
+
           root = pathlib.Path("/tmp/lowkey-fixture")
           accounts = rpc("eth_accounts", [])
           sender = accounts[0]
@@ -1171,7 +1183,7 @@ jobs:
           target_tx = rpc("eth_sendTransaction", [{
               "from": sender, "data": "0x" + target_bytecode, "value": hex(10**19)
           }])
-          target_receipt = rpc("eth_getTransactionReceipt", [target_tx])
+          target_receipt = wait_for_receipt(target_tx)
           assert target_receipt and target_receipt.get("contractAddress"), target_receipt
           target = target_receipt["contractAddress"]
           attacker_bytecode = attacker_artifact["bytecode"]["object"].removeprefix("0x")
@@ -1179,7 +1191,7 @@ jobs:
           attacker_tx = rpc("eth_sendTransaction", [{
               "from": sender, "data": "0x" + attacker_bytecode + constructor_args, "value": "0x0"
           }])
-          attacker_receipt = rpc("eth_getTransactionReceipt", [attacker_tx])
+          attacker_receipt = wait_for_receipt(attacker_tx)
           assert attacker_receipt and attacker_receipt.get("contractAddress"), attacker_receipt
           attacker = attacker_receipt["contractAddress"]
           credit_calldata = subprocess.check_output(
@@ -1189,7 +1201,7 @@ jobs:
           credit_tx = rpc("eth_sendTransaction", [{
               "from": sender, "to": target, "data": credit_calldata, "value": "0x0"
           }])
-          assert rpc("eth_getTransactionReceipt", [credit_tx]), credit_tx
+          assert wait_for_receipt(credit_tx), credit_tx
           mapping_slot = subprocess.check_output(
               ["cast", "index", "address", attacker, "0"], text=True
           ).strip()
