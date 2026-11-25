@@ -117,6 +117,14 @@ except ImportError:
     project_tools = None
 
 try:
+    import source_index
+except ImportError:
+    try:
+        from lowkey import source_index
+    except ImportError:
+        source_index = None
+
+try:
     import lab_target_scope
 except ImportError:
     from lowkey import lab_target_scope
@@ -2373,8 +2381,9 @@ _FUNCTION_CLASS_ALIASES = {
 
 def _function_usage():
     return (
-        "Usage: lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]\n"
-        "  -v, --verbose              Show per-function audit metadata.\n"
+        "Usage: lk fn [FUNCTION] [-q QUERY] [-v] [-V visibility] [-m mutability] [-c class] [-r]\n"
+        "  -q, --query TEXT           Search function names/signatures explicitly.\n"
+        "  -v, --verbose              Show per-function audit metadata, including matched compiler-AST effects.\n"
         "  -V, --visibility VALUE     Filter by source visibility (public/external/internal/private/unknown).\n"
         "  -m, --mutability VALUE     Filter by mutability (pure/view/nonpayable/payable).\n"
         "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
@@ -2387,20 +2396,31 @@ def _function_usage():
         "  SENDS ETH includes detected CALL/value, payable transfer/send, CREATE and SELFDESTRUCT patterns.\n"
         "  ETH OUT shows destination and amount expressions where source analysis can identify them.\n"
         "  Detection is best-effort source analysis, not proof that every indirect ETH flow was found.\n"
+        "  A positional token equal to the active contract name shows its full ABI inventory.\n"
+        "  Use -q/--query to force a function-name/signature search, even when text equals the contract name.\n"
+        "  Compiler-AST effects are static source evidence, not proof of runtime execution.\n"
         "\n"
         "Examples:\n"
         "  lk fn\n"
+        "  lk fn OrderBook              (full inventory for the active OrderBook target)\n"
         "  lk fn -v\n"
         "  lk fn -v withdraw\n"
+        "  lk fn --query executeSwapOrder\n"
         "  lk fn -V external\n"
         "  lk fn -m payable\n"
         "  lk fn -c admin\n"
         "  lk fn -r\n"
     )
 
+class _FunctionOptions(dict):
+    """Keep parser metadata out of the public options mapping for API compatibility."""
+    __slots__ = ("query_explicit",)
+
+
 def _parse_function_options(raw_args):
     args = [str(item) for item in (raw_args if isinstance(raw_args, (list, tuple)) else [raw_args] if raw_args is not None else [])]
-    options = {"verbose": False, "visibility": None, "mutability": None, "class": None, "risk": False}
+    options = _FunctionOptions({"verbose": False, "visibility": None, "mutability": None, "class": None, "risk": False})
+    options.query_explicit = False
     query_parts = []
     value_flags = {
         "-V": "visibility", "--visibility": "visibility",
@@ -2415,6 +2435,21 @@ def _parse_function_options(raw_args):
             return None, "help"
         if token in bool_flags:
             options[bool_flags[token]] = True
+            i += 1
+            continue
+        if token in {"-q", "--query"}:
+            if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                return None, f"missing value for {token}"
+            query_parts.append(args[i + 1].strip())
+            options.query_explicit = True
+            i += 2
+            continue
+        if token.startswith("--query="):
+            value = token.split("=", 1)[1].strip()
+            if not value:
+                return None, "missing value for --query"
+            query_parts.append(value)
+            options.query_explicit = True
             i += 1
             continue
         matched = False
@@ -3523,6 +3558,376 @@ def _function_inventory_artifact(target, config):
     artifact = read_artifact(path) if path else None
     return path, artifact or {}
 
+def _function_query_for_target(query, contract_name, *, explicit_query=False):
+    """Treat an exact positional contract name as the inventory selector, not a function search."""
+    value = str(query or "").strip()
+    contract = str(contract_name or "").strip()
+    if not value or explicit_query or not contract:
+        return value, False
+    if value.casefold() == contract.casefold():
+        return "", True
+    return value, False
+
+
+def _function_source_relative_path(path, root):
+    if not path:
+        return None
+    try:
+        return Path(path).expanduser().resolve().relative_to(Path(root).expanduser().resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return str(path).replace("\\", "/").lstrip("./")
+
+
+def _function_graph_node(index, contract_name, signature, source_path, root):
+    """Resolve one ABI entry to one exact source-graph declaration; ambiguity stays unresolved."""
+    if source_index is None:
+        return None
+    qualified = f"{contract_name}.{signature}" if contract_name else str(signature)
+    try:
+        candidates = source_index.find_symbols(index, qualified)
+    except Exception:
+        candidates = []
+    candidates = [
+        item for item in candidates
+        if isinstance(item, dict) and item.get("kind") == "function"
+    ]
+    if not candidates:
+        candidates = [
+            item for item in (index.get("nodes") or [])
+            if isinstance(item, dict)
+            and item.get("kind") == "function"
+            and str(item.get("signature") or "") == str(signature)
+        ]
+    wanted_path = _function_source_relative_path(source_path, root)
+    if wanted_path:
+        same_file = [
+            item for item in candidates
+            if str(item.get("file") or "").replace("\\", "/").lstrip("./") == wanted_path
+        ]
+        if same_file:
+            candidates = same_file
+    unique = {str(item.get("id")): item for item in candidates if item.get("id")}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
+def _compiler_ast_effects_for_function(index, function_node):
+    """Return only declaration-resolved AST effects, including AST-backed inherited helper effects."""
+    if not isinstance(function_node, dict) or not function_node.get("id"):
+        return "UNRESOLVED", []
+    node_id = str(function_node["id"])
+    ast_report = index.get("ast") or {}
+    covered = ast_report.get("covered_function_ids")
+    if not isinstance(covered, list) or node_id not in {str(item) for item in covered}:
+        return "NOT_COVERED", []
+
+    edges = [item for item in (index.get("edges") or []) if isinstance(item, dict)]
+    by_id = {str(item.get("id")): item for item in edges if item.get("id")}
+    direct_evidence = {
+        "SOLC_AST_DECLARATION_REFERENCE",
+        "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+        "SOLC_AST_STORAGE_REFERENCE_ARGUMENT",
+    }
+    effect_kinds = {
+        "CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER",
+        "READS", "READS_CONSTANT", "READS_IMMUTABLE",
+        "WRITES", "DELETES", "MUTATES",
+        "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+        "ALIASES_STORAGE", "INITIALIZES", "UNRESOLVED_MUTATION",
+    }
+    selected = []
+    prefix = f"INFERRED:{node_id}:"
+    for edge in edges:
+        if edge.get("from") != node_id or edge.get("kind") not in effect_kinds:
+            continue
+        evidence = str(edge.get("evidence") or "")
+        if evidence in direct_evidence:
+            item = dict(edge)
+            item["ast_origin"] = "DIRECT"
+            selected.append(item)
+            continue
+        if evidence in {"CALL_GRAPH_PROPAGATION", "MODIFIER_EXECUTION_PROPAGATION"}:
+            edge_id = str(edge.get("id") or "")
+            if not edge_id.startswith(prefix):
+                continue
+            original = by_id.get(edge_id[len(prefix):])
+            if not isinstance(original, dict) or original.get("evidence") not in direct_evidence:
+                continue
+            item = dict(edge)
+            item["ast_origin"] = "INFERRED"
+            item["ast_source_edge"] = original.get("id")
+            selected.append(item)
+    selected.sort(key=lambda item: (
+        str((item.get("source") or {}).get("file") or ""),
+        int((item.get("source") or {}).get("line") or 0),
+        int((item.get("source") or {}).get("column") or 0),
+        str(item.get("kind") or ""),
+        str(item.get("id") or ""),
+    ))
+    return "COVERED", selected
+
+
+def _function_graph_boundary_edges(index, function_node):
+    """Return bounded call/control boundaries reachable from one declaration.
+
+    Resolved local calls are traversed. External calls and unresolved/ambiguous
+    call edges are returned as evidence, not silently discarded. Lexical
+    relationships remain labelled as source-graph evidence.
+    """
+    if not isinstance(function_node, dict) or not function_node.get("id"):
+        return {"edges": [], "unresolved": [], "truncated": False}
+
+    node_id = str(function_node["id"])
+    nodes = {
+        str(item.get("id")): item
+        for item in (index.get("nodes") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    edges = [item for item in (index.get("edges") or []) if isinstance(item, dict)]
+    outgoing = {}
+    for edge in edges:
+        source = str(edge.get("from") or "")
+        if source:
+            outgoing.setdefault(source, []).append(edge)
+
+    propagation = index.get("effect_propagation") or {}
+    try:
+        max_depth = int(propagation.get("max_depth") or 8)
+    except (TypeError, ValueError):
+        max_depth = 8
+    max_depth = max(1, min(max_depth, 32))
+
+    queue = [(node_id, 0)]
+    visited = {node_id}
+    selected = {}
+    truncated = False
+    while queue:
+        current, depth = queue.pop(0)
+        relationships = outgoing.get(current, [])
+        next_functions = []
+        for edge in relationships:
+            kind = str(edge.get("kind") or "")
+            resolution = str(edge.get("resolution") or "UNRESOLVED").upper()
+            target_id = str(edge.get("to") or "")
+            target_node = nodes.get(target_id) or {}
+
+            if (
+                kind in {"CALLS", "APPLIES_MODIFIER"}
+                and resolution in {"DIRECT", "INFERRED"}
+                and target_id in nodes
+                and target_node.get("kind") in {"function", "modifier"}
+                and target_id not in visited
+            ):
+                next_functions.append((target_id, depth + 1))
+                continue
+
+            is_external_boundary = kind == "EXTERNAL_CALL"
+            is_unresolved_relationship = (
+                kind in {"CALLS", "APPLIES_MODIFIER"}
+                and resolution in {"UNRESOLVED", "AMBIGUOUS"}
+            )
+            is_unresolved_mutation = kind == "UNRESOLVED_MUTATION"
+            if is_external_boundary or is_unresolved_relationship or is_unresolved_mutation:
+                edge_id = str(edge.get("id") or "")
+                if edge_id:
+                    selected[edge_id] = edge
+
+        if next_functions and depth >= max_depth:
+            truncated = True
+            continue
+        for target_id, next_depth in next_functions:
+            if target_id in visited:
+                continue
+            visited.add(target_id)
+            queue.append((target_id, next_depth))
+
+    # Collapse duplicate lexical/AST reports at the same source boundary. If
+    # both exist, retain the compiler-AST relationship as the stronger source.
+    evidence_rank = {
+        "SOLC_AST_DECLARATION_REFERENCE": 0,
+        "SOLC_AST_STORAGE_DECLARATION_REFERENCE": 0,
+        "SOLC_AST_STORAGE_REFERENCE_ARGUMENT": 0,
+        "LEXICAL_SOURCE": 1,
+    }
+    deduplicated = {}
+    for edge in selected.values():
+        location = edge.get("source") or {}
+        key = (
+            edge.get("from"), edge.get("kind"),
+            location.get("file"), location.get("line"), location.get("column"),
+            edge.get("receiver"), edge.get("method"), edge.get("operation"),
+        )
+        current = deduplicated.get(key)
+        rank = evidence_rank.get(str(edge.get("evidence") or ""), 2)
+        current_rank = evidence_rank.get(str((current or {}).get("evidence") or ""), 2)
+        if current is None or rank < current_rank:
+            deduplicated[key] = edge
+
+    result = list(deduplicated.values())
+    result.sort(key=lambda item: (
+        str((item.get("source") or {}).get("file") or ""),
+        int((item.get("source") or {}).get("line") or 0),
+        int((item.get("source") or {}).get("column") or 0),
+        str(item.get("kind") or ""),
+        str(item.get("id") or ""),
+    ))
+    unresolved = [
+        edge for edge in result
+        if str(edge.get("resolution") or "").upper() in {"UNRESOLVED", "AMBIGUOUS"}
+        or str(edge.get("implementation_resolution") or "").upper() == "UNRESOLVED"
+        or edge.get("kind") == "UNRESOLVED_MUTATION"
+    ]
+    return {"edges": result, "unresolved": unresolved, "truncated": truncated}
+
+
+def _format_function_graph_boundary(edge, nodes):
+    """Format one external or unresolved call boundary with its evidence limits."""
+    node_map = nodes if isinstance(nodes, dict) else {}
+    kind = str(edge.get("kind") or "CALL")
+    target = node_map.get(str(edge.get("to") or ""), {})
+    subject = (
+        target.get("qualified_name") or target.get("name")
+        or edge.get("method") or edge.get("to") or "unknown target"
+    )
+    resolution = str(edge.get("resolution") or "UNRESOLVED").upper()
+    implementation = str(edge.get("implementation_resolution") or "").upper()
+    evidence = str(edge.get("evidence") or "UNKNOWN")
+    location = edge.get("source") or {}
+    source_ref = (
+        f"{location.get('file') or 'source'}:"
+        f"{location.get('line') or '?'}:"
+        f"{location.get('column') or '?'}"
+    )
+    detail = f"{kind} {subject}"
+    if edge.get("receiver"):
+        detail += f" via {edge['receiver']}"
+    if edge.get("operation"):
+        detail += f" ({edge['operation']})"
+    if edge.get("call_kind"):
+        detail += f" [{edge['call_kind']}]"
+    if resolution in {"UNRESOLVED", "AMBIGUOUS"}:
+        detail += f" — {resolution}"
+    if implementation == "UNRESOLVED":
+        detail += " — runtime implementation UNRESOLVED"
+    if evidence.startswith("SOLC_AST_"):
+        marker = "[COMPILER AST]"
+    elif evidence == "LEXICAL_SOURCE":
+        marker = "[LEXICAL SOURCE GRAPH]"
+    else:
+        marker = f"[{evidence}]"
+    extra = " ".join(str(edge.get("detail") or "").split())
+    if extra:
+        detail += f"; {extra}"
+    return f"{marker} {detail} @ {source_ref}"
+
+
+def _format_compiler_ast_effect(edge, nodes):
+    kind = str(edge.get("kind") or "EFFECT")
+    node_map = nodes if isinstance(nodes, dict) else {}
+    location = edge.get("source") or {}
+    source_ref = (
+        f"{location.get('file') or 'source'}:"
+        f"{location.get('line') or '?'}:"
+        f"{location.get('column') or '?'}"
+    )
+    if kind in {
+        "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES",
+        "MUTATES", "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+        "ALIASES_STORAGE", "INITIALIZES", "UNRESOLVED_MUTATION",
+    }:
+        target = node_map.get(str(edge.get("to") or ""), {})
+        subject = str(edge.get("access_path") or edge.get("variable") or target.get("name") or "storage")
+        operation = str(edge.get("operation") or "")
+        detail = f"{kind} {subject}" + (f" ({operation})" if operation else "")
+        if edge.get("mutation_kind"):
+            detail += f" [{edge['mutation_kind']}]"
+    else:
+        target = node_map.get(str(edge.get("to") or ""), {})
+        subject = target.get("qualified_name") or target.get("name") or edge.get("method") or edge.get("to") or "unresolved target"
+        detail = f"{kind} {subject}"
+        if edge.get("receiver"):
+            detail += f" via {edge['receiver']}"
+    via = edge.get("via") or []
+    marker = "[INFERRED AST PATH]" if edge.get("ast_origin") == "INFERRED" else "[DIRECT AST]"
+    if via:
+        names = [
+            node_map.get(str(item), {}).get("qualified_name") or str(item)
+            for item in via
+        ]
+        detail += " via " + " -> ".join(names)
+    return f"{marker} {detail} @ {source_ref}"
+
+
+def _print_compiler_ast_effects(root, contract_name, source_path, records):
+    """Append compiler-AST effects for verbose inventory; static evidence is never called execution proof."""
+    if source_index is None:
+        print("\nCOMPILER AST EFFECTS")
+        print("  UNAVAILABLE: source_index is not installed; lexical function notes remain best-effort.")
+        return
+    try:
+        index = source_index.build_source_index(root)
+    except Exception as error:
+        print("\nCOMPILER AST EFFECTS")
+        detail = " ".join(str(error).split())[:240]
+        print(f"  UNAVAILABLE: source graph could not be built ({type(error).__name__}: {detail}).")
+        return
+
+    report = index.get("ast") or {}
+    ast_functions = int(report.get("functions") or 0)
+    print("\nCOMPILER AST EFFECTS")
+    print(
+        f"  Matched declarations: {ast_functions}; build-info files: {report.get('build_info_files', 0)}; "
+        f"stale source units: {report.get('stale_units', 0)}."
+    )
+    print("  Evidence: static compiler-AST/source graph; reachable paths are not proof of runtime execution.")
+    for warning in (report.get("warnings") or [])[:3]:
+        print(f"  AST NOTE: {warning}")
+
+    nodes = {
+        str(item.get("id")): item
+        for item in (index.get("nodes") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for record in records:
+        signature = str(record.get("signature") or record.get("name") or "")
+        node = _function_graph_node(index, contract_name, signature, source_path, root)
+        print(f"\n  [{signature}]")
+        if node is None:
+            print("    AST MATCH: UNRESOLVED / AMBIGUOUS; no declaration-level effect summary is claimed.")
+            continue
+        status, effects = _compiler_ast_effects_for_function(index, node)
+        if status != "COVERED":
+            print("    AST COVERAGE: NOT PROVEN for this declaration; lexical notes above remain best-effort.")
+        else:
+            print("    AST COVERAGE: MATCHED current compiler declaration.")
+            if not effects:
+                print("    AST EFFECTS: no declaration-resolved call/storage edges recorded; absence is not proof of no side effects.")
+            else:
+                for effect in effects[:12]:
+                    print("    " + _format_compiler_ast_effect(effect, nodes))
+                if len(effects) > 12:
+                    print(f"    ... {len(effects) - 12} additional AST-backed effect edge(s) omitted.")
+
+        boundaries = _function_graph_boundary_edges(index, node)
+        if boundaries["edges"]:
+            print("    CALL / EXTERNAL / UNRESOLVED BOUNDARIES:")
+            for boundary in boundaries["edges"][:12]:
+                print("      " + _format_function_graph_boundary(boundary, nodes))
+            if len(boundaries["edges"]) > 12:
+                print(f"      ... {len(boundaries['edges']) - 12} additional boundary edge(s) omitted.")
+        if boundaries["unresolved"] or boundaries["truncated"]:
+            reasons = []
+            if boundaries["unresolved"]:
+                reasons.append(f"{len(boundaries['unresolved'])} unresolved or runtime-dependent boundary(s)")
+            if boundaries["truncated"]:
+                reasons.append("resolved helper traversal reached its depth limit")
+            print("    ANALYSIS STATUS: PARTIALLY ANALYSED — " + "; ".join(reasons) + ".")
+            print("      Do not interpret missing effects as proof that no state or asset changes occur.")
+        elif status == "COVERED":
+            print("    ANALYSIS STATUS: no unresolved boundary was recorded in the traversed static source graph; runtime behavior is not proven.")
+        else:
+            print("    ANALYSIS STATUS: UNVERIFIED — compiler AST coverage is not established.")
+
+
 def run_functions(config, args=None):
     raw_args = [args] if isinstance(args, str) else args
     options, query = _parse_function_options(raw_args)
@@ -3542,7 +3947,7 @@ def run_functions(config, args=None):
     if not target:
         if not query:
             return fail("Error: no project target selected. Use 'lk fn <function>' to search build artifacts, or deploy and run 'lk target auto'.")
-        if any(options.values()):
+        if any(options.get(key) for key in ("verbose", "visibility", "mutability", "class", "risk")):
             return fail("Error: function filters/verbose mode need a selected target with an ABI. Use 'lk target <name|address>' first.")
         matches = project_artifact_function_matches(root, query)
         if not matches:
@@ -3579,6 +3984,9 @@ def run_functions(config, args=None):
     artifact_path, artifact = _function_inventory_artifact(target, config)
     source_root = Path(root).resolve()
     source_contract = artifact.get("contractName") or config.get("target_contract")
+    query, contract_query_selected = _function_query_for_target(
+        query, source_contract, explicit_query=getattr(options, "query_explicit", False)
+    )
     source_path, source_decls = _function_source_file(artifact, source_root, source_contract)
     storage_labels = _function_storage_labels(target, config, artifact)
     state_variables = _function_state_variable_records(config, artifact, source_path, source_contract, getter_names)
@@ -3613,6 +4021,9 @@ def run_functions(config, args=None):
             verbose=True,
         )
         _print_state_variable_inventory(state_records, verbose=True)
+        if contract_query_selected:
+            print(f"\nSELECTION: '{source_contract}' matched the active contract; showing the complete ABI inventory.")
+        _print_compiler_ast_effects(root, source_contract, source_path, records)
         for entry in abi_entrypoints:
             kind = str(entry.get("type"))
             source_entry = next((decl for decl in source_decls if decl.get("name") == kind), None)
@@ -3667,6 +4078,8 @@ def run_functions(config, args=None):
     contract_label = artifact.get("contractName") or config.get("target_contract")
     if contract_label:
         _function_print_wrapped("  CONTRACT  ", contract_label)
+    if contract_query_selected:
+        _function_print_wrapped("  SELECTED  ", f"contract selector '{source_contract}' -> complete ABI inventory")
     summary = (
         f"{len(records)} functions · {len(write_records)} write · "
         f"{len(read_records)} read · {len(getter_records)} getters"
@@ -24465,44 +24878,49 @@ COMMAND_HELP = {
         related=["lk project", "lk audit", "lk import search ERC20", "lk import explain interface"],
     ),
     "functions": _help_entry(
-        "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
-        "lk functions [query] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
-        "lk functions -v",
-        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory. Add a query to narrow the list; filter flags require a selected target with an ABI.",
+        "List the selected contract's complete ABI inventory or search for a function by name/signature. An exact active contract name selects the full inventory.",
+        "lk functions [CONTRACT|FUNCTION] [-q|--query TEXT] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
+        "lk functions OrderBook",
+        "Use it when starting an unfamiliar contract. A positional token equal to the active contract name shows the complete ABI inventory; use -q/--query to force a function search. Verbose mode includes compiler-AST effects and explicitly reports unresolved or partially analysed call boundaries.",
         forms=[
-            ("lk functions", "List the selected contract's ABI functions, grouped into write functions, read functions, and storage getters.", "lk functions"),
-            ("lk functions <query>", "Search the function inventory by name or signature text.", "lk functions withdraw"),
-            ("lk functions <query> [filters...]", "Combine a search with visibility, mutability, class, verbose, or risk filters.", "lk functions withdraw --visibility external --mutability nonpayable"),
+            ("lk functions", "List the selected contract's complete ABI inventory.", "lk functions"),
+            ("lk functions <contract>", "When the name exactly matches the active target contract, show the complete ABI inventory instead of searching for a method with that name.", "lk functions OrderBook"),
+            ("lk functions <function>", "Search function names and signature text. Search results are ranked and limited to the most relevant matches.", "lk functions executeSwapOrder"),
+            ("lk functions -q <text>", "Explicitly search function names/signatures, even when the text equals the active contract name.", "lk functions -q OrderBook"),
+            ("lk functions -q '<signature>'", "Search for an exact function signature or overload.", "lk functions -q 'withdraw(uint256)'"),
         ],
         options=[
-            ("-v / --verbose", "Show per-function source metadata including visibility, modifiers, storage references, calls, ETH flow, selectors, and review flags.", "lk functions --verbose"),
+            ("-q / --query <text>", "Force function-name/signature search. This overrides the exact-contract-name inventory shortcut. Also accepts --query=<text>.", "lk functions --query OrderBook"),
+            ("-v / --verbose", "Show expanded source metadata and compiler-AST direct effects/helper paths. External boundaries, unresolved calls and coverage limits are shown separately; static reachability is not runtime execution proof.", "lk functions --verbose"),
             ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous. The long form also accepts --visibility=<value>.", "lk functions --visibility=external"),
-            ("-m / --mutability <value>", "Filter by mutability: pure, view, nonpayable, or payable. The long form also accepts --mutability=<value>.", "lk functions -m payable"),
-            ("-c / --class <value>", "Filter by audit class: state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow. The long form also accepts --class=<value>.", "lk functions --class admin"),
-            ("-r / --risk", "Show compact audit-review flags for functions that deserve closer inspection.", "lk functions --risk"),
+            ("-m / --mutability <value>", "Filter by pure, view, nonpayable, or payable mutability. The long form also accepts --mutability=<value>.", "lk functions --mutability payable"),
+            ("-c / --class <value>", "Filter by audit class: state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow.", "lk functions --class admin"),
+            ("-r / --risk", "Show compact audit-review flags alongside the function inventory.", "lk functions --risk"),
         ],
         related=["lk fn", "lk ask", "lk risk"]
     ),
     "fn": _help_entry(
-        "Short spelling of the function inventory/search command. It accepts the same filters and produces the same output as lk functions.",
-        "lk fn [query] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
-        "lk fn -v setValue",
-        "Use it for the same function inventory when you want the compact command. Add a query to narrow the list; filter flags require a selected target with an ABI.",
+        "Short spelling of the function inventory/search command. It accepts the same contract selector, explicit query and filters as lk functions.",
+        "lk fn [CONTRACT|FUNCTION] [-q|--query TEXT] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
+        "lk fn OrderBook",
+        "Use it for the same full inventory and function search. An exact active contract name selects the complete ABI inventory; use -q/--query to force function search.",
         forms=[
-            ("lk fn", "List the selected contract's ABI functions, grouped into write functions, read functions, and storage getters.", "lk fn"),
-            ("lk fn <query>", "Search the function inventory by name or signature text.", "lk fn withdraw"),
-            ("lk fn <query> [filters...]", "Combine a search with visibility, mutability, class, verbose, or risk filters.", "lk fn withdraw --visibility external --mutability nonpayable"),
+            ("lk fn", "List the selected contract's complete ABI inventory.", "lk fn"),
+            ("lk fn <contract>", "Show the complete ABI inventory when the token exactly matches the active contract name.", "lk fn OrderBook"),
+            ("lk fn <function>", "Search function names and signature text.", "lk fn executeSwapOrder"),
+            ("lk fn -q <text>", "Force a method search, even when the text equals the active contract name.", "lk fn -q OrderBook"),
+            ("lk fn -q '<signature>'", "Search a specific overload by signature.", "lk fn -q 'withdraw(uint256)'"),
         ],
         options=[
-            ("-v / --verbose", "Show per-function source metadata including visibility, modifiers, storage references, calls, ETH flow, selectors, and review flags.", "lk fn --verbose"),
-            ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous. The long form also accepts --visibility=<value>.", "lk fn --visibility=external"),
-            ("-m / --mutability <value>", "Filter by mutability: pure, view, nonpayable, or payable. The long form also accepts --mutability=<value>.", "lk fn -m payable"),
-            ("-c / --class <value>", "Filter by audit class: state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow. The long form also accepts --class=<value>.", "lk fn --class admin"),
-            ("-r / --risk", "Show compact audit-review flags for functions that deserve closer inspection.", "lk fn --risk"),
+            ("-q / --query <text>", "Force function-name/signature search and override contract-name inventory selection. Also accepts --query=<text>.", "lk fn --query OrderBook"),
+            ("-v / --verbose", "Show compiler-AST direct effects, propagated helper paths, external boundaries and unresolved-analysis warnings.", "lk fn --verbose"),
+            ("-V / --visibility <value>", "Filter by public, external, internal, private, unknown, or ambiguous visibility.", "lk fn -V external"),
+            ("-m / --mutability <value>", "Filter by pure, view, nonpayable, or payable mutability.", "lk fn -m payable"),
+            ("-c / --class <value>", "Filter by audit class, such as admin, state, getter, asset, callback, or eth-flow.", "lk fn -c admin"),
+            ("-r / --risk", "Show compact audit-review flags.", "lk fn --risk"),
         ],
         related=["lk functions", "lk ask", "lk risk"]
-    ),
-    "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createRecord", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
+    ),    "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createRecord", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
     "wizard": _help_entry(
         "Interact with one contract function without having to build the full command yourself.",
         "lk wizard <function> [values...] [call|send|encode]",
@@ -25376,44 +25794,49 @@ COMMAND_HELP.update({
         related=["lk target list", "lk use <name>"],
     ),
     "functions": _help_entry(
-        "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
-        "lk functions [query] [-v|--verbose] [-V|--visibility <value>] [-m|--mutability <value>] [-c|--class <value>] [-r|--risk]",
-        "lk functions -v",
-        "Use it when starting an unfamiliar contract to see the functions it exposes and a quick audit inventory. Add a query to narrow the list.",
+        "List the selected contract's complete ABI inventory or search for a function by name/signature. An exact active contract name selects the full inventory.",
+        "lk functions [CONTRACT|FUNCTION] [-q|--query TEXT] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
+        "lk functions OrderBook",
+        "Use it when starting an unfamiliar contract. A positional token equal to the active contract name shows the complete ABI inventory; use -q/--query to force a function search. Verbose mode includes compiler-AST effects and explicitly reports unresolved or partially analysed call boundaries.",
         forms=[
-            ("lk functions", "List the selected contract's ABI functions.", "lk functions"),
-            ("lk functions <query>", "Search the inventory by function name or signature text.", "lk functions withdraw"),
-            ("lk functions <query> [filters...]", "Combine a name search with the documented visibility, mutability, class, verbose, or risk filters.", "lk functions withdraw --visibility external --mutability nonpayable"),
+            ("lk functions", "List the selected contract's complete ABI inventory.", "lk functions"),
+            ("lk functions <contract>", "When the name exactly matches the active target contract, show the complete ABI inventory instead of searching for a method with that name.", "lk functions OrderBook"),
+            ("lk functions <function>", "Search function names and signature text. Search results are ranked and limited to the most relevant matches.", "lk functions executeSwapOrder"),
+            ("lk functions -q <text>", "Explicitly search function names/signatures, even when the text equals the active contract name.", "lk functions -q OrderBook"),
+            ("lk functions -q '<signature>'", "Search for an exact function signature or overload.", "lk functions -q 'withdraw(uint256)'"),
         ],
         options=[
-            ("-v / --verbose", "Show expanded metadata: source visibility, modifiers, storage references, calls, ETH flow, selectors, and review flags.", "lk functions --verbose"),
-            ("-V / --visibility <value>", "Filter by public, external, internal, private, unknown, or ambiguous visibility. Also accepts --visibility=VALUE.", "lk functions -V external"),
-            ("-m / --mutability <value>", "Filter by pure, view, nonpayable, or payable mutability. Also accepts --mutability=VALUE.", "lk functions --mutability payable"),
-            ("-c / --class <value>", "Filter by audit class: state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow. Also accepts --class=VALUE.", "lk functions -c admin"),
+            ("-q / --query <text>", "Force function-name/signature search. This overrides the exact-contract-name inventory shortcut. Also accepts --query=<text>.", "lk functions --query OrderBook"),
+            ("-v / --verbose", "Show expanded source metadata and compiler-AST direct effects/helper paths. External boundaries, unresolved calls and coverage limits are shown separately; static reachability is not runtime execution proof.", "lk functions --verbose"),
+            ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous. The long form also accepts --visibility=<value>.", "lk functions --visibility=external"),
+            ("-m / --mutability <value>", "Filter by pure, view, nonpayable, or payable mutability. The long form also accepts --mutability=<value>.", "lk functions --mutability payable"),
+            ("-c / --class <value>", "Filter by audit class: state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow.", "lk functions --class admin"),
             ("-r / --risk", "Show compact audit-review flags alongside the function inventory.", "lk functions --risk"),
         ],
-        related=["lk fn", "lk ask", "lk risk"],
+        related=["lk fn", "lk ask", "lk risk"]
     ),
     "fn": _help_entry(
-        "Short spelling of the function inventory/search command. It accepts the same filters as lk functions.",
-        "lk fn [query] [-v|--verbose] [-V|--visibility <value>] [-m|--mutability <value>] [-c|--class <value>] [-r|--risk]",
-        "lk fn -v setValue",
-        "Use it for the same function inventory when you want the compact command. Add a query to narrow the list.",
+        "Short spelling of the function inventory/search command. It accepts the same contract selector, explicit query and filters as lk functions.",
+        "lk fn [CONTRACT|FUNCTION] [-q|--query TEXT] [-v|--verbose] [-V|--visibility <visibility>] [-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]",
+        "lk fn OrderBook",
+        "Use it for the same full inventory and function search. An exact active contract name selects the complete ABI inventory; use -q/--query to force function search.",
         forms=[
-            ("lk fn", "List the selected contract's ABI functions.", "lk fn"),
-            ("lk fn <query>", "Search the inventory by function name or signature text.", "lk fn withdraw"),
-            ("lk fn <query> [filters...]", "Combine a name search with the same filters supported by lk functions.", "lk fn withdraw --visibility external --mutability nonpayable"),
+            ("lk fn", "List the selected contract's complete ABI inventory.", "lk fn"),
+            ("lk fn <contract>", "Show the complete ABI inventory when the token exactly matches the active contract name.", "lk fn OrderBook"),
+            ("lk fn <function>", "Search function names and signature text.", "lk fn executeSwapOrder"),
+            ("lk fn -q <text>", "Force a method search, even when the text equals the active contract name.", "lk fn -q OrderBook"),
+            ("lk fn -q '<signature>'", "Search a specific overload by signature.", "lk fn -q 'withdraw(uint256)'"),
         ],
         options=[
-            ("-v / --verbose", "Show expanded function metadata.", "lk fn --verbose"),
-            ("-V / --visibility <value>", "Filter by source visibility: public, external, internal, private, unknown, or ambiguous.", "lk fn -V external"),
+            ("-q / --query <text>", "Force function-name/signature search and override contract-name inventory selection. Also accepts --query=<text>.", "lk fn --query OrderBook"),
+            ("-v / --verbose", "Show compiler-AST direct effects, propagated helper paths, external boundaries and unresolved-analysis warnings.", "lk fn --verbose"),
+            ("-V / --visibility <value>", "Filter by public, external, internal, private, unknown, or ambiguous visibility.", "lk fn -V external"),
             ("-m / --mutability <value>", "Filter by pure, view, nonpayable, or payable mutability.", "lk fn -m payable"),
             ("-c / --class <value>", "Filter by audit class, such as admin, state, getter, asset, callback, or eth-flow.", "lk fn -c admin"),
             ("-r / --risk", "Show compact audit-review flags.", "lk fn --risk"),
         ],
-        related=["lk functions", "lk ask"],
-    ),
-    "read": _help_entry(
+        related=["lk functions", "lk ask", "lk risk"]
+    ),    "read": _help_entry(
         "Call a contract without intentionally changing state. Lowkey uses the selected target and the ABI to interpret the function's arguments and return value.",
         "lk read <function> [args...]",
         "lk read EscrowID @firstEscrow",
