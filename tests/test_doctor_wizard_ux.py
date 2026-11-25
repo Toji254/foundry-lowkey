@@ -289,6 +289,33 @@ PASS  dependency command: cast receipt
         cast_output.assert_not_called()
         prompt.assert_not_called()
 
+
+    def test_yes_with_explicit_sender_can_continue_when_rpc_is_unavailable(self):
+        target = "0x" + "1" * 40
+        sender = "0x" + "2" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "resolve_function", return_value="setValue(uint256)"), \
+             patch.object(lk, "effective_rpc", return_value=None), \
+             patch.object(lk, "resolve_wallet_key", return_value=None), \
+             patch.object(lk, "cast_output", return_value=(0, "send accepted", "")) as cast, \
+             redirect_stdout(io.StringIO()):
+            result = lk.run_cast(
+                ["send", "setValue", "5", "--from", sender, "--yes"],
+                {"target": target},
+            )
+
+        self.assertEqual(result, 0)
+        cast.assert_called_once()
+        self.assertIn(sender, cast.call_args.args[0])
+
     def test_wallet_error_explains_no_signer_and_no_broadcast(self):
         rendered = lk._format_cli_error(
             "Error accessing local wallet. Did you pass a keystore, hardware wallet, private key or mnemonic?",
