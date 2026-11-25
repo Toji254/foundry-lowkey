@@ -1602,7 +1602,7 @@ def _render_link_help(command: str = "lk link") -> str:
                 ),
                 (
                     "lk trace source --search <TEXT> [--type <KIND>]",
-                    "With no TARGET, browse/filter the source map instead of tracing one declaration.",
+                    "With no TARGET, the protocol graph is the default; use --search to open the declaration inventory.",
                     "lk trace source --search Position --type contract",
                 ),
             ],
@@ -1622,7 +1622,7 @@ def _render_link_help(command: str = "lk link") -> str:
             notes=(
                 "This is static source analysis. It does not prove that a path executed or that an external call succeeded.",
                 "Unresolved relationships and incomplete source coverage remain visible; they are not silently treated as safe.",
-                "When TARGET is omitted, --search, --type, --page, and --all browse the source map. With TARGET, use --only, --depth, and --detail for declaration relationships.",
+                "When TARGET is omitted, Lowkey shows the protocol graph. Use --search, --type, --page, or --all to browse the declaration inventory. With TARGET, use --only, --depth, and --detail for declaration relationships.",
             ),
         )
 
