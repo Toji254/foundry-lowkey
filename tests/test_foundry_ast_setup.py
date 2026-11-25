@@ -111,10 +111,10 @@ class FoundryAstSetupTests(unittest.TestCase):
 
     def test_can_disable_build_info_ast_omission_when_foundry_reports_it(self):
         original = (
-            "[profile.default]\\n"
-            "ast = true\\n"
-            "build_info = true\\n"
-            "build_info_without_ast = true # keep note\\n"
+            "[profile.default]\n"
+            "ast = true\n"
+            "build_info = true\n"
+            "build_info_without_ast = true # keep note\n"
         )
         updated, changed = ast_setup._patch_profile_settings(
             original,
