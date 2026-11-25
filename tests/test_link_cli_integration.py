@@ -45,7 +45,7 @@ class LinkCliIntegrationTests(unittest.TestCase):
         self.assertEqual(result, 0)
         rendered = output.getvalue()
         self.assertIn("lk trace [<transaction-hash>]", rendered)
-        self.assertIn("--grep <TEXT>", rendered)
+        self.assertIn("--grep <text>", rendered)
         self.assertIn("transaction", rendered.lower())
 
     def test_link_command_dispatches_to_source_relationship_engine(self):
