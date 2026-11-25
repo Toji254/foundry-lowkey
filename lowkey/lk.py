@@ -117,6 +117,11 @@ except ImportError:
     project_tools = None
 
 try:
+    import lab_target_scope
+except ImportError:
+    from lowkey import lab_target_scope
+
+try:
     import solidity_cheatsheet
 except ImportError:
     solidity_cheatsheet = None
@@ -12280,7 +12285,12 @@ def artifact_is_project_application(root, path, artifact):
     # The old check compared the artifact directory to the *contract name*,
     # which incorrectly rejected valid layouts when source filenames and Solidity symbols differ.
     # Explicit sourceName metadata is stronger provenance and needs no basename check.
-    if not explicit_source:
+    if not explicit_source and Path(normalized).suffix.lower() != ".vy":
+        # Solidity artifacts commonly live under <Contract>.sol/<Contract>.json,
+        # so their fallback path must match the artifact source directory. Vyper
+        # backends also place artifacts under generic roots such as
+        # .audit/build/vyper, so source-name matching (performed by
+        # source_contract_fallback) is the safe provenance check for .vy files.
         parent_stem = path_obj.parent.name
         if parent_stem.lower().endswith(".sol"):
             parent_stem = parent_stem[:-4]
@@ -12488,67 +12498,148 @@ def discover_audit_target_contract(root):
     return artifacts[ranked[0][0]]
 
 
-def discover_generic_lab_contract(root, query=None):
-    preferred_name = str(query).strip() if query else discover_audit_target_contract(root)
+def _discover_artifact_lab_contract_scoped(root, name, *, target_scope=None, source_file=None):
+    """Keep legacy discovery calls unchanged unless the user narrowed the scope."""
+    if target_scope is None and source_file is None:
+        return discover_artifact_lab_contract(root, name)
+    return discover_artifact_lab_contract(
+        root, name, target_scope=target_scope, source_file=source_file
+    )
 
-    # First pass: the strict artifact/source validation.
+
+def _lab_artifact_source(root, path, artifact):
+    """Resolve an artifact source only when its provenance remains inside the project."""
+    source = artifact_source_name(artifact, path, root) or source_contract_fallback(
+        root, artifact_contract_name(path, artifact)
+    )
+    if not source or not lab_target_scope.artifact_source_in_scope(root, source):
+        return None
+    return source
+
+
+def _lab_scoped_contract_names(root, *, target_scope=None, source_file=None):
+    """List unique deployable application contracts in the selected source scope."""
+    names = {}
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not isinstance(artifact, dict) or not artifact_is_deployable(artifact):
+            continue
+        name = artifact_contract_name(path, artifact)
+        source = _lab_artifact_source(root, path, artifact)
+        if not name or not source:
+            continue
+        if not lab_target_scope.artifact_source_in_scope(
+            root, source, target_scope=target_scope, source_file=source_file
+        ):
+            continue
+        if not artifact_is_project_application(root, path, artifact):
+            continue
+        names.setdefault(name.casefold(), set()).add((name, str(Path(path).resolve())))
+    return sorted(
+        {next(iter(values))[0] for values in names.values() if len(values) == 1},
+        key=str.casefold,
+    )
+
+
+def _lab_artifact_fingerprint(artifact):
+    """Return deployment-relevant identity, excluding path and compiler metadata."""
+    if not isinstance(artifact, dict):
+        return None
+    try:
+        abi = json.dumps(artifact.get("abi") or [], sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+
+    def bytecode_value(value):
+        if isinstance(value, dict):
+            value = value.get("object")
+        return str(value or "").strip().lower()
+
+    creation = bytecode_value(artifact.get("bytecode"))
+    runtime = bytecode_value(artifact.get("deployedBytecode"))
+    if not creation:
+        return None
+    return abi, creation, runtime
+
+
+def _collapse_equivalent_lab_artifacts(candidates):
+    """Collapse duplicate build outputs only when source and deployable payload match."""
+    grouped = {}
+    for candidate in candidates:
+        _score, contract, path, artifact, constructor_inputs, fqn = candidate
+        source_identity = str(fqn).rsplit(":", 1)[0].replace("\\", "/").casefold()
+        key = (str(contract).casefold(), source_identity)
+        grouped.setdefault(key, []).append(candidate)
+
+    collapsed = []
+    for _key, group in grouped.items():
+        fingerprints = {_lab_artifact_fingerprint(item[3]) for item in group}
+        # Missing fingerprints or differing deployable payloads stay ambiguous.
+        if None in fingerprints or len(fingerprints) != 1:
+            return None
+
+        def artifact_preference(candidate):
+            path_text = str(candidate[2]).replace("\\", "/")
+            if "/.audit/build/vyper/" in path_text:
+                priority = 0
+            elif "/out/" in path_text or path_text.startswith("out/"):
+                priority = 1
+            elif "/artifacts/" in path_text:
+                priority = 2
+            elif "/build/contracts/" in path_text:
+                priority = 3
+            elif "/.audit/walkthrough/" in path_text:
+                priority = 4
+            else:
+                priority = 5
+            return priority, len(path_text), path_text
+
+        collapsed.append(min(group, key=artifact_preference))
+
+    return collapsed
+
+
+def discover_generic_lab_contract(root, query=None, *, target_scope=None, source_file=None):
+    """Find one deployable application artifact within the selected source scope."""
+    requested = str(query or "").strip()
+    detected = None
+    if not requested:
+        detected = discover_audit_target_contract(root)
+        if detected and not _discover_artifact_lab_contract_scoped(
+            root, detected, target_scope=target_scope, source_file=source_file
+        ):
+            detected = None
+    preferred_name = requested or detected
+
     candidates = []
     for path in local_artifact_paths(root):
         artifact = read_artifact(path)
         if not artifact or not artifact_is_deployable(artifact):
             continue
         contract = artifact_contract_name(path, artifact)
-        if preferred_name and contract.lower() != preferred_name.lower():
+        if preferred_name and contract.casefold() != preferred_name.casefold():
             continue
-        source = artifact_source_name(artifact, path, root) or source_contract_fallback(root, contract)
-        if not source:
-            continue
-        lowered = str(source).lower().replace("\\", "/")
-        lowered_contract = contract.lower()
-        if "/interfaces/" in lowered or lowered_contract.startswith("i"):
+        source = _lab_artifact_source(root, path, artifact)
+        if not source or not lab_target_scope.artifact_source_in_scope(
+            root, source, target_scope=target_scope, source_file=source_file
+        ):
             continue
         if not artifact_is_project_application(root, path, artifact):
-            # Re-check with the source fallback: sparse metadata should not block
-            # a valid first-party Foundry artifact from becoming a local lab.
-            if not re.search(r"\b(contract|library|interface)\s+" + re.escape(contract) + r"\b",
-                             (Path(root) / source).read_text(encoding="utf-8", errors="replace")):
-                continue
+            continue
         candidates.append((
-            0 if preferred_name and contract.lower() == preferred_name.lower() else 50,
+            0 if preferred_name else 50,
             contract, path, artifact, artifact_constructor_inputs(artifact),
-            f"{source}:{contract}"
+            f"{source}:{contract}",
         ))
 
-    # If metadata/source-name recovery still failed, use the strongest application
-    # contract name and its matching bytecode artifact.
-    if not candidates and preferred_name:
-        for path in local_artifact_paths(root):
-            artifact = read_artifact(path)
-            if not artifact or not artifact_is_deployable(artifact):
-                continue
-            contract = artifact_contract_name(path, artifact)
-            if contract.lower() != preferred_name.lower():
-                continue
-            source = source_contract_fallback(root, contract)
-            if source:
-                candidates.append((
-                    0, contract, path, artifact, artifact_constructor_inputs(artifact),
-                    f"{source}:{contract}"
-                ))
-                break
-
-    if not candidates:
+    candidates = _collapse_equivalent_lab_artifacts(candidates)
+    if not candidates or len(candidates) != 1:
         return None
-    if not preferred_name and len(candidates) > 1:
-        # Never choose the alphabetically first contract when role discovery
-        # could not distinguish several application artifacts.
-        return None
-    candidates.sort(key=lambda item: (item[0], item[1].lower(), str(item[2])))
     return candidates[0]
 
 
-def discover_artifact_lab_contract(root, query):
-    """Resolve an explicitly requested built artifact for direct local deployment."""
+def discover_artifact_lab_contract(root, query, *, target_scope=None, source_file=None):
+    """Resolve one exact built contract name within the selected source scope."""
     requested = str(query or "").strip()
     if not requested:
         return None
@@ -12559,19 +12650,25 @@ def discover_artifact_lab_contract(root, query):
         if not artifact or not artifact_is_deployable(artifact):
             continue
         contract = artifact_contract_name(path, artifact)
-        if contract.lower() != requested.lower():
+        if contract.casefold() != requested.casefold():
+            continue
+        source = _lab_artifact_source(root, path, artifact)
+        if not source or not lab_target_scope.artifact_source_in_scope(
+            root, source, target_scope=target_scope, source_file=source_file
+        ):
             continue
         matches.append((
-            0,
-            contract,
-            path,
-            artifact,
-            artifact_constructor_inputs(artifact),
-            f"{artifact_source_name(artifact, path, root) or path}:{contract}",
+            0, contract, path, artifact, artifact_constructor_inputs(artifact),
+            f"{source}:{contract}",
         ))
 
-    matches.sort(key=lambda item: str(item[2]))
-    return matches[0] if matches else None
+    # Same-source compiler outputs may be duplicated across Lowkey-owned
+    # artifact roots. Collapse only when their ABI and creation/runtime bytecode
+    # are identical; a same-name symbol from different sources stays ambiguous.
+    matches = _collapse_equivalent_lab_artifacts(matches)
+    if not matches or len(matches) != 1:
+        return None
+    return matches[0]
 
 
 class ContractDependencyCycleError(ValueError):
@@ -15126,23 +15223,38 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     return None, "deployment succeeded, but Lowkey could not identify a live deployed contract address"
 
 
-def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic", deployment_only=False, _skip_dependency_discovery=False):
+def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic", deployment_only=False, _skip_dependency_discovery=False, *, target_scope=None, source_file=None):
     config["_lab_system_root"] = str(Path(root).resolve())
     config.pop("lab_system", None)
     candidate = (
-        discover_artifact_lab_contract(root, requested)
+        _discover_artifact_lab_contract_scoped(
+            root, requested, target_scope=target_scope, source_file=source_file
+        )
         if mode == "artifact"
-        else discover_generic_lab_contract(root, requested)
+        else (
+            discover_generic_lab_contract(root, requested)
+            if target_scope is None and source_file is None
+            else discover_generic_lab_contract(
+                root, requested, target_scope=target_scope, source_file=source_file
+            )
+        )
     )
     if not candidate:
+        if requested:
+            return fail(
+                f"Requested contract '{requested}' was not found as a unique first-party "
+                f"deployable artifact within target scope '{target_scope or root}'. "
+                "No alternate target will be selected. Check the source path, build artifacts, "
+                "and exact contract declaration."
+            )
         app = discover_audit_target_contract(root)
         return fail(
-            "Local lab target discovery failed. "
-            + (f"Lowkey identified '{app}' as the likely application contract, but could not match it to deployable bytecode. "
+            "Local lab target discovery failed within the selected target scope. "
+            + (f"Project-wide role analysis identified '{app}', but it is outside this scope or has no matching deployable artifact. "
                if app else
-               "Lowkey could not identify a first-party application contract with deployable bytecode. ")
-            + "Fix: run 'lk build', then 'lk lab <ContractName>' for the exact contract. "
-            + "If it still fails, run 'lk project' and check the dependency/target diagnostics."
+               "Lowkey could not identify one unique first-party application contract in this scope. ")
+            + "Use 'lk lab --scope project' to broaden discovery, or select a source with "
+            "'lk lab --source <file> <ContractName>'."
         )
 
     _score, contract, path, artifact, constructor_inputs, fqn = candidate
@@ -15464,12 +15576,14 @@ def run_native_lab(config, root, project):
     return 0
 
 
-def validate_ai_primary_contract_suggestion(root, suggested_name):
-    """Accept an AI target proposal only after a local deployable first-party artifact exists."""
+def validate_ai_primary_contract_suggestion(root, suggested_name, *, target_scope=None, source_file=None):
+    """Accept an AI target proposal only after a scoped deployable artifact exists."""
     name = str(suggested_name or "").strip()
     if not name:
         return None
-    candidate = discover_artifact_lab_contract(root, name)
+    candidate = _discover_artifact_lab_contract_scoped(
+        root, name, target_scope=target_scope, source_file=source_file
+    )
     if not candidate:
         return None
     if not artifact_is_project_application(root, candidate[2], candidate[3]):
@@ -15755,8 +15869,10 @@ def _preferred_lab_contract(
     ai_deployment_plan=None,
     *,
     manual_pin=False,
+    target_scope=None,
+    source_file=None,
 ):
-    """Prefer explicit intent, then an explicit manual pin, then validated project evidence."""
+    """Prefer explicit intent, then a scoped manual pin, then validated project evidence."""
     explicit = str(requested or "").strip()
     if explicit:
         return explicit
@@ -15765,14 +15881,35 @@ def _preferred_lab_contract(
     if (
         manual_pin
         and remembered
-        and discover_artifact_lab_contract(root, remembered)
+        and _discover_artifact_lab_contract_scoped(
+            root, remembered, target_scope=target_scope, source_file=source_file
+        )
     ):
         return remembered
 
     detected = discover_audit_target_contract(root)
+    # Keep the original project-wide heuristic semantics unchanged. Artifact
+    # membership validation is needed only when an invocation/source scope
+    # narrows what can be selected.
+    if (
+        detected
+        and (target_scope is not None or source_file is not None)
+        and not _discover_artifact_lab_contract_scoped(
+            root, detected, target_scope=target_scope, source_file=source_file
+        )
+    ):
+        detected = None
+    if not detected and target_scope is not None:
+        scoped_candidate = discover_generic_lab_contract(
+            root, target_scope=target_scope, source_file=source_file
+        )
+        detected = scoped_candidate[1] if scoped_candidate else None
+
     ai_name = _ai_plan_primary_contract(root, ai_suggested, ai_deployment_plan) or ""
     if ai_name:
-        candidate = discover_artifact_lab_contract(root, ai_name)
+        candidate = _discover_artifact_lab_contract_scoped(
+            root, ai_name, target_scope=target_scope, source_file=source_file
+        )
         if candidate and artifact_is_project_application(root, candidate[2], candidate[3]):
             # If native source analysis proves the model-selected contract is
             # a child of the current native candidate, keep the host. If native
@@ -15803,6 +15940,30 @@ def _preferred_lab_contract(
 
 def run_lab(config,args, *, deployment_only=False):
     args = list(args or [])
+    invocation_dir = Path.cwd().expanduser().resolve()
+    try:
+        args, requested_scope, requested_source = lab_target_scope.parse_scope_options(args)
+    except ValueError as exc:
+        return fail(f"Error: {exc}", 2)
+
+    # Backward compatibility: a positional Solidity/Vyper filename is a source
+    # selector, not a contract-name query.
+    if requested_source is None:
+        mode_tokens = {"generic", "--generic", "forge", "--forge"}
+        source_selector_index = next(
+            (
+                index for index, argument in enumerate(args)
+                if str(argument).lower().endswith((".sol", ".vy"))
+                and not str(argument).startswith("-")
+                and str(argument).lower() not in mode_tokens
+            ),
+            None,
+        )
+        if source_selector_index is not None:
+            requested_source = str(args[source_selector_index]).strip()
+            args = list(args)
+            args.pop(source_selector_index)
+
     ai_review_flags = {"--ai", "--ai-review"}
     ai_review_requested = any(str(argument).strip().lower() in ai_review_flags for argument in args)
     if ai_review_requested:
@@ -15822,6 +15983,12 @@ def run_lab(config,args, *, deployment_only=False):
         print("             Optional Contract chooses which contract to deploy.")
         print("  --artifact Deploy the exact compiled contract you name.")
         print("             Useful when a project has several contracts with similar names.")
+        print("")
+        print("OPTIONS / TARGET SELECTION")
+        print("  --scope <path|project>")
+        print("      Limit primary target discovery to a source directory; use 'project' for full-project discovery.")
+        print("  --source <file>")
+        print("      Select one .sol or .vy source file. Name the contract if that file contains multiple deployable contracts.")
         print("")
         print("OPTIONS / AI ASSISTANCE")
         print("  --ai | --ai-review")
@@ -15851,6 +16018,12 @@ def run_lab(config,args, *, deployment_only=False):
         print("      Deploy MyContract directly and answer its constructor prompts.")
         print("  lk lab --artifact MyContract")
         print("      Deploy exactly this compiled contract.")
+        print("  lk lab --generic OrderBook --scope contracts/core")
+        print("      Restrict primary target discovery to one source directory.")
+        print("  lk lab --scope project")
+        print("      Restore project-wide primary target discovery from any directory.")
+        print("  lk lab --source contracts/core/OrderBook.sol OrderBook")
+        print("      Select a specific Solidity/Vyper source file and contract declaration.")
         print("  lk lab stop")
         print("      Stop the local Anvil instance started by Lowkey.")
         return 0
@@ -15916,6 +16089,33 @@ def run_lab(config,args, *, deployment_only=False):
     # or deterministic complexity-triggered assistance after the user selects auto.
     # Neither mode grants the model authority over targets, tool execution, or deployment.
     _ai_is_stop = any(str(argument).lower() == "stop" for argument in args)
+    target_scope_info = None
+    target_scope = None
+    source_file = None
+    if not _ai_is_stop:
+        try:
+            target_scope_info = lab_target_scope.resolve_target_scope(
+                root,
+                invocation_dir=invocation_dir,
+                scope=requested_scope,
+                source=requested_source,
+            )
+        except ValueError as exc:
+            return fail(f"Error: {exc}", 2)
+        target_scope = target_scope_info.target_scope
+        source_file = target_scope_info.source_file
+        # A project-root scope is semantically identical to the legacy
+        # project-wide mode. Pass no new kwargs in that case so existing
+        # internal callers and integrations retain their original call shape.
+        effective_target_scope = (
+            None if target_scope == Path(root).resolve() and source_file is None
+            else target_scope
+        )
+        print(f"Project root   : {Path(root).resolve()}")
+        print(f"Invocation dir : {invocation_dir}")
+        print(f"Target scope   : {target_scope}")
+        print(f"Dependencies   : {target_scope_info.dependency_scope} (project-wide)")
+
     requested_contract = next(
         (str(argument) for argument in args
          if not str(argument).startswith("-")
@@ -16128,6 +16328,8 @@ def run_lab(config,args, *, deployment_only=False):
         _ai_suggested_primary_contract = validate_ai_primary_contract_suggestion(
             root,
             _ai_primary_contract_proposal,
+            target_scope=effective_target_scope,
+            source_file=source_file,
         )
         if _ai_suggested_primary_contract:
             print(
@@ -16161,6 +16363,24 @@ def run_lab(config,args, *, deployment_only=False):
             requested = str(args[1]).strip() if len(args) > 1 else None
         else:
             requested = first
+
+        if source_file is not None and not requested:
+            source_contracts = _lab_scoped_contract_names(
+                root, target_scope=target_scope, source_file=source_file
+            )
+            if len(source_contracts) == 1:
+                requested = source_contracts[0]
+            elif not source_contracts:
+                return fail(
+                    f"No unique deployable first-party contract was found in source '{source_file}'. "
+                    "Check its compiler artifact and contract declaration."
+                )
+            else:
+                return fail(
+                    f"Source '{source_file}' contains multiple deployable contracts: "
+                    + ", ".join(source_contracts)
+                    + ". Name the intended contract explicitly."
+                )
 
         if len(args) > (2 if mode in {"generic", "artifact"} else 1):
             return fail("Usage: lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop")
@@ -16197,6 +16417,8 @@ def run_lab(config,args, *, deployment_only=False):
         _ai_suggested_primary_contract,
         _ai_deployment_plan,
         manual_pin=bool(remembered_contract_name),
+        target_scope=effective_target_scope,
+        source_file=source_file,
     )
     if (
         not requested
@@ -16279,7 +16501,9 @@ def run_lab(config,args, *, deployment_only=False):
             accounts,
             key,
             requested or auto_selected,
-            explicit_requested=bool(args) and mode == "auto" and str(args[0]).strip().lower() not in {"", "auto"},
+            explicit_requested=(
+                bool(args) and mode == "auto" and str(args[0]).strip().lower() not in {"", "auto"}
+            ) or source_file is not None,
         )
         if script_code == 0:
             return 0
@@ -16327,6 +16551,8 @@ def run_lab(config,args, *, deployment_only=False):
             _ai_suggested_primary_contract,
             _ai_deployment_plan,
             manual_pin=bool(remembered_contract_name),
+            target_scope=effective_target_scope,
+            source_file=source_file,
         )
 
     if not requested:
@@ -16344,9 +16570,16 @@ def run_lab(config,args, *, deployment_only=False):
             if isinstance(signal, dict) and signal.get("function"):
                 requested = str(signal.get("function")).split("(", 1)[0]
 
+    if effective_target_scope is None and source_file is None:
+        return run_generic_lab(
+            config, root, rpc, accounts, key, requested, mode=mode,
+            deployment_only=deployment_only,
+        )
     return run_generic_lab(
         config, root, rpc, accounts, key, requested, mode=mode,
         deployment_only=deployment_only,
+        target_scope=effective_target_scope,
+        source_file=source_file,
     )
 
 def run_ens(config,args):
@@ -26093,6 +26326,31 @@ def _apply_command_help_audit_catalog():
         lab_entry.setdefault("notes", []).append(
             ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab --generic Vault --ai-review")
         )
+
+        lab_entry["summary"] = "Select or deploy a local audit-lab contract without confusing the project root with the source directory being audited."
+        lab_entry["use"] = "Use this when a repository contains multiple contracts or when you are auditing a nested package and need the correct contract selected."
+        lab_entry["usage"] = "lk lab [--generic <ContractName>] [--scope <path|project>] [--source <file>]"
+        lab_entry["example"] = "lk lab --generic OrderBook --scope contracts/core"
+        scoped_forms = [
+            ("lk lab", "Auto-select one deployable first-party contract from the current invocation directory when it is a valid application scope.", "cd contracts/core && lk lab"),
+            ("lk lab --generic OrderBook", "Select the exact named deployable contract. If it is not in the active scope, Lowkey fails closed instead of substituting another contract.", "lk lab --generic OrderBook"),
+            ("lk lab --scope project --generic OrderBook", "Expand target discovery to the whole project when the current directory is too narrow.", "lk lab --scope project --generic OrderBook"),
+            ("lk lab --scope contracts/core --generic OrderBook", "Restrict candidate discovery to a project-relative application directory; build and dependency resolution still use the project root.", "lk lab --scope contracts/core --generic OrderBook"),
+            ("lk lab --source contracts/core/OrderBook.sol --generic OrderBook", "Restrict selection to declarations in one source file, useful for same-named contracts or ambiguous artifact sets.", "lk lab --source contracts/core/OrderBook.sol --generic OrderBook"),
+        ]
+        lab_forms = lab_entry.setdefault("forms", [])
+        for form in scoped_forms:
+            if form not in lab_forms:
+                lab_forms.append(form)
+        scope_notes = [
+            ("Target scope vs project root", "The invocation directory controls target discovery by default. The canonical project root remains the build and dependency-resolution root, so imports outside the target folder remain available.", "cd contracts/core && lk lab --generic OrderBook"),
+            ("Explicit scope", "Use --scope project for whole-project discovery or --scope <path> for a directory inside the project. Paths that escape the project boundary or cross a symlink outside it are rejected.", "lk lab --scope project --generic OrderBook"),
+            ("No silent substitution", "An explicit contract or source selection must resolve to a unique deployable artifact. Missing or ambiguous requests fail with diagnostics; Lowkey does not silently switch to a different contract.", "lk lab --source contracts/core/OrderBook.sol --generic OrderBook"),
+        ]
+        lab_notes = lab_entry.setdefault("notes", [])
+        for note in scope_notes:
+            if note not in lab_notes:
+                lab_notes.append(note)
 
     # The runtime supports init/actor/add/list/test. A historical help child
     # called "state" was never implemented, so do not advertise it as a command.
