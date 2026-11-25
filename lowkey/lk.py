@@ -6589,6 +6589,77 @@ def _read_state_change_warning(args, config):
     )
 
 
+def _ask_next_commands(item, command_function, examples, config=None):
+    """Build executable next steps that match this ABI entry's mutability."""
+    config = config if isinstance(config, dict) else {}
+    mutability = str((item or {}).get("stateMutability") or "").lower()
+    examples = list(examples or [])
+    has_examples = all(value is not None for value in examples)
+    function_ref = shlex.quote(str(command_function or (item or {}).get("name") or "").strip())
+
+    if mutability in {"view", "pure"}:
+        if has_examples:
+            command = "lk read " + function_ref
+            if examples:
+                command += " " + " ".join(examples)
+            reason = "Run this read-only call with the sample arguments."
+        else:
+            command = "lk wizard " + function_ref + " call"
+            reason = "Enter the arguments interactively; the function is read-only."
+        return [(command, reason)]
+
+    recommendations = [
+        ("lk status", "Verify the selected contract, RPC and sender."),
+    ]
+
+    if mutability == "payable":
+        actor_name = str(config.get("actor") or "").strip()
+        wallets = config.get("wallets") if isinstance(config.get("wallets"), dict) else {}
+        if actor_name and actor_name in wallets:
+            recommendations.append((
+                "lk balance " + shlex.quote(actor_name),
+                "Check the sender's ETH balance before a payable call.",
+            ))
+        return recommendations[:2]
+
+    if has_examples and mutability == "nonpayable":
+        sample_args = " ".join(examples)
+        changes_command = "lk changes " + function_ref
+        if sample_args:
+            changes_command += " " + sample_args
+        recommendations.append((
+            changes_command,
+            "Inspect the simulated storage changes; this does not broadcast a transaction.",
+        ))
+        send_command = "lk send " + function_ref
+        if sample_args:
+            send_command += " " + sample_args
+        send_command += " --confirm"
+        recommendations.append((
+            send_command,
+            "Submit these values only after reviewing Lowkey's confirmation prompt.",
+        ))
+    else:
+        wizard_command = "lk wizard " + function_ref
+        recommendations.append((
+            wizard_command,
+            "Enter arguments interactively; Lowkey requests confirmation before a state-changing send.",
+        ))
+
+    return recommendations[:3]
+
+
+def _print_ask_next_commands(recommendations):
+    """Render a compact, aligned next-step section beneath the ask guide."""
+    if not recommendations:
+        return
+    print("")
+    print(_function_terminal_style("NEXT", "heading"))
+    for command, reason in recommendations:
+        _function_print_wrapped("  ", command)
+        _function_print_wrapped("    ", _function_terminal_style(reason, "muted"))
+
+
 def _function_interaction_recommendations(command,args,config):
     """Build recommendations from the actual ABI function just used."""
     canonical=_canonical_help_command(str(command or "").strip().lower())
@@ -29718,7 +29789,14 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
 
         if inputs:
             print("")
-            print(_function_terminal_style("NOTE", "muted") + "  ABI types describe encoding, not units or contract-specific rules.")
+            if str(item.get("stateMutability") or "").lower() == "payable":
+                note = "Payable function: the sample attaches 0 ETH; add --eth <amount> only when source logic requires it."
+            else:
+                note = "ABI types describe encoding, not units or contract-specific rules."
+            print(_function_terminal_style("NOTE", "muted") + "  " + note)
+
+        next_commands = _ask_next_commands(item, command_function, examples, config)
+        _print_ask_next_commands(next_commands)
         return 0
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
