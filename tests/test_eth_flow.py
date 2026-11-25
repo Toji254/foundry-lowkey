@@ -144,14 +144,14 @@ class EthFlowReconTests(unittest.TestCase):
                 self.assertIn(section, rendered)
 
 
-    def test_internal_payable_helpers_are_not_reported_as_transaction_entry_points(self):
+    def test_internal_msg_value_helpers_are_not_reported_as_transaction_entry_points(self):
         temporary, root = self.workspace()
         try:
             source = root / "packages" / "vault" / "src" / "Vault.sol"
             text = source.read_text(encoding="utf-8")
             text = text.replace(
                 "function deposit() external payable {",
-                "function _internalPayable() internal payable { uint256 received = msg.value; }\n"
+                "function _internalValueHelper() internal { uint256 received = msg.value; }\n"
                 "                function deposit() external payable {",
             )
             source.write_text(text, encoding="utf-8")
@@ -164,7 +164,7 @@ class EthFlowReconTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertEqual(status, 0)
         self.assertIn("Vault.deposit", rendered)
-        self.assertNotIn("Vault._internalPayable", rendered)
+        self.assertNotIn("Vault._internalValueHelper", rendered)
 
     def test_default_view_is_compact_and_groups_duplicate_exit_mechanisms(self):
         temporary, root = self.workspace()
