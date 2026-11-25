@@ -295,6 +295,8 @@ class ProxyInspectionTests(unittest.TestCase):
         def fake(args, _config, capture=False):
             if args[0] == "call":
                 return values[args[2]]
+            if args[0] == "code":
+                return "0x6000"
             raise AssertionError("unexpected command " + str(args))
         with patch.object(lk, "run_cast", side_effect=fake):
             result = lk.inspect_protocol_readiness(
@@ -304,6 +306,7 @@ class ProxyInspectionTests(unittest.TestCase):
         self.assertEqual(by_name["router"]["status"], "ZERO")
         self.assertEqual(by_name["vault"]["status"], "ZERO")
         self.assertEqual(by_name["weth"]["status"], "SET")
+        self.assertEqual(by_name["weth"]["code_status"], "PRESENT")
         self.assertEqual(by_name["usdg"]["status"], "UNREADABLE")
         self.assertEqual(by_name["paused"]["status"], "FALSE")
         self.assertNotIn("totalSupply", by_name)
@@ -335,6 +338,94 @@ class ProxyInspectionTests(unittest.TestCase):
             )
         cast.assert_not_called()
         self.assertEqual(result["getters"], [])
+
+
+    def test_proxy_slot_rpc_failures_are_unverified_not_a_direct_contract(self):
+        def fake(args, _config, capture=False):
+            if args[0] == "code":
+                return "0x6000"
+            if args[0] == "st":
+                return lk.CommandResult("Error: RPC unavailable", 1)
+            if args[0] == "admin":
+                raise AssertionError("admin must not be queried without proxy evidence")
+            raise AssertionError("unexpected command " + str(args))
+
+        with patch.object(lk, "run_cast", side_effect=fake), \
+             patch.object(lk, "load_abi", return_value=[]):
+            details = lk.inspect_proxy_details({"target": TARGET})
+
+        self.assertFalse(details["is_proxy"])
+        self.assertEqual(details["kind"], "DIRECT_OR_UNKNOWN")
+        self.assertEqual(details["implementation_slot_status"], "UNREADABLE")
+        self.assertEqual(details["beacon_slot_status"], "UNREADABLE")
+        self.assertEqual(details["proxy_detection_status"], "UNVERIFIED")
+        self.assertTrue(any("proxy absence is not established" in item for item in details["evidence"]))
+
+
+    def test_partial_eip1967_slot_read_is_not_reported_as_checked_direct(self):
+        def fake(args, _config, capture=False):
+            if args[0] == "code":
+                return "0x6000"
+            if args[0] == "st":
+                if args[1] == lk.EIP1967_IMPLEMENTATION_SLOT:
+                    return ZERO_SLOT
+                return lk.CommandResult("Error: RPC unavailable", 1)
+            return "Error: unsupported"
+
+        with patch.object(lk, "run_cast", side_effect=fake), \
+             patch.object(lk, "load_abi", return_value=[]):
+            details = lk.inspect_proxy_details({"target": TARGET})
+
+        self.assertEqual(details["implementation_slot_status"], "ZERO")
+        self.assertEqual(details["beacon_slot_status"], "UNREADABLE")
+        self.assertEqual(details["proxy_detection_status"], "PARTIALLY_CHECKED")
+
+
+    def test_two_zero_proxy_slots_prove_only_no_supported_standard_pattern(self):
+        with patch.object(lk, "run_cast", side_effect=self._run_cast()), \
+             patch.object(lk, "load_abi", return_value=[]):
+            details = lk.inspect_proxy_details({"target": TARGET})
+        self.assertEqual(details["implementation_slot_status"], "ZERO")
+        self.assertEqual(details["beacon_slot_status"], "ZERO")
+        self.assertEqual(details["proxy_detection_status"], "CHECKED_NO_SUPPORTED_PATTERN")
+        self.assertFalse(details["is_proxy"])
+
+
+    def test_nonzero_candidate_dependency_is_checked_for_code_without_claiming_safety(self):
+        abi = [
+            {"type": "function", "name": "router", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "view"},
+            {"type": "function", "name": "vault", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "view"},
+            {"type": "function", "name": "weth", "inputs": [], "outputs": [{"type": "address"}], "stateMutability": "view"},
+        ]
+        calls = []
+        values = {
+            "router()": word(IMPLEMENTATION),
+            "vault()": word(BEACON),
+            "weth()": "0x" + "0" * 64,
+        }
+
+        def fake(args, _config, capture=False):
+            calls.append(list(args))
+            if args[0] == "call":
+                return values[args[2]]
+            if args[0] == "code" and args[1] == IMPLEMENTATION:
+                return "0x6000"
+            if args[0] == "code" and args[1] == BEACON:
+                return "0x"
+            raise AssertionError("unexpected command " + str(args))
+
+        with patch.object(lk, "run_cast", side_effect=fake):
+            result = lk.inspect_protocol_readiness({"target": TARGET}, abi, has_code=True)
+
+        by_name = {item["name"]: item for item in result["getters"]}
+        self.assertEqual(by_name["router"]["status"], "SET")
+        self.assertEqual(by_name["router"]["code_status"], "PRESENT")
+        self.assertEqual(by_name["vault"]["status"], "SET")
+        self.assertEqual(by_name["vault"]["code_status"], "NO_CODE")
+        self.assertEqual(by_name["weth"]["status"], "ZERO")
+        self.assertEqual(by_name["weth"]["code_status"], "NOT_APPLICABLE_ZERO")
+        self.assertFalse(any(call[0] == "code" and call[1] == "0x" + "0" * 40 for call in calls))
+        self.assertIn("not proof that it is the intended", result["evidence_limit"])
 
 if __name__ == "__main__":
     unittest.main()
