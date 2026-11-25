@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 22
+CACHE_VERSION = 23
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -1725,7 +1725,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 ))
 
         member_pattern = re.compile(
-            r"\b(?P<receiver>[A-Za-z_]\w*|this|super)\s*\.\s*(?P<name>[A-Za-z_]\w*)\s*\("
+            r"\b(?P<receiver>[A-Za-z_]\w*|this|super)\s*\.\s*(?P<name>[A-Za-z_]\w*)"
+            r"(?:\s*\{[^}]*\})?\s*\("
         )
         for call in member_pattern.finditer(body):
             if in_assembly(call.start()):
