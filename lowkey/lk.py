@@ -8300,7 +8300,7 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
             "available": False,
             "reason": redact_secrets(str(reason or "no reliable estimate")),
             "sender_resolved": sender_resolved,
-            "rpc_attempted": True,
+            "rpc_attempted": bool(extra.pop("rpc_attempted", False)),
             **extra,
         }
 
@@ -8372,9 +8372,9 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
 
     response = _rpc_json_response(rpc, "eth_estimateGas", [tx], timeout=2.0)
     if not isinstance(response, dict):
-        return unavailable("RPC did not return an estimate response")
+        return unavailable("RPC did not return an estimate response", rpc_attempted=True)
     if response.get("transport_error"):
-        return unavailable(response["transport_error"])
+        return unavailable(response["transport_error"], rpc_attempted=True)
     rpc_error = response.get("error")
     if rpc_error is not None:
         message = str(
@@ -8423,11 +8423,12 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
                 readable or "the contract reverted during simulation",
                 status="reverted",
                 technical=redact_secrets(decode_text),
+                rpc_attempted=True,
             )
-        return unavailable(message, status="unavailable")
+        return unavailable(message, status="unavailable", rpc_attempted=True)
     gas_estimate = _hex_to_int(response.get("result"))
     if gas_estimate is None or gas_estimate <= 0:
-        return unavailable("RPC returned a missing or invalid gas estimate")
+        return unavailable("RPC returned a missing or invalid gas estimate", rpc_attempted=True)
 
     gas_limit_raw = _preview_option_value(command, "--gas-limit") or _preview_option_value(command, "--gas")
     gas_limit = _hex_to_int(gas_limit_raw) if gas_limit_raw is not None else None
