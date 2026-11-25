@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 20
+CACHE_VERSION = 21
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -2317,6 +2317,40 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 status="TRANSFER_ATTEMPT", recipient=match.group("recipient").strip(),
                 amount=match.group("amount").strip(), syntax="legacy-call-value",
                 detail="Legacy call.value amount is attached to a low-level CALL; verify success and balance movement at runtime.",
+            ))
+
+        # High-level external calls can also forward native ETH:
+        # treasury.deposit{value: amount}(...). Keep these distinct from
+        # low-level .call{value: ...} and contract creation.
+        high_level_value_call = re.compile(
+            r"(?P<recipient>this|address\\s*\\(\\s*this\\s*\\)|[A-Za-z_]\\w*(?:\\s*\\([^()]*\\))?)"
+            r"\\s*\\.\\s*(?P<method>[A-Za-z_]\\w*)\\s*\\{(?P<options>[^}]+)\\}\\s*\\("
+        )
+        for match in high_level_value_call.finditer(body):
+            if in_asset_assembly(match.start()):
+                continue
+            if match.group("method") in {"call", "delegatecall", "staticcall"}:
+                continue
+            value_option = re.search(r"\\bvalue\\s*:\\s*([^,}]+)", match.group("options"))
+            if value_option is None:
+                continue
+            recipient = match.group("recipient").strip()
+            recipient_compact = re.sub(r"\\s+", "", recipient)
+            self_call = recipient_compact in {"this", "address(this)"}
+            edges.append(_edge(
+                "ASSET_FLOW", func["id"], "asset:eth", path, source,
+                offset + match.start(), asset="eth",
+                direction="both" if self_call else "out",
+                status="SELF_VALUE_CALL_ATTEMPT" if self_call else "TRANSFER_ATTEMPT",
+                recipient=recipient,
+                amount=value_option.group(1).strip(),
+                method=match.group("method"),
+                syntax="high-level-call-options",
+                detail=(
+                    "High-level external call attaches ETH value to a self-call; it is not a net transfer to another account."
+                    if self_call else
+                    "High-level external call attaches ETH value to a declared target; verify the runtime target and call success."
+                ),
             ))
 
         # .transfer/.send are native-ETH flows only when the receiver is
