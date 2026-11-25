@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Compiler AST setup is explicit: it may edit foundry.toml and run a forced build.
+if [[ "${1:-}" == "ast" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/foundry_ast_setup.py" "$@"
+fi
+
 # Hardhat has project-local binaries. Keep initialization and clean routing in
 # one adapter; build/test continue through Lowkey's existing native planners.
 if [[ "${1:-}" == "hardhat" ]]; then
@@ -85,6 +91,10 @@ if [[ "$#" -eq 1 ]]; then
             python3 "$HOME/.lowkey/lk.py" "$@"
             python3 "$HOME/.lowkey/godmode.py"
             cat <<'LOWKEY_SOURCE_HELP'
+
+Compiler AST evidence:
+  lk ast doctor              Read-only compiler AST readiness check
+  lk ast setup               Enable AST/build-info, rebuild and verify
 
 Hardhat project setup:
   lk hardhat init
@@ -248,6 +258,20 @@ if [[ "${1:-}" == "link" ]]; then
     shift
     exec python3 "$HOME/.lowkey/command_wrapper.py" "link" -- python3 "$HOME/.lowkey/source_link.py" link "$@"
 fi
+# Verbose function inventories rely on compiler AST evidence. Diagnose missing
+# Foundry output without silently editing project configuration or rebuilding.
+if [[ "${1:-}" == "fn" ]]; then
+    verbose_requested=0
+    for arg in "$@"; do
+        case "$arg" in
+            -v|--verbose) verbose_requested=1 ;;
+        esac
+    done
+    if [[ "$verbose_requested" -eq 1 && -f "$HOME/.lowkey/foundry_ast_setup.py" ]] && command -v forge >/dev/null 2>&1; then
+        python3 "$HOME/.lowkey/foundry_ast_setup.py" doctor --quiet-if-ready || true
+    fi
+fi
+
 if [[ "${1:-}" == "fn" ]]; then
     for arg in "$@"; do
         case "$arg" in
