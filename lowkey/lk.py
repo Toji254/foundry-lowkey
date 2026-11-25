@@ -27095,6 +27095,111 @@ def _help_alias_for(command):
         return None
     return raw
 
+_FUNCTION_HELP_GUIDE_INSTALLED = True
+for _function_command in ("functions", "fn"):
+    _function_entry = COMMAND_HELP.get(_function_command)
+    if not isinstance(_function_entry, dict):
+        continue
+    _function_prefix = f"lk {_function_command}"
+    _function_entry["summary"] = (
+        "Show the selected contract's complete ABI function inventory or search by function name/signature. "
+        "A positional token equal to the active contract name selects its full inventory; use -q/--query to force a text search."
+    )
+    _function_entry["usage"] = (
+        f"{_function_prefix} [ContractName|query] [-q|--query <text>] "
+        "[-v|--verbose] [-V|--visibility <visibility>] "
+        "[-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]"
+    )
+    _function_entry["example"] = f"{_function_prefix} OrderBook"
+    _function_entry["use"] = (
+        "Use this when auditing an unfamiliar contract. No positional selector lists the active target's full ABI; "
+        "a positional token equal to that contract's name also lists the full inventory. Other positional text searches "
+        "function names/signatures. Add -q/--query to force searching even when the text matches the contract name."
+    )
+    _function_forms = [
+        (_function_prefix, "List the active target's complete ABI inventory, grouped into write functions, read functions, and getters.", _function_prefix),
+        (f"{_function_prefix} OrderBook", "When OrderBook is the active target, show its full inventory rather than searching for a function called OrderBook.", f"{_function_prefix} OrderBook"),
+        (f"{_function_prefix} withdraw", "Search function names and signatures when the text is not the active contract name.", f"{_function_prefix} withdraw"),
+        (f"{_function_prefix} --query OrderBook", "Force a function-name/signature search even though the text matches the active contract name.", f"{_function_prefix} --query OrderBook"),
+        (f"{_function_prefix} -q executeSwapOrder", "Short form of the explicit function query flag.", f"{_function_prefix} -q executeSwapOrder"),
+    ]
+    _function_existing_forms = _function_entry.setdefault("forms", [])
+    for _function_form in _function_forms:
+        if _function_form not in _function_existing_forms:
+            _function_existing_forms.append(_function_form)
+    _function_options = [
+        ("-q / --query <text>", "Force a function name/signature search; do not treat the value as a contract selector.", f"{_function_prefix} --query executeSwapOrder"),
+        ("Positional contract selector", "An exact match for the active contract name shows the complete ABI inventory.", f"{_function_prefix} OrderBook"),
+    ]
+    _function_existing_options = _function_entry.setdefault("options", [])
+    for _function_option in _function_options:
+        if _function_option not in _function_existing_options:
+            _function_existing_options.append(_function_option)
+    _function_notes = [
+        ("Static effect evidence", "Compiler-AST effects describe statically resolved source behavior. They do not prove that a function or helper executed at runtime.", f"{_function_prefix} --verbose"),
+        ("Ambiguity", "Use an explicit contract target first when the active target is uncertain; Lowkey does not infer a different deployed target from a function query.", f"{_function_prefix} OrderBook"),
+    ]
+    _function_existing_notes = _function_entry.setdefault("notes", [])
+    for _function_note in _function_notes:
+        if _function_note not in _function_existing_notes:
+            _function_existing_notes.append(_function_note)
+
+_PROXY_HELP_GUIDE_INSTALLED = True
+_PROXY_HELP_GUIDES = {
+    "proxy": {
+        "summary": "Inspect the selected target's proxy and deployment form using on-chain storage and runtime-bytecode evidence.",
+        "usage": "lk proxy",
+        "example": "lk proxy",
+        "use": "Use this during reconnaissance to determine whether the selected address is a direct contract, an ERC-1967 proxy, a beacon proxy, or an EIP-1167 clone.",
+        "forms": [
+            ("lk proxy", "Inspect implementation, beacon, proxy-admin and clone evidence for the active target.", "lk proxy"),
+            ("lk implementation", "Resolve the implementation address when the proxy pattern exposes one.", "lk implementation"),
+            ("lk admin", "Inspect the EIP-1967 proxy-admin role when the target exposes that slot.", "lk admin"),
+        ],
+        "notes": [
+            ("Evidence sources", "Detection uses ERC-1967 implementation/beacon/admin slots and EIP-1167 runtime-bytecode patterns. A failed RPC read is UNVERIFIED, not proof that the target is direct.", "lk proxy"),
+            ("Zero admin is not a negative proxy test", "A zero or absent EIP-1967 admin slot does not prove that an address is not a proxy. UUPS-style proxies can have an implementation without a separate proxy-admin address.", "lk proxy"),
+            ("Proxy admin vs application governor", "The EIP-1967 admin controls the proxy upgrade surface when present. An application-level gov() value is a separate protocol role and must not be presented as the proxy admin.", "lk proxy"),
+        ],
+        "related": ["lk implementation", "lk admin", "lk info", "lk recon"],
+    },
+    "implementation": {
+        "summary": "Resolve the implementation behind a supported proxy or minimal clone.",
+        "usage": "lk implementation",
+        "example": "lk implementation",
+        "use": "Use it after lk proxy to inspect the code address that executes behind a proxy or clone.",
+        "forms": [
+            ("ERC-1967 implementation", "Read the implementation slot when it contains a valid non-zero address.", "lk implementation"),
+            ("Beacon implementation", "Resolve the beacon contract and query its implementation() address when supported.", "lk proxy"),
+            ("EIP-1167 clone", "Extract the embedded implementation address from the minimal-proxy runtime bytecode.", "lk proxy"),
+        ],
+        "notes": [
+            ("Direct contracts", "If no supported proxy/clone evidence is found, Lowkey reports that no implementation was established; it does not invent one.", "lk implementation"),
+            ("Verification boundary", "A resolved implementation address does not by itself prove source verification, initialization, upgrade safety, or protocol readiness.", "lk implementation"),
+        ],
+        "related": ["lk proxy", "lk admin", "lk info"],
+    },
+    "admin": {
+        "summary": "Inspect the EIP-1967 proxy-admin address when that proxy pattern exposes one.",
+        "usage": "lk admin",
+        "example": "lk admin",
+        "use": "Use it to identify the proxy-admin control surface during an upgradeability review.",
+        "forms": [
+            ("lk admin", "Read and display the EIP-1967 admin address when available.", "lk admin"),
+            ("lk proxy", "Compare the admin result with implementation, beacon, clone and application-governor evidence.", "lk proxy"),
+        ],
+        "notes": [
+            ("Zero or missing admin", "A zero or missing admin address is not proof that the target is not a proxy; UUPS proxies commonly do not use a separate transparent-proxy admin slot.", "lk admin"),
+            ("Application governor", "A contract's gov() or owner() value is an application access-control role, not automatically the EIP-1967 proxy admin.", "lk admin"),
+            ("Unsupported patterns", "If the selected target uses a custom upgrade mechanism, Lowkey may not be able to resolve its controller from standard proxy slots.", "lk admin"),
+        ],
+        "related": ["lk proxy", "lk implementation", "lk info"],
+    },
+}
+for _proxy_help_name, _proxy_help_values in _PROXY_HELP_GUIDES.items():
+    _proxy_help_entry = COMMAND_HELP.get(_proxy_help_name)
+    if isinstance(_proxy_help_entry, dict):
+        _proxy_help_entry.update(_proxy_help_values)
 def _help_entry_for_path(path):
     if not path:
         return None, [], None
