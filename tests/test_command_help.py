@@ -1470,7 +1470,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Unsigned integer", rendered)
         self.assertIn("ProposalOptions", rendered)
         self.assertIn("string[]", rendered)
-        self.assertIn("Array of utf-8 text (one JSON argument)", rendered)
+        self.assertIn("UTF-8 text array (one JSON argument)", rendered)
         self.assertIn("PREVIEW COMMAND", rendered)
         self.assertIn("lk send createProposal \"HI\" 86400 '[\"Yes\",\"No\",\"Abstain\"]' --preview", rendered)
         self.assertIn("Preview only; nothing is broadcast.", rendered)
@@ -1490,8 +1490,8 @@ class CommandHelpTests(unittest.TestCase):
             ({"type": "bool"}, "true or false"),
             ({"type": "address"}, "20-byte Ethereum address"),
             ({"type": "string"}, "UTF-8 text"),
-            ({"type": "string[]"}, "Array of utf-8 text (one JSON argument)"),
-            ({"type": "uint256[3]"}, "Array of unsigned integer (exactly 3)"),
+            ({"type": "string[]"}, "UTF-8 text array (one JSON argument)"),
+            ({"type": "uint256[3]"}, "Unsigned integer array (exactly 3)"),
             (
                 {"type": "tuple", "components": [
                     {"name": "recipient", "type": "address"},
