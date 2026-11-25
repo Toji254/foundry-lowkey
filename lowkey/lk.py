@@ -3331,6 +3331,247 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
     record["risk_flags"] = _function_inventory_risk_flags(record)
     return record
 
+def _function_source_graph_effects(root, source_path, contract, records, index=None):
+    """Attach exact source-index effects to ABI records without guessing matches.
+
+    Foundry AST references and the shared source graph are preferred. When a
+    declaration cannot be matched exactly, the existing lexical record is kept
+    and is explicitly labelled as fallback evidence.
+    """
+    report = {
+        "available": False,
+        "parser": "UNAVAILABLE",
+        "ast": {},
+        "matched_functions": 0,
+        "unmatched_functions": [],
+        "warnings": [],
+        "effect_propagation": {},
+    }
+    if index is None:
+        try:
+            try:
+                import source_index as source_index_module
+            except ImportError:
+                from lowkey import source_index as source_index_module
+            index = source_index_module.build_source_index(root, use_cache=True)
+        except Exception as error:
+            report["warnings"].append(
+                f"Shared source graph unavailable; lexical function summaries retained: {error}"
+            )
+            for record in records:
+                record["effect_basis"] = "LEXICAL_FALLBACK"
+                record["effect_basis_note"] = "Shared source graph could not be built."
+            return report
+
+    if not isinstance(index, dict):
+        report["warnings"].append("Shared source graph returned an invalid result.")
+        for record in records:
+            record["effect_basis"] = "LEXICAL_FALLBACK"
+            record["effect_basis_note"] = "Shared source graph result was invalid."
+        return report
+
+    report["available"] = True
+    report["parser"] = str(index.get("parser") or "UNKNOWN")
+    report["ast"] = index.get("ast") if isinstance(index.get("ast"), dict) else {}
+    report["effect_propagation"] = (
+        index.get("effect_propagation")
+        if isinstance(index.get("effect_propagation"), dict) else {}
+    )
+    report["inventory_complete"] = bool(
+        (index.get("inventory") or {}).get("complete", False)
+    )
+
+    root_path = Path(root).expanduser().resolve()
+    source_file = None
+    if source_path:
+        candidate = Path(source_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = root_path / candidate
+        try:
+            source_file = candidate.resolve().relative_to(root_path).as_posix()
+        except (OSError, ValueError):
+            report["warnings"].append(
+                "Selected contract source is outside the project root; exact source-graph matching was skipped."
+            )
+
+    nodes = [
+        item for item in index.get("nodes") or []
+        if isinstance(item, dict) and item.get("id")
+    ]
+    nodes_by_id = {str(item["id"]): item for item in nodes}
+    edges = [
+        item for item in index.get("edges") or []
+        if isinstance(item, dict)
+    ]
+
+    read_kinds = {
+        "READS", "READS_CONSTANT", "READS_IMMUTABLE", "TRANSIENT_READS",
+    }
+    write_kinds = {
+        "WRITES", "DELETES", "MUTATES", "TRANSIENT_WRITES",
+        "TRANSIENT_DELETES", "INITIALIZES", "UNRESOLVED_MUTATION",
+    }
+    ast_evidence = {
+        "SOLC_AST_DECLARATION_REFERENCE",
+        "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+        "SOLC_AST_STORAGE_REFERENCE_ARGUMENT",
+    }
+
+    def target_label(edge):
+        target = nodes_by_id.get(str(edge.get("to") or ""), {})
+        return (
+            str(edge.get("access_path") or "").strip()
+            or str(target.get("qualified_name") or "").strip()
+            or str(target.get("name") or "").strip()
+            or str(edge.get("variable") or "").strip()
+            or str(edge.get("to") or "unresolved")
+        )
+
+    for record in records:
+        signature = str(record.get("signature") or "")
+        candidates = [
+            item for item in nodes
+            if item.get("kind") == "function"
+            and item.get("contract") == contract
+            and item.get("signature") == signature
+            and (source_file is None or str(item.get("file") or "").replace("\\", "/") == source_file)
+        ]
+        if len(candidates) != 1:
+            reason = "no exact source declaration matched" if not candidates else "source declaration match was ambiguous"
+            record["effect_basis"] = "LEXICAL_FALLBACK"
+            record["effect_basis_note"] = reason
+            report["unmatched_functions"].append(signature or str(record.get("name") or "<unknown>"))
+            continue
+
+        function_node = candidates[0]
+        function_id = str(function_node["id"])
+        function_edges = [
+            edge for edge in edges if str(edge.get("from") or "") == function_id
+        ]
+        ast_edges = [
+            edge for edge in function_edges
+            if str(edge.get("evidence") or "") in ast_evidence
+        ]
+        graph_effects = [
+            edge for edge in function_edges
+            if edge.get("kind") in read_kinds | write_kinds
+        ]
+        graph_reads = sorted({
+            target_label(edge) for edge in graph_effects
+            if edge.get("kind") in read_kinds
+        })
+        graph_writes = sorted({
+            target_label(edge) for edge in graph_effects
+            if edge.get("kind") in write_kinds
+        })
+        graph_events = sorted({
+            target_label(edge) for edge in function_edges
+            if edge.get("kind") == "EMITS"
+        })
+
+        call_edges = [
+            edge for edge in function_edges
+            if edge.get("kind") in {"CALLS", "EXTERNAL_CALL"}
+        ]
+        resolved_calls = []
+        for edge in call_edges:
+            target = nodes_by_id.get(str(edge.get("to") or ""), {})
+            label = (
+                str(target.get("qualified_name") or target.get("name") or "").strip()
+                or ".".join(
+                    part for part in (
+                        str(edge.get("receiver") or "").strip(),
+                        str(edge.get("method") or "").strip(),
+                    ) if part and part != "dynamic"
+                )
+                or str(edge.get("method") or edge.get("to") or "unresolved")
+            )
+            call_kind = str(edge.get("kind") or "CALLS")
+            rendered = f"{label} [{call_kind}]"
+            if rendered not in resolved_calls:
+                resolved_calls.append(rendered)
+
+        modifier_edges = [
+            edge for edge in function_edges if edge.get("kind") == "APPLIES_MODIFIER"
+        ]
+        graph_modifiers = sorted({
+            str(
+                nodes_by_id.get(str(edge.get("to") or ""), {}).get("name")
+                or nodes_by_id.get(str(edge.get("to") or ""), {}).get("qualified_name")
+                or edge.get("to")
+            )
+            for edge in modifier_edges
+        })
+
+        helper_paths = []
+        for edge in function_edges:
+            via = edge.get("via")
+            if not isinstance(via, list) or len(via) < 2 or via[0] != function_id:
+                continue
+            labels = []
+            for item in via[1:]:
+                node = nodes_by_id.get(str(item), {})
+                label = str(node.get("qualified_name") or node.get("name") or item)
+                if label not in labels:
+                    labels.append(label)
+            rendered = " -> ".join(labels)
+            if rendered and rendered not in helper_paths:
+                helper_paths.append(rendered)
+
+        uncertain_effects = []
+        for edge in function_edges:
+            kind = str(edge.get("kind") or "")
+            if kind.startswith("UNRESOLVED") or kind == "ALIASES_STORAGE" and edge.get("resolution") == "UNRESOLVED":
+                detail = str(edge.get("detail") or edge.get("access_path") or kind)
+                if detail not in uncertain_effects:
+                    uncertain_effects.append(detail)
+
+        # Use graph-derived effects when this function has at least one
+        # compiler-AST relationship. It includes AST storage accesses and
+        # call-graph/modifier-propagated helper effects. Otherwise preserve
+        # the existing lexical summary rather than treating an empty edge set
+        # as proof that the function has no effects.
+        if ast_edges:
+            record["reads"] = graph_reads
+            record["writes"] = graph_writes
+            if graph_events:
+                record["events"] = graph_events
+            record["effect_basis"] = "SOLC_AST + STATIC_CALL_GRAPH"
+            record["effect_basis_note"] = (
+                "Compiler declaration references matched current source; helper/modifier effects are potential static paths, not runtime observations."
+            )
+        else:
+            record["effect_basis"] = (
+                "SOURCE_GRAPH_LEXICAL" if function_edges else "LEXICAL_FALLBACK"
+            )
+            record["effect_basis_note"] = (
+                "No per-function compiler-AST relationship was matched; lexical/static graph evidence is not a complete effect proof."
+            )
+
+        record["resolved_calls"] = resolved_calls
+        record["helper_effect_paths"] = sorted(helper_paths)
+        record["unresolved_effects"] = sorted(uncertain_effects)
+        if graph_modifiers:
+            record["modifiers"] = sorted(set(
+                str(item) for item in (record.get("modifiers") or []) if item
+            ) | set(graph_modifiers))
+        if ast_edges:
+            record["risk_flags"] = _function_inventory_risk_flags(record)
+            record["classes"] = _function_inventory_classes(record)
+        report["matched_functions"] += 1
+
+    ast_warnings = report["ast"].get("warnings") or []
+    if isinstance(ast_warnings, list):
+        report["warnings"].extend(str(item) for item in ast_warnings if item)
+    if report["inventory_complete"] is False:
+        report["warnings"].append("Source inventory is incomplete; inspect uninspected files before relying on absence claims.")
+    if report["effect_propagation"].get("depth_complete") is False:
+        report["warnings"].append(
+            "Static helper/modifier effect propagation hit its depth cap; deeper effects may be missing."
+        )
+    return report
+
+
 def _function_matches_filter(record, options):
     if options.get("visibility") and record["visibility"].lower() != options["visibility"]:
         return False
@@ -3410,7 +3651,7 @@ def _function_default_eth_annotation(record):
     return labels
 
 
-def _print_function_inventory(records, contract=None, source_path=None, verbose=False, show_risk=False):
+def _print_function_inventory(records, contract=None, source_path=None, verbose=False, show_risk=False, source_report=None):
     title = "LOWKEY // FUNCTION INVENTORY"
     if verbose:
         title += " • VERBOSE"
@@ -3423,6 +3664,20 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
     if source_path:
         print(f"Source   : {source_path}")
     print(f"Count    : {len(records)}")
+    if verbose and source_report is not None:
+        ast_report = source_report.get("ast") or {}
+        print()
+        print("STATIC SOURCE ANALYSIS")
+        print(f"  parser       : {source_report.get('parser') or 'UNKNOWN'}")
+        print(
+            "  compiler AST : "
+            f"{ast_report.get('functions', 0)} function(s) matched across "
+            f"{ast_report.get('matched_units', 0)} source unit(s); "
+            f"{ast_report.get('stale_units', 0)} stale unit(s)"
+        )
+        print("  semantics    : potential static paths, not proof of runtime execution")
+        for warning in (source_report.get("warnings") or [])[:4]:
+            print(f"  warning      : {warning}")
     if not records:
         print("\nNo functions matched the requested filters.")
         return
@@ -3444,6 +3699,15 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
             print(f"  writes     : {', '.join(record['writes']) if record['writes'] else '—'}")
             print(f"  emits      : {', '.join(record['events']) if record['events'] else '—'}")
             print(f"  calls      : {', '.join(record['calls']) if record['calls'] else '—'}")
+            if record.get("resolved_calls"):
+                print(f"  resolved   : {', '.join(record['resolved_calls'])}")
+            if record.get("helper_effect_paths"):
+                print(f"  helper via : {'; '.join(record['helper_effect_paths'])}")
+            if record.get("unresolved_effects"):
+                print(f"  uncertain  : {'; '.join(record['unresolved_effects'])}")
+            if record.get("effect_basis"):
+                print(f"  effect base: {record['effect_basis']}")
+                print(f"  basis note : {record.get('effect_basis_note') or '—'}")
             print(f"  ether      : {record['eth'] or '—'}")
             if record.get("eth_outflows"):
                 for outflow_index, outflow in enumerate(record["eth_outflows"], 1):
@@ -3562,6 +3826,11 @@ def run_functions(config, args=None):
         for item in functions
     ]
     records = [record for record in records if _function_matches_filter(record, options)]
+    source_effect_report = None
+    if options.get("verbose"):
+        source_effect_report = _function_source_graph_effects(
+            root, source_path, source_contract, records
+        )
     state_records = list(state_variables)
     if options.get("visibility"):
         state_records = [record for record in state_records if record["visibility"].lower() == options["visibility"]]
@@ -3578,6 +3847,7 @@ def run_functions(config, args=None):
             contract=artifact.get("contractName") or config.get("target_contract"),
             source_path=source_path,
             verbose=True,
+            source_report=source_effect_report,
         )
         _print_state_variable_inventory(state_records, verbose=True)
         for entry in abi_entrypoints:
