@@ -9658,14 +9658,15 @@ def _target_entry_is_protocol(root, entry):
     return True
 
 
-def _validate_manual_target_runtime(config, root, address, contract=None, artifact=None):
-    """Validate a manually supplied target when the connected chain is authoritative."""
+def _validate_manual_target_runtime(
+    config, root, address, contract=None, artifact=None, *, return_state=False
+):
+    """Validate a manually supplied target and optionally return its read-only evidence snapshot."""
     rpc = effective_rpc(config)
+    state = _live_target_state(config, address, artifact)
     if not rpc:
         print("Runtime check: UNVERIFIED (no RPC available; target metadata is not deployment proof).")
-        return 0
-
-    state = _live_target_state(config, address, artifact)
+        return (0, state) if return_state else 0
     if state.get("status") == "NOT_DEPLOYED":
         return fail(
             f"Error: {address} has no contract bytecode on {rpc}. "
@@ -9685,7 +9686,7 @@ def _validate_manual_target_runtime(config, root, address, contract=None, artifa
         )
     else:
         print("Runtime check: UNVERIFIED (RPC did not provide authoritative bytecode state).")
-    return 0
+    return (0, state) if return_state else 0
 
 
 def _select_project_target(config, entry, root):
@@ -27832,6 +27833,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             )
             if display_address:
                 state = _live_target_state(config, display_address, project.get("artifact") if project else None)
+                _print_target_runtime_provenance(state)
                 if state.get("status") == "DEPLOYED" and state.get("verification") != "CODE MISMATCH":
                     print(f"Deployment: LIVE ({state.get('verification', 'unverified').lower()}; {state.get('code_size', 0)} bytes)")
                 elif state.get("status") == "NOT_DEPLOYED":
@@ -27870,16 +27872,47 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 )
                 if selected_entry is None:
                     artifact = config.get("abi_paths", {}).get(ref)
-                    validation = _validate_manual_target_runtime(
+                    validation, runtime_state = _validate_manual_target_runtime(
                         config,
                         root,
                         ref,
                         config.get("target_contract"),
                         artifact,
+                        return_state=True,
                     )
                     if validation != 0:
                         return validation
                     config["target"] = ref
+                    remember_project_target(
+                        config, root, config.get("target_contract") or "Target", ref,
+                        runtime_state=runtime_state,
+                    )
+                    audit_context.set_target(
+                        root,
+                        address=ref,
+                        contract=config.get("target_contract"),
+                        artifact=artifact,
+                        source="manual",
+                    )
+                    audit_context.update(
+                        root,
+                        target={"runtime": runtime_state},
+                        deployment={
+                            "source": "manual",
+                            "contract": config.get("target_contract"),
+                            "address": ref,
+                            "chain_id": runtime_state.get("chain_id"),
+                            "block_number": runtime_state.get("block_number"),
+                            "rpc_fingerprint": runtime_state.get("rpc_fingerprint"),
+                            "rpc_origin": runtime_state.get("rpc_origin"),
+                            "runtime_code_hash": runtime_state.get("runtime_code_hash"),
+                            "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
+                            "runtime_status": runtime_state.get("status"),
+                            "verification": runtime_state.get("verification"),
+                            "verified_at": datetime.now().isoformat(timespec="seconds"),
+                        },
+                    )
+                    _print_target_runtime_provenance(runtime_state)
             else:
                 matches = [
                     entry for entry in protocol_entries
@@ -27914,16 +27947,19 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             )
         elif len(args)==2 and is_address(args[1]):
             artifact = config.get("abi_paths",{}).get(args[1])
-            validation = _validate_manual_target_runtime(
+            validation, runtime_state = _validate_manual_target_runtime(
                 config,
                 root,
                 args[1],
                 args[0],
                 artifact,
+                return_state=True,
             )
             if validation != 0:
                 return validation
-            remember_project_target(config, root, args[0], args[1])
+            remember_project_target(
+                config, root, args[0], args[1], runtime_state=runtime_state
+            )
             config["target"]=args[1]
             config["target_contract"]=args[0]
             audit_context.set_target(
@@ -27933,6 +27969,25 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 artifact=artifact,
                 source="manual",
             )
+            audit_context.update(
+                root,
+                target={"runtime": runtime_state},
+                deployment={
+                    "source": "manual",
+                    "contract": args[0],
+                    "address": args[1],
+                    "chain_id": runtime_state.get("chain_id"),
+                    "block_number": runtime_state.get("block_number"),
+                    "rpc_fingerprint": runtime_state.get("rpc_fingerprint"),
+                    "rpc_origin": runtime_state.get("rpc_origin"),
+                    "runtime_code_hash": runtime_state.get("runtime_code_hash"),
+                    "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
+                    "runtime_status": runtime_state.get("status"),
+                    "verification": runtime_state.get("verification"),
+                    "verified_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+            _print_target_runtime_provenance(runtime_state)
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
     elif cmd in {"targets","target-list"}:
