@@ -87,15 +87,48 @@ class FoundryAstSetupTests(unittest.TestCase):
         with self.assertRaisesRegex(ast_setup.AstSetupError, "Unsafe Foundry profile"):
             ast_setup._patch_profile_settings("[profile.default]\n", 'ci."unexpected"')
 
-    def test_detects_false_environment_overrides(self):
+    def test_detects_environment_overrides_that_conflict_with_required_values(self):
         self.assertEqual(
-            ast_setup._false_environment_overrides({
-                "FOUNDRY_AST": "false",
-                "DAPP_BUILD_INFO": "0",
-                "FOUNDRY_OPTIMIZER": "false",
-            }),
-            ["FOUNDRY_AST", "DAPP_BUILD_INFO"],
+            ast_setup._blocking_environment_overrides(
+                {
+                    "FOUNDRY_AST": "false",
+                    "DAPP_BUILD_INFO": "0",
+                    "FOUNDRY_BUILD_INFO_WITHOUT_AST": "true",
+                    "FOUNDRY_OPTIMIZER": "false",
+                },
+                {
+                    "ast": True,
+                    "build_info": True,
+                    "build_info_without_ast": False,
+                },
+            ),
+            [
+                "FOUNDRY_AST",
+                "DAPP_BUILD_INFO",
+                "FOUNDRY_BUILD_INFO_WITHOUT_AST",
+            ],
         )
+
+    def test_can_disable_build_info_ast_omission_when_foundry_reports_it(self):
+        original = (
+            "[profile.default]\\n"
+            "ast = true\\n"
+            "build_info = true\\n"
+            "build_info_without_ast = true # keep note\\n"
+        )
+        updated, changed = ast_setup._patch_profile_settings(
+            original,
+            "default",
+            {
+                "ast": True,
+                "build_info": True,
+                "build_info_without_ast": False,
+            },
+        )
+        self.assertTrue(changed)
+        self.assertIn("build_info_without_ast = false # keep note", updated)
+        parsed = ast_setup._parse_toml(updated)
+        self.assertIs(parsed["profile"]["default"]["build_info_without_ast"], False)
 
     def test_inspects_real_ast_nodes_and_ignores_metadata_only_build_info(self):
         with tempfile.TemporaryDirectory() as temporary:
