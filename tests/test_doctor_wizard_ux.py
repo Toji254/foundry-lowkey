@@ -195,6 +195,94 @@ PASS  dependency command: cast receipt
         cast_output.assert_not_called()
         prompt.assert_not_called()
 
+
+    def test_nested_rpc_data_payload_is_forwarded_to_revert_decoder(self):
+        target = "0x" + "1" * 40
+        revert_data = "0x08c379a0" + "0" * 64
+        response = {
+            "error": {
+                "message": "execution reverted",
+                "data": {"originalError": {"data": revert_data}},
+            }
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "_send_value_as_wei", return_value=0), \
+             patch.object(lk, "_rpc_json_response", return_value=response), \
+             patch.object(lk, "_decode_contract_revert", return_value={
+                 "kind": "REVERT", "reason": "Atleat 2 OPTIONS"
+             }) as decode:
+            result = lk._transaction_preview_gas(
+                {},
+                ["send", target],
+                target,
+                None,
+                [],
+                direct_eth_transfer=True,
+            )
+
+        self.assertEqual(result["status"], "reverted")
+        self.assertIn("Atleat 2 OPTIONS", result["reason"])
+        self.assertIn(f"revert data: {revert_data}", decode.call_args.args[0])
+
+    def test_private_key_is_resolved_for_gas_estimation_caller(self):
+        target = "0x" + "1" * 40
+        sender = "0x" + "2" * 40
+        private_key = "0x" + "3" * 64
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "_send_value_as_wei", return_value=0), \
+             patch.object(lk, "cast_output", return_value=(0, sender, "")) as cast, \
+             patch.object(lk, "_rpc_json_response", side_effect=[
+                 {"result": "0x5208"},
+                 {"result": "0x1"},
+             ]) as rpc:
+            result = lk._transaction_preview_gas(
+                {},
+                ["send", target, "--private-key", private_key],
+                target,
+                None,
+                [],
+                direct_eth_transfer=True,
+            )
+
+        self.assertTrue(result["available"])
+        self.assertTrue(result["sender_resolved"])
+        cast.assert_called_once_with(
+            ["cast", "wallet", "address", "--private-key", private_key],
+            timeout=5,
+        )
+        tx = rpc.call_args_list[0].args[2][0]
+        self.assertEqual(tx["from"], sender)
+
+    def test_yes_requires_resolved_sender_when_estimate_would_otherwise_use_rpc_default(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "resolve_function", return_value="setValue(uint256)"), \
+             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "resolve_wallet_key", return_value=None), \
+             patch.object(lk, "_transaction_preview_gas", return_value={
+                 "available": True,
+                 "sender_resolved": False,
+                 "gas_estimate": 50000,
+             }), \
+             patch.object(lk, "_print_transaction_gas_context") as preflight_report, \
+             patch.object(lk, "cast_output") as cast_output, \
+             patch("builtins.input") as prompt, \
+             redirect_stdout(io.StringIO()):
+            result = lk.run_cast(["send", "setValue", "5", "--yes"], {"target": target})
+
+        self.assertNotEqual(result, 0)
+        preflight_report.assert_called_once()
+        cast_output.assert_not_called()
+        prompt.assert_not_called()
+
     def test_wallet_error_explains_no_signer_and_no_broadcast(self):
         rendered = lk._format_cli_error(
             "Error accessing local wallet. Did you pass a keystore, hardware wallet, private key or mnemonic?",
