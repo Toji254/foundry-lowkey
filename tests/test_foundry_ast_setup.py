@@ -75,7 +75,7 @@ class FoundryAstSetupTests(unittest.TestCase):
             "ast = true\n"
             "build_info = false\n"
         )
-        with self.assertRaisesRegex(ast_setup.AstSetupError, "duplicate ast"):
+        with self.assertRaisesRegex(ast_setup.AstSetupError, "not valid TOML"):
             ast_setup._patch_profile_settings(original, "default")
 
     def test_refuses_non_boolean_setting_instead_of_overwriting_unknown_toml(self):
