@@ -18,12 +18,67 @@ class InstallSmokeTests(unittest.TestCase):
             "install.sh must retain its executable bit because CI and users invoke ./install.sh",
         )
 
+    def test_hardhat_test_prepares_dependencies_before_native_test_router(self):
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "hardhat_tools.py").write_text(
+                "print('HARDHAT_PREPARE')\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "lk.py").write_text(
+                "import sys\nprint('NATIVE_TEST', *sys.argv[1:])\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "bin" / "lk"), "test", "--match-test", "testFoo"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertLess(
+                result.stdout.index("HARDHAT_PREPARE"),
+                result.stdout.index("NATIVE_TEST"),
+            )
+            self.assertIn("NATIVE_TEST test --match-test testFoo", result.stdout)
+
+    def test_non_hardhat_test_keeps_existing_native_router(self):
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "hardhat_tools.py").write_text(
+                "raise SystemExit(3)\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "lk.py").write_text(
+                "import sys\nprint('NATIVE_TEST', *sys.argv[1:])\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "bin" / "lk"), "test", "--match-test", "testFoo"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("NATIVE_TEST test --match-test testFoo", result.stdout)
+
+
     def test_clean_help_is_routed_to_lowkey_before_native_clean_adapter(self):
         with tempfile.TemporaryDirectory() as home:
             lowkey_dir = pathlib.Path(home) / ".lowkey"
             lowkey_dir.mkdir()
             (lowkey_dir / "lk.py").write_text(
-                "import sys\nprint('LOWKEY_HELP_ROUTED', *sys.argv[1:])\n",
+                "import sys\\nprint('LOWKEY_HELP_ROUTED', *sys.argv[1:])\\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
@@ -214,23 +269,59 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk link Vault", help_result.stdout)
             self.assertIn("--only calls|storage|reads|writes|imports|assets", help_result.stdout)
             self.assertIn("lk fn --flow", help_result.stdout)
+            self.assertIn("lk trace source --help", help_result.stdout)
+            self.assertIn("lk fn --flow --help", help_result.stdout)
 
             link_help = subprocess.run(
                 [str(installed_lk), "link", "--help"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(link_help.returncode, 0, link_help.stdout + link_help.stderr)
-            self.assertIn("lk link", link_help.stdout)
-            self.assertIn("--depth", link_help.stdout)
-            self.assertIn("--only", link_help.stdout)
+            self.assertIn("LOWKEY HELP  •  lk link", link_help.stdout)
+            for item in ("What it does:", "When to use:", "COMMAND VARIATIONS", "OPTIONS / MODES", "--depth <N>", "--only <FILTER>", "--detail <VIEW>", "--search <TEXT>", "--type <KIND>", "--page <N>", "--all", "--json"):
+                self.assertIn(item, link_help.stdout)
 
             flow_help = subprocess.run(
                 [str(installed_lk), "fn", "--flow", "both", "--help"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(flow_help.returncode, 0, flow_help.stdout + flow_help.stderr)
-            self.assertIn("--asset", flow_help.stdout)
-            self.assertIn("erc20", flow_help.stdout)
+            self.assertIn("LOWKEY HELP  •  lk fn --flow", flow_help.stdout)
+            self.assertIn("--flow <in|out|both>", flow_help.stdout)
+            self.assertIn("--asset <eth|erc20|all>", flow_help.stdout)
+            self.assertIn("does not prove that a transfer happened", flow_help.stdout)
+
+            trace_source_help = subprocess.run(
+                [str(installed_lk), "trace", "source", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(trace_source_help.returncode, 0, trace_source_help.stdout + trace_source_help.stderr)
+            self.assertIn("LOWKEY HELP  •  lk trace source", trace_source_help.stdout)
+            self.assertIn("not the same as 'lk trace <TX>'", trace_source_help.stdout)
+
+            clean_help = subprocess.run(
+                [str(installed_lk), "clean", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(clean_help.returncode, 0, clean_help.stdout + clean_help.stderr)
+            self.assertIn("LOWKEY HELP  •  lk clean", clean_help.stdout)
+            self.assertIn("generated artifacts/cache", clean_help.stdout)
+
+            hardhat_doctor_help = subprocess.run(
+                [str(installed_lk), "hardhat", "doctor", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(hardhat_doctor_help.returncode, 0, hardhat_doctor_help.stdout + hardhat_doctor_help.stderr)
+            self.assertIn("LOWKEY HELP  •  lk hardhat doctor", hardhat_doctor_help.stdout)
+            self.assertIn("read-only", hardhat_doctor_help.stdout)
+
+            build_help = subprocess.run(
+                [str(installed_lk), "build", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(build_help.returncode, 0, build_help.stdout + build_help.stderr)
+            self.assertIn("LOWKEY HELP  •  lk build", build_help.stdout)
+            self.assertIn("--low-memory", build_help.stdout)
 
             ai_status = subprocess.run(
                 [str(installed_lk), "ai", "status", "--json"], cwd=ROOT, env=env,
