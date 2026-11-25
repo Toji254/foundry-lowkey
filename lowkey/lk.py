@@ -15577,15 +15577,19 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
 
     has_initializer = artifact_has_initializer(artifact)
     locked_implementation = artifact_is_locked_implementation(root, path, artifact)
+    proxy_details = inspect_proxy_details(config)
+    print(f"Initializer ABI : {'PRESENT' if has_initializer else 'NOT EXPOSED'}")
+    print(f"Deployment form : {proxy_details.get('kind') or 'UNKNOWN'}")
+    print("Protocol readiness: UNVERIFIED")
     if has_initializer:
-        print(f"Target  : {contract} @ {target}")
-        print(f"ABI     : {path}")
-        print("Status  : IMPLEMENTATION ONLY" if locked_implementation else "Status  : DEPLOYED IMPLEMENTATION")
-        if locked_implementation:
-            print("Note    : this implementation locks its initializer; it is not a configured proxy/clone.")
-        else:
-            print("Note    : this artifact exposes initialize(); a proxy/initializer may be required.")
-        print("         A live bytecode match proves deployment, not protocol readiness.")
+        print("Initialization state: UNKNOWN; ABI presence alone does not prove that initialization is required or complete.")
+    if proxy_details.get("is_proxy"):
+        print("Proxy relation    : proven from ERC-1967 storage or EIP-1167 runtime evidence.")
+    else:
+        print("Proxy requirement : NOT ESTABLISHED; an initialize() function alone does not imply a proxy is required.")
+    if locked_implementation:
+        print("Status            : IMPLEMENTATION ONLY (source constructor disables initializers).")
+    print("No initializer or protocol setup transaction was sent automatically.")
 
     current_actor = config.get("actor")
     current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
@@ -15613,8 +15617,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     print(f"Constructor caller : lab-deployer ({accounts[0]}) [Anvil #0]")
     _print_lab_owner_identity(config, target)
     _print_security_scope(root)
-    if deployment_only:
-        print("Note    : deployment and runtime-bytecode verification do not establish protocol readiness or a security verdict.")
+    print("Protocol readiness: UNVERIFIED — deployment is not initialization, dependency, role, or configuration proof.")
     if locked_implementation:
         print("Lab     : IMPLEMENTATION ONLY — no initialized proxy/clone or operational protocol setup was established.")
         print("Next    : use the project's native deployment/test setup before state-changing protocol experiments.")
@@ -15622,7 +15625,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     if deployment_only:
         print("Next    : lk read ... | lk trace | lk changes")
     else:
-        print("Ready   : lk read ... | lk changes ... | lk trace")
+        print("Lab access: lk read ... | lk changes ... | lk trace")
     return 0
 
 def _tracked_scarb_manifest_drift(root):
@@ -21847,16 +21850,36 @@ def _set_audit_auto_target(config, root, address, contract=None, artifact=None, 
 
 
 def _live_target_is_proxy(rpc, address):
+    """Recognize ERC-1967 implementation/beacon proxies and EIP-1167 clones."""
     if not rpc or not is_address(address):
         return False
+
     try:
-        code, implementation, _err = cast_output(["cast", "implementation", address, "--rpc-url", rpc])
+        runtime = _runtime_code(rpc, address)
     except Exception:
+        runtime = ""
+    if not runtime or str(runtime).strip().lower() in {"", "0x"}:
         return False
-    if code != 0:
-        return False
-    implementation = str(implementation or "").strip().splitlines()[-1] if implementation else ""
-    return is_address(implementation) and implementation.lower() != str(address).lower()
+
+    try:
+        code, implementation_slot, _err = cast_output([
+            "cast", "storage", address, EIP1967_IMPLEMENTATION_SLOT, "--rpc-url", rpc
+        ])
+        if code == 0 and _address_from_slot(implementation_slot):
+            return True
+    except Exception:
+        pass
+
+    try:
+        code, beacon_slot, _err = cast_output([
+            "cast", "storage", address, EIP1967_BEACON_SLOT, "--rpc-url", rpc
+        ])
+        if code == 0 and _address_from_slot(beacon_slot):
+            return True
+    except Exception:
+        pass
+
+    return bool(_fixture_embedded_implementation(runtime))
 
 def _live_target_candidate(config, root, contract_name=None):
     """Find a saved target matching a current-project contract and live on the detected Anvil."""
