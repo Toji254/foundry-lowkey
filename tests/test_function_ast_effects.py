@@ -77,6 +77,7 @@ class FunctionAstEffectInventoryTests(unittest.TestCase):
         record = {
             "name": "executeSwapOrder",
             "signature": "executeSwapOrder()",
+            "mutability": "nonpayable",
             "reads": ["lexicalRead"],
             "writes": ["lexicalWrite"],
             "events": [],
