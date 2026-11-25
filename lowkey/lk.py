@@ -12493,6 +12493,15 @@ def discover_audit_target_contract(root):
     return artifacts[ranked[0][0]]
 
 
+def _discover_artifact_lab_contract_scoped(root, name, *, target_scope=None, source_file=None):
+    """Keep legacy discovery calls unchanged unless the user narrowed the scope."""
+    if target_scope is None and source_file is None:
+        return discover_artifact_lab_contract(root, name)
+    return discover_artifact_lab_contract(
+        root, name, target_scope=target_scope, source_file=source_file
+    )
+
+
 def _lab_artifact_source(root, path, artifact):
     """Resolve an artifact source only when its provenance remains inside the project."""
     source = artifact_source_name(artifact, path, root) or source_contract_fallback(
