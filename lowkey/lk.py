@@ -1364,8 +1364,13 @@ def target_aliases(config, root=None):
     return merged
 
 
-def remember_project_target(config, root, name, address):
-    """Persist a project/name/address identity while retaining legacy aliases."""
+def remember_project_target(config, root, name, address, *, runtime_state=None):
+    """Persist project identity plus optional chain/RPC/runtime evidence.
+
+    Runtime provenance is a point-in-time read-only snapshot. It is not a
+    deployment receipt and must never be treated as proof of historical
+    initialization or of source-to-runtime equivalence by itself.
+    """
     if not name or not is_address(address):
         return
     root_path = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
@@ -1400,11 +1405,39 @@ def remember_project_target(config, root, name, address):
         )
         if is_address(existing_address) and str(existing_address).lower() == str(address).lower():
             del project_entries[existing_name]
-    project_entries[str(name)] = {
+    previous_record = project_entries.get(str(name))
+    same_address = (
+        isinstance(previous_record, dict)
+        and str(previous_record.get("address") or "").lower() == str(address).lower()
+    )
+    provenance = (
+        dict(previous_record.get("provenance") or {})
+        if same_address and isinstance(previous_record.get("provenance"), dict)
+        else None
+    )
+    if isinstance(runtime_state, dict):
+        snapshot = {
+            "schema_version": 1,
+            "chain_id": runtime_state.get("chain_id"),
+            "block_number": runtime_state.get("block_number"),
+            "rpc_fingerprint": runtime_state.get("rpc_fingerprint"),
+            "rpc_origin": runtime_state.get("rpc_origin"),
+            "runtime_code_hash": runtime_state.get("runtime_code_hash"),
+            "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm") or "keccak256",
+            "runtime_code_hash_status": runtime_state.get("runtime_code_hash_status") or "UNAVAILABLE",
+            "runtime_status": runtime_state.get("status") or "UNKNOWN",
+            "verification": runtime_state.get("verification") or "UNVERIFIED",
+            "observed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        provenance = {key: value for key, value in snapshot.items() if value is not None}
+    project_record = {
         "address": str(address),
         "artifact": artifact,
         "explicit": True,
     }
+    if provenance:
+        project_record["provenance"] = provenance
+    project_entries[str(name)] = project_record
 
     # Legacy maps remain for compatibility with older Lowkey commands. They
     # are no longer sufficient on their own to establish target identity.
@@ -8860,7 +8893,7 @@ def run_snapshot(config,slots=None):
         state[str(slot)]=run_cast(["st",str(slot)]+storage_args,config,capture=True)
     current_block=block or run_cast(["block-number"],config,capture=True)
     chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
-    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().isoformat(timespec="seconds"),"slots":state}
+    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().astimezone().isoformat(timespec="seconds"),"slots":state}
     path=snapshot_path(config,chain); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
     print(f"Snapshot saved: {path}")
 def run_diff(config):
@@ -8973,7 +9006,7 @@ def run_workspace(config,args,root=None):
     for key in ["notes","todos","findings"]:
         if not os.path.exists(paths[key]): open(paths[key],"w",encoding="utf-8").close()
     if not os.path.exists(paths["config"]):
-        Path(paths["config"]).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"created":datetime.now().isoformat(timespec="seconds")},indent=4),encoding="utf-8")
+        Path(paths["config"]).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"created":datetime.now().astimezone().isoformat(timespec="seconds")},indent=4),encoding="utf-8")
     print(f"Audit workspace ready: {paths['root']}")
 def read_json_file(path, default):
     try:
@@ -9021,7 +9054,7 @@ def run_matrix(config,args):
                 "snapshot":snapshot_path(config) if os.path.exists(snapshot_path(config)) else None,
                 "session":SESSION_FILE,
             },
-            "created":datetime.now().isoformat(timespec="seconds"),
+            "created":datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         scenarios=read_json_file(paths["matrix_scenarios"],[]); scenarios.append(scenario); write_json_file(paths["matrix_scenarios"],scenarios)
         print(f"Scenario saved: {scenario['name']}"); return
@@ -9122,7 +9155,7 @@ def run_session_lifecycle(config, action):
     if action == "start":
         os.makedirs(os.path.dirname(paths["session"]), exist_ok=True)
         config["session_active"] = True
-        config["session_started"] = datetime.now().isoformat(timespec="seconds")
+        config["session_started"] = datetime.now().astimezone().isoformat(timespec="seconds")
         save_config(config)
         with open(paths["session"], "a") as f:
             f.write(f"\nSESSION START {config['session_started']}\n")
@@ -9843,26 +9876,29 @@ def _target_entry_is_protocol(root, entry):
     return True
 
 
-def _validate_manual_target_runtime(config, root, address, contract=None, artifact=None):
-    """Validate a manually supplied target when the connected chain is authoritative."""
+def _validate_manual_target_runtime(
+    config, root, address, contract=None, artifact=None, *, return_state=False
+):
+    """Validate a manually supplied target and optionally return its read-only evidence snapshot."""
     rpc = effective_rpc(config)
+    state = _live_target_state(config, address, artifact)
     if not rpc:
         print("Runtime check: UNVERIFIED (no RPC available; target metadata is not deployment proof).")
-        return 0
-
-    state = _live_target_state(config, address, artifact)
+        return (0, state) if return_state else 0
     if state.get("status") == "NOT_DEPLOYED":
-        return fail(
+        error = fail(
             f"Error: {address} has no contract bytecode on {rpc}. "
             "Run 'lk lab' to deploy/refresh the local target, or 'lk target reset' to clear the stale target.",
             1,
         )
+        return (error, state) if return_state else error
     if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
-        return fail(
+        error = fail(
             f"Error: {address} has live bytecode, but it does not match the selected "
             f"artifact for {contract or 'this target'}. Run 'lk lab' or select the correct deployment.",
             1,
         )
+        return (error, state) if return_state else error
     if state.get("status") == "DEPLOYED":
         print(
             f"Runtime check: LIVE ({state.get('verification', 'unverified').lower()}; "
@@ -9870,7 +9906,7 @@ def _validate_manual_target_runtime(config, root, address, contract=None, artifa
         )
     else:
         print("Runtime check: UNVERIFIED (RPC did not provide authoritative bytecode state).")
-    return 0
+    return (0, state) if return_state else 0
 
 
 def _select_project_target(config, entry, root):
@@ -9883,8 +9919,8 @@ def _select_project_target(config, entry, root):
     # activation; if no RPC is available, keep the metadata selection but mark
     # it unverified rather than inventing deployment state.
     rpc = effective_rpc(config)
+    state = _live_target_state(config, address, entry.get("artifact"))
     if rpc:
-        state = _live_target_state(config, address, entry.get("artifact"))
         if state.get("status") == "NOT_DEPLOYED":
             return fail(
                 f"Error: {address} has no contract bytecode on {rpc}. "
@@ -9914,7 +9950,9 @@ def _select_project_target(config, entry, root):
     config["target_contract"] = contract
     if artifact:
         config.setdefault("abi_paths", {})[address] = artifact
-    remember_project_target(config, root, entry.get("name") or contract, address)
+    remember_project_target(
+        config, root, entry.get("name") or contract, address, runtime_state=state
+    )
     save_config(config)
 
     target_source = entry.get("source") or "project"
@@ -9949,6 +9987,25 @@ def _select_project_target(config, entry, root):
         artifact=artifact,
         source=target_source,
     )
+    audit_context.update(
+        root,
+        target={"runtime": state},
+        deployment={
+            "source": target_source,
+            "contract": contract,
+            "address": address,
+            "chain_id": state.get("chain_id"),
+            "block_number": state.get("block_number"),
+            "rpc_fingerprint": state.get("rpc_fingerprint"),
+            "rpc_origin": state.get("rpc_origin"),
+            "runtime_code_hash": state.get("runtime_code_hash"),
+            "runtime_code_hash_algorithm": state.get("runtime_code_hash_algorithm"),
+            "runtime_status": state.get("status"),
+            "verification": state.get("verification"),
+            "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        },
+    )
+    _print_target_runtime_provenance(state)
     print(f"Target selected: {entry.get('name') or contract} -> {apply_labels(address, config)}")
     if entry.get("source_file"):
         print(f"  Source       : {entry.get('source_file')}")
@@ -10214,6 +10271,74 @@ def _attached_value_argument(args):
     return False
 
 
+def _print_target_runtime_provenance(runtime_state):
+    """Display the chain/RPC/runtime evidence captured for the selected target."""
+    if not isinstance(runtime_state, dict):
+        return
+    chain_id = runtime_state.get("chain_id")
+    origin = runtime_state.get("rpc_origin")
+    fingerprint = runtime_state.get("rpc_fingerprint")
+    code_hash = runtime_state.get("runtime_code_hash")
+    print(f"Chain ID          : {chain_id if chain_id is not None else 'UNVERIFIED'}")
+    if origin:
+        print(f"RPC origin        : {origin}")
+    else:
+        print("RPC origin        : UNVERIFIED")
+    if fingerprint:
+        print(f"RPC fingerprint   : {fingerprint}")
+    else:
+        print("RPC fingerprint   : UNAVAILABLE")
+    if code_hash:
+        print(f"Runtime code hash : keccak256 {code_hash}")
+    else:
+        print("Runtime code hash : UNAVAILABLE (Keccak provider or valid runtime code unavailable)")
+
+
+def _rpc_identity_fingerprint(rpc):
+    """Return a non-secret identity for an RPC endpoint without retaining its URL."""
+    raw = str(rpc or "").strip()
+    if not raw:
+        return {"rpc_fingerprint": None, "rpc_origin": None}
+
+    fingerprint = "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    origin = None
+    try:
+        parsed = urlsplit(raw)
+        scheme = str(parsed.scheme or "").lower()
+        hostname = str(parsed.hostname or "").lower()
+        port = parsed.port
+        if hostname:
+            host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+            if port is not None:
+                host = f"{host}:{port}"
+            origin = f"{scheme}://{host}" if scheme else host
+    except (TypeError, ValueError):
+        origin = None
+    return {"rpc_fingerprint": fingerprint, "rpc_origin": origin}
+
+
+def _runtime_code_keccak_hash(runtime_code):
+    """Return the Ethereum Keccak-256 hash of runtime bytecode, or None if unavailable."""
+    raw = str(runtime_code or "").strip()
+    if not raw.startswith(("0x", "0X")):
+        return None
+    encoded = raw[2:]
+    if not encoded or len(encoded) % 2 or not re.fullmatch(r"[0-9a-fA-F]+", encoded):
+        return None
+    if break_engine is None:
+        return None
+    keccak = getattr(break_engine, "_keccak256", None)
+    if not callable(keccak):
+        return None
+    try:
+        digest = keccak(bytes.fromhex(encoded))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(digest, (bytes, bytearray)) or len(digest) != 32:
+        return None
+    return "0x" + bytes(digest).hex()
+
+
 def _live_target_state(config, address=None, artifact=None):
     """Return authoritative runtime state for a configured EVM target."""
     address = address or config.get("target")
@@ -10221,9 +10346,14 @@ def _live_target_state(config, address=None, artifact=None):
         "status": "INVALID_TARGET",
         "address": address,
         "rpc": None,
+        "rpc_fingerprint": None,
+        "rpc_origin": None,
         "chain_id": None,
         "block_number": None,
         "code_size": 0,
+        "runtime_code_hash": None,
+        "runtime_code_hash_algorithm": "keccak256",
+        "runtime_code_hash_status": "UNAVAILABLE",
         "verification": "UNVERIFIED",
     }
     if not is_address(address):
@@ -10231,11 +10361,33 @@ def _live_target_state(config, address=None, artifact=None):
 
     rpc = effective_rpc(config)
     state["rpc"] = rpc
+    rpc_identity = _rpc_identity_fingerprint(rpc)
+    state.update(rpc_identity)
     if not rpc:
         state["status"] = "NO_RPC"
         return state
 
-    code = rpc_json(rpc, "eth_getCode", [address, "latest"])
+    # Capture the network and block identity before reading code. Querying
+    # eth_getCode at the captured block avoids pairing bytecode from one tip
+    # with a block number observed after a concurrent upgrade.
+    chain_id = rpc_json(rpc, "eth_chainId", [])
+    if chain_id is not None:
+        try:
+            state["chain_id"] = str(int(str(chain_id), 16))
+        except (TypeError, ValueError):
+            state["chain_id"] = str(chain_id)
+
+    block_number = rpc_json(rpc, "eth_blockNumber", [])
+    code_block_tag = "latest"
+    if block_number is not None:
+        try:
+            block_number_int = int(str(block_number), 16)
+            state["block_number"] = str(block_number_int)
+            code_block_tag = hex(block_number_int)
+        except (TypeError, ValueError):
+            state["block_number"] = str(block_number)
+
+    code = rpc_json(rpc, "eth_getCode", [address, code_block_tag])
     if code is None:
         state["status"] = "RPC_UNAVAILABLE"
         return state
@@ -10247,20 +10399,10 @@ def _live_target_state(config, address=None, artifact=None):
         state["status"] = "DEPLOYED"
         if runtime.lower().startswith("0x"):
             state["code_size"] = max(0, (len(runtime) - 2) // 2)
-
-    chain_id = rpc_json(rpc, "eth_chainId", [])
-    if chain_id is not None:
-        try:
-            state["chain_id"] = str(int(str(chain_id), 16))
-        except (TypeError, ValueError):
-            state["chain_id"] = str(chain_id)
-
-    block_number = rpc_json(rpc, "eth_blockNumber", [])
-    if block_number is not None:
-        try:
-            state["block_number"] = str(int(str(block_number), 16))
-        except (TypeError, ValueError):
-            state["block_number"] = str(block_number)
+            runtime_hash = _runtime_code_keccak_hash(runtime)
+            if runtime_hash:
+                state["runtime_code_hash"] = runtime_hash
+                state["runtime_code_hash_status"] = "AVAILABLE"
 
     if state["status"] == "DEPLOYED":
         artifact_path = artifact
@@ -10620,13 +10762,16 @@ def run_auto_target(config,name=None):
     record=ranked[0]
     contract = record.get("_resolved_contract") or record.get("contract") or "Target"
     alias=name or contract
-    remember_project_target(config, root, alias, record["address"])
+    runtime_state = record.get("_runtime_state")
+    if not isinstance(runtime_state, dict):
+        runtime_state = _live_target_state(config, record["address"], record.get("_artifact"))
+    remember_project_target(config, root, alias, record["address"], runtime_state=runtime_state)
     config["target"]=record["address"]
 
     artifact_path=record.get("_artifact")
     if artifact_path:
         config["abi_paths"][record["address"]]=artifact_path
-        remember_project_target(config, root, alias, record["address"])
+        remember_project_target(config, root, alias, record["address"], runtime_state=runtime_state)
         print(f"ABI auto-loaded: {artifact_path}")
 
     config["target_contract"]=contract
@@ -10641,6 +10786,8 @@ def run_auto_target(config,name=None):
     match_label = record.get("_match_kind")
     if match_label:
         print(f"Runtime match  : {match_label}")
+    if isinstance(runtime_state, dict):
+        _print_target_runtime_provenance(runtime_state)
     if record.get("deployment_kind") == "additional":
         parent = record.get("parent_contract") or "deployment transaction"
         print(f"Instance type  : nested CREATE from {apply_labels(parent, config)}")
@@ -11824,7 +11971,7 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
         "auto_started": True,
         "pid": process.pid,
         "rpc": fixture_rpc,
-        "started": datetime.now().isoformat(timespec="seconds"),
+        "started": datetime.now().astimezone().isoformat(timespec="seconds"),
         "purpose": "project-fixture-block-context",
         "fixture_context": context,
         "previous_rpc_present": previous_rpc_present,
@@ -13059,6 +13206,8 @@ def set_lab_target(config, root, target, contract, artifact):
         source="project-lab",
     )
     runtime_state = _live_target_state(config, target, artifact)
+    remember_project_target(config, root, contract, target, runtime_state=runtime_state)
+    save_config(config)
     deployment = {
         "source": "project-lab",
         "contract": contract,
@@ -13066,9 +13215,13 @@ def set_lab_target(config, root, target, contract, artifact):
         "rpc": runtime_state.get("rpc"),
         "chain_id": runtime_state.get("chain_id"),
         "block_number": runtime_state.get("block_number"),
+        "rpc_fingerprint": runtime_state.get("rpc_fingerprint"),
+        "rpc_origin": runtime_state.get("rpc_origin"),
+        "runtime_code_hash": runtime_state.get("runtime_code_hash"),
+        "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
         "runtime_status": runtime_state.get("status"),
         "verification": runtime_state.get("verification"),
-        "verified_at": datetime.now().isoformat(timespec="seconds"),
+        "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     audit_context.update(
         root,
@@ -13084,6 +13237,7 @@ def set_lab_target(config, root, target, contract, artifact):
         )
     else:
         print(f"Deployment verified: NO ({runtime_state.get('status', 'UNVERIFIED')})")
+    _print_target_runtime_provenance(runtime_state)
 
 def repo_clone_url(value):
     value = str(value or "").strip()
@@ -13203,7 +13357,7 @@ def ensure_project_anvil(config, root):
                 "auto_started": True,
                 "pid": process.pid,
                 "rpc": rpc,
-                "started": datetime.now().isoformat(timespec="seconds"),
+                "started": datetime.now().astimezone().isoformat(timespec="seconds"),
             }
             write_project_anvil_state(root, state)
             config["_auto_rpc_info"] = info
@@ -23399,7 +23553,7 @@ def run_fork(args, config=None):
         try: process.terminate()
         except OSError: pass
         return fail(f"Error: fork did not become ready. See {log_path}.")
-    state={"pid":process.pid,"local_rpc":f"http://127.0.0.1:{port}","block":block,"started":datetime.now().isoformat(timespec="seconds")}
+    state={"pid":process.pid,"local_rpc":f"http://127.0.0.1:{port}","block":block,"started":datetime.now().astimezone().isoformat(timespec="seconds")}
     Path(FORK_FILE).write_text(json.dumps(state,indent=4),encoding="utf-8")
     config["rpc"]=state["local_rpc"]
     save_config(config)
@@ -28026,6 +28180,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             )
             if display_address:
                 state = _live_target_state(config, display_address, project.get("artifact") if project else None)
+                _print_target_runtime_provenance(state)
                 if state.get("status") == "DEPLOYED" and state.get("verification") != "CODE MISMATCH":
                     print(f"Deployment: LIVE ({state.get('verification', 'unverified').lower()}; {state.get('code_size', 0)} bytes)")
                 elif state.get("status") == "NOT_DEPLOYED":
@@ -28064,16 +28219,47 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 )
                 if selected_entry is None:
                     artifact = config.get("abi_paths", {}).get(ref)
-                    validation = _validate_manual_target_runtime(
+                    validation, runtime_state = _validate_manual_target_runtime(
                         config,
                         root,
                         ref,
                         config.get("target_contract"),
                         artifact,
+                        return_state=True,
                     )
                     if validation != 0:
                         return validation
                     config["target"] = ref
+                    remember_project_target(
+                        config, root, config.get("target_contract") or "Target", ref,
+                        runtime_state=runtime_state,
+                    )
+                    audit_context.set_target(
+                        root,
+                        address=ref,
+                        contract=config.get("target_contract"),
+                        artifact=artifact,
+                        source="manual",
+                    )
+                    audit_context.update(
+                        root,
+                        target={"runtime": runtime_state},
+                        deployment={
+                            "source": "manual",
+                            "contract": config.get("target_contract"),
+                            "address": ref,
+                            "chain_id": runtime_state.get("chain_id"),
+                            "block_number": runtime_state.get("block_number"),
+                            "rpc_fingerprint": runtime_state.get("rpc_fingerprint"),
+                            "rpc_origin": runtime_state.get("rpc_origin"),
+                            "runtime_code_hash": runtime_state.get("runtime_code_hash"),
+                            "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
+                            "runtime_status": runtime_state.get("status"),
+                            "verification": runtime_state.get("verification"),
+                            "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                        },
+                    )
+                    _print_target_runtime_provenance(runtime_state)
             else:
                 matches = [
                     entry for entry in protocol_entries
@@ -28108,16 +28294,19 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             )
         elif len(args)==2 and is_address(args[1]):
             artifact = config.get("abi_paths",{}).get(args[1])
-            validation = _validate_manual_target_runtime(
+            validation, runtime_state = _validate_manual_target_runtime(
                 config,
                 root,
                 args[1],
                 args[0],
                 artifact,
+                return_state=True,
             )
             if validation != 0:
                 return validation
-            remember_project_target(config, root, args[0], args[1])
+            remember_project_target(
+                config, root, args[0], args[1], runtime_state=runtime_state
+            )
             config["target"]=args[1]
             config["target_contract"]=args[0]
             audit_context.set_target(
@@ -28127,6 +28316,25 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 artifact=artifact,
                 source="manual",
             )
+            audit_context.update(
+                root,
+                target={"runtime": runtime_state},
+                deployment={
+                    "source": "manual",
+                    "contract": args[0],
+                    "address": args[1],
+                    "chain_id": runtime_state.get("chain_id"),
+                    "block_number": runtime_state.get("block_number"),
+                    "rpc_fingerprint": runtime_state.get("rpc_fingerprint"),
+                    "rpc_origin": runtime_state.get("rpc_origin"),
+                    "runtime_code_hash": runtime_state.get("runtime_code_hash"),
+                    "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
+                    "runtime_status": runtime_state.get("status"),
+                    "verification": runtime_state.get("verification"),
+                    "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                },
+            )
+            _print_target_runtime_provenance(runtime_state)
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
     elif cmd in {"targets","target-list"}:
@@ -28457,7 +28665,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="session":
         if args and args[0] in {"start","resume"}: run_session_lifecycle(config,args[0])
         elif args and args[0]=="end":
-            config["session_active"]=False; config["session_ended"]=datetime.now().isoformat(timespec="seconds"); save_config(config); print("Audit session ended.")
+            config["session_active"]=False; config["session_ended"]=datetime.now().astimezone().isoformat(timespec="seconds"); save_config(config); print("Audit session ended.")
         elif os.path.exists(SESSION_FILE): print(Path(SESSION_FILE).read_text(encoding="utf-8"))
         else: print("No session history yet.")
     elif cmd=="workspace": run_workspace(config,args)

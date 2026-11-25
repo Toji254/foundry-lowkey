@@ -374,6 +374,148 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertNotIn("GlpManager", entries)
             self.assertEqual(entries["OrderBook"]["address"], address)
 
+    def test_rpc_identity_fingerprint_hides_credentials_and_distinguishes_endpoints(self):
+        first_url = "https://alice:supersecret@rpc.example:8545/v1/key-one?token=secret"
+        second_url = "https://alice:supersecret@rpc.example:8545/v1/key-two?token=secret"
+
+        first = lk._rpc_identity_fingerprint(first_url)
+        second = lk._rpc_identity_fingerprint(second_url)
+
+        self.assertEqual(first["rpc_origin"], "https://rpc.example:8545")
+        self.assertTrue(first["rpc_fingerprint"].startswith("sha256:"))
+        self.assertEqual(len(first["rpc_fingerprint"].split(":", 1)[1]), 64)
+        self.assertNotEqual(first["rpc_fingerprint"], second["rpc_fingerprint"])
+        self.assertNotIn("alice", json.dumps(first))
+        self.assertNotIn("supersecret", json.dumps(first))
+        self.assertNotIn("key-one", json.dumps(first))
+        self.assertNotIn("secret", json.dumps(first))
+
+    def test_runtime_code_fingerprint_uses_ethereum_keccak_not_sha3(self):
+        digest = bytes.fromhex("ab" * 32)
+        with patch.object(lk.break_engine, "_keccak256", return_value=digest) as keccak:
+            result = lk._runtime_code_keccak_hash("0x60016000")
+
+        keccak.assert_called_once_with(bytes.fromhex("60016000"))
+        self.assertEqual(result, "0x" + "ab" * 32)
+        self.assertIsNone(lk._runtime_code_keccak_hash("0x0"))
+        self.assertIsNone(lk._runtime_code_keccak_hash("0x123"))
+
+    def test_live_target_state_captures_chain_rpc_and_runtime_code_provenance(self):
+        target = "0x" + "4" * 40
+        rpc = "https://alice:supersecret@rpc.example:8545/v1/key?token=secret"
+        runtime = "0x60016000"
+        responses = {
+            "eth_getCode": runtime,
+            "eth_chainId": "0x7a69",
+            "eth_blockNumber": "0x2a",
+        }
+
+        rpc_calls = []
+
+        def fake_rpc(_url, method, params):
+            rpc_calls.append((method, params))
+            return responses[method]
+
+        with patch.object(lk, "effective_rpc", return_value=rpc), \
+             patch.object(lk, "rpc_json", side_effect=fake_rpc), \
+             patch.object(lk, "read_artifact", return_value={"deployedBytecode": runtime}), \
+             patch.object(lk, "_live_target_artifact_match", return_value="runtime"), \
+             patch.object(lk.break_engine, "_keccak256", return_value=bytes.fromhex("cd" * 32)):
+            state = lk._live_target_state({"target": target}, target, "OrderBook.json")
+
+        self.assertEqual(state["status"], "DEPLOYED")
+        self.assertEqual(state["chain_id"], "31337")
+        self.assertEqual(state["block_number"], "42")
+        self.assertEqual(state["runtime_code_hash"], "0x" + "cd" * 32)
+        self.assertEqual(state["runtime_code_hash_algorithm"], "keccak256")
+        self.assertEqual(state["runtime_code_hash_status"], "AVAILABLE")
+        self.assertEqual(state["rpc_origin"], "https://rpc.example:8545")
+        self.assertTrue(state["rpc_fingerprint"].startswith("sha256:"))
+        self.assertEqual(state["verification"], "MATCHED")
+        self.assertLess(
+            [method for method, _ in rpc_calls].index("eth_chainId"),
+            [method for method, _ in rpc_calls].index("eth_getCode"),
+        )
+        self.assertLess(
+            [method for method, _ in rpc_calls].index("eth_blockNumber"),
+            [method for method, _ in rpc_calls].index("eth_getCode"),
+        )
+        self.assertIn(("eth_getCode", [target, "0x2a"]), rpc_calls)
+
+    def test_manual_target_validation_can_return_read_only_provenance_snapshot(self):
+        target = "0x" + "4" * 40
+        state = {
+            "status": "NO_RPC",
+            "chain_id": None,
+            "rpc_fingerprint": None,
+            "runtime_code_hash": None,
+            "runtime_code_hash_status": "UNAVAILABLE",
+            "verification": "UNVERIFIED",
+        }
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value=None), \
+             patch.object(lk, "_live_target_state", return_value=state) as inspect, \
+             redirect_stdout(output):
+            result = lk._validate_manual_target_runtime(
+                {}, pathlib.Path("/tmp/lowkey-test"), target, "OrderBook",
+                return_state=True,
+            )
+
+        self.assertEqual(result, (0, state))
+        inspect.assert_called_once()
+        self.assertIn("UNVERIFIED", output.getvalue())
+
+    def test_target_provenance_display_is_explicit_when_runtime_hash_is_unavailable(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk._print_target_runtime_provenance({
+                "chain_id": "31337",
+                "rpc_origin": "http://127.0.0.1:8545",
+                "rpc_fingerprint": "sha256:" + "a" * 64,
+                "runtime_code_hash": None,
+                "runtime_code_hash_status": "UNAVAILABLE",
+            })
+        rendered = output.getvalue()
+        self.assertIn("Chain ID          : 31337", rendered)
+        self.assertIn("http://127.0.0.1:8545", rendered)
+        self.assertIn("Runtime code hash : UNAVAILABLE", rendered)
+        self.assertNotIn("UNVERIFIED", rendered)
+
+    def test_project_target_registry_persists_and_preserves_runtime_provenance(self):
+        address = "0x" + "4" * 40
+        rpc = "https://alice:supersecret@rpc.example:8545/v1/key?token=secret"
+        runtime_state = {
+            "chain_id": "31337",
+            "block_number": "42",
+            "rpc_fingerprint": "sha256:" + "a" * 64,
+            "rpc_origin": "https://rpc.example:8545",
+            "runtime_code_hash": "0x" + "b" * 64,
+            "runtime_code_hash_algorithm": "keccak256",
+            "runtime_code_hash_status": "AVAILABLE",
+            "status": "DEPLOYED",
+            "verification": "MATCHED",
+            "rpc": rpc,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            config = {"project_target_registry": {}}
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                lk.remember_project_target(
+                    config, root, "OrderBook", address, runtime_state=runtime_state
+                )
+                first = dict(config["project_target_registry"][str(root)]["OrderBook"]["provenance"])
+                lk.remember_project_target(config, root, "OrderBook", address)
+
+            record = config["project_target_registry"][str(root)]["OrderBook"]
+            self.assertEqual(record["provenance"], first)
+            self.assertEqual(record["provenance"]["chain_id"], "31337")
+            self.assertEqual(record["provenance"]["runtime_code_hash"], "0x" + "b" * 64)
+            self.assertEqual(record["provenance"]["runtime_code_hash_algorithm"], "keccak256")
+            self.assertNotIn(rpc, json.dumps(record))
+            self.assertNotIn("supersecret", json.dumps(record))
+            self.assertNotIn("/v1/key", json.dumps(record))
+
+
     def test_storage_read_explains_slot_from_compiled_layout(self):
         raw = "0x000000000000000000000000" + "f39fd6e51aad88f6f4ce6ab8827279cfffb92266"
         types = {
