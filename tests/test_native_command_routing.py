@@ -121,6 +121,15 @@ class LauncherRoutingTests(unittest.TestCase):
 
 
 
+
+    def test_eth_flow_has_a_dedicated_read_only_route_and_root_help(self):
+        launcher = (Path(__file__).resolve().parents[1] / "bin" / "lk").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if [[ "${1:-}" == "flow" && "${2:-}" == "eth" ]]', launcher)
+        self.assertIn('eth_flow.py" "$@"', launcher)
+        self.assertIn("lk flow eth --h", launcher)
+
     def test_block_state_diff_route_uses_shared_command_wrapper(self):
         launcher = (Path(__file__).resolve().parents[1] / "bin" / "lk").read_text(
             encoding="utf-8"
