@@ -26072,7 +26072,7 @@ COMMAND_HELP = {
             ("--confirm", "Explicitly request the approval prompt; ordinary sends already preview and ask unless --yes is supplied.", "lk send release 0xd9c5... --confirm"),
             ("--repeat <N>", "Preview once and ask for approval before sending the same call N times as the same selected actor, using N separate sequential transactions. Each waits for its receipt; N must be 1–100. Use --yes only for deliberate automation.", "lk send AttackTarget --repeat 10 --as attacker"),
             ("--times <N>", "Alias for --repeat; previews and asks once before N separate sequential transactions from the same selected actor (maximum 100), unless --yes is supplied.", "lk send AttackTarget --times 10 --as attacker"),
-            ("--yes", "Explicitly bypass the preview and confirmation prompt. Reserve this for reviewed automation and tests.", "lk send release 0xd9c5... --yes"),
+            ("--yes", "Skip the preview display and interactive prompt, but never skip sender resolution or the read-only revert guard. Use --from <address> when Lowkey cannot derive the signing address.", "lk send release 0xd9c5... --from 0x1111111111111111111111111111111111111111 --yes"),
         ],
         argument_types=[
             ("address / address payable / contract", "Pass a 0x-prefixed 20-byte address. Solidity address payable and contract-typed parameters use the same ABI address representation.", "lk send transfer 0x1111111111111111111111111111111111111111 100"),
