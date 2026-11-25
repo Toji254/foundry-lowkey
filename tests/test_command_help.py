@@ -1467,7 +1467,12 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("ProposalOptions : string[]", rendered)
         self.assertIn("Dynamic array", rendered)
         self.assertIn('["Yes", "No"]', rendered)
-        self.assertIn("lk send 'createProposal(string,uint256,string[])'", rendered)
+        self.assertIn("READY-TO-EDIT COMMAND", rendered)
+        self.assertIn("LK_ARG_1='Community proposal'  # title (string)", rendered)
+        self.assertIn("LK_ARG_2=42  # deadline (uint256)", rendered)
+        self.assertIn("ProposalOptions (string[])", rendered)
+        self.assertIn('lk send \'createProposal(string,uint256,string[])\' "$LK_ARG_1" "$LK_ARG_2" "$LK_ARG_3" --preview', rendered)
+        self.assertNotIn("'Community proposal' 42 '", rendered)
         self.assertIn("ABI types describe the encoded shape, not the business meaning.", rendered)
 
     def test_abi_input_guide_handles_boolean_address_bytes_fixed_arrays_and_tuples(self):

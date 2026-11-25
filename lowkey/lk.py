@@ -29645,15 +29645,32 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                     print(f"     Field: {component}")
         print("")
         if all(value is not None for value in examples):
+            print("READY-TO-EDIT COMMAND")
+            print("  Copy this whole block. Change only the values on the right-hand side, then run it.")
+            command_arguments = []
+            for index, (param, value) in enumerate(zip(inputs, examples), 1):
+                variable = f"LK_ARG_{index}"
+                label = str(param.get("name") or f"arg{index}")
+                abi_type = canonical_type(param)
+                print(f"  {variable}={value}  # {label} ({abi_type})")
+                command_arguments.append('"        print("")
+        print("ABI LIMIT")
+        print("  ABI types describe the encoded shape, not the business meaning.")
+        print("  For example, uint256 alone cannot tell Lowkey whether a value is seconds, a timestamp, a token amount, or a price.")
+        print("  Contract require checks, enum labels, valid address roles, and application-specific bounds must be verified in source.")
+        return 0
+ + variable + '"')
             command = "lk send " + shlex.quote(signature)
-            if examples:
-                command += " " + " ".join(examples)
+            if command_arguments:
+                command += " " + " ".join(command_arguments)
             command += " --preview"
-            print("PREVIEW COMMAND (prepares the call; does not broadcast)")
+            print("")
+            print("FINAL COMMAND (preview only; nothing is broadcast)")
             print(f"  {command}")
         else:
-            print("PREVIEW COMMAND")
-            print("  One or more ABI types need a manual value; use the examples above and inspect the source for custom constraints.")
+            print("READY-TO-EDIT COMMAND")
+            print("  Lowkey cannot safely create a complete value block for every input type in this function.")
+            print("  Use the examples above, inspect any unsupported type in source, then build the command manually.")
         print("")
         print("ABI LIMIT")
         print("  ABI types describe the encoded shape, not the business meaning.")
