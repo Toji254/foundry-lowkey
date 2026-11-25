@@ -8746,8 +8746,12 @@ def withdraw(amount: uint256):
         self.assertIn(f"To: attackTelephone ({intermediary})", rendered)
         self.assertIn("msg.sender at Telephone (CALL): attackTelephone", rendered)
         self.assertIn(f"({intermediary})", rendered)
-        self.assertIn("was the immediate", rendered)
-        self.assertIn("caller to Telephone; tx.origin remains", rendered)
+        # Terminal wrapping may split explanatory prose across physical lines.
+        normalized_rendered = " ".join(rendered.split())
+        self.assertIn(
+            "was the immediate caller to Telephone; tx.origin remains",
+            normalized_rendered,
+        )
         self.assertNotIn("msg.sender at top-level recipient", rendered)
         self.assertNotIn("Args:", rendered)
 
