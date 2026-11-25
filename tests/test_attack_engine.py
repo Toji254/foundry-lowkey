@@ -312,6 +312,119 @@ class AttackEngineTests(unittest.TestCase):
                 manifest,
             )
 
+    def test_economic_mode_accepts_only_reconciled_source_verified_usd_portfolio(self):
+        self._write_reproof(semantic=False, profitable=True)
+        manifest = engine.validate_experiment_manifest(
+            self._manifest(family="economic", impact_mode="economic"), self.root
+        )
+        path = self.root / ".audit" / "godmode" / "reprove.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        prior_cost = 500_000_000_000_000  # 0.0005 ETH at $2,000 = $1
+        gas_cost = 5
+        token_delta = 3 * 10**18
+        net_profit = 2 * 10**18
+        payload.update({
+            "net_profit_wei": None,
+            "net_profit_usd_18": net_profit,
+            "net_profit_unit": "USD_18",
+            "net_profit_value": net_profit,
+            "gross_balance_delta_wei": 0,
+            "gas_cost_wei": gas_cost,
+            "prior_cost_wei": prior_cost,
+            "total_cost_wei": gas_cost + prior_cost,
+            "gas_cost_in_portfolio_delta": True,
+            "source_fork_verification": {
+                **payload["source_fork_verification"],
+                "portfolio_assets_verified": True,
+                "portfolio_asset_count": 1,
+            },
+            "token_portfolio": {
+                "quote_currency": "USD",
+                "source_state_verified": True,
+                "native_price": {"price_usd_18": 2_000 * 10**18},
+                "tokens": [{"symbol": "USDC", "value_delta_usd_18": token_delta}],
+                "token_value_delta_usd_18": token_delta,
+            },
+            "economic_valuation": {
+                "native_delta_usd_18": 0,
+                "token_delta_usd_18": token_delta,
+                "external_gas_cost_usd_18": 0,
+                "prior_cost_usd_18": 10**18,
+                "net_profit_usd_18": net_profit,
+                "native_gross_delta_wei": 0,
+                "actual_transaction_gas_cost_wei": gas_cost,
+                "gas_cost_in_portfolio_delta": True,
+                "prior_cost_wei": prior_cost,
+                "total_cost_wei": gas_cost + prior_cost,
+            },
+        })
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = engine.validate_evidence_pair(
+            self._evidence("attack", family="economic"),
+            self._evidence("control", family="economic"),
+            manifest,
+        )
+        self.assertEqual(result["independent_reproof"]["net_profit_usd_18"], net_profit)
+        self.assertEqual(result["independent_reproof"]["net_profit_unit"], "USD_18")
+
+    def test_economic_mode_rejects_usd_portfolio_source_or_arithmetic_mismatch(self):
+        self._write_reproof(semantic=False, profitable=True)
+        manifest = engine.validate_experiment_manifest(
+            self._manifest(family="economic", impact_mode="economic"), self.root
+        )
+        path = self.root / ".audit" / "godmode" / "reprove.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.update({
+            "net_profit_wei": None,
+            "net_profit_usd_18": 5,
+            "net_profit_unit": "USD_18",
+            "net_profit_value": 5,
+            "gross_balance_delta_wei": 0,
+            "gas_cost_in_portfolio_delta": True,
+            "source_fork_verification": {
+                **payload["source_fork_verification"],
+                "portfolio_assets_verified": True,
+                "portfolio_asset_count": 1,
+            },
+            "token_portfolio": {
+                "quote_currency": "USD",
+                "source_state_verified": False,
+                "native_price": {"price_usd_18": 10**18},
+                "tokens": [{"value_delta_usd_18": 10}],
+                "token_value_delta_usd_18": 10,
+            },
+            "economic_valuation": {
+                "native_delta_usd_18": 0,
+                "token_delta_usd_18": 10,
+                "external_gas_cost_usd_18": 0,
+                "prior_cost_usd_18": 5,
+                "net_profit_usd_18": 5,
+                "native_gross_delta_wei": 0,
+                "actual_transaction_gas_cost_wei": 5,
+                "gas_cost_in_portfolio_delta": True,
+                "prior_cost_wei": 5,
+                "total_cost_wei": 10,
+            },
+        })
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(engine.AttackEngineError, "source-verified"):
+            engine.validate_evidence_pair(
+                self._evidence("attack", family="economic"),
+                self._evidence("control", family="economic"),
+                manifest,
+            )
+
+        payload["token_portfolio"]["source_state_verified"] = True
+        payload["economic_valuation"]["token_delta_usd_18"] = 999
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(engine.AttackEngineError, "reconcile"):
+            engine.validate_evidence_pair(
+                self._evidence("attack", family="economic"),
+                self._evidence("control", family="economic"),
+                manifest,
+            )
+
     def _chain_manifest(self, *, impact_mode="semantic"):
         stages = [
             {
