@@ -25,6 +25,7 @@ import project_tools
 import audit_context
 import forge_tools
 import bootstrap
+import hardhat_tools
 
 GIB = 1024 ** 3
 IGNORED = {
@@ -675,60 +676,162 @@ def render_plan(plan: dict[str, Any]) -> str:
 
 
 def _run_native_fallback(argv: Sequence[str]) -> int:
+    requested = Path.cwd().expanduser().resolve()
+    try:
+        info = project_detection.detect_project(requested)
+    except Exception as exc:
+        info = {}
+        print(f"Lowkey build: project detection could not be refreshed before native fallback: {exc}", file=sys.stderr)
+
+    project = Path((info or {}).get("root") or requested).expanduser().resolve()
+    try:
+        hardhat_scope = bootstrap._is_hardhat_scope(info, project)
+    except Exception:
+        hardhat_scope = False
+
+    # The shared project bootstrap already knows how to install repository-owned
+    # Node dependencies (frozen when a lockfile exists) and how to detect a
+    # partially restored Hardhat install. The native build fallback previously
+    # skipped that preparation step, so lk build failed before the local
+    # Hardhat command could be selected.
+    binary = bootstrap._local_hardhat_binary(project) if hardhat_scope else None
+    if hardhat_scope and binary is None:
+        print(
+            "Hardhat was detected, but its project-local executable is missing. "
+            "Preparing the dependencies declared by this repository."
+        )
+        bootstrap_code = project_detection.bootstrap_project(
+            info, reason="build", safe_node_install=True
+        )
+        if bootstrap_code != 0:
+            return bootstrap_code
+
+        try:
+            info = project_detection.detect_project(project)
+        except Exception as exc:
+            print(f"REVIEW NEEDED: could not re-detect Hardhat after dependency preparation: {exc}", file=sys.stderr)
+            return 2
+        project = Path((info or {}).get("root") or project).expanduser().resolve()
+        binary = bootstrap._local_hardhat_binary(project)
+        if binary is None:
+            print(
+                "REVIEW NEEDED: dependency preparation completed, but the "
+                "repository-local Hardhat executable is still missing.",
+                file=sys.stderr,
+            )
+            return 2
+
+    if hardhat_scope:
+        if binary is None:
+            print(
+                "REVIEW NEEDED: Hardhat dependency preparation did not produce "
+                "a project-local executable.",
+                file=sys.stderr,
+            )
+            return 2
+        readiness_code = hardhat_tools.prepare_readiness(project, binary)
+        if readiness_code != 0:
+            return readiness_code
+
     script = Path(__file__).resolve().with_name("lk.py")
     if not script.is_file():
         print("Lowkey build: this is not a Foundry package and the native project router is unavailable.", file=sys.stderr)
         return 2
     return subprocess.run(
         [sys.executable, str(script), "build", *argv],
-        cwd=Path.cwd(), check=False,
+        cwd=requested, check=False,
     ).returncode
 
 
 def render_build_help() -> str:
-    """Friendly help for the project-aware build command, including AI failure modes."""
+    """Explain Lowkey's project-aware build planner and every Lowkey-owned option."""
     return "\n".join([
         "LOWKEY HELP  •  lk build",
         "=" * 72,
+        "What it does: Selects the correct project/package, plans a safe build scope, checks",
+        "              available resources, and runs the detected native build tool.",
+        "When to use: Compile contracts or build another supported native project. Use --plan",
+        "             first when you want to inspect the selected package and command without",
+        "             starting the compiler.",
+        "Usage: lk build [LOWKEY OPTIONS] [FORGE OPTIONS]",
+        "Example: lk build --scope production --plan",
         "",
-        "WHAT THIS COMMAND DOES",
-        "  Selects the correct Foundry package, plans a safe build scope, checks",
-        "  available resources, and chooses conservative compiler concurrency.",
+        "COMMAND VARIATIONS",
+        "------------------",
+        "  lk build",
+        "      Build the selected project with the full default scope.",
+        "      Example: lk build",
+        "  lk build --scope <SCOPE>",
+        "      Select full, production, tests, scripts, or target scope.",
+        "      Example: lk build --scope production",
+        "  lk build --target <CONTRACT>",
+        "      Build one source file or uniquely named contract. This implies target scope.",
+        "      Example: lk build --target PositionManager --plan",
+        "  lk build --root <DIR> [--member <MEMBER>]",
+        "      Select a project root or an explicit workspace member.",
+        "      Example: lk build --root packages/perps --scope production",
         "",
-        "USAGE",
-        "  lk build [OPTIONS] [FORGE OPTIONS]",
+        "OPTIONS / MODES",
+        "---------------",
+        "  --root <DIR>",
+        "      Select a project/package root. Nested package config takes precedence over",
+        "      workspace selection.",
+        "      Example: lk build --root packages/perps",
+        "  --member <MEMBER>",
+        "      Select a workspace member by index, name, or path. The selection is saved",
+        "      as the workspace's active member.",
+        "      Example: lk build --member perps",
+        "  --scope <full|production|tests|scripts|target>",
+        "      Choose what to compile. Default: full. Target scope can also be selected",
+        "      implicitly with --target.",
+        "      Example: lk build --scope tests",
+        "  --target <CONTRACT>",
+        "      Build one source file or unique contract. Cannot be combined with another",
+        "      non-default scope.",
+        "      Example: lk build --target src/Vault.sol",
+        "  --low-memory",
+        "      Force one compiler worker rather than using detected concurrency.",
+        "      Example: lk build --low-memory",
+        "  --plan",
+        "      Print the selected package, compiler/resource plan, and exact command without",
+        "      starting the compiler.",
+        "      Example: lk build --scope production --plan",
+        "  --json",
+        "      Print the machine-readable plan before executing the build.",
+        "      Example: lk build --scope production --json",
+        "  --guide",
+        "      For this build only, explain a build failure and offer clues. No project files",
+        "      are edited; a configured AI provider may receive the error and nearby source.",
+        "      Example: lk build --guide",
+        "  --lazy",
+        "      For this build only, may repair one eligible local Solidity test, then run",
+        "      forge build and that test. Failed checks restore the changed test.",
+        "      Example: lk build --lazy",
+        "  FORGE OPTIONS",
+        "      Unrecognized Lowkey options are forwarded to forge build for Foundry projects.",
+        "      Example: lk build --skip test",
         "",
-        "BUILD OPTIONS",
-        "  --root DIR          Select a project or package root.",
-        "  --member MEMBER     Select a workspace member by index, name, or path.",
-        "  --scope SCOPE       full, production, tests, scripts, or target (default: full).",
-        "  --target CONTRACT   Build one source file or unique contract; implies target scope.",
-        "  --low-memory        Force one compiler worker.",
-        "  --plan              Print the plan without starting the compiler.",
-        "  --json              Print the build plan as JSON.",
+        "IMPORTANT NOTES",
+        "---------------",
+        "  --guide and --lazy are mutually exclusive and apply to this command only.",
+        "  Root/member/scope/target/resource planning options apply to the Foundry planner.",
+        "  For Hardhat, Lowkey uses the project-local Hardhat binary and shared readiness",
+        "  checks; it does not translate Foundry scope flags into Hardhat options.",
+        "  Extra Forge options are forwarded only when a Foundry build is selected.",
+        "  Lazy repair is restricted to local Solidity tests under test/ or tests/. Contract",
+        "  sources and Foundry compiler settings are never auto-edited.",
+        "  Use lk ai status to check AI readiness and lk ai --h for AI command help.",
         "",
-        "AI FAILURE MODES",
-        "  --guide             For this build only: explain a failure and give clues.",
-        "                      No project files are edited.",
-        "  --lazy              For this build only: may repair one eligible local Solidity",
-        "                      test, then run forge build and that test. Failed checks restore it.",
+        "RELATED COMMANDS",
+        "----------------",
+        "  lk project",
+        "  lk test",
+        "  lk clean",
+        "  lk hardhat doctor",
         "",
-        "EXAMPLES",
-        "  lk build --h",
-        "  lk build --scope production --plan",
-        "  lk build --root packages/perps --scope production",
-        "  lk build --guide",
-        "  lk build --lazy",
-        "",
-        "NOTES",
-        "  --guide and --lazy are mutually exclusive and do not change 'lk ai guide/lazy'.",
-        "  Lazy edits are restricted to local Solidity tests under test/ or tests/; contracts",
-        "  and Foundry settings are never auto-edited. A configured, enabled AI provider is required.",
-        "  Diagnosis may send the error and a nearby source excerpt to that provider.",
-        "  Use 'lk ai status' to check readiness and 'lk ai --h' for the complete AI guide.",
-        "",
-        "HELP FORMS",
-        "  lk build --h | --help | -h | help",
+        "HELP TIP",
+        "  Help is safe: it does not compile, edit source, deploy, or send transactions.",
+        "  Accepted forms: --h, --help, -h, help.",
     ])
 
 

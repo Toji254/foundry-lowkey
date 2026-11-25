@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -1113,6 +1114,149 @@ def _supplemental_native_tests(info: dict[str, Any]) -> int:
     return failures
 
 
+
+def _diagnose_solidity_compiler_download(
+    root: Path,
+    command: Sequence[str],
+    output: str,
+) -> str:
+    """Explain Hardhat HH502 using independent Node HTTPS and curl probes.
+
+    This is failure-triggered only. TLS verification stays enabled and neither
+    probe downloads a compiler binary or changes the project's cache.
+    """
+    lowered = str(output or "").lower()
+    if not (
+        "hh502" in lowered
+        or "couldn't download compiler version list" in lowered
+    ):
+        return ""
+
+    command_text = " ".join(str(part) for part in command).lower()
+    if "hardhat" not in command_text and "hh502" not in lowered:
+        return ""
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "linux":
+        # solc-bin publishes linux-amd64, not linux-arm64. This probes the
+        # metadata endpoint Hardhat uses; it does not claim the static compiler
+        # binary itself can execute on a non-amd64 host.
+        platform_name = "linux-amd64"
+    elif system == "darwin":
+        # The official static distribution uses one macOS platform directory.
+        platform_name = "macosx-amd64"
+    elif system == "windows":
+        platform_name = "windows-amd64"
+    else:
+        return (
+            "LOWKEY NETWORK DIAGNOSTIC: compiler metadata fetch failed (HH502); "
+            f"automatic endpoint probing is not configured for {system}/{machine}."
+        )
+
+    url = f"https://binaries.soliditylang.org/{platform_name}/list.json"
+    try:
+        runtime_env, _pin = runtime_environment(root)
+    except Exception:
+        runtime_env = dict(os.environ)
+
+    node_result = None
+    node_path = shutil.which("node", path=runtime_env.get("PATH"))
+    if node_path:
+        script = (
+            "const https=require('https');"
+            "const req=https.get(process.argv[1],res=>{"
+            "console.log('HTTP '+res.statusCode);res.resume();});"
+            "req.setTimeout(7000,()=>req.destroy(Object.assign("
+            "new Error('request timed out'),{code:'ETIMEDOUT'})));"
+            "req.on('error',e=>{console.error((e.code||e.name)+': '+e.message);"
+            "process.exitCode=1;});"
+        )
+        try:
+            node_result = subprocess.run(
+                [node_path, "-e", script, url],
+                cwd=str(root),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=runtime_env,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            node_result = None
+            node_detail = str(exc)
+        else:
+            node_detail = (node_result.stdout or node_result.stderr or "").strip()
+    else:
+        node_detail = "Node.js executable not found in the resolved project PATH"
+
+    curl_result = None
+    curl_path = shutil.which("curl")
+    if curl_path:
+        try:
+            curl_result = subprocess.run(
+                [
+                    curl_path, "-fsSL", "--connect-timeout", "5", "--max-time", "8",
+                    "-o", os.devnull, "-w", "HTTP %{http_code}", url,
+                ],
+                cwd=str(root),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=runtime_env,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            curl_detail = str(exc)
+        else:
+            curl_detail = (curl_result.stdout or curl_result.stderr or "").strip()
+    else:
+        curl_detail = "curl is not installed"
+
+    node_ok = bool(
+        node_result is not None
+        and node_result.returncode == 0
+        and "HTTP 200" in (node_result.stdout or "")
+    )
+    curl_ok = bool(
+        curl_result is not None
+        and curl_result.returncode == 0
+        and "HTTP 200" in (curl_result.stdout or "")
+    )
+
+    proxy_names = [
+        name for name in (
+            "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+        ) if runtime_env.get(name)
+    ]
+    lines = [
+        "LOWKEY NETWORK DIAGNOSTIC (HH502)",
+        f"Compiler metadata: {url}",
+        f"Node HTTPS       : {'reachable' if node_ok else 'failed'} — {node_detail or 'no response'}",
+        f"curl HTTPS       : {'reachable' if curl_ok else 'failed'} — {curl_detail or 'no response'}",
+        "Proxy variables  : " + (", ".join(proxy_names) if proxy_names else "none detected; values are never printed"),
+    ]
+    if curl_ok and not node_ok:
+        lines.append(
+            "Interpretation   : curl can reach the compiler host, but Hardhat's Node HTTPS path cannot. "
+            "Check proxy/NO_PROXY and Node trust/network settings; do not disable TLS verification."
+        )
+    elif not curl_ok and not node_ok:
+        lines.append(
+            "Interpretation   : neither client reached the compiler host. Check DNS, firewall, "
+            "proxy configuration and outbound HTTPS before changing Solidity versions."
+        )
+    elif node_ok:
+        lines.append(
+            "Interpretation   : Node can currently reach compiler metadata. HH502 may have been "
+            "transient or related to Hardhat's cache/download path; retry once and inspect the "
+            "underlying error if it persists."
+        )
+    return "\n".join(lines)
+
 def _run(command: Sequence[str], root: Path) -> tuple[int, str]:
     try:
         runtime_env, _node_pin = runtime_environment(root)
@@ -1129,7 +1273,15 @@ def _run(command: Sequence[str], root: Path) -> tuple[int, str]:
     except OSError as exc:
         return 1, str(exc)
     output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
-    return result.returncode, output.strip()
+    output = output.strip()
+    if result.returncode != 0:
+        try:
+            diagnostic = _diagnose_solidity_compiler_download(root, command, output)
+        except Exception as exc:
+            diagnostic = f"LOWKEY NETWORK DIAGNOSTIC: probe failed safely: {exc}"
+        if diagnostic:
+            output = (output + "\n\n" + diagnostic).strip()
+    return result.returncode, output
 
 def _report_step(label: str, command: Sequence[str], code: int, output: str) -> None:
     status = "PASS" if code == 0 else "TIMEOUT" if code == 124 else "FAIL"
@@ -1204,6 +1356,7 @@ def bootstrap_project(
     force: bool = False,
     reason: str = "prepare",
     required_paths: Sequence[str] = (),
+    safe_node_install: bool = False,
 ) -> int:
     """Prepare the selected project through Lowkey's shared bootstrap engine."""
     if run_shared_bootstrap is None:
@@ -1223,8 +1376,12 @@ def bootstrap_project(
             reason=reason,
             timeout=timeout,
             required_paths=required_paths,
+            safe_node_install=safe_node_install,
         )
-    return run_shared_bootstrap(info, force=force, reason=reason, timeout=timeout)
+    return run_shared_bootstrap(
+        info, force=force, reason=reason, timeout=timeout,
+        safe_node_install=safe_node_install,
+    )
 
 
 def bootstrap_status(info: dict[str, Any]) -> dict[str, Any]:
