@@ -1502,8 +1502,8 @@ class CommandHelpTests(unittest.TestCase):
                 "outputs": [{"name": "", "type": "uint256"}],
             }
         ]
-        with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
-             patch.object(lk, "active_project_target", return_value=target), \\
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(lk, "active_project_target", return_value=target), \
              patch.object(lk, "load_abi", return_value=abi):
             output = io.StringIO()
             with redirect_stdout(output):
