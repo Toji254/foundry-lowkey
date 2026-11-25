@@ -165,6 +165,28 @@ class LabTargetScopeTests(unittest.TestCase):
                 root, "OrderBookReader", target_scope=core, source_file=root / source
             ))
 
+    def test_vyper_artifact_without_source_name_resolves_from_vyper_source_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            source = root / "src" / "Counter.vy"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "@external\ndef increment():\n    pass\n",
+                encoding="utf-8",
+            )
+            artifact_path = root / "out" / "Counter.vy" / "Counter.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(json.dumps({
+                "contractName": "Counter",
+                "abi": [{"type": "function", "name": "increment", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            self.assertTrue(lk.artifact_is_project_application(root, artifact_path, artifact))
+            selected = lk.discover_generic_lab_contract(root, target_scope=root)
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected[1], "Counter")
+
     def test_explicit_missing_target_fails_closed_without_alternate_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(tmp)
