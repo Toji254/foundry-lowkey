@@ -70,13 +70,13 @@ class EthFlowReconTests(unittest.TestCase):
         try:
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                status = main(["--root", str(root), "--depth", "5"])
+                status = main(["--root", str(root), "--depth", "5", "--detail"])
         finally:
             temporary.cleanup()
 
         rendered = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("ETH ENTERS", rendered)
+        self.assertIn("ETH ENTRY POINTS", rendered)
         self.assertIn("Vault.deposit()", rendered)
         self.assertIn("ETH EXIT SITES", rendered)
         self.assertIn("Treasury.pay(", rendered)
@@ -91,7 +91,7 @@ class EthFlowReconTests(unittest.TestCase):
         try:
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                status = main(["--root", str(root), "--contract", "Vault"])
+                status = main(["--root", str(root), "--contract", "Vault", "--detail"])
         finally:
             temporary.cleanup()
 
@@ -136,6 +136,8 @@ class EthFlowReconTests(unittest.TestCase):
                 "HELP TIP",
                 "--contract <NAME>",
                 "--depth <N>",
+                "--detail",
+                "--include-tests",
                 "--json",
                 "runtime address",
             ):
