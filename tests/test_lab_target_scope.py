@@ -109,6 +109,95 @@ class LabTargetScopeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside the selected project"):
                 scope_module.resolve_target_scope(root, invocation_dir=root, scope="external-link")
 
+
+    def test_missing_artifact_source_name_resolves_only_inside_invocation_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            core = root / "contracts" / "core"
+            peripherals = root / "contracts" / "peripherals"
+            core.mkdir(parents=True)
+            peripherals.mkdir(parents=True)
+            core_source = core / "OrderBook.sol"
+            peripheral_source = peripherals / "OrderBook.sol"
+            core_source.write_text("contract OrderBook {}", encoding="utf-8")
+            peripheral_source.write_text("contract OrderBook {}", encoding="utf-8")
+
+            self.assertIsNone(lk.source_contract_fallback(root, "OrderBook"))
+            self.assertEqual(
+                lk.source_contract_fallback(root, "OrderBook", target_scope=core),
+                "contracts/core/OrderBook.sol",
+            )
+            self.assertEqual(
+                lk.source_contract_fallback(root, "OrderBook", source_file=peripheral_source),
+                "contracts/peripherals/OrderBook.sol",
+            )
+
+
+    def test_scoped_source_resolution_is_reused_by_application_provenance_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            core = root / "contracts" / "core"
+            peripherals = root / "contracts" / "peripherals"
+            core.mkdir(parents=True)
+            peripherals.mkdir(parents=True)
+            (core / "OrderBook.sol").write_text("contract OrderBook {}", encoding="utf-8")
+            (peripherals / "OrderBook.sol").write_text("contract OrderBook {}", encoding="utf-8")
+            artifact_path = root / "out" / "OrderBook.sol" / "OrderBook.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact = {
+                "contractName": "OrderBook",
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+            }
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+            scoped_source = lk.source_contract_fallback(
+                root, "OrderBook", target_scope=core
+            )
+            self.assertEqual(scoped_source, "contracts/core/OrderBook.sol")
+            self.assertTrue(lk.artifact_is_project_application(
+                root, artifact_path, artifact, resolved_source=scoped_source
+            ))
+            self.assertFalse(lk.artifact_is_project_application(
+                root, artifact_path, artifact
+            ))
+
+    def test_scoped_contract_list_collapses_identical_artifact_copies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            self._write_vyper_artifact(root, ".audit/build/vyper/Counter.json")
+            self._write_vyper_artifact(root, ".audit/walkthrough/vyper/Counter.json")
+            self.assertEqual(
+                lk._lab_scoped_contract_names(root, target_scope=root),
+                ["Counter"],
+            )
+
+    def test_scoped_contract_list_keeps_conflicting_same_source_artifacts_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            self._write_vyper_artifact(
+                root, ".audit/build/vyper/Counter.json", bytecode="0x6000"
+            )
+            self._write_vyper_artifact(
+                root, ".audit/walkthrough/vyper/Counter.json", bytecode="0x6002"
+            )
+            self.assertEqual(lk._lab_scoped_contract_names(root, target_scope=root), [])
+
+    def test_source_artifact_symlink_outside_project_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = self._project(tmp)
+            outside_source = Path(outside) / "OrderBook.sol"
+            outside_source.write_text("contract OrderBook {}", encoding="utf-8")
+            link = root / "contracts" / "OrderBook.sol"
+            link.parent.mkdir(parents=True)
+            try:
+                link.symlink_to(outside_source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks are unavailable")
+            self.assertFalse(lk.lab_target_scope.artifact_source_in_scope(
+                root, "contracts/OrderBook.sol", target_scope=link.parent
+            ))
+
     def test_scope_parser_preserves_contract_selector_and_other_flags(self):
         args, scope, source = scope_module.parse_scope_options([
             "--generic", "OrderBook", "--scope", "contracts/core", "--ai-review",

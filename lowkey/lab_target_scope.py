@@ -84,7 +84,7 @@ def parse_scope_options(arguments: Iterable[str] | None):
 def _resolve_existing(path: Path, description: str) -> Path:
     try:
         return path.resolve(strict=True)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise ValueError(f"{description} does not exist or cannot be resolved: {path}") from exc
 
 
@@ -181,22 +181,28 @@ def artifact_source_in_scope(
     """Check compiler source provenance against the selected project and scope."""
     if not source_name:
         return False
-    root = Path(project_root).expanduser().resolve()
-    raw_source = Path(str(source_name)).expanduser()
-    candidate = (raw_source if raw_source.is_absolute() else root / raw_source).resolve()
-    if not _is_within(candidate, root) or not candidate.is_file():
+    try:
+        root = Path(project_root).expanduser().resolve(strict=True)
+        raw_source = Path(str(source_name).replace("\\", "/")).expanduser()
+        candidate = (
+            raw_source if raw_source.is_absolute() else root / raw_source
+        ).resolve(strict=True)
+        candidate.relative_to(root)
+        if not candidate.is_file():
+            return False
+
+        if target_scope is not None:
+            scope_path = Path(target_scope).expanduser().resolve(strict=True)
+            scope_path.relative_to(root)
+            if not scope_path.is_dir() or not _is_within(candidate, scope_path):
+                return False
+
+        if source_file is not None:
+            requested_source = Path(source_file).expanduser().resolve(strict=True)
+            requested_source.relative_to(root)
+            if candidate != requested_source:
+                return False
+    except (OSError, RuntimeError, ValueError):
         return False
-
-    if target_scope is not None:
-        scope_path = Path(target_scope).expanduser().resolve()
-        if not _is_within(scope_path, root) or not scope_path.is_dir():
-            return False
-        if not _is_within(candidate, scope_path):
-            return False
-
-    if source_file is not None:
-        requested_source = Path(source_file).expanduser().resolve()
-        if candidate != requested_source:
-            return False
 
     return True
