@@ -3752,12 +3752,16 @@ def run_info(config):
         print(f"Implementation: {apply_labels(proxy['implementation'], config)}")
     if proxy.get("beacon"):
         print(f"Beacon: {apply_labels(proxy['beacon'], config)}")
+    if proxy.get("beacon_implementation"):
+        print(f"Beacon implementation: {apply_labels(proxy['beacon_implementation'], config)}")
     if proxy.get("admin"):
         print(f"Proxy admin: {apply_labels(proxy['admin'], config)}")
     if proxy.get("clone_implementation"):
         print(f"Clone implementation: {apply_labels(proxy['clone_implementation'], config)}")
     if proxy.get("application_governor"):
         print(f"Application governor (gov()): {apply_labels(proxy['application_governor'], config)}")
+    for item in proxy.get("evidence") or []:
+        print(f"Proxy evidence: {item}")
 
 def run_encode(config,args):
     if not args:
@@ -8239,12 +8243,27 @@ def run_recon(config):
     print(f"Codehash: {codehash or 'Unknown'}")
     print(f"Codesize: {codesize or 'Unknown'} bytes")
     print(f"Nonce:    {nonce or 'Unknown'}")
-    proxy=inspect_proxy(config,quiet=True)
-    clone_implementation=inspect_clone(config)
-    print(f"EIP-1967 proxy: {'YES' if proxy else 'NO'}")
-    print(f"EIP-1167 clone: {'YES' if clone_implementation else 'NO'}")
-    if clone_implementation:
-        print(f"Implementation: {clone_implementation}")
+    proxy = inspect_proxy_details(config)
+    proxy_kind = str(proxy.get("kind") or "UNKNOWN")
+    erc1967_proxy = proxy_kind in {
+        "ERC1967_IMPLEMENTATION_PROXY", "ERC1967_BEACON_PROXY",
+    }
+    is_clone = proxy_kind == "EIP1167_MINIMAL_CLONE"
+    print(f"Proxy classification: {proxy_kind}")
+    print(f"EIP-1967 proxy: {'YES' if erc1967_proxy else 'NO'}")
+    print(f"EIP-1167 clone: {'YES' if is_clone else 'NO'}")
+    if proxy.get("implementation"):
+        print(f"Implementation: {apply_labels(proxy['implementation'], config)}")
+    if proxy.get("beacon"):
+        print(f"Beacon: {apply_labels(proxy['beacon'], config)}")
+    if proxy.get("beacon_implementation"):
+        print(f"Beacon implementation: {apply_labels(proxy['beacon_implementation'], config)}")
+    if proxy.get("admin"):
+        print(f"Proxy admin: {apply_labels(proxy['admin'], config)}")
+    if proxy.get("application_governor"):
+        print(f"Application governor (gov()): {apply_labels(proxy['application_governor'], config)}")
+    for item in proxy.get("evidence") or []:
+        print(f"Proxy evidence: {item}")
     print("="*52)
 EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 EIP1967_BEACON_SLOT = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50"

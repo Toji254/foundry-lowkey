@@ -1,3 +1,5 @@
+import contextlib
+import io
 import importlib.util
 import pathlib
 import sys
@@ -159,6 +161,56 @@ class ProxyInspectionTests(unittest.TestCase):
 
         with patch.object(lk, "cast_output", return_value=(1, "", "rpc failed")):
             self.assertEqual(lk._runtime_code("http://127.0.0.1:8545", TARGET), "")
+
+    def test_info_displays_beacon_implementation_from_shared_inspector(self):
+        details = {
+            "kind": "ERC1967_BEACON_PROXY",
+            "implementation": None,
+            "beacon": BEACON,
+            "beacon_implementation": IMPLEMENTATION,
+            "admin": None,
+            "clone_implementation": None,
+            "application_governor": APP_GOV,
+            "evidence": ["non-zero ERC-1967 beacon slot"],
+        }
+        output = io.StringIO()
+        with patch.object(lk, "run_chain"), \
+             patch.object(lk, "run_cast", return_value="0x6000"), \
+             patch.object(lk, "load_abi", return_value=[]), \
+             patch.object(lk, "inspect_proxy_details", return_value=details):
+            with contextlib.redirect_stdout(output):
+                lk.run_info({"target": TARGET})
+
+        self.assertIn(f"Beacon implementation: {IMPLEMENTATION}", output.getvalue())
+        self.assertIn("Proxy evidence: non-zero ERC-1967 beacon slot", output.getvalue())
+
+    def test_recon_distinguishes_minimal_clone_from_erc1967_proxy(self):
+        details = {
+            "kind": "EIP1167_MINIMAL_CLONE",
+            "is_proxy": True,
+            "implementation": IMPLEMENTATION,
+            "beacon": None,
+            "beacon_implementation": None,
+            "admin": None,
+            "application_governor": None,
+            "evidence": ["minimal-proxy runtime bytecode embeds the implementation address"],
+        }
+        output = io.StringIO()
+        with patch.object(lk, "run_cast", side_effect=[
+            "1 ether", "0x6000", "0x" + "a" * 64, "1", "32"
+        ]), \
+             patch.object(lk, "inspect_proxy_details", return_value=details), \
+             patch.object(lk, "inspect_clone") as legacy_clone:
+            with contextlib.redirect_stdout(output):
+                lk.run_recon({"target": TARGET})
+
+        rendered = output.getvalue()
+        self.assertIn("Proxy classification: EIP1167_MINIMAL_CLONE", rendered)
+        self.assertIn("EIP-1967 proxy: NO", rendered)
+        self.assertIn("EIP-1167 clone: YES", rendered)
+        self.assertIn(f"Implementation: {IMPLEMENTATION}", rendered)
+        legacy_clone.assert_not_called()
+
 
     def test_live_proxy_guard_accepts_beacon_and_clone_patterns(self):
         with patch.object(lk, "_runtime_code", return_value="0x6000"), \
