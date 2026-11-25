@@ -213,6 +213,7 @@ class SourceAstTests(unittest.TestCase):
         self.assertEqual(len(ast_modifiers), 1)
         self.assertEqual(index["parser"], "SOLC_AST+LEXICAL")
         self.assertGreaterEqual(index["ast"]["functions"], 3)
+        self.assertIn(withdraw["id"], index["ast"]["covered_function_ids"])
 
     def test_ast_storage_mapping_write_and_compound_write_are_declaration_resolved(self):
         temporary = tempfile.TemporaryDirectory()
