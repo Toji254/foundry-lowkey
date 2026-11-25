@@ -1972,24 +1972,26 @@ def run_link(argv: list[str], *, help_command: str = "lk link") -> int:
         )
 
     candidates = find_symbols(index, args.target)
+    if args.detail != "summary" and args.only is not None:
+        parser.error("--detail is for function views; use --only for contract relationship filters")
+
+    graph_json = args.json or args.output_format == "json"
     if len(candidates) == 1 and candidates[0].get("kind") == "contract":
         graph_status = render_project_graph(
             index, root=args.root, only=args.only, focus=args.target,
             depth=args.depth or 1, limit=args.limit,
             include_third_party=args.include_third_party,
-            output_format="terminal",
+            output_format="json" if graph_json else "terminal",
         )
-        if graph_status:
+        if graph_status or graph_json:
             return graph_status
         print()
     elif args.include_third_party:
         print("NOTE  --include-third-party is only used by project/focused graph views.")
 
-    if args.detail != "summary" and args.only is not None:
-        parser.error("--detail is for function views; use --only for contract relationship filters")
     return render_link(
         index=index, target=args.target, only=args.only, depth=args.depth,
-        limit=args.limit, as_json=(args.json or args.output_format == "json"), detail=args.detail,
+        limit=args.limit, as_json=graph_json, detail=args.detail,
     )
 
 
