@@ -10940,7 +10940,7 @@ def _doctor_compact_summary(report, exit_code):
             missing_names = [display_names.get(str(item.get("name") or "").lower(),
                                                str(item.get("name") or "unknown"))
                              for item in missing]
-            print("  Not installed: " + ", ".join(missing_names))
+            print("  Optional engines not installed: " + ", ".join(missing_names))
     elif engine_report.get("error"):
         print("  Inventory unavailable: " + engine_report["error"])
     else:
