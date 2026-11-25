@@ -56,7 +56,7 @@ PASS  dependency command: cast receipt
         self.assertIn("Installed: 2 / 3 registered", rendered)
         self.assertIn("Forge", rendered)
         self.assertIn("Slither", rendered)
-        self.assertIn("Not installed: Halmos", rendered)
+        self.assertIn("Optional engines not installed: Halmos", rendered)
         self.assertIn("Plugin registration warnings: 1", rendered)
         self.assertIn("broken-test-plugin: factory import failed", rendered)
         self.assertIn("Extra toolchains: 2 detected", rendered)
