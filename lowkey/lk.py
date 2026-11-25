@@ -29645,26 +29645,24 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                     print(f"     Field: {component}")
         print("")
         if all(value is not None for value in examples):
-            print("READY-TO-EDIT COMMAND")
-            print("  Copy this whole block. Change only the values on the right-hand side, then run it.")
-            command_arguments = []
-            for index, (param, value) in enumerate(zip(inputs, examples), 1):
-                variable = f"LK_ARG_{index}"
-                label = str(param.get("name") or f"arg{index}")
-                abi_type = canonical_type(param)
-                print(f"  {variable}={value}  # {label} ({abi_type})")
-                command_arguments.append(chr(34) + chr(36) + variable + chr(34))
-            command = "lk send " + shlex.quote(signature)
-            if command_arguments:
-                command += " " + " ".join(command_arguments)
+            print("COPY, EDIT VALUES, RUN")
+            print("  This is a normal Lowkey command. Change the sample values directly, then paste the command.")
+            overloaded = [
+                candidate for candidate in funcs
+                if str(candidate.get("name") or "").casefold() == str(item.get("name") or "").casefold()
+            ]
+            command_function = signature if len(overloaded) > 1 else str(item.get("name") or signature)
+            command = "lk send " + shlex.quote(command_function)
+            if examples:
+                command += " " + " ".join(examples)
             command += " --preview"
             print("")
-            print("FINAL COMMAND (preview only; nothing is broadcast)")
+            print("READY-TO-COPY COMMAND (preview only; nothing is broadcast)")
             print(f"  {command}")
         else:
-            print("READY-TO-EDIT COMMAND")
-            print("  Lowkey cannot safely create a complete value block for every input type in this function.")
-            print("  Use the examples above, inspect any unsupported type in source, then build the command manually.")
+            print("READY-TO-COPY COMMAND")
+            print("  Lowkey cannot safely generate an example for every input type in this function.")
+            print("  Use the examples above, inspect unsupported types in source, then construct the command manually.")
         print("")
         print("ABI LIMIT")
         print("  ABI types describe the encoded shape, not the business meaning.")
