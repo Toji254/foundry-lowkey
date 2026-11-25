@@ -1,6 +1,8 @@
 import importlib.util
 import io
+import json
 import pathlib
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -316,6 +318,61 @@ class CliConsistencyTests(unittest.TestCase):
                 f"Fallback ({address})",
                 lk.apply_labels(address, config),
             )
+
+    def test_current_project_target_identity_overrides_stale_global_label(self):
+        address = "0x" + "4" * 40
+        config = {"labels": {address: "GlpManager"}}
+        with patch.object(lk, "target_aliases", return_value={"OrderBook": address}):
+            self.assertEqual(lk.apply_labels(address, config), f"OrderBook ({address})")
+
+    def test_actor_identity_still_outranks_project_target_and_global_label(self):
+        address = "0x" + "4" * 40
+        config = {
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": address}},
+            "labels": {address: "GlpManager"},
+        }
+        with patch.object(lk, "target_aliases", return_value={"OrderBook": address}):
+            self.assertEqual(lk.apply_labels(address, config), f"Alice ({address})")
+
+    def test_project_context_removes_stale_registry_name_for_reused_address(self):
+        address = "0x" + "4" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            old_artifact = root / "GlpManager.json"
+            new_artifact = root / "OrderBook.json"
+            old_artifact.write_text(json.dumps({"contractName": "GlpManager"}), encoding="utf-8")
+            new_artifact.write_text(json.dumps({"contractName": "OrderBook"}), encoding="utf-8")
+            config = {
+                "project_target_registry": {
+                    str(root): {
+                        "GlpManager": {"address": address, "artifact": str(old_artifact), "explicit": True},
+                        "OrderBook": {"address": address, "artifact": str(new_artifact), "explicit": True},
+                    }
+                }
+            }
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "project_context_target", return_value={"address": address, "contract": "OrderBook"}), \
+                 patch.object(lk, "artifact_is_project_application", return_value=True):
+                aliases = lk.target_aliases(config, root)
+            self.assertEqual(aliases, {"OrderBook": address})
+
+    def test_remember_project_target_retires_old_name_at_reused_address(self):
+        address = "0x" + "4" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            config = {
+                "project_target_registry": {
+                    str(root): {
+                        "GlpManager": {"address": address, "artifact": None, "explicit": True}
+                    }
+                }
+            }
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                lk.remember_project_target(config, root, "OrderBook", address)
+            entries = config["project_target_registry"][str(root)]
+            self.assertNotIn("GlpManager", entries)
+            self.assertEqual(entries["OrderBook"]["address"], address)
 
     def test_storage_read_explains_slot_from_compiled_layout(self):
         raw = "0x000000000000000000000000" + "f39fd6e51aad88f6f4ce6ab8827279cfffb92266"

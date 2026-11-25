@@ -1233,6 +1233,18 @@ def target_aliases(config, root=None):
             except (OSError, RuntimeError, TypeError, ValueError):
                 continue
 
+    # The active project context is the freshest record for its current target.
+    # Resolve it before the registry so a deterministic Anvil address reused for
+    # a different contract cannot retain the old project's/target's nickname.
+    context_target = project_context_target(project_root)
+    context_identity = None
+    if isinstance(context_target, dict):
+        context_name = str(context_target.get("contract") or "").strip()
+        context_address = context_target.get("address")
+        if context_name and is_address(context_address):
+            context_identity = (context_name, str(context_address))
+
+    registry_candidates = []
     registry_names = set()
     for name, record in scoped_registry.items():
         if not isinstance(record, dict):
@@ -1255,20 +1267,29 @@ def target_aliases(config, root=None):
             # registered inside this project; runtime code is still checked
             # before it is offered as a constructor address.
             continue
-        merged[str(name)] = str(address)
+        registry_candidates.append((str(name), str(address)))
         registry_names.add(str(name).casefold())
+
+    names_by_address = {}
+    for name, address in registry_candidates:
+        names_by_address.setdefault(address.lower(), set()).add(name.casefold())
+
+    for name, address in registry_candidates:
+        current_context_address = (
+            context_identity[1].lower() if context_identity else None
+        )
+        if current_context_address == address.lower():
+            if name.casefold() != context_identity[0].casefold():
+                continue
+        elif len(names_by_address.get(address.lower(), set())) > 1:
+            # Without a current target record, two contract names for one
+            # address are ambiguous. Do not choose by dict iteration order.
+            continue
+        merged[name] = address
 
     roots = config.get("project_roots", {})
     owners = config.get("target_owners", {})
     aliases = list(config.get("aliases", {}).items()) + list(config.get("targets", {}).items())
-
-    context_target = project_context_target(project_root)
-    context_identity = None
-    if isinstance(context_target, dict):
-        context_name = str(context_target.get("contract") or "").strip()
-        context_address = context_target.get("address")
-        if context_name and is_address(context_address):
-            context_identity = (context_name, str(context_address))
 
     for name, address in aliases:
         if not name or not is_address(address):
@@ -1367,6 +1388,18 @@ def remember_project_target(config, root, name, address):
 
     registry = config.setdefault("project_target_registry", {})
     project_entries = registry.setdefault(root_key, {})
+    # A live address can identify only one deployed runtime at a time. If
+    # Anvil reuses a deterministic address for another contract, retire the
+    # older name in this project's registry before recording the new identity.
+    for existing_name, existing_record in list(project_entries.items()):
+        if str(existing_name).casefold() == str(name).casefold():
+            continue
+        existing_address = (
+            existing_record.get("address")
+            if isinstance(existing_record, dict) else None
+        )
+        if is_address(existing_address) and str(existing_address).lower() == str(address).lower():
+            del project_entries[existing_name]
     project_entries[str(name)] = {
         "address": str(address),
         "artifact": artifact,
@@ -5198,15 +5231,9 @@ def _known_address_identities(config):
         lowered = str(address).lower()
         identities.setdefault(lowered, (str(name), str(address)))
 
-    # Explicit labels remain useful when no actor/wallet name owns the address.
-    for address, label in (config.get("labels") or {}).items():
-        if not is_address(address) or not str(label).strip():
-            continue
-        lowered = str(address).lower()
-        identities.setdefault(lowered, (str(label).strip(), str(address)))
-
-    # Project target names are also human identities. Actor/wallet identities
-    # remain higher priority when the same address has both meanings.
+    # Project target names are grounded in this project's artifact/context
+    # records and therefore outrank free-form global labels that may be stale
+    # after Anvil reuses a deterministic address.
     try:
         for name, address in target_aliases(config).items():
             if is_address(address):
@@ -5214,6 +5241,14 @@ def _known_address_identities(config):
                 identities.setdefault(lowered, (str(name), str(address)))
     except Exception:
         pass
+
+    # Explicit labels remain a fallback when no actor, wallet, or current
+    # project target owns the address.
+    for address, label in (config.get("labels") or {}).items():
+        if not is_address(address) or not str(label).strip():
+            continue
+        lowered = str(address).lower()
+        identities.setdefault(lowered, (str(label).strip(), str(address)))
 
     return identities
 
