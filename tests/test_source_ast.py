@@ -213,6 +213,10 @@ class SourceAstTests(unittest.TestCase):
         self.assertEqual(len(ast_modifiers), 1)
         self.assertEqual(index["parser"], "SOLC_AST+LEXICAL")
         self.assertGreaterEqual(index["ast"]["functions"], 3)
+        self.assertGreaterEqual(index["ast"]["source_units"], 1)
+        self.assertGreaterEqual(index["ast"]["ast_source_units"], 1)
+        self.assertGreaterEqual(index["ast"]["contract_declarations"], 2)
+        self.assertGreaterEqual(index["ast"]["function_declarations"], 3)
         self.assertIn(withdraw["id"], index["ast"]["covered_function_ids"])
 
     def test_ast_storage_mapping_write_and_compound_write_are_declaration_resolved(self):
@@ -829,6 +833,30 @@ class SourceAstTests(unittest.TestCase):
             and edge.get("kind") == "CALLS"
             for edge in index["edges"]
         ))
+
+    def test_build_info_without_ast_reports_foundry_remediation(self):
+        temporary, root, _source = self._fixture()
+        try:
+            path = root / "out" / "build-info" / "test.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            for output in payload["output"]["sources"].values():
+                output.pop("ast", None)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        ast_report = index["ast"]
+        self.assertEqual(ast_report["build_info_files"], 1)
+        self.assertEqual(ast_report["source_units"], 1)
+        self.assertEqual(ast_report["ast_source_units"], 0)
+        self.assertEqual(ast_report["functions"], 0)
+        self.assertTrue(any(
+            "ast = true" in warning and "forge build --force" in warning
+            for warning in ast_report["warnings"]
+        ))
+        self.assertEqual(index["parser"], "LEXICAL")
 
     def test_build_info_manifest_changes_when_artifact_changes(self):
         temporary, root, _source = self._fixture()

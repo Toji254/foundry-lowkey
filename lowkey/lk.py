@@ -3761,6 +3761,8 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
     if source_path:
         print(f"Source   : {source_path}")
     print(f"Count    : {len(records)}")
+    if verbose:
+        print("Return data: ABI-declared outputs only; mined transaction receipts do not expose Solidity return data.")
     if not records:
         print("\nNo functions matched the requested filters.")
         return
@@ -3772,10 +3774,10 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
             print(f"  mutability : {record['mutability']}")
             print(f"  class      : {' • '.join(record['classes'])}")
             print(f"  modifiers  : {_function_modifier_text(record)}")
-            params = _function_parameter_labels(record.get("inputs"), "arg")
+            inputs = _function_parameter_labels(record.get("inputs"), "arg")
             outputs = _function_parameter_labels(record.get("outputs"), "ret")
-            print(f"  params     : {', '.join(params) if params else '—'}")
-            print(f"  returns    : {', '.join(outputs) if outputs else '—'}")
+            print(f"  inputs     : {', '.join(inputs) if inputs else '—'}")
+            print(f"  ABI returns: {', '.join(outputs) if outputs else '—'}")
             print(f"  reads      : {', '.join(record['reads']) if record['reads'] else '—'}")
             print(f"  writes     : {', '.join(record['writes']) if record['writes'] else '—'}")
             print(f"  emits      : {', '.join(record['events']) if record['events'] else '—'}")
@@ -4141,12 +4143,23 @@ def _print_compiler_ast_effects(root, contract_name, source_path, records):
 
     report = index.get("ast") or {}
     ast_functions = int(report.get("functions") or 0)
+    source_units = int(report.get("source_units") or 0)
+    ast_source_units = int(report.get("ast_source_units") or 0)
+    matched_units = int(report.get("matched_units") or 0)
+    contracts = int(report.get("contracts") or 0)
+    contract_declarations = int(report.get("contract_declarations") or 0)
+    function_declarations = int(report.get("function_declarations") or 0)
     print("\nCOMPILER AST EFFECTS")
     print(
-        f"  Matched declarations: {ast_functions}; build-info files: {report.get('build_info_files', 0)}; "
-        f"stale source units: {report.get('stale_units', 0)}."
+        f"  Build info : {report.get('build_info_files', 0)} file(s) · "
+        f"{source_units} source unit(s) · {ast_source_units} with AST · {matched_units} current"
     )
-    print("  Evidence: static compiler-AST/source graph; reachable paths are not proof of runtime execution.")
+    print(
+        f"  AST match  : {contracts}/{contract_declarations} contracts · "
+        f"{ast_functions}/{function_declarations} functions/modifiers"
+    )
+    print(f"  Stale      : {report.get('stale_units', 0)} source unit(s)")
+    print("  Evidence   : static compiler-AST/source graph; reachable paths are not proof of runtime execution.")
     for warning in (report.get("warnings") or [])[:3]:
         print(f"  AST NOTE: {warning}")
 
@@ -4375,6 +4388,12 @@ def run_functions(config, args=None):
                 _function_print_wrapped(
                     "      INPUTS   ",
                     " · ".join(input_labels),
+                )
+            output_labels = _function_parameter_labels(record.get("outputs"), "ret")
+            if output_labels:
+                _function_print_wrapped(
+                    "      RETURNS  ",
+                    " · ".join(output_labels),
                 )
             labels = _function_default_eth_annotation(record)
             status = " · ".join(

@@ -151,6 +151,9 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("ether      : SENDS", output)
         self.assertIn("risk flags : STATE-WRITE", output)
         self.assertIn("selector   : 0x2e1a7d4d", output)
+        self.assertIn("inputs     :", output)
+        self.assertIn("ABI returns:", output)
+        self.assertIn("Return data: ABI-declared outputs only", output)
 
     def test_default_inventory_is_a_compact_dashboard(self):
         code, output = self._run([])
@@ -191,6 +194,8 @@ class FunctionInventoryTests(unittest.TestCase):
         # explicit positional fallback instead of inventing a source name.
         self.assertIn("arg1:address", output)
         self.assertIn("balances(address)", output)
+        self.assertIn("RETURNS", output)
+        self.assertIn("ret1:uint256", output)
 
     def test_parameter_label_formatter_preserves_tuple_types_and_fallback_names(self):
         labels = lk._function_parameter_labels(

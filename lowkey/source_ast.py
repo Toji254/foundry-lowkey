@@ -179,7 +179,7 @@ def _match_function(
 def _load_matched_units(
     manifest: dict[str, Any],
     source_by_path: dict[str, str],
-) -> tuple[list[dict[str, Any]], int, list[str]]:
+) -> tuple[list[dict[str, Any]], int, list[str], int, int]:
     by_hash: dict[str, list[str]] = {}
     source_hashes: dict[str, str] = {}
     for path, content in source_by_path.items():
@@ -191,6 +191,8 @@ def _load_matched_units(
     stale = 0
     warnings: list[str] = []
     total_bytes = 0
+    source_units_seen = 0
+    source_units_with_ast = 0
 
     for entry in manifest.get("files") or []:
         path = Path(str(entry.get("path") or ""))
@@ -213,8 +215,13 @@ def _load_matched_units(
             continue
 
         for source_key, output in output_sources.items():
-            if not isinstance(output, dict) or not isinstance(output.get("ast"), dict):
+            if not isinstance(output, dict):
                 continue
+            source_units_seen += 1
+            ast = output.get("ast")
+            if not isinstance(ast, dict):
+                continue
+            source_units_with_ast += 1
             input_entry = input_sources.get(source_key)
             content = input_entry.get("content") if isinstance(input_entry, dict) else None
             if not isinstance(content, str):
@@ -242,7 +249,7 @@ def _load_matched_units(
 
     # Keep compilation identity: declaration IDs are unique only within one
     # solc compilation, not across separate build-info JSON files.
-    return units, stale, warnings
+    return units, stale, warnings, source_units_seen, source_units_with_ast
 
 
 
@@ -806,10 +813,14 @@ def apply_solc_ast_call_edges(
         return {
             "available": False, "build_info_files": 0, "matched_units": 0,
             "stale_units": 0, "functions": 0, "covered_function_ids": [], "call_edges": 0,
-            "modifier_edges": 0, "warnings": [f"Could not inspect build-info: {error}"],
+            "modifier_edges": 0, "source_units": 0, "ast_source_units": 0,
+            "contract_declarations": 0, "function_declarations": 0,
+            "warnings": [f"Could not inspect build-info: {error}"],
         }
 
-    units, stale_units, warnings = _load_matched_units(manifest, source_by_path)
+    units, stale_units, warnings, source_units_seen, source_units_with_ast = _load_matched_units(
+        manifest, source_by_path
+    )
     graph_functions = [
         item for item in nodes
         if item.get("kind") in {"function", "modifier"}
@@ -821,9 +832,14 @@ def apply_solc_ast_call_edges(
     ast_covered: set[str] = set()
     ast_virtual: dict[str, bool] = {}
     matched_contracts = 0
+    contract_declarations = 0
+    unmatched_contracts: list[str] = []
+    function_declarations = 0
+    unmatched_functions: list[str] = []
 
     def collect_contract(contract_ast: dict[str, Any], unit: dict[str, Any]) -> None:
-        nonlocal matched_contracts
+        nonlocal matched_contracts, contract_declarations, function_declarations
+        contract_declarations += 1
         contract_name = str(contract_ast.get("name") or "")
         contract_graph = next(
             (
@@ -835,6 +851,7 @@ def apply_solc_ast_call_edges(
             None,
         )
         if contract_graph is None:
+            unmatched_contracts.append(f"{unit['path']}::{contract_name or '<unnamed>'}")
             return
         matched_contracts += 1
         contract_ast_id = contract_ast.get("id")
@@ -892,6 +909,7 @@ def apply_solc_ast_call_edges(
                 continue
             if child.get("nodeType") not in {"FunctionDefinition", "ModifierDefinition"}:
                 continue
+            function_declarations += 1
             graph_function = _match_function(
                 graph_functions,
                 path=unit["path"],
@@ -900,6 +918,8 @@ def apply_solc_ast_call_edges(
                 source=unit["source"],
             )
             if graph_function is None:
+                declaration_name = str(child.get("name") or child.get("kind") or "<anonymous>")
+                unmatched_functions.append(f"{unit['path']}::{contract_name}.{declaration_name}")
                 continue
             ast_id = child.get("id")
             try:
@@ -937,9 +957,14 @@ def apply_solc_ast_call_edges(
             "matched_units": len(units),
             "stale_units": stale_units,
             "contracts": matched_contracts,
+            "contract_declarations": contract_declarations,
+            "unmatched_contract_declarations": unmatched_contracts[:8],
+            "function_declarations": function_declarations,
+            "unmatched_function_declarations": unmatched_functions[:8],
+            "source_units": source_units_seen,
+            "ast_source_units": source_units_with_ast,
             "functions": 0,
             "covered_function_ids": sorted(ast_covered),
-            "call_edges": 0,
             "modifier_edges": 0,
             "storage_edges": 0,
             "storage_contexts_processed": 0,
@@ -948,8 +973,30 @@ def apply_solc_ast_call_edges(
                 [f"Ignored {stale_units} build-info source unit(s) that did not exactly match the current source inventory."]
                 if stale_units else []
             ) + (
+                [
+                    "Compiler AST output is missing from Foundry build-info. Set ast = true in the active foundry.toml profile, then run forge build --force to regenerate AST-enabled build-info."
+                ]
+                if source_units_seen and source_units_with_ast == 0 else []
+            ) + (
+                [
+                    f"Compiler AST output is missing from {source_units_seen - source_units_with_ast} of {source_units_seen} build-info source unit(s); set ast = true in the active foundry.toml profile and rebuild."
+                ]
+                if source_units_with_ast and source_units_with_ast < source_units_seen else []
+            ) + (
+                [
+                    "Compiler AST source units were present, but no contract declarations matched the current lexical source graph: "
+                    + ", ".join(unmatched_contracts[:3])
+                ]
+                if contract_declarations and not matched_contracts else []
+            ) + (
+                [
+                    "Compiler AST function declarations did not match the lexical source graph: "
+                    + ", ".join(unmatched_functions[:3])
+                ]
+                if function_declarations and not ast_covered else []
+            ) + (
                 ["No current compiler AST declarations could be matched; lexical analysis remains authoritative."]
-                if manifest.get("files") else []
+                if manifest.get("files") and not source_units_seen else []
             ),
         }
 
@@ -1194,6 +1241,12 @@ def apply_solc_ast_call_edges(
         "matched_units": len(units),
         "stale_units": stale_units,
         "contracts": matched_contracts,
+        "contract_declarations": contract_declarations,
+        "unmatched_contract_declarations": unmatched_contracts[:8],
+        "function_declarations": function_declarations,
+        "unmatched_function_declarations": unmatched_functions[:8],
+        "source_units": source_units_seen,
+        "ast_source_units": source_units_with_ast,
         "functions": len(ast_covered),
         "covered_function_ids": sorted(ast_covered),
         "call_edges": ast_call_edges,

@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 19
+CACHE_VERSION = 20
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
