@@ -24903,7 +24903,38 @@ COMMAND_HELP = {
 
         children={
             "tx": _help_entry("Inspect the latest transaction.", "lk last tx", "lk last tx", "Use it after a send."),
-            "trace": _help_entry(
+            "trace": _help_entry("Trace the latest transaction.", "lk last trace", "lk last trace", "Use it when you want the latest call chain."),
+            "logs": _help_entry("Show latest transaction logs.", "lk last logs", "lk last logs", "Use it when event evidence matters."),
+        },
+        related=["lk receipt", "lk trace", "lk logs"],
+    ),
+    "tx": _help_entry(
+        "Inspect and decode a transaction, including tx.origin and trace-derived msg.sender context.",
+        "lk tx [tx]",
+        "lk tx 0x...",
+        "Without a hash, Lowkey inspects the latest transaction saved for the current project and validated target. Pass an explicit hash to inspect a transaction from another workspace; this does not replace the current project's default transaction unless the transaction directly targets this project's validated target.",
+        forms=[
+            ("lk tx", "Inspect the latest transaction saved for this project and target.", "lk tx"),
+            ("lk tx <transaction-hash>", "Inspect a specific transaction, including the immediate caller at the selected project target when the RPC provides a call trace.", "lk tx 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ],
+        related=["lk receipt", "lk trace", "lk logs"],
+    ),
+    "receipt": _help_entry(
+        "Show the important result of a transaction without dumping the full raw receipt.",
+        "lk receipt [tx] [--raw]",
+        "lk receipt",
+        "Use it after sending a transaction when you want the answer first: did it succeed, who sent it, how much ETH moved, and what events were emitted. Use --raw only when you need the full Cast receipt.",
+        forms=[
+            ("lk receipt", "Show the last transaction Lowkey remembers in a simple summary.", "lk receipt"),
+            ("lk receipt <tx>", "Show a specific transaction's simple summary.", "lk receipt 0x871f..."),
+            ("lk receipt <tx> --raw", "Show the full low-level receipt when detailed debugging is needed.", "lk receipt 0x871f... --raw"),
+        ],
+        options=[
+            ("--raw", "Show the original detailed Cast receipt instead of Lowkey's simple summary.", "lk receipt --raw"),
+        ],
+        related=["lk tx", "lk trace", "lk logs"],
+    ),    
+    "trace": _help_entry(
         "Inspect one transaction's EVM execution, or use the source subcommand to navigate static Solidity call and storage relationships.",
         "lk trace [<transaction-hash>] [options] | lk trace source <Contract.function> [source options]",
         "lk trace source Vault.withdraw --detail all",
@@ -24976,53 +25007,7 @@ COMMAND_HELP = {
         ],
         related=["lk trace source", "lk fn --verbose", "lk project", "lk deps", "lk layout"],
     ),
-            "logs": _help_entry("Show latest transaction logs.", "lk last logs", "lk last logs", "Use it when event evidence matters."),
-        },
-        related=["lk receipt", "lk trace", "lk logs"],
-    ),
-    "tx": _help_entry(
-        "Inspect and decode a transaction, including tx.origin and trace-derived msg.sender context.",
-        "lk tx [tx]",
-        "lk tx 0x...",
-        "Without a hash, Lowkey inspects the latest transaction saved for the current project and validated target. Pass an explicit hash to inspect a transaction from another workspace; this does not replace the current project's default transaction unless the transaction directly targets this project's validated target.",
-        forms=[
-            ("lk tx", "Inspect the latest transaction saved for this project and target.", "lk tx"),
-            ("lk tx <transaction-hash>", "Inspect a specific transaction, including the immediate caller at the selected project target when the RPC provides a call trace.", "lk tx 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        ],
-        related=["lk receipt", "lk trace", "lk logs"],
-    ),
-    "receipt": _help_entry(
-        "Show the important result of a transaction without dumping the full raw receipt.",
-        "lk receipt [tx] [--raw]",
-        "lk receipt",
-        "Use it after sending a transaction when you want the answer first: did it succeed, who sent it, how much ETH moved, and what events were emitted. Use --raw only when you need the full Cast receipt.",
-        forms=[
-            ("lk receipt", "Show the last transaction Lowkey remembers in a simple summary.", "lk receipt"),
-            ("lk receipt <tx>", "Show a specific transaction's simple summary.", "lk receipt 0x871f..."),
-            ("lk receipt <tx> --raw", "Show the full low-level receipt when detailed debugging is needed.", "lk receipt 0x871f... --raw"),
-        ],
-        options=[
-            ("--raw", "Show the original detailed Cast receipt instead of Lowkey's simple summary.", "lk receipt --raw"),
-        ],
-        related=["lk tx", "lk trace", "lk logs"],
-    ),    "trace": _help_entry(
-        "Show the steps a transaction took inside the EVM, including calls to other contracts.",
-        "lk trace [tx] [options]",
-        "lk trace 0x871fecf8d5d88863f191016cae8f994eb8e2143521764948684d1468a7948957",
-        "Use it when a transaction's final result is not enough and you need to see where execution went or where it failed. When the top-level call returns a value that looks like an identifier, Lowkey shows it clearly and warns when the same probable identifier appears again.",
-        forms=[
-            ("lk trace", "Show the trace for the last transaction Lowkey remembers.", "lk trace"),
-            ("lk trace <tx>", "Show the trace for a specific transaction.", "lk trace 0x871f..."),
-            ("lk trace <tx> --grep <text>", "Show only trace lines containing the text you give.", "lk trace 0x871f... --grep setValue"),
-        ],
-        options=[
-            ("--grep <text>", "Show only trace lines that contain this text. This helps when a long trace has one part you care about.", "lk trace --grep setValue"),
-            ("--quick", "Ask Cast for a shorter trace when you do not need every detail.", "lk trace --quick"),
-            ("--decode-internal", "Ask Cast to decode more of the data used by calls inside the transaction.", "lk trace --decode-internal"),
-            ("--trace-printer <value>", "Pass a trace display setting to Cast. Run 'cast run --help' to see the exact value choices.", "lk trace --trace-printer <value>"),
-        ],
-        related=["lk receipt", "lk walkthrough"],
-    ),    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
+    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
     "logs": _help_entry("Query logs and optionally decode events.", "lk logs [args...]", "lk logs --decode", "Use it when events are part of behavior or security evidence.", options=[("--decode", "Decode matching events with the current ABI.", "lk logs --decode")], related=["lk event", "lk tx"]),
     "chain": _help_entry("Show chain ID, current block, and RPC.", "lk chain", "lk chain", "Use it to verify exactly which local chain/fork you are talking to.", related=["lk rpc", "lk fork"]),
     "balance": _help_entry(
