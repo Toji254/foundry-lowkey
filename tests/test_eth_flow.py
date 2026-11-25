@@ -166,6 +166,38 @@ class EthFlowReconTests(unittest.TestCase):
         self.assertIn("Vault.deposit", rendered)
         self.assertNotIn("Vault._internalValueHelper", rendered)
 
+
+    def test_test_and_mock_contracts_are_opt_in(self):
+        temporary, root = self.workspace()
+        try:
+            mock = root / "packages" / "vault" / "test" / "MockVaultTest.sol"
+            mock.parent.mkdir(parents=True)
+            mock.write_text(
+                """
+                pragma solidity ^0.8.20;
+                contract MockVaultTest {
+                    function testFunding() external payable {
+                        (bool ok,) = msg.sender.call{value: msg.value}("");
+                        require(ok);
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            default_output = io.StringIO()
+            with contextlib.redirect_stdout(default_output):
+                default_status = main(["--root", str(root)])
+            full_output = io.StringIO()
+            with contextlib.redirect_stdout(full_output):
+                full_status = main(["--root", str(root), "--include-tests"])
+        finally:
+            temporary.cleanup()
+
+        self.assertEqual(default_status, 0)
+        self.assertEqual(full_status, 0)
+        self.assertNotIn("MockVaultTest", default_output.getvalue())
+        self.assertIn("MockVaultTest", full_output.getvalue())
+
     def test_default_view_is_compact_and_groups_duplicate_exit_mechanisms(self):
         temporary, root = self.workspace()
         try:
