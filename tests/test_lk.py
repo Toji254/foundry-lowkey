@@ -1839,12 +1839,16 @@ class LowkeyCastTests(unittest.TestCase):
         }]
         config = {"target": target}
 
-        with patch.object(lk, "load_abi", return_value=abi), patch.object(
-            lk, "run_cast", return_value=0
-        ) as run_cast:
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0x1234", "")) as encode, \
+             patch.object(lk, "run_cast", return_value=0) as run_cast:
             result = lk.run_wizard(config, ["buyNft", "5"])
 
         self.assertEqual(result, 0)
+        encode.assert_called_once_with(
+            ["cast", "calldata", "buyNft(uint256)", "5"],
+            timeout=30,
+        )
         run_cast.assert_called_once_with(
             ["send", "buyNft(uint256)", "5", "--confirm"],
             config,
@@ -1862,16 +1866,106 @@ class LowkeyCastTests(unittest.TestCase):
         owner = "0x" + "2" * 40
         config = {"target": target}
 
-        with patch.object(lk, "load_abi", return_value=abi), patch.object(
-            lk, "run_cast", return_value=0
-        ) as run_cast:
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0x1234", "")) as encode, \
+             patch.object(lk, "run_cast", return_value=0) as run_cast:
             result = lk.run_wizard(config, ["balanceOf", owner])
 
         self.assertEqual(result, 0)
+        encode.assert_called_once_with(
+            ["cast", "calldata", "balanceOf(address)", owner],
+            timeout=30,
+        )
         run_cast.assert_called_once_with(
             ["call", "balanceOf(address)", owner],
             config,
         )
+
+    def test_wizard_shows_array_example_and_reprompts_before_send(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "createProposal",
+            "stateMutability": "nonpayable",
+            "inputs": [
+                {"name": "title", "type": "string"},
+                {"name": "deadline", "type": "uint256"},
+                {"name": "ProposalOptions", "type": "string[]"},
+            ],
+            "outputs": [],
+        }]
+        config = {"target": target}
+        valid_options = '["Yes","No","Abstain"]'
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0x1234", "")) as encode, \
+             patch.object(lk, "run_cast", return_value=0) as send, \
+             patch("builtins.input", side_effect=["hi", "2", "you", valid_options]) as prompt, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_wizard(config, ["createProposal"])
+
+        self.assertEqual(result, 0)
+        self.assertIn('[example: ["Yes","No","Abstain"]]', prompt.call_args_list[2].args[0])
+        self.assertIn("Invalid ProposalOptions (string[]): expected an array value", output.getvalue())
+        self.assertEqual(
+            encode.call_args.args[0],
+            ["cast", "calldata", "createProposal(string,uint256,string[])", "hi", "2", valid_options],
+        )
+        send.assert_called_once_with(
+            ["send", "createProposal(string,uint256,string[])", "hi", "2", valid_options, "--confirm"],
+            config,
+        )
+
+    def test_wizard_rejects_bad_array_argument_without_preparing_transaction(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "createProposal",
+            "stateMutability": "nonpayable",
+            "inputs": [
+                {"name": "title", "type": "string"},
+                {"name": "deadline", "type": "uint256"},
+                {"name": "ProposalOptions", "type": "string[]"},
+            ],
+            "outputs": [],
+        }]
+        config = {"target": target}
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output") as encode, \
+             patch.object(lk, "run_cast") as send, \
+             redirect_stderr(io.StringIO()) as errors:
+            result = lk.run_wizard(
+                config,
+                ["createProposal", "hi", "2", "you"],
+            )
+
+        self.assertNotEqual(result, 0)
+        encode.assert_not_called()
+        send.assert_not_called()
+        self.assertIn("ProposalOptions (string[])", errors.getvalue())
+        self.assertIn('Example: ["Yes","No","Abstain"]', errors.getvalue())
+        self.assertIn("No transaction was prepared or broadcast.", errors.getvalue())
+
+    def test_wizard_cast_preflight_failure_stops_before_send_confirmation(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }]
+        config = {"target": target}
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(1, "", "parser error: invalid uint")) as encode, \
+             patch.object(lk, "run_cast") as send, \
+             redirect_stderr(io.StringIO()) as errors:
+            result = lk.run_wizard(config, ["setValue", "5"])
+
+        self.assertNotEqual(result, 0)
+        encode.assert_called_once()
+        send.assert_not_called()
+        self.assertIn("Cast could not ABI-encode", errors.getvalue())
+        self.assertIn("No transaction was prepared or broadcast.", errors.getvalue())
 
     def test_lab_array_parts_parses_one_outer_dimension_and_rejects_invalid_fixed_lengths(self):
         self.assertEqual(lk._lab_array_parts({"type": "uint256[2]"}), ("uint256", 2))
@@ -2660,6 +2754,7 @@ class LowkeyCastTests(unittest.TestCase):
             "decode_error": None,
         }
         with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0x1234", "")), \
              patch.object(lk, "run_cast", return_value=0) as send, \
              patch.object(lk, "_wizard_transaction_return", return_value=trace_result), \
              redirect_stdout(io.StringIO()) as output:
