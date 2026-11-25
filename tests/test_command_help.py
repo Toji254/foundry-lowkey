@@ -1445,6 +1445,7 @@ class CommandHelpTests(unittest.TestCase):
             {
                 "type": "function",
                 "name": "createProposal",
+                "stateMutability": "nonpayable",
                 "inputs": [
                     {"name": "title", "type": "string"},
                     {"name": "deadline", "type": "uint256"},
@@ -1482,6 +1483,37 @@ class CommandHelpTests(unittest.TestCase):
         self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
         self.assertNotIn("Why:", rendered)
         self.assertNotIn("LK_ARG_", rendered)
+        self.assertIn("NEXT", rendered)
+        self.assertIn("lk status", rendered)
+        self.assertIn('lk changes createProposal "HI" 86400 \'["Yes","No","Abstain"]\'', rendered)
+        self.assertIn('lk send createProposal "HI" 86400 \'["Yes","No","Abstain"]\' --confirm', rendered)
+        self.assertIn("Inspect the simulated storage changes", rendered)
+        self.assertNotIn("lk read createProposal", rendered)
+
+    def test_ask_recommends_real_read_command_for_view_functions(self):
+        root = pathlib.Path(".")
+        target = "0x" + "2" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "balanceOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "account", "type": "address"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+            }
+        ]
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \\
+             patch.object(lk, "active_project_target", return_value=target), \\
+             patch.object(lk, "load_abi", return_value=abi):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.dispatch_command("ask", ["balanceOf"], {})
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("lk read balanceOf 0x" + "1" * 40, rendered)
+        self.assertIn("NEXT", rendered)
+        self.assertNotIn("lk changes balanceOf", rendered)
+        self.assertNotIn("lk send balanceOf", rendered)
 
     def test_abi_input_summary_covers_common_and_composite_types(self):
         cases = [
