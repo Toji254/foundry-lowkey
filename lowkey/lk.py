@@ -4192,7 +4192,9 @@ def run_info(config):
     print(f"Code:   {'YES' if code.startswith('0x') and len(code) > 2 else 'NO'}")
     abi = load_abi(target, config)
     print(f"ABI:    {'LOADED' if abi else 'NOT LOADED'}")
-    proxy = inspect_proxy_details(config)
+    proxy = inspect_proxy_details(config, abi=abi)
+    readiness = inspect_protocol_readiness(config, abi=abi, has_code=proxy.get("has_code"))
+    _print_protocol_readiness(readiness)
     print(f"Proxy type: {proxy.get('kind') or 'UNKNOWN'}")
     if proxy.get("implementation"):
         print(f"Implementation: {apply_labels(proxy['implementation'], config)}")
@@ -8689,7 +8691,10 @@ def run_recon(config):
     print(f"Codehash: {codehash or 'Unknown'}")
     print(f"Codesize: {codesize or 'Unknown'} bytes")
     print(f"Nonce:    {nonce or 'Unknown'}")
-    proxy = inspect_proxy_details(config)
+    abi = load_abi(target, config)
+    proxy = inspect_proxy_details(config, abi=abi)
+    readiness = inspect_protocol_readiness(config, abi=abi, has_code=proxy.get("has_code"))
+    _print_protocol_readiness(readiness)
     proxy_kind = str(proxy.get("kind") or "UNKNOWN")
     erc1967_proxy = proxy_kind in {
         "ERC1967_IMPLEMENTATION_PROXY", "ERC1967_BEACON_PROXY",
@@ -8725,7 +8730,10 @@ def _address_from_slot(value):
             return None
         raw = match.group(1)
     else:
-        raw = match.group(1)[-40:]
+        slot_word = match.group(1)
+        if slot_word[:24].lower() != "0" * 24:
+            return None
+        raw = slot_word[-40:]
     if raw.lower() == "0" * 40:
         return None
     return "0x" + raw
@@ -8780,7 +8788,167 @@ def _application_governor(config, target, abi):
     return _address_from_cast_result(value)
 
 
-def inspect_proxy_details(config):
+_READINESS_ADDRESS_NAMES = frozenset({
+    "router", "vault", "weth", "usdg", "token", "rewardtoken",
+    "collateraltoken", "stabletoken", "oracle", "priceoracle",
+    "pricefeed", "factory", "controller", "manager", "handler",
+    "treasury", "feereceiver", "feerecipient", "guardian", "minter",
+    "stakedtoken", "stakingtoken",
+})
+_READINESS_BOOLEAN_NAMES = frozenset({
+    "initialized", "isinitialized", "paused", "ispaused",
+    "active", "isactive", "enabled", "isenabled",
+})
+
+
+def _readiness_candidate_name(name, output_type):
+    """Restrict read-only probing to conventional configuration/status getters."""
+    normalized = re.sub(r"[^a-z0-9]", "", str(name or "").casefold())
+    kind = str(output_type or "").casefold()
+    if kind == "address":
+        return normalized in _READINESS_ADDRESS_NAMES or any(
+            normalized.endswith(suffix)
+            for suffix in (
+                "router", "vault", "oracle", "factory", "controller",
+                "manager", "handler", "feereceiver", "feerecipient",
+                "rewardtoken", "collateraltoken", "stabletoken",
+            )
+        )
+    if kind == "bool":
+        return normalized in _READINESS_BOOLEAN_NAMES
+    return False
+
+
+def _readiness_decode_getter(output_type, raw):
+    """Decode only address/bool getter values, retaining unreadable as a distinct state."""
+    text = str(raw or "").strip()
+    lowered = text.casefold()
+    if not text or "error:" in lowered or "revert" in lowered:
+        return {"status": "UNREADABLE", "value": None}
+    kind = str(output_type or "").casefold()
+    if kind == "address":
+        words = re.findall(
+            r"(?<![0-9a-fA-F])0x([0-9a-fA-F]{64})(?![0-9a-fA-F])",
+            text,
+        )
+        if words:
+            word = words[-1]
+            if word[:24].lower() != "0" * 24:
+                return {"status": "UNREADABLE", "value": None}
+            address_word = word[-40:]
+            if address_word.lower() == "0" * 40:
+                return {"status": "ZERO", "value": "0x" + "0" * 40}
+            return {"status": "SET", "value": "0x" + address_word}
+        addresses = re.findall(
+            r"(?<![0-9a-fA-F])0x([0-9a-fA-F]{40})(?![0-9a-fA-F])",
+            text,
+        )
+        if addresses:
+            address = addresses[-1]
+            if address.lower() == "0" * 40:
+                return {"status": "ZERO", "value": "0x" + "0" * 40}
+            return {"status": "SET", "value": "0x" + address}
+        return {"status": "UNREADABLE", "value": None}
+    if kind == "bool":
+        if lowered in {"true", "1"}:
+            return {"status": "TRUE", "value": True}
+        if lowered in {"false", "0"}:
+            return {"status": "FALSE", "value": False}
+        words = re.findall(
+            r"(?<![0-9a-fA-F])0x([0-9a-fA-F]{64})(?![0-9a-fA-F])",
+            text,
+        )
+        if words:
+            number = int(words[-1], 16)
+            if number in {0, 1}:
+                value = bool(number)
+                return {"status": "TRUE" if value else "FALSE", "value": value}
+    return {"status": "UNREADABLE", "value": None}
+
+
+def inspect_protocol_readiness(config, abi=None, *, has_code=None):
+    """Read-only ABI-derived configuration hints; never infer required fields or mutate state."""
+    target = config.get("target")
+    result = {
+        "target": target,
+        "has_code": has_code,
+        "initializer_entrypoints": [],
+        "getters": [],
+        "evidence_limit": (
+            "These ABI-derived candidate getters do not establish protocol requirements; "
+            "they are inspection hints, not proof that initialization ran or that any dependency is safe."
+        ),
+    }
+    if not target or has_code is False:
+        return result
+    if abi is None:
+        abi = load_abi(target, config)
+    if not isinstance(abi, list):
+        return result
+
+    candidates = []
+    seen = set()
+    for item in abi:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        name = str(item.get("name") or "").strip()
+        inputs = item.get("inputs") or []
+        outputs = item.get("outputs") or []
+        if not name:
+            continue
+        if name.casefold() == "initialize" or name.casefold().startswith("initialize"):
+            if str(item.get("stateMutability") or "nonpayable").casefold() not in {"view", "pure"}:
+                signature = format_signature(item)
+                result["initializer_entrypoints"].append(signature)
+        if inputs or len(outputs) != 1:
+            continue
+        mutability = str(item.get("stateMutability") or "").casefold()
+        if mutability not in {"view", "pure"} and not item.get("constant"):
+            continue
+        output_type = str((outputs[0] or {}).get("type") or "")
+        if not _readiness_candidate_name(name, output_type):
+            continue
+        signature = f"{name}()"
+        identity = (name.casefold(), output_type.casefold())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        candidates.append((name, signature, output_type))
+
+    for name, signature, output_type in candidates:
+        raw = run_cast(["call", target, signature], config, capture=True)
+        decoded = _readiness_decode_getter(output_type, raw)
+        result["getters"].append({
+            "name": name,
+            "signature": signature,
+            "type": output_type,
+            **decoded,
+        })
+    return result
+
+
+def _print_protocol_readiness(readiness):
+    """Render read-only ABI hints without implying a protocol readiness verdict."""
+    print("PROTOCOL CONFIGURATION CANDIDATES")
+    print("---------------------------------")
+    print("Read-only ABI hints; these do not establish protocol requirements or initialization state.")
+    initializers = readiness.get("initializer_entrypoints") or []
+    if initializers:
+        print("Initializer ABI: " + ", ".join(initializers))
+        print("  Presence does not prove a proxy is required or that an initializer has/has not executed.")
+    else:
+        print("Initializer ABI: no initialize* entrypoint found in the loaded ABI.")
+    getters = readiness.get("getters") or []
+    if not getters:
+        print("Candidate getters: none found or none readable from the loaded ABI.")
+    for getter in getters:
+        status = str(getter.get("status") or "UNREADABLE")
+        value = getter.get("value")
+        suffix = f" = {value}" if value is not None else ""
+        print(f"  {getter.get('signature')}: {status}{suffix}")
+
+
+def inspect_proxy_details(config, abi=None):
     """Return one evidence-backed proxy/clone classification for the selected target."""
     target = config.get("target")
     details = {
@@ -8844,12 +9012,13 @@ def inspect_proxy_details(config):
     else:
         details["evidence"].append("no ERC-1967 implementation/beacon slot or EIP-1167 runtime pattern detected")
 
-    # Cast admin may fail for UUPS, beacon, clone, or direct contracts. That
-    # does not rule out a proxy; it only means the tool did not resolve an admin.
-    admin_result = run_cast(["admin", target], config, capture=True)
-    details["admin"] = _address_from_cast_result(admin_result)
+    # Resolve an admin only after an independent proxy signal exists. The
+    # absence of an admin does not rule out UUPS/beacon/clone proxy patterns.
+    if details["is_proxy"]:
+        admin_result = run_cast(["admin", target], config, capture=True)
+        details["admin"] = _address_from_cast_result(admin_result)
 
-    abi = load_abi(target, config)
+    abi = load_abi(target, config) if abi is None else abi
     details["application_governor"] = _application_governor(config, target, abi)
     if details["application_governor"]:
         details["evidence"].append("application gov() getter resolved independently from proxy admin")
@@ -13024,9 +13193,31 @@ def artifact_is_deployable(artifact):
     return bool(obj and obj not in {"0x", "0X"})
 
 
-def source_contract_fallback(root, contract_name):
-    """Find first-party source for an artifact across supported EVM project layouts."""
-    root_path = Path(root).expanduser().resolve()
+def source_contract_fallback(
+    root, contract_name, *, target_scope=None, source_file=None
+):
+    """Resolve a contract source only when it is unique inside the requested scope."""
+    try:
+        root_path = Path(root).expanduser().resolve(strict=True)
+        scope_path = (
+            Path(target_scope).expanduser().resolve(strict=True)
+            if target_scope is not None else root_path
+        )
+        requested_source = (
+            Path(source_file).expanduser().resolve(strict=True)
+            if source_file is not None else None
+        )
+        scope_relative = scope_path.relative_to(root_path)
+        if not scope_path.is_dir():
+            return None
+        if requested_source is not None:
+            requested_source.relative_to(root_path)
+            requested_source.relative_to(scope_path)
+            if not requested_source.is_file():
+                return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
     candidates = []
     if project_tools is not None:
         try:
@@ -13040,7 +13231,11 @@ def source_contract_fallback(root, contract_name):
         }
         for path in root_path.rglob("*"):
             if path.is_file() and path.suffix.lower() in {".sol", ".vy"}:
-                if not any(part in ignored for part in path.parts):
+                try:
+                    relative = path.resolve(strict=True).relative_to(root_path)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if not any(part in ignored for part in relative.parts):
                     candidates.append(path)
 
     excluded_parts = {
@@ -13048,50 +13243,67 @@ def source_contract_fallback(root, contract_name):
         "out", "artifacts", "build", "cache", "dist", "tests", "test",
         "fixtures", "mocks", "mock",
     }
-    for candidate in sorted(set(candidates)):
+    matches = []
+    for candidate in sorted(set(Path(item) for item in candidates)):
         try:
-            relative_parts = candidate.resolve().relative_to(root_path).parts
-        except (OSError, ValueError):
+            resolved = candidate.resolve(strict=True)
+            relative = resolved.relative_to(root_path)
+            relative.relative_to(scope_relative)
+        except (OSError, RuntimeError, ValueError):
             continue
-        if any(str(part).lower() in excluded_parts for part in relative_parts[:-1]):
+        if not resolved.is_file() or resolved.suffix.lower() not in {".sol", ".vy"}:
             continue
-        if candidate.stem.lower() != str(contract_name).lower():
+        if requested_source is not None and resolved != requested_source:
+            continue
+        if any(str(part).casefold() in excluded_parts for part in relative.parts[:-1]):
+            continue
+        if resolved.stem.casefold() != str(contract_name).casefold():
             continue
         try:
-            text = candidate.read_text(encoding="utf-8", errors="replace")
+            source_text = resolved.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if candidate.suffix.lower() == ".vy":
-            try:
-                return candidate.relative_to(root_path).as_posix()
-            except ValueError:
-                continue
-        if re.search(
+        if resolved.suffix.lower() == ".vy" or re.search(
             r"\b(contract|library|interface|abstract\s+contract)\s+"
             + re.escape(str(contract_name)) + r"\b",
-            text,
+            source_text,
         ):
-            try:
-                return candidate.relative_to(root_path).as_posix()
-            except ValueError:
-                continue
-    return None
+            matches.append(relative.as_posix())
 
-def artifact_is_project_application(root, path, artifact):
-    """Return True only for deployable, first-party application artifacts."""
+    unique = sorted(set(matches), key=str.casefold)
+    return unique[0] if len(unique) == 1 else None
+
+def artifact_is_project_application(root, path, artifact, *, resolved_source=None):
+    """Return True only for deployable, first-party application artifacts.
+
+    resolved_source is accepted only from a caller that has already resolved
+    and scope-checked the compiler source path. It avoids falling back to an
+    unrelated same-named source in another package or directory.
+    """
     if not artifact_is_deployable(artifact):
         return False
 
     root_path = Path(root).expanduser().resolve()
-    path_obj = Path(path).expanduser().resolve()
+    try:
+        path_obj = Path(path).expanduser().resolve(strict=True)
+        path_obj.relative_to(root_path)
+    except (OSError, RuntimeError, ValueError):
+        return False
     explicit_source = artifact_source_name(artifact, path, root)
-    source = explicit_source or source_contract_fallback(
+    source = explicit_source or resolved_source or source_contract_fallback(
         root, artifact_contract_name(path, artifact)
     )
     if not source:
         return False
 
-    normalized = str(source).replace("\\", "/").lstrip("./")
+    raw_source = Path(str(source).replace("\\", "/")).expanduser()
+    try:
+        source_path = (
+            raw_source if raw_source.is_absolute() else root_path / raw_source
+        ).resolve(strict=True)
+        normalized = source_path.relative_to(root_path).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return False
 
     # When Foundry stripped sourceName, use the artifact directory only to
     # confirm that the fallback source file belongs to the same artifact stem.
@@ -13109,7 +13321,6 @@ def artifact_is_project_application(root, path, artifact):
             parent_stem = parent_stem[:-4]
         if Path(normalized).stem.lower() != parent_stem.lower():
             return False
-    source_path = root_path / normalized
     if not source_path.is_file():
         return False
 
@@ -13320,38 +13531,47 @@ def _discover_artifact_lab_contract_scoped(root, name, *, target_scope=None, sou
     )
 
 
-def _lab_artifact_source(root, path, artifact):
-    """Resolve an artifact source only when its provenance remains inside the project."""
+def _lab_artifact_source(root, path, artifact, *, target_scope=None, source_file=None):
+    """Resolve artifact provenance inside both the selected project and target scope."""
     source = artifact_source_name(artifact, path, root) or source_contract_fallback(
-        root, artifact_contract_name(path, artifact)
+        root,
+        artifact_contract_name(path, artifact),
+        target_scope=target_scope,
+        source_file=source_file,
     )
-    if not source or not lab_target_scope.artifact_source_in_scope(root, source):
+    if not source or not lab_target_scope.artifact_source_in_scope(
+        root, source, target_scope=target_scope, source_file=source_file
+    ):
         return None
     return source
 
 
 def _lab_scoped_contract_names(root, *, target_scope=None, source_file=None):
     """List unique deployable application contracts in the selected source scope."""
-    names = {}
+    candidates_by_name = {}
     for path in local_artifact_paths(root):
         artifact = read_artifact(path)
         if not isinstance(artifact, dict) or not artifact_is_deployable(artifact):
             continue
         name = artifact_contract_name(path, artifact)
-        source = _lab_artifact_source(root, path, artifact)
+        source = _lab_artifact_source(
+            root, path, artifact, target_scope=target_scope, source_file=source_file
+        )
         if not name or not source:
             continue
-        if not lab_target_scope.artifact_source_in_scope(
-            root, source, target_scope=target_scope, source_file=source_file
-        ):
+        if not artifact_is_project_application(root, path, artifact, resolved_source=source):
             continue
-        if not artifact_is_project_application(root, path, artifact):
-            continue
-        names.setdefault(name.casefold(), set()).add((name, str(Path(path).resolve())))
-    return sorted(
-        {next(iter(values))[0] for values in names.values() if len(values) == 1},
-        key=str.casefold,
-    )
+        candidates_by_name.setdefault(name.casefold(), []).append((
+            0, name, path, artifact, artifact_constructor_inputs(artifact),
+            f"{source}:{name}",
+        ))
+
+    names = []
+    for candidates in candidates_by_name.values():
+        collapsed = _collapse_equivalent_lab_artifacts(candidates)
+        if collapsed and len(collapsed) == 1:
+            names.append(collapsed[0][1])
+    return sorted(names, key=str.casefold)
 
 
 def _lab_artifact_fingerprint(artifact):
@@ -13432,12 +13652,12 @@ def discover_generic_lab_contract(root, query=None, *, target_scope=None, source
         contract = artifact_contract_name(path, artifact)
         if preferred_name and contract.casefold() != preferred_name.casefold():
             continue
-        source = _lab_artifact_source(root, path, artifact)
+        source = _lab_artifact_source(root, path, artifact, target_scope=target_scope, source_file=source_file)
         if not source or not lab_target_scope.artifact_source_in_scope(
             root, source, target_scope=target_scope, source_file=source_file
         ):
             continue
-        if not artifact_is_project_application(root, path, artifact):
+        if not artifact_is_project_application(root, path, artifact, resolved_source=source):
             continue
         candidates.append((
             0 if preferred_name else 50,
@@ -13465,7 +13685,7 @@ def discover_artifact_lab_contract(root, query, *, target_scope=None, source_fil
         contract = artifact_contract_name(path, artifact)
         if contract.casefold() != requested.casefold():
             continue
-        source = _lab_artifact_source(root, path, artifact)
+        source = _lab_artifact_source(root, path, artifact, target_scope=target_scope, source_file=source_file)
         if not source or not lab_target_scope.artifact_source_in_scope(
             root, source, target_scope=target_scope, source_file=source_file
         ):
