@@ -16,6 +16,7 @@ Usage:
   lk cheat
   lk cheat <topic>
   lk cheat symbols
+  lk cheat structs
   lk cheat keywords
   lk cheat search <word>
   lk compare <topicA> <topicB> [topicC]
@@ -100,6 +101,247 @@ def add(name, aliases, category, meaning, mental, syntax, example, steps,
 
 
 register_topics(add)
+
+
+# Full reference for declaring, initialising, storing, and auditing structs.
+add(
+    "structs",
+    [
+        "struct",
+        "struct-guide",
+        "struct-initialization",
+        "struct-initialisation",
+        "struct-arrays",
+        "struct-array-initialization",
+    ],
+    "DATA STRUCTURES",
+    "A struct is a named record that groups related values. Each field keeps its own Solidity type, and a struct can contain value types, strings, bytes, enums, nested structs, and arrays.",
+    "A struct is a form with named boxes. The field declaration says what belongs in each box; initialisation puts the actual data into those boxes. A struct declaration is only a blueprint until you create or access an instance.",
+    """STRUCT DECLARATION
+struct User {
+    uint256 id;
+    uint128 weight;
+    int256 adjustment;
+    bool active;
+    address account;
+    address payable payout;
+    bytes32 userId;
+    bytes4 selector;
+    string name;
+    bytes metadata;
+    uint256[] scores;       // dynamic array
+    uint256[3] fixedScores; // fixed array: exactly 3
+    Status status;          // enum
+    Limits limits;          // nested struct
+}
+
+enum Status { Draft, Active, Closed }
+
+struct Limits {
+    uint128 minimum;
+    uint128 maximum;
+}
+
+COMMON FIELD TYPES
+uint256 amount;          // unsigned integer
+uint128 weight;          // smaller unsigned integer
+int256 adjustment;       // signed integer
+bool active;             // true / false
+address creator;         // account address
+address payable payout;  // address usable for payable transfers
+bytes32 id;              // exactly 32 bytes
+bytes4 selector;         // exactly 4 bytes
+string title;            // text
+bytes payload;           // dynamic bytes
+Status status;           // enum member
+Limits limits;           // another struct
+
+ARRAY DECLARATIONS
+uint256[] scores;        // dynamic: length can change in storage
+uint256[3] scores;       // fixed: exactly 3 elements
+bytes32[] optionIds;
+bytes32[2] fixedIds;
+address[] voters;
+address[2] fixedVoters;
+string[] options;
+
+DYNAMIC MEMORY ARRAY INITIALISATION
+uint256[] memory scores = new uint256[](3);
+scores[0] = 10;
+scores[1] = 20;
+scores[2] = 30;
+
+string[] memory options = new string[](3);
+options[0] = "Yes";
+options[1] = "No";
+options[2] = "Abstain";
+
+bytes32[] memory optionIds = new bytes32[](2);
+optionIds[0] = keccak256("Yes");
+optionIds[1] = keccak256("No");
+
+address[] memory voters = new address[](2);
+voters[0] = msg.sender;
+voters[1] = address(this);
+
+FIXED MEMORY ARRAY INITIALISATION
+uint256[3] memory fixedScores = [
+    uint256(10),
+    uint256(20),
+    uint256(30)
+];
+
+bytes32[2] memory fixedIds = [
+    bytes32(uint256(1)),
+    bytes32(uint256(2))
+];
+
+address[2] memory fixedVoters = [
+    msg.sender,
+    address(this)
+];
+
+NAMED STRUCT INITIALISATION
+User memory user = User({
+    id: 1,
+    weight: 10,
+    adjustment: -1,
+    active: true,
+    account: msg.sender,
+    payout: payable(msg.sender),
+    userId: keccak256("user-1"),
+    selector: bytes4(keccak256("transfer(address,uint256)")),
+    name: "Alice",
+    metadata: hex"1234",
+    scores: scores,
+    fixedScores: fixedScores,
+    status: Status.Active,
+    limits: Limits({minimum: 1, maximum: 100})
+});
+
+LEFT SIDE = struct member name.
+RIGHT SIDE = the value assigned to that member.
+
+STRUCT INITIALISATION PATTERNS
+// Named: recommended; field names make intent obvious.
+User memory a = User({
+    id: 1,
+    weight: 10,
+    adjustment: 0,
+    active: true,
+    account: msg.sender,
+    payout: payable(msg.sender),
+    userId: bytes32(0),
+    selector: bytes4(0),
+    name: "Alice",
+    metadata: bytes(""),
+    scores: new uint256[](0),
+    fixedScores: [uint256(0), 0, 0],
+    status: Status.Draft,
+    limits: Limits({minimum: 0, maximum: 0})
+});
+
+// Positional: values must follow the exact declaration order.
+// Prefer named initialisation for structs with several fields.
+User memory b = User(
+    1, 10, 0, true, msg.sender, payable(msg.sender),
+    bytes32(0), bytes4(0), "Alice", bytes(""),
+    new uint256[](0), [uint256(0), 0, 0],
+    Status.Draft, Limits({minimum: 0, maximum: 0})
+);
+
+// Storage reference: this points at the existing stored record.
+User storage stored = users[userAddress];
+stored.active = false;
+stored.scores.push(99);
+
+DATA LOCATIONS
+User memory temporaryCopy = ...; // temporary, mutable, not persistent
+User storage storedRef = users[userAddress]; // persistent reference
+function submit(User calldata input) external {} // read-only external input
+
+IMPORTANT ARRAY RULES
+T[]   = dynamic array type.
+T[N]  = fixed-size array type.
+new T[](n) allocates a dynamic memory array with n positions.
+A memory array's length is fixed after allocation; memory arrays do not support push() or pop().
+Dynamic storage arrays support push() and pop().
+Fixed-size arrays never grow or shrink; they do not support push() or pop().
+Indexing starts at zero: options[0] is the first element.
+A memory array assigned into a storage struct field is copied into persistent storage.""",
+    """contract ProposalInitialisationExample {
+    struct Proposal {
+        string title;
+        uint256 deadline;
+        string[] options;
+        uint256[] voteCounts;
+    }
+
+    mapping(bytes32 => Proposal) private proposals;
+    uint256 private nonce;
+
+    function createProposal(
+        string calldata title,
+        uint256 duration,
+        string[] calldata suppliedOptions
+    ) external returns (bytes32 proposalId) {
+        require(suppliedOptions.length >= 2, "need at least two options");
+        require(duration != 0, "duration is zero");
+
+        uint256 currentNonce = nonce;
+        nonce = currentNonce + 1;
+        proposalId = keccak256(abi.encode(msg.sender, currentNonce, title));
+
+        // calldata is read-only input. Allocate memory and copy each string.
+        string[] memory options = new string[](suppliedOptions.length);
+        for (uint256 i = 0; i < suppliedOptions.length; i++) {
+            options[i] = suppliedOptions[i];
+        }
+
+        // Dynamic memory array: length is fixed at allocation; new slots are zero.
+        uint256[] memory voteCounts = new uint256[](options.length);
+
+        Proposal memory proposal = Proposal({
+            title: title,
+            deadline: block.timestamp + duration,
+            options: options,
+            voteCounts: voteCounts
+        });
+
+        // The struct and its dynamic arrays are copied into persistent storage.
+        proposals[proposalId] = proposal;
+    }
+
+    function addOption(bytes32 proposalId, string calldata option) external {
+        Proposal storage proposal = proposals[proposalId];
+        proposal.options.push(option);
+        proposal.voteCounts.push(0);
+    }
+
+    function getOptions(bytes32 proposalId)
+        external
+        view
+        returns (string[] memory)
+    {
+        return proposals[proposalId].options;
+    }
+}""",
+    [
+        "Declare the struct once; this defines the field names and types but does not create a record.",
+        "Choose the right field type: value types such as uint256/address/bool, reference types such as string/bytes/arrays, or another struct/enum.",
+        "Use T[] for a dynamic array and T[N] for a fixed-size array.",
+        "For a dynamic memory array, allocate its length with new T[](length) before assigning by index.",
+        "For a fixed array, initialise exactly N elements; an explicit first-element type often makes the array literal type clear.",
+        "Build nested structs first, then use them as values in the outer struct initializer.",
+        "Prefer StructName({field: value, ...}); the left side is the field name and the right side is the value.",
+        "Assign the completed memory struct to a mapping or storage slot to persist it.",
+        "Use StructName storage ref = mapping[key] when you intend to modify the existing record in place.",
+        "Use push/pop only on dynamic storage arrays; memory arrays and fixed-size arrays cannot grow or shrink.",
+    ],
+    audit="Validate array lengths and indexes; bound user-controlled array sizes to avoid excessive storage and gas costs; check duplicate options/IDs where uniqueness matters; protect storage updates with the correct authorization; and remember that assigning a memory struct with dynamic arrays into storage copies those arrays. A storage reference changes the original record. Mapping-containing structs have additional storage-only restrictions.",
+    gotchas="A struct declaration is not an instance. Named initializers must account for the struct's fields; positional initializers are order-dependent. new T[](n) creates a dynamic memory array of length n, not a growable memory vector. Memory arrays cannot use push/pop. T[N] must always have exactly N elements. A mapping member can live only in a storage struct; a struct containing a mapping cannot be copied to memory, returned, or assigned wholesale. Deleting such a struct does not clear the mapping's individual entries.",
+);
+
 
 for _topic in TOPICS:
     if _topic["name"] in {
