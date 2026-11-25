@@ -15821,8 +15821,15 @@ def _preferred_lab_contract(
         return remembered
 
     detected = discover_audit_target_contract(root)
-    if detected and not _discover_artifact_lab_contract_scoped(
-        root, detected, target_scope=target_scope, source_file=source_file
+    # Keep the original project-wide heuristic semantics unchanged. Artifact
+    # membership validation is needed only when an invocation/source scope
+    # narrows what can be selected.
+    if (
+        detected
+        and (target_scope is not None or source_file is not None)
+        and not _discover_artifact_lab_contract_scoped(
+            root, detected, target_scope=target_scope, source_file=source_file
+        )
     ):
         detected = None
     if not detected and target_scope is not None:
