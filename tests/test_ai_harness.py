@@ -1612,5 +1612,81 @@ class AIHarnessTests(unittest.TestCase):
 
 
 
+    def test_free_tier_source_provenance_matches_the_final_provider_context(self):
+        ai.configure(provider="deepseek", model="deepseek-flash", api_key="free-tier-test-key")
+        cfg = ai.load_config()
+        cfg["jev_free_tier_mode"] = True
+        ai.save_config(cfg)
+        original_sources = [
+            {"path": f"src/Contract{index}.sol", "source_excerpt": "contract Contract {} " * 80}
+            for index in range(12)
+        ]
+        submitted = {}
+        with patch.object(
+            ai, "autonomy_budget_status",
+            return_value={
+                "context_limit_bytes": 25_000,
+                "max_output_tokens": 256,
+                "calls_today": 0,
+                "remaining": 5,
+            },
+        ), patch.object(ai, "_reserve_jev_request"), \
+             patch.object(ai, "_read_jev_cached_response", return_value=None), \
+             patch.object(ai, "_store_jev_cached_response"), \
+             patch.object(
+                 ai, "_send",
+                 side_effect=lambda config, **kwargs: submitted.update(kwargs) or {"facts": [], "hypotheses": []},
+             ):
+            result = ai.request_structured(
+                purpose="lab_protocol_review",
+                task="inspect the bounded source context",
+                context={"source_files": original_sources, "source_files_included": len(original_sources)},
+                required_fields=("facts", "hypotheses"),
+            )
+        sent_context = submitted["context"]
+        sent_sources = [
+            item for item in sent_context["source_files"]
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        ]
+        metadata = result["_lowkey_request_meta"]
+        self.assertEqual(len(sent_sources), 10)
+        self.assertEqual(sent_context["source_files_included"], len(sent_sources))
+        self.assertEqual(metadata["source_files_found"], 12)
+        self.assertEqual(metadata["source_files_included"], 10)
+        self.assertEqual(metadata["source_files_omitted"], 2)
+        self.assertTrue(metadata["free_tier_compaction_applied"])
+        import hashlib
+        self.assertEqual(
+            metadata["context_sha256"],
+            hashlib.sha256(
+                json.dumps(sent_context, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest(),
+        )
+
+    def test_protocol_review_uses_metadata_from_final_request_context(self):
+        context = {
+            "source_files": [{"path": f"src/C{i}.sol", "source_excerpt": "contract C {}"} for i in range(8)],
+            "source_files_included": 8,
+        }
+        request_meta = {
+            "source_files_found": 8, "source_files_included": 3, "source_files_omitted": 5,
+            "source_files_with_trimmed_excerpts": 1, "context_sha256": "f" * 64,
+            "context_compaction": {"free_tier_context_compaction": True},
+            "free_tier_compaction_applied": True,
+        }
+        response = {
+            "summary": "Bounded source review.", "contract_roles": [], "invariants": [],
+            "open_questions": [], "deployment_considerations": [], "_lowkey_request_meta": request_meta,
+        }
+        with patch.object(ai, "_protocol_review_context", return_value=context), \
+             patch.object(ai, "request_structured", return_value=response):
+            result = ai.review_project_protocol("/tmp/project")
+        self.assertEqual(result["_lowkey_meta"]["source_files_found"], 8)
+        self.assertEqual(result["_lowkey_meta"]["source_files_included"], 3)
+        self.assertEqual(result["_lowkey_meta"]["source_files_omitted"], 5)
+        self.assertEqual(result["_lowkey_meta"]["context_sha256"], "f" * 64)
+        self.assertTrue(result["_lowkey_meta"]["free_tier_compaction_applied"])
+
+
 if __name__ == "__main__":
     unittest.main()

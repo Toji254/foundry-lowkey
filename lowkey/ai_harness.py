@@ -640,6 +640,62 @@ def _compact_free_tier_context(context: Mapping[str, Any], byte_limit: int) -> d
     )
 
 
+def _submitted_context_provenance(
+    original_context: Mapping[str, Any],
+    submitted_context: dict[str, Any],
+    *,
+    free_tier_compaction_applied: bool,
+) -> dict[str, Any]:
+    """Update source counters and hash the exact context that will be sent to the provider."""
+    def source_entries(value: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        entries = value.get("source_files")
+        if isinstance(entries, list):
+            return [
+                item for item in entries
+                if isinstance(item, Mapping) and isinstance(item.get("path"), str)
+            ]
+        return []
+
+    original_sources = source_entries(original_context)
+    submitted_sources = source_entries(submitted_context)
+    found = len(original_sources)
+    included = len(submitted_sources)
+    original_excerpt_by_path = {
+        str(item.get("path")): str(item.get("source_excerpt") or "")
+        for item in original_sources
+    }
+    trimmed = sum(
+        1 for item in submitted_sources
+        if str(item.get("path")) in original_excerpt_by_path
+        and len(str(item.get("source_excerpt") or "")) < len(original_excerpt_by_path[str(item.get("path"))])
+    )
+    if "source_files" in submitted_context or "source_files_included" in submitted_context:
+        submitted_context["source_files_included"] = included
+    compaction = submitted_context.get("_lowkey_context_compaction")
+    if isinstance(compaction, Mapping) or free_tier_compaction_applied:
+        final_compaction = dict(compaction) if isinstance(compaction, Mapping) else {}
+        final_compaction.update({
+            "source_files_original": found,
+            "source_files_included": included,
+            "source_files_omitted": max(0, found - included),
+            "source_files_with_trimmed_excerpts": trimmed,
+        })
+        if free_tier_compaction_applied:
+            final_compaction["free_tier_context_compaction"] = True
+        submitted_context["_lowkey_context_compaction"] = final_compaction
+    rendered_bytes = json.dumps(submitted_context, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return {
+        "source_files_found": found,
+        "source_files_included": included,
+        "source_files_omitted": max(0, found - included),
+        "source_files_with_trimmed_excerpts": trimmed,
+        "context_sha256": hashlib.sha256(rendered_bytes).hexdigest(),
+        "context_bytes": len(rendered_bytes),
+        "context_compaction": submitted_context.get("_lowkey_context_compaction"),
+        "free_tier_compaction_applied": free_tier_compaction_applied,
+    }
+
+
 def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     cfg = dict(config or load_config())
     provider = cfg.get("provider")
@@ -1220,40 +1276,49 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
             "Run 'lk ai status' for the next step. Native workflows remain available."
         )
     if purpose == "setup_reasoning":
-        # Keep the user-facing CLI responsive. A slow model is skipped, not
-        # allowed to hold up deterministic setup or attack verification.
         cfg = dict(cfg)
         cfg["timeout_seconds"] = min(int(cfg.get("timeout_seconds", DEFAULT_TIMEOUT)), 3)
         cfg["max_output_tokens"] = min(int(cfg.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)), 128)
     if not isinstance(task, str) or not task.strip() or len(task) > 6000:
         raise AIHarnessError("Task must contain 1–6000 characters.")
-    request_context: Mapping[str, Any] = _compact_request_context(context, MAX_CONTEXT_BYTES)
-    cache_key = None
+
+    request_context: dict[str, Any] = _compact_request_context(context, MAX_CONTEXT_BYTES)
     free_tier = bool(cfg.get("jev_free_tier_mode"))
-    cache_enabled = free_tier or purpose == "setup_reasoning"
-    if cache_enabled and purpose != "provider_test":
-        cache_key = _jev_cache_key(cfg, purpose, task.strip(), context, required_fields)
-        cached = _read_jev_cached_response(cache_key, required_fields)
-        if cached is not None:
-            return cached
     if free_tier:
         budget = autonomy_budget_status(cfg)
         request_context = _compact_free_tier_context(
             request_context, int(budget["context_limit_bytes"])
         )
-        # Keep the user's configured provider/model, but cap all guarded requests
-        # locally. A provider's own quota may be stricter than this guard.
         cfg = dict(cfg)
         cfg["max_output_tokens"] = min(
             int(cfg.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)),
             int(budget["max_output_tokens"]),
         )
         cfg["timeout_seconds"] = min(int(cfg.get("timeout_seconds", DEFAULT_TIMEOUT)), 30)
+
+    request_meta = _submitted_context_provenance(
+        context, request_context, free_tier_compaction_applied=free_tier
+    )
+    cache_key = None
+    cache_enabled = free_tier or purpose == "setup_reasoning"
+    if cache_enabled and purpose != "provider_test":
+        # Cache only the exact bounded context that the provider would receive.
+        cache_key = _jev_cache_key(cfg, purpose, task.strip(), request_context, required_fields)
+        cached = _read_jev_cached_response(cache_key, required_fields)
+        if cached is not None:
+            cached_result = dict(cached)
+            cached_result["_lowkey_request_meta"] = request_meta
+            return cached_result
+    if free_tier:
         _reserve_jev_request(cfg, purpose)
     result = _send(
         cfg, purpose=purpose, task=task.strip(), context=request_context,
         required_fields=required_fields, first_attempt_reserved=free_tier,
     )
+    if not isinstance(result, dict):
+        raise AIHarnessError("Provider response did not produce a structured JSON object.")
+    result = dict(result)
+    result["_lowkey_request_meta"] = request_meta
     if cache_key is not None:
         _store_jev_cached_response(cache_key, result)
     return result
@@ -1666,17 +1731,25 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
     result.setdefault("deployment_plan", [])
     result["ai_generated"] = True
     result["origin"] = "configured-model"
+    request_meta = result.get("_lowkey_request_meta")
+    request_meta = request_meta if isinstance(request_meta, Mapping) else {}
     result["_lowkey_meta"] = {
         "ai_generated": True,
         "origin": "configured-model",
-        "source_files_included": (
-            (context.get("_lowkey_context_compaction") or {}).get(
-                "source_files_included", context["source_files_included"]
-            )
+        "source_files_included": request_meta.get(
+            "source_files_included", context.get("source_files_included", len(context.get("source_files", [])))
         ),
-        "source_files_found": context["source_files_included"],
-        "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
-        "context_compaction": context.get("_lowkey_context_compaction"),
+        "source_files_found": request_meta.get(
+            "source_files_found", context.get("source_files_included", len(context.get("source_files", [])))
+        ),
+        "source_files_omitted": request_meta.get("source_files_omitted", 0),
+        "source_files_with_trimmed_excerpts": request_meta.get("source_files_with_trimmed_excerpts", 0),
+        "context_sha256": request_meta.get(
+            "context_sha256",
+            hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
+        ),
+        "context_compaction": request_meta.get("context_compaction", context.get("_lowkey_context_compaction")),
+        "free_tier_compaction_applied": request_meta.get("free_tier_compaction_applied", False),
         "verified": False,
     }
     return result
@@ -2236,16 +2309,28 @@ def recommend_next_steps(
     normalized["current_lowkey_command"] = context.get("current_lowkey_command", {})
     shared_history = context.get("shared_project_context")
     shared_events = shared_history.get("events", []) if isinstance(shared_history, Mapping) else []
+    request_meta = result.get("_lowkey_request_meta")
+    request_meta = request_meta if isinstance(request_meta, Mapping) else {}
     normalized["_lowkey_meta"] = {
         "ai_generated": True,
         "origin": "configured-model",
-        "source_files_included": context.get("source_files_included", len(context.get("source_files", []))),
+        "source_files_included": request_meta.get(
+            "source_files_included", context.get("source_files_included", len(context.get("source_files", [])))
+        ),
+        "source_files_found": request_meta.get(
+            "source_files_found", context.get("source_files_included", len(context.get("source_files", [])))
+        ),
+        "source_files_omitted": request_meta.get("source_files_omitted", 0),
+        "source_files_with_trimmed_excerpts": request_meta.get("source_files_with_trimmed_excerpts", 0),
         "shared_command_events_included": len(shared_events) if isinstance(shared_events, list) else 0,
         "current_command_evidence_included": bool(context.get("current_command_evidence")),
         "lowkey_runtime_source_included": bool(context.get("lowkey_runtime_context")),
-        "context_sha256": hashlib.sha256(
-            json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest(),
+        "context_sha256": request_meta.get(
+            "context_sha256",
+            hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
+        ),
+        "context_compaction": request_meta.get("context_compaction", context.get("_lowkey_context_compaction")),
+        "free_tier_compaction_applied": request_meta.get("free_tier_compaction_applied", False),
         "verified": False,
     }
     return normalized
