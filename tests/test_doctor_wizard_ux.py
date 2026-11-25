@@ -89,11 +89,15 @@ PASS  dependency command: cast receipt
             return {
                 "scarb": "/usr/bin/scarb",
                 "snforge": "/usr/bin/snforge",
+                "hardhat": "/usr/bin/hardhat",
                 "crytic-compile": "/home/user/.local/bin/crytic-compile",
                 "solc-select": "/home/user/.local/bin/solc-select",
             }.get(name)
 
-        with patch.object(lk, "detect_project", return_value={"native": native}), \
+        with patch.object(lk, "detect_project", return_value={
+            "native": native,
+            "security_analyzers": ["aptos-move-prove"],
+        }), \
              patch.object(lk.shutil, "which", side_effect=which):
             rows = lk._doctor_supplemental_tool_inventory(Path("/tmp/cairo-project"))
 
@@ -102,7 +106,9 @@ PASS  dependency command: cast receipt
         self.assertIn("Starknet Foundry", names)
         self.assertIn("crytic-compile", names)
         self.assertIn("solc-select", names)
-        self.assertEqual(len(rows), 4)
+        self.assertIn("Hardhat", names)
+        self.assertIn("aptos-move-prove", names)
+        self.assertEqual(len(rows), 6)
 
     def test_doctor_verbose_flag_preserves_full_diagnostics(self):
         output = io.StringIO()
