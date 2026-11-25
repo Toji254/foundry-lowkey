@@ -6519,7 +6519,7 @@ contract Pool {
         self.assertIn(f"msg.sender = Alice ({alice})", rendered)
         self.assertIn("Function selector: 0xa6f9dae1", rendered)
         self.assertIn(encoded, rendered)
-        self.assertIn("Gas estimation is read-only", rendered)
+        self.assertIn("eth_estimateGas is a read-only simulation", rendered)
         self.assertNotIn("DEBUG: Executing", rendered)
         self.assertNotIn("Preview: cast send", rendered)
         cast_output.assert_called_once_with([
