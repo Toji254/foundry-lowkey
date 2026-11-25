@@ -516,7 +516,7 @@ class FunctionInventoryTests(unittest.TestCase):
 
     def test_short_query_flag_is_supported(self):
         options, query = lk._parse_function_options(["-q", "withdraw(uint256)"])
-        self.assertTrue(options["query_explicit"])
+        self.assertTrue(options.query_explicit)
         self.assertEqual(query, "withdraw(uint256)")
 
     def test_compiler_ast_effects_exclude_lexical_edges_and_preserve_inferred_paths(self):
