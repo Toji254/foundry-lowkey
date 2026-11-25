@@ -27044,6 +27044,58 @@ def _help_alias_for(command):
         return None
     return raw
 
+
+# Keep the user-facing registry aligned with the function parser's distinction
+# between an active-contract selector and an explicit function-name query.
+_FUNCTION_HELP_GUIDE_INSTALLED = True
+for _function_command in ("functions", "fn"):
+    _function_entry = COMMAND_HELP.get(_function_command)
+    if not isinstance(_function_entry, dict):
+        continue
+    _function_prefix = f"lk {_function_command}"
+    _function_entry["summary"] = (
+        "Show the selected contract's complete ABI function inventory or search by function name/signature. "
+        "A positional token equal to the active contract name selects its full inventory; use -q/--query to force a text search."
+    )
+    _function_entry["usage"] = (
+        f"{_function_prefix} [ContractName|query] [-q|--query <text>] "
+        "[-v|--verbose] [-V|--visibility <visibility>] "
+        "[-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]"
+    )
+    _function_entry["example"] = f"{_function_prefix} OrderBook"
+    _function_entry["use"] = (
+        "Use this when auditing an unfamiliar contract. No positional selector lists the active target's full ABI; "
+        "a positional token equal to that contract's name also lists the full inventory. Other positional text searches "
+        "function names/signatures. Add -q/--query to force searching even when the text matches the contract name."
+    )
+    _function_forms = [
+        (_function_prefix, "List the active target's complete ABI inventory, grouped into write functions, read functions, and getters.", _function_prefix),
+        (f"{_function_prefix} OrderBook", "When OrderBook is the active target, show its full inventory rather than searching for a function called OrderBook.", f"{_function_prefix} OrderBook"),
+        (f"{_function_prefix} withdraw", "Search function names and signatures when the text is not the active contract name.", f"{_function_prefix} withdraw"),
+        (f"{_function_prefix} --query OrderBook", "Force a function-name/signature search even though the text matches the active contract name.", f"{_function_prefix} --query OrderBook"),
+        (f"{_function_prefix} -q executeSwapOrder", "Short form of the explicit function query flag.", f"{_function_prefix} -q executeSwapOrder"),
+    ]
+    _function_existing_forms = _function_entry.setdefault("forms", [])
+    for _function_form in _function_forms:
+        if _function_form not in _function_existing_forms:
+            _function_existing_forms.append(_function_form)
+    _function_options = [
+        ("-q / --query <text>", "Force a function name/signature search; do not treat the value as a contract selector.", f"{_function_prefix} --query executeSwapOrder"),
+        ("Positional contract selector", "An exact match for the active contract name shows the complete ABI inventory.", f"{_function_prefix} OrderBook"),
+    ]
+    _function_existing_options = _function_entry.setdefault("options", [])
+    for _function_option in _function_options:
+        if _function_option not in _function_existing_options:
+            _function_existing_options.append(_function_option)
+    _function_notes = [
+        ("Static effect evidence", "Compiler-AST effects describe statically resolved source behavior. They do not prove that a function or helper executed at runtime.", f"{_function_prefix} --verbose"),
+        ("Ambiguity", "Use an explicit contract target first when the active target is uncertain; Lowkey does not infer a different deployed target from a function query.", f"{_function_prefix} OrderBook"),
+    ]
+    _function_existing_notes = _function_entry.setdefault("notes", [])
+    for _function_note in _function_notes:
+        if _function_note not in _function_existing_notes:
+            _function_existing_notes.append(_function_note)
+
 def _help_entry_for_path(path):
     if not path:
         return None, [], None
