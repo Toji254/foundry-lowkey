@@ -117,6 +117,14 @@ except ImportError:
     project_tools = None
 
 try:
+    import source_link as source_link_engine
+except ImportError:
+    try:
+        from lowkey import source_link as source_link_engine
+    except ImportError:
+        source_link_engine = None
+
+try:
     import lab_target_scope
 except ImportError:
     from lowkey import lab_target_scope
@@ -24895,7 +24903,79 @@ COMMAND_HELP = {
 
         children={
             "tx": _help_entry("Inspect the latest transaction.", "lk last tx", "lk last tx", "Use it after a send."),
-            "trace": _help_entry("Trace the latest transaction.", "lk last trace", "lk last trace", "Use it when you want the latest call chain."),
+            "trace": _help_entry(
+        "Inspect one transaction's EVM execution, or use the source subcommand to navigate static Solidity call and storage relationships.",
+        "lk trace [<transaction-hash>] [options] | lk trace source <Contract.function> [source options]",
+        "lk trace source Vault.withdraw --detail all",
+        "Use transaction mode after a send or when investigating an existing transaction. Use source mode before execution when mapping the code path and state touched by a function.",
+        forms=[
+            ("lk trace [<transaction-hash>]", "Replay the saved or supplied transaction and show its nested EVM call trace.", "lk trace 0x<transaction-hash>"),
+            ("lk trace source <Contract.function>", "Open the source relationship view for one Solidity function; this is static source analysis, not a transaction replay.", "lk trace source Vault.withdraw --detail all"),
+            ("lk last trace", "Trace the latest transaction saved for this project and target.", "lk last trace"),
+        ],
+        children={
+            "source": _help_entry(
+                "Trace source-level function calls, modifiers, storage effects, external boundaries, events, and asset-flow relationships.",
+                "lk trace source <Contract.function> [--detail summary|calls|storage|external|all] [options]",
+                "lk trace source PositionManager.increasePosition --detail all --depth 4",
+                "Use it when you want to understand a code path before executing it. Source links are potential static relationships and do not prove runtime execution.",
+                forms=[
+                    ("lk trace source <Contract.function>", "Show the function's compact source relationship overview.", "lk trace source Vault.withdraw"),
+                    ("lk trace source <Contract.function> --detail calls", "Show reachable internal callees and external call boundaries.", "lk trace source Vault.withdraw --detail calls"),
+                    ("lk trace source <Contract.function> --detail storage", "Show state reads, writes, deletes, and storage-reference paths.", "lk trace source Vault.withdraw --detail storage"),
+                    ("lk trace source <Contract.function> --detail all", "Show every supported source relationship section.", "lk trace source Vault.withdraw --detail all"),
+                ],
+                options=[
+                    ("--detail VIEW", "Choose summary (default), calls, storage, external, or all.", "lk trace source Vault.withdraw --detail all"),
+                    ("--depth N", "Bound helper/call traversal from 1 to 10. Deeper traversal can expose more helpers but remains static.", "lk trace source Vault.withdraw --depth 4"),
+                    ("--limit N", "Limit each section to 1-500 visible relationships; increase it when output reports omitted entries.", "lk trace source Vault.withdraw --limit 60"),
+                    ("--json", "Emit structured source-graph data for scripts and downstream review.", "lk trace source Vault.withdraw --json"),
+                ],
+                notes=[
+                    ("Static evidence", "Compiler AST references are preferred when current Foundry build-info matches source. Stale/missing AST coverage falls back to lexical analysis and is reported.", "lk link Vault.withdraw --detail all"),
+                    ("Execution boundary", "A resolved interface call identifies the declared callable, not the implementation deployed at a runtime address. Static paths do not prove branch execution or transaction success.", "lk trace source Vault.withdraw --detail external"),
+                ],
+                related=["lk link", "lk fn --verbose", "lk trace <tx>", "lk receipt"],
+            ),
+        },
+        options=[
+            ("--quick", "Use the quicker native Cast trace output where supported.", "lk trace --quick"),
+            ("--decode-internal", "Ask Cast to decode internal calls where metadata is available.", "lk trace --decode-internal"),
+            ("--trace-printer", "Use Cast's trace printer output.", "lk trace --trace-printer"),
+            ("--grep <TEXT>", "Show only trace lines containing the supplied text.", "lk trace --grep transfer"),
+        ],
+        related=["lk receipt", "lk tx", "lk link", "lk trace source"],
+    ),
+    "link": _help_entry(
+        "Browse the shared Solidity source relationship graph or inspect a contract, function, modifier, mapping, or state variable.",
+        "lk link [TARGET] [options]",
+        "lk link Vault.positions",
+        "Use it to map how source declarations connect before running transactions. Omit TARGET to browse the project source map.",
+        forms=[
+            ("lk link", "Browse the source map in pages of 24 declarations.", "lk link"),
+            ("lk link <Contract>", "Show a contract overview with its functions, storage, and connected declarations.", "lk link Vault"),
+            ("lk link <Contract.function>", "Inspect a function's local calls, modifiers, storage effects, and external boundaries.", "lk link Vault.withdraw --detail all"),
+            ("lk link <Contract.mapping>", "Inspect a mapping's declaration and source-level readers/writers.", "lk link PositionManager.positions"),
+        ],
+        options=[
+            ("--root DIR", "Scan a different project root. Project imports are resolved through the normal source inventory.", "lk link --root ../protocol"),
+            ("--search TEXT", "Filter the no-target source map by declaration name or source path.", "lk link --search Position"),
+            ("--type KIND", "Filter the no-target source map to contract, interface, or library declarations.", "lk link --type interface"),
+            ("--page N", "Show one source-map page (24 items per page).", "lk link --page 2"),
+            ("--all", "Show every matching source-map declaration in one compact list.", "lk link --search Vault --all"),
+            ("--only FILTER", "For contract views, filter relationships: calls, storage, reads, writes, imports, or assets.", "lk link Vault --only writes"),
+            ("--depth N", "Bound contract/function call traversal from 1 to 10; the function default is 3 and contract default is 1.", "lk link Vault --depth 4"),
+            ("--detail VIEW", "For functions/modifiers, show summary (default), calls, storage, external, or all.", "lk link Vault.withdraw --detail storage"),
+            ("--limit N", "Limit each detail section to 1-500 displayed relationships (default 24).", "lk link Vault --only writes --limit 60"),
+            ("--json", "Emit structured source graph output.", "lk link --search Vault --json"),
+        ],
+        notes=[
+            ("Source evidence", "Lowkey reuses its shared source index and current compiler AST when available. It reports incomplete inventory, stale build-info, and unresolved relationships rather than treating absence as proof.", "lk link --search Position"),
+            ("Static, not runtime", "Source relationships show potential call/effect paths. They do not prove a branch executed, a transaction succeeded, a storage slot was reached, or an external implementation address.", "lk link Vault.withdraw --detail all"),
+            ("Option boundaries", "--search, --type, --page, and --all are source-map options and require omitting TARGET. --detail applies only to functions/modifiers.", "lk link --search Vault --all"),
+        ],
+        related=["lk trace source", "lk fn --verbose", "lk project", "lk deps", "lk layout"],
+    ),
             "logs": _help_entry("Show latest transaction logs.", "lk last logs", "lk last logs", "Use it when event evidence matters."),
         },
         related=["lk receipt", "lk trace", "lk logs"],
@@ -27590,6 +27670,8 @@ UNDERSTAND THE PROJECT
   lk wizard <function> [values...] [call|send|encode] Interactive argument helper; return values shown after successful sends when available.
   lk layout <Contract>             Show Forge storage layout.
   lk deps [src]                    Show imports/inheritance. Example: lk deps
+  lk link [Target]                 Browse or inspect Solidity source relationships. Example: lk link Vault.withdraw
+  lk trace source <Contract.function> Trace static source calls/effects; distinct from replaying a transaction.
   lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
   lk seams [hotspots]              Show audit hotspots.
   lk risk                          Show ABI-level review-surface hints.
@@ -28762,6 +28844,14 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": return run_receipt(config, args=args)
+    elif cmd=="link":
+        if source_link_engine is None:
+            return fail("Source relationship engine is unavailable. Re-run install.sh and check the lowkey/source_link.py module.")
+        return source_link_engine.run_link(args)
+    elif cmd=="trace" and args and str(args[0]).strip().lower()=="source":
+        if source_link_engine is None:
+            return fail("Source relationship engine is unavailable. Re-run install.sh and check the lowkey/source_link.py module.")
+        return source_link_engine.run_link(args[1:])
     elif cmd=="trace": return run_trace(config,args)
     elif cmd=="logs": run_logs(config,args)
     elif cmd=="last":
