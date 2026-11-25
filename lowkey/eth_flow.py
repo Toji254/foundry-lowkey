@@ -593,7 +593,9 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
     ]
     print()
     print(f"OTHER ETH ENTRY POINTS  ({len(other_entries)})")
-    if not other_entries:
+    if not entries:
+        print("  No payable/value-reading ABI entry points were identified.")
+    elif not other_entries:
         print("  All detected ingress points are represented in the routes above.")
     for item in other_entries[:min(limit, 6)]:
         function = item["function"]
