@@ -12285,10 +12285,15 @@ def artifact_is_project_application(root, path, artifact):
     # The old check compared the artifact directory to the *contract name*,
     # which incorrectly rejected valid layouts when source filenames and Solidity symbols differ.
     # Explicit sourceName metadata is stronger provenance and needs no basename check.
-    if not explicit_source:
+    if not explicit_source and Path(normalized).suffix.lower() != ".vy":
+        # Solidity artifacts commonly live under <Contract>.sol/<Contract>.json,
+        # so their fallback path must match the artifact source directory. Vyper
+        # backends also place artifacts under generic roots such as
+        # .audit/build/vyper, so source-name matching (performed by
+        # source_contract_fallback) is the safe provenance check for .vy files.
         parent_stem = path_obj.parent.name
-        if parent_stem.lower().endswith((".sol", ".vy")):
-            parent_stem = parent_stem.rsplit(".", 1)[0]
+        if parent_stem.lower().endswith(".sol"):
+            parent_stem = parent_stem[:-4]
         if Path(normalized).stem.lower() != parent_stem.lower():
             return False
     source_path = root_path / normalized
