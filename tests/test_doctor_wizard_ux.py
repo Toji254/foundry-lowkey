@@ -100,14 +100,18 @@ PASS  dependency command: cast receipt
 
     def test_doctor_verbose_flag_preserves_full_diagnostics(self):
         output = io.StringIO()
-        with patch.object(lk, "_run_doctor_detailed", return_value=0), \
+        def detailed_report():
+            print("FULL DIAGNOSTIC REPORT")
+            return 0
+
+        with patch.object(lk, "_run_doctor_detailed", side_effect=detailed_report), \
              patch.object(lk, "_doctor_verbose_engine_inventory") as engines, \
              patch.object(lk.audit_context, "foundry_project_root", return_value=Path("/tmp/project")), \
              redirect_stdout(output):
             result = lk.run_doctor(["--verbose"])
 
         self.assertEqual(result, 0)
-        self.assertEqual(output.getvalue(), "")
+        self.assertIn("FULL DIAGNOSTIC REPORT", output.getvalue())
         engines.assert_called_once_with(Path("/tmp/project"))
 
     def test_gas_estimation_revert_is_classified_as_contract_preflight_failure(self):
