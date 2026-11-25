@@ -19,7 +19,7 @@ spec.loader.exec_module(lk)
 class TransactionOriginContextTests(unittest.TestCase):
     def setUp(self):
         self.origin = "0x" + "1" * 40
-        self.attacker = "0x" + "2" * 40
+        self.intermediary = "0x" + "2" * 40
         self.target = "0x" + "3" * 40
         self.tx_hash = "0x" + "a" * 64
 
@@ -27,11 +27,11 @@ class TransactionOriginContextTests(unittest.TestCase):
         trace = {
             "type": "CALL",
             "from": self.origin,
-            "to": self.attacker,
+            "to": self.intermediary,
             "calls": [
                 {
                     "type": "CALL",
-                    "from": self.attacker,
+                    "from": self.intermediary,
                     "to": self.target,
                     "calls": [],
                 }
@@ -39,7 +39,7 @@ class TransactionOriginContextTests(unittest.TestCase):
         }
         self.assertEqual(
             lk._trace_target_msg_senders(trace, self.target, self.origin),
-            [(self.attacker, "CALL")],
+            [(self.intermediary, "CALL")],
         )
 
     def test_delegatecall_preserves_parent_msg_sender(self):
@@ -47,11 +47,11 @@ class TransactionOriginContextTests(unittest.TestCase):
         proxy_trace = {
             "type": "CALL",
             "from": self.origin,
-            "to": self.attacker,
+            "to": self.intermediary,
             "calls": [
                 {
                     "type": "DELEGATECALL",
-                    "from": self.attacker,
+                    "from": self.intermediary,
                     "to": implementation,
                     "calls": [],
                 }
@@ -67,11 +67,11 @@ class TransactionOriginContextTests(unittest.TestCase):
         trace = {
             "type": "CALL",
             "from": self.origin,
-            "to": self.attacker,
+            "to": self.intermediary,
             "calls": [
                 {
                     "type": "DELEGATECALL",
-                    "from": self.attacker,
+                    "from": self.intermediary,
                     "to": implementation,
                     "calls": [
                         {
@@ -85,14 +85,14 @@ class TransactionOriginContextTests(unittest.TestCase):
         }
         self.assertEqual(
             lk._trace_target_msg_senders(trace, self.target, self.origin),
-            [(self.attacker, "CALL")],
+            [(self.intermediary, "CALL")],
         )
 
     def test_call_trace_without_matching_target_does_not_guess_sender(self):
         trace = {
             "type": "CALL",
             "from": self.origin,
-            "to": self.attacker,
+            "to": self.intermediary,
             "calls": [],
         }
         self.assertEqual(
@@ -113,14 +113,14 @@ class TransactionOriginContextTests(unittest.TestCase):
             output = io.StringIO()
             config = {
                 "target": self.target,
-                "target_contract": "Telephone",
+                "target_contract": "Target",
                 "actor": "Alice",
                 "wallets": {},
                 "labels": {},
             }
             with patch.object(lk, "cast_output", return_value=(0, json.dumps(tx), "")), \
                  patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
-                 patch.object(lk, "project_context_target", return_value={"address": self.target, "contract": "Telephone"}), \
+                 patch.object(lk, "project_context_target", return_value={"address": self.target, "contract": "Target"}), \
                  patch.object(lk, "active_project_target", return_value=self.target), \
                  patch.object(lk.walkthrough, "_receipt", return_value=None), \
                  patch.object(lk.walkthrough, "_write_transaction_evidence"), \
@@ -133,7 +133,7 @@ class TransactionOriginContextTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("tx.origin:", rendered)
         self.assertIn(self.origin, rendered)
-        self.assertIn("msg.sender at Telephone (direct):", rendered)
+        self.assertIn("msg.sender at Target (direct):", rendered)
 
     def test_transaction_value_is_shown_in_eth_and_wei(self):
         tx = {
@@ -148,7 +148,7 @@ class TransactionOriginContextTests(unittest.TestCase):
             output = io.StringIO()
             config = {
                 "target": self.target,
-                "target_contract": "Telephone",
+                "target_contract": "Target",
                 "actor": "Alice",
                 "wallets": {},
                 "labels": {},
@@ -172,7 +172,7 @@ class TransactionOriginContextTests(unittest.TestCase):
         tx = {
             "hash": self.tx_hash,
             "from": self.origin,
-            "to": self.attacker,
+            "to": self.intermediary,
             "value": "0x0",
             "blockNumber": "0xa",
             "input": "0x",
@@ -180,11 +180,11 @@ class TransactionOriginContextTests(unittest.TestCase):
         trace = {
             "type": "CALL",
             "from": self.origin,
-            "to": self.attacker,
+            "to": self.intermediary,
             "calls": [
                 {
                     "type": "CALL",
-                    "from": self.attacker,
+                    "from": self.intermediary,
                     "to": self.target,
                     "calls": [],
                 }
@@ -194,14 +194,14 @@ class TransactionOriginContextTests(unittest.TestCase):
             output = io.StringIO()
             config = {
                 "target": self.target,
-                "target_contract": "Telephone",
+                "target_contract": "Target",
                 "actor": "Alice",
                 "wallets": {},
                 "labels": {},
             }
             with patch.object(lk, "cast_output", return_value=(0, json.dumps(tx), "")), \
                  patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
-                 patch.object(lk, "project_context_target", return_value={"address": self.target, "contract": "Telephone"}), \
+                 patch.object(lk, "project_context_target", return_value={"address": self.target, "contract": "Target"}), \
                  patch.object(lk, "active_project_target", return_value=self.target), \
                  patch.object(lk, "rpc_json", return_value=trace) as rpc_call, \
                  patch.object(lk.walkthrough, "_receipt", return_value=None), \
@@ -214,8 +214,8 @@ class TransactionOriginContextTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn(f"tx.origin: {self.origin}", rendered)
-        self.assertIn("msg.sender at Telephone (CALL):", rendered)
-        self.assertIn(self.attacker, rendered)
+        self.assertIn("msg.sender at Target (CALL):", rendered)
+        self.assertIn(self.intermediary, rendered)
         rpc_call.assert_called_once_with(
             "http://127.0.0.1:8545",
             "debug_traceTransaction",
@@ -235,7 +235,7 @@ class TransactionOriginContextTests(unittest.TestCase):
             output = io.StringIO()
             config = {
                 "target": self.target,
-                "target_contract": "Telephone",
+                "target_contract": "Target",
                 "actor": "Alice",
                 "wallets": {},
                 "labels": {},
