@@ -187,6 +187,81 @@ class LabTargetScopeTests(unittest.TestCase):
             self.assertIsNotNone(selected)
             self.assertEqual(selected[1], "Counter")
 
+    def _write_vyper_artifact(self, root, relative_output, bytecode="0x6000"):
+        source = root / "contracts" / "Counter.vy"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(
+            "@external\ndef increment():\n    pass\n",
+            encoding="utf-8",
+        )
+        artifact_path = root / relative_output
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(json.dumps({
+            "contractName": "Counter",
+            "sourceName": "contracts/Counter.vy",
+            "abi": [{
+                "type": "function", "name": "increment",
+                "inputs": [], "outputs": [],
+            }],
+            "bytecode": {"object": bytecode},
+            "deployedBytecode": {"object": "0x6001"},
+            "language": "Vyper",
+        }), encoding="utf-8")
+        return artifact_path
+
+    def test_identical_vyper_artifacts_for_same_source_are_collapsed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            build_artifact = self._write_vyper_artifact(
+                root, ".audit/build/vyper/Counter.json"
+            )
+            self._write_vyper_artifact(
+                root, ".audit/walkthrough/vyper/Counter.json"
+            )
+            selected = lk.discover_generic_lab_contract(root, "Counter")
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected[1], "Counter")
+            self.assertEqual(Path(selected[2]).resolve(), build_artifact.resolve())
+
+    def test_conflicting_vyper_artifacts_for_same_source_remain_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            self._write_vyper_artifact(
+                root, ".audit/build/vyper/Counter.json", bytecode="0x6000"
+            )
+            self._write_vyper_artifact(
+                root, ".audit/walkthrough/vyper/Counter.json", bytecode="0x6002"
+            )
+            self.assertIsNone(lk.discover_generic_lab_contract(root, "Counter"))
+
+    def test_same_named_contracts_from_different_sources_remain_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            first = self._write_vyper_artifact(
+                root, ".audit/build/vyper/Counter.json"
+            )
+            second_source = root / "other" / "Counter.vy"
+            second_source.parent.mkdir(parents=True)
+            second_source.write_text(
+                "@external\ndef increment():\n    pass\n",
+                encoding="utf-8",
+            )
+            second_artifact = root / ".audit/walkthrough/vyper/OtherCounter.json"
+            second_artifact.parent.mkdir(parents=True)
+            second_artifact.write_text(json.dumps({
+                "contractName": "Counter",
+                "sourceName": "other/Counter.vy",
+                "abi": [{
+                    "type": "function", "name": "increment",
+                    "inputs": [], "outputs": [],
+                }],
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6001"},
+                "language": "Vyper",
+            }), encoding="utf-8")
+            self.assertNotEqual(first.resolve(), second_artifact.resolve())
+            self.assertIsNone(lk.discover_generic_lab_contract(root, "Counter"))
+
     def test_explicit_missing_target_fails_closed_without_alternate_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(tmp)
