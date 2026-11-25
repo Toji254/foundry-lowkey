@@ -10703,7 +10703,7 @@ def _doctor_compact_summary(report, exit_code):
     core_tools = []
     for name, display in (
         ("python3", "Python"), ("forge", "Forge"), ("cast", "Cast"),
-        ("anvil", "Anvil"), ("chisel", "Chisel"), ("slither", "Slither"),
+        ("anvil", "Anvil"), ("chisel", "Chisel"),
     ):
         row = next((line for line in lines if re.match(
             rf"^(PASS|FAIL|WARN|NOTE)\s+{re.escape(name)}:", line
@@ -10725,9 +10725,12 @@ def _doctor_compact_summary(report, exit_code):
     missing = [item for item in engines if isinstance(item, dict) and not item.get("available")]
     display_names = {"forge": "Forge", "slither": "Slither", "halmos": "Halmos",
                      "echidna": "Echidna", "medusa": "Medusa", "certora": "Certora"}
+    # Forge is already listed as part of the environment/toolchain above.
+    # Keep it in the installed count, but avoid printing it a second time here.
     rendered = [display_names.get(str(item.get("name") or "").lower(),
                                   str(item.get("name") or "unknown").replace("_", " ").title())
-                for item in available]
+                for item in available
+                if str(item.get("name") or "").strip().lower() != "forge"]
     build_line = next((line.strip() for line in lines if re.match(
         r"^(PASS|FAIL|WARN|NOTE)\s+project build:", line
     )), "Project build: not checked")
