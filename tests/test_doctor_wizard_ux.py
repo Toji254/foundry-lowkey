@@ -39,6 +39,10 @@ PASS  dependency command: cast receipt
         output = io.StringIO()
         with patch.object(lk.audit_context, "foundry_project_root", return_value=Path("/tmp/Voting Contract")), \
              patch.object(lk, "_doctor_engine_inventory", return_value={"engines": engines, "error": None}), \
+             patch.object(lk, "_doctor_supplemental_tool_inventory", return_value=[
+                 {"name": "Scarb / Cairo", "path": "/usr/bin/scarb"},
+                 {"name": "crytic-compile", "path": "/usr/bin/crytic-compile"},
+             ]), \
              redirect_stdout(output):
             lk._doctor_compact_summary(report, 0)
 
@@ -49,9 +53,50 @@ PASS  dependency command: cast receipt
         self.assertIn("Forge", rendered)
         self.assertIn("Slither", rendered)
         self.assertIn("Not installed: Halmos", rendered)
+        self.assertIn("Extra toolchains: 2 detected", rendered)
+        self.assertIn("Scarb / Cairo", rendered)
+        self.assertIn("crytic-compile", rendered)
+        self.assertIn("Forge is included in the count", rendered)
+        self.assertEqual(rendered.count("Slither"), 1)
         self.assertIn("Project build", rendered)
         self.assertNotIn("dependency command", rendered)
         self.assertNotIn("Workspace root", rendered)
+
+
+    def test_supplemental_tool_inventory_detects_cairo_and_solidity_support_tools(self):
+        native = {
+            "scarb": True,
+            "snforge": True,
+            "vyper": False,
+            "hardhat": False,
+            "ape": False,
+            "brownie": False,
+            "anchor": False,
+            "aptos": False,
+            "sui": False,
+            "cargo-audit": False,
+            "cargo-geiger": False,
+            "pytest": False,
+            "boa": False,
+        }
+        def which(name):
+            return {
+                "scarb": "/usr/bin/scarb",
+                "snforge": "/usr/bin/snforge",
+                "crytic-compile": "/home/user/.local/bin/crytic-compile",
+                "solc-select": "/home/user/.local/bin/solc-select",
+            }.get(name)
+
+        with patch.object(lk, "detect_project", return_value={"native": native}), \
+             patch.object(lk.shutil, "which", side_effect=which):
+            rows = lk._doctor_supplemental_tool_inventory(Path("/tmp/cairo-project"))
+
+        names = {row["name"] for row in rows}
+        self.assertIn("Scarb / Cairo", names)
+        self.assertIn("Starknet Foundry", names)
+        self.assertIn("crytic-compile", names)
+        self.assertIn("solc-select", names)
+        self.assertEqual(len(rows), 4)
 
     def test_doctor_verbose_flag_preserves_full_diagnostics(self):
         output = io.StringIO()
