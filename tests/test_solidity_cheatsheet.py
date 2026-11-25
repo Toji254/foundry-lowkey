@@ -272,6 +272,63 @@ class SolidityCheatsheetTests(unittest.TestCase):
                       "FIELD NAME", "actual data", "amount: amount"):
             self.assertIn(token, output)
 
+    def test_structs_reference_covers_field_types_arrays_and_locations(self):
+        result, output = self.render("structs")
+        self.assertEqual(result, 0)
+        for token in (
+            "uint256",
+            "uint128",
+            "int256",
+            "bool",
+            "address payable",
+            "bytes32",
+            "bytes4",
+            "string",
+            "bytes",
+            "uint256[]",
+            "uint256[3]",
+            "bytes32[]",
+            "bytes32[2]",
+            "address[]",
+            "address[2]",
+            "string[]",
+            "Status",
+            "Limits",
+            "new uint256[](3)",
+            "new string[](3)",
+            "options: options",
+            "named struct initialisation",
+            "positional",
+            "memory",
+            "storage",
+            "calldata",
+            "push()",
+            "mapping",
+        ):
+            self.assertIn(token.lower(), output.lower())
+
+        # The singular/plural aliases should reach the same guide.
+        result, alias_output = self.render("struct")
+        self.assertEqual(result, 0)
+        self.assertIn("LOWKEY // CHEAT • STRUCTS", alias_output)
+
+    def test_structs_contract_lab_shows_mapping_to_storage_copy_and_updates(self):
+        result, output = self.render("structs", "1")
+        self.assertEqual(result, 0)
+        for token in (
+            "contract StructsReferenceLab",
+            "uint256[3] fixedScores",
+            "bytes32[2] fixedTags",
+            "address[2] fixedSigners",
+            "string[] options",
+            "Record memory record",
+            "records[recordId] = record",
+            "Record storage record",
+            "record.options.push(option)",
+            "mapping(address => uint256) allowances",
+        ):
+            self.assertIn(token, output)
+
     def test_calldata_reference_connects_to_receive_and_fallback(self):
         result, output = self.render("calldata-deep")
         self.assertEqual(result, 0)
