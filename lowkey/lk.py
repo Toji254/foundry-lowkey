@@ -4415,14 +4415,17 @@ def run_info(config):
         return fail("Error: Set target first.")
     print(f"Target: {apply_labels(target, config)}")
     run_chain(config)
-    code = run_cast(["code", target], config, capture=True) or ""
-    print(f"Code:   {'YES' if code.startswith('0x') and len(code) > 2 else 'NO'}")
     abi = load_abi(target, config)
     print(f"ABI:    {'LOADED' if abi else 'NOT LOADED'}")
     proxy = inspect_proxy_details(config, abi=abi)
-    readiness = inspect_protocol_readiness(config, abi=abi, has_code=proxy.get("has_code"))
+    code_status = proxy.get("runtime_code_status") or "UNKNOWN"
+    code_label = "YES" if code_status == "PRESENT" else "NO" if code_status == "NO_CODE" else "UNKNOWN"
+    print(f"Code:   {code_label}")
+    readiness_has_code = True if code_status == "PRESENT" else False if code_status == "NO_CODE" else None
+    readiness = inspect_protocol_readiness(config, abi=abi, has_code=readiness_has_code)
     _print_protocol_readiness(readiness)
     print(f"Proxy type: {proxy.get('kind') or 'UNKNOWN'}")
+    _print_proxy_detection_status(proxy)
     if proxy.get("implementation"):
         print(f"Implementation: {apply_labels(proxy['implementation'], config)}")
     if proxy.get("beacon"):
@@ -8903,33 +8906,56 @@ def run_balance(config,args=None):
             print("WARNING   : this target address has ETH, but the current RPC reports no contract bytecode.")
     return 0
 
+def _eip1967_proxy_label(details):
+    """Return YES/NO only when the two EIP-1967 slot reads justify that claim."""
+    implementation = str(details.get("implementation_slot_status") or "NOT_CHECKED").upper()
+    beacon = str(details.get("beacon_slot_status") or "NOT_CHECKED").upper()
+    statuses = (implementation, beacon)
+
+    if "NONZERO" in statuses:
+        return "YES"
+    if details.get("proxy_detection_status") == "NOT_APPLICABLE":
+        return "NOT_APPLICABLE"
+    if statuses == ("ZERO", "ZERO"):
+        return "NO"
+
+    unavailable = {"UNREADABLE", "MALFORMED", "NOT_CHECKED", "UNKNOWN"}
+    unavailable_count = sum(status in unavailable for status in statuses)
+    if unavailable_count == 2:
+        return "UNVERIFIED"
+    if unavailable_count == 1:
+        return "PARTIALLY_CHECKED"
+    return "UNKNOWN"
+
+
 def run_recon(config):
     target=config.get("target")
     if not target:
         return fail("Error: Set target first.")
     print(f"CONTRACT RECON: {apply_labels(target, config)}\n" + "="*52)
     balance=run_cast(["balance",target],config,capture=True)
-    code=run_cast(["code",target],config,capture=True) or ""
     codehash=run_cast(["codehash",target],config,capture=True)
     nonce=run_cast(["nonce",target],config,capture=True)
     codesize=run_cast(["codesize",target],config,capture=True)
     print(f"Balance:  {humanize_value(balance) if balance else 'Unknown'}")
-    print(f"Code:     {'YES' if code.startswith('0x') and len(code)>2 else 'NO'}")
     print(f"Codehash: {codehash or 'Unknown'}")
     print(f"Codesize: {codesize or 'Unknown'} bytes")
     print(f"Nonce:    {nonce or 'Unknown'}")
     abi = load_abi(target, config)
     proxy = inspect_proxy_details(config, abi=abi)
-    readiness = inspect_protocol_readiness(config, abi=abi, has_code=proxy.get("has_code"))
+    code_status = proxy.get("runtime_code_status") or "UNKNOWN"
+    code_label = "YES" if code_status == "PRESENT" else "NO" if code_status == "NO_CODE" else "UNKNOWN"
+    print(f"Code:     {code_label}")
+    readiness_has_code = True if code_status == "PRESENT" else False if code_status == "NO_CODE" else None
+    readiness = inspect_protocol_readiness(config, abi=abi, has_code=readiness_has_code)
     _print_protocol_readiness(readiness)
     proxy_kind = str(proxy.get("kind") or "UNKNOWN")
-    erc1967_proxy = proxy_kind in {
-        "ERC1967_IMPLEMENTATION_PROXY", "ERC1967_BEACON_PROXY",
-    }
     is_clone = proxy_kind == "EIP1167_MINIMAL_CLONE"
     print(f"Proxy classification: {proxy_kind}")
-    print(f"EIP-1967 proxy: {'YES' if erc1967_proxy else 'NO'}")
-    print(f"EIP-1167 clone: {'YES' if is_clone else 'NO'}")
+    _print_proxy_detection_status(proxy)
+    print(f"EIP-1967 proxy: {_eip1967_proxy_label(proxy)}")
+    clone_label = "YES" if is_clone else "NO" if code_status == "PRESENT" else "NOT_APPLICABLE" if code_status == "NO_CODE" else "UNVERIFIED"
+    print(f"EIP-1167 clone: {clone_label}")
     if proxy.get("implementation"):
         print(f"Implementation: {apply_labels(proxy['implementation'], config)}")
     if proxy.get("beacon"):
@@ -8964,6 +8990,41 @@ def _address_from_slot(value):
     if raw.lower() == "0" * 40:
         return None
     return "0x" + raw
+
+
+def _proxy_runtime_code_evidence(value):
+    """Distinguish successful empty runtime code from an RPC/decoding failure."""
+    result_code = getattr(value, "code", 0)
+    text = str(getattr(value, "text", value or "")).strip()
+    if result_code != 0 or not text or text.casefold().startswith(("error:", "warning:")):
+        return "UNREADABLE", ""
+    if text == "0x":
+        return "NO_CODE", text
+    if re.fullmatch(r"0x(?:[0-9a-fA-F]{2})+", text):
+        return "PRESENT", text
+    if text.startswith("0x"):
+        return "MALFORMED", ""
+    return "UNREADABLE", ""
+
+
+def _proxy_slot_evidence(value):
+    """Classify one EIP-1967 slot read without confusing RPC failure with zero."""
+    result_code = getattr(value, "code", 0)
+    text = str(getattr(value, "text", value or "")).strip()
+    if result_code != 0 or not text or text.casefold().startswith(("error:", "warning:")):
+        return "UNREADABLE", None
+
+    match = re.fullmatch(r"0x([0-9a-fA-F]{64})", text)
+    if not match:
+        return ("MALFORMED", None) if text.startswith("0x") else ("UNREADABLE", None)
+
+    word = match.group(1)
+    if word[:24].lower() != "0" * 24:
+        return "MALFORMED", None
+    address = word[-40:]
+    if address.lower() == "0" * 40:
+        return "ZERO", None
+    return "NONZERO", "0x" + address
 
 
 def _address_from_cast_result(value):
@@ -9145,12 +9206,39 @@ def inspect_protocol_readiness(config, abi=None, *, has_code=None):
     for name, signature, output_type in candidates:
         raw = run_cast(["call", target, signature], config, capture=True)
         decoded = _readiness_decode_getter(output_type, raw)
-        result["getters"].append({
+        getter = {
             "name": name,
             "signature": signature,
             "type": output_type,
             **decoded,
-        })
+        }
+        if output_type.casefold() == "address":
+            if decoded.get("status") == "SET":
+                dependency_code = run_cast(
+                    ["code", decoded["value"]], config, capture=True
+                )
+                dependency_code_text = str(
+                    getattr(dependency_code, "text", dependency_code or "")
+                ).strip()
+                dependency_code_exit = getattr(dependency_code, "code", 0)
+                if dependency_code_exit != 0 or dependency_code_text.casefold().startswith(("error:", "warning:")):
+                    getter["code_status"] = "UNREADABLE"
+                elif dependency_code_text == "0x":
+                    getter["code_status"] = "NO_CODE"
+                elif re.fullmatch(r"0x(?:[0-9a-fA-F]{2})+", dependency_code_text):
+                    getter["code_status"] = "PRESENT"
+                else:
+                    getter["code_status"] = "UNREADABLE"
+            elif decoded.get("status") == "ZERO":
+                getter["code_status"] = "NOT_APPLICABLE_ZERO"
+            else:
+                getter["code_status"] = "NOT_CHECKED"
+        result["getters"].append(getter)
+    result["evidence_limit"] = (
+        "These ABI-derived candidate getters do not establish protocol requirements. "
+        "A non-zero address with runtime code is not proof that it is the intended, compatible, "
+        "or safe dependency; initializer presence and getter values do not establish protocol readiness."
+    )
     return result
 
 
@@ -9181,8 +9269,10 @@ def inspect_proxy_details(config, abi=None):
     details = {
         "target": target,
         "has_code": False,
+        "runtime_code_status": "NOT_CHECKED",
         "is_proxy": False,
         "kind": "NO_TARGET" if not target else "DIRECT_OR_UNKNOWN",
+        "proxy_detection_status": "NOT_CHECKED",
         "implementation": None,
         "beacon": None,
         "beacon_implementation": None,
@@ -9191,29 +9281,42 @@ def inspect_proxy_details(config, abi=None):
         "application_governor": None,
         "implementation_slot": None,
         "beacon_slot": None,
+        "implementation_slot_status": "NOT_CHECKED",
+        "beacon_slot_status": "NOT_CHECKED",
         "evidence": [],
     }
     if not target or not is_address(target):
         return details
 
-    code = run_cast(["code", target], config, capture=True) or ""
-    details["has_code"] = bool(str(code).strip().startswith("0x") and len(str(code).strip()) > 2)
-    if not details["has_code"]:
+    code_result = run_cast(["code", target], config, capture=True)
+    runtime_code_status, code = _proxy_runtime_code_evidence(code_result)
+    details["runtime_code_status"] = runtime_code_status
+    details["has_code"] = runtime_code_status == "PRESENT"
+    if runtime_code_status == "NO_CODE":
         details["kind"] = "NO_CODE"
-        details["evidence"].append("target has no deployed runtime bytecode")
+        details["proxy_detection_status"] = "NOT_APPLICABLE"
+        details["evidence"].append("target successfully returned empty runtime bytecode")
         return details
+    if runtime_code_status != "PRESENT":
+        details["evidence"].append(
+            f"target runtime bytecode read: {runtime_code_status}; EIP-1167 clone inspection is unavailable"
+        )
 
     implementation_raw = run_cast(["st", EIP1967_IMPLEMENTATION_SLOT], config, capture=True)
     beacon_raw = run_cast(["st", EIP1967_BEACON_SLOT], config, capture=True)
-    implementation = _address_from_slot(implementation_raw)
-    beacon = _address_from_slot(beacon_raw)
-    clone_implementation = _fixture_embedded_implementation(code)
+    implementation_status, implementation = _proxy_slot_evidence(implementation_raw)
+    beacon_status, beacon = _proxy_slot_evidence(beacon_raw)
+    clone_implementation = _fixture_embedded_implementation(code) if runtime_code_status == "PRESENT" else None
 
     details["implementation_slot"] = implementation_raw
     details["beacon_slot"] = beacon_raw
+    details["implementation_slot_status"] = implementation_status
+    details["beacon_slot_status"] = beacon_status
     details["implementation"] = implementation
     details["beacon"] = beacon
     details["clone_implementation"] = clone_implementation
+    details["evidence"].append(f"EIP-1967 implementation slot read: {implementation_status}")
+    details["evidence"].append(f"EIP-1967 beacon slot read: {beacon_status}")
 
     if beacon:
         details["is_proxy"] = True
@@ -9236,8 +9339,24 @@ def inspect_proxy_details(config, abi=None):
         details["kind"] = "EIP1167_MINIMAL_CLONE"
         details["implementation"] = clone_implementation
         details["evidence"].append("minimal-proxy runtime bytecode embeds the implementation address")
+
+    if details["is_proxy"]:
+        details["proxy_detection_status"] = "DETECTED"
+    elif implementation_status == "ZERO" and beacon_status == "ZERO" and runtime_code_status == "PRESENT":
+        details["proxy_detection_status"] = "CHECKED_NO_SUPPORTED_PATTERN"
+        details["evidence"].append(
+            "no ERC-1967 implementation/beacon slot or EIP-1167 runtime pattern detected; custom proxy patterns are not ruled out"
+        )
+    elif implementation_status in {"UNREADABLE", "MALFORMED"} and beacon_status in {"UNREADABLE", "MALFORMED"}:
+        details["proxy_detection_status"] = "UNVERIFIED"
+        details["evidence"].append(
+            "EIP-1967 slot reads were unavailable or malformed; proxy absence is not established"
+        )
     else:
-        details["evidence"].append("no ERC-1967 implementation/beacon slot or EIP-1167 runtime pattern detected")
+        details["proxy_detection_status"] = "PARTIALLY_CHECKED"
+        details["evidence"].append(
+            "not all standard proxy evidence was available; proxy absence is not established"
+        )
 
     # Resolve an admin only after an independent proxy signal exists. The
     # absence of an admin does not rule out UUPS/beacon/clone proxy patterns.
@@ -9273,6 +9392,21 @@ def inspect_proxy(config, quiet=False):
     return bool(details["is_proxy"])
 
 
+def _print_proxy_detection_status(details):
+    status = str(details.get("proxy_detection_status") or "UNKNOWN")
+    print(f"Proxy detection: {status}")
+    runtime_status = details.get("runtime_code_status")
+    if runtime_status and runtime_status != "NOT_CHECKED":
+        print(f"  Runtime code: {runtime_status}")
+    for key, label in (
+        ("implementation_slot_status", "EIP-1967 implementation slot"),
+        ("beacon_slot_status", "EIP-1967 beacon slot"),
+    ):
+        value = details.get(key)
+        if value and value != "NOT_CHECKED":
+            print(f"  {label}: {value}")
+
+
 def run_proxy(config):
     target = config.get("target")
     if not target:
@@ -9280,6 +9414,7 @@ def run_proxy(config):
     details = inspect_proxy_details(config)
     print(f"Target        : {apply_labels(target, config)}")
     print(f"Classification: {details['kind']}")
+    _print_proxy_detection_status(details)
     if details.get("implementation"):
         print(f"Implementation: {apply_labels(details['implementation'], config)}")
     if details.get("beacon"):
@@ -9297,7 +9432,7 @@ def run_proxy(config):
     for item in details["evidence"]:
         print(f"Evidence      : {item}")
     if not details["is_proxy"]:
-        print("Note          : no supported proxy pattern was proven; this is not proof that no custom proxy exists.")
+        print("Note          : no supported proxy pattern was proven; custom proxy patterns are not ruled out.")
     return 0
 
 
@@ -9316,7 +9451,11 @@ def run_proxy_field(config, field):
     else:
         return fail(f"Unknown proxy field: {field}")
     if not details["is_proxy"]:
-        print("Target is not a recognized ERC-1967/EIP-1167 proxy or clone.")
+        status = details.get("proxy_detection_status")
+        if status in {"UNVERIFIED", "PARTIALLY_CHECKED"}:
+            print(f"Proxy detection {status}: cannot safely conclude that the target is direct.")
+        else:
+            print("Target has no detected ERC-1967/EIP-1167 proxy pattern; custom patterns are not ruled out.")
         return 1
     if not value:
         print(f"{label}: not resolved")
