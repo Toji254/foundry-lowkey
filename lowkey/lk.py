@@ -10922,7 +10922,8 @@ def _doctor_compact_summary(report, exit_code):
 
     print("LOWKEY / DOCTOR")
     print("=" * 48)
-    print(f"STATUS   {'HEALTHY' if exit_code == 0 else 'NEEDS ATTENTION'}")
+    health_status = "HEALTHY" if exit_code == 0 and not issues and not plugin_errors else "NEEDS ATTENTION"
+    print(f"STATUS   {health_status}")
     print(f"PROJECT  {project_name}")
     print("")
     print("ENVIRONMENT")
