@@ -125,6 +125,14 @@ except ImportError:
         source_index = None
 
 try:
+    import source_link as source_link_engine
+except ImportError:
+    try:
+        from lowkey import source_link as source_link_engine
+    except ImportError:
+        source_link_engine = None
+
+try:
     import lab_target_scope
 except ImportError:
     from lowkey import lab_target_scope
@@ -25367,24 +25375,81 @@ COMMAND_HELP = {
             ("--raw", "Show the original detailed Cast receipt instead of Lowkey's simple summary.", "lk receipt --raw"),
         ],
         related=["lk tx", "lk trace", "lk logs"],
-    ),    "trace": _help_entry(
-        "Show the steps a transaction took inside the EVM, including calls to other contracts.",
-        "lk trace [tx] [options]",
-        "lk trace 0x871fecf8d5d88863f191016cae8f994eb8e2143521764948684d1468a7948957",
-        "Use it when a transaction's final result is not enough and you need to see where execution went or where it failed. When the top-level call returns a value that looks like an identifier, Lowkey shows it clearly and warns when the same probable identifier appears again.",
+    ),    
+    "trace": _help_entry(
+        "Inspect one transaction's EVM execution, or use the source subcommand to navigate static Solidity call and storage relationships.",
+        "lk trace [<transaction-hash>] [options] | lk trace source <Contract.function> [source options]",
+        "lk trace source Vault.withdraw --detail all",
+        "Use transaction mode after a send or when investigating an existing transaction. Use source mode before execution when mapping the code path and state touched by a function.",
         forms=[
-            ("lk trace", "Show the trace for the last transaction Lowkey remembers.", "lk trace"),
-            ("lk trace <tx>", "Show the trace for a specific transaction.", "lk trace 0x871f..."),
-            ("lk trace <tx> --grep <text>", "Show only trace lines containing the text you give.", "lk trace 0x871f... --grep setValue"),
+            ("lk trace [<transaction-hash>]", "Replay the saved or supplied transaction and show its nested EVM call trace.", "lk trace 0x<transaction-hash>"),
+            ("lk trace source <Contract.function>", "Open the source relationship view for one Solidity function; this is static source analysis, not a transaction replay.", "lk trace source Vault.withdraw --detail all"),
+            ("lk last trace", "Trace the latest transaction saved for this project and target.", "lk last trace"),
+        ],
+        children={
+            "source": _help_entry(
+                "Trace source-level function calls, modifiers, storage effects, external boundaries, events, and asset-flow relationships.",
+                "lk trace source <Contract.function> [--detail summary|calls|storage|external|all] [options]",
+                "lk trace source PositionManager.increasePosition --detail all --depth 4",
+                "Use it when you want to understand a code path before executing it. This is static source analysis, not a transaction replay; source links are potential static relationships and do not prove runtime execution.",
+                forms=[
+                    ("lk trace source <Contract.function>", "Show the function's compact source relationship overview.", "lk trace source Vault.withdraw"),
+                    ("lk trace source <Contract.function> --detail calls", "Show reachable internal callees and external call boundaries.", "lk trace source Vault.withdraw --detail calls"),
+                    ("lk trace source <Contract.function> --detail storage", "Show state reads, writes, deletes, and storage-reference paths.", "lk trace source Vault.withdraw --detail storage"),
+                    ("lk trace source <Contract.function> --detail all", "Show every supported source relationship section.", "lk trace source Vault.withdraw --detail all"),
+                ],
+                options=[
+                    ("--detail VIEW", "Choose summary (default), calls, storage, external, or all.", "lk trace source Vault.withdraw --detail all"),
+                    ("--depth N", "Bound helper/call traversal from 1 to 10. Deeper traversal can expose more helpers but remains static.", "lk trace source Vault.withdraw --depth 4"),
+                    ("--limit N", "Limit each section to 1-500 visible relationships; increase it when output reports omitted entries.", "lk trace source Vault.withdraw --limit 60"),
+                    ("--json", "Emit structured source-graph data for scripts and downstream review.", "lk trace source Vault.withdraw --json"),
+                ],
+                notes=[
+                    ("Static evidence", "Compiler AST references are preferred when current Foundry build-info matches source. Stale/missing AST coverage falls back to lexical analysis and is reported.", "lk link Vault.withdraw --detail all"),
+                    ("Execution boundary", "A resolved interface call identifies the declared callable, not the implementation deployed at a runtime address. Static paths do not prove branch execution or transaction success.", "lk trace source Vault.withdraw --detail external"),
+                ],
+                related=["lk link", "lk fn --verbose", "lk trace <tx>", "lk receipt"],
+            ),
+        },
+        options=[
+            ("--quick", "Use the quicker native Cast trace output where supported.", "lk trace --quick"),
+            ("--decode-internal", "Ask Cast to decode internal calls where metadata is available.", "lk trace --decode-internal"),
+            ("--trace-printer <value>", "Pass a trace display setting to Cast; see cast run --help for supported values.", "lk trace --trace-printer pretty"),
+            ("--grep <text>", "Show only trace lines containing the supplied text.", "lk trace --grep transfer"),
+        ],
+        related=["lk receipt", "lk tx", "lk link", "lk trace source"],
+    ),
+    "link": _help_entry(
+        "Browse the shared Solidity source relationship graph or inspect a contract, function, modifier, mapping, or state variable.",
+        "lk link [TARGET] [options]",
+        "lk link Vault.positions",
+        "Use it to map how source declarations connect before running transactions. Omit TARGET to browse the project source map.",
+        forms=[
+            ("lk link", "Browse the source map in pages of 24 declarations.", "lk link"),
+            ("lk link <Contract>", "Show a contract overview with its functions, storage, and connected declarations.", "lk link Vault"),
+            ("lk link <Contract.function>", "Inspect a function's local calls, modifiers, storage effects, and external boundaries.", "lk link Vault.withdraw --detail all"),
+            ("lk link <Contract.mapping>", "Inspect a mapping's declaration and source-level readers/writers.", "lk link PositionManager.positions"),
         ],
         options=[
-            ("--grep <text>", "Show only trace lines that contain this text. This helps when a long trace has one part you care about.", "lk trace --grep setValue"),
-            ("--quick", "Ask Cast for a shorter trace when you do not need every detail.", "lk trace --quick"),
-            ("--decode-internal", "Ask Cast to decode more of the data used by calls inside the transaction.", "lk trace --decode-internal"),
-            ("--trace-printer <value>", "Pass a trace display setting to Cast. Run 'cast run --help' to see the exact value choices.", "lk trace --trace-printer <value>"),
+            ("--root DIR", "Scan a different project root. Project imports are resolved through the normal source inventory.", "lk link --root ../protocol"),
+            ("--search TEXT", "Filter the no-target source map by declaration name or source path.", "lk link --search Position"),
+            ("--type KIND", "Filter the no-target source map to contract, interface, or library declarations.", "lk link --type interface"),
+            ("--page N", "Show one source-map page (24 items per page).", "lk link --page 2"),
+            ("--all", "Show every matching source-map declaration in one compact list.", "lk link --search Vault --all"),
+            ("--only FILTER", "For contract views, filter relationships: calls, storage, reads, writes, imports, or assets.", "lk link Vault --only writes"),
+            ("--depth N", "Bound contract/function call traversal from 1 to 10; the function default is 3 and contract default is 1.", "lk link Vault --depth 4"),
+            ("--detail VIEW", "For functions/modifiers, show summary (default), calls, storage, external, or all.", "lk link Vault.withdraw --detail storage"),
+            ("--limit N", "Limit each detail section to 1-500 displayed relationships (default 24).", "lk link Vault --only writes --limit 60"),
+            ("--json", "Emit structured source graph output.", "lk link --search Vault --json"),
         ],
-        related=["lk receipt", "lk walkthrough"],
-    ),    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
+        notes=[
+            ("Source evidence", "Lowkey reuses its shared source index and current compiler AST when available. It reports incomplete inventory, stale build-info, and unresolved relationships rather than treating absence as proof.", "lk link --search Position"),
+            ("Static, not runtime", "Source relationships show potential call/effect paths. They do not prove a branch executed, a transaction succeeded, a storage slot was reached, or an external implementation address.", "lk link Vault.withdraw --detail all"),
+            ("Option boundaries", "--search, --type, --page, and --all are source-map options and require omitting TARGET. --detail applies only to functions/modifiers.", "lk link --search Vault --all"),
+        ],
+        related=["lk trace source", "lk fn --verbose", "lk project", "lk deps", "lk layout"],
+    ),
+    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
     "logs": _help_entry("Query logs and optionally decode events.", "lk logs [args...]", "lk logs --decode", "Use it when events are part of behavior or security evidence.", options=[("--decode", "Decode matching events with the current ABI.", "lk logs --decode")], related=["lk event", "lk tx"]),
     "chain": _help_entry("Show chain ID, current block, and RPC.", "lk chain", "lk chain", "Use it to verify exactly which local chain/fork you are talking to.", related=["lk rpc", "lk fork"]),
     "balance": _help_entry(
@@ -25962,7 +26027,7 @@ COMMAND_HELP.update({
     "bind": _native_forge_help("bind", "Generate Rust bindings from the current Forge project interfaces.", "forge bind --help"),
     "bind-json": _native_forge_help("bind-json", "Generate JSON-form binding output from the current Forge project.", "forge bind-json --help"),
     "cache": _native_forge_help("cache", "Manage Forge's compiler/build cache.", "forge cache --help"),
-    "clean": _native_forge_help("clean", "Remove Forge build artifacts and generated output.", "forge clean --help"),
+    "clean": _native_forge_help("clean", "Remove generated artifacts/cache files for the selected project backend (Foundry or Hardhat).", "forge clean --help"),
     "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "forge compiler --help"),
     "completions": _native_forge_help("completions", "Generate shell completion scripts for Forge.", "forge completions --help"),
     "config": _native_forge_help("config", "Inspect or work with Forge configuration.", "forge config --help"),
@@ -27501,6 +27566,7 @@ _NATIVE_HELP_SOURCES = {
     "chisel": ("chisel", []),
     "slither": ("slither", []),
     "fork": ("anvil", []),
+
 }
 for _help_command, (_help_binary, _help_args) in _NATIVE_HELP_SOURCES.items():
     if _help_command in COMMAND_HELP and not COMMAND_HELP[_help_command].get("native_help"):
@@ -27682,6 +27748,134 @@ for _proxy_help_name, _proxy_help_values in _PROXY_HELP_GUIDES.items():
     _proxy_help_entry = COMMAND_HELP.get(_proxy_help_name)
     if isinstance(_proxy_help_entry, dict):
         _proxy_help_entry.update(_proxy_help_values)
+
+_CLEAN_HELP_GUIDE_INSTALLED = True
+_clean_help_entry = COMMAND_HELP.get("clean")
+if isinstance(_clean_help_entry, dict):
+    _clean_help_entry.update({
+        "usage": "lk clean [native-options...]",
+        "example": "lk clean",
+        "use": "Use it before a clean rebuild or when generated compiler output is stale. Foundry is preferred when a Foundry project/workspace is detected; otherwise Hardhat is selected when available.",
+        "forms": [
+            ("lk clean", "Run the native clean command selected for this project. Foundry is preferred when the project contains a Foundry configuration or workspace stack; otherwise Hardhat is used when detected.", "lk clean"),
+            ("lk clean --h", "Show this guide without running a cleaner or changing project files.", "lk clean --h"),
+        ],
+        "options": [
+            ("Backend-specific flags", "Lowkey forwards extra arguments to the selected native cleaner. The selected backend's supported native options are displayed in this help page when its executable is installed.", "lk clean --h"),
+        ],
+        "notes": [
+            ("What is removed", "The native backend removes generated build artifacts and cache files; source files, manifests, dependency directories, and on-chain state are not targets of this command.", "lk clean"),
+            ("Mixed projects", "When both Foundry and Hardhat are present, Lowkey preserves the existing Foundry-first clean behavior.", "lk clean"),
+        ],
+        "related": ["lk build", "lk test", "lk forge"],
+    })
+
+_FUNCTION_HELP_GUIDE_INSTALLED = True
+for _function_command in ("functions", "fn"):
+    _function_entry = COMMAND_HELP.get(_function_command)
+    if not isinstance(_function_entry, dict):
+        continue
+    _function_prefix = f"lk {_function_command}"
+    _function_entry["summary"] = (
+        "Show the selected contract's complete ABI function inventory or search by function name/signature. "
+        "A positional token equal to the active contract name selects its full inventory; use -q/--query to force a text search."
+    )
+    _function_entry["usage"] = (
+        f"{_function_prefix} [ContractName|query] [-q|--query <text>] "
+        "[-v|--verbose] [-V|--visibility <visibility>] "
+        "[-m|--mutability <mutability>] [-c|--class <class>] [-r|--risk]"
+    )
+    _function_entry["example"] = f"{_function_prefix} OrderBook"
+    _function_entry["use"] = (
+        "Use this when auditing an unfamiliar contract. No positional selector lists the active target's full ABI; "
+        "a positional token equal to that contract's name also lists the full inventory. Other positional text searches "
+        "function names/signatures. Add -q/--query to force searching even when the text matches the contract name."
+    )
+    _function_forms = [
+        (_function_prefix, "List the active target's complete ABI inventory, grouped into write functions, read functions, and getters.", _function_prefix),
+        (f"{_function_prefix} OrderBook", "When OrderBook is the active target, show its full inventory rather than searching for a function called OrderBook.", f"{_function_prefix} OrderBook"),
+        (f"{_function_prefix} withdraw", "Search function names and signatures when the text is not the active contract name.", f"{_function_prefix} withdraw"),
+        (f"{_function_prefix} --query OrderBook", "Force a function-name/signature search even though the text matches the active contract name.", f"{_function_prefix} --query OrderBook"),
+        (f"{_function_prefix} -q executeSwapOrder", "Short form of the explicit function query flag.", f"{_function_prefix} -q executeSwapOrder"),
+    ]
+    _function_existing_forms = _function_entry.setdefault("forms", [])
+    for _function_form in _function_forms:
+        if _function_form not in _function_existing_forms:
+            _function_existing_forms.append(_function_form)
+    _function_options = [
+        ("-q / --query <text>", "Force a function name/signature search; do not treat the value as a contract selector.", f"{_function_prefix} --query executeSwapOrder"),
+        ("Positional contract selector", "An exact match for the active contract name shows the complete ABI inventory.", f"{_function_prefix} OrderBook"),
+    ]
+    _function_existing_options = _function_entry.setdefault("options", [])
+    for _function_option in _function_options:
+        if _function_option not in _function_existing_options:
+            _function_existing_options.append(_function_option)
+    _function_notes = [
+        ("Static effect evidence", "Compiler-AST effects describe statically resolved source behavior. They do not prove that a function or helper executed at runtime.", f"{_function_prefix} --verbose"),
+        ("Ambiguity", "Use an explicit contract target first when the active target is uncertain; Lowkey does not infer a different deployed target from a function query.", f"{_function_prefix} OrderBook"),
+    ]
+    _function_existing_notes = _function_entry.setdefault("notes", [])
+    for _function_note in _function_notes:
+        if _function_note not in _function_existing_notes:
+            _function_existing_notes.append(_function_note)
+
+_PROXY_HELP_GUIDE_INSTALLED = True
+_PROXY_HELP_GUIDES = {
+    "proxy": {
+        "summary": "Inspect the selected target's proxy and deployment form using on-chain storage and runtime-bytecode evidence.",
+        "usage": "lk proxy",
+        "example": "lk proxy",
+        "use": "Use this during reconnaissance to determine whether the selected address is a direct contract, an ERC-1967 proxy, a beacon proxy, or an EIP-1167 clone.",
+        "forms": [
+            ("lk proxy", "Inspect implementation, beacon, proxy-admin and clone evidence for the active target.", "lk proxy"),
+            ("lk implementation", "Resolve the implementation address when the proxy pattern exposes one.", "lk implementation"),
+            ("lk admin", "Inspect the EIP-1967 proxy-admin role when the target exposes that slot.", "lk admin"),
+        ],
+        "notes": [
+            ("Evidence sources", "Detection uses ERC-1967 implementation/beacon/admin slots and EIP-1167 runtime-bytecode patterns. A failed RPC read is UNVERIFIED, not proof that the target is direct.", "lk proxy"),
+            ("Zero admin is not a negative proxy test", "A zero or absent EIP-1967 admin slot does not prove that an address is not a proxy. UUPS-style proxies can have an implementation without a separate proxy-admin address.", "lk proxy"),
+            ("Proxy admin vs application governor", "The EIP-1967 admin controls the proxy upgrade surface when present. An application-level gov() value is a separate protocol role and must not be presented as the proxy admin.", "lk proxy"),
+        ],
+        "related": ["lk implementation", "lk admin", "lk info", "lk recon"],
+    },
+    "implementation": {
+        "summary": "Resolve the implementation behind a supported proxy or minimal clone.",
+        "usage": "lk implementation",
+        "example": "lk implementation",
+        "use": "Use it after lk proxy to inspect the code address that executes behind a proxy or clone.",
+        "forms": [
+            ("ERC-1967 implementation", "Read the implementation slot when it contains a valid non-zero address.", "lk implementation"),
+            ("Beacon implementation", "Resolve the beacon contract and query its implementation() address when supported.", "lk proxy"),
+            ("EIP-1167 clone", "Extract the embedded implementation address from the minimal-proxy runtime bytecode.", "lk proxy"),
+        ],
+        "notes": [
+            ("Direct contracts", "If no supported proxy/clone evidence is found, Lowkey reports that no implementation was established; it does not invent one.", "lk implementation"),
+            ("Verification boundary", "A resolved implementation address does not by itself prove source verification, initialization, upgrade safety, or protocol readiness.", "lk implementation"),
+        ],
+        "related": ["lk proxy", "lk admin", "lk info"],
+    },
+    "admin": {
+        "summary": "Inspect the EIP-1967 proxy-admin address when that proxy pattern exposes one.",
+        "usage": "lk admin",
+        "example": "lk admin",
+        "use": "Use it to identify the proxy-admin control surface during an upgradeability review.",
+        "forms": [
+            ("lk admin", "Read and display the EIP-1967 admin address when available.", "lk admin"),
+            ("lk proxy", "Compare the admin result with implementation, beacon, clone and application-governor evidence.", "lk proxy"),
+        ],
+        "notes": [
+            ("Zero or missing admin", "A zero or missing admin address is not proof that the target is not a proxy; UUPS proxies commonly do not use a separate transparent-proxy admin slot.", "lk admin"),
+            ("Application governor", "A contract's gov() or owner() value is an application access-control role, not automatically the EIP-1967 proxy admin.", "lk admin"),
+            ("Unsupported patterns", "If the selected target uses a custom upgrade mechanism, Lowkey may not be able to resolve its controller from standard proxy slots.", "lk admin"),
+        ],
+        "related": ["lk proxy", "lk implementation", "lk info"],
+    },
+}
+for _proxy_help_name, _proxy_help_values in _PROXY_HELP_GUIDES.items():
+    _proxy_help_entry = COMMAND_HELP.get(_proxy_help_name)
+    if isinstance(_proxy_help_entry, dict):
+        _proxy_help_entry.update(_proxy_help_values)
+
 def _help_entry_for_path(path):
     if not path:
         return None, [], None
@@ -28119,6 +28313,8 @@ UNDERSTAND THE PROJECT
   lk wizard <function> [values...] [call|send|encode] Interactive argument helper; return values shown after successful sends when available.
   lk layout <Contract>             Show Forge storage layout.
   lk deps [src]                    Show imports/inheritance. Example: lk deps
+  lk link [Target]                 Browse or inspect Solidity source relationships. Example: lk link Vault.withdraw
+  lk trace source <Contract.function> Trace static source calls/effects; distinct from replaying a transaction.
   lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
   lk seams [hotspots]              Show audit hotspots.
   lk risk                          Show ABI-level review-surface hints.
@@ -29345,6 +29541,14 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": return run_receipt(config, args=args)
+    elif cmd=="link":
+        if source_link_engine is None:
+            return fail("Source relationship engine is unavailable. Re-run install.sh and check the lowkey/source_link.py module.")
+        return source_link_engine.run_link(args)
+    elif cmd=="trace" and args and str(args[0]).strip().lower()=="source":
+        if source_link_engine is None:
+            return fail("Source relationship engine is unavailable. Re-run install.sh and check the lowkey/source_link.py module.")
+        return source_link_engine.run_link(args[1:])
     elif cmd=="trace": return run_trace(config,args)
     elif cmd=="logs": run_logs(config,args)
     elif cmd=="last":
