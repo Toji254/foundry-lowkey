@@ -144,6 +144,8 @@ jobs:
           export HOME="$RUNNER_TEMP/lowkey-p3-home"
           mkdir -p "$HOME"
           bash install.sh
+          "$HOME/.foundry/bin/lk" ast --help > /tmp/p3-ast-help.txt
+          grep -q -- "lk ast setup" /tmp/p3-ast-help.txt
           "$HOME/.foundry/bin/lk" archetype classify --help > /tmp/p3-archetype-help.txt
           grep -q -- "--root" /tmp/p3-archetype-help.txt
           grep -q -- "--json" /tmp/p3-archetype-help.txt
