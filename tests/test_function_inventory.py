@@ -488,6 +488,83 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("withdraw(uint256)", output)
 
+
+    def test_active_contract_name_query_shows_the_full_inventory(self):
+        code, output = self._run(["Foo"])
+        self.assertEqual(code, 0)
+        self.assertIn("SUMMARY   5 functions · 3 write · 1 read · 1 getters", output)
+        self.assertIn("deposit()", output)
+        self.assertIn("withdraw(uint256)", output)
+        self.assertIn("balanceOf(address)", output)
+        self.assertNotIn("MATCH     Foo", output)
+        self.assertIn("SELECTED", output)
+        self.assertIn("contract selector 'Foo' -> complete ABI inventory", output)
+
+    def test_explicit_query_is_not_reinterpreted_as_contract_selection(self):
+        options, query = lk._parse_function_options(["--query", "Foo"])
+        self.assertIsNotNone(options)
+        self.assertTrue(options["query_explicit"])
+        self.assertEqual(query, "Foo")
+        self.assertEqual(
+            lk._function_query_for_target(query, "Foo", explicit_query=options["query_explicit"]),
+            ("Foo", False),
+        )
+        self.assertEqual(
+            lk._function_query_for_target("Foo", "Foo"),
+            ("", True),
+        )
+
+    def test_short_query_flag_is_supported(self):
+        options, query = lk._parse_function_options(["-q", "withdraw(uint256)"])
+        self.assertTrue(options["query_explicit"])
+        self.assertEqual(query, "withdraw(uint256)")
+
+    def test_compiler_ast_effects_exclude_lexical_edges_and_preserve_inferred_paths(self):
+        function_id = "function:src/Foo.sol:Foo.withdraw(uint256)"
+        helper_id = "function:src/Foo.sol:Foo._debit(address,uint256)"
+        storage_id = "mapping:src/Foo.sol:Foo.balances"
+        storage_edge_id = "SOLC_AST_STORAGE:WRITES:helper:balances:src/Foo.sol:22"
+        index = {
+            "ast": {"functions": 2, "covered_function_ids": [function_id, helper_id]},
+            "nodes": [
+                {"id": function_id, "kind": "function", "name": "withdraw", "qualified_name": "Foo.withdraw(uint256)"},
+                {"id": helper_id, "kind": "function", "name": "_debit", "qualified_name": "Foo._debit(address,uint256)"},
+                {"id": storage_id, "kind": "mapping", "name": "balances"},
+            ],
+            "edges": [
+                {
+                    "id": "SOLC_AST:CALLS:withdraw:debit",
+                    "from": function_id, "to": helper_id, "kind": "CALLS",
+                    "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                    "source": {"file": "src/Foo.sol", "line": 12, "column": 9},
+                },
+                {
+                    "id": storage_edge_id,
+                    "from": helper_id, "to": storage_id, "kind": "WRITES",
+                    "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                    "access_path": "balances[user]", "operation": "+=", "source": {"file": "src/Foo.sol", "line": 22, "column": 9},
+                },
+                {
+                    "id": f"INFERRED:{function_id}:{storage_edge_id}",
+                    "from": function_id, "to": storage_id, "kind": "WRITES",
+                    "evidence": "CALL_GRAPH_PROPAGATION", "resolution": "INFERRED",
+                    "via": [function_id, helper_id], "access_path": "balances[user]", "operation": "+=",
+                    "source": {"file": "src/Foo.sol", "line": 22, "column": 9},
+                },
+                {
+                    "id": "LEXICAL:WRITES:withdraw:balances",
+                    "from": function_id, "to": storage_id, "kind": "WRITES",
+                    "evidence": "LEXICAL_SOURCE", "resolution": "INFERRED",
+                    "access_path": "balances[user]", "source": {"file": "src/Foo.sol", "line": 12, "column": 9},
+                },
+            ],
+        }
+        status, effects = lk._compiler_ast_effects_for_function(index, {"id": function_id})
+        self.assertEqual(status, "COVERED")
+        self.assertEqual(len(effects), 2)
+        self.assertEqual({item["ast_origin"] for item in effects}, {"DIRECT", "INFERRED"})
+        self.assertTrue(all(item["evidence"] != "LEXICAL_SOURCE" for item in effects))
+
     def test_dispatch_passes_all_function_args(self):
         tmp, root, config = self._fixture()
         old = os.getcwd()

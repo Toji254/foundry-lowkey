@@ -117,6 +117,14 @@ except ImportError:
     project_tools = None
 
 try:
+    import source_index
+except ImportError:
+    try:
+        from lowkey import source_index
+    except ImportError:
+        source_index = None
+
+try:
     import lab_target_scope
 except ImportError:
     from lowkey import lab_target_scope
@@ -2340,8 +2348,9 @@ _FUNCTION_CLASS_ALIASES = {
 
 def _function_usage():
     return (
-        "Usage: lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]\n"
-        "  -v, --verbose              Show per-function audit metadata.\n"
+        "Usage: lk fn [FUNCTION] [-q QUERY] [-v] [-V visibility] [-m mutability] [-c class] [-r]\n"
+        "  -q, --query TEXT           Search function names/signatures explicitly.\n"
+        "  -v, --verbose              Show per-function audit metadata, including matched compiler-AST effects.\n"
         "  -V, --visibility VALUE     Filter by source visibility (public/external/internal/private/unknown).\n"
         "  -m, --mutability VALUE     Filter by mutability (pure/view/nonpayable/payable).\n"
         "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
@@ -2354,11 +2363,16 @@ def _function_usage():
         "  SENDS ETH includes detected CALL/value, payable transfer/send, CREATE and SELFDESTRUCT patterns.\n"
         "  ETH OUT shows destination and amount expressions where source analysis can identify them.\n"
         "  Detection is best-effort source analysis, not proof that every indirect ETH flow was found.\n"
+        "  A positional token equal to the active contract name shows its full ABI inventory.\n"
+        "  Use -q/--query to force a function-name/signature search, even when text equals the contract name.\n"
+        "  Compiler-AST effects are static source evidence, not proof of runtime execution.\n"
         "\n"
         "Examples:\n"
         "  lk fn\n"
+        "  lk fn OrderBook              (full inventory for the active OrderBook target)\n"
         "  lk fn -v\n"
         "  lk fn -v withdraw\n"
+        "  lk fn --query executeSwapOrder\n"
         "  lk fn -V external\n"
         "  lk fn -m payable\n"
         "  lk fn -c admin\n"
@@ -2367,7 +2381,7 @@ def _function_usage():
 
 def _parse_function_options(raw_args):
     args = [str(item) for item in (raw_args if isinstance(raw_args, (list, tuple)) else [raw_args] if raw_args is not None else [])]
-    options = {"verbose": False, "visibility": None, "mutability": None, "class": None, "risk": False}
+    options = {"verbose": False, "visibility": None, "mutability": None, "class": None, "risk": False, "query_explicit": False}
     query_parts = []
     value_flags = {
         "-V": "visibility", "--visibility": "visibility",
@@ -2382,6 +2396,21 @@ def _parse_function_options(raw_args):
             return None, "help"
         if token in bool_flags:
             options[bool_flags[token]] = True
+            i += 1
+            continue
+        if token in {"-q", "--query"}:
+            if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                return None, f"missing value for {token}"
+            query_parts.append(args[i + 1].strip())
+            options["query_explicit"] = True
+            i += 2
+            continue
+        if token.startswith("--query="):
+            value = token.split("=", 1)[1].strip()
+            if not value:
+                return None, "missing value for --query"
+            query_parts.append(value)
+            options["query_explicit"] = True
             i += 1
             continue
         matched = False
@@ -3485,10 +3514,208 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
             cells.append(" / ".join(record["risk_flags"])[:widths[4]])
         print("  ".join(cells[index].ljust(widths[index]) for index in range(len(cells))))
 
+
+def _function_query_for_target(query, contract_name, *, explicit_query=False):
+    """Treat an exact positional contract name as the inventory selector, not a function search."""
+    value = str(query or "").strip()
+    contract = str(contract_name or "").strip()
+    if not value or explicit_query or not contract:
+        return value, False
+    if value.casefold() == contract.casefold():
+        return "", True
+    return value, False
+
+
 def _function_inventory_artifact(target, config):
     path = resolve_abi_path(config, target) or auto_abi_path(target, config)
     artifact = read_artifact(path) if path else None
     return path, artifact or {}
+
+
+def _function_source_relative_path(path, root):
+    if not path:
+        return None
+    try:
+        return Path(path).expanduser().resolve().relative_to(Path(root).expanduser().resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return str(path).replace("\\", "/").lstrip("./")
+
+
+def _function_graph_node(index, contract_name, signature, source_path, root):
+    """Resolve one ABI entry to one exact source-graph declaration; ambiguity stays unresolved."""
+    if source_index is None:
+        return None
+    qualified = f"{contract_name}.{signature}" if contract_name else str(signature)
+    try:
+        candidates = source_index.find_symbols(index, qualified)
+    except Exception:
+        candidates = []
+    candidates = [
+        item for item in candidates
+        if isinstance(item, dict) and item.get("kind") == "function"
+    ]
+    if not candidates:
+        candidates = [
+            item for item in (index.get("nodes") or [])
+            if isinstance(item, dict)
+            and item.get("kind") == "function"
+            and str(item.get("signature") or "") == str(signature)
+        ]
+    wanted_path = _function_source_relative_path(source_path, root)
+    if wanted_path:
+        same_file = [
+            item for item in candidates
+            if str(item.get("file") or "").replace("\\", "/").lstrip("./") == wanted_path
+        ]
+        if same_file:
+            candidates = same_file
+    unique = {str(item.get("id")): item for item in candidates if item.get("id")}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
+def _compiler_ast_effects_for_function(index, function_node):
+    """Return only declaration-resolved AST effects, including AST-backed inherited helper effects."""
+    if not isinstance(function_node, dict) or not function_node.get("id"):
+        return "UNRESOLVED", []
+    node_id = str(function_node["id"])
+    ast_report = index.get("ast") or {}
+    covered = ast_report.get("covered_function_ids")
+    if not isinstance(covered, list) or node_id not in {str(item) for item in covered}:
+        return "NOT_COVERED", []
+
+    edges = [item for item in (index.get("edges") or []) if isinstance(item, dict)]
+    by_id = {str(item.get("id")): item for item in edges if item.get("id")}
+    direct_evidence = {
+        "SOLC_AST_DECLARATION_REFERENCE",
+        "SOLC_AST_STORAGE_DECLARATION_REFERENCE",
+        "SOLC_AST_STORAGE_REFERENCE_ARGUMENT",
+    }
+    effect_kinds = {
+        "CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER",
+        "READS", "READS_CONSTANT", "READS_IMMUTABLE",
+        "WRITES", "DELETES", "MUTATES",
+        "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+        "ALIASES_STORAGE", "INITIALIZES", "UNRESOLVED_MUTATION",
+    }
+    selected = []
+    prefix = f"INFERRED:{node_id}:"
+    for edge in edges:
+        if edge.get("from") != node_id or edge.get("kind") not in effect_kinds:
+            continue
+        evidence = str(edge.get("evidence") or "")
+        if evidence in direct_evidence:
+            item = dict(edge)
+            item["ast_origin"] = "DIRECT"
+            selected.append(item)
+            continue
+        if evidence in {"CALL_GRAPH_PROPAGATION", "MODIFIER_EXECUTION_PROPAGATION"}:
+            edge_id = str(edge.get("id") or "")
+            if not edge_id.startswith(prefix):
+                continue
+            original = by_id.get(edge_id[len(prefix):])
+            if not isinstance(original, dict) or original.get("evidence") not in direct_evidence:
+                continue
+            item = dict(edge)
+            item["ast_origin"] = "INFERRED"
+            item["ast_source_edge"] = original.get("id")
+            selected.append(item)
+    selected.sort(key=lambda item: (
+        str((item.get("source") or {}).get("file") or ""),
+        int((item.get("source") or {}).get("line") or 0),
+        int((item.get("source") or {}).get("column") or 0),
+        str(item.get("kind") or ""),
+        str(item.get("id") or ""),
+    ))
+    return "COVERED", selected
+
+
+def _format_compiler_ast_effect(edge, nodes):
+    kind = str(edge.get("kind") or "EFFECT")
+    node_map = nodes if isinstance(nodes, dict) else {}
+    location = edge.get("source") or {}
+    source_ref = (
+        f"{location.get('file') or 'source'}:"
+        f"{location.get('line') or '?'}:"
+        f"{location.get('column') or '?'}"
+    )
+    if kind in {
+        "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES",
+        "MUTATES", "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
+        "ALIASES_STORAGE", "INITIALIZES", "UNRESOLVED_MUTATION",
+    }:
+        target = node_map.get(str(edge.get("to") or ""), {})
+        subject = str(edge.get("access_path") or edge.get("variable") or target.get("name") or "storage")
+        operation = str(edge.get("operation") or "")
+        detail = f"{kind} {subject}" + (f" ({operation})" if operation else "")
+        if edge.get("mutation_kind"):
+            detail += f" [{edge['mutation_kind']}]"
+    else:
+        target = node_map.get(str(edge.get("to") or ""), {})
+        subject = target.get("qualified_name") or target.get("name") or edge.get("method") or edge.get("to") or "unresolved target"
+        detail = f"{kind} {subject}"
+        if edge.get("receiver"):
+            detail += f" via {edge['receiver']}"
+    via = edge.get("via") or []
+    marker = "[INFERRED AST PATH]" if edge.get("ast_origin") == "INFERRED" else "[DIRECT AST]"
+    if via:
+        names = [
+            node_map.get(str(item), {}).get("qualified_name") or str(item)
+            for item in via
+        ]
+        detail += " via " + " -> ".join(names)
+    return f"{marker} {detail} @ {source_ref}"
+
+
+def _print_compiler_ast_effects(root, contract_name, source_path, records):
+    """Append compiler-AST effects for verbose inventory; static evidence is never called execution proof."""
+    if source_index is None:
+        print("\nCOMPILER AST EFFECTS")
+        print("  UNAVAILABLE: source_index is not installed; lexical function notes remain best-effort.")
+        return
+    try:
+        index = source_index.build_source_index(root)
+    except Exception as error:
+        print("\nCOMPILER AST EFFECTS")
+        detail = " ".join(str(error).split())[:240]
+        print(f"  UNAVAILABLE: source graph could not be built ({type(error).__name__}: {detail}).")
+        return
+
+    report = index.get("ast") or {}
+    ast_functions = int(report.get("functions") or 0)
+    print("\nCOMPILER AST EFFECTS")
+    print(
+        f"  Matched declarations: {ast_functions}; build-info files: {report.get('build_info_files', 0)}; "
+        f"stale source units: {report.get('stale_units', 0)}."
+    )
+    print("  Evidence: static compiler-AST/source graph; reachable paths are not proof of runtime execution.")
+    for warning in (report.get("warnings") or [])[:3]:
+        print(f"  AST NOTE: {warning}")
+
+    nodes = {
+        str(item.get("id")): item
+        for item in (index.get("nodes") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for record in records:
+        signature = str(record.get("signature") or record.get("name") or "")
+        node = _function_graph_node(index, contract_name, signature, source_path, root)
+        print(f"\n  [{signature}]")
+        if node is None:
+            print("    AST MATCH: UNRESOLVED / AMBIGUOUS; no declaration-level effect summary is claimed.")
+            continue
+        status, effects = _compiler_ast_effects_for_function(index, node)
+        if status != "COVERED":
+            print("    AST COVERAGE: NOT PROVEN for this declaration; lexical notes above remain best-effort.")
+            continue
+        print("    AST COVERAGE: MATCHED current compiler declaration.")
+        if not effects:
+            print("    AST EFFECTS: no declaration-resolved call/storage edges recorded; absence is not proof of no side effects.")
+            continue
+        for effect in effects[:12]:
+            print("    " + _format_compiler_ast_effect(effect, nodes))
+        if len(effects) > 12:
+            print(f"    ... {len(effects) - 12} additional AST-backed effect edge(s) omitted.")
+
 
 def run_functions(config, args=None):
     raw_args = [args] if isinstance(args, str) else args
@@ -3509,7 +3736,7 @@ def run_functions(config, args=None):
     if not target:
         if not query:
             return fail("Error: no project target selected. Use 'lk fn <function>' to search build artifacts, or deploy and run 'lk target auto'.")
-        if any(options.values()):
+        if any(options.get(key) for key in ("verbose", "visibility", "mutability", "class", "risk")):
             return fail("Error: function filters/verbose mode need a selected target with an ABI. Use 'lk target <name|address>' first.")
         matches = project_artifact_function_matches(root, query)
         if not matches:
@@ -3546,6 +3773,9 @@ def run_functions(config, args=None):
     artifact_path, artifact = _function_inventory_artifact(target, config)
     source_root = Path(root).resolve()
     source_contract = artifact.get("contractName") or config.get("target_contract")
+    query, contract_query_selected = _function_query_for_target(
+        query, source_contract, explicit_query=options.get("query_explicit", False)
+    )
     source_path, source_decls = _function_source_file(artifact, source_root, source_contract)
     storage_labels = _function_storage_labels(target, config, artifact)
     state_variables = _function_state_variable_records(config, artifact, source_path, source_contract, getter_names)
@@ -3580,6 +3810,9 @@ def run_functions(config, args=None):
             verbose=True,
         )
         _print_state_variable_inventory(state_records, verbose=True)
+        if contract_query_selected:
+            print(f"\nSELECTION: '{source_contract}' matched the active contract; showing the complete ABI inventory.")
+        _print_compiler_ast_effects(root, source_contract, source_path, records)
         for entry in abi_entrypoints:
             kind = str(entry.get("type"))
             source_entry = next((decl for decl in source_decls if decl.get("name") == kind), None)
@@ -3634,6 +3867,8 @@ def run_functions(config, args=None):
     contract_label = artifact.get("contractName") or config.get("target_contract")
     if contract_label:
         _function_print_wrapped("  CONTRACT  ", contract_label)
+    if contract_query_selected:
+        _function_print_wrapped("  SELECTED  ", f"contract selector '{source_contract}' -> complete ABI inventory")
     summary = (
         f"{len(records)} functions · {len(write_records)} write · "
         f"{len(read_records)} read · {len(getter_records)} getters"
