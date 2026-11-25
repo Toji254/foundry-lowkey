@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import hashlib
 import json
@@ -2485,6 +2486,48 @@ class GodmodeTests(unittest.TestCase):
             )
 
             self.assertEqual(context, {})
+
+
+    def test_godmode_has_no_shadowed_top_level_function_definitions(self):
+        tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+        names = [
+            node.name for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        self.assertEqual(duplicates, [])
+
+    def test_bare_invariant_forge_and_archetype_use_a_real_default_profile(self):
+        cases = (
+            ("invariant-forge", ".audit/godmode/invariant-forge-vault.md", "invariant-forge / vault"),
+            ("archetype", ".audit/godmode/archetype-vault.md", "archetype / vault"),
+        )
+        for command, relative_path, heading in cases:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(godmode.main([command, "--root", str(root)]), 0)
+                generated = root / relative_path
+                self.assertTrue(generated.is_file())
+                self.assertIn(heading, generated.read_text(encoding="utf-8"))
+
+    def test_storage_infer_no_resolve_skips_all_mapping_key_probes(self):
+        target = "0x" + "a" * 40
+        output = io.StringIO()
+        with patch.object(godmode, "rpc_url", return_value="http://127.0.0.1:8545"), \
+             patch.object(godmode, "rpc", return_value="0x" + "0" * 64) as rpc_call, \
+             patch.object(godmode.shutil, "which", side_effect=AssertionError("cast lookup must be skipped")):
+            with redirect_stdout(output):
+                self.assertEqual(godmode.main([
+                    "storage-infer", target, "--slots", "2", "--no-resolve",
+                    "--key", "0x" + "b" * 40,
+                ]), 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["probe_derivation"], "skipped-by-user")
+        self.assertTrue(payload["resolution_skipped_by_user"])
+        self.assertEqual(payload["known_key_probes"], [])
+        self.assertEqual(rpc_call.call_count, 2)
+        self.assertTrue(all(call.args[1] == "eth_getStorageAt" for call in rpc_call.call_args_list))
 
 
 if __name__ == "__main__":

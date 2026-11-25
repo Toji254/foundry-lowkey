@@ -5537,172 +5537,6 @@ def control(args):
 
 
 
-def output(payload):
-    print(json.dumps(payload,indent=2,sort_keys=True)); return 0
-def source_cmd(command,args):
-    p=LowkeyArgumentParser(prog="lk "+command); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); data=source_maps(root)
-    key={"fallback-map":"fallback_map","oracle-map":"oracle_map","sig-matrix":"signature_map","init-frontrun":"initializer_map","custody":"custody_map","cross-vm":"cross_vm_map","reentrancy-graph":"reentrancy_graph","cfg":"cfg_outline"}[command]
-    payload={"command":command,"signals":data[key]}
-    if command=="sig-matrix": payload["candidate_replay_cases"]=["same signature twice","nonce not consumed","wrong chain ID","wrong verifying contract","expired deadline","wrong signer","malleable s","v normalization","wrong action/domain","packed-encoding collision","ERC-1271 contract signer"]
-    if command=="oracle-map": payload["next"]="Trace the consumer and prove a downstream asset delta; no pool manipulation is inferred from a read."
-    if command=="init-frontrun": payload["safety"]="Read-only static map only; Lowkey does not seize or initialize a live contract."
-    if command=="reentrancy-graph": payload["confidence"]="heuristic; check exact storage identity and run a callback plus sequential control."
-    return output(payload)
-def economic(args):
-    p=LowkeyArgumentParser(prog="lk economic"); p.add_argument("--gross-wei",type=int,required=True); p.add_argument("--gas-used",type=int,required=True); p.add_argument("--max-fee-wei",type=int,required=True); p.add_argument("--pool-fee-bps",type=int,default=0); p.add_argument("--slippage-bps",type=int,default=0); p.add_argument("--capital-cost-wei",type=int,default=0); ns=p.parse_args(args)
-    vals=[ns.gross_wei,ns.gas_used,ns.max_fee_wei,ns.pool_fee_bps,ns.slippage_bps,ns.capital_cost_wei]
-    if min(vals)<0 or ns.pool_fee_bps>10000 or ns.slippage_bps>10000: raise ValueError("Economic inputs must be nonnegative; bps <= 10000.")
-    gas=ns.gas_used*ns.max_fee_wei; pool=ns.gross_wei*ns.pool_fee_bps//10000; slip=ns.gross_wei*ns.slippage_bps//10000
-    net=ns.gross_wei-gas-pool-slip-ns.capital_cost_wei
-    return output({"gross_wei":ns.gross_wei,"gas_cost_wei":gas,"pool_fee_wei":pool,"slippage_wei":slip,"capital_cost_wei":ns.capital_cost_wei,"net_profit_wei":net,"status":"positive-candidate" if net>0 else "OBSERVED","limitations":["MEV competition and unmodeled price impact are excluded."]})
-def rpc_command(kind,args):
-    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("target"); p.add_argument("--rpc-url")
-    if kind in {"proxy-resolve", "storage-infer"}:
-        p.add_argument("--slots",type=int,default=120)
-    if kind == "storage-infer":
-        p.add_argument("--no-resolve",action="store_true"); p.add_argument("--key",action="append",default=[])
-    ns=p.parse_args(args); url=rpc_url(ns.rpc_url); target=addr(ns.target)
-    if kind=="selectors-full": return output(selectors(target,url))
-    if kind=="proxy-resolve": return output(proxy(target,url,ns.slots))
-    count=max(1,min(ns.slots,120))
-    calls=[rpc(url,"eth_getStorageAt",[target,hex(i),"latest"]) for i in range(count)]
-    nonzero=[{"slot":i,"word":v} for i,v in enumerate(calls) if v and int(v,16)]
-    probes=[]; derivation="not-run"
-    if ns.key:
-        try:
-            from Crypto.Hash import keccak
-            derivation="pycryptodome-keccak"
-            for raw_key in ns.key:
-                key=addr(raw_key)
-                for anchor in range(count):
-                    packed=bytes.fromhex(key[2:].rjust(64,"0")+format(anchor,"064x"))
-                    digest=keccak.new(digest_bits=256); digest.update(packed)
-                    derived="0x"+digest.hexdigest()
-                    value=rpc(url,"eth_getStorageAt",[target,derived,"latest"])
-                    if value and int(value,16):
-                        probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,"value":value,"confidence":"known-key-probe-hit"})
-        except ImportError:
-            if shutil.which("cast"):
-                derivation="cast-index"
-                for raw_key in ns.key:
-                    key=addr(raw_key)
-                    for anchor in range(count):
-                        proc=run(["cast","index","address",key,str(anchor)],Path.cwd(),5)
-                        if proc.returncode: continue
-                        derived=proc.stdout.strip()
-                        if not re.fullmatch(r"0x[0-9a-fA-F]{64}",derived): continue
-                        value=rpc(url,"eth_getStorageAt",[target,derived,"latest"])
-                        if value and int(value,16):
-                            probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,"value":value,"confidence":"known-key-probe-hit"})
-            else: derivation="blocked-no-keccak-library-or-cast"
-    return output({"target":target,"scanned_slots":count,"nonzero_slots":nonzero,
-                   "known_key_probes":probes,"probe_derivation":derivation,
-                   "warning":"A hit supports a mapping candidate at that anchor. No hit does not disprove a mapping; nested mappings and struct offsets need explicit modelling."})
-def unravel(args):
-    p=LowkeyArgumentParser(prog="lk unravel"); p.add_argument("tx_hash"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
-    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",ns.tx_hash): raise ValueError("Transaction hash must be 32-byte hex.")
-    trace=rpc(rpc_url(ns.rpc_url),"debug_traceTransaction",[ns.tx_hash,{"tracer":"callTracer"}],60)
-    def walk(x,d=0):
-        if not isinstance(x,dict): return []
-        rows=[{"depth":d,"type":x.get("type"),"from":x.get("from"),"to":x.get("to"),"value":x.get("value"),"gasUsed":x.get("gasUsed"),"error":x.get("error"),"input":str(x.get("input") or "")[:74]}]
-        for y in x.get("calls") or []: rows += walk(y,d+1)
-        return rows
-    return output({"tx_hash":ns.tx_hash,"call_tree":walk(trace)})
-def state_diff(args):
-    p=LowkeyArgumentParser(prog="lk state-diff"); p.add_argument("target"); p.add_argument("--before",required=True); p.add_argument("--after",required=True); p.add_argument("--slot",action="append",required=True); p.add_argument("--rpc-url"); ns=p.parse_args(args)
-    url=rpc_url(ns.rpc_url); target=addr(ns.target); rows=[]
-    for x in ns.slot:
-        slot=x if x.startswith("0x") else hex(int(x))
-        a=rpc(url,"eth_getStorageAt",[target,slot,ns.before if ns.before.startswith("0x") else hex(int(ns.before))])
-        b=rpc(url,"eth_getStorageAt",[target,slot,ns.after if ns.after.startswith("0x") else hex(int(ns.after))])
-        if a!=b: rows.append({"slot":slot,"before":a,"after":b})
-    return output({"target":target,"changed_slots":rows,"count":len(rows)})
-def attack_forge(args):
-    p=LowkeyArgumentParser(prog="lk attack forge"); p.add_argument("attack_id"); p.add_argument("--target",required=True); p.add_argument("--root",default="."); ns=p.parse_args(args)
-    root=root_path(ns.root); target=addr(ns.target)
-    try:
-        try: from .attack_catalog import ATTACKS
-        except ImportError: from attack_catalog import ATTACKS
-    except Exception: ATTACKS=[]
-    entry=next((x for x in ATTACKS if str(x.get("id","")).lower()==ns.attack_id.lower() or str(x.get("slug","")).lower()==ns.attack_id.lower()),None)
-    if not entry: raise ValueError("Unknown attack ID/slug.")
-    out=safe_out(root,".audit/attack-forge/"+str(entry["id"])+"/AttackHarness.template.t.sol")
-    fixture=None
-    try:
-        try: from .attack_library import LAB_SNIPPETS
-        except ImportError: from attack_library import LAB_SNIPPETS
-        snippet=LAB_SNIPPETS.get(str(entry.get("slug") or ""))
-        if snippet:
-            fixture=safe_out(root,".audit/attack-forge/"+str(entry["id"])+"/VulnerableFixture.sol")
-            fixture.write_text(str(snippet).rstrip()+"\n",encoding="utf-8")
-    except (ImportError,AttributeError,TypeError):
-        snippet=None
-    out.write_text("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\nimport \"forge-std/Test.sol\";\ncontract LowkeyAttackCandidate is Test {\n address constant TARGET = "+target+";\n function test_candidate() external { assertGt(TARGET.code.length, 0, \"no runtime code\"); /* add exact protocol invariant and impact */ }\n}\n",encoding="utf-8")
-    attack={key:entry.get(key) for key in ("id","slug","title","category","severity","plain","pattern","audit_signal","local_lab","mitigation","references")}
-    write_json(out.parent/"attack.json",{"attack":attack,"target":target,"fixture":str(fixture.relative_to(root)) if fixture else None,
-      "status":"starter-needs-protocol-specific-predicate","proof":False,
-      "required":["bind exact target ABI and function","set up realistic actors, permissions and asset state",
-        "assert a measurable security-property violation","run the matched sequential control","validate test sensitivity with mutation",
-        "record fork block, gas, fees, recipient delta and artifact hashes"]})
-    (out.parent/"README.md").write_text("# Attack candidate: "+str(entry.get("title") or entry["id"])+"\n\n"+
-       "Library metadata is preserved in attack.json. The generated harness only checks that the target has code; replace it with the actual exploit preconditions and measurable impact before treating it as a PoC.\n\n"+
-       ("A local fixture snippet was included. Review it; do not assume it is byte-for-byte compatible with the live target.\n" if fixture else "No runnable fixture snippet exists for this catalogue entry yet.\n"),encoding="utf-8")
-    print("Attack workspace: "+str(out.parent.relative_to(root)))
-    print("Fixture: "+(str(fixture.relative_to(root)) if fixture else "none available"))
-    print("Status: starter only; no exploit proof claimed.")
-    return 0
-
-def _archetype_index_main(args):
-    module_dir = str(Path(__file__).resolve().parent)
-    if module_dir not in sys.path:
-        sys.path.insert(0, module_dir)
-    try:
-        from archetypes._index import main as archetype_main
-    except ImportError as exc:
-        print(f"Archetype index is unavailable: {exc}", file=sys.stderr)
-        return 2
-    return archetype_main(list(args or []))
-
-
-def generate(args,kind):
-    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",choices=("vault","lending","amm","staking","bridge","governance"),default="vault"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
-    templates={
-      "invariant-forge":{"vault":["totalAssets >= totalSupply after matching units/fees","sum(user shares) == totalSupply"],"lending":["total debt reconciles with account debt","collateral and debt valuation obey liquidation rules"],"amm":["fee-adjusted invariant is preserved","pool balances reconcile with reserves"],"staking":["sum(user stake) == totalStaked","claimed rewards never exceed earned rewards"],"bridge":["message nonce consumed at most once","minted representation never exceeds finalized deposits"],"governance":["proposal executes at most once","vote weight counted once at declared snapshot"]},
-      "archetype":{"vault":["deposit/withdraw/preview/share-inflation handlers","donation and rounding ghost state"],"lending":["borrow/repay/liquidate handlers","health-factor and bad-debt ghosts"],"amm":["swap/mint/burn/flash handlers","reserve and invariant ghosts"],"staking":["stake/unstake/claim handlers","reward-index and lockup ghosts"],"bridge":["send/relay/claim handlers","message nonce and finality ghosts"],"governance":["propose/vote/queue/execute handlers","snapshot and timelock ghosts"]}
-    }
-    if kind not in templates or ns.profile not in templates[kind]: raise ValueError("Unknown protocol profile.")
-    out.write_text("# "+kind+" / "+ns.profile+"\n\n"+"".join("- [ ] "+x+"\n" for x in templates[kind][ns.profile])+"\nThese are candidates/starters. Bind the real protocol, actors, ghost state and assertions before running a proof engine.\n")
-    print(f"Starter: {out.relative_to(root)}"); return 0
-def token_weird(args):
-    p=LowkeyArgumentParser(prog="lk token-weird"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root)
-    out=safe_out(root,".audit/godmode/token-weird/WeirdTokens.sol")
-    out.write_text("""// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
-contract WeirdERC20 {
- uint8 public decimals=18; uint256 public totalSupply; bool public paused; bool public returnFalse; uint256 public feeBps;
- mapping(address=>uint256) public balanceOf; mapping(address=>mapping(address=>uint256)) public allowance;
- mapping(address=>bool) public blocked; address public hook;
- function configure(uint8 d,uint256 fee,bool pause_,bool false_,address hook_) external {decimals=d;feeBps=fee;paused=pause_;returnFalse=false_;hook=hook_;}
- function setBlocked(address a,bool b) external {blocked[a]=b;}
- function mint(address a,uint256 n) external {balanceOf[a]+=n;totalSupply+=n;}
- function approve(address s,uint256 n) external returns(bool){allowance[msg.sender][s]=n;return true;}
- function transfer(address to,uint256 n) external returns(bool){if(returnFalse)return false;_move(msg.sender,to,n);return true;}
- function transferFrom(address f,address t,uint256 n) external returns(bool){if(returnFalse)return false;uint256 a=allowance[f][msg.sender];require(a>=n);allowance[f][msg.sender]=a-n;_move(f,t,n);return true;}
- function rebase(address account,int256 delta) external {if(delta>=0){balanceOf[account]+=uint256(delta);totalSupply+=uint256(delta);}else{uint256 cut=uint256(-delta);require(balanceOf[account]>=cut);balanceOf[account]-=cut;totalSupply-=cut;}}
- function _move(address f,address t,uint256 n) internal {require(!paused&&!blocked[f]&&!blocked[t]&&balanceOf[f]>=n);balanceOf[f]-=n;uint256 fee=n*feeBps/10000;balanceOf[t]+=n-fee;totalSupply-=fee;if(hook!=address(0)){(bool ok,)=hook.call(abi.encodeWithSignature("tokensReceived(address,address,address,uint256,bytes,bytes)",msg.sender,f,t,n,bytes(""),bytes("")));require(ok);}}
-}
-contract NoReturnERC20 {mapping(address=>uint256) public balanceOf;mapping(address=>mapping(address=>uint256)) public allowance;function mint(address a,uint n) external {balanceOf[a]+=n;}function approve(address s,uint n) external {allowance[msg.sender][s]=n;}function transfer(address a,uint n) external {require(balanceOf[msg.sender]>=n);balanceOf[msg.sender]-=n;balanceOf[a]+=n;}function transferFrom(address f,address t,uint n) external {require(allowance[f][msg.sender]>=n&&balanceOf[f]>=n);allowance[f][msg.sender]-=n;balanceOf[f]-=n;balanceOf[t]+=n;}}
-contract WideDecimalsToken {uint256 public decimals=1000;mapping(address=>uint256) public balanceOf;function mint(address a,uint256 n) external {balanceOf[a]+=n;}function transfer(address to,uint256 n) external returns(bool){require(balanceOf[msg.sender]>=n);balanceOf[msg.sender]-=n;balanceOf[to]+=n;return true;}}
-contract ERC1155ReceiverLike {function onERC1155Received(address,address,uint256,uint256,bytes calldata) external pure returns(bytes4){return this.onERC1155Received.selector;}function onERC1155BatchReceived(address,address,uint256[] calldata,uint256[] calldata,bytes calldata) external pure returns(bytes4){return this.onERC1155BatchReceived.selector;}}
-contract ERC777ReceiverLike {function tokensReceived(address,address,address,uint256,bytes calldata,bytes calldata) external pure {}}
-""")
-    print(f"Hostile token fixtures: {out.relative_to(root)}"); print("Includes fee-on-transfer, explicit rebasing, false-return, no-return transfer/transferFrom, pause, blacklist, reentrant hooks, and ERC1155/777 receivers. WideDecimalsToken returns uint256(1000) deliberately; a standard IERC20Metadata decimals() returns uint8."); return 0
-def run_control_alias(args): return control(args)
-def run_control(args):
-    """Entry point used by break_engine for the mandatory control gate."""
-    return control(args)
-
-
 def mutation(args):
     p = LowkeyArgumentParser(prog="lk mutation-score")
     p.add_argument("manifest", help="JSON mutation manifest for one vulnerability family.")
@@ -6138,262 +5972,6 @@ def source_cmd(command,args):
     if command=="init-frontrun": payload["safety"]="Read-only static map only; Lowkey does not seize or initialize a live contract."
     if command=="reentrancy-graph": payload["confidence"]="heuristic; check exact storage identity and run a callback plus sequential control."
     return output(payload)
-def _sandbox_seccomp_filter():
-    """Build a small architecture-checked seccomp-BPF denylist for dangerous syscalls."""
-    machine = platform.machine().lower()
-    if machine in {"x86_64", "amd64"}:
-        audit_arch = 0xC000003E
-        denied = {
-            "ptrace": 101, "mount": 165, "umount2": 166, "pivot_root": 155,
-            "setns": 308, "unshare": 272, "bpf": 321, "perf_event_open": 298,
-            "keyctl": 250, "add_key": 248, "request_key": 249, "userfaultfd": 323,
-            "kexec_load": 246, "reboot": 169, "init_module": 175, "finit_module": 313,
-            "delete_module": 176, "open_by_handle_at": 304, "name_to_handle_at": 303,
-            "process_vm_readv": 310, "process_vm_writev": 311,
-            "io_uring_setup": 425, "io_uring_enter": 426, "io_uring_register": 427,
-        }
-    elif machine in {"aarch64", "arm64"}:
-        audit_arch = 0xC00000B7
-        denied = {
-            "ptrace": 117, "mount": 40, "umount2": 39, "pivot_root": 41,
-            "setns": 268, "unshare": 97, "bpf": 280, "perf_event_open": 241,
-            "keyctl": 219, "add_key": 217, "request_key": 218, "userfaultfd": 282,
-            "kexec_load": 104, "reboot": 142, "init_module": 105, "finit_module": 273,
-            "delete_module": 106, "open_by_handle_at": 265, "name_to_handle_at": 264,
-            "process_vm_readv": 270, "process_vm_writev": 271,
-            "io_uring_setup": 425, "io_uring_enter": 426, "io_uring_register": 427,
-        }
-    else:
-        raise RuntimeError("No audited seccomp syscall table for architecture: " + machine)
-
-    instructions = []
-    pack = lambda code, jt, jf, value: struct.pack("=HBBI", code, jt, jf, value)
-    instructions.append(pack(0x20, 0, 0, 4))               # load seccomp_data.arch
-    instructions.append(pack(0x15, 1, 0, audit_arch))      # expected architecture?
-    instructions.append(pack(0x06, 0, 0, 0x80000000))       # kill on ABI mismatch
-    instructions.append(pack(0x20, 0, 0, 0))               # load syscall number
-    for syscall_number in sorted(set(denied.values())):
-        instructions.append(pack(0x15, 0, 1, syscall_number))
-        instructions.append(pack(0x06, 0, 0, 0x00050000 | 1))  # EPERM
-    instructions.append(pack(0x06, 0, 0, 0x7FFF0000))      # allow remaining syscalls
-    return b"".join(instructions), sorted(denied)
-
-
-def _sandbox_resolve_allowlist(hosts):
-    addresses = set()
-    unresolved = []
-    for host in hosts:
-        value = str(host).strip()
-        if not value or any(char in value for char in "/?#@"):
-            raise ValueError("Allowlisted hosts must be plain hostnames or IP addresses: " + repr(host))
-        try:
-            addresses.add(str(ipaddress.ip_address(value)))
-            continue
-        except ValueError:
-            pass
-        try:
-            for item in socket.getaddrinfo(value, None, type=socket.SOCK_STREAM):
-                addresses.add(str(ipaddress.ip_address(item[4][0])))
-        except OSError:
-            unresolved.append(value)
-    if unresolved:
-        raise ValueError("Could not resolve allowlisted host(s); refusing a partial network policy: " + ", ".join(unresolved))
-    if not addresses:
-        raise ValueError("Network allowlist is empty.")
-    return sorted(addresses)
-
-
-def sandbox(args):
-    p = LowkeyArgumentParser(prog="lk sandbox")
-    p.add_argument("--root", default=".")
-    p.add_argument("--timeout", type=int, default=300)
-    p.add_argument("--cpu-seconds", type=int, default=300)
-    p.add_argument("--memory-mb", type=int, default=4096)
-    p.add_argument("--file-size-mb", type=int, default=512)
-    p.add_argument("--nofile", type=int, default=256)
-    p.add_argument("--processes", type=int, default=512, help="Maximum processes/threads in this sandbox's systemd cgroup TasksMax.")
-    p.add_argument("--readonly-workspace", action="store_true", help="Mount the disposable project copy read-only.")
-    p.add_argument("--network", choices=("none", "allowlist"), default="none")
-    p.add_argument("--allow-host", action="append", default=[], help="Allow this hostname/IP when --network allowlist is selected. All ports to resolved IPs are allowed.")
-    p.add_argument("command", nargs=argparse.REMAINDER)
-    ns = p.parse_args(args)
-
-    if not ns.command or ns.command[0] != "--":
-        raise ValueError("Usage: lk sandbox [options] -- <command> [args]")
-    if min(ns.timeout, ns.cpu_seconds, ns.memory_mb, ns.file_size_mb, ns.nofile, ns.processes) < 1:
-        raise ValueError("Sandbox time, CPU, memory, file-size, nofile, and process limits must all be positive.")
-    if ns.network == "none" and ns.allow_host:
-        raise ValueError("--allow-host requires --network allowlist.")
-    if ns.network == "allowlist" and not ns.allow_host:
-        raise ValueError("--network allowlist requires at least one --allow-host.")
-
-    root = root_path(ns.root)
-    if not shutil.which("bwrap"):
-        raise RuntimeError("bubblewrap is unavailable; refusing unsandboxed execution.")
-    if not shutil.which("systemd-run"):
-        raise RuntimeError("Sandbox resource isolation requires systemd-run cgroup controls; refusing a weaker fallback.")
-    if ns.network == "allowlist":
-        if not shutil.which("sudo"):
-            raise RuntimeError("Network allowlisting requires sudo; refusing an unrestricted network fallback.")
-        if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
-            raise RuntimeError("Network allowlisting requires cgroup v2; refusing an unrestricted network fallback.")
-        allow_ips = _sandbox_resolve_allowlist(ns.allow_host)
-        resolver_ips = []
-        resolv_conf = Path("/etc/resolv.conf")
-        if resolv_conf.is_file():
-            for line in resolv_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] == "nameserver":
-                    try:
-                        resolver_ips.append(str(ipaddress.ip_address(parts[1])))
-                    except ValueError:
-                        pass
-        allow_ips = sorted(set(allow_ips + resolver_ips))
-    else:
-        allow_ips = []
-
-    temporary = Path(tempfile.mkdtemp(prefix="lk-sandbox-"))
-    work = temporary / "project"
-    try:
-        def ignore_sensitive(directory, names):
-            ignored = []
-            for name in names:
-                lower = name.lower()
-                if name in {".git", ".audit", "node_modules", "out", "cache", "__pycache__", ".venv", "venv"}:
-                    ignored.append(name)
-                elif lower.startswith(".env") or any(
-                    token in lower for token in ("credential", "keystore", "private_key", "wallet.json", "id_rsa", "id_ed25519", ".npmrc")
-                ):
-                    ignored.append(name)
-            return ignored
-
-        shutil.copytree(root, work, ignore=ignore_sensitive, symlinks=True)
-        home = Path.home()
-        home_args = []
-        if str(home).startswith("/home/"):
-            home_args += ["--dir", "/home"]
-        if str(home) != "/":
-            home_args += ["--dir", str(home)]
-        foundry_bin = home / ".foundry" / "bin"
-        if foundry_bin.is_dir():
-            home_args += ["--dir", str(home / ".foundry"), "--ro-bind", str(foundry_bin), str(foundry_bin)]
-        svm = home / ".svm"
-        if svm.is_dir():
-            home_args += ["--dir", str(home / ".svm"), "--ro-bind", str(svm), str(svm)]
-
-        seccomp_bytes, denied_names = _sandbox_seccomp_filter()
-        # systemd-run creates a new service process: an FD passed to its client
-        # is not inherited by the transient service. Open the filter in a small
-        # trusted wrapper before exec'ing bubblewrap in that service.
-        seccomp_file = temporary / "seccomp.filter"
-        seccomp_file.write_bytes(seccomp_bytes)
-        seccomp_argument = "3"
-
-        path_value = str(foundry_bin) + ":/usr/local/bin:/usr/bin:/bin"
-        workspace_mount = "--ro-bind" if ns.readonly_workspace else "--bind"
-        runtime_mount_args = []
-        # A minimal bwrap root does not inherit host /bin, /sbin or ELF loader
-        # directories just because those paths exist on the host. Bind the
-        # existing runtime paths read-only into the disposable namespace.
-        for runtime_path in ("/bin", "/sbin", "/lib", "/lib64"):
-            if Path(runtime_path).exists():
-                runtime_mount_args.extend(["--ro-bind", runtime_path, runtime_path])
-
-        bwrap_argv = [
-            "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-            "--seccomp", seccomp_argument, "--clearenv", "--setenv", "HOME", str(home),
-            "--setenv", "PATH", path_value, "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/etc", "/etc", *runtime_mount_args,
-            "--dev", "/dev", "--proc", "/proc",
-            "--tmpfs", "/tmp", *home_args, "--dir", "/workspace",
-            workspace_mount, str(work), "/workspace", "--chdir", "/workspace",
-            "--", *ns.command[1:],
-        ]
-        if ns.network == "none":
-            bwrap_argv.insert(2, "--unshare-net")
-
-        # Per-sandbox cgroup controls apply in both network modes. Network-none
-        # additionally uses a fresh network namespace; allowlist mode relies on
-        # systemd's cgroup IP filter and therefore needs the system manager.
-        resource_properties = [
-            "--property=Type=exec",
-            "--property=LimitCPU=" + str(ns.cpu_seconds) + "s",
-            "--property=LimitAS=" + str(ns.memory_mb * 1024 * 1024),
-            "--property=MemoryMax=" + str(ns.memory_mb * 1024 * 1024),
-            "--property=LimitFSIZE=" + str(ns.file_size_mb * 1024 * 1024),
-            "--property=LimitNOFILE=" + str(ns.nofile),
-            "--property=TasksMax=" + str(ns.processes),
-            "--property=RuntimeMaxSec=" + str(ns.timeout) + "s",
-        ]
-        seccomp_wrapper = [
-            "/bin/bash", "-c", 'exec 3< "$1"; shift; exec "$@"',
-            "lowkey-sandbox-seccomp", str(seccomp_file), *bwrap_argv,
-        ]
-        if ns.network == "allowlist":
-            current_user = pwd.getpwuid(os.getuid()).pw_name
-            outer_argv = [
-                "sudo", "systemd-run", "--system", "--wait", "--pipe", "--collect",
-                "--property=User=" + current_user,
-                "--property=IPAddressDeny=any",
-                *resource_properties,
-            ]
-            outer_argv.extend("--property=IPAddressAllow=" + address for address in allow_ips)
-        else:
-            outer_argv = [
-                "systemd-run", "--user", "--wait", "--pipe", "--collect",
-                *resource_properties,
-            ]
-        outer_argv.extend(["--", *seccomp_wrapper])
-
-        proc = subprocess.Popen(
-            outer_argv,
-            cwd=str(root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            pass_fds=(),
-            start_new_session=True,
-        )
-        # RuntimeMaxSec is the authoritative service timeout; give the
-        # systemd-run client a short grace period to receive the unit result.
-        client_timeout = ns.timeout + 5
-        try:
-            stdout_text, stderr_text = proc.communicate(timeout=client_timeout)
-        except subprocess.TimeoutExpired:
-            print("SANDBOX: TIMEOUT after " + str(ns.timeout) + " seconds; terminating process group", file=sys.stderr)
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                proc.terminate()
-            try:
-                stdout_text, stderr_text = proc.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    proc.kill()
-                stdout_text, stderr_text = proc.communicate()
-            if stdout_text:
-                print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
-            if stderr_text:
-                print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
-            return 124
-        print("SANDBOX NETWORK: " + ("IP allowlist " + ", ".join(allow_ips) if ns.network == "allowlist" else "disabled"))
-        print("SANDBOX SECCOMP: active; denied syscalls: " + ", ".join(denied_names))
-        print("SANDBOX LIMITS: cgroup MemoryMax=" + str(ns.memory_mb) + "MiB TasksMax=" + str(ns.processes) + " LimitCPU=" + str(ns.cpu_seconds) + "s file=" + str(ns.file_size_mb) + "MiB nofile=" + str(ns.nofile))
-        if stdout_text:
-            print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
-        if stderr_text:
-            print(stderr_text, file=sys.stderr, end="" if stderr_text.endswith("\n") else "\n")
-        return proc.returncode
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
-
-
 def fingerprint(args):
     p = LowkeyArgumentParser(prog="lk cheat-fingerprint")
     p.add_argument("--root", default=".", help="Project root to scan.")
@@ -6419,14 +5997,32 @@ def economic(args):
     net=ns.gross_wei-gas-pool-slip-ns.capital_cost_wei
     return output({"gross_wei":ns.gross_wei,"gas_cost_wei":gas,"pool_fee_wei":pool,"slippage_wei":slip,"capital_cost_wei":ns.capital_cost_wei,"net_profit_wei":net,"status":"positive-candidate" if net>0 else "OBSERVED","limitations":["MEV competition and unmodeled price impact are excluded."]})
 def rpc_command(kind,args):
-    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("target"); p.add_argument("--rpc-url"); p.add_argument("--slots",type=int,default=120); p.add_argument("--no-resolve",action="store_true"); p.add_argument("--key",action="append",default=[]); ns=p.parse_args(args); url=rpc_url(ns.rpc_url); target=addr(ns.target)
-    if kind=="selectors-full": return output(selectors(target,url))
-    if kind=="proxy-resolve": return output(proxy(target,url,ns.slots))
+    p=LowkeyArgumentParser(prog="lk "+kind)
+    p.add_argument("target")
+    p.add_argument("--rpc-url")
+    if kind in {"proxy-resolve", "storage-infer"}:
+        p.add_argument("--slots", type=int, default=120)
+    if kind == "storage-infer":
+        p.add_argument("--no-resolve", action="store_true",
+                       help="skip optional mapping-key derivation; scan sequential slots only")
+        p.add_argument("--key", action="append", default=[])
+    ns=p.parse_args(args)
+    url=rpc_url(ns.rpc_url)
+    target=addr(ns.target)
+    if kind=="selectors-full":
+        return output(selectors(target,url))
+    if kind=="proxy-resolve":
+        return output(proxy(target,url,ns.slots))
+    if kind != "storage-infer":
+        raise ValueError("Unsupported RPC command: "+str(kind))
     count=max(1,min(ns.slots,120))
     calls=[rpc(url,"eth_getStorageAt",[target,hex(i),"latest"]) for i in range(count)]
     nonzero=[{"slot":i,"word":v} for i,v in enumerate(calls) if v and int(v,16)]
-    probes=[]; derivation="not-run"
-    if ns.key:
+    probes=[]
+    derivation="not-run"
+    if ns.no_resolve:
+        derivation="skipped-by-user"
+    elif ns.key:
         try:
             from Crypto.Hash import keccak
             derivation="pycryptodome-keccak"
@@ -6434,11 +6030,13 @@ def rpc_command(kind,args):
                 key=addr(raw_key)
                 for anchor in range(count):
                     packed=bytes.fromhex(key[2:].rjust(64,"0")+format(anchor,"064x"))
-                    digest=keccak.new(digest_bits=256); digest.update(packed)
+                    digest=keccak.new(digest_bits=256)
+                    digest.update(packed)
                     derived="0x"+digest.hexdigest()
                     value=rpc(url,"eth_getStorageAt",[target,derived,"latest"])
                     if value and int(value,16):
-                        probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,"value":value,"confidence":"known-key-probe-hit"})
+                        probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,
+                                       "value":value,"confidence":"known-key-probe-hit"})
         except ImportError:
             if shutil.which("cast"):
                 derivation="cast-index"
@@ -6446,16 +6044,24 @@ def rpc_command(kind,args):
                     key=addr(raw_key)
                     for anchor in range(count):
                         proc=run(["cast","index","address",key,str(anchor)],Path.cwd(),5)
-                        if proc.returncode: continue
+                        if proc.returncode:
+                            continue
                         derived=proc.stdout.strip()
-                        if not re.fullmatch(r"0x[0-9a-fA-F]{64}",derived): continue
+                        if not re.fullmatch(r"0x[0-9a-fA-F]{64}",derived):
+                            continue
                         value=rpc(url,"eth_getStorageAt",[target,derived,"latest"])
                         if value and int(value,16):
-                            probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,"value":value,"confidence":"known-key-probe-hit"})
-            else: derivation="blocked-no-keccak-library-or-cast"
-    return output({"target":target,"scanned_slots":count,"nonzero_slots":nonzero,
-                   "known_key_probes":probes,"probe_derivation":derivation,
-                   "warning":"A hit supports a mapping candidate at that anchor. No hit does not disprove a mapping; nested mappings and struct offsets need explicit modelling."})
+                            probes.append({"key":key,"mapping_anchor_slot":anchor,"derived_slot":derived,
+                                           "value":value,"confidence":"known-key-probe-hit"})
+            else:
+                derivation="blocked-no-keccak-library-or-cast"
+    return output({
+        "target":target,"scanned_slots":count,"nonzero_slots":nonzero,
+        "known_key_probes":probes,"probe_derivation":derivation,
+        "resolution_skipped_by_user":ns.no_resolve,
+        "warning":"A hit supports a mapping candidate at that anchor. No hit does not disprove a mapping; nested mappings and struct offsets need explicit modelling.",
+    })
+
 def unravel(args):
     p=LowkeyArgumentParser(prog="lk unravel"); p.add_argument("tx_hash"); p.add_argument("--rpc-url"); ns=p.parse_args(args)
     if not re.fullmatch(r"0x[0-9a-fA-F]{64}",ns.tx_hash): raise ValueError("Transaction hash must be 32-byte hex.")
@@ -6511,7 +6117,7 @@ def attack_forge(args):
     return 0
 
 def generate(args,kind):
-    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",default="general"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
+    p=LowkeyArgumentParser(prog="lk "+kind); p.add_argument("profile",nargs="?",choices=("vault","lending","amm","staking","bridge","governance"),default="vault"); p.add_argument("--root",default="."); ns=p.parse_args(args); root=root_path(ns.root); out=safe_out(root,f".audit/godmode/{kind}-{ns.profile}.md")
     templates={
       "invariant-forge":{"vault":["totalAssets >= totalSupply after matching units/fees","sum(user shares) == totalSupply"],"lending":["total debt reconciles with account debt","collateral and debt valuation obey liquidation rules"],"amm":["fee-adjusted invariant is preserved","pool balances reconcile with reserves"],"staking":["sum(user stake) == totalStaked","claimed rewards never exceed earned rewards"],"bridge":["message nonce consumed at most once","minted representation never exceeds finalized deposits"],"governance":["proposal executes at most once","vote weight counted once at declared snapshot"]},
       "archetype":{"vault":["deposit/withdraw/preview/share-inflation handlers","donation and rounding ghost state"],"lending":["borrow/repay/liquidate handlers","health-factor and bad-debt ghosts"],"amm":["swap/mint/burn/flash handlers","reserve and invariant ghosts"],"staking":["stake/unstake/claim handlers","reward-index and lockup ghosts"],"bridge":["send/relay/claim handlers","message nonce and finality ghosts"],"governance":["propose/vote/queue/execute handlers","snapshot and timelock ghosts"]}
