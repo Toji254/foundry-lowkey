@@ -8271,17 +8271,43 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
     """Estimate gas with a read-only RPC call; never signs or broadcasts."""
     rpc = _preview_option_value(command, "--rpc-url") or effective_rpc(config, target=target)
     if not rpc:
-        return {"available": False, "reason": "no RPC URL is available for an estimate"}
+        return {"available": False, "reason": "no RPC URL is available for an estimate", "sender_resolved": False}
 
     sender = _preview_option_value(command, "--from")
-    if not sender and actor:
+    if not is_address(sender) and actor:
         try:
             sender = actor_address(config, actor)
         except Exception:
             sender = None
 
-    tx = {}
+    # Resolve a one-off private key locally so estimation uses the signer that
+    # will broadcast. Hardware/keystore signers should pass --from because the
+    # active address may require interactive unlock or device confirmation.
+    if not is_address(sender):
+        private_key = _preview_option_value(command, "--private-key")
+        if private_key:
+            try:
+                code, output, _error = cast_output(
+                    ["cast", "wallet", "address", "--private-key", private_key],
+                    timeout=5,
+                )
+                matches = re.findall(r"0x[0-9a-fA-F]{40}", str(output or ""))
+                if code == 0 and matches:
+                    sender = matches[-1]
+            except Exception:
+                sender = None
+
     sender_resolved = is_address(sender)
+
+    def unavailable(reason, **extra):
+        return {
+            "available": False,
+            "reason": redact_secrets(str(reason or "no reliable estimate")),
+            "sender_resolved": sender_resolved,
+            **extra,
+        }
+
+    tx = {}
     if sender_resolved:
         tx["from"] = sender
     if is_address(target):
@@ -8289,7 +8315,7 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
 
     value_wei = _send_value_as_wei(command)
     if value_wei is None:
-        return {"available": False, "reason": "the attached ETH value could not be converted to wei safely"}
+        return unavailable("the attached ETH value could not be converted to wei safely")
     if value_wei:
         tx["value"] = hex(value_wei)
 
@@ -8299,10 +8325,10 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
         rows = _preview_argument_rows(config, function_item, raw_values)
         inputs = function_item.get("inputs") or []
         if len(rows) != len(inputs):
-            return {"available": False, "reason": "function arguments could not be matched to the loaded ABI"}
+            return unavailable("function arguments could not be matched to the loaded ABI")
         if calldata_resolved:
             if not isinstance(calldata, str) or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
-                return {"available": False, "reason": "prepared calldata is unavailable; gas estimation was not attempted"}
+                return unavailable("prepared calldata is unavailable; gas estimation was not attempted")
             tx["data"] = calldata
         else:
             try:
@@ -8311,11 +8337,11 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
                     *[row[4] for row in rows],
                 ])
             except Exception as error:
-                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(error))}"}
+                return unavailable(f"calldata encoding failed: {redact_secrets(str(error))}")
             calldata = str(output or "").strip()
             if code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
                 detail = error or output or "Cast did not return valid calldata"
-                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(detail))}"}
+                return unavailable(f"calldata encoding failed: {redact_secrets(str(detail))}")
             tx["data"] = calldata
     else:
         raw_data = str(command[3]).strip() if len(command) > 3 else ""
@@ -8329,45 +8355,52 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
                     "cast", "calldata", raw_data, *[str(value) for value in raw_values or []],
                 ])
             except Exception as error:
-                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(error))}"}
+                return unavailable(f"calldata encoding failed: {redact_secrets(str(error))}")
             calldata = str(output or "").strip()
             if code != 0 or not re.fullmatch(r"0x[0-9a-fA-F]*", calldata):
                 detail = error or output or "Cast could not encode the supplied function signature"
-                return {"available": False, "reason": f"calldata encoding failed: {redact_secrets(str(detail))}"}
+                return unavailable(f"calldata encoding failed: {redact_secrets(str(detail))}")
             tx["data"] = calldata
         elif raw_values:
-            return {"available": False, "reason": "function calldata is ambiguous without an ABI or full function signature"}
+            return unavailable("function calldata is ambiguous without an ABI or full function signature")
         else:
             tx["data"] = "0x"
 
     response = _rpc_json_response(rpc, "eth_estimateGas", [tx], timeout=2.0)
     if not isinstance(response, dict):
-        return {"available": False, "reason": "RPC did not return an estimate response"}
+        return unavailable("RPC did not return an estimate response")
     if response.get("transport_error"):
-        return {"available": False, "reason": redact_secrets(str(response["transport_error"]))}
+        return unavailable(response["transport_error"])
     rpc_error = response.get("error")
     if rpc_error is not None:
-        detail = str(
+        message = str(
             rpc_error.get("message") if isinstance(rpc_error, dict) else rpc_error
         ).strip() or "RPC rejected eth_estimateGas"
-        lowered_detail = detail.lower()
-        if "revert" in lowered_detail:
-            decoded = _decode_contract_revert(detail, config=config, target=target)
+        error_payload = (
+            json.dumps(rpc_error, sort_keys=True, default=str)
+            if isinstance(rpc_error, dict) else str(rpc_error)
+        )
+        decode_text = message + "\\nRPC error payload: " + error_payload
+        lowered_detail = decode_text.lower()
+        if (
+            "revert" in lowered_detail
+            or "0x08c379a0" in lowered_detail
+            or "0x4e487b71" in lowered_detail
+        ):
+            decoded = _decode_contract_revert(decode_text, config=config, target=target)
             readable = str(decoded.get("reason") or "").strip() if isinstance(decoded, dict) else ""
             if not readable:
-                match = re.search(r"(?i)execution reverted\s*:?\s*(.*)$", detail)
-                readable = match.group(1).strip() if match else detail
-            return {
-                "available": False,
-                "status": "reverted",
-                "reason": redact_secrets(readable or "the contract reverted during simulation"),
-                "sender_resolved": sender_resolved,
-                "technical": redact_secrets(detail),
-            }
-        return {"available": False, "status": "unavailable", "reason": redact_secrets(detail)}
+                match = re.search(r"(?i)execution reverted\\s*:?\\s*(.*)$", message)
+                readable = match.group(1).strip() if match else message
+            return unavailable(
+                readable or "the contract reverted during simulation",
+                status="reverted",
+                technical=redact_secrets(decode_text),
+            )
+        return unavailable(message, status="unavailable")
     gas_estimate = _hex_to_int(response.get("result"))
     if gas_estimate is None or gas_estimate <= 0:
-        return {"available": False, "reason": "RPC returned a missing or invalid gas estimate"}
+        return unavailable("RPC returned a missing or invalid gas estimate")
 
     gas_limit_raw = _preview_option_value(command, "--gas-limit") or _preview_option_value(command, "--gas")
     gas_limit = _hex_to_int(gas_limit_raw) if gas_limit_raw is not None else None
@@ -8407,6 +8440,7 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
     priority_wei = _send_value_as_wei(["--value", priority_raw]) if priority_raw is not None else None
     return {
         "available": True,
+        "sender_resolved": sender_resolved,
         "gas_estimate": gas_estimate,
         "gas_limit": gas_limit,
         "gas_limit_raw": gas_limit_raw,
