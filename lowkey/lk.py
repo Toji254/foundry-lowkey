@@ -2379,9 +2379,15 @@ def _function_usage():
         "  lk fn -r\n"
     )
 
+class _FunctionOptions(dict):
+    """Keep parser metadata out of the public options mapping for API compatibility."""
+    __slots__ = ("query_explicit",)
+
+
 def _parse_function_options(raw_args):
     args = [str(item) for item in (raw_args if isinstance(raw_args, (list, tuple)) else [raw_args] if raw_args is not None else [])]
-    options = {"verbose": False, "visibility": None, "mutability": None, "class": None, "risk": False, "query_explicit": False}
+    options = _FunctionOptions({"verbose": False, "visibility": None, "mutability": None, "class": None, "risk": False})
+    options.query_explicit = False
     query_parts = []
     value_flags = {
         "-V": "visibility", "--visibility": "visibility",
@@ -2402,7 +2408,7 @@ def _parse_function_options(raw_args):
             if i + 1 >= len(args) or args[i + 1].startswith("-"):
                 return None, f"missing value for {token}"
             query_parts.append(args[i + 1].strip())
-            options["query_explicit"] = True
+            options.query_explicit = True
             i += 2
             continue
         if token.startswith("--query="):
@@ -2410,7 +2416,7 @@ def _parse_function_options(raw_args):
             if not value:
                 return None, "missing value for --query"
             query_parts.append(value)
-            options["query_explicit"] = True
+            options.query_explicit = True
             i += 1
             continue
         matched = False
@@ -3774,7 +3780,7 @@ def run_functions(config, args=None):
     source_root = Path(root).resolve()
     source_contract = artifact.get("contractName") or config.get("target_contract")
     query, contract_query_selected = _function_query_for_target(
-        query, source_contract, explicit_query=options.get("query_explicit", False)
+        query, source_contract, explicit_query=getattr(options, "query_explicit", False)
     )
     source_path, source_decls = _function_source_file(artifact, source_root, source_contract)
     storage_labels = _function_storage_labels(target, config, artifact)

@@ -503,10 +503,10 @@ class FunctionInventoryTests(unittest.TestCase):
     def test_explicit_query_is_not_reinterpreted_as_contract_selection(self):
         options, query = lk._parse_function_options(["--query", "Foo"])
         self.assertIsNotNone(options)
-        self.assertTrue(options["query_explicit"])
+        self.assertTrue(options.query_explicit)
         self.assertEqual(query, "Foo")
         self.assertEqual(
-            lk._function_query_for_target(query, "Foo", explicit_query=options["query_explicit"]),
+            lk._function_query_for_target(query, "Foo", explicit_query=options.query_explicit),
             ("Foo", False),
         )
         self.assertEqual(
