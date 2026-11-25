@@ -8547,8 +8547,12 @@ def _print_transaction_preview(config, command, target, function_item, raw_value
     if gas_context.get("status") == "reverted":
         print("  BLOCKED: this call reverted during preflight. Correct the inputs before retrying.")
     else:
-        print("  Not broadcast. Gas estimation is read-only; it does not save contract state.")
-        print("  A successful estimate is not a guarantee that the mined transaction will succeed.")
+        print("  No transaction has been broadcast.")
+        print("  When available, eth_estimateGas is a read-only simulation and does not save state.")
+        if gas_context.get("available"):
+            print("  A successful estimate is not a guarantee that the mined transaction will succeed.")
+        else:
+            print("  No successful estimate is available; contract execution remains unverified.")
     return gas_context
 
 
