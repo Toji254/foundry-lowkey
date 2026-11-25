@@ -78,7 +78,7 @@ class InstallSmokeTests(unittest.TestCase):
             lowkey_dir = pathlib.Path(home) / ".lowkey"
             lowkey_dir.mkdir()
             (lowkey_dir / "lk.py").write_text(
-                "import sys\\nprint('LOWKEY_HELP_ROUTED', *sys.argv[1:])\\n",
+                "import sys\nprint('LOWKEY_HELP_ROUTED', *sys.argv[1:])\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
