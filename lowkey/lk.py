@@ -8376,21 +8376,44 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
         message = str(
             rpc_error.get("message") if isinstance(rpc_error, dict) else rpc_error
         ).strip() or "RPC rejected eth_estimateGas"
-        error_payload = (
-            json.dumps(rpc_error, sort_keys=True, default=str)
-            if isinstance(rpc_error, dict) else str(rpc_error)
+
+        # Providers often put ABI revert bytes in error.data rather than the
+        # message. Extract only data-like fields, including nested provider
+        # wrappers such as originalError.data.
+        payloads = set()
+
+        def collect_error_payloads(value, key=""):
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    collect_error_payloads(child_value, str(child_key).lower())
+            elif isinstance(value, (list, tuple)):
+                for child_value in value:
+                    collect_error_payloads(child_value, key)
+            elif isinstance(value, str) and key in {
+                "data", "return", "return_data", "revert_data", "originalerror"
+            }:
+                for match in re.findall(r"(?i)0x[0-9a-f]+", value):
+                    if len(match[2:]) >= 8 and len(match[2:]) % 2 == 0:
+                        payloads.add(match)
+
+        collect_error_payloads(rpc_error)
+        decode_text = message + "\n" + "\n".join(
+            f"revert data: {payload}" for payload in sorted(payloads)
         )
-        decode_text = message + "\\nRPC error payload: " + error_payload
         lowered_detail = decode_text.lower()
         if (
             "revert" in lowered_detail
+            or bool(payloads)
             or "0x08c379a0" in lowered_detail
             or "0x4e487b71" in lowered_detail
         ):
             decoded = _decode_contract_revert(decode_text, config=config, target=target)
-            readable = str(decoded.get("reason") or "").strip() if isinstance(decoded, dict) else ""
+            readable = (
+                str(decoded.get("reason") or "").strip()
+                if isinstance(decoded, dict) else ""
+            )
             if not readable:
-                match = re.search(r"(?i)execution reverted\\s*:?\\s*(.*)$", message)
+                match = re.search(r"(?i)execution reverted\s*:?\s*(.*)$", message)
                 readable = match.group(1).strip() if match else message
             return unavailable(
                 readable or "the contract reverted during simulation",
