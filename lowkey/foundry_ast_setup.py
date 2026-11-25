@@ -518,42 +518,42 @@ def _setup(cwd: Path, env: dict[str, str]) -> int:
 
 def _usage() -> None:
     print(
-        "LOWKEY HELP  •  lk ast\n"
-        "=" * 72
-    )
-    print(
-        "What it does: Check or prepare Foundry compiler AST output for richer source analysis.\n"
-        "When to use: Run doctor before relying on compiler-backed function details; use setup only when you intend to edit Foundry settings and rebuild.\n"
-        "Usage: lk ast <doctor|setup>\n"
-        "Example: lk ast doctor\n"
-        "\n"
-        "COMMAND VARIATIONS\n"
-        "------------------\n"
-        "  lk ast doctor\n"
-        "      Read-only check of active Foundry AST/build-info readiness.\n"
-        "      Example: lk ast doctor\n"
-        "  lk ast setup\n"
-        "      Safely enable AST/build-info, rebuild, and verify the resulting evidence.\n"
-        "      Example: lk ast setup\n"
-        "\n"
-        "OPTIONS / MODES\n"
-        "---------------\n"
-        "  --h, --help, -h, help\n"
-        "      Show this help page; does not change project files.\n"
-        "      Example: lk ast --h\n"
-        "  --quiet-if-ready (doctor only)\n"
-        "      Return quietly when the active build is already AST-ready.\n"
-        "      Example: lk ast doctor --quiet-if-ready\n"
-        "\n"
-        "RELATED COMMANDS\n"
-        "----------------\n"
-        "  lk fn -v\n"
-        "  lk sources\n"
-        "  lk link\n"
-        "\n"
-        "HELP TIP\n"
-        "  doctor is read-only. setup may edit foundry.toml and run a forced build.\n"
-        "  Accepted help forms: --h, --help, -h, help."
+        "\n".join([
+            "LOWKEY HELP  •  lk ast",
+            "=" * 72,
+            "What it does: Check or prepare Foundry compiler AST output for richer source analysis.",
+            "When to use: Run doctor before relying on compiler-backed function details; use setup only when you intend to edit Foundry settings and rebuild.",
+            "Usage: lk ast <doctor|setup>",
+            "Example: lk ast doctor",
+            "",
+            "COMMAND VARIATIONS",
+            "------------------",
+            "  lk ast doctor",
+            "      Read-only check of active Foundry AST/build-info readiness.",
+            "      Example: lk ast doctor",
+            "  lk ast setup",
+            "      Safely enable AST/build-info, rebuild, and verify the resulting evidence.",
+            "      Example: lk ast setup",
+            "",
+            "OPTIONS / MODES",
+            "---------------",
+            "  --h, --help, -h, help",
+            "      Show this help page; does not change project files.",
+            "      Example: lk ast --h",
+            "  --quiet-if-ready (doctor only)",
+            "      Return quietly when the active build is already AST-ready.",
+            "      Example: lk ast doctor --quiet-if-ready",
+            "",
+            "RELATED COMMANDS",
+            "----------------",
+            "  lk fn -v",
+            "  lk sources",
+            "  lk link",
+            "",
+            "HELP TIP",
+            "  doctor is read-only. setup may edit foundry.toml and run a forced build.",
+            "  Accepted help forms: --h, --help, -h, help.",
+        ])
     )
 
 
