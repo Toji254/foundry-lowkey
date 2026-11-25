@@ -27174,7 +27174,7 @@ if isinstance(_clean_help_entry, dict):
             ("lk clean --h", "Show this guide without running a cleaner or changing project files.", "lk clean --h"),
         ],
         "options": [
-            ("Backend-specific flags", "Lowkey forwards extra arguments to the selected native cleaner. Use 'lk forge clean --help' for Forge flags or 'lk hardhat clean --help' for Hardhat flags.", "lk forge clean --help"),
+            ("Backend-specific flags", "Lowkey forwards extra arguments to the selected native cleaner. The selected backend's supported native options are displayed in this help page when its executable is installed.", "lk clean --h"),
         ],
         "notes": [
             ("What is removed", "The native backend removes generated build artifacts and cache files; source files, manifests, dependency directories, and on-chain state are not targets of this command.", "lk clean"),
