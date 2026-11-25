@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -18,10 +19,11 @@ MAX_BUILD_INFO_FILES = 24
 MAX_BUILD_INFO_FILE_BYTES = 64 * 1024 * 1024
 MAX_BUILD_INFO_TOTAL_BYTES = 128 * 1024 * 1024
 FALSE_VALUES = {"0", "false", "no", "off"}
+TRUE_VALUES = {"1", "true", "yes", "on"}
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 TABLE_RE = re.compile(r"^\s*\[\s*([^\]]+?)\s*\]\s*(?:#.*)?(?:\r?\n)?$")
 ASSIGNMENT_RE = re.compile(
-    r"^(?P<indent>\s*)(?P<key>ast|build_info)(?P<separator>\s*=\s*)(?P<rhs>.*?)(?P<ending>\r?\n)?$"
+    r"^(?P<indent>\s*)(?P<key>ast|build_info|build_info_without_ast)(?P<separator>\s*=\s*)(?P<rhs>.*?)(?P<ending>\r?\n)?$"
 )
 
 
@@ -132,21 +134,38 @@ def _forge_config(cwd: Path, env: dict[str, str]) -> dict[str, Any]:
     return parsed
 
 
-def _false_environment_overrides(env: dict[str, str]) -> list[str]:
+def _blocking_environment_overrides(
+    env: dict[str, str],
+    required_settings: dict[str, bool],
+) -> list[str]:
     blocked: list[str] = []
-    for key in ("AST", "BUILD_INFO"):
+    for key, required in required_settings.items():
+        env_key = key.upper()
         for prefix in ("FOUNDRY", "DAPP"):
-            name = f"{prefix}_{key}"
+            name = f"{prefix}_{env_key}"
             value = env.get(name)
-            if value is not None and value.strip().lower() in FALSE_VALUES:
+            if value is None:
+                continue
+            normalized = value.strip().lower()
+            if required and normalized in FALSE_VALUES:
+                blocked.append(name)
+            elif not required and normalized in TRUE_VALUES:
                 blocked.append(name)
     return blocked
 
 
-def _patch_profile_settings(text: str, profile: str) -> tuple[str, bool]:
-    """Set only ast/build_info in one profile, preserving all other TOML text."""
+def _patch_profile_settings(
+    text: str,
+    profile: str,
+    settings: dict[str, bool] | None = None,
+) -> tuple[str, bool]:
+    """Set only requested compiler-output flags in one profile."""
     if not PROFILE_RE.fullmatch(profile):
         raise AstSetupError(f"Unsafe Foundry profile name: {profile!r}")
+    desired = settings or {"ast": True, "build_info": True}
+    allowed = {"ast", "build_info", "build_info_without_ast"}
+    if not desired or any(key not in allowed or not isinstance(value, bool) for key, value in desired.items()):
+        raise AstSetupError("Unsupported compiler-output settings requested.")
 
     parsed_before = _parse_toml(text)
     lines = text.splitlines(keepends=True)
@@ -194,20 +213,24 @@ def _patch_profile_settings(text: str, profile: str) -> tuple[str, bool]:
                 raise AstSetupError(
                     f"[{target}] {key} must be a TOML boolean; found {value!r}."
                 )
-            if value != "true":
+            expected = str(desired[key]).lower()
+            if value != expected:
                 lines[index] = (
                     match.group("indent")
                     + key
                     + match.group("separator")
-                    + "true"
+                    + expected
                     + comment
                     + (match.group("ending") or "")
                 )
                 changed = True
 
-        missing = [key for key in ("ast", "build_info") if key not in seen]
+        missing = [key for key in desired if key not in seen]
         if missing:
-            additions = [f"{key} = true{newline}" for key in missing]
+            additions = [
+                f"{key} = {str(desired[key]).lower()}{newline}"
+                for key in missing
+            ]
             if end > 0 and lines[end - 1] and not lines[end - 1].endswith(("\n", "\r")):
                 lines[end - 1] += newline
             lines[end:end] = additions
@@ -222,7 +245,10 @@ def _patch_profile_settings(text: str, profile: str) -> tuple[str, bool]:
             ),
             len(lines),
         )
-        block = [f"[{target}]{newline}", f"ast = true{newline}", f"build_info = true{newline}"]
+        block = [f"[{target}]{newline}"] + [
+            f"{key} = {str(value).lower()}{newline}"
+            for key, value in desired.items()
+        ]
         if nested < len(lines):
             block.append(newline)
         elif lines and not lines[-1].endswith(("\n", "\r")):
@@ -234,10 +260,11 @@ def _patch_profile_settings(text: str, profile: str) -> tuple[str, bool]:
     parsed_after = _parse_toml(updated)
     if parsed_after is not None:
         profile_data = (parsed_after.get("profile") or {}).get(profile) or {}
-        if profile_data.get("ast") is not True or profile_data.get("build_info") is not True:
-            raise AstSetupError(
-                f"Could not validate ast=true and build_info=true in [{target}]."
-            )
+        for key, value in desired.items():
+            if profile_data.get(key) is not value:
+                raise AstSetupError(
+                    f"Could not validate {key}={str(value).lower()} in [{target}]."
+                )
     elif parsed_before is None:
         # The line editor still validates the targeted boolean values, but
         # cannot claim full TOML validation without tomllib/tomli installed.
@@ -266,7 +293,7 @@ def _write_config_with_backup(path: Path, content: str) -> Path:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, original_mode)
+        os.chmod(temporary, stat.S_IMODE(original_mode))
         os.replace(temporary, path)
     except Exception:
         try:
@@ -351,6 +378,8 @@ def _readiness(config: dict[str, Any], build_info: dict[str, int]) -> tuple[bool
         issues.append("Foundry compiler AST output is disabled (ast=false).")
     if config.get("build_info") is not True:
         issues.append("Foundry build-info generation is disabled (build_info=false).")
+    if config.get("build_info_without_ast") is True:
+        issues.append("Foundry is configured to omit AST nodes from build-info (build_info_without_ast=true).")
     if build_info["source_units"] == 0:
         issues.append("No compiler source units were found in build-info output.")
     elif build_info["with_ast"] == 0:
@@ -379,6 +408,7 @@ def _doctor(cwd: Path, env: dict[str, str], quiet_if_ready: bool = False) -> int
     print(f"  Profile      : {profile}")
     print(f"  AST          : {config.get('ast')}")
     print(f"  Build info   : {config.get('build_info')}")
+    print(f"  Omit AST     : {config.get('build_info_without_ast', False)}")
     print(f"  Build files  : {build_info['files']}")
     print(f"  Source units : {build_info['source_units']}")
     print(f"  With AST     : {build_info['with_ast']}")
@@ -395,28 +425,31 @@ def _doctor(cwd: Path, env: dict[str, str], quiet_if_ready: bool = False) -> int
 def _setup(cwd: Path, env: dict[str, str]) -> int:
     config_path = _find_config(cwd, env)
     profile = _active_profile(env)
-    _forge_config(cwd, env)
+    current = _forge_config(cwd, env)
+    desired_settings = {"ast": True, "build_info": True}
+    if current.get("build_info_without_ast") is True:
+        desired_settings["build_info_without_ast"] = False
 
-    blockers = _false_environment_overrides(env)
+    blockers = _blocking_environment_overrides(env, desired_settings)
     if blockers:
         raise AstSetupError(
-            "Environment variables override the project profile with false values: "
+            "Environment variables override required compiler-output settings: "
             + ", ".join(blockers)
             + ". Remove or change those overrides, then rerun 'lk ast setup'. "
             "No project files were changed."
         )
 
     original = config_path.read_text(encoding="utf-8")
-    updated, changed = _patch_profile_settings(original, profile)
+    updated, changed = _patch_profile_settings(original, profile, desired_settings)
     if changed:
         backup = _write_config_with_backup(config_path, updated)
         print(f"Updated active profile [profile.{profile}] in {config_path}")
         print(f"Backup      : {backup}")
     else:
-        print(f"Found ast=true and build_info=true in [profile.{profile}].")
+        print(f"Found required compiler-output flags in [profile.{profile}].")
 
     resolved = _forge_config(cwd, env)
-    if resolved.get("ast") is not True or resolved.get("build_info") is not True:
+    if any(resolved.get(key) is not value for key, value in desired_settings.items()):
         raise AstSetupError(
             "Foundry still resolves ast/build_info to false after the profile update. "
             "Another configuration source may be overriding the TOML values. "
@@ -497,6 +530,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Unknown AST command: {command}", file=sys.stderr)
         return 2
     except (AstSetupError, OSError) as error:
+        if command in {"doctor", "status"} and args[1:] == ["--quiet-if-ready"]:
+            return 0
         print(f"LOWKEY AST SETUP FAILED: {error}", file=sys.stderr)
         return 1
 
