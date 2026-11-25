@@ -283,6 +283,129 @@ class AttackEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(engine.AttackEngineError, "source-verified"):
             engine.validate_evidence_pair(attack, control, manifest)
 
+    def test_usd_portfolio_reproof_requires_source_verified_assets_and_reconciled_costs(self):
+        payload = {
+            "status": "PROFITABLE",
+            "legacy_status": "PROFITABLE",
+            "command_run": True,
+            "target_address": ADDR,
+            "chain_id": "0x1",
+            "fork_parent_block": 100,
+            "receipt_status": "0x1",
+            "tx_hash": TX_HASH,
+            "call_trace": [{"type": "CALL", "to": ADDR}],
+            "gas_cost_wei": 3,
+            "prior_cost_wei": 2,
+            "total_cost_wei": 5,
+            "net_profit_wei": None,
+            "net_profit_usd_18": 10 * 10**18 - 5,
+            "net_profit_unit": "USD_18",
+            "net_profit_value": 10 * 10**18 - 5,
+            "gross_balance_delta_wei": 0,
+            "gas_cost_in_portfolio_delta": False,
+            "source_fork_verification": {
+                "verified": True,
+                "source_chain_id": "0x1",
+                "target_code_sha256": CODE_SHA[2:],
+                "portfolio_assets_verified": True,
+                "portfolio_asset_count": 1,
+            },
+            "token_portfolio": {
+                "quote_currency": "USD",
+                "source_state_verified": True,
+                "valuation_block": 100,
+                "native_price": {"price_usd_18": 10**18},
+                "token_value_delta_usd_18": 10 * 10**18,
+                "tokens": [{
+                    "kind": "erc20",
+                    "token_code_sha256": "5" * 64,
+                    "value_delta_usd_18": 10 * 10**18,
+                    "oracle": {
+                        "feed_code_source_verified": True,
+                        "source_round_verified": True,
+                    },
+                }],
+            },
+            "economic_valuation": {
+                "native_delta_usd_18": 0,
+                "native_gross_delta_wei": 0,
+                "token_delta_usd_18": 10 * 10**18,
+                "external_gas_cost_usd_18": 3,
+                "prior_cost_usd_18": 2,
+                "net_profit_usd_18": 10 * 10**18 - 5,
+                "portfolio_manifest_sha256": "6" * 64,
+            },
+        }
+        portfolio_manifest = {
+            "schema_version": 1,
+            "quote_currency": "USD",
+            "max_price_age_seconds": 3600,
+            "native": {"oracle": "0x" + "77" * 20},
+            "tokens": [{
+                "kind": "erc20",
+                "address": "0x" + "55" * 20,
+                "symbol": "TKN",
+                "oracle": "0x" + "66" * 20,
+            }],
+        }
+        manifest_path = self.root / ".audit" / "portfolio.json"
+        manifest_path.write_text(json.dumps(portfolio_manifest), encoding="utf-8")
+        manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        payload["token_portfolio"]["native_price"] = {
+            "feed": "0x" + "77" * 20,
+            "feed_code_sha256": "8" * 64,
+            "feed_code_source_verified": True,
+            "source_round_verified": True,
+            "price_usd_18": 10**18,
+        }
+        asset = payload["token_portfolio"]["tokens"][0]
+        asset["token"] = "0x" + "55" * 20
+        asset["symbol"] = "TKN"
+        asset["oracle"].update({
+            "feed": "0x" + "66" * 20,
+            "feed_code_sha256": "9" * 64,
+        })
+        payload["economic_valuation"]["portfolio_manifest"] = ".audit/portfolio.json"
+        payload["economic_valuation"]["portfolio_manifest_sha256"] = manifest_sha256
+        report_path = self.root / ".audit" / "godmode" / "reprove.json"
+        report_path.write_text(json.dumps(payload), encoding="utf-8")
+        result = engine._validate_reproof(
+            {"reproof_file": ".audit/godmode/reprove.json"},
+            root=self.root, target=self.target, family="economic",
+            impact_mode="economic", label="reproof",
+        )
+        self.assertEqual(result["net_profit_usd_18"], 10 * 10**18 - 5)
+        self.assertEqual(result["net_profit_unit"], "USD_18")
+
+        payload["token_portfolio"]["tokens"][0]["token"] = "0x" + "99" * 20
+        report_path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(engine.AttackEngineError, "hashed manifest"):
+            engine._validate_reproof(
+                {"reproof_file": ".audit/godmode/reprove.json"},
+                root=self.root, target=self.target, family="economic",
+                impact_mode="economic", label="reproof",
+            )
+
+        payload["token_portfolio"]["tokens"][0]["token"] = "0x" + "55" * 20
+        payload["economic_valuation"]["external_gas_cost_usd_18"] = 4
+        report_path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(engine.AttackEngineError, "does not reconcile"):
+            engine._validate_reproof(
+                {"reproof_file": ".audit/godmode/reprove.json"},
+                root=self.root, target=self.target, family="economic",
+                impact_mode="economic", label="reproof",
+            )
+
+        payload["economic_valuation"]["external_gas_cost_usd_18"] = 3
+        payload["token_portfolio"]["tokens"][0]["oracle"]["source_round_verified"] = False
+        report_path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(engine.AttackEngineError, "source-verified"):
+            engine._validate_reproof(
+                {"reproof_file": ".audit/godmode/reprove.json"},
+                root=self.root, target=self.target, family="economic",
+                impact_mode="economic", label="reproof",
+            )
+
     def test_economic_mode_requires_verified_profitable_reproof(self):
         self._write_reproof(semantic=False, profitable=True)
         manifest = engine.validate_experiment_manifest(

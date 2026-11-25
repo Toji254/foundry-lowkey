@@ -108,10 +108,10 @@ GODMODE_COMMAND_DETAILS = {
         "limits": "The 15 family labels share a generic executable sequence; they are not 15 protocol-specific exploit generators. Generic flash_borrow and reenter callback steps remain backend_unsupported.",
     },
     "reprove": {
-        "summary": "Re-run a PoC on a cheatcode-free local fork and calculate portfolio profit from a mined transaction receipt.",
-        "when": "Use it after a candidate exploit has a reproducible harness and you need transaction, trace, gas, storage, and net-cost evidence.",
-        "example": "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --prior-cost-wei 1000000000000000",
-        "limits": "Pass verified prior deployment/funding/setup expenditure through --prior-cost-wei. Without it, net profit subtracts replay gas only. A local fixture is not production-deployment proof.",
+        "summary": "Re-run a PoC on a cheatcode-free local fork and calculate net native-ETH profit or an explicitly declared ERC20/ERC4626 portfolio value.",
+        "when": "Use it after a candidate exploit has a reproducible harness and you need transaction, trace, storage, gas, and net-cost evidence.",
+        "example": "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222 --portfolio-manifest .audit/portfolio.json --source-rpc-url $SOURCE_ARCHIVE_RPC_URL --argv-json '[\"forge\",\"test\",\"--match-test\",\"testExploit\"]'",
+        "limits": "Token valuation is opt-in and requires explicit assets and Chainlink USD feeds. Source-verified PROFITABLE promotion requires independent source checks for every declared asset/feed; without --source-rpc-url the result remains local-only. Feed suitability and undeclared assets remain auditor assumptions.",
     },
     "mutation-score": {
         "summary": "Run a per-family mutation campaign and fail closed on surviving, invalid, timed-out, errored, or unscored mutants.",
@@ -1216,6 +1216,7 @@ GODMODE_HELP_GUIDES = {
         "variations": [
             "lk reprove test/Exploit.t.sol --root . --rpc-url http://127.0.0.1:8545 --fork-block 19000000 --target-address 0x1111111111111111111111111111111111111111 --profit-address 0x2222222222222222222222222222222222222222",
             "Use --tx-hash <hash> to inspect an already-mined transaction instead of passing --argv-json.",
+            "Use --portfolio-manifest .audit/portfolio.json to opt into explicit ERC20/ERC4626 USD valuation; this never enables source verification by itself.",
             "Repeat --profit-address for every relevant portfolio account (attacker, gas payer, payout recipient).",
             "Use --non-economic with --semantic-check-argv-json and --semantic-test when the invariant is not profit-based."
         ],
@@ -1230,7 +1231,8 @@ GODMODE_HELP_GUIDES = {
             "--root DIR — project root; default: .",
             "--tx-hash HASH — inspect a mined tx instead of executing --argv-json.",
             "--prior-cost-wei N — verified prior setup/deployment/funding cost in wei; default: 0.",
-            "--source-rpc-url URL — independent read-only archive RPC for source-anchor/funding checks.",
+            "--source-rpc-url URL — independent read-only archive RPC for source-anchor/funding and every declared portfolio asset/feed.",
+            "--portfolio-manifest FILE — optional project-relative ERC20/ERC4626 portfolio manifest with explicit USD price feeds.",
             "--prestate-slot ADDRESS:SLOT — repeat to include extra storage slots in source/fork comparisons.",
             "--argv-json JSON — JSON string array for the replay command; never shell-evaluated.",
             "--support-file FILE — repeat for imported support files.",
@@ -6187,6 +6189,7 @@ def reprove(args):
                    help="Verified prior deployment/funding/setup expenditure in wei; subtract it from net profit in addition to replay gas. Defaults to 0, so pass measured costs when they exist.")
     p.add_argument("--target-address",required=True,help="Contract address whose execution and runtime code are verified."); p.add_argument("--profit-address",action="append",required=True,help="Portfolio address to measure; repeat for attacker, gas payer, and payout recipient.")
     p.add_argument("--source-rpc-url",help="Independent read-only archive RPC used to verify the fork anchor and real sender funding.")
+    p.add_argument("--portfolio-manifest",help="Project-relative JSON manifest of explicitly declared ERC20/ERC4626 assets and USD feeds; opt-in token-denominated economics.")
     p.add_argument("--prestate-slot",action="append",default=[],help="Additional storage slot to compare between local fork and source, as ADDRESS:SLOT.")
     p.add_argument("--argv-json",help="JSON string array for the replay command; it is never shell-evaluated.")
     p.add_argument("--support-file",action="append",default=[],
@@ -6200,6 +6203,24 @@ def reprove(args):
     if ns.prior_cost_wei < 0:
         raise ValueError("--prior-cost-wei must be a non-negative integer.")
     root=root_path(ns.root); harness=(root/ns.harness).resolve()
+    portfolio_spec = None
+    portfolio_manifest_path = None
+    if ns.portfolio_manifest:
+        raw_manifest_path = Path(ns.portfolio_manifest).expanduser()
+        portfolio_manifest_path = (
+            root / raw_manifest_path
+        ).resolve() if not raw_manifest_path.is_absolute() else raw_manifest_path.resolve()
+        if not portfolio_manifest_path.is_relative_to(root) or not portfolio_manifest_path.is_file():
+            raise ValueError("--portfolio-manifest must be an existing JSON file inside --root.")
+        try:
+            try:
+                from . import token_economics
+            except ImportError:
+                import token_economics
+            portfolio_payload = json.loads(portfolio_manifest_path.read_text(encoding="utf-8"))
+            portfolio_spec = token_economics.load_portfolio_manifest(portfolio_payload)
+        except (ImportError, OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("Portfolio manifest or token-economics module is unavailable: " + str(exc)) from exc
     if not harness.is_relative_to(root) or not harness.is_file(): raise ValueError("Harness must be inside project.")
     try:
         try:
@@ -6337,6 +6358,7 @@ def reprove(args):
     ):
         detail=storage_trace.get("reason") or "prestateTracer diff returned no changed storage slots for this transaction."
         raise ValueError("Source-verified reproof requires at least one prestateTracer-derived changed storage slot: "+str(detail))
+    source_url = None
     source_verification={"verified":False,"reason":"No independent source archive RPC was supplied; result is local-only."}
     if ns.source_rpc_url:
         if not ns.argv_json:
@@ -6444,14 +6466,64 @@ def reprove(args):
     # explicitly. Prior setup capital/fees are always separate measured costs.
     transaction_gas_cost = 0 if not subtract_fee else gas_cost
     prior_cost = int(ns.prior_cost_wei)
-    net_profit=gross_delta-transaction_gas_cost-prior_cost
     total_cost=gas_cost+prior_cost
+    token_portfolio = None
+    economic_valuation = None
+    net_profit_usd_18 = None
+    net_profit_unit = "wei"
+    net_profit = gross_delta-transaction_gas_cost-prior_cost
+    economic_value = net_profit
+    if portfolio_spec is not None:
+        try:
+            from . import token_economics
+        except ImportError:
+            import token_economics
+        try:
+            parent_timestamp = int(str(parent.get("timestamp") or "0x0"), 16)
+        except ValueError as exc:
+            raise ValueError("Pinned fork parent block has an invalid timestamp.") from exc
+        token_portfolio = token_economics.measure_token_portfolio(
+            rpc, local_url=url, source_url=source_url,
+            manifest=portfolio_spec, accounts=profit_addresses,
+            before_block=ns.fork_block, after_block=block_number,
+            block_timestamp=parent_timestamp,
+        )
+        if source_verification.get("verified") and not token_portfolio.get("source_state_verified"):
+            raise ValueError(
+                "Source-verified portfolio valuation did not independently verify every asset, price feed and prestate read."
+            )
+        portfolio_summary = token_economics.net_portfolio_profit_usd_18(
+            native_delta_wei=gross_delta,
+            token_value_delta_usd_18=token_portfolio["token_value_delta_usd_18"],
+            native_price=token_portfolio["native_price"],
+            external_gas_cost_wei=transaction_gas_cost,
+            prior_cost_wei=prior_cost,
+        )
+        net_profit_usd_18 = portfolio_summary["net_profit_usd_18"]
+        net_profit = None
+        economic_value = net_profit_usd_18
+        net_profit_unit = "USD_18"
+        economic_valuation = {
+            **portfolio_summary,
+            "native_gross_delta_wei": gross_delta,
+            "actual_transaction_gas_cost_wei": gas_cost,
+            "gas_cost_in_portfolio_delta": not subtract_fee,
+            "prior_cost_wei": prior_cost,
+            "total_cost_wei": total_cost,
+            "portfolio_manifest": portfolio_manifest_path.relative_to(root).as_posix(),
+            "portfolio_manifest_sha256": hashlib.sha256(
+                portfolio_manifest_path.read_bytes()
+            ).hexdigest(),
+        }
+        if source_verification.get("verified"):
+            source_verification["portfolio_assets_verified"] = True
+            source_verification["portfolio_asset_count"] = len(token_portfolio["tokens"])
     if command_result is None:
         final_status="LOCAL_TRACE_ONLY"
     elif source_verification["verified"]:
-        final_status="PROFITABLE" if net_profit>0 else "FORK_REPRODUCED"
+        final_status="PROFITABLE" if (economic_value>0 and not non_economic) else "FORK_REPRODUCED"
     else:
-        final_status="LOCAL_PROFITABLE" if net_profit>0 else "LOCAL_REPRODUCED"
+        final_status="LOCAL_PROFITABLE" if (economic_value>0 and not non_economic) else "LOCAL_REPRODUCED"
     fidelity_label="real_funded"
     if fidelity.get("synthetic_state"):
         fidelity_label="synthetic_state"
@@ -6465,11 +6537,12 @@ def reprove(args):
         fidelity_label="unknown"
     semantic_invariant_verified=bool((semantic_check or {}).get("verified"))
     economic_policy=proof_evidence.evaluate_economic_policy(
-        family,net_profit,non_economic=non_economic,
+        family,net_profit,net_profit_usd_18=net_profit_usd_18,
+        non_economic=non_economic,
         semantic_invariant_verified=semantic_invariant_verified,
     )
     proof_outcome=(
-        "profitable" if (net_profit>0 and not non_economic) else
+        "profitable" if (economic_value>0 and not non_economic) else
         ("observed" if (not non_economic or semantic_invariant_verified) else "rejected")
     )
     if not fidelity.get("scan_complete"):
@@ -6489,7 +6562,7 @@ def reprove(args):
         proof_axes["status"]="SIMULATED_BREAK"
     if non_economic and not semantic_invariant_verified:
         proof_axes["status"]="REJECTED"
-    if not economic_policy.get("accepted") and not non_economic and net_profit<=0:
+    if not economic_policy.get("accepted") and not non_economic and economic_value<=0:
         proof_axes["status"]="REJECTED"
     payload={
         "status":proof_axes["status"],
@@ -6508,6 +6581,9 @@ def reprove(args):
         "prior_cost_wei":prior_cost,"total_cost_wei":total_cost,
         "profit_addresses":balances,"gross_balance_delta_wei":gross_delta,
         "net_profit_wei":net_profit,
+        "net_profit_usd_18":net_profit_usd_18,
+        "net_profit_unit":net_profit_unit,
+        "net_profit_value":economic_value,
         "fidelity":fidelity,
         "fidelity_label":fidelity_label,
         "target_authenticity":"forked_deployment" if source_verification.get("verified") else "unknown",
@@ -6521,19 +6597,26 @@ def reprove(args):
         "execution_command":execution_command,
         "promotion_policy":{
             "FORK_REPRODUCED":"Block-pinned parent state, real mined local Anvil transaction, successful receipt, callTracer match, declared target reached, no synthetic funding/storage/code/mock/time/caller cheatcodes.",
-            "PROFITABLE":"FORK_REPRODUCED plus measured portfolio balance delta net of actual transaction gas is positive.",
+            "PROFITABLE":"Independently source-verified native/token portfolio value, net of actual transaction gas and prior setup costs, is positive.",
             "HUMAN_CONFIRMED":"Never assigned automatically; requires explicit human disposition in the evidence ledger.",
         },
         "human_confirmation_required":True,
-        "limitations":["Native-ETH balance accounting only; ERC20/ERC4626 share profit requires token-specific balance measurement.",
-                       "Without --source-rpc-url, this is a local Anvil reproduction only, not an independently verified source-chain fork.",
-                       "An independent source check verifies chain ID, parent block hash, target bytecode, and transaction-sender ETH balance; it does not prove that every dependency or storage slot is identical.",
-                       "A replayed transaction proves only the tested path and state; it is not a completeness guarantee."],
+        "token_portfolio":token_portfolio,
+        "economic_valuation":economic_valuation,
+        "limitations":(
+            (token_portfolio.get("limitations", []) if token_portfolio else
+             ["Native-ETH balance accounting only; ERC20/ERC4626 portfolio value requires --portfolio-manifest."])
+            + [
+                "Without --source-rpc-url, this is a local Anvil reproduction only, not an independently verified source-chain fork.",
+                "An independent source check verifies the declared assets, feeds and pinned prestate calls only when --portfolio-manifest is supplied.",
+                "A replayed transaction proves only the tested path and state; it is not a completeness guarantee.",
+            ]
+        ),
     }
     rejection_codes=[]
     if non_economic and not semantic_invariant_verified:
         rejection_codes.append("semantic_invariant_failed")
-    if not non_economic and net_profit<=0:
+    if not non_economic and economic_value<=0:
         rejection_codes.append("net_negative")
     payload["rejection_codes"]=rejection_codes
     if rejection_codes:
@@ -6546,7 +6629,7 @@ def reprove(args):
                 kind="false-positive",
                 summary="Rejected reproof hypothesis for "+family,
                 evidence="Reproof did not satisfy the economic/semantic gate: "+", ".join(rejection_codes)+
-                         "; net_profit_wei="+str(net_profit),
+                         "; net_profit_"+net_profit_unit+"="+str(economic_value),
                 root=root,
             )
         except Exception as exc:
