@@ -18,6 +18,31 @@ class InstallSmokeTests(unittest.TestCase):
             "install.sh must retain its executable bit because CI and users invoke ./install.sh",
         )
 
+    def test_clean_help_is_routed_to_lowkey_before_native_clean_adapter(self):
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "lk.py").write_text(
+                "import sys\nprint('LOWKEY_HELP_ROUTED', *sys.argv[1:])\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            for flag in ("--h", "--help", "-h", "help"):
+                with self.subTest(flag=flag):
+                    result = subprocess.run(
+                        ["bash", str(ROOT / "bin" / "lk"), "clean", flag],
+                        cwd=ROOT,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(f"LOWKEY_HELP_ROUTED clean {flag}", result.stdout)
+                    self.assertNotIn("forge clean", result.stdout + result.stderr)
+
+
     def test_install_publishes_current_runtime_and_manifest(self):
         with tempfile.TemporaryDirectory() as home:
             env = os.environ.copy()

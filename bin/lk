@@ -8,6 +8,15 @@ if [[ "${1:-}" == "hardhat" ]]; then
     exec python3 "$HOME/.lowkey/command_wrapper.py" "hardhat" -- python3 "$HOME/.lowkey/hardhat_tools.py" "$@"
 fi
 if [[ "${1:-}" == "clean" ]]; then
+    # Friendly Lowkey help must be handled before the Hardhat/Foundry clean
+    # adapter; otherwise the short --h alias leaks through to the native CLI.
+    for arg in "$@"; do
+        case "$arg" in
+            --h|--help|-h|help)
+                exec python3 "$HOME/.lowkey/lk.py" "$@"
+                ;;
+        esac
+    done
     shift
     exec python3 "$HOME/.lowkey/command_wrapper.py" "clean" -- python3 "$HOME/.lowkey/hardhat_tools.py" clean "$@"
 fi
