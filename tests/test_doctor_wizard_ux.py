@@ -173,11 +173,8 @@ PASS  dependency command: cast receipt
         errors = io.StringIO()
         with patch.object(lk, "load_abi", return_value=abi), \
              patch.object(lk, "run_cast") as run_cast, \
-             patch("builtins.input", return_value="1 ether"), \
-             patch("builtins.input", return_value="1 ether"), \
-             patch("builtins.input", side_effect=["1 ether"]) as prompt, \
              patch("sys.stderr", errors):
-            result = lk.run_wizard({"target": target}, ["setValue"])
+            result = lk.run_wizard({"target": target}, ["setValue", "1 ether"])
 
         self.assertNotEqual(result, 0)
         self.assertIn("raw integer field", errors.getvalue())
