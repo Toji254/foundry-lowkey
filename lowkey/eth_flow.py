@@ -507,10 +507,13 @@ def _state_touchpoints(report: dict[str, Any], *, limit: int) -> list[dict[str, 
             "name": variable.get("name") or "?",
             "kinds": set(),
             "functions": set(),
+            "accesses": set(),
             "location": _location(edge),
         })
         group["kinds"].add(str(edge.get("kind") or "TOUCH"))
         group["functions"].add(_compact_function_label(item.get("function") or {}))
+        if edge.get("access_path"):
+            group["accesses"].add(str(edge["access_path"]))
     values = list(groups.values())
     values.sort(key=lambda item: (
         not bool(item["kinds"].intersection({"WRITES", "DELETES", "MUTATES"})),
@@ -700,7 +703,9 @@ def _render_detail(report: dict[str, Any], *, limit: int) -> None:
         for item in touchpoints:
             kinds = "/".join(sorted(item["kinds"]))
             functions = ", ".join(sorted(item["functions"])[:4])
-            print(f"  {kinds:<20} {item['name']}  [{functions}]")
+            accesses = ", ".join(sorted(item["accesses"])[:3])
+            access_label = f" [{accesses}]" if accesses else ""
+            print(f"  {kinds:<20} {item['name']}{access_label}  [{functions}]")
             print(f"    {item['location']}")
 
     if report["unresolved"]:
