@@ -805,7 +805,7 @@ def apply_solc_ast_call_edges(
     except Exception as error:
         return {
             "available": False, "build_info_files": 0, "matched_units": 0,
-            "stale_units": 0, "functions": 0, "call_edges": 0,
+            "stale_units": 0, "functions": 0, "covered_function_ids": [], "call_edges": 0,
             "modifier_edges": 0, "warnings": [f"Could not inspect build-info: {error}"],
         }
 
@@ -938,6 +938,7 @@ def apply_solc_ast_call_edges(
             "stale_units": stale_units,
             "contracts": matched_contracts,
             "functions": 0,
+            "covered_function_ids": sorted(ast_covered),
             "call_edges": 0,
             "modifier_edges": 0,
             "storage_edges": 0,
@@ -1194,6 +1195,7 @@ def apply_solc_ast_call_edges(
         "stale_units": stale_units,
         "contracts": matched_contracts,
         "functions": len(ast_covered),
+        "covered_function_ids": sorted(ast_covered),
         "call_edges": ast_call_edges,
         "modifier_edges": ast_modifier_edges,
         "storage_edges": ast_storage_edges,
