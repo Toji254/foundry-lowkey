@@ -10759,12 +10759,17 @@ def _run_doctor_detailed():
 
 def _doctor_engine_inventory(root):
     """Return registered verification/security tools without hiding failures."""
-    if verification_cli is None or root is None:
-        return {"engines": [], "error": "verification engine inventory is unavailable"}
+    if verification_cli is None:
+        return {"engines": [], "plugin_errors": [], "error": "verification engine inventory is unavailable"}
     try:
-        report = verification_cli.engine_inventory(Path(root).resolve())
+        report = verification_cli.engine_inventory(Path(root).resolve() if root else None)
         engines = report.get("engines") if isinstance(report, dict) else []
-        return {"engines": engines if isinstance(engines, list) else [], "error": None}
+        plugin_errors = report.get("plugin_errors") if isinstance(report, dict) else []
+        return {
+            "engines": engines if isinstance(engines, list) else [],
+            "plugin_errors": plugin_errors if isinstance(plugin_errors, list) else [],
+            "error": None,
+        }
     except Exception as exc:
         return {"engines": [], "error": f"{type(exc).__name__}: {exc}"}
 
@@ -10879,6 +10884,7 @@ def _doctor_compact_summary(report, exit_code):
 
     engine_report = _doctor_engine_inventory(root)
     engines = engine_report.get("engines") or []
+    plugin_errors = engine_report.get("plugin_errors") or []
     available = [item for item in engines if isinstance(item, dict) and item.get("available")]
     missing = [item for item in engines if isinstance(item, dict) and not item.get("available")]
     supplemental = _doctor_supplemental_tool_inventory(root)
@@ -10922,6 +10928,8 @@ def _doctor_compact_summary(report, exit_code):
     if supplemental:
         print(f"  Extra toolchains: {len(supplemental)} detected")
         print("  " + "  ·  ".join(item["name"] for item in supplemental))
+    if plugin_errors:
+        print(f"  Plugin registration warnings: {len(plugin_errors)}")
     print("")
     print("PROJECT HEALTH")
     print(f"  {build_line}")
@@ -10930,7 +10938,7 @@ def _doctor_compact_summary(report, exit_code):
         if repair and repair.lower() != "none needed" else "ready"
     ))
     print(f"  Checks: {counts['PASS']} passed · {counts['FAIL']} failed · {counts['WARN']} warnings")
-    if issues:
+    if issues or plugin_errors:
         print("")
         print("ATTENTION")
         for issue in issues[:3]:
@@ -10940,6 +10948,15 @@ def _doctor_compact_summary(report, exit_code):
                 print(f"    Fix: {issue['fix']}")
         if len(issues) > 3:
             print(f"  ...and {len(issues) - 3} more issue(s).")
+        for error in plugin_errors[:3]:
+            if not isinstance(error, dict):
+                print(f"  WARN verification plugin: {str(error)[:240]}")
+                continue
+            plugin = str(error.get("name") or error.get("plugin") or "unknown plugin")
+            detail = str(error.get("error") or error.get("reason") or "registration failed")
+            print(f"  WARN {plugin}: {detail[:240]}")
+        if len(plugin_errors) > 3:
+            print(f"  ...and {len(plugin_errors) - 3} more plugin issue(s).")
     else:
         print("")
         print("No blocking issues detected.")
@@ -10967,6 +10984,18 @@ def _doctor_verbose_engine_inventory(root):
         print(f"  {state:<9} {name:<12} {kinds}")
         if engine.get("notes"):
             print(f"            {engine['notes']}")
+    plugin_errors = report.get("plugin_errors") or []
+    if plugin_errors:
+        print("")
+        print("PLUGIN REGISTRATION ERRORS")
+        print("===========================")
+        for error in plugin_errors:
+            if isinstance(error, dict):
+                name = error.get("name") or error.get("plugin") or "unknown plugin"
+                detail = error.get("error") or error.get("reason") or "registration failed"
+                print(f"  {name}: {detail}")
+            else:
+                print(f"  {error}")
 
     try:
         root = audit_context.foundry_project_root()
