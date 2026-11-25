@@ -9698,8 +9698,8 @@ def _select_project_target(config, entry, root):
     # activation; if no RPC is available, keep the metadata selection but mark
     # it unverified rather than inventing deployment state.
     rpc = effective_rpc(config)
+    state = _live_target_state(config, address, entry.get("artifact"))
     if rpc:
-        state = _live_target_state(config, address, entry.get("artifact"))
         if state.get("status") == "NOT_DEPLOYED":
             return fail(
                 f"Error: {address} has no contract bytecode on {rpc}. "
@@ -9729,7 +9729,9 @@ def _select_project_target(config, entry, root):
     config["target_contract"] = contract
     if artifact:
         config.setdefault("abi_paths", {})[address] = artifact
-    remember_project_target(config, root, entry.get("name") or contract, address)
+    remember_project_target(
+        config, root, entry.get("name") or contract, address, runtime_state=state
+    )
     save_config(config)
 
     target_source = entry.get("source") or "project"
@@ -9764,6 +9766,25 @@ def _select_project_target(config, entry, root):
         artifact=artifact,
         source=target_source,
     )
+    audit_context.update(
+        root,
+        target={"runtime": state},
+        deployment={
+            "source": target_source,
+            "contract": contract,
+            "address": address,
+            "chain_id": state.get("chain_id"),
+            "block_number": state.get("block_number"),
+            "rpc_fingerprint": state.get("rpc_fingerprint"),
+            "rpc_origin": state.get("rpc_origin"),
+            "runtime_code_hash": state.get("runtime_code_hash"),
+            "runtime_code_hash_algorithm": state.get("runtime_code_hash_algorithm"),
+            "runtime_status": state.get("status"),
+            "verification": state.get("verification"),
+            "verified_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    _print_target_runtime_provenance(state)
     print(f"Target selected: {entry.get('name') or contract} -> {apply_labels(address, config)}")
     if entry.get("source_file"):
         print(f"  Source       : {entry.get('source_file')}")
@@ -10515,6 +10536,8 @@ def run_auto_target(config,name=None):
     contract = record.get("_resolved_contract") or record.get("contract") or "Target"
     alias=name or contract
     runtime_state = record.get("_runtime_state")
+    if not isinstance(runtime_state, dict):
+        runtime_state = _live_target_state(config, record["address"], record.get("_artifact"))
     remember_project_target(config, root, alias, record["address"], runtime_state=runtime_state)
     config["target"]=record["address"]
 
