@@ -25408,6 +25408,21 @@ COMMAND_HELP = {
     ),
     "forge": _help_entry("Pass a native Forge command through Lowkey.", "lk forge <forge-command> [args...]", "lk forge test -vvvv", "Use it when you need a Forge feature that Lowkey does not wrap separately.", related=["lk build", "lk test"]),
     "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
+    "clean": _help_entry(
+        "Remove generated artifacts/cache files for the selected project backend (Foundry or Hardhat).",
+        "lk clean [native-options...]",
+        "lk clean",
+        "Use it before a clean rebuild or when generated compiler output is stale. This removes generated build output, not source files, project configuration, dependencies, or deployed contracts.",
+        forms=[
+            ("lk clean", "Run the native clean command selected for this project. Foundry is preferred when the project contains a Foundry configuration or workspace stack; otherwise Hardhat is used when detected.", "lk clean"),
+            ("lk clean --h", "Show this guide without running a cleaner or changing project files.", "lk clean --h"),
+        ],
+        notes=[
+            ("What is removed", "The native backend removes its generated build artifacts and cache files; source files, manifests, dependency directories, and on-chain state are not targets of this command.", "lk clean"),
+            ("Mixed projects", "When both Foundry and Hardhat are present, Lowkey preserves the existing Foundry-first clean behavior.", "lk clean"),
+        ],
+        related=["lk build", "lk test", "lk forge"],
+    ),
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
     "script": _help_entry("Run a native Forge script.", "lk script <args...>", "lk script script/LocalDeploy.s.sol --sig run()", "Use it when the project already has a useful setup/deployment script.", related=["lk lab", "lk forge"]),
     "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect MyContract storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
