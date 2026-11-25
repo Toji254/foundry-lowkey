@@ -1661,10 +1661,12 @@ def _abi_sample_literal(param, depth=0, context=None):
         if count > 8:
             return None
         values = []
-        for _ in range(count):
+        for value_index in range(count):
             value = _abi_sample_literal(element, depth + 1, context="array")
             if value is None:
                 return None
+            if element.get("type") == "string":
+                value = "Yes" if value_index == 0 else "No"
             if element.get("type") in {"string", "bytes", "address"}:
                 value = json.dumps(value)
             values.append(value)
