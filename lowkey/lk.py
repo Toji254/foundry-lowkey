@@ -8671,7 +8671,7 @@ def inspect_protocol_readiness(config, abi=None, *, has_code=None):
         "initializer_entrypoints": [],
         "getters": [],
         "evidence_limit": (
-            "ABI-derived candidate getters are inspection hints, not proof that a field is required, "
+            "ABI-derived candidate getters are inspection hints; they do not establish protocol requirements, "
             "that initialization ran, or that a dependency is safe."
         ),
     }
@@ -25632,7 +25632,7 @@ COMMAND_HELP.update({
     "bind": _native_forge_help("bind", "Generate Rust bindings from the current Forge project interfaces.", "forge bind --help"),
     "bind-json": _native_forge_help("bind-json", "Generate JSON-form binding output from the current Forge project.", "forge bind-json --help"),
     "cache": _native_forge_help("cache", "Manage Forge's compiler/build cache.", "forge cache --help"),
-    "clean": _native_forge_help("clean", "Remove Forge build artifacts and generated output.", "forge clean --help"),
+    "clean": _native_forge_help("clean", "Remove generated artifacts/cache files for the selected project backend (Foundry or Hardhat).", "forge clean --help"),
     "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "forge compiler --help"),
     "completions": _native_forge_help("completions", "Generate shell completion scripts for Forge.", "forge completions --help"),
     "config": _native_forge_help("config", "Inspect or work with Forge configuration.", "forge config --help"),
