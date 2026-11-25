@@ -195,12 +195,15 @@ class InstallSmokeTests(unittest.TestCase):
             source_index = pathlib.Path(home) / ".lowkey" / "source_index.py"
             source_ast = pathlib.Path(home) / ".lowkey" / "source_ast.py"
             source_link = pathlib.Path(home) / ".lowkey" / "source_link.py"
+            eth_flow = pathlib.Path(home) / ".lowkey" / "eth_flow.py"
             self.assertTrue(source_index.is_file())
             self.assertTrue(source_ast.is_file())
             self.assertTrue(source_link.is_file())
+            self.assertTrue(eth_flow.is_file())
             self.assertIn(str(source_index), install_manifest["files"])
             self.assertIn(str(source_ast), install_manifest["files"])
             self.assertIn(str(source_link), install_manifest["files"])
+            self.assertIn(str(eth_flow), install_manifest["files"])
 
             source_fixture = pathlib.Path(home) / "source-link-fixture"
             (source_fixture / "src").mkdir(parents=True)
@@ -254,6 +257,16 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("ETH", flow_filter.stdout)
             self.assertIn("OUT", flow_filter.stdout)
 
+            eth_flow_recon = subprocess.run(
+                [str(installed_lk), "flow", "eth", "--root", str(source_fixture)],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(eth_flow_recon.returncode, 0, eth_flow_recon.stdout + eth_flow_recon.stderr)
+            self.assertIn("LOWKEY / ETH FLOW RECON", eth_flow_recon.stdout)
+            self.assertIn("ETH ENTERS", eth_flow_recon.stdout)
+            self.assertIn("ETH EXIT SITES", eth_flow_recon.stdout)
+            self.assertIn("FlowVault.withdraw(uint256)", eth_flow_recon.stdout)
+
             version = subprocess.run(
                 [str(installed_lk), "--version"],
                 cwd=ROOT,
@@ -283,6 +296,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk link Vault", help_result.stdout)
             self.assertIn("--only calls|storage|reads|writes|imports|assets", help_result.stdout)
             self.assertIn("lk fn --flow", help_result.stdout)
+            self.assertIn("lk flow eth", help_result.stdout)
             self.assertIn("lk trace source --help", help_result.stdout)
             self.assertIn("lk fn --flow --help", help_result.stdout)
 
@@ -312,6 +326,22 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertEqual(trace_source_help.returncode, 0, trace_source_help.stdout + trace_source_help.stderr)
             self.assertIn("LOWKEY HELP  •  lk trace source", trace_source_help.stdout)
             self.assertIn("not the same as 'lk trace <TX>'", trace_source_help.stdout)
+
+            eth_flow_help = subprocess.run(
+                [str(installed_lk), "flow", "eth", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(eth_flow_help.returncode, 0, eth_flow_help.stdout + eth_flow_help.stderr)
+            self.assertIn("LOWKEY HELP  •  lk flow eth", eth_flow_help.stdout)
+            self.assertIn("OPTIONS / MODES", eth_flow_help.stdout)
+
+            ast_help = subprocess.run(
+                [str(installed_lk), "ast", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(ast_help.returncode, 0, ast_help.stdout + ast_help.stderr)
+            self.assertIn("LOWKEY HELP  •  lk ast", ast_help.stdout)
+            self.assertIn("COMMAND VARIATIONS", ast_help.stdout)
 
             clean_help = subprocess.run(
                 [str(installed_lk), "clean", "--h"],
