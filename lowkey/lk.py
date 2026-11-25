@@ -24949,7 +24949,7 @@ COMMAND_HELP = {
                 "Trace source-level function calls, modifiers, storage effects, external boundaries, events, and asset-flow relationships.",
                 "lk trace source <Contract.function> [--detail summary|calls|storage|external|all] [options]",
                 "lk trace source PositionManager.increasePosition --detail all --depth 4",
-                "Use it when you want to understand a code path before executing it. Source links are potential static relationships and do not prove runtime execution.",
+                "Use it when you want to understand a code path before executing it. This is static source analysis, not a transaction replay; source links are potential relationships and do not prove runtime execution.",
                 forms=[
                     ("lk trace source <Contract.function>", "Show the function's compact source relationship overview.", "lk trace source Vault.withdraw"),
                     ("lk trace source <Contract.function> --detail calls", "Show reachable internal callees and external call boundaries.", "lk trace source Vault.withdraw --detail calls"),
@@ -24973,7 +24973,7 @@ COMMAND_HELP = {
             ("--quick", "Use the quicker native Cast trace output where supported.", "lk trace --quick"),
             ("--decode-internal", "Ask Cast to decode internal calls where metadata is available.", "lk trace --decode-internal"),
             ("--trace-printer", "Use Cast's trace printer output.", "lk trace --trace-printer"),
-            ("--grep <TEXT>", "Show only trace lines containing the supplied text.", "lk trace --grep transfer"),
+            ("--grep <text>", "Show only trace lines containing the supplied text.", "lk trace --grep transfer"),
         ],
         related=["lk receipt", "lk tx", "lk link", "lk trace source"],
     ),
