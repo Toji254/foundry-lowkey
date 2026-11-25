@@ -27096,6 +27096,62 @@ for _function_command in ("functions", "fn"):
         if _function_note not in _function_existing_notes:
             _function_existing_notes.append(_function_note)
 
+_PROXY_HELP_GUIDE_INSTALLED = True
+_PROXY_HELP_GUIDES = {
+    "proxy": {
+        "summary": "Inspect the selected target's proxy and deployment form using on-chain storage and runtime-bytecode evidence.",
+        "usage": "lk proxy",
+        "example": "lk proxy",
+        "use": "Use this during reconnaissance to determine whether the selected address is a direct contract, an ERC-1967 proxy, a beacon proxy, or an EIP-1167 clone.",
+        "forms": [
+            ("lk proxy", "Inspect implementation, beacon, proxy-admin and clone evidence for the active target.", "lk proxy"),
+            ("lk implementation", "Resolve the implementation address when the proxy pattern exposes one.", "lk implementation"),
+            ("lk admin", "Inspect the EIP-1967 proxy-admin role when the target exposes that slot.", "lk admin"),
+        ],
+        "notes": [
+            ("Evidence sources", "Detection uses ERC-1967 implementation/beacon/admin slots and EIP-1167 runtime-bytecode patterns. A failed RPC read is UNVERIFIED, not proof that the target is direct.", "lk proxy"),
+            ("Zero admin is not a negative proxy test", "A zero or absent EIP-1967 admin slot does not prove that an address is not a proxy. UUPS-style proxies can have an implementation without a separate proxy-admin address.", "lk proxy"),
+            ("Proxy admin vs application governor", "The EIP-1967 admin controls the proxy upgrade surface when present. An application-level gov() value is a separate protocol role and must not be presented as the proxy admin.", "lk proxy"),
+        ],
+        "related": ["lk implementation", "lk admin", "lk info", "lk recon"],
+    },
+    "implementation": {
+        "summary": "Resolve the implementation behind a supported proxy or minimal clone.",
+        "usage": "lk implementation",
+        "example": "lk implementation",
+        "use": "Use it after lk proxy to inspect the code address that executes behind a proxy or clone.",
+        "forms": [
+            ("ERC-1967 implementation", "Read the implementation slot when it contains a valid non-zero address.", "lk implementation"),
+            ("Beacon implementation", "Resolve the beacon contract and query its implementation() address when supported.", "lk proxy"),
+            ("EIP-1167 clone", "Extract the embedded implementation address from the minimal-proxy runtime bytecode.", "lk proxy"),
+        ],
+        "notes": [
+            ("Direct contracts", "If no supported proxy/clone evidence is found, Lowkey reports that no implementation was established; it does not invent one.", "lk implementation"),
+            ("Verification boundary", "A resolved implementation address does not by itself prove source verification, initialization, upgrade safety, or protocol readiness.", "lk implementation"),
+        ],
+        "related": ["lk proxy", "lk admin", "lk info"],
+    },
+    "admin": {
+        "summary": "Inspect the EIP-1967 proxy-admin address when that proxy pattern exposes one.",
+        "usage": "lk admin",
+        "example": "lk admin",
+        "use": "Use it to identify the proxy-admin control surface during an upgradeability review.",
+        "forms": [
+            ("lk admin", "Read and display the EIP-1967 admin address when available.", "lk admin"),
+            ("lk proxy", "Compare the admin result with implementation, beacon, clone and application-governor evidence.", "lk proxy"),
+        ],
+        "notes": [
+            ("Zero or missing admin", "A zero or missing admin address is not proof that the target is not a proxy; UUPS proxies commonly do not use a separate transparent-proxy admin slot.", "lk admin"),
+            ("Application governor", "A contract's gov() or owner() value is an application access-control role, not automatically the EIP-1967 proxy admin.", "lk admin"),
+            ("Unsupported patterns", "If the selected target uses a custom upgrade mechanism, Lowkey may not be able to resolve its controller from standard proxy slots.", "lk admin"),
+        ],
+        "related": ["lk proxy", "lk implementation", "lk info"],
+    },
+}
+for _proxy_help_name, _proxy_help_values in _PROXY_HELP_GUIDES.items():
+    _proxy_help_entry = COMMAND_HELP.get(_proxy_help_name)
+    if isinstance(_proxy_help_entry, dict):
+        _proxy_help_entry.update(_proxy_help_values)
 def _help_entry_for_path(path):
     if not path:
         return None, [], None
