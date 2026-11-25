@@ -1,6 +1,8 @@
 import importlib.util
 import io
+import json
 import pathlib
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
