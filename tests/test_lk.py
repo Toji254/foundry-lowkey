@@ -1274,7 +1274,7 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk, "load_abi", return_value=[]), patch.object(
             lk, "resolve_wallet_key", return_value=None
         ), patch.object(lk, "cast_output", return_value=(1, "", error)):
-            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--yes"], config, capture=True)
+            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--from", "0x2222222222222222222222222222222222222222", "--yes"], config, capture=True)
 
         self.assertEqual(result.code, 1)
         self.assertIn("Error: Transaction not sent", result.text)
@@ -1302,7 +1302,7 @@ class LowkeyCastTests(unittest.TestCase):
             lk, "cast_output",
             return_value=(1, f"transactionHash: {tx_hash}", "execution reverted: invalid number"),
         ):
-            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--yes"], config, capture=True)
+            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--from", "0x2222222222222222222222222222222222222222", "--yes"], config, capture=True)
 
         self.assertEqual(result.code, 1)
         self.assertEqual(config["last_tx"], tx_hash)
@@ -6392,7 +6392,7 @@ contract Pool {
         }]
         with patch.object(lk,"load_abi",return_value=abi), \
              patch.object(lk,"cast_output",return_value=(0,"ok","")) as cast:
-            self.assertEqual(lk.run_cast(["send","sendTo","Bob","--yes"],config),0)
+            self.assertEqual(lk.run_cast(["send","sendTo","Bob","--from","0x3333333333333333333333333333333333333333","--yes"],config),0)
         sent=cast.call_args.args[0]
         self.assertIn("sendTo(address)",sent)
         self.assertIn("0x"+"2"*40,sent)
