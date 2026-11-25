@@ -88,6 +88,7 @@ if [[ "$#" -eq 1 ]]; then
 
 Hardhat project setup:
   lk hardhat init
+  lk hardhat doctor           Read-only Hardhat readiness report
   lk build
   lk test
   lk clean
@@ -95,13 +96,14 @@ Hardhat project setup:
 Source relationship navigation:
   lk link                       Browse available contracts and source locations
   lk link --help                 Full flags, use cases and copy-paste examples
-  lk trace source --help         Source-call investigation options
+  lk trace source --help         Source-call traversal, detail views and depth options
+  lk fn --flow --help            Incoming/outgoing asset-flow filter guide
   lk link Vault
   lk link Vault.withdraw
   lk link Vault.positions
-  lk link Vault.withdraw(uint256) --depth 3
+  lk link 'Vault.withdraw(uint256)' --depth 3
   lk trace source Vault.withdraw
-  lk trace source Vault.withdraw(uint256) --depth 5
+  lk trace source 'Vault.withdraw(uint256)' --depth 5
   lk link Vault --only calls|storage|reads|writes|imports|assets
   lk fn --flow in|out|both --asset eth|erc20|all
 
@@ -270,6 +272,21 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# A Hardhat test may be the first project command. Prepare its declared local
+# dependencies before handing execution back to the existing native LK router.
+# Exit 3 means "not a Hardhat project" and preserves the old routing unchanged.
+if [[ "${1:-}" == "test" ]]; then
+    if python3 "$HOME/.lowkey/hardhat_tools.py" prepare; then
+        exec python3 "$HOME/.lowkey/lk.py" "$@"
+    else
+        status=$?
+        if [[ "$status" -ne 3 ]]; then
+            exit "$status"
+        fi
+    fi
+    exec python3 "$HOME/.lowkey/lk.py" "$@"
+fi
 
 if [[ "${1:-}" == "forge" ]]; then
     shift
