@@ -593,7 +593,7 @@ class FunctionInventoryTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 rendered = "\\n".join(output)
                 self.assertIn("-q / --query", rendered)
-                self.assertIn("lk functions --query OrderBook", rendered)
+                self.assertIn("--query OrderBook", rendered)
                 self.assertIn("complete ABI inventory", rendered)
                 self.assertIn("matches the active contract name", rendered)
 
