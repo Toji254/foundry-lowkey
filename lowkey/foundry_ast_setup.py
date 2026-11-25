@@ -518,16 +518,48 @@ def _setup(cwd: Path, env: dict[str, str]) -> int:
 
 def _usage() -> None:
     print(
-        "LOWKEY / COMPILER AST\n"
+        "LOWKEY HELP  •  lk ast\n"
+        "=" * 72
+    )
+    print(
+        "What it does: Check or prepare Foundry compiler AST output for richer source analysis.\n"
+        "When to use: Run doctor before relying on compiler-backed function details; use setup only when you intend to edit Foundry settings and rebuild.\n"
+        "Usage: lk ast <doctor|setup>\n"
+        "Example: lk ast doctor\n"
         "\n"
-        "  lk ast doctor   Read-only check of active Foundry AST readiness\n"
-        "  lk ast setup    Safely enable AST/build-info, rebuild and verify\n"
+        "COMMAND VARIATIONS\n"
+        "------------------\n"
+        "  lk ast doctor\n"
+        "      Read-only check of active Foundry AST/build-info readiness.\n"
+        "      Example: lk ast doctor\n"
+        "  lk ast setup\n"
+        "      Safely enable AST/build-info, rebuild, and verify the resulting evidence.\n"
+        "      Example: lk ast setup\n"
+        "\n"
+        "OPTIONS / MODES\n"
+        "---------------\n"
+        "  --h, --help, -h, help\n"
+        "      Show this help page; does not change project files.\n"
+        "      Example: lk ast --h\n"
+        "  --quiet-if-ready (doctor only)\n"
+        "      Return quietly when the active build is already AST-ready.\n"
+        "      Example: lk ast doctor --quiet-if-ready\n"
+        "\n"
+        "RELATED COMMANDS\n"
+        "----------------\n"
+        "  lk fn -v\n"
+        "  lk sources\n"
+        "  lk link\n"
+        "\n"
+        "HELP TIP\n"
+        "  doctor is read-only. setup may edit foundry.toml and run a forced build.\n"
+        "  Accepted help forms: --h, --help, -h, help."
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args or args[0] in {"-h", "--help", "help"}:
+    if not args or any(item in {"-h", "--h", "--help", "help"} for item in args):
         _usage()
         return 0
 
