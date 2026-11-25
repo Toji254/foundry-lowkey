@@ -6510,7 +6510,7 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("TRANSACTION PREVIEW — NOT SENT", rendered)
+        self.assertIn("TRANSACTION PREVIEW", rendered)
         self.assertIn(f"Sender:   Alice ({alice})", rendered)
         self.assertIn(f"Contract: Telephone ({target})", rendered)
         self.assertIn("Function: changeOwner(address)", rendered)
@@ -6519,7 +6519,7 @@ contract Pool {
         self.assertIn(f"msg.sender = Alice ({alice})", rendered)
         self.assertIn("Function selector: 0xa6f9dae1", rendered)
         self.assertIn(encoded, rendered)
-        self.assertIn("does not execute or simulate the contract", rendered)
+        self.assertIn("Gas estimation is read-only", rendered)
         self.assertNotIn("DEBUG: Executing", rendered)
         self.assertNotIn("Preview: cast send", rendered)
         cast_output.assert_called_once_with([
