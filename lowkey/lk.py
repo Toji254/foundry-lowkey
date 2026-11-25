@@ -8267,14 +8267,32 @@ def _address_from_slot(value):
 
 
 def _address_from_cast_result(value):
-    """Extract a single address from cast output without treating errors as addresses."""
+    """Decode an address from cast output or a 32-byte ABI return word.
+
+    ABI-encoded addresses are left-padded to 32 bytes. Prefer decoding the
+    complete word before looking for a plain 20-byte address; otherwise a
+    regex can accidentally capture the leading zero bytes as the address.
+    Error text is never treated as address evidence.
+    """
     text = str(value or "").strip()
     if not text or "error:" in text.lower():
         return None
-    matches = re.findall(r"0x[0-9a-fA-F]{40}", text)
-    if not matches:
-        return None
-    address = matches[-1]
+
+    words = re.findall(
+        r"(?<![0-9a-fA-F])0x([0-9a-fA-F]{64})(?![0-9a-fA-F])",
+        text,
+    )
+    if words:
+        address = "0x" + words[-1][-40:]
+    else:
+        addresses = re.findall(
+            r"(?<![0-9a-fA-F])0x([0-9a-fA-F]{40})(?![0-9a-fA-F])",
+            text,
+        )
+        if not addresses:
+            return None
+        address = "0x" + addresses[-1]
+
     return None if address.lower() == "0x" + "0" * 40 else address
 
 
@@ -21850,6 +21868,19 @@ def _set_audit_auto_target(config, root, address, contract=None, artifact=None, 
     audit_context.update(root, actor=actor_display(config), rpc=effective_rpc(config))
     save_config(config)
     return address
+
+
+def _runtime_code(rpc, address):
+    """Read deployed runtime bytecode through the selected RPC using Foundry cast."""
+    if not rpc or not is_address(address):
+        return ""
+    code, stdout, _stderr = cast_output([
+        "cast", "code", address, "--rpc-url", str(rpc)
+    ])
+    if code != 0:
+        return ""
+    value = str(stdout or "").strip()
+    return value if value.startswith("0x") else ""
 
 
 def _live_target_is_proxy(rpc, address):

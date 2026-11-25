@@ -140,6 +140,26 @@ class ProxyInspectionTests(unittest.TestCase):
         self.assertFalse(details["is_proxy"])
         self.assertEqual(details["kind"], "NO_CODE")
 
+    def test_cast_address_decoder_handles_plain_and_abi_padded_addresses(self):
+        self.assertEqual(lk._address_from_cast_result(IMPLEMENTATION), IMPLEMENTATION)
+        self.assertEqual(lk._address_from_cast_result(word(IMPLEMENTATION)), IMPLEMENTATION)
+        self.assertIsNone(lk._address_from_cast_result("Error: call reverted"))
+        self.assertIsNone(lk._address_from_cast_result(word("0x" + "0" * 40)))
+
+    def test_runtime_code_uses_rpc_scoped_cast_and_fails_closed(self):
+        with patch.object(
+            lk, "cast_output", return_value=(0, "0x6000", "")
+        ) as cast:
+            self.assertEqual(
+                lk._runtime_code("http://127.0.0.1:8545", TARGET), "0x6000"
+            )
+        cast.assert_called_once_with([
+            "cast", "code", TARGET, "--rpc-url", "http://127.0.0.1:8545"
+        ])
+
+        with patch.object(lk, "cast_output", return_value=(1, "", "rpc failed")):
+            self.assertEqual(lk._runtime_code("http://127.0.0.1:8545", TARGET), "")
+
     def test_live_proxy_guard_accepts_beacon_and_clone_patterns(self):
         with patch.object(lk, "_runtime_code", return_value="0x6000"), \
              patch.object(
