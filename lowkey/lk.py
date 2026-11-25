@@ -10812,6 +10812,8 @@ def _doctor_compact_summary(report, exit_code):
         print(f"  Installed: {len(available)} / {len(engines)} registered")
         if rendered:
             print("  " + "  ·  ".join(rendered))
+        if any(str(item.get("name") or "").lower() == "forge" for item in available):
+            print("  Forge is included in the count and shown above under Environment.")
         if missing:
             missing_names = [display_names.get(str(item.get("name") or "").lower(),
                                                str(item.get("name") or "unknown"))
