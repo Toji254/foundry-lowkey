@@ -12541,6 +12541,64 @@ def _lab_scoped_contract_names(root, *, target_scope=None, source_file=None):
     )
 
 
+def _lab_artifact_fingerprint(artifact):
+    """Return deployment-relevant identity, excluding path and compiler metadata."""
+    if not isinstance(artifact, dict):
+        return None
+    try:
+        abi = json.dumps(artifact.get("abi") or [], sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+
+    def bytecode_value(value):
+        if isinstance(value, dict):
+            value = value.get("object")
+        return str(value or "").strip().lower()
+
+    creation = bytecode_value(artifact.get("bytecode"))
+    runtime = bytecode_value(artifact.get("deployedBytecode"))
+    if not creation:
+        return None
+    return abi, creation, runtime
+
+
+def _collapse_equivalent_lab_artifacts(candidates):
+    """Collapse duplicate build outputs only when source and deployable payload match."""
+    grouped = {}
+    for candidate in candidates:
+        _score, contract, path, artifact, constructor_inputs, fqn = candidate
+        source_identity = str(fqn).rsplit(":", 1)[0].replace("\\", "/").casefold()
+        key = (str(contract).casefold(), source_identity)
+        grouped.setdefault(key, []).append(candidate)
+
+    collapsed = []
+    for _key, group in grouped.items():
+        fingerprints = {_lab_artifact_fingerprint(item[3]) for item in group}
+        # Missing fingerprints or differing deployable payloads stay ambiguous.
+        if None in fingerprints or len(fingerprints) != 1:
+            return None
+
+        def artifact_preference(candidate):
+            path_text = str(candidate[2]).replace("\\", "/")
+            if "/.audit/build/vyper/" in path_text:
+                priority = 0
+            elif "/out/" in path_text or path_text.startswith("out/"):
+                priority = 1
+            elif "/artifacts/" in path_text:
+                priority = 2
+            elif "/build/contracts/" in path_text:
+                priority = 3
+            elif "/.audit/walkthrough/" in path_text:
+                priority = 4
+            else:
+                priority = 5
+            return priority, len(path_text), path_text
+
+        collapsed.append(min(group, key=artifact_preference))
+
+    return collapsed
+
+
 def discover_generic_lab_contract(root, query=None, *, target_scope=None, source_file=None):
     """Find one deployable application artifact within the selected source scope."""
     requested = str(query or "").strip()
@@ -12574,7 +12632,8 @@ def discover_generic_lab_contract(root, query=None, *, target_scope=None, source
             f"{source}:{contract}",
         ))
 
-    if len(candidates) != 1:
+    candidates = _collapse_equivalent_lab_artifacts(candidates)
+    if not candidates or len(candidates) != 1:
         return None
     return candidates[0]
 
@@ -12603,8 +12662,11 @@ def discover_artifact_lab_contract(root, query, *, target_scope=None, source_fil
             f"{source}:{contract}",
         ))
 
-    # Duplicate symbols across files/build profiles are ambiguous; require a narrower scope.
-    if len(matches) != 1:
+    # Same-source compiler outputs may be duplicated across Lowkey-owned
+    # artifact roots. Collapse only when their ABI and creation/runtime bytecode
+    # are identical; a same-name symbol from different sources stays ambiguous.
+    matches = _collapse_equivalent_lab_artifacts(matches)
+    if not matches or len(matches) != 1:
         return None
     return matches[0]
 
