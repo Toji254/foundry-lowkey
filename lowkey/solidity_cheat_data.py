@@ -350,27 +350,29 @@ contract CallsLab {
 
         bytes memory metadata = hex"1234";
 
-        Record memory record = Record({
-            id: currentNonce,
-            weight: 10,
-            adjustment: -1,
-            active: true,
-            creator: msg.sender,
-            payout: payable(msg.sender),
-            recordId: recordId,
-            selector: bytes4(keccak256("transfer(address,uint256)")),
-            title: title,
-            metadata: metadata,
-            scores: scores,
-            fixedScores: fixedScores,
-            tags: tags,
-            fixedTags: fixedTags,
-            signers: signers,
-            fixedSigners: fixedSigners,
-            options: options,
-            status: Status.Active,
-            bounds: Bounds({minimum: 1, maximum: 100})
-        });
+        // Build the memory struct field by field. This is equivalent to a
+        // named struct initializer, but avoids keeping every field expression
+        // live on the stack at the same time when the struct has many members.
+        Record memory record;
+        record.id = currentNonce;
+        record.weight = 10;
+        record.adjustment = -1;
+        record.active = true;
+        record.creator = msg.sender;
+        record.payout = payable(msg.sender);
+        record.recordId = recordId;
+        record.selector = bytes4(keccak256("transfer(address,uint256)"));
+        record.title = title;
+        record.metadata = metadata;
+        record.scores = scores;
+        record.fixedScores = fixedScores;
+        record.tags = tags;
+        record.fixedTags = fixedTags;
+        record.signers = signers;
+        record.fixedSigners = fixedSigners;
+        record.options = options;
+        record.status = Status.Active;
+        record.bounds = Bounds({minimum: 1, maximum: 100});
 
         // Copies the memory struct and its dynamic arrays into storage.
         records[recordId] = record;
