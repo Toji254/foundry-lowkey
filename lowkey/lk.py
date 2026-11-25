@@ -1931,6 +1931,44 @@ def project_artifact_function_matches(root, query):
     ))
     return matches
 
+def project_artifact_contract_artifacts(root, contract_name):
+    """Find exact-name compiled contract artifacts without selecting a live target."""
+    wanted = str(contract_name or "").strip().casefold()
+    if not wanted:
+        return []
+
+    matches = []
+    seen = set()
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("abi"), list):
+            continue
+        name = artifact_contract_name(path, artifact)
+        if str(name).strip().casefold() != wanted:
+            continue
+        signatures = tuple(sorted(
+            format_signature(item) for item in abi_functions(artifact.get("abi") or [])
+        ))
+        source_name = str(artifact.get("sourceName") or "").replace("\\", "/").strip()
+        # Collapse duplicate copies only when source identity and ABI agree.
+        # Different source files or ABI surfaces remain explicitly ambiguous.
+        identity = (
+            source_name.casefold() if source_name else str(Path(path).resolve()),
+            signatures,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        matches.append({
+            "contract": name,
+            "path": str(path),
+            "artifact": artifact,
+            "signatures": signatures,
+            "source_name": source_name or None,
+        })
+    return matches
+
+
 def configured_project_root(target,config):
     roots=config.get("project_roots",{}) if isinstance(config,dict) else {}
     root=roots.get(target) if isinstance(roots,dict) else None
@@ -2340,12 +2378,14 @@ _FUNCTION_CLASS_ALIASES = {
 
 def _function_usage():
     return (
-        "Usage: lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]\n"
+        "Usage: lk fn [ContractName|function query] [-v] [-V visibility] [-m mutability] [-c class] [-r]\\n"
         "  -v, --verbose              Show per-function audit metadata.\n"
         "  -V, --visibility VALUE     Filter by source visibility (public/external/internal/private/unknown).\n"
         "  -m, --mutability VALUE     Filter by mutability (pure/view/nonpayable/payable).\n"
         "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
         "  -r, --risk                 Show compact audit-review flags.\n"
+        "  An exact ContractName lists the full compiled ABI; other text searches function names/signatures.\\n"
+        "  Without a live target, a contract listing is read-only build-artifact data.\\n"
         "  Default output labels function mutability and detected native-ETH flow.\n"
         "  It also lists compiler-backed state variables with source visibility and storage slots.\n"
         "  Solidity private/internal visibility does not hide data stored on-chain.\n"
@@ -2357,6 +2397,8 @@ def _function_usage():
         "\n"
         "Examples:\n"
         "  lk fn\n"
+        "  lk fn OrderBook\\n"
+        "  lk fn executeSwapOrder\\n"
         "  lk fn -v\n"
         "  lk fn -v withdraw\n"
         "  lk fn -V external\n"
@@ -3754,6 +3796,45 @@ def _function_inventory_artifact(target, config):
     artifact = read_artifact(path) if path else None
     return path, artifact or {}
 
+def _function_query_for_selected_contract(query, contract_name, config):
+    """Treat an exact selected contract name as an inventory selector."""
+    value = str(query or "").strip()
+    known = {
+        str(contract_name or "").strip().casefold(),
+        str(config.get("target_contract") or "").strip().casefold(),
+    }
+    known.discard("")
+    return "" if value.casefold() in known else value
+
+
+def _print_build_artifact_contract_inventory(contract, artifact_path, artifact):
+    """Print all ABI functions from compiled artifact data, without implying deployment."""
+    abi = artifact.get("abi") if isinstance(artifact, dict) else []
+    abi = abi if isinstance(abi, list) else []
+    functions = sorted(abi_functions(abi), key=lambda item: format_signature(item).lower())
+    entrypoints = sorted({
+        str(item.get("type"))
+        for item in abi
+        if isinstance(item, dict) and item.get("type") in {"receive", "fallback"}
+    })
+    print("LOWKEY BUILD FUNCTION INVENTORY")
+    print("===============================")
+    print(f"Contract : {contract}")
+    print(f"Source   : {artifact.get('sourceName') or 'not recorded in artifact'}")
+    print(f"Artifact : {artifact_path}")
+    print("Live     : none — compiled ABI data only; no deployment is implied")
+    print(f"Functions: {len(functions)}")
+    for number, item in enumerate(functions, 1):
+        print(f"  {number:02d}. {format_signature(item)}")
+    if entrypoints:
+        print(f"Entrypoints: {', '.join(entrypoints)}")
+    if not functions and not entrypoints:
+        print("No external ABI functions or receive/fallback entrypoints were found.")
+    print()
+    print("Next: select/deploy a live target before using transaction commands.")
+    return 0
+
+
 def run_functions(config, args=None):
     raw_args = [args] if isinstance(args, str) else args
     options, query = _parse_function_options(raw_args)
@@ -3772,7 +3853,24 @@ def run_functions(config, args=None):
             target = explicit_target
     if not target:
         if not query:
-            return fail("Error: no project target selected. Use 'lk fn <function>' to search build artifacts, or deploy and run 'lk target auto'.")
+            return fail("Error: no project target selected. Use 'lk fn <ContractName>' to list an exact compiled contract ABI, 'lk fn <function>' to search functions, or deploy and run 'lk target auto'.")
+        contract_artifacts = project_artifact_contract_artifacts(root, query)
+        if len(contract_artifacts) == 1 and not any(options.values()):
+            candidate = contract_artifacts[0]
+            return _print_build_artifact_contract_inventory(
+                candidate["contract"], candidate["path"], candidate["artifact"]
+            )
+        if len(contract_artifacts) > 1:
+            print("AMBIGUOUS COMPILED CONTRACT")
+            print("==========================")
+            print(f"Contract: {query}")
+            for candidate in contract_artifacts:
+                print(
+                    f"  - {candidate['path']} "
+                    f"({len(candidate['signatures'])} ABI function(s); "
+                    f"source: {candidate['source_name'] or 'unknown'})"
+                )
+            return fail("Error: multiple compiled artifacts share this contract name. Select a live target or disambiguate the source; Lowkey will not merge their ABIs.")
         if any(options.values()):
             return fail("Error: function filters/verbose mode need a selected target with an ABI. Use 'lk target <name|address>' first.")
         matches = project_artifact_function_matches(root, query)
@@ -3810,6 +3908,7 @@ def run_functions(config, args=None):
     artifact_path, artifact = _function_inventory_artifact(target, config)
     source_root = Path(root).resolve()
     source_contract = artifact.get("contractName") or config.get("target_contract")
+    query = _function_query_for_selected_contract(query, source_contract, config)
     source_path, source_decls = _function_source_file(artifact, source_root, source_contract)
     storage_labels = _function_storage_labels(target, config, artifact)
     state_variables = _function_state_variable_records(config, artifact, source_path, source_contract, getter_names)
