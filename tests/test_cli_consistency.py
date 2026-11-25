@@ -430,6 +430,45 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertTrue(state["rpc_fingerprint"].startswith("sha256:"))
         self.assertEqual(state["verification"], "MATCHED")
 
+    def test_manual_target_validation_can_return_read_only_provenance_snapshot(self):
+        target = "0x" + "4" * 40
+        state = {
+            "status": "NO_RPC",
+            "chain_id": None,
+            "rpc_fingerprint": None,
+            "runtime_code_hash": None,
+            "runtime_code_hash_status": "UNAVAILABLE",
+            "verification": "UNVERIFIED",
+        }
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value=None), \
+             patch.object(lk, "_live_target_state", return_value=state) as inspect, \
+             redirect_stdout(output):
+            result = lk._validate_manual_target_runtime(
+                {}, pathlib.Path("/tmp/lowkey-test"), target, "OrderBook",
+                return_state=True,
+            )
+
+        self.assertEqual(result, (0, state))
+        inspect.assert_called_once()
+        self.assertIn("UNVERIFIED", output.getvalue())
+
+    def test_target_provenance_display_is_explicit_when_runtime_hash_is_unavailable(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk._print_target_runtime_provenance({
+                "chain_id": "31337",
+                "rpc_origin": "http://127.0.0.1:8545",
+                "rpc_fingerprint": "sha256:" + "a" * 64,
+                "runtime_code_hash": None,
+                "runtime_code_hash_status": "UNAVAILABLE",
+            })
+        rendered = output.getvalue()
+        self.assertIn("Chain ID          : 31337", rendered)
+        self.assertIn("http://127.0.0.1:8545", rendered)
+        self.assertIn("Runtime code hash : UNAVAILABLE", rendered)
+        self.assertNotIn("UNVERIFIED", rendered)
+
     def test_project_target_registry_persists_and_preserves_runtime_provenance(self):
         address = "0x" + "4" * 40
         rpc = "https://alice:supersecret@rpc.example:8545/v1/key?token=secret"
