@@ -104,19 +104,23 @@ Hardhat project setup:
   lk clean
 
 Source relationship navigation:
-  lk link                       Browse available contracts and source locations
-  lk link --help                 Full flags, use cases and copy-paste examples
-  lk trace source --help         Source-call traversal, detail views and depth options
-  lk fn --flow --help            Incoming/outgoing asset-flow filter guide
-  lk link Vault
-  lk link Vault.withdraw
+  lk link                       Show the protocol architecture graph
+  lk link OrderBook --depth 2   Focus the graph on one contract
+  lk link --only calls          Show cross-contract call relationships
+  lk link --only storage        Show state readers and writers
+  lk link --format html         Generate the interactive offline graph
+  lk link --list                Browse the searchable declaration inventory
+  lk link --help                Full flags, use cases and copy-paste examples
+  lk trace source --help        Source-call traversal, detail views and depth options
+  lk fn --flow --help           Incoming/outgoing asset-flow filter guide
+  lk link OrderBook
   lk link Vault.positions
   lk link 'Vault.withdraw(uint256)' --depth 3
   lk trace source Vault.withdraw
   lk trace source 'Vault.withdraw(uint256)' --depth 5
-  lk link Vault --only calls|storage|reads|writes|imports|assets
+  lk link OrderBook --only calls|storage|reads|writes|imports|assets
   lk fn --flow in|out|both --asset eth|erc20|all
-  lk flow eth                  Map native ETH ingress, call paths and exit attempts
+  lk flow eth                   Map native ETH ingress, call paths and exit attempts
   lk flow eth --h               Explain ETH-flow recon and its evidence limits
 
 Static links describe source relationships, not proof that a path executed.
