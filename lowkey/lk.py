@@ -8671,8 +8671,8 @@ def inspect_protocol_readiness(config, abi=None, *, has_code=None):
         "initializer_entrypoints": [],
         "getters": [],
         "evidence_limit": (
-            "ABI-derived candidate getters are inspection hints, not proof that a field is required, "
-            "that initialization ran, or that a dependency is safe."
+            "These ABI-derived candidate getters do not establish protocol requirements; "
+            "they are inspection hints, not proof that initialization ran or that any dependency is safe."
         ),
     }
     if not target or has_code is False:
