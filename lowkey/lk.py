@@ -15577,19 +15577,6 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
 
     has_initializer = artifact_has_initializer(artifact)
     locked_implementation = artifact_is_locked_implementation(root, path, artifact)
-    proxy_details = inspect_proxy_details(config)
-    print(f"Initializer ABI : {'PRESENT' if has_initializer else 'NOT EXPOSED'}")
-    print(f"Deployment form : {proxy_details.get('kind') or 'UNKNOWN'}")
-    print("Protocol readiness: UNVERIFIED")
-    if has_initializer:
-        print("Initialization state: UNKNOWN; ABI presence alone does not prove that initialization is required or complete.")
-    if proxy_details.get("is_proxy"):
-        print("Proxy relation    : proven from ERC-1967 storage or EIP-1167 runtime evidence.")
-    else:
-        print("Proxy requirement : NOT ESTABLISHED; an initialize() function alone does not imply a proxy is required.")
-    if locked_implementation:
-        print("Status            : IMPLEMENTATION ONLY (source constructor disables initializers).")
-    print("No initializer or protocol setup transaction was sent automatically.")
 
     current_actor = config.get("actor")
     current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
@@ -15607,6 +15594,22 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
         "root_model": contract,
         "target_model": contract,
     }
+
+    # Run this after set_lab_target: target and ABI must refer to the deployment
+    # just created, not a stale project selection from before this command.
+    proxy_details = inspect_proxy_details(config)
+    print(f"Initializer ABI : {'PRESENT' if has_initializer else 'NOT EXPOSED'}")
+    print(f"Deployment form : {proxy_details.get('kind') or 'UNKNOWN'}")
+    if has_initializer:
+        print("Initialization state: UNKNOWN; ABI presence alone does not prove that initialization is required or complete.")
+    if proxy_details.get("is_proxy"):
+        print("Proxy relation    : proven from ERC-1967 storage or EIP-1167 runtime evidence.")
+    else:
+        print("Proxy requirement : NOT ESTABLISHED; an initialize() function alone does not imply a proxy is required.")
+    if locked_implementation:
+        print("Status            : IMPLEMENTATION ONLY (source constructor disables initializers).")
+    print("Protocol readiness: UNVERIFIED; dependencies, roles, and configuration were not established.")
+    print("No initializer or protocol setup transaction was sent automatically.")
 
     if deployment_only:
         print()
