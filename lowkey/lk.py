@@ -3744,12 +3744,20 @@ def run_info(config):
     run_chain(config)
     code = run_cast(["code", target], config, capture=True) or ""
     print(f"Code:   {'YES' if code.startswith('0x') and len(code) > 2 else 'NO'}")
-    print(f"ABI:    {'LOADED' if load_abi(target, config) else 'NOT LOADED'}")
-    print(f"EIP-1967 proxy: {'YES' if inspect_proxy(config, quiet=True) else 'NO'}")
-    clone_implementation = inspect_clone(config)
-    print(f"EIP-1167 clone: {'YES' if clone_implementation else 'NO'}")
-    if clone_implementation:
-        print(f"Implementation: {clone_implementation}")
+    abi = load_abi(target, config)
+    print(f"ABI:    {'LOADED' if abi else 'NOT LOADED'}")
+    proxy = inspect_proxy_details(config)
+    print(f"Proxy type: {proxy.get('kind') or 'UNKNOWN'}")
+    if proxy.get("implementation"):
+        print(f"Implementation: {apply_labels(proxy['implementation'], config)}")
+    if proxy.get("beacon"):
+        print(f"Beacon: {apply_labels(proxy['beacon'], config)}")
+    if proxy.get("admin"):
+        print(f"Proxy admin: {apply_labels(proxy['admin'], config)}")
+    if proxy.get("clone_implementation"):
+        print(f"Clone implementation: {apply_labels(proxy['clone_implementation'], config)}")
+    if proxy.get("application_governor"):
+        print(f"Application governor (gov()): {apply_labels(proxy['application_governor'], config)}")
 
 def run_encode(config,args):
     if not args:
@@ -8238,35 +8246,208 @@ def run_recon(config):
     if clone_implementation:
         print(f"Implementation: {clone_implementation}")
     print("="*52)
-def inspect_proxy(config, quiet=False):
+EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+EIP1967_BEACON_SLOT = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50"
+
+
+def _address_from_slot(value):
+    """Extract a non-zero address from an EIP-1967 bytes32 slot."""
+    text = str(value or "").strip()
+    match = re.search(r"0x([0-9a-fA-F]{64})", text)
+    if not match:
+        match = re.search(r"0x([0-9a-fA-F]{40})", text)
+        if not match:
+            return None
+        raw = match.group(1)
+    else:
+        raw = match.group(1)[-40:]
+    if raw.lower() == "0" * 40:
+        return None
+    return "0x" + raw
+
+
+def _address_from_cast_result(value):
+    """Extract a single address from cast output without treating errors as addresses."""
+    text = str(value or "").strip()
+    if not text or "error:" in text.lower():
+        return None
+    matches = re.findall(r"0x[0-9a-fA-F]{40}", text)
+    if not matches:
+        return None
+    address = matches[-1]
+    return None if address.lower() == "0x" + "0" * 40 else address
+
+
+def _application_governor(config, target, abi):
+    """Read gov() only when the loaded ABI proves the getter exists."""
+    if not isinstance(abi, list):
+        return None
+    getter = next((
+        item for item in abi
+        if isinstance(item, dict)
+        and item.get("type") == "function"
+        and str(item.get("name") or "") == "gov"
+        and not item.get("inputs")
+        and len(item.get("outputs") or []) == 1
+        and str((item.get("outputs") or [{}])[0].get("type") or "") == "address"
+    ), None)
+    if not getter:
+        return None
+    value = run_cast(["call", target, "gov()(address)"], config, capture=True)
+    return _address_from_cast_result(value)
+
+
+def inspect_proxy_details(config):
+    """Return one evidence-backed proxy/clone classification for the selected target."""
     target = config.get("target")
-    if not target:
-        return False
-    implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
-    beacon_slot = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50"
-    implementation = run_cast(["st", implementation_slot], config, capture=True)
-    beacon = run_cast(["st", beacon_slot], config, capture=True)
-    implementation_found = is_nonzero_slot(implementation)
-    beacon_found = is_nonzero_slot(beacon)
-    is_proxy = implementation_found or beacon_found
+    details = {
+        "target": target,
+        "has_code": False,
+        "is_proxy": False,
+        "kind": "NO_TARGET" if not target else "DIRECT_OR_UNKNOWN",
+        "implementation": None,
+        "beacon": None,
+        "beacon_implementation": None,
+        "admin": None,
+        "clone_implementation": None,
+        "application_governor": None,
+        "implementation_slot": None,
+        "beacon_slot": None,
+        "evidence": [],
+    }
+    if not target or not is_address(target):
+        return details
+
+    code = run_cast(["code", target], config, capture=True) or ""
+    details["has_code"] = bool(str(code).strip().startswith("0x") and len(str(code).strip()) > 2)
+    if not details["has_code"]:
+        details["kind"] = "NO_CODE"
+        details["evidence"].append("target has no deployed runtime bytecode")
+        return details
+
+    implementation_raw = run_cast(["st", EIP1967_IMPLEMENTATION_SLOT], config, capture=True)
+    beacon_raw = run_cast(["st", EIP1967_BEACON_SLOT], config, capture=True)
+    implementation = _address_from_slot(implementation_raw)
+    beacon = _address_from_slot(beacon_raw)
+    clone_implementation = _fixture_embedded_implementation(code)
+
+    details["implementation_slot"] = implementation_raw
+    details["beacon_slot"] = beacon_raw
+    details["implementation"] = implementation
+    details["beacon"] = beacon
+    details["clone_implementation"] = clone_implementation
+
+    if beacon:
+        details["is_proxy"] = True
+        details["kind"] = "ERC1967_BEACON_PROXY"
+        details["evidence"].append("non-zero ERC-1967 beacon slot")
+        beacon_result = run_cast(
+            ["call", beacon, "implementation()(address)"], config, capture=True
+        )
+        details["beacon_implementation"] = _address_from_cast_result(beacon_result)
+        if details["beacon_implementation"]:
+            details["evidence"].append("beacon implementation() returned an address")
+        else:
+            details["evidence"].append("beacon address found, but implementation() could not be resolved")
+    elif implementation:
+        details["is_proxy"] = True
+        details["kind"] = "ERC1967_IMPLEMENTATION_PROXY"
+        details["evidence"].append("non-zero ERC-1967 implementation slot")
+    elif clone_implementation:
+        details["is_proxy"] = True
+        details["kind"] = "EIP1167_MINIMAL_CLONE"
+        details["implementation"] = clone_implementation
+        details["evidence"].append("minimal-proxy runtime bytecode embeds the implementation address")
+    else:
+        details["evidence"].append("no ERC-1967 implementation/beacon slot or EIP-1167 runtime pattern detected")
+
+    # Cast admin may fail for UUPS, beacon, clone, or direct contracts. That
+    # does not rule out a proxy; it only means the tool did not resolve an admin.
+    admin_result = run_cast(["admin", target], config, capture=True)
+    details["admin"] = _address_from_cast_result(admin_result)
+
+    abi = load_abi(target, config)
+    details["application_governor"] = _application_governor(config, target, abi)
+    if details["application_governor"]:
+        details["evidence"].append("application gov() getter resolved independently from proxy admin")
+    return details
+
+
+def inspect_proxy(config, quiet=False):
+    """Compatibility wrapper; callers needing detail should use inspect_proxy_details."""
+    details = inspect_proxy_details(config)
     if not quiet:
-        print(f"Proxy: {'YES' if is_proxy else 'NO'}")
-        if implementation_found:
-            print(f"Implementation slot: {implementation}")
-        if beacon_found:
-            print(f"Beacon slot: {beacon}")
-    return is_proxy
+        print(f"Proxy: {'YES' if details['is_proxy'] else 'NO'}")
+        print(f"Type: {details['kind']}")
+        if details.get("implementation"):
+            print(f"Implementation: {apply_labels(details['implementation'], config)}")
+        if details.get("beacon"):
+            print(f"Beacon: {apply_labels(details['beacon'], config)}")
+        if details.get("beacon_implementation"):
+            print(f"Beacon implementation: {apply_labels(details['beacon_implementation'], config)}")
+        if details.get("admin"):
+            print(f"Proxy admin: {apply_labels(details['admin'], config)}")
+        if details.get("application_governor"):
+            print(f"Application governor (gov()): {apply_labels(details['application_governor'], config)}")
+        for item in details["evidence"]:
+            print(f"Evidence: {item}")
+    return bool(details["is_proxy"])
+
 
 def run_proxy(config):
-    target=config.get("target")
+    target = config.get("target")
     if not target:
         return fail("Error: Set target first.")
-    detected=inspect_proxy(config)
-    if not detected: return
-    implementation=run_cast(["implementation",target],config,capture=True)
-    admin=run_cast(["admin",target],config,capture=True)
-    print(f"Implementation: {apply_labels(implementation or 'Unknown',config)}")
-    print(f"Admin:         {apply_labels(admin or 'Unknown',config)}")
+    details = inspect_proxy_details(config)
+    print(f"Target        : {apply_labels(target, config)}")
+    print(f"Classification: {details['kind']}")
+    if details.get("implementation"):
+        print(f"Implementation: {apply_labels(details['implementation'], config)}")
+    if details.get("beacon"):
+        print(f"Beacon        : {apply_labels(details['beacon'], config)}")
+    if details.get("beacon_implementation"):
+        print(f"Beacon impl   : {apply_labels(details['beacon_implementation'], config)}")
+    if details.get("admin"):
+        print(f"Proxy admin   : {apply_labels(details['admin'], config)}")
+    else:
+        print("Proxy admin   : not resolved (this does not rule out UUPS/beacon/clone)")
+    if details.get("application_governor"):
+        print(f"App gov()     : {apply_labels(details['application_governor'], config)}")
+    else:
+        print("App gov()     : not exposed by the loaded ABI or not readable")
+    for item in details["evidence"]:
+        print(f"Evidence      : {item}")
+    if not details["is_proxy"]:
+        print("Note          : no supported proxy pattern was proven; this is not proof that no custom proxy exists.")
+    return 0
+
+
+def run_proxy_field(config, field):
+    """Expose the same resolver behind lk implementation and lk admin."""
+    target = config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    details = inspect_proxy_details(config)
+    if field == "implementation":
+        value = details.get("beacon_implementation") or details.get("implementation")
+        label = "Implementation"
+    elif field == "admin":
+        value = details.get("admin")
+        label = "Proxy admin"
+    else:
+        return fail(f"Unknown proxy field: {field}")
+    if not details["is_proxy"]:
+        print("Target is not a recognized ERC-1967/EIP-1167 proxy or clone.")
+        return 1
+    if not value:
+        print(f"{label}: not resolved")
+        return 1
+    print(f"{label}: {apply_labels(value, config)}")
+    if field == "admin":
+        print("Note: proxy admin is distinct from an application's gov()/owner() role.")
+    return 0
+
+
 def storage_type_expression(types, type_id, seen=None):
     """Render a compact Solidity-like storage type from a Foundry layout type id."""
     if seen is None:
@@ -28067,9 +28248,9 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         if len(args)==2: config["labels"][args[0]]=args[1]; save_config(config)
         else: print("Usage: lk label <address> <name>")
     elif cmd=="recon": run_recon(config)
-    elif cmd=="proxy": run_proxy(config)
-    elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
-    elif cmd=="admin": run_cast(["admin",config.get("target")],config)
+    elif cmd=="proxy": return run_proxy(config)
+    elif cmd=="implementation": return run_proxy_field(config, "implementation")
+    elif cmd=="admin": return run_proxy_field(config, "admin")
     elif cmd in {"mapping","map"}: return run_mapping(config,*args)
     elif cmd in {"ids","identifiers"}: return run_ids(config,args)
     elif cmd=="id": return run_id(config,args)
