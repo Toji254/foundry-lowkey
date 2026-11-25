@@ -565,6 +565,191 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertEqual({item["ast_origin"] for item in effects}, {"DIRECT", "INFERRED"})
         self.assertTrue(all(item["evidence"] != "LEXICAL_SOURCE" for item in effects))
 
+    def test_orderbook_effect_graph_covers_swap_creation_execution_and_increase_paths(self):
+        # Normalized compiler-AST regression graph based on GMX OrderBook's
+        # call/effect structure. Direct facts and propagated helper effects
+        # are intentionally represented as distinct evidence.
+        functions = {
+            "create": "function:src/OrderBook.sol:OrderBook.createSwapOrder(address,address,uint256,uint256,uint256,bool)",
+            "create_helper": "function:src/OrderBook.sol:OrderBook._createSwapOrder(address,address,uint256,uint256,uint256,bool)",
+            "execute": "function:src/OrderBook.sol:OrderBook.executeSwapOrder(uint256,address payable)",
+            "swap_helper": "function:src/OrderBook.sol:OrderBook._swap(address,address,uint256,uint256,address payable)",
+            "increase": "function:src/OrderBook.sol:OrderBook.executeIncreaseOrder(uint256)",
+        }
+        storage = {
+            "index": "state:src/OrderBook.sol:OrderBook.swapOrdersIndex",
+            "orders": "mapping:src/OrderBook.sol:OrderBook.swapOrders",
+            "increase_orders": "mapping:src/OrderBook.sol:OrderBook.increaseOrders",
+        }
+        external = {
+            "router": "function:src/interfaces/IRouter.sol:IRouter.pluginTransfer(address,address,uint256,address)",
+            "token_transfer": "function:src/interfaces/IERC20.sol:IERC20.transfer(address,uint256)",
+            "swap": "function:src/interfaces/IVault.sol:IVault.swap(address,address,uint256,uint256,address)",
+        }
+        nodes = [
+            {"id": identifier, "kind": "function", "name": identifier.rsplit(".", 1)[-1]}
+            for identifier in [*functions.values(), *external.values()]
+        ] + [
+            {"id": identifier, "kind": "storage", "name": identifier.rsplit(".", 1)[-1]}
+            for identifier in storage.values()
+        ]
+        edges = [
+            {
+                "id": "ast:create:router",
+                "from": functions["create"], "to": external["router"], "kind": "EXTERNAL_CALL",
+                "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "source": {"file": "src/OrderBook.sol", "line": 211, "column": 9},
+            },
+            {
+                "id": "ast:create:helper",
+                "from": functions["create"], "to": functions["create_helper"], "kind": "CALLS",
+                "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "source": {"file": "src/OrderBook.sol", "line": 212, "column": 9},
+            },
+            {
+                "id": "ast:helper:index",
+                "from": functions["create_helper"], "to": storage["index"], "kind": "WRITES",
+                "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "access_path": "swapOrdersIndex", "operation": "++",
+                "source": {"file": "src/OrderBook.sol", "line": 231, "column": 9},
+            },
+            {
+                "id": "ast:helper:orders",
+                "from": functions["create_helper"], "to": storage["orders"], "kind": "WRITES",
+                "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "access_path": "swapOrders[swapOrdersIndex]", "operation": "=",
+                "source": {"file": "src/OrderBook.sol", "line": 232, "column": 9},
+            },
+            {
+                "id": f"INFERRED:{functions['create']}:ast:helper:index",
+                "from": functions["create"], "to": storage["index"], "kind": "WRITES",
+                "evidence": "CALL_GRAPH_PROPAGATION", "resolution": "INFERRED",
+                "via": [functions["create"], functions["create_helper"]],
+                "access_path": "swapOrdersIndex", "operation": "++",
+                "source": {"file": "src/OrderBook.sol", "line": 231, "column": 9},
+            },
+            {
+                "id": f"INFERRED:{functions['create']}:ast:helper:orders",
+                "from": functions["create"], "to": storage["orders"], "kind": "WRITES",
+                "evidence": "CALL_GRAPH_PROPAGATION", "resolution": "INFERRED",
+                "via": [functions["create"], functions["create_helper"]],
+                "access_path": "swapOrders[swapOrdersIndex]", "operation": "=",
+                "source": {"file": "src/OrderBook.sol", "line": 232, "column": 9},
+            },
+            {
+                "id": "ast:execute:delete",
+                "from": functions["execute"], "to": storage["orders"], "kind": "DELETES",
+                "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "access_path": "swapOrders[orderIndex]", "operation": "delete",
+                "source": {"file": "src/OrderBook.sol", "line": 301, "column": 9},
+            },
+            {
+                "id": "ast:execute:swap",
+                "from": functions["execute"], "to": functions["swap_helper"], "kind": "CALLS",
+                "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "source": {"file": "src/OrderBook.sol", "line": 309, "column": 9},
+            },
+            {
+                "id": "ast:swap:vault",
+                "from": functions["swap_helper"], "to": external["swap"], "kind": "EXTERNAL_CALL",
+                "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "source": {"file": "src/OrderBook.sol", "line": 355, "column": 9},
+            },
+            {
+                "id": "ast:swap:token",
+                "from": functions["swap_helper"], "to": external["token_transfer"], "kind": "EXTERNAL_CALL",
+                "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "source": {"file": "src/OrderBook.sol", "line": 361, "column": 9},
+            },
+            {
+                "id": f"INFERRED:{functions['execute']}:ast:swap:vault",
+                "from": functions["execute"], "to": external["swap"], "kind": "EXTERNAL_CALL",
+                "evidence": "CALL_GRAPH_PROPAGATION", "resolution": "INFERRED",
+                "via": [functions["execute"], functions["swap_helper"]],
+                "source": {"file": "src/OrderBook.sol", "line": 355, "column": 9},
+            },
+            {
+                "id": f"INFERRED:{functions['execute']}:ast:swap:token",
+                "from": functions["execute"], "to": external["token_transfer"], "kind": "EXTERNAL_CALL",
+                "evidence": "CALL_GRAPH_PROPAGATION", "resolution": "INFERRED",
+                "via": [functions["execute"], functions["swap_helper"]],
+                "source": {"file": "src/OrderBook.sol", "line": 361, "column": 9},
+            },
+            {
+                "id": "ast:increase:delete",
+                "from": functions["increase"], "to": storage["increase_orders"], "kind": "DELETES",
+                "evidence": "SOLC_AST_STORAGE_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "access_path": "increaseOrders[orderIndex]", "operation": "delete",
+                "source": {"file": "src/OrderBook.sol", "line": 401, "column": 9},
+            },
+            {
+                "id": "ast:increase:router",
+                "from": functions["increase"], "to": external["router"], "kind": "EXTERNAL_CALL",
+                "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "source": {"file": "src/OrderBook.sol", "line": 407, "column": 9},
+            },
+            {
+                "id": "ast:increase:token",
+                "from": functions["increase"], "to": external["token_transfer"], "kind": "EXTERNAL_CALL",
+                "evidence": "SOLC_AST_DECLARATION_REFERENCE", "resolution": "DIRECT",
+                "source": {"file": "src/OrderBook.sol", "line": 412, "column": 9},
+            },
+        ]
+        index = {
+            "ast": {"functions": len(functions), "covered_function_ids": list(functions.values())},
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+        status, create_effects = lk._compiler_ast_effects_for_function(
+            index, {"id": functions["create"]}
+        )
+        self.assertEqual(status, "COVERED")
+        create_facts = {
+            (item["kind"], item["to"], item["ast_origin"])
+            for item in create_effects
+        }
+        self.assertIn(("EXTERNAL_CALL", external["router"], "DIRECT"), create_facts)
+        self.assertIn(("WRITES", storage["index"], "INFERRED"), create_facts)
+        self.assertIn(("WRITES", storage["orders"], "INFERRED"), create_facts)
+        for item in create_effects:
+            self.assertIn(item.get("source", {}).get("line"), {211, 231, 232})
+            self.assertTrue(item.get("source", {}).get("file", "").endswith("OrderBook.sol"))
+
+        status, helper_effects = lk._compiler_ast_effects_for_function(
+            index, {"id": functions["create_helper"]}
+        )
+        self.assertEqual(status, "COVERED")
+        helper_facts = {(item["kind"], item["to"]) for item in helper_effects}
+        self.assertIn(("WRITES", storage["index"]), helper_facts)
+        self.assertIn(("WRITES", storage["orders"]), helper_facts)
+
+        status, execute_effects = lk._compiler_ast_effects_for_function(
+            index, {"id": functions["execute"]}
+        )
+        self.assertEqual(status, "COVERED")
+        execute_facts = {
+            (item["kind"], item["to"], item["ast_origin"])
+            for item in execute_effects
+        }
+        self.assertIn(("DELETES", storage["orders"], "DIRECT"), execute_facts)
+        self.assertIn(("EXTERNAL_CALL", external["swap"], "INFERRED"), execute_facts)
+        self.assertIn(("EXTERNAL_CALL", external["token_transfer"], "INFERRED"), execute_facts)
+
+        status, increase_effects = lk._compiler_ast_effects_for_function(
+            index, {"id": functions["increase"]}
+        )
+        self.assertEqual(status, "COVERED")
+        increase_facts = {(item["kind"], item["to"]) for item in increase_effects}
+        self.assertIn(("DELETES", storage["increase_orders"]), increase_facts)
+        self.assertIn(("EXTERNAL_CALL", external["router"]), increase_facts)
+        self.assertIn(("EXTERNAL_CALL", external["token_transfer"]), increase_facts)
+
+        self.assertEqual(
+            lk._compiler_ast_effects_for_function(index, {"id": "uncovered-function"}),
+            ("NOT_COVERED", []),
+        )
+
     def test_dispatch_passes_all_function_args(self):
         tmp, root, config = self._fixture()
         old = os.getcwd()
