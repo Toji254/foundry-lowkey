@@ -18,7 +18,7 @@ class FoundryAstSetupTests(unittest.TestCase):
         original = (
             '[profile.default]\n'
             'src = "src"\n'
-            'ast = false # keep the user's note\n'
+            "ast = false # keep the user's note\\n"
             '\n'
             '[profile.default.fuzz]\n'
             'runs = 128\n'
