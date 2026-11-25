@@ -1471,7 +1471,11 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("READY-TO-COPY COMMAND", rendered)
         self.assertIn("lk send createProposal \"HI\" 86400 '[\"Yes\",\"No\",\"Abstain\"]' --preview", rendered)
         self.assertNotIn("LK_ARG_", rendered)
-        self.assertNotIn("createProposal(string,uint256,string[])", rendered)
+        # The heading is intentionally canonical; the ready-to-copy command
+        # should use the bare name because this ABI entry is not overloaded.
+        self.assertIn("Function: createProposal(string,uint256,string[])", rendered)
+        ready_command = rendered.split("READY-TO-COPY COMMAND", 1)[1]
+        self.assertNotIn("createProposal(string,uint256,string[])", ready_command)
         self.assertIn("ABI types describe the encoded shape, not the business meaning.", rendered)
 
     def test_abi_input_guide_handles_boolean_address_bytes_fixed_arrays_and_tuples(self):
