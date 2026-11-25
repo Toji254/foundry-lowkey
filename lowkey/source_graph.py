@@ -605,7 +605,7 @@ a{color:var(--accent)}code{color:#b6e3ff;overflow-wrap:anywhere}
 </header>
 <div id="warning">STATIC SOURCE EVIDENCE — a relationship in this graph does not prove runtime execution, successful calls, or deployed implementation identity.</div>
 <main>
-  <section id="canvas"><svg id="graph" role="img" aria-label="Interactive contract relationship graph"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#91a0b9"/></marker></defs><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg></section>
+  <section id="canvas"><svg id="graph" viewBox="0 0 1600 1050" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Interactive contract relationship graph"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#91a0b9"/></marker></defs><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg></section>
   <aside>
     <h1 id="detail-title">Protocol overview</h1>
     <p class="muted" id="detail-sub">Select a node to inspect its connections.</p>
@@ -686,7 +686,7 @@ function showDetails(n){
  if(!rows.length)c.textContent="No displayed relationships for this node.";
 }
 function applyTransform(){viewport.setAttribute("transform","translate("+tx+" "+ty+") scale("+scale+")")}
-function fit(){if(!nodes.length)return;const xs=nodes.map(n=>positions.get(n.id).x),ys=nodes.map(n=>positions.get(n.id).y),minX=Math.min(...xs)-160,maxX=Math.max(...xs)+160,minY=Math.min(...ys)-120,maxY=Math.max(...ys)+120;const box=svg.getBoundingClientRect(),sx=box.width/(maxX-minX),sy=box.height/(maxY-minY);scale=Math.max(.25,Math.min(1.6,Math.min(sx,sy)));tx=(box.width/scale-(minX+maxX))/2;ty=(box.height/scale-(minY+maxY))/2;applyTransform()}
+function fit(){if(!nodes.length)return;const xs=nodes.map(n=>positions.get(n.id).x),ys=nodes.map(n=>positions.get(n.id).y),minX=Math.min(...xs)-160,maxX=Math.max(...xs)+160,minY=Math.min(...ys)-120,maxY=Math.max(...ys)+120;const sx=width/(maxX-minX),sy=height/(maxY-minY);scale=Math.max(.18,Math.min(1.6,Math.min(sx,sy)));tx=(width/scale-(minX+maxX))/2;ty=(height/scale-(minY+maxY))/2;applyTransform()}
 function edgeColor(kind){return ({INHERITS:"#e6ba65",USES_LIBRARY:"#9b8bd5",USES_TYPE:"#7ba5d8",IMPORTS:"#8497b5",CALLS:"#63b6a0",EXTERNAL_CALL:"#d58b5c",APPLIES_MODIFIER:"#83a8d4",ASSET_FLOW:"#bd88d2",READS:"#6ea6a1",WRITES:"#e18b72"})[kind]||"#8292aa"}
 svg.addEventListener("wheel",ev=>{ev.preventDefault();const factor=ev.deltaY<0?1.12:.89;scale=Math.max(.18,Math.min(3,scale*factor));applyTransform()},{passive:false});
 svg.addEventListener("pointerdown",ev=>{if(ev.target!==svg&&ev.target.tagName!=="g")return;pan={x:ev.clientX,y:ev.clientY,tx,ty}});
