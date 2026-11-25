@@ -750,6 +750,76 @@ class FunctionInventoryTests(unittest.TestCase):
             ("NOT_COVERED", []),
         )
 
+    def test_verbose_function_graph_reports_typed_external_and_unresolved_calls(self):
+        entry = "function:src/OrderBook.sol:OrderBook.executeSwapOrder(uint256)"
+        helper = "function:src/OrderBook.sol:OrderBook._swap(address,address,uint256)"
+        interface_method = "function:src/interfaces/IVault.sol:IVault.swap(address,address,uint256)"
+        index = {
+            "ast": {"functions": 1, "covered_function_ids": []},
+            "effect_propagation": {"max_depth": 8},
+            "nodes": [
+                {"id": entry, "kind": "function", "qualified_name": "OrderBook.executeSwapOrder(uint256)"},
+                {"id": helper, "kind": "function", "qualified_name": "OrderBook._swap(address,address,uint256)"},
+                {"id": interface_method, "kind": "function", "qualified_name": "IVault.swap(address,address,uint256)"},
+            ],
+            "edges": [
+                {
+                    "id": "resolved-helper-call", "from": entry, "to": helper,
+                    "kind": "CALLS", "resolution": "DIRECT", "evidence": "LEXICAL_SOURCE",
+                    "source": {"file": "src/OrderBook.sol", "line": 300, "column": 9},
+                },
+                {
+                    "id": "typed-interface-call", "from": helper, "to": interface_method,
+                    "kind": "EXTERNAL_CALL", "resolution": "DIRECT",
+                    "implementation_resolution": "UNRESOLVED",
+                    "evidence": "LEXICAL_SOURCE", "receiver": "vault", "method": "swap",
+                    "detail": "The declared interface method is identified; runtime implementation is not.",
+                    "source": {"file": "src/OrderBook.sol", "line": 355, "column": 9},
+                },
+                {
+                    "id": "dynamic-function-pointer", "from": helper,
+                    "to": "function-pointer:OrderBook.executeCallback", "kind": "CALLS",
+                    "resolution": "UNRESOLVED", "evidence": "LEXICAL_SOURCE",
+                    "call_kind": "dynamic-function-pointer",
+                    "detail": "Function pointer target depends on runtime assignment or dispatch.",
+                    "source": {"file": "src/OrderBook.sol", "line": 360, "column": 9},
+                },
+                {
+                    "id": "unknown-low-level-call", "from": helper,
+                    "to": "low-level:delegatecall", "kind": "EXTERNAL_CALL",
+                    "resolution": "UNRESOLVED", "evidence": "LEXICAL_SOURCE",
+                    "operation": "delegatecall",
+                    "source": {"file": "src/OrderBook.sol", "line": 365, "column": 9},
+                },
+            ],
+        }
+
+        result = lk._function_graph_boundary_edges(index, {"id": entry})
+        self.assertEqual(len(result["edges"]), 3)
+        self.assertEqual(len(result["unresolved"]), 3)
+        self.assertFalse(result["truncated"])
+        kinds = {(edge["kind"], edge.get("method"), edge.get("call_kind")) for edge in result["edges"]}
+        self.assertIn(("EXTERNAL_CALL", "swap", None), kinds)
+        self.assertIn(("CALLS", None, "dynamic-function-pointer"), kinds)
+        self.assertIn(("EXTERNAL_CALL", None, None), kinds)
+
+        output = io.StringIO()
+        with patch.object(lk.source_index, "build_source_index", return_value=index), \
+             patch.object(lk, "_function_graph_node", return_value={"id": entry}), \
+             contextlib.redirect_stdout(output):
+            lk._print_compiler_ast_effects(
+                pathlib.Path("/tmp/orderbook"), "OrderBook", "src/OrderBook.sol",
+                [{"signature": "executeSwapOrder(uint256)"}],
+            )
+        rendered = output.getvalue()
+        self.assertIn("CALL / EXTERNAL / UNRESOLVED BOUNDARIES", rendered)
+        self.assertIn("IVault.swap(address,address,uint256)", rendered)
+        self.assertIn("runtime implementation UNRESOLVED", rendered)
+        self.assertIn("function-pointer", rendered)
+        self.assertIn("low-level:delegatecall", rendered)
+        self.assertIn("ANALYSIS STATUS: PARTIALLY ANALYSED", rendered)
+        self.assertIn("Do not interpret missing effects as proof", rendered)
+
     def test_dispatch_passes_all_function_args(self):
         tmp, root, config = self._fixture()
         old = os.getcwd()
