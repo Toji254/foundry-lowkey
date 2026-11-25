@@ -1258,7 +1258,8 @@ def _store_jev_cached_response(cache_key: str, result: Mapping[str, Any]) -> Non
 
 
 def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
-                       required_fields: tuple[str, ...] = ()) -> dict[str, Any]:
+                       required_fields: tuple[str, ...] = (),
+                       return_request_meta: bool = False) -> dict[str, Any]:
     """Request one explicitly named Lowkey task; free-form chat purposes are rejected."""
     if purpose not in PURPOSES:
         raise AIHarnessError("Unsupported purpose. Lowkey's AI extension does not accept general chat.")
@@ -1307,7 +1308,8 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
         cached = _read_jev_cached_response(cache_key, required_fields)
         if cached is not None:
             cached_result = dict(cached)
-            cached_result["_lowkey_request_meta"] = request_meta
+            if return_request_meta:
+                cached_result["_lowkey_request_meta"] = request_meta
             return cached_result
     if free_tier:
         _reserve_jev_request(cfg, purpose)
@@ -1318,9 +1320,12 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
     if not isinstance(result, dict):
         raise AIHarnessError("Provider response did not produce a structured JSON object.")
     result = dict(result)
-    result["_lowkey_request_meta"] = request_meta
     if cache_key is not None:
+        # Cache the provider's original response shape; provenance is recomputed
+        # from each caller's final submitted context on cache hits.
         _store_jev_cached_response(cache_key, result)
+    if return_request_meta:
+        result["_lowkey_request_meta"] = request_meta
     return result
 
 
@@ -1726,6 +1731,7 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
         ),
         context=context,
         required_fields=("summary", "contract_roles", "invariants", "open_questions", "deployment_considerations"),
+        return_request_meta=True,
     )
     _validate_protocol_review_output(result)
     result.setdefault("deployment_plan", [])
@@ -2301,6 +2307,7 @@ def recommend_next_steps(
         purpose="next_step_recommendations",
         task=task,
         context=context,
+        return_request_meta=True,
         required_fields=("recommendations",),
     )
     normalized = validate_ai_recommendations(result, context, native_recommendations)

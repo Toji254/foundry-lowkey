@@ -832,6 +832,7 @@ class AIHarnessTests(unittest.TestCase):
                 task="Explain this result.",
                 context={"safe": True},
                 required_fields=("facts", "hypotheses"),
+                return_request_meta=True,
             )
 
         system_message = sent_payloads[0]["messages"][0]["content"]
