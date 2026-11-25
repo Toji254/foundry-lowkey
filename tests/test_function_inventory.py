@@ -174,6 +174,48 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn("! UNASSESSED", output)
         self.assertNotIn(chr(27), output)
 
+    def test_default_inventory_shows_parameter_names_and_types_in_call_order(self):
+        code, output = self._run([])
+        self.assertEqual(code, 0)
+
+        # Parameter names come from the ABI and sit immediately below the
+        # canonical signature, without changing the signature Cast expects.
+        self.assertIn("withdraw(uint256)", output)
+        self.assertIn("amount:uint256", output)
+        self.assertIn("setTreasury(address)", output)
+        self.assertIn("next:address", output)
+        self.assertIn("balanceOf(address)", output)
+        self.assertIn("who:address", output)
+
+        # Compiler-generated getter inputs may have no ABI name. Show an
+        # explicit positional fallback instead of inventing a source name.
+        self.assertIn("arg1:address", output)
+        self.assertIn("balances(address)", output)
+
+    def test_parameter_label_formatter_preserves_tuple_types_and_fallback_names(self):
+        labels = lk._function_parameter_labels(
+            [
+                {"name": "proposalTitle", "type": "string"},
+                {"name": "options", "type": "string[]"},
+                {
+                    "name": "",
+                    "type": "tuple",
+                    "components": [
+                        {"name": "owner", "type": "address"},
+                        {"name": "amount", "type": "uint256"},
+                    ],
+                },
+            ]
+        )
+        self.assertEqual(
+            labels,
+            [
+                "proposalTitle:string",
+                "options:string[]",
+                "arg3:(address,uint256)",
+            ],
+        )
+
     def test_default_inventory_shows_outflow_destination_and_amount_separately(self):
         code, output = self._run([])
         self.assertEqual(code, 0)
