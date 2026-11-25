@@ -116,6 +116,8 @@ Source relationship navigation:
   lk trace source 'Vault.withdraw(uint256)' --depth 5
   lk link Vault --only calls|storage|reads|writes|imports|assets
   lk fn --flow in|out|both --asset eth|erc20|all
+  lk flow eth                  Map native ETH ingress, call paths and exit attempts
+  lk flow eth --h               Explain ETH-flow recon and its evidence limits
 
 Static links describe source relationships, not proof that a path executed.
 Use lk trace to investigate actual transaction execution.
@@ -242,6 +244,14 @@ fi
 if [[ "${1:-}" == "ai" ]]; then
     shift
     exec python3 "$HOME/.lowkey/command_wrapper.py" "ai" -- python3 "$HOME/.lowkey/ai_harness.py" "$@"
+fi
+
+# Native ETH-flow reconnaissance uses the shared source relationship index.
+# It is read-only and follows declared cross-contract calls without claiming that
+# the implementation behind a runtime address is proven.
+if [[ "${1:-}" == "flow" && "${2:-}" == "eth" ]]; then
+    shift 2
+    exec python3 "$HOME/.lowkey/command_wrapper.py" "flow" -- python3 "$HOME/.lowkey/eth_flow.py" "$@"
 fi
 
 # Static source tracing is separate from runtime transaction tracing.
