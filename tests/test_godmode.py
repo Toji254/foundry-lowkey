@@ -5,6 +5,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlparse
 from contextlib import redirect_stdout
 import io
