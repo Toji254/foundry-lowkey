@@ -1341,6 +1341,7 @@ def bootstrap_plan(
     force: bool = False,
     reason: str = "prepare",
     required_paths: Sequence[str] = (),
+    safe_node_install: bool = False,
 ) -> dict[str, Any]:
     """Build a safe, repository-derived repair plan without executing it."""
     selected_root = Path((info or {}).get("root") or root).expanduser().resolve()
@@ -1441,15 +1442,43 @@ def bootstrap_plan(
         hardhat_ready = (cwd / "node_modules" / ".bin" / "hardhat").is_file()
         node_incomplete = "hardhat" in stacks and not hardhat_ready
         if command and (force or not node_modules.is_dir() or node_incomplete):
-            actions.append({
-                "kind": "node",
-                "cwd": cwd,
-                "command": command,
-                "evidence": (
-                    f"{evidence}; Hardhat binary missing from node_modules/.bin"
-                    if node_incomplete else evidence
-                ),
-            })
+            node_commands = [(command, evidence)]
+            if safe_node_install and command[0] == "npm":
+                npm_flags = ["--ignore-scripts", "--no-audit", "--no-fund"]
+                npm_lock_present = (
+                    (cwd / "package-lock.json").is_file()
+                    or (cwd / "npm-shrinkwrap.json").is_file()
+                )
+                if command[1:2] == ["install"] and not npm_lock_present:
+                    # Resolve and write the lockfile without executing package
+                    # lifecycle scripts, then install exactly that graph.
+                    node_commands = [
+                        (
+                            ["npm", "install", "--package-lock-only", *npm_flags],
+                            "package.json without a lockfile; generate a lockfile with lifecycle scripts disabled",
+                        ),
+                        (
+                            ["npm", "ci", *npm_flags],
+                            "install from the newly generated npm lockfile with lifecycle scripts disabled",
+                        ),
+                    ]
+                else:
+                    node_commands = [
+                        (
+                            ["npm", "ci", *npm_flags],
+                            f"{evidence}; npm lifecycle scripts disabled",
+                        )
+                    ]
+            for node_command, node_evidence in node_commands:
+                actions.append({
+                    "kind": "node",
+                    "cwd": cwd,
+                    "command": node_command,
+                    "evidence": (
+                        f"{node_evidence}; Hardhat binary missing from node_modules/.bin"
+                        if node_incomplete else node_evidence
+                    ),
+                })
 
     for cwd, command, evidence in _python_plan(selected_root):
         if command and (force or not (cwd / ".venv").is_dir() or reason in {"dependency", "workspace"}):
@@ -1497,6 +1526,17 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
                 "The package resolver found mutually incompatible dependency "
                 "constraints. Lowkey will not rewrite manifest constraints or "
                 "lockfiles automatically."
+            ),
+        }
+
+    if "hh502" in lowered or "couldn't download compiler version list" in lowered:
+        return {
+            "category": "compiler_download",
+            "repairable": False,
+            "reason": (
+                "Hardhat could not fetch Solidity compiler metadata. This is a compiler-host "
+                "network/download failure, not evidence of missing npm dependencies. Lowkey "
+                "will not reinstall packages, change the Solidity version, or disable TLS."
             ),
         }
 
@@ -1736,10 +1776,12 @@ def run_bootstrap(
     reason: str = "prepare",
     timeout: int = 900,
     required_paths: Sequence[str] = (),
+    safe_node_install: bool = False,
 ) -> int:
     """Execute a previously reasoned repair plan."""
     plan = bootstrap_plan(
-        info, root, force=force, reason=reason, required_paths=required_paths
+        info, root, force=force, reason=reason, required_paths=required_paths,
+        safe_node_install=safe_node_install,
     )
     actions = plan["actions"]
 
@@ -1849,7 +1891,8 @@ def run_bootstrap(
         # Refresh dependency discovery even after a partial failure so remaining
         # non-submodule bootstrap work can still be planned from current state.
         plan = bootstrap_plan(
-            info, root, force=force, reason=reason, required_paths=required_paths
+            info, root, force=force, reason=reason, required_paths=required_paths,
+            safe_node_install=safe_node_install,
         )
         if stage_failed:
             break
