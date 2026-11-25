@@ -289,5 +289,22 @@ class LabTargetScopeTests(unittest.TestCase):
         self.assertIn("--source <file>", rendered)
 
 
+    def test_cli_help_registry_exposes_lab_target_scope_controls(self):
+        output = []
+        with patch.object(
+            lk, "print",
+            side_effect=lambda *args: output.append(" ".join(map(str, args))),
+            create=True,
+        ):
+            code = lk._render_command_help(["lab"])
+        self.assertEqual(code, 0)
+        rendered = "\\n".join(output)
+        self.assertIn("--scope project --generic OrderBook", rendered)
+        self.assertIn("--source contracts/core/OrderBook.sol --generic OrderBook", rendered)
+        self.assertIn("project root", rendered.lower())
+        self.assertIn("fails closed", rendered.lower())
+
+
+
 if __name__ == "__main__":
     unittest.main()
