@@ -9668,17 +9668,19 @@ def _validate_manual_target_runtime(
         print("Runtime check: UNVERIFIED (no RPC available; target metadata is not deployment proof).")
         return (0, state) if return_state else 0
     if state.get("status") == "NOT_DEPLOYED":
-        return fail(
+        error = fail(
             f"Error: {address} has no contract bytecode on {rpc}. "
             "Run 'lk lab' to deploy/refresh the local target, or 'lk target reset' to clear the stale target.",
             1,
         )
+        return (error, state) if return_state else error
     if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
-        return fail(
+        error = fail(
             f"Error: {address} has live bytecode, but it does not match the selected "
             f"artifact for {contract or 'this target'}. Run 'lk lab' or select the correct deployment.",
             1,
         )
+        return (error, state) if return_state else error
     if state.get("status") == "DEPLOYED":
         print(
             f"Runtime check: LIVE ({state.get('verification', 'unverified').lower()}; "
