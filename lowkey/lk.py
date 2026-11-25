@@ -24240,7 +24240,7 @@ def _wizard_array_input_error(param, value):
     if not isinstance(param, dict):
         return None
     raw_type = str(param.get("type") or "").strip()
-    match = re.fullmatch(r"(.+)\\[([0-9]*)\\]", raw_type)
+    match = re.fullmatch(r"(.+)\[([0-9]*)\]", raw_type)
     if not match:
         return None
 
@@ -24274,7 +24274,7 @@ def _wizard_array_input_error(param, value):
 def _wizard_array_data_error(param, value):
     """Validate JSON array element shapes for common ABI scalar/nested types."""
     raw_type = str((param or {}).get("type") or "").strip()
-    nested = re.fullmatch(r"(.+)\\[([0-9]*)\\]", raw_type)
+    nested = re.fullmatch(r"(.+)\[([0-9]*)\]", raw_type)
     if nested:
         base_type, fixed_length = nested.groups()
         if not isinstance(value, list):
@@ -24332,6 +24332,7 @@ def _wizard_preflight_error(signature, params, values):
 
 
 
+def run_wizard(config,args):
     if not args:
         return fail("Usage: lk wizard <function> [values...] [call|send|encode]")
 
