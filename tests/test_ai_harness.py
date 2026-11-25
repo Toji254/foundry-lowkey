@@ -1644,6 +1644,7 @@ class AIHarnessTests(unittest.TestCase):
                 task="inspect the bounded source context",
                 context={"source_files": original_sources, "source_files_included": len(original_sources)},
                 required_fields=("facts", "hypotheses"),
+                return_request_meta=True,
             )
         sent_context = submitted["context"]
         sent_sources = [

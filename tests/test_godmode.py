@@ -2490,12 +2490,18 @@ class GodmodeTests(unittest.TestCase):
 
     def test_godmode_has_no_shadowed_top_level_function_definitions(self):
         tree = ast.parse(MODULE.read_text(encoding="utf-8"))
-        names = [
-            node.name for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        duplicates = sorted({name for name in names if names.count(name) > 1})
-        self.assertEqual(duplicates, [])
+        grouped = {}
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                grouped.setdefault(node.name, []).append({
+                    "line": node.lineno,
+                    "end_line": node.end_lineno,
+                })
+        duplicates = {
+            name: locations for name, locations in grouped.items()
+            if len(locations) > 1
+        }
+        self.assertEqual(duplicates, {}, f"Shadowed top-level functions: {duplicates}")
 
     def test_bare_invariant_forge_and_archetype_use_a_real_default_profile(self):
         cases = (
