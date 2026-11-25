@@ -10914,7 +10914,8 @@ def run_doctor(args=None):
         exit_code = _run_doctor_detailed()
     report = captured.getvalue()
     if verbose:
-        print(report, end="" if report.endswith("\n") else "\n")
+        if report:
+            print(report, end="" if report.endswith("\n") else "\n")
         try:
             root = audit_context.foundry_project_root()
         except Exception:
