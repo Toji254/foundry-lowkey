@@ -4,6 +4,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import sys
@@ -11,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lowkey"))
 
 import foundry_build
+import hardhat_tools
 import project_detection
 
 
@@ -35,6 +37,14 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         self.assertIn("--lazy", rendered)
         self.assertIn("mutually exclusive", rendered)
         self.assertIn("lk build --lazy", rendered)
+        for item in (
+            "What it does:", "When to use:", "COMMAND VARIATIONS",
+            "OPTIONS / MODES", "RELATED COMMANDS", "HELP TIP",
+            "--root <DIR>", "--member <MEMBER>", "--scope <full|production|tests|scripts|target>",
+            "--target <CONTRACT>", "--low-memory", "--plan", "--json",
+            "--guide", "--lazy", "FORGE OPTIONS",
+        ):
+            self.assertIn(item, rendered)
 
     def test_build_help_long_alias_lists_ai_failure_modes_without_running_build(self):
         import contextlib
@@ -46,6 +56,154 @@ class FoundryBuildPlannerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("--guide", output.getvalue())
         self.assertIn("--lazy", output.getvalue())
+
+    def test_native_hardhat_build_bootstraps_missing_local_dependencies_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
+            )
+            info = {
+                "root": str(root),
+                "kind": "hardhat",
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+            binary = root / "node_modules" / ".bin" / "hardhat"
+
+            with (
+                patch.object(project_detection, "detect_project", side_effect=[info, info]),
+                patch.object(foundry_build.bootstrap, "_local_hardhat_binary", side_effect=[None, binary]),
+                patch.object(project_detection, "bootstrap_project", return_value=0) as prepare,
+                patch.object(
+                    foundry_build.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(returncode=0),
+                ) as run,
+                patch.object(foundry_build.hardhat_tools, "prepare_readiness", return_value=0) as readiness,
+            ):
+                code = foundry_build._run_native_fallback(["--verbose"])
+
+            self.assertEqual(code, 0)
+            prepare.assert_called_once_with(info, reason="build", safe_node_install=True)
+            readiness.assert_called_once_with(root.resolve(), binary)
+            command = run.call_args.args[0]
+            self.assertEqual(command[1:], [str(ROOT / "lowkey" / "lk.py"), "build", "--verbose"])
+            self.assertEqual(pathlib.Path(run.call_args.kwargs["cwd"]), pathlib.Path.cwd())
+
+    def test_native_hardhat_build_stops_when_dependency_bootstrap_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
+            )
+            info = {
+                "root": str(root),
+                "kind": "hardhat",
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+
+            with (
+                patch.object(project_detection, "detect_project", return_value=info),
+                patch.object(foundry_build.bootstrap, "_local_hardhat_binary", return_value=None),
+                patch.object(project_detection, "bootstrap_project", return_value=1) as prepare,
+                patch.object(foundry_build.subprocess, "run") as run,
+            ):
+                code = foundry_build._run_native_fallback([])
+
+            self.assertEqual(code, 1)
+            prepare.assert_called_once_with(info, reason="build", safe_node_install=True)
+            run.assert_not_called()
+
+    def test_hardhat_first_test_command_prepares_missing_local_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
+            )
+            info = {
+                "root": str(root),
+                "kind": "hardhat",
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+            binary = root / "node_modules" / ".bin" / "hardhat"
+
+            with (
+                patch.object(hardhat_tools, "_selected_project", return_value=(root, info)),
+                patch.object(hardhat_tools, "_local_hardhat", side_effect=[None, binary]),
+                patch.object(
+                    hardhat_tools.project_detection,
+                    "bootstrap_project",
+                    return_value=0,
+                ) as prepare,
+                patch.object(hardhat_tools, "prepare_readiness", return_value=0) as readiness,
+            ):
+                code = hardhat_tools.run_prepare(reason="test")
+
+            self.assertEqual(code, 0)
+            prepare.assert_called_once_with(info, reason="test", safe_node_install=True)
+            readiness.assert_called_once_with(root, binary)
+
+    def test_hardhat_prepare_skips_install_when_local_binary_already_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.js", "module.exports = {};\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"gmx","devDependencies":{"hardhat":"^2.6.1"}}\n',
+            )
+            info = {
+                "root": str(root),
+                "kind": "hardhat",
+                "backend": "hardhat",
+                "stacks": ["hardhat"],
+            }
+            binary = root / "node_modules" / ".bin" / "hardhat"
+
+            with (
+                patch.object(hardhat_tools, "_selected_project", return_value=(root, info)),
+                patch.object(hardhat_tools, "_local_hardhat", return_value=binary),
+                patch.object(hardhat_tools.project_detection, "bootstrap_project") as prepare,
+                patch.object(hardhat_tools, "prepare_readiness", return_value=0) as readiness,
+            ):
+                code = hardhat_tools.run_prepare(reason="test")
+
+            self.assertEqual(code, 0)
+            prepare.assert_not_called()
+            readiness.assert_called_once_with(root, binary)
+
+    def test_non_hardhat_native_build_fallback_does_not_bootstrap_node_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            info = {"root": str(root), "kind": "generic", "backend": "generic", "stacks": []}
+
+            with (
+                patch.object(project_detection, "detect_project", return_value=info),
+                patch.object(project_detection, "bootstrap_project") as prepare,
+                patch.object(
+                    foundry_build.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(returncode=0),
+                ) as run,
+            ):
+                code = foundry_build._run_native_fallback([])
+
+            self.assertEqual(code, 0)
+            prepare.assert_not_called()
+            run.assert_called_once()
+
 
     def test_collect_resources_reads_ram_swap_zram_psi_and_cgroup(self):
         with tempfile.TemporaryDirectory() as tmp:

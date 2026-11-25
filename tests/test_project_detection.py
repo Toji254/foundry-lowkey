@@ -346,6 +346,77 @@ class ProjectDetectionTests(unittest.TestCase):
                     ("https://archive.example/rpc", 289488417),
                 )
 
+
+    def test_hh502_diagnostic_separates_node_https_from_curl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            node_result = type("Result", (), {
+                "returncode": 1, "stdout": "", "stderr": "ETIMEDOUT: request timed out"
+            })()
+            curl_result = type("Result", (), {
+                "returncode": 0, "stdout": "HTTP 200", "stderr": ""
+            })()
+            with patch.object(project_detection.platform, "system", return_value="Linux"), \
+                 patch.object(project_detection.platform, "machine", return_value="x86_64"), \
+                 patch.object(project_detection, "runtime_environment", return_value=({"PATH": "/usr/bin"}, None)), \
+                 patch.object(
+                     project_detection.shutil,
+                     "which",
+                     side_effect=lambda name, path=None: "/usr/bin/node" if name == "node" else "/usr/bin/curl",
+                 ), patch.object(
+                     project_detection.subprocess,
+                     "run",
+                     side_effect=[node_result, curl_result],
+                 ):
+                diagnostic = project_detection._diagnose_solidity_compiler_download(
+                    root,
+                    [str(root / "node_modules/.bin/hardhat"), "compile"],
+                    "Error HH502: Couldn't download compiler version list",
+                )
+
+            self.assertIn("Node HTTPS       : failed", diagnostic)
+            self.assertIn("curl HTTPS       : reachable", diagnostic)
+            self.assertIn("Node HTTPS path", diagnostic)
+            self.assertIn("do not disable TLS verification", diagnostic)
+
+    def test_non_hh502_failure_does_not_trigger_compiler_network_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            diagnostic = project_detection._diagnose_solidity_compiler_download(
+                root,
+                [str(root / "node_modules/.bin/hardhat"), "compile"],
+                "ParserError: unexpected token",
+            )
+            self.assertEqual(diagnostic, "")
+
+    def test_run_appends_hh502_network_diagnostic_to_failed_hardhat_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(
+                project_detection, "runtime_environment",
+                return_value=({"PATH": "/usr/bin"}, None),
+            ), patch.object(
+                project_detection.subprocess,
+                "run",
+                return_value=type("Result", (), {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "Error HH502: Couldn't download compiler version list",
+                })(),
+            ), patch.object(
+                project_detection,
+                "_diagnose_solidity_compiler_download",
+                return_value="LOWKEY NETWORK DIAGNOSTIC (HH502)\nNode HTTPS failed",
+            ) as diagnose:
+                code, output = project_detection._run(
+                    [str(root / "node_modules/.bin/hardhat"), "compile"], root
+                )
+
+            self.assertEqual(code, 1)
+            self.assertIn("LOWKEY NETWORK DIAGNOSTIC (HH502)", output)
+            diagnose.assert_called_once()
+
+
     def test_historical_state_errors_are_classified_as_infrastructure(self):
         self.assertTrue(
             project_detection._historical_state_unavailable(
