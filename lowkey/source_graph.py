@@ -308,7 +308,7 @@ def build_protocol_graph(
                 add_edge(source_contract, target_id, kind, edge)
             continue
 
-        if kind == "ASSET_FLOW" and only == "assets":
+        if kind == "ASSET_FLOW" and only in {"assets", "all"}:
             if source_contract:
                 add_contract_node(source_contract)
                 asset = str(edge.get("asset") or "unknown").upper()
@@ -749,9 +749,12 @@ def render_project_graph(
         if output_format == "json":
             return render_protocol_graph_json(graph)
         if output_format == "html":
-            destination = Path(output) if output else Path(root) / ".lowkey" / "link-graph.html"
-            if not destination.is_absolute():
-                destination = Path(root) / destination
+            if output:
+                destination = Path(output).expanduser()
+                if not destination.is_absolute():
+                    destination = Path(root) / destination
+            else:
+                destination = Path(root) / ".lowkey" / "link-graph.html"
             saved = render_protocol_graph_html(graph, destination)
             print("LOWKEY // PROTOCOL GRAPH")
             print(f"GRAPH SAVED  {saved}")
