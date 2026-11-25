@@ -1828,6 +1828,28 @@ class LowkeyCastTests(unittest.TestCase):
                 lk._read_state_change_warning(["calculate", "3"], {"target": target})
             )
 
+    def test_wizard_keeps_positional_values_visible_for_encode_mode(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "buyNft",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "amount", "type": "uint256"}],
+            "outputs": [],
+        }]
+        config = {"target": target}
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "run_cast", return_value=0) as encode, \
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_wizard(config, ["buyNft", "encode", "5"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("amount (uint256): 5", output.getvalue())
+        encode.assert_called_once_with(
+            ["calldata", "buyNft(uint256)", "5"],
+            config,
+        )
+
     def test_wizard_treats_positional_value_as_argument_and_infers_send(self):
         target = "0x" + "1" * 40
         abi = [{
@@ -1841,10 +1863,13 @@ class LowkeyCastTests(unittest.TestCase):
 
         with patch.object(lk, "load_abi", return_value=abi), \
              patch.object(lk, "cast_output", return_value=(0, "0x1234", "")) as encode, \
-             patch.object(lk, "run_cast", return_value=0) as run_cast:
+             patch.object(lk, "run_cast", return_value=0) as run_cast, \
+             redirect_stdout(io.StringIO()) as output:
             result = lk.run_wizard(config, ["buyNft", "5"])
 
         self.assertEqual(result, 0)
+        self.assertIn("LOWKEY / WIZARD", output.getvalue())
+        self.assertNotIn("amount (uint256): 5", output.getvalue())
         encode.assert_called_once_with(
             ["cast", "calldata", "buyNft(uint256)", "5"],
             timeout=30,
@@ -2731,7 +2756,7 @@ class LowkeyCastTests(unittest.TestCase):
         ])
         self.assertEqual(cast.call_count, 2)
 
-    def test_wizard_value_first_form_surfaces_transaction_return(self):
+    def test_wizard_delegates_return_reporting_to_the_standard_send_summary(self):
         target = "0x" + "1" * 40
         config = {
             "target": target,
@@ -2746,17 +2771,10 @@ class LowkeyCastTests(unittest.TestCase):
             "outputs": [{"name": "id", "type": "bytes32"}],
             "stateMutability": "nonpayable",
         }]
-        tx_hash = "0x" + "2" * 64
-        config["last_tx"] = tx_hash
-        trace_result = {
-            "raw": "0x" + "aa" * 32,
-            "decoded": "0x" + "aa" * 32,
-            "decode_error": None,
-        }
         with patch.object(lk, "load_abi", return_value=abi), \
              patch.object(lk, "cast_output", return_value=(0, "0x1234", "")), \
              patch.object(lk, "run_cast", return_value=0) as send, \
-             patch.object(lk, "_wizard_transaction_return", return_value=trace_result), \
+             patch.object(lk, "_wizard_transaction_return") as wizard_return, \
              redirect_stdout(io.StringIO()) as output:
             code = lk.run_wizard(
                 config,
@@ -2768,14 +2786,9 @@ class LowkeyCastTests(unittest.TestCase):
             ["send", "createEscrow(address)", "0x" + "3" * 40, "--confirm"],
             config,
         )
-        rendered = output.getvalue()
-        self.assertIn("RETURN VALUES", rendered)
-        self.assertIn("Raw return data:", rendered)
-        self.assertIn("Decoded:", rendered)
-        self.assertIn(
-            "id = 0x" + "aa" * 32 + " [bytes32]",
-            rendered,
-        )
+        wizard_return.assert_not_called()
+        self.assertIn("LOWKEY / WIZARD", output.getvalue())
+        self.assertNotIn("RETURN VALUES", output.getvalue())
 
     def test_tuple_canonicalization(self):
         self.assertEqual(
@@ -8727,13 +8740,18 @@ def withdraw(amount: uint256):
                     lk.run_tx(config, [tx_hash])
 
         rendered = output.getvalue()
+        self.assertIn("LOWKEY / TRANSACTION", rendered)
         self.assertIn("EXECUTION CONTEXT", rendered)
         self.assertIn(f"tx.origin: {origin} (transaction signer)", rendered)
-        self.assertIn(f"Top-level recipient: attackTelephone ({intermediary})", rendered)
-        self.assertIn(f"msg.sender at top-level recipient: {origin}", rendered)
+        self.assertIn(f"To: attackTelephone ({intermediary})", rendered)
         self.assertIn(f"msg.sender at Telephone (CALL): attackTelephone ({intermediary})", rendered)
-        self.assertIn(f"attackTelephone ({intermediary}) was the immediate caller to Telephone", rendered)
-        self.assertIn("tx.origin remains", rendered)
+        self.assertIn(
+            f"attackTelephone ({intermediary}) was the immediate caller to Telephone; "
+            f"tx.origin remains {origin}",
+            rendered,
+        )
+        self.assertNotIn("msg.sender at top-level recipient", rendered)
+        self.assertNotIn("Args:", rendered)
 
     def test_project_transaction_pointer_is_not_replaced_by_another_target(self):
         root = pathlib.Path("/tmp/lowkey-project")

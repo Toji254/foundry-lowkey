@@ -1606,9 +1606,10 @@ class CommandHelpTests(unittest.TestCase):
             rendered = output.getvalue()
         finally:
             lk._COMMAND_STATUS = previous_status
-        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertIn("NEXT", rendered)
+        self.assertNotIn("NEXT COMMANDS", rendered)
         self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
-        self.assertEqual(rendered.count("NEXT COMMANDS"), 1)
+        self.assertEqual(rendered.count("NEXT\n"), 1)
         self.assertIn("lk ask buyNft", rendered)
         self.assertIn("lk wizard buyNft [values...]", rendered)
         self.assertIn("Understand the function's inputs", rendered)
@@ -1634,7 +1635,8 @@ class CommandHelpTests(unittest.TestCase):
             lk.sys.argv = original_argv
 
         rendered = output.getvalue()
-        self.assertIn("NEXT COMMANDS", rendered)
+        self.assertIn("NEXT", rendered)
+        self.assertNotIn("NEXT COMMANDS", rendered)
         self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
         self.assertIn("lk ask buyNft", rendered)
 

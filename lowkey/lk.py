@@ -3684,13 +3684,14 @@ def _function_terminal_style(value, tone="muted", stream=None):
 
 
 def _function_print_wrapped(prefix, value):
-    """Print a labelled value without needlessly truncating long signatures/expressions."""
+    """Wrap one human-facing line to the available terminal width without truncating it."""
     try:
-        width = shutil.get_terminal_size(fallback=(88, 24)).columns
-    except (OSError, AttributeError):
+        width = int(shutil.get_terminal_size(fallback=(88, 24)).columns or 88)
+    except (OSError, AttributeError, TypeError, ValueError):
         width = 88
-    width = max(48, width)
+    width = max(24, min(width, 100))
     prefix = str(prefix)
+    width = max(width, len(prefix) + 12)
     rendered = textwrap.wrap(
         str(value),
         width=width,
@@ -5353,26 +5354,42 @@ def _print_disassembly_guide(disassembly):
     print("Security note: an opcode is a clue about behavior, not proof of a vulnerability. Follow the surrounding instructions and control flow.")
 
 
-def run_tx(config,args):
-    tx_hash=args[0] if args else last_transaction(config)
-    if not tx_hash: return fail("Error: no transaction is saved for this project and target. Send a transaction here, or pass an explicit hash: lk tx <transaction-hash>.")
-    if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
-    command=["cast","tx",tx_hash,"--json"]
-    rpc=effective_rpc(config)
-    if rpc: command.extend(["--rpc-url",rpc])
-    code,output,error=cast_output(command)
-    if code!=0 and not output:
-        print(error or "cast tx failed",file=sys.stderr)
+def run_tx(config, args):
+    tx_hash = args[0] if args else last_transaction(config)
+    if not tx_hash:
+        return fail(
+            "Error: no transaction is saved for this project and target. "
+            "Send a transaction here, or pass an explicit hash: lk tx <transaction-hash>."
+        )
+    if not is_tx_hash(tx_hash):
+        return fail("Error: invalid transaction hash")
+
+    command = ["cast", "tx", tx_hash, "--json"]
+    rpc = effective_rpc(config)
+    if rpc:
+        command.extend(["--rpc-url", rpc])
+    code, output, error = cast_output(command)
+    if code != 0 and not output:
+        print(error or "cast tx failed", file=sys.stderr)
         return record_status(code)
-    try: transaction=json.loads(output)
-    except json.JSONDecodeError: print(output or error); return
-    if not isinstance(transaction,dict): print("Unexpected cast tx JSON."); return
-    if isinstance(transaction.get("transaction"),dict): transaction=transaction["transaction"]
-    elif isinstance(transaction.get("data"),dict) and any(k in transaction["data"] for k in ["hash","from","to"]):
-        transaction=transaction["data"]
-    tx_to=transaction.get("to") or ""
-    abi_target=tx_to if is_address(tx_to) else config.get("target")
-    abi=load_abi(abi_target,config)
+    try:
+        transaction = json.loads(output)
+    except json.JSONDecodeError:
+        print(output or error)
+        return
+    if not isinstance(transaction, dict):
+        print("Unexpected cast tx JSON.")
+        return
+    if isinstance(transaction.get("transaction"), dict):
+        transaction = transaction["transaction"]
+    elif isinstance(transaction.get("data"), dict) and any(
+        key in transaction["data"] for key in ("hash", "from", "to")
+    ):
+        transaction = transaction["data"]
+
+    tx_to = transaction.get("to") or ""
+    abi_target = tx_to if is_address(tx_to) else config.get("target")
+    abi = load_abi(abi_target, config)
     tx_hash = transaction.get("hash") or tx_hash
     root = audit_context.foundry_project_root()
     display_config = _transaction_display_config(config, root, rpc)
@@ -5384,37 +5401,58 @@ def run_tx(config,args):
         str(tx_to or config.get("target") or "0x" + "00" * 20),
         "transaction",
         [],
-        status="success" if isinstance(receipt, dict) and receipt.get("status") in ("0x1", 1) else "reverted" if receipt else "checking",
+        status=(
+            "success"
+            if isinstance(receipt, dict) and receipt.get("status") in ("0x1", 1)
+            else "reverted" if receipt else "checking"
+        ),
         tx_hash=tx_hash,
     )
     walkthrough._write_transaction_evidence(root, rpc or "", step, receipt)
-    print(f"Hash:  {walkthrough._transaction_link(root, tx_hash)}")
-    print(f"From:  {apply_labels(transaction.get('from','Unknown'),display_config)}")
-    print(f"To:    {apply_labels(transaction.get('to','Unknown'),display_config)}")
 
-    # Separate the transaction signer from the caller seen by each contract.
-    # tx.origin is the transaction's originating account; msg.sender is derived
-    # from the actual call frame that entered the selected project target.
-    origin = transaction.get("from")
+    from_address = transaction.get("from")
     block_number = transaction.get("blockNumber")
     is_mined = block_number is not None and str(block_number).strip() != ""
-    print("EXECUTION CONTEXT")
-    print("-----------------")
-    if is_address(origin):
-        origin_label = apply_labels(origin, display_config)
-        if not is_mined:
-            print(f"Expected tx.origin when mined: {origin_label}")
-            print("msg.sender context: unavailable until the transaction is mined.")
-        else:
-            print(f"tx.origin: {origin_label} (transaction signer)")
-            if is_address(tx_to):
-                print(f"Top-level recipient: {apply_labels(tx_to, display_config)}")
-                print(f"msg.sender at top-level recipient: {origin_label}")
-            else:
-                print("Top-level recipient: contract creation")
-                print(f"msg.sender during contract creation: {origin_label}")
+    receipt_status = str((receipt or {}).get("status") or "").strip().lower()
+    if receipt_status in {"0x1", "1"}:
+        status_label = "SUCCESS"
+    elif receipt_status in {"0x0", "0"}:
+        status_label = "REVERTED"
+    elif is_mined:
+        status_label = "MINED (receipt status unavailable)"
     else:
-        origin_label = None
+        status_label = "PENDING / NOT MINED"
+
+    print(_function_terminal_style("LOWKEY / TRANSACTION", "heading"))
+    _function_print_wrapped("Hash: ", walkthrough._transaction_link(root, tx_hash))
+    _function_print_wrapped(
+        "From: ",
+        apply_labels(from_address or "Unknown", display_config),
+    )
+    _function_print_wrapped(
+        "To: ",
+        apply_labels(tx_to, display_config) if is_address(tx_to) else "contract creation",
+    )
+    _function_print_wrapped("Status: ", status_label)
+
+    # tx.origin is the transaction signer. The selected target's msg.sender is
+    # derived only from a real callTracer result; Lowkey never infers it.
+    print("")
+    print(_function_terminal_style("EXECUTION CONTEXT", "heading"))
+    origin_label = None
+    if is_address(from_address):
+        origin_label = apply_labels(from_address, display_config)
+        if is_mined:
+            _function_print_wrapped(
+                "tx.origin: ",
+                origin_label + " (transaction signer)",
+            )
+        else:
+            _function_print_wrapped(
+                "Expected tx.origin: ",
+                origin_label + " (transaction not yet mined)",
+            )
+    else:
         print("tx.origin: unavailable (transaction sender is missing or invalid).")
 
     try:
@@ -5429,6 +5467,7 @@ def run_tx(config,args):
         )
     except Exception:
         selected_target = None
+
     if is_address(selected_target):
         selected_target = str(selected_target)
         target_name = "selected target"
@@ -5443,56 +5482,65 @@ def run_tx(config,args):
             and str(config.get("target_contract") or "").strip()
         ):
             target_name = str(config["target_contract"]).strip()
-        target_label = f"{target_name} ({selected_target})"
-        print(f"Selected project target: {target_label}")
 
-        if not is_mined or not is_address(origin):
-            print(f"msg.sender at {target_name}: unavailable until the transaction is mined.")
+        _function_print_wrapped(
+            "Selected project target: ",
+            f"{target_name} ({selected_target})",
+        )
+        if not is_mined or not origin_label:
+            _function_print_wrapped(
+                f"msg.sender at {target_name}: ",
+                "unavailable until the transaction is mined",
+            )
         elif is_address(tx_to) and selected_target.lower() == str(tx_to).lower():
-            print(f"msg.sender at {target_name} (direct): {origin_label}")
-            print(
-                f"Meaning: {origin_label} called {target_name} directly, so "
-                "tx.origin and msg.sender at this target are the same."
+            _function_print_wrapped(
+                f"msg.sender at {target_name} (direct): ",
+                origin_label,
+            )
+            _function_print_wrapped(
+                "Meaning: ",
+                "direct call; tx.origin and msg.sender at this target are the same.",
             )
         else:
             callers = _transaction_target_msg_senders(
-                rpc, tx_hash, selected_target, origin
+                rpc, tx_hash, selected_target, from_address
             )
             if callers is None:
-                print(f"msg.sender at {target_name}: unavailable (RPC call tracing is not supported or failed).")
-                print(
-                    "Meaning: Lowkey cannot determine whether this target was called "
-                    "directly or through another contract, so it will not guess."
+                _function_print_wrapped(
+                    f"msg.sender at {target_name}: ",
+                    "unavailable (RPC call tracing is not supported or failed)",
                 )
-                print(
-                    "Try lk trace <tx-hash> or use an RPC endpoint that supports "
-                    "debug_traceTransaction with callTracer."
+                _function_print_wrapped(
+                    "Hint: ",
+                    f"use lk trace {tx_hash} or an RPC with debug_traceTransaction/callTracer",
                 )
             elif callers:
                 for caller, frame_type in callers:
-                    print(
-                        f"msg.sender at {target_name} ({frame_type}): "
-                        f"{apply_labels(caller, display_config)}"
+                    _function_print_wrapped(
+                        f"msg.sender at {target_name} ({frame_type}): ",
+                        apply_labels(caller, display_config),
                     )
                 if len(callers) == 1:
                     caller_label = apply_labels(callers[0][0], display_config)
-                    print(
-                        f"Meaning: {origin_label} initiated the transaction; "
-                        f"{caller_label} was the immediate caller to {target_name}. "
-                        f"tx.origin remains {origin_label}."
+                    _function_print_wrapped(
+                        "Meaning: ",
+                        f"{caller_label} was the immediate caller to {target_name}; "
+                        f"tx.origin remains {origin_label}.",
                     )
                 else:
-                    print(
-                        f"Meaning: {target_name} was entered through multiple "
-                        "caller/frame combinations shown above. "
-                        f"tx.origin remains {origin_label} for the transaction."
+                    _function_print_wrapped(
+                        "Meaning: ",
+                        f"{target_name} was entered through multiple caller/frame "
+                        f"combinations shown above; tx.origin remains {origin_label}.",
                     )
             else:
-                print(f"msg.sender at {target_name}: no matching call frame found.")
+                _function_print_wrapped(
+                    f"msg.sender at {target_name}: ",
+                    "no matching call frame found in the returned trace",
+                )
                 print(
-                    "Meaning: the returned trace did not show this target being called. "
-                    "Check the transaction hash and selected project target; Lowkey "
-                    "will not infer a caller from the top-level recipient."
+                    "  Check the transaction hash and selected project target; "
+                    "Lowkey will not infer a caller from the top-level recipient."
                 )
     elif is_address(config.get("target")):
         print(
@@ -5500,29 +5548,53 @@ def run_tx(config,args):
             "target-specific msg.sender was not inferred."
         )
 
+    print("")
+    print(_function_terminal_style("CALL DATA", "heading"))
     value_raw = transaction.get("value", "0")
     value_wei = _hex_to_int(value_raw)
     if value_wei is None:
-        print(f"ETH value: unavailable ({value_raw})")
+        _function_print_wrapped("ETH value: ", f"unavailable ({value_raw})")
     else:
-        print(f"ETH value: {_wei_to_eth(value_wei)} ETH ({value_wei:,} wei)")
-        print("Meaning: this is the native ETH attached to the top-level transaction. It is separate from any ETH or tokens moved by internal contract calls.")
-    input_data=transaction.get("input") or transaction.get("data") or "0x"
-    if isinstance(input_data,str) and input_data.startswith("0x") and len(input_data)>=10:
-        selector=input_data[:10].lower(); decoded=False
+        _function_print_wrapped(
+            "ETH value: ",
+            f"{_wei_to_eth(value_wei)} ETH ({value_wei:,} wei)",
+        )
+        print("  Top-level value only; internal ETH/token transfers are visible in traces and logs.")
+
+    input_data = transaction.get("input") or transaction.get("data") or "0x"
+    if isinstance(input_data, str) and input_data.startswith("0x") and len(input_data) >= 10:
+        selector = input_data[:10].lower()
+        decoded = False
         for item in abi_functions(abi):
-            signature=format_signature(item)
-            if (abi_selector(signature) or "").lower()==selector:
-                print(f"Function: {signature}")
-                decoded_args = decode_abi_input(signature, input_data)
-                print(f"Args:    {decoded_args}")
-                for line in _format_decoded_abi_arguments(item, decoded_args, display_config, indent="  "):
-                    print(line)
-                decoded=True; break
+            signature = format_signature(item)
+            if (abi_selector(signature) or "").lower() != selector:
+                continue
+
+            _function_print_wrapped("Function: ", signature)
+            decoded_args = decode_abi_input(signature, input_data)
+            argument_lines = _format_decoded_abi_arguments(
+                item,
+                decoded_args,
+                display_config,
+                indent="  ",
+            )
+            if argument_lines:
+                for line in argument_lines:
+                    _function_print_wrapped("  ", str(line).strip())
+            elif item.get("inputs"):
+                _function_print_wrapped("Raw arguments: ", decoded_args)
+            else:
+                print("Arguments: none.")
+            decoded = True
+            break
+
         if not decoded:
-            print(f"Selector: {selector} (unknown to loaded ABI)")
-            _,fourbyte,_=cast_output(["cast","4byte",selector])
-            if fourbyte: print(f"4byte:   {fourbyte}")
+            _function_print_wrapped("Selector: ", f"{selector} (unknown to loaded ABI)")
+            _, fourbyte, _ = cast_output(["cast", "4byte", selector])
+            if fourbyte:
+                _function_print_wrapped("4byte: ", fourbyte)
+    else:
+        print("No function calldata (plain ETH transfer or contract creation).")
 
 
 def _transaction_argument_values(function_item, tx):
@@ -15503,24 +15575,22 @@ def _numeric_field_is_value_like(label):
 
 
 def _print_numeric_unit_reference(label, ptype):
-    """Show numeric input choices without inferring a unit from the ABI or name."""
+    """Give a compact numeric hint without guessing the contract's units."""
     if not str(ptype).startswith(("uint", "int")):
         return
 
-    print()
-    print("NUMERIC INPUT OPTIONS")
-    print("---------------------")
-    print("  Raw integer : a number such as 1000000 is passed through unchanged.")
-    print("  Separators  : commas/underscores are accepted, e.g. 1,000,000.")
-    print("  Unit note   : uint/int types do not specify what the number measures.")
+    print("  Integer: enter a raw whole number; commas and underscores are accepted.")
     if _numeric_field_is_value_like(label):
-        print("  Optional ETH units: 0.5 ETH, 10 gwei, or 1 wei (converted to wei).")
-        print("  Check first : use ETH units only if the contract expects a wei-denominated amount.")
-        print("  Reference   : 1 ETH = 1000000000000000000 wei; 1 gwei = 1000000000 wei.")
+        print(
+            "  Units: the ABI does not define them. ETH/gwei/wei inputs convert to wei; "
+            "use them only when the source expects wei."
+        )
+        print("  Reference: 1 ETH = 10^18 wei; 1 gwei = 10^9 wei.")
     else:
-        print("  Field hint  : this name does not suggest an ETH amount.")
-        print("  Use plain integers unless you know the contract expects a wei-denominated amount.")
-    print()
+        print(
+            "  Units: uint/int does not say what the number measures. "
+            "Use plain integers unless the source confirms a wei-denominated value."
+        )
 
 
 def _normalize_human_numeric_input(value, ptype, label=''):
@@ -24332,32 +24402,32 @@ def _wizard_preflight_error(signature, params, values):
 
 
 
-def run_wizard(config,args):
+def run_wizard(config, args):
     if not args:
         return fail("Usage: lk wizard <function> [values...] [call|send|encode]")
 
-    target=config.get("target")
+    target = config.get("target")
     if not target:
         return fail("Error: Set target first.")
 
-    funcs=abi_functions(load_abi(target,config))
-    matches=matching_functions(funcs,args[0])
-    if len(matches)!=1:
+    funcs = abi_functions(load_abi(target, config))
+    matches = matching_functions(funcs, args[0])
+    if len(matches) != 1:
         return fail("Error: Function must resolve to exactly one ABI entry.")
 
-    item=matches[0]
-    signature=format_signature(item)
-    params=item.get("inputs", [])
+    item = matches[0]
+    signature = format_signature(item)
+    params = item.get("inputs", [])
 
     # Preserve the explicit mode spelling while treating positional values as
     # actual function arguments. Without a mode, view/pure functions default to
     # call and state-changing functions default to a confirmed send.
-    remaining=list(args[1:])
-    explicit_mode=None
-    if remaining and remaining[0].lower() in {"call","send","encode"}:
-        explicit_mode=remaining.pop(0).lower()
-    mode=explicit_mode or (
-        "call" if item.get("stateMutability") in {"view","pure"} else "send"
+    remaining = list(args[1:])
+    explicit_mode = None
+    if remaining and remaining[0].lower() in {"call", "send", "encode"}:
+        explicit_mode = remaining.pop(0).lower()
+    mode = explicit_mode or (
+        "call" if item.get("stateMutability") in {"view", "pure"} else "send"
     )
 
     if len(remaining) > len(params):
@@ -24366,32 +24436,37 @@ def run_wizard(config,args):
             f"but {len(remaining)} value(s) were provided."
         )
 
-    values=[]
-    print(f"Function: {signature}")
-    for index,param in enumerate(params,1):
-        label=param.get("name") or f"arg{index}"
-        ptype=canonical_type(param)
+    values = []
+    print(_function_terminal_style("LOWKEY / WIZARD", "heading"))
+    _function_print_wrapped("  ", signature)
+    for index, param in enumerate(params, 1):
+        label = param.get("name") or f"arg{index}"
+        ptype = canonical_type(param)
         provided = index <= len(remaining)
 
         while True:
             if provided:
-                value=str(remaining[index-1]).strip()
-                print(f"{label} ({ptype}): {value}")
+                value = str(remaining[index - 1]).strip()
+                # Send mode displays values in the complete transaction preview.
+                # Keep explicit values visible for call/encode modes, which do
+                # not show that preview.
+                if mode != "send":
+                    _function_print_wrapped(f"{label} ({ptype}): ", value)
             else:
-                if ptype.startswith(('uint', 'int')):
+                if ptype.startswith(("uint", "int")):
                     _print_numeric_unit_reference(label, ptype)
                 example = _abi_sample_literal(param)
                 prompt = f"{label} ({ptype})"
                 if example is not None:
                     prompt += f" [example: {example}]"
                 try:
-                    value=input(prompt + ": ").strip()
+                    value = input(prompt + ": ").strip()
                 except EOFError:
                     print("Wizard cancelled.")
                     return 0
 
-            if value and ptype.startswith(('uint', 'int')):
-                value=_normalize_human_numeric_input(value, ptype, label)
+            if value and ptype.startswith(("uint", "int")):
+                value = _normalize_human_numeric_input(value, ptype, label)
             if not value:
                 return fail(f"Argument '{label}' is required.")
 
@@ -24421,32 +24496,14 @@ def run_wizard(config,args):
                 "No transaction was prepared or broadcast. Correct the values and run lk wizard again."
             )
 
-    if mode=="encode":
-        return run_cast(["calldata",signature,*values],config)
-    if mode=="send":
-        code = run_cast(["send",signature,*values,"--confirm"],config)
-        if code == 0 and item.get("outputs"):
-            tx_hash = config.get("last_tx")
-            result = _wizard_transaction_return(config, tx_hash, item) if tx_hash else None
-            if result:
-                print("RETURN VALUES")
-                print("==============")
-                print("Raw return data:")
-                print(f"  {result['raw']}")
-                if result.get("decoded"):
-                    decoded_display = format_human_abi_return(
-                        item,
-                        result["decoded"],
-                        config,
-                        [item],
-                    )
-                    print("Decoded:")
-                    for line in str(decoded_display).splitlines():
-                        print(f"  {line}")
-                elif result.get("decode_error"):
-                    print(f"Decoded: unavailable ({result['decode_error']})")
-        return code
-    return run_cast(["call",signature,*values],config)
+    if mode == "encode":
+        return run_cast(["calldata", signature, *values], config)
+    if mode == "send":
+        # run_cast already owns the canonical transaction/return-value report.
+        # Re-tracing here duplicated the same ABI return and added an extra RPC
+        # round trip after a successful send.
+        return run_cast(["send", signature, *values, "--confirm"], config)
+    return run_cast(["call", signature, *values], config)
 
 
 
@@ -29396,7 +29453,7 @@ def _print_ai_recommendations(command, native_items, config=None, args=None, res
         )
 
 def _print_recommended_next_commands(command, args=None, result=0, config=None):
-    """Render native suggestions on success and optional learning notes for any eligible attempt."""
+    """Render one compact, consistent next-step section after successful commands."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
     canonical = _canonical_help_command(command)
     raw_args = [str(item).strip().lower() for item in (args or [])]
@@ -29407,42 +29464,10 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     items = []
     if result_code in {None, 0}:
         items = _recommended_next_commands(command, args, config)
-    if items and canonical in {"fn", "functions"}:
-        print("")
-        print(_function_terminal_style("NEXT COMMANDS", "heading"))
-        try:
-            footer_width = shutil.get_terminal_size(fallback=(88, 24)).columns
-        except (OSError, AttributeError):
-            footer_width = 88
-        print(_function_terminal_style("─" * max(48, min(footer_width, 88)), "muted"))
-        short_reasons = {
-            "lk ask": "Understand the function's inputs",
-            "lk read": "Read current contract state",
-            "lk wizard": "Run with guided prompts",
-            "lk changes": "Review state effects",
-        }
-        command_width = min(max(len(command_text) for command_text, _ in items), 42)
-        for command_text, reason in items:
-            command_key = " ".join(command_text.split()[:2])
-            short_reason = short_reasons.get(command_key)
-            if short_reason is None:
-                short_reason = str(reason).split(". ", 1)[0].strip()
-                if len(short_reason) > 54:
-                    short_reason = short_reason[:51].rstrip() + "..."
-            if len(command_text) <= command_width:
-                print(f"  {command_text:<{command_width}}  {short_reason}")
-            else:
-                _function_print_wrapped("  ", command_text)
-                print(f"  {' ' * command_width}  {short_reason}")
-    elif items:
-        print("")
-        print("LOWKEY RECOMMENDED NEXT COMMANDS")
-        print("================================")
-        for index, (command_text, reason) in enumerate(items, 1):
-            print(f"  {index}. {command_text}")
-            print(f"     Why: {reason}")
-    # Unlike the native task menu, the AI learning nudge is allowed after a
-    # failed/unknown command and when there is no static next-command menu.
+    if items:
+        _print_ask_next_commands(items)
+
+    # AI learning guidance remains a separate optional layer.
     _print_ai_recommendations(command, items, config, args=args, result=result_code)
 
 
