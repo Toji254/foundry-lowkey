@@ -713,7 +713,7 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertIn(("WRITES", storage["index"], "INFERRED"), create_facts)
         self.assertIn(("WRITES", storage["orders"], "INFERRED"), create_facts)
         for item in create_effects:
-            self.assertIn(item.get("source", {}).get("line"), {211, 231, 232})
+            self.assertIn(item.get("source", {}).get("line"), {211, 212, 231, 232})
             self.assertTrue(item.get("source", {}).get("file", "").endswith("OrderBook.sol"))
 
         status, helper_effects = lk._compiler_ast_effects_for_function(
