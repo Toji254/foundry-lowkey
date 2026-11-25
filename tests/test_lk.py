@@ -8709,9 +8709,9 @@ def withdraw(amount: uint256):
             "input": "0x",
         }
         config = {
-            "actor": "alicw",
+            "actor": "Alice",
             "target": target,
-            "target_contract": "Telephone",
+            "target_contract": "Target",
             "wallets": {},
             "labels": {},
         }
@@ -8722,14 +8722,14 @@ def withdraw(amount: uint256):
                  patch.object(lk, "cast_output", return_value=(0, json.dumps(transaction), "")), \
                  patch.object(lk, "load_abi", return_value=[]), \
                  patch.object(lk, "project_context_target", return_value={
-                     "address": target, "contract": "Telephone"
+                     "address": target, "contract": "Target"
                  }), \
                  patch.object(lk, "active_project_target", return_value=target), \
                  patch.object(lk, "_transaction_target_msg_senders", return_value=[(intermediary, "CALL")]), \
                  patch.object(lk, "_lab_workspace_remembered_targets", return_value=[{
-                     "name": "attackTelephone", "address": intermediary,
-                     "root": root / "Attack",
-                     "artifact": str(root / "Attack" / "out" / "attackTelephone.json"),
+                     "name": "Forwarder", "address": intermediary,
+                     "root": root / "Forwarder",
+                     "artifact": str(root / "Forwarder" / "out" / "Forwarder.json"),
                  }]), \
                  patch.object(lk, "_lab_remembered_contract_is_live", return_value=True), \
                  patch.object(lk.walkthrough, "_receipt", return_value={"status": "0x1"}), \
@@ -8743,13 +8743,13 @@ def withdraw(amount: uint256):
         self.assertIn("LOWKEY / TRANSACTION", rendered)
         self.assertIn("EXECUTION CONTEXT", rendered)
         self.assertIn(f"tx.origin: {origin} (transaction signer)", rendered)
-        self.assertIn(f"To: attackTelephone ({intermediary})", rendered)
-        self.assertIn("msg.sender at Telephone (CALL): attackTelephone", rendered)
+        self.assertIn(f"To: Forwarder ({intermediary})", rendered)
+        self.assertIn("msg.sender at Target (CALL): Forwarder", rendered)
         self.assertIn(f"({intermediary})", rendered)
         # Terminal wrapping may split explanatory prose across physical lines.
         normalized_rendered = " ".join(rendered.split())
         self.assertIn(
-            "was the immediate caller to Telephone; tx.origin remains",
+            "was the immediate caller to Target; tx.origin remains",
             normalized_rendered,
         )
         self.assertNotIn("msg.sender at top-level recipient", rendered)
