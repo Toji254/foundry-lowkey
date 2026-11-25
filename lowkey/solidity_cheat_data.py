@@ -268,6 +268,136 @@ contract CallsLab {
         allowance[msg.sender][spender] = amount;
     }
 }""",
+    "structs": """contract StructsReferenceLab {
+    enum Status { Draft, Active, Closed }
+
+    struct Bounds {
+        uint128 minimum;
+        uint128 maximum;
+    }
+
+    struct Record {
+        uint256 id;
+        uint128 weight;
+        int256 adjustment;
+        bool active;
+        address creator;
+        address payable payout;
+        bytes32 recordId;
+        bytes4 selector;
+        string title;
+        bytes metadata;
+        uint256[] scores;
+        uint256[3] fixedScores;
+        bytes32[] tags;
+        bytes32[2] fixedTags;
+        address[] signers;
+        address[2] fixedSigners;
+        string[] options;
+        Status status;
+        Bounds bounds;
+    }
+
+    // A mapping member is valid in a storage-only struct.
+    struct CreditAccount {
+        uint256 balance;
+        mapping(address => uint256) allowances;
+    }
+
+    mapping(bytes32 => Record) private records;
+    mapping(address => CreditAccount) private creditAccounts;
+    uint256 private nonce;
+
+    function create(
+        string calldata title,
+        string[] calldata suppliedOptions
+    ) external returns (bytes32 recordId) {
+        require(suppliedOptions.length >= 2, "need two options");
+
+        uint256 currentNonce = nonce;
+        nonce = currentNonce + 1;
+        recordId = keccak256(abi.encode(msg.sender, currentNonce, title));
+
+        string[] memory options = new string[](suppliedOptions.length);
+        for (uint256 i = 0; i < suppliedOptions.length; i++) {
+            options[i] = suppliedOptions[i];
+        }
+
+        uint256[] memory scores = new uint256[](options.length);
+
+        bytes32[] memory tags = new bytes32[](2);
+        tags[0] = keccak256("governance");
+        tags[1] = keccak256("community");
+
+        address[] memory signers = new address[](1);
+        signers[0] = msg.sender;
+
+        uint256[3] memory fixedScores = [
+            uint256(7),
+            uint256(8),
+            uint256(9)
+        ];
+
+        bytes32[2] memory fixedTags = [
+            bytes32(uint256(1)),
+            bytes32(uint256(2))
+        ];
+
+        address[2] memory fixedSigners = [
+            msg.sender,
+            address(this)
+        ];
+
+        bytes memory metadata = hex"1234";
+
+        Record memory record = Record({
+            id: currentNonce,
+            weight: 10,
+            adjustment: -1,
+            active: true,
+            creator: msg.sender,
+            payout: payable(msg.sender),
+            recordId: recordId,
+            selector: bytes4(keccak256("transfer(address,uint256)")),
+            title: title,
+            metadata: metadata,
+            scores: scores,
+            fixedScores: fixedScores,
+            tags: tags,
+            fixedTags: fixedTags,
+            signers: signers,
+            fixedSigners: fixedSigners,
+            options: options,
+            status: Status.Active,
+            bounds: Bounds({minimum: 1, maximum: 100})
+        });
+
+        // Copies the memory struct and its dynamic arrays into storage.
+        records[recordId] = record;
+    }
+
+    function appendOption(bytes32 recordId, string calldata option) external {
+        Record storage record = records[recordId];
+        require(record.creator == msg.sender, "not creator");
+
+        // Dynamic arrays in storage can grow.
+        record.options.push(option);
+        record.scores.push(0);
+    }
+
+    function getOptions(bytes32 recordId)
+        external
+        view
+        returns (string[] memory)
+    {
+        return records[recordId].options;
+    }
+
+    function setAllowance(address spender, uint256 amount) external {
+        // Access a mapping member through its storage struct.
+        creditAccounts[msg.sender].allowances[spender] = amount;
+    }
+}""",
     "struct-types": """contract StructTypesLab {
     enum Status { Open, Paid }
 
