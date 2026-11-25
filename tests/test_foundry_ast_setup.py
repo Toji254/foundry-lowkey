@@ -196,5 +196,29 @@ class FoundryAstSetupTests(unittest.TestCase):
             self.assertTrue(second_backup.exists())
 
 
+
+    def test_ast_help_accepts_every_lowkey_help_alias_and_uses_send_style(self):
+        from contextlib import redirect_stdout
+
+        for alias in ("--h", "--help", "-h", "help"):
+            output = __import__("io").StringIO()
+            with redirect_stdout(output):
+                status = ast_setup.main([alias])
+            rendered = output.getvalue()
+            self.assertEqual(status, 0)
+            for section in (
+                "LOWKEY HELP  •  lk ast",
+                "What it does:",
+                "When to use:",
+                "Usage:",
+                "COMMAND VARIATIONS",
+                "OPTIONS / MODES",
+                "RELATED COMMANDS",
+                "HELP TIP",
+                "lk ast doctor",
+                "lk ast setup",
+            ):
+                self.assertIn(section, rendered)
+
 if __name__ == "__main__":
     unittest.main()
