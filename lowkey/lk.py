@@ -10793,6 +10793,8 @@ def _doctor_compact_summary(report, exit_code):
         if status == "PASS":
             version = detail.rsplit("(", 1)[-1].rstrip(")") if "(" in detail else detail
             version = re.sub(r"^(?:forge|cast|anvil|chisel) Version:\s*", "", version, flags=re.I)
+            if name == "python3":
+                version = re.sub(r"^Python\s+", "", version, flags=re.I)
             core_tools.append(f"{display} {version}".strip())
         elif status in {"FAIL", "WARN"}:
             core_tools.append(f"{display} unavailable")
