@@ -3460,6 +3460,25 @@ def _function_print_wrapped(prefix, value):
     print("\n".join(rendered) if rendered else prefix.rstrip())
 
 
+
+def _function_parameter_labels(parameters, fallback_prefix="arg"):
+    """Render ABI input/output names with types in their declared positional order.
+
+    ABI names are useful for humans but are not part of the canonical function
+    signature. Some compiler-generated getter inputs or hand-authored ABIs omit
+    names, so expose an explicit argN/retN fallback rather than guessing.
+    """
+    labels = []
+    for position, parameter in enumerate(parameters or [], 1):
+        if not isinstance(parameter, dict):
+            continue
+        name = str(parameter.get("name") or "").strip()
+        if not name:
+            name = f"{fallback_prefix}{position}"
+        labels.append(f"{name}:{canonical_type(parameter)}")
+    return labels
+
+
 def _function_default_eth_annotation(record):
     """Return compact status labels without treating compiler-generated getters as source functions."""
     mutability = str(record.get("mutability") or "unknown").lower()
@@ -3510,10 +3529,8 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
             print(f"  mutability : {record['mutability']}")
             print(f"  class      : {' • '.join(record['classes'])}")
             print(f"  modifiers  : {_function_modifier_text(record)}")
-            params = [f"{param.get('name') or 'arg' + str(position)}:{canonical_type(param)}"
-                      for position, param in enumerate(record["inputs"], 1)]
-            outputs = [f"{param.get('name') or 'ret' + str(position)}:{canonical_type(param)}"
-                       for position, param in enumerate(record["outputs"], 1)]
+            params = _function_parameter_labels(record.get("inputs"), "arg")
+            outputs = _function_parameter_labels(record.get("outputs"), "ret")
             print(f"  params     : {', '.join(params) if params else '—'}")
             print(f"  returns    : {', '.join(outputs) if outputs else '—'}")
             print(f"  reads      : {', '.join(record['reads']) if record['reads'] else '—'}")
@@ -4110,6 +4127,12 @@ def run_functions(config, args=None):
                 f"  {function_numbers[id(record)]:02d}  ",
                 signature,
             )
+            input_labels = _function_parameter_labels(record.get("inputs"), "arg")
+            if input_labels:
+                _function_print_wrapped(
+                    "      INPUTS   ",
+                    " · ".join(input_labels),
+                )
             labels = _function_default_eth_annotation(record)
             status = " · ".join(
                 _function_terminal_style(label, tone) for label, tone in labels
