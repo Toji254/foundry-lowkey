@@ -558,6 +558,8 @@ class CommandHelpTests(unittest.TestCase):
                 "--dry-run",
                 "--confirm",
                 "--yes",
+                "never skip sender resolution or the read-only revert guard",
+                "--from <address>",
                 "Solidity receives that ETH as msg.value",
             ),
             "probe": (
