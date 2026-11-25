@@ -12719,7 +12719,7 @@ def source_contract_fallback(
             Path(source_file).expanduser().resolve(strict=True)
             if source_file is not None else None
         )
-        scope_path.relative_to(root_path)
+        scope_relative = scope_path.relative_to(root_path)
         if not scope_path.is_dir():
             return None
         if requested_source is not None:
@@ -12760,7 +12760,7 @@ def source_contract_fallback(
         try:
             resolved = candidate.resolve(strict=True)
             relative = resolved.relative_to(root_path)
-            relative.relative_to(scope_path)
+            relative.relative_to(scope_relative)
         except (OSError, RuntimeError, ValueError):
             continue
         if not resolved.is_file() or resolved.suffix.lower() not in {".sol", ".vy"}:
