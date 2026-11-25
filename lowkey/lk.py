@@ -27053,6 +27053,7 @@ _NATIVE_HELP_SOURCES = {
     "chisel": ("chisel", []),
     "slither": ("slither", []),
     "fork": ("anvil", []),
+    "clean": ("forge", ["clean"]),
 }
 for _help_command, (_help_binary, _help_args) in _NATIVE_HELP_SOURCES.items():
     if _help_command in COMMAND_HELP and not COMMAND_HELP[_help_command].get("native_help"):
