@@ -27265,6 +27265,28 @@ def _help_alias_for(command):
         return None
     return raw
 
+
+_CLEAN_HELP_GUIDE_INSTALLED = True
+_clean_help_entry = COMMAND_HELP.get("clean")
+if isinstance(_clean_help_entry, dict):
+    _clean_help_entry.update({
+        "usage": "lk clean [native-options...]",
+        "example": "lk clean",
+        "use": "Use it before a clean rebuild or when generated compiler output is stale. Foundry is preferred when a Foundry project/workspace is detected; otherwise Hardhat is selected when available.",
+        "forms": [
+            ("lk clean", "Run the native clean command selected for this project. Foundry is preferred when the project contains a Foundry configuration or workspace stack; otherwise Hardhat is used when detected.", "lk clean"),
+            ("lk clean --h", "Show this guide without running a cleaner or changing project files.", "lk clean --h"),
+        ],
+        "options": [
+            ("Backend-specific flags", "Lowkey forwards extra arguments to the selected native cleaner. The selected backend's supported native options are displayed in this help page when its executable is installed.", "lk clean --h"),
+        ],
+        "notes": [
+            ("What is removed", "The native backend removes generated build artifacts and cache files; source files, manifests, dependency directories, and on-chain state are not targets of this command.", "lk clean"),
+            ("Mixed projects", "When both Foundry and Hardhat are present, Lowkey preserves the existing Foundry-first clean behavior.", "lk clean"),
+        ],
+        "related": ["lk build", "lk test", "lk forge"],
+    })
+
 def _help_entry_for_path(path):
     if not path:
         return None, [], None
