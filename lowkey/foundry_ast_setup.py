@@ -203,6 +203,8 @@ def _patch_profile_settings(
                     "Lowkey will not guess which value Foundry should use."
                 )
             seen[key] = index
+            if key not in desired:
+                continue
 
             rhs = match.group("rhs")
             comment_match = re.search(r"\s+#.*$", rhs)
