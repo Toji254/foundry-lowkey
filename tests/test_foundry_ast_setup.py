@@ -109,6 +109,19 @@ class FoundryAstSetupTests(unittest.TestCase):
             ],
         )
 
+    def test_preserves_existing_false_build_info_omission_setting(self):
+        original = (
+            "[profile.default]\n"
+            "ast = false\n"
+            "build_info = false\n"
+            "build_info_without_ast = false # leave this alone\n"
+        )
+        updated, changed = ast_setup._patch_profile_settings(original, "default")
+        self.assertTrue(changed)
+        self.assertIn("build_info_without_ast = false # leave this alone", updated)
+        parsed = ast_setup._parse_toml(updated)
+        self.assertIs(parsed["profile"]["default"]["build_info_without_ast"], False)
+
     def test_can_disable_build_info_ast_omission_when_foundry_reports_it(self):
         original = (
             "[profile.default]\n"
