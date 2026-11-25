@@ -965,6 +965,7 @@ def apply_solc_ast_call_edges(
             "ast_source_units": source_units_with_ast,
             "functions": 0,
             "covered_function_ids": sorted(ast_covered),
+            "call_edges": 0,
             "modifier_edges": 0,
             "storage_edges": 0,
             "storage_contexts_processed": 0,
