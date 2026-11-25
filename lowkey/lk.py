@@ -10675,6 +10675,64 @@ def _doctor_engine_inventory(root):
         return {"engines": [], "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _doctor_supplemental_tool_inventory(root):
+    """Collect installed native ecosystem and Solidity support tools."""
+    rows = []
+    info = {}
+    if root and callable(detect_project):
+        try:
+            info = detect_project(root) or {}
+        except Exception:
+            info = {}
+    native = info.get("native") if isinstance(info, dict) else {}
+    native = native if isinstance(native, dict) else {}
+
+    ecosystem = (
+        ("scarb", "Scarb / Cairo"),
+        ("snforge", "Starknet Foundry"),
+        ("vyper", "Vyper"),
+        ("hardhat", "Hardhat"),
+        ("ape", "ApeWorx"),
+        ("brownie", "Brownie"),
+        ("anchor", "Solana Anchor"),
+        ("aptos", "Aptos CLI"),
+        ("sui", "Sui CLI"),
+        ("cargo-audit", "cargo-audit"),
+        ("cargo-geiger", "cargo-geiger"),
+        ("pytest", "pytest"),
+        ("boa", "Titanoboa"),
+    )
+    for key, label in ecosystem:
+        if not native.get(key):
+            continue
+        executable = {
+            "scarb": "scarb", "snforge": "snforge", "vyper": "vyper",
+            "hardhat": "hardhat", "ape": "ape", "brownie": "brownie",
+            "anchor": "anchor", "aptos": "aptos", "sui": "sui",
+            "cargo-audit": "cargo-audit", "cargo-geiger": "cargo-geiger",
+            "pytest": "pytest",
+        }.get(key)
+        path = shutil.which(executable) if executable else None
+        if key == "hardhat" and not path and root:
+            candidate = Path(root) / "node_modules" / ".bin" / "hardhat"
+            path = str(candidate) if candidate.is_file() else None
+        rows.append({"name": label, "path": path or "Python module / project-local tool"})
+
+    for executable, label in (
+        ("crytic-compile", "crytic-compile"),
+        ("solc-select", "solc-select"),
+    ):
+        path = shutil.which(executable)
+        if path:
+            rows.append({"name": label, "path": path})
+
+    # Stable ordering and no duplicate names make the count auditable.
+    unique = {}
+    for row in rows:
+        unique[row["name"]] = row
+    return [unique[name] for name in sorted(unique, key=str.casefold)]
+
+
 def _doctor_compact_summary(report, exit_code):
     """Render the default doctor view as a short health and tool inventory."""
     lines = str(report or "").splitlines()
@@ -10727,6 +10785,7 @@ def _doctor_compact_summary(report, exit_code):
     engines = engine_report.get("engines") or []
     available = [item for item in engines if isinstance(item, dict) and item.get("available")]
     missing = [item for item in engines if isinstance(item, dict) and not item.get("available")]
+    supplemental = _doctor_supplemental_tool_inventory(root)
     display_names = {"forge": "Forge", "slither": "Slither", "halmos": "Halmos",
                      "echidna": "Echidna", "medusa": "Medusa", "certora": "Certora"}
     # Forge is already listed as part of the environment/toolchain above.
@@ -10762,6 +10821,9 @@ def _doctor_compact_summary(report, exit_code):
         print("  Inventory unavailable: " + engine_report["error"])
     else:
         print("  No verification adapters were registered.")
+    if supplemental:
+        print(f"  Extra toolchains: {len(supplemental)} detected")
+        print("  " + "  ·  ".join(item["name"] for item in supplemental))
     print("")
     print("PROJECT HEALTH")
     print(f"  {build_line}")
@@ -10807,6 +10869,19 @@ def _doctor_verbose_engine_inventory(root):
         print(f"  {state:<9} {name:<12} {kinds}")
         if engine.get("notes"):
             print(f"            {engine['notes']}")
+
+    try:
+        root = audit_context.foundry_project_root()
+    except Exception:
+        root = None
+    supplemental = _doctor_supplemental_tool_inventory(root)
+    print("")
+    print("ADDITIONAL NATIVE / ECOSYSTEM TOOLS")
+    print("==================================")
+    if not supplemental:
+        print("  No additional recognized toolchains detected.")
+    for item in supplemental:
+        print(f"  AVAILABLE {item['name']:<20} {item['path']}")
 
 
 def run_doctor(args=None):
