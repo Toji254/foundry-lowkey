@@ -10806,21 +10806,34 @@ def _doctor_supplemental_tool_inventory(root):
         ("pytest", "pytest"),
         ("boa", "Titanoboa"),
     )
+    executable_names = {
+        "scarb": "scarb", "snforge": "snforge", "vyper": "vyper",
+        "hardhat": "hardhat", "ape": "ape", "brownie": "brownie",
+        "anchor": "anchor", "aptos": "aptos", "sui": "sui",
+        "cargo-audit": "cargo-audit", "cargo-geiger": "cargo-geiger",
+        "pytest": "pytest",
+    }
     for key, label in ecosystem:
-        if not native.get(key):
-            continue
-        executable = {
-            "scarb": "scarb", "snforge": "snforge", "vyper": "vyper",
-            "hardhat": "hardhat", "ape": "ape", "brownie": "brownie",
-            "anchor": "anchor", "aptos": "aptos", "sui": "sui",
-            "cargo-audit": "cargo-audit", "cargo-geiger": "cargo-geiger",
-            "pytest": "pytest",
-        }.get(key)
+        executable = executable_names.get(key)
         path = shutil.which(executable) if executable else None
         if key == "hardhat" and not path and root:
             candidate = Path(root) / "node_modules" / ".bin" / "hardhat"
             path = str(candidate) if candidate.is_file() else None
-        rows.append({"name": label, "path": path or "Python module / project-local tool"})
+        # Native detection also covers local executables and Python modules.
+        if not native.get(key) and not path:
+            continue
+        rows.append({
+            "name": label,
+            "path": path or "Python module / project-local tool",
+        })
+
+    # Project-aware analyzers can include tools surfaced by a framework
+    # integration even when they are not standalone executables.
+    analyzers = info.get("security_analyzers") if isinstance(info, dict) else []
+    for analyzer in analyzers if isinstance(analyzers, list) else []:
+        name = str(analyzer or "").strip()
+        if name and name.lower() not in {"slither", "cargo-audit", "cargo-geiger"}:
+            rows.append({"name": name, "path": "project-aware analyzer"})
 
     for executable, label in (
         ("crytic-compile", "crytic-compile"),
@@ -10835,6 +10848,7 @@ def _doctor_supplemental_tool_inventory(root):
     for row in rows:
         unique[row["name"]] = row
     return [unique[name] for name in sorted(unique, key=str.casefold)]
+
 
 
 def _doctor_compact_summary(report, exit_code):
