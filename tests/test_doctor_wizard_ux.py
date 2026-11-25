@@ -58,7 +58,7 @@ PASS  dependency command: cast receipt
         self.assertIn("crytic-compile", rendered)
         self.assertIn("Forge is included in the count", rendered)
         self.assertEqual(rendered.count("Slither"), 1)
-        self.assertIn("Project build", rendered)
+        self.assertIn("project build", rendered)
         self.assertNotIn("dependency command", rendered)
         self.assertNotIn("Workspace root", rendered)
 
