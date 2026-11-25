@@ -5449,9 +5449,10 @@ def run_tx(config, args):
             )
         else:
             _function_print_wrapped(
-                "Expected tx.origin: ",
-                origin_label + " (transaction not yet mined)",
+                "Expected tx.origin when mined: ",
+                origin_label,
             )
+            print("msg.sender context: unavailable until the transaction is mined.")
     else:
         print("tx.origin: unavailable (transaction sender is missing or invalid).")
 
@@ -5487,10 +5488,13 @@ def run_tx(config, args):
             "Selected project target: ",
             f"{target_name} ({selected_target})",
         )
-        if not is_mined or not origin_label:
+        if not is_mined:
+            # Pending status was explained above; do not repeat the same warning.
+            pass
+        elif not origin_label:
             _function_print_wrapped(
                 f"msg.sender at {target_name}: ",
-                "unavailable until the transaction is mined",
+                "unavailable because the transaction sender is missing or invalid",
             )
         elif is_address(tx_to) and selected_target.lower() == str(tx_to).lower():
             _function_print_wrapped(
@@ -5559,7 +5563,8 @@ def run_tx(config, args):
             "ETH value: ",
             f"{_wei_to_eth(value_wei)} ETH ({value_wei:,} wei)",
         )
-        print("  Top-level value only; internal ETH/token transfers are visible in traces and logs.")
+        print("  This is native ETH attached to the top-level transaction.")
+        print("  Internal ETH/token transfers are separate and appear in traces/logs.")
 
     input_data = transaction.get("input") or transaction.get("data") or "0x"
     if isinstance(input_data, str) and input_data.startswith("0x") and len(input_data) >= 10:
@@ -15575,22 +15580,22 @@ def _numeric_field_is_value_like(label):
 
 
 def _print_numeric_unit_reference(label, ptype):
-    """Give a compact numeric hint without guessing the contract's units."""
+    """Show the short numeric entry guide without guessing contract-specific units."""
     if not str(ptype).startswith(("uint", "int")):
         return
 
-    print("  Integer: enter a raw whole number; commas and underscores are accepted.")
+    print("")
+    print("NUMERIC INPUT OPTIONS")
+    print("  Raw integer : a value such as 1000000 is passed through unchanged.")
+    print("  Separators  : commas/underscores are accepted, e.g. 1,000,000.")
+    print("  Unit note   : uint/int types do not specify what the number measures.")
     if _numeric_field_is_value_like(label):
-        print(
-            "  Units: the ABI does not define them. ETH/gwei/wei inputs convert to wei; "
-            "use them only when the source expects wei."
-        )
-        print("  Reference: 1 ETH = 10^18 wei; 1 gwei = 10^9 wei.")
+        print("  Optional ETH units: 0.5 ETH, 10 gwei, or 1 wei (converted to wei).")
+        print("  Check first : use units only if the contract expects a wei-denominated amount.")
     else:
-        print(
-            "  Units: uint/int does not say what the number measures. "
-            "Use plain integers unless the source confirms a wei-denominated value."
-        )
+        print("  Field hint  : this name does not suggest an ETH amount.")
+        print("  Use plain integers unless the source confirms a wei-denominated value.")
+    print("")
 
 
 def _normalize_human_numeric_input(value, ptype, label=''):
@@ -29464,6 +29469,21 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     items = []
     if result_code in {None, 0}:
         items = _recommended_next_commands(command, args, config)
+    if items and canonical in {"fn", "functions"}:
+        short_reasons = {
+            "lk ask": "Understand the function's inputs",
+            "lk read": "Read current contract state",
+            "lk wizard": "Run with guided prompts",
+            "lk changes": "Review state effects",
+        }
+        compact_items = []
+        for command_text, reason in items:
+            command_key = " ".join(str(command_text).split()[:2])
+            compact_items.append((
+                command_text,
+                short_reasons.get(command_key, str(reason).split(". ", 1)[0].strip()),
+            ))
+        items = compact_items
     if items:
         _print_ask_next_commands(items)
 
@@ -29930,12 +29950,21 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         print("")
         print(_function_terminal_style("PREVIEW COMMAND", "heading"))
         if all(value is not None for value in examples):
-            command = "lk send " + shlex.quote(command_function)
-            if examples:
-                command += " " + " ".join(examples)
-            command += " --preview"
-            _function_print_wrapped("  ", command)
-            print(_function_terminal_style("  Preview only; nothing is broadcast. Edit the sample values before running.", "muted"))
+            read_only = str(item.get("stateMutability") or "").lower() in {"view", "pure"}
+            if read_only:
+                print(
+                    _function_terminal_style(
+                        "  Read-only function. Use the command under NEXT; no transaction is broadcast.",
+                        "muted",
+                    )
+                )
+            else:
+                command = "lk send " + shlex.quote(command_function)
+                if examples:
+                    command += " " + " ".join(examples)
+                command += " --preview"
+                _function_print_wrapped("  ", command)
+                print(_function_terminal_style("  Preview only; nothing is broadcast. Edit the sample values before running.", "muted"))
         else:
             print("  No safe example could be generated for every argument.")
             print("  Check the unsupported argument type in Solidity source before constructing the command.")

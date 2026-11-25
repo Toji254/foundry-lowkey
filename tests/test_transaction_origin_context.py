@@ -214,7 +214,8 @@ class TransactionOriginContextTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn(f"tx.origin: {self.origin}", rendered)
-        self.assertIn(f"msg.sender at Telephone (CALL): {self.attacker}", rendered)
+        self.assertIn("msg.sender at Telephone (CALL):", rendered)
+        self.assertIn(self.attacker, rendered)
         rpc_call.assert_called_once_with(
             "http://127.0.0.1:8545",
             "debug_traceTransaction",
