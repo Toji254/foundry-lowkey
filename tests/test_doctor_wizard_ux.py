@@ -129,6 +129,7 @@ PASS  dependency command: cast receipt
 
         self.assertFalse(result["available"])
         self.assertEqual(result["status"], "reverted")
+        self.assertFalse(result["sender_resolved"])
         self.assertIn("Atleat 2 OPTIONS", result["reason"])
 
     def test_reverted_preflight_blocks_send_before_confirmation(self):
@@ -158,6 +159,37 @@ PASS  dependency command: cast receipt
         self.assertNotEqual(result, 0)
         prompt.assert_not_called()
         cast_output.assert_not_called()
+
+
+    def test_yes_flag_skips_prompt_but_not_known_revert_preflight(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "_target_health_block", return_value=None), \
+             patch.object(lk, "resolve_function", return_value="setValue(uint256)"), \
+             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "resolve_wallet_key", return_value=None), \
+             patch.object(lk, "_transaction_preview_gas", return_value={
+                 "available": False,
+                 "status": "reverted",
+                 "reason": "Atleat 2 OPTIONS",
+             }), \
+             patch.object(lk, "_print_transaction_gas_context") as gas_report, \
+             patch.object(lk, "cast_output") as cast_output, \
+             patch("builtins.input") as prompt, \
+             redirect_stdout(io.StringIO()):
+            result = lk.run_cast(["send", "setValue", "5", "--yes"], {"target": target})
+
+        self.assertNotEqual(result, 0)
+        gas_report.assert_called_once()
+        cast_output.assert_not_called()
+        prompt.assert_not_called()
 
     def test_wallet_error_explains_no_signer_and_no_broadcast(self):
         rendered = lk._format_cli_error(
