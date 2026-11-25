@@ -1427,7 +1427,7 @@ def remember_project_target(config, root, name, address, *, runtime_state=None):
             "runtime_code_hash_status": runtime_state.get("runtime_code_hash_status") or "UNAVAILABLE",
             "runtime_status": runtime_state.get("status") or "UNKNOWN",
             "verification": runtime_state.get("verification") or "UNVERIFIED",
-            "observed_at": datetime.now().isoformat(timespec="seconds"),
+            "observed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         provenance = {key: value for key, value in snapshot.items() if value is not None}
     project_record = {
@@ -8675,7 +8675,7 @@ def run_snapshot(config,slots=None):
         state[str(slot)]=run_cast(["st",str(slot)]+storage_args,config,capture=True)
     current_block=block or run_cast(["block-number"],config,capture=True)
     chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
-    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().isoformat(timespec="seconds"),"slots":state}
+    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().astimezone().isoformat(timespec="seconds"),"slots":state}
     path=snapshot_path(config,chain); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
     print(f"Snapshot saved: {path}")
 def run_diff(config):
@@ -8788,7 +8788,7 @@ def run_workspace(config,args,root=None):
     for key in ["notes","todos","findings"]:
         if not os.path.exists(paths[key]): open(paths[key],"w",encoding="utf-8").close()
     if not os.path.exists(paths["config"]):
-        Path(paths["config"]).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"created":datetime.now().isoformat(timespec="seconds")},indent=4),encoding="utf-8")
+        Path(paths["config"]).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"created":datetime.now().astimezone().isoformat(timespec="seconds")},indent=4),encoding="utf-8")
     print(f"Audit workspace ready: {paths['root']}")
 def read_json_file(path, default):
     try:
@@ -8836,7 +8836,7 @@ def run_matrix(config,args):
                 "snapshot":snapshot_path(config) if os.path.exists(snapshot_path(config)) else None,
                 "session":SESSION_FILE,
             },
-            "created":datetime.now().isoformat(timespec="seconds"),
+            "created":datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         scenarios=read_json_file(paths["matrix_scenarios"],[]); scenarios.append(scenario); write_json_file(paths["matrix_scenarios"],scenarios)
         print(f"Scenario saved: {scenario['name']}"); return
@@ -8937,7 +8937,7 @@ def run_session_lifecycle(config, action):
     if action == "start":
         os.makedirs(os.path.dirname(paths["session"]), exist_ok=True)
         config["session_active"] = True
-        config["session_started"] = datetime.now().isoformat(timespec="seconds")
+        config["session_started"] = datetime.now().astimezone().isoformat(timespec="seconds")
         save_config(config)
         with open(paths["session"], "a") as f:
             f.write(f"\nSESSION START {config['session_started']}\n")
@@ -9784,7 +9784,7 @@ def _select_project_target(config, entry, root):
             "runtime_code_hash_algorithm": state.get("runtime_code_hash_algorithm"),
             "runtime_status": state.get("status"),
             "verification": state.get("verification"),
-            "verified_at": datetime.now().isoformat(timespec="seconds"),
+            "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         },
     )
     _print_target_runtime_provenance(state)
@@ -11753,7 +11753,7 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
         "auto_started": True,
         "pid": process.pid,
         "rpc": fixture_rpc,
-        "started": datetime.now().isoformat(timespec="seconds"),
+        "started": datetime.now().astimezone().isoformat(timespec="seconds"),
         "purpose": "project-fixture-block-context",
         "fixture_context": context,
         "previous_rpc_present": previous_rpc_present,
@@ -13003,7 +13003,7 @@ def set_lab_target(config, root, target, contract, artifact):
         "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
         "runtime_status": runtime_state.get("status"),
         "verification": runtime_state.get("verification"),
-        "verified_at": datetime.now().isoformat(timespec="seconds"),
+        "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     audit_context.update(
         root,
@@ -13139,7 +13139,7 @@ def ensure_project_anvil(config, root):
                 "auto_started": True,
                 "pid": process.pid,
                 "rpc": rpc,
-                "started": datetime.now().isoformat(timespec="seconds"),
+                "started": datetime.now().astimezone().isoformat(timespec="seconds"),
             }
             write_project_anvil_state(root, state)
             config["_auto_rpc_info"] = info
@@ -23296,7 +23296,7 @@ def run_fork(args, config=None):
         try: process.terminate()
         except OSError: pass
         return fail(f"Error: fork did not become ready. See {log_path}.")
-    state={"pid":process.pid,"local_rpc":f"http://127.0.0.1:{port}","block":block,"started":datetime.now().isoformat(timespec="seconds")}
+    state={"pid":process.pid,"local_rpc":f"http://127.0.0.1:{port}","block":block,"started":datetime.now().astimezone().isoformat(timespec="seconds")}
     Path(FORK_FILE).write_text(json.dumps(state,indent=4),encoding="utf-8")
     config["rpc"]=state["local_rpc"]
     save_config(config)
@@ -27917,7 +27917,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                             "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
                             "runtime_status": runtime_state.get("status"),
                             "verification": runtime_state.get("verification"),
-                            "verified_at": datetime.now().isoformat(timespec="seconds"),
+                            "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                         },
                     )
                     _print_target_runtime_provenance(runtime_state)
@@ -27992,7 +27992,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                     "runtime_code_hash_algorithm": runtime_state.get("runtime_code_hash_algorithm"),
                     "runtime_status": runtime_state.get("status"),
                     "verification": runtime_state.get("verification"),
-                    "verified_at": datetime.now().isoformat(timespec="seconds"),
+                    "verified_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 },
             )
             _print_target_runtime_provenance(runtime_state)
@@ -28326,7 +28326,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="session":
         if args and args[0] in {"start","resume"}: run_session_lifecycle(config,args[0])
         elif args and args[0]=="end":
-            config["session_active"]=False; config["session_ended"]=datetime.now().isoformat(timespec="seconds"); save_config(config); print("Audit session ended.")
+            config["session_active"]=False; config["session_ended"]=datetime.now().astimezone().isoformat(timespec="seconds"); save_config(config); print("Audit session ended.")
         elif os.path.exists(SESSION_FILE): print(Path(SESSION_FILE).read_text(encoding="utf-8"))
         else: print("No session history yet.")
     elif cmd=="workspace": run_workspace(config,args)
