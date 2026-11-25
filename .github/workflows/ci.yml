@@ -590,7 +590,7 @@ jobs:
           test -f "$HOME/.lowkey/trace_schema.py"
           test -f "$HOME/.lowkey/trace_parity.py"
           test -f "$HOME/.lowkey/storage_trace.py"
-          test -f "$HOME/.lowkey/abi_support.py"
+          test -f "$HOME/.lowkey/abi_support.py lowkey/foundry_ast_setup.py"
           test -f "$HOME/.lowkey/setup_reasoner.py"
           test -f "$HOME/.lowkey/foundry_build.py"
           test -f "$HOME/.lowkey/workspace_tools.py"
