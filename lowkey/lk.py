@@ -8529,7 +8529,7 @@ def _print_transaction_gas_context(gas):
 
 
 def _print_transaction_preview(config, command, target, function_item, raw_values, actor=None, direct_eth_transfer=False):
-    """Render a learner-friendly transaction plan; this does not simulate execution."""
+    """Render a transaction plan and read-only execution preflight; never signs or broadcasts."""
     contract_name = (
         config.get("target_contract")
         if str(config.get("target") or "").lower() == str(target or "").lower()
