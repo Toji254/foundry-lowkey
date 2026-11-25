@@ -24646,7 +24646,7 @@ COMMAND_HELP.update({
     "bind-json": _native_forge_help("bind-json", "Generate JSON-form binding output from the current Forge project.", "forge bind-json --help"),
     "cache": _native_forge_help("cache", "Manage Forge's compiler/build cache.", "forge cache --help"),
     "clean": _native_forge_help("clean", "Remove generated artifacts/cache files for the selected project backend (Foundry or Hardhat).", "forge clean --help"),
-    " "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "forge compiler --help"),
+    "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "forge compiler --help"),
     "completions": _native_forge_help("completions", "Generate shell completion scripts for Forge.", "forge completions --help"),
     "config": _native_forge_help("config", "Inspect or work with Forge configuration.", "forge config --help"),
     "doc": _native_forge_help("doc", "Generate or inspect Forge documentation output.", "forge doc --help"),
