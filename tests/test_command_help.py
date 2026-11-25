@@ -1460,19 +1460,49 @@ class CommandHelpTests(unittest.TestCase):
                 result = lk.dispatch_command("ask", ["createProposal"], {})
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("title : string", rendered)
-        self.assertIn("Expects: UTF-8 text", rendered)
-        self.assertIn("deadline : uint256", rendered)
-        self.assertIn("Unsigned whole number", rendered)
-        self.assertIn("ProposalOptions : string[]", rendered)
-        self.assertIn("Dynamic array", rendered)
-        self.assertIn('["Yes","No","Abstain"]', rendered)
-        self.assertIn("COPY, EDIT VALUES, RUN", rendered)
-        self.assertIn("READY-TO-COPY COMMAND", rendered)
+        self.assertIn("LOWKEY / ASK", rendered)
+        self.assertIn("ARGUMENTS", rendered)
+        self.assertIn("title", rendered)
+        self.assertIn("string", rendered)
+        self.assertIn("UTF-8 text", rendered)
+        self.assertIn("deadline", rendered)
+        self.assertIn("uint256", rendered)
+        self.assertIn("Unsigned integer", rendered)
+        self.assertIn("ProposalOptions", rendered)
+        self.assertIn("string[]", rendered)
+        self.assertIn("Array of utf-8 text (one JSON argument)", rendered)
+        self.assertIn("PREVIEW COMMAND", rendered)
         self.assertIn("lk send createProposal \"HI\" 86400 '[\"Yes\",\"No\",\"Abstain\"]' --preview", rendered)
+        self.assertIn("Preview only; nothing is broadcast.", rendered)
+        self.assertIn("ABI types describe encoding, not units or contract-specific rules.", rendered)
+        self.assertNotIn("COPY, EDIT VALUES, RUN", rendered)
+        self.assertNotIn("READY-TO-COPY COMMAND", rendered)
+        self.assertNotIn("INPUT GUIDE", rendered)
+        self.assertNotIn("ABI LIMIT", rendered)
+        self.assertNotIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertNotIn("Why:", rendered)
         self.assertNotIn("LK_ARG_", rendered)
-        self.assertNotIn("createProposal(string,uint256,string[])", rendered)
-        self.assertIn("ABI types describe the encoded shape, not the business meaning.", rendered)
+
+    def test_abi_input_summary_covers_common_and_composite_types(self):
+        cases = [
+            ({"type": "uint256"}, "Unsigned integer"),
+            ({"type": "int128"}, "Signed integer"),
+            ({"type": "bool"}, "true or false"),
+            ({"type": "address"}, "20-byte Ethereum address"),
+            ({"type": "string"}, "UTF-8 text"),
+            ({"type": "string[]"}, "Array of utf-8 text (one JSON argument)"),
+            ({"type": "uint256[3]"}, "Array of unsigned integer (exactly 3)"),
+            (
+                {"type": "tuple", "components": [
+                    {"name": "recipient", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ]},
+                "Struct/tuple: recipient:address, amount:uint256",
+            ),
+        ]
+        for param, expected in cases:
+            with self.subTest(param=param):
+                self.assertEqual(lk._abi_input_summary(param), expected)
 
     def test_abi_input_guide_handles_boolean_address_bytes_fixed_arrays_and_tuples(self):
         bool_guide = lk._abi_input_guide({"name": "enabled", "type": "bool"})
