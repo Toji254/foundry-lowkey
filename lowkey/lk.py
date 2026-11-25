@@ -7803,6 +7803,27 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
 
     is_send = str(command or "").lower() in {"send", "s"}
     is_gas_estimation = "failed to estimate gas" in lowered
+    wallet_error = any(marker in lowered for marker in (
+        "error accessing local wallet",
+        "did you pass a keystore",
+        "did you set a private key",
+        "no signer configured",
+        "no signing account",
+        "failed to unlock local wallet",
+    ))
+    if is_send and wallet_error:
+        return _friendly_error(
+            "No signing account is configured",
+            reason="Cast could not find or unlock a wallet for this send.",
+            what="The failure happened before transaction signing and submission. No transaction was broadcast.",
+            next_step=(
+                "For a local Anvil lab, inspect accounts with 'lk actors' and select one with "
+                "'lk actor <index> <name>'. For a saved signer, inspect 'lk wallet list'. "
+                "For a one-off Cast signer, use '--interactive', '--account <name>', or '--keystore <path>'."
+            ),
+            transaction="Not broadcast — Cast failed while resolving the signing account.",
+        )
+
     looks_reverted = (
         "execution reverted" in lowered
         or ("revert" in lowered and bool(list(_explicit_revert_payloads(text))))
@@ -24649,10 +24670,15 @@ def run_wizard(config, args):
     signature = format_signature(item)
     params = item.get("inputs", [])
 
+    # --learn restores the longer numeric explanation for users who want it.
+    # By default the wizard keeps prompts short and leaves detailed teaching to help.
+    remaining = list(args[1:])
+    learning = "--learn" in remaining
+    remaining = [value for value in remaining if value != "--learn"]
+
     # Preserve the explicit mode spelling while treating positional values as
     # actual function arguments. Without a mode, view/pure functions default to
     # call and state-changing functions default to a confirmed send.
-    remaining = list(args[1:])
     explicit_mode = None
     if remaining and remaining[0].lower() in {"call", "send", "encode"}:
         explicit_mode = remaining.pop(0).lower()
@@ -24669,6 +24695,7 @@ def run_wizard(config, args):
     values = []
     print(_function_terminal_style("LOWKEY / WIZARD", "heading"))
     _function_print_wrapped("  ", signature)
+    print(f"  MODE: {mode.upper()} · {len(params)} input(s)")
     for index, param in enumerate(params, 1):
         label = param.get("name") or f"arg{index}"
         ptype = canonical_type(param)
@@ -24683,12 +24710,14 @@ def run_wizard(config, args):
                 if mode != "send":
                     _function_print_wrapped(f"{label} ({ptype}): ", value)
             else:
-                if ptype.startswith(("uint", "int")):
+                if ptype.startswith(("uint", "int")) and learning:
                     _print_numeric_unit_reference(label, ptype)
                 example = _abi_sample_literal(param)
                 prompt = f"{label} ({ptype})"
                 if example is not None:
                     prompt += f" [example: {example}]"
+                if ptype.startswith(("uint", "int")) and not learning:
+                    prompt += " [integer; unit is defined by the contract]"
                 try:
                     value = input(prompt + ": ").strip()
                 except EOFError:
@@ -24696,7 +24725,14 @@ def run_wizard(config, args):
                     return 0
 
             if value and ptype.startswith(("uint", "int")):
-                value = _normalize_human_numeric_input(value, ptype, label)
+                try:
+                    value = _normalize_human_numeric_input(value, ptype, label)
+                except ValueError as error:
+                    message = f"Invalid {label} ({ptype}): {error}"
+                    if provided:
+                        return fail(message + "\nNo transaction was prepared or broadcast.")
+                    print("  " + message)
+                    continue
             if not value:
                 return fail(f"Argument '{label}' is required.")
 
@@ -25912,6 +25948,7 @@ COMMAND_HELP = {
             ("lk wizard <function> [values...] encode", "Only build the call data. Nothing is sent.", "lk wizard setValue 10 encode"),
         ],
         options=[
+            ("--learn", "Show the longer numeric-input explanation for each integer parameter.", "lk wizard setValue --learn"),
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard setValue 10 send"),
             ("encode", "Build the data for the function call without sending it.", "lk wizard setValue 10 encode"),
@@ -26706,7 +26743,7 @@ COMMAND_HELP = {
     "recon": _help_entry("Quickly inspect a live target for balance/code/nonce and proxy hints.", "lk recon", "lk recon", "Use it as a first-pass sanity check.", related=["lk info", "lk proxy"]),
     "deployments": _help_entry("List deployment history discovered in the current project; this command does not deploy contracts.", "lk deployments", "lk deployments", "Use it to find addresses from previous deployment runs. Use lk deploy or lk lab when you want to deploy a contract now.", related=["lk deploy", "lk target auto", "lk lab"]),
     "clone": _help_entry("Clone and onboard a repository for auditing.", "lk clone <repo> [dir] [options]", "lk clone https://github.com/example/protocol", "Use it when starting work on a repository that is not onboarded yet.", related=["lk build", "lk audit", "lk lab"]),
-    "doctor": _help_entry("Diagnose Lowkey, Foundry, Anvil, dependencies, and optional tools.", "lk doctor", "lk doctor", "Use it before debugging higher-level audit behavior when the toolchain may be the problem.", related=["lk self-test"]),
+    "doctor": _help_entry("Check environment health and installed security/verification tools. Use --verbose for the complete diagnostic report.", "lk doctor [--verbose]", "lk doctor --verbose", "Use it before debugging higher-level audit behavior when the toolchain may be the problem.", related=["lk self-test"]),
     "self-test": _help_entry("Run Lowkey's built-in regression checks.", "lk self-test", "lk self-test", "Use it after changing Lowkey itself."),
     "interface": _help_entry("Inspect interface-related ABI/contract information.", "lk interface [args...]", "lk interface IERC20", "Use it when investigating interface calls or contract boundaries.", related=["lk deps", "lk selectors"]),
     "4byte": _help_entry("Use Cast's 4byte lookup helpers.", "lk 4byte ...", "lk 4byte 0xa9059cbb", "Use it when a selector needs to be matched to possible signatures.", related=["lk sig", "lk calldata"]),
@@ -27991,7 +28028,11 @@ def _apply_command_help_audit_catalog():
         },
         "doctor": {
             "forms": [
-                ("lk doctor", "Check Lowkey, Foundry, Anvil, project dependencies and optional audit tools.", "lk doctor"),
+                ("lk doctor", "Show a compact health summary and the installed security/verification tool count.", "lk doctor"),
+                ("lk doctor --verbose", "Show every dependency check, full paths, optional-tool notes and repair diagnostics.", "lk doctor --verbose"),
+            ],
+            "options": [
+                ("--verbose / -v", "Expand the compact summary into the complete diagnostic report.", "lk doctor --verbose"),
             ],
         },
         "self-test": {
@@ -30333,7 +30374,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd in {"storage","slots"}: return run_storage_slots(config,args)
     elif cmd=="batch": return run_batch(config,args)
     elif cmd=="self-test": raise SystemExit(run_self_test())
-    elif cmd=="doctor": return run_doctor()
+    elif cmd=="doctor": return run_doctor(args)
     elif cmd=="receipt": return run_receipt(config, args=args)
     elif cmd=="link":
         if source_link_engine is None:
