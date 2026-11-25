@@ -580,5 +580,24 @@ class FunctionInventoryTests(unittest.TestCase):
         runner.assert_called_once_with(config, ["-V", "external", "-r"])
 
 
+    def test_cli_help_documents_contract_selector_and_explicit_query(self):
+        for command in ("functions", "fn"):
+            with self.subTest(command=command):
+                output = []
+                with patch.object(
+                    lk, "print",
+                    side_effect=lambda *args: output.append(" ".join(map(str, args))),
+                    create=True,
+                ):
+                    code = lk._render_command_help([command])
+                self.assertEqual(code, 0)
+                rendered = "\\n".join(output)
+                self.assertIn("-q / --query", rendered)
+                self.assertIn("--query OrderBook", rendered)
+                self.assertIn("complete ABI inventory", rendered)
+                self.assertIn("active contract name", rendered)
+
+
+
 if __name__ == "__main__":
     unittest.main()
