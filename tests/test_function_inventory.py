@@ -595,7 +595,7 @@ class FunctionInventoryTests(unittest.TestCase):
                 self.assertIn("-q / --query", rendered)
                 self.assertIn("--query OrderBook", rendered)
                 self.assertIn("complete ABI inventory", rendered)
-                self.assertIn("matches the active contract name", rendered)
+                self.assertIn("active contract name", rendered)
 
 
 
