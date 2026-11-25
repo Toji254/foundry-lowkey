@@ -1439,6 +1439,78 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Did you mean:", rendered)
         self.assertIn("balanceOf(address)", rendered)
 
+    def test_ask_shows_type_expectations_and_shell_safe_examples(self):
+        root = pathlib.Path(".")
+        abi = [
+            {
+                "type": "function",
+                "name": "createProposal",
+                "inputs": [
+                    {"name": "title", "type": "string"},
+                    {"name": "deadline", "type": "uint256"},
+                    {"name": "ProposalOptions", "type": "string[]"},
+                ],
+            }
+        ]
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(lk, "active_project_target", return_value="0x" + "2" * 40), \
+             patch.object(lk, "load_abi", return_value=abi):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.dispatch_command("ask", ["createProposal"], {})
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("title : string", rendered)
+        self.assertIn("Expects: UTF-8 text", rendered)
+        self.assertIn("deadline : uint256", rendered)
+        self.assertIn("Unsigned whole number", rendered)
+        self.assertIn("ProposalOptions : string[]", rendered)
+        self.assertIn("Dynamic array", rendered)
+        self.assertIn('["Yes", "No"]', rendered)
+        self.assertIn("lk send 'createProposal(string,uint256,string[])'", rendered)
+        self.assertIn("ABI types describe the encoded shape, not the business meaning.", rendered)
+
+    def test_abi_input_guide_handles_boolean_address_bytes_fixed_arrays_and_tuples(self):
+        bool_guide = lk._abi_input_guide({"name": "enabled", "type": "bool"})
+        self.assertIn("true or false", bool_guide["expects"])
+        self.assertEqual(bool_guide["example"], "true")
+
+        address_guide = lk._abi_input_guide({"name": "account", "type": "address"})
+        self.assertIn("20-byte Ethereum address", address_guide["expects"])
+        self.assertIn("0x" + "1" * 40, address_guide["example"])
+
+        bytes_guide = lk._abi_input_guide({"name": "salt", "type": "bytes32"})
+        self.assertIn("exactly 32 byte(s)", bytes_guide["expects"])
+        self.assertEqual(bytes_guide["example"], "0x" + "11" * 32)
+
+        fixed_array = lk._abi_input_guide({"name": "scores", "type": "uint256[3]"})
+        self.assertIn("exactly 3 element(s)", fixed_array["expects"])
+        self.assertIn("[42, 42, 42]", fixed_array["example"])
+
+        tuple_guide = lk._abi_input_guide({
+            "name": "request",
+            "type": "tuple",
+            "internalType": "struct VotingContract.Request",
+            "components": [
+                {"name": "voter", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+            ],
+        })
+        self.assertIn("voter:address", tuple_guide["expects"])
+        self.assertIn("amount:uint256", tuple_guide["expects"])
+        self.assertIn("(0x" + "1" * 40 + ",42)", tuple_guide["example"])
+        self.assertIn("struct VotingContract.Request", " ".join(tuple_guide["notes"]))
+
+    def test_abi_input_guide_does_not_guess_enum_member_names_or_custom_type_values(self):
+        guide = lk._abi_input_guide({
+            "name": "status",
+            "type": "uint8",
+            "internalType": "enum VotingContract.Status",
+        })
+        self.assertIn("numeric ordinal", guide["expects"])
+        self.assertIn("does not include the enum member names", guide["notes"][0])
+        self.assertEqual(guide["example"], "1")
+
     def test_recommendations_require_a_curated_workflow(self):
         audit_commands = [command for command, _ in lk._recommended_next_commands("audit", [])]
         self.assertIn("lk findings", audit_commands)

@@ -1514,6 +1514,191 @@ def canonical_type(param):
         return f"({','.join(canonical_type(c) for c in param.get('components',[]))}){suffix}"
     return raw
 
+
+def _abi_input_guide(param):
+    """Describe one ABI input and build a Cast-compatible example token.
+
+    The ABI can describe wire types and tuple component names, but it cannot
+    recover application-level meaning such as units, valid business ranges,
+    authorization rules, or enum member labels.
+    """
+    if not isinstance(param, dict):
+        return {
+            "expects": "ABI metadata is unavailable; inspect the source declaration.",
+            "example": None,
+            "notes": [],
+            "components": [],
+        }
+
+    raw_type = str(param.get("type") or "").strip()
+    internal_type = str(param.get("internalType") or "").strip()
+    canonical = canonical_type(param)
+    array_match = re.fullmatch(r"(.+)\[([0-9]*)\]", raw_type)
+
+    if array_match:
+        element = dict(param)
+        element["type"] = array_match.group(1)
+        element_guide = _abi_input_guide(element)
+        count_text = array_match.group(2)
+        if count_text:
+            expects = (
+                f"Fixed-size array of {element_guide['expects']} "
+                f"with exactly {count_text} element(s)."
+            )
+            notes = [f"Supply exactly {count_text} elements."]
+        else:
+            expects = f"Dynamic array of {element_guide['expects']}."
+            notes = ["Pass the whole array as one argument; single-quote the JSON-style value in Bash."]
+        example = _abi_sample_literal(param)
+        return {
+            "expects": expects,
+            "example": shlex.quote(example) if example is not None else None,
+            "notes": notes,
+            "components": element_guide.get("components", []),
+        }
+
+    if raw_type.startswith("tuple"):
+        components = param.get("components") or []
+        component_labels = []
+        for index, component in enumerate(components, 1):
+            if not isinstance(component, dict):
+                continue
+            component_name = str(component.get("name") or f"field{index}")
+            component_labels.append(f"{component_name}:{canonical_type(component)}")
+        if component_labels:
+            expects = "Tuple/struct value. Supply fields in this exact declaration order: " + ", ".join(component_labels) + "."
+        else:
+            expects = "Tuple/struct value with fields in ABI declaration order."
+        notes = ["Structs are encoded as tuples; pass one parenthesized tuple argument."]
+        if internal_type.lower().startswith("struct "):
+            notes.append(f"ABI identifies this as {internal_type}.")
+        example = _abi_sample_literal(param)
+        return {
+            "expects": expects,
+            "example": shlex.quote(example) if example is not None else None,
+            "notes": notes,
+            "components": component_labels,
+        }
+
+    enum_type = internal_type.lower().startswith("enum ")
+    if enum_type:
+        expects = f"Enum encoded as {canonical}; provide its numeric ordinal."
+        notes = [f"ABI identifies {internal_type}, but does not include the enum member names or their order; inspect the Solidity enum declaration."]
+        example = "1"
+    elif re.fullmatch(r"u?int(?:[0-9]+)?", raw_type):
+        signed = raw_type.startswith("int") and not raw_type.startswith("uint")
+        bits_match = re.search(r"([0-9]+)$", raw_type)
+        bits = int(bits_match.group(1)) if bits_match else 256
+        if signed:
+            expects = f"Signed whole number from -2^{bits - 1} through 2^{bits - 1} - 1; use decimal digits."
+            example = "-7"
+        else:
+            expects = f"Unsigned whole number from 0 through 2^{bits} - 1; use decimal digits."
+            example = "42"
+        notes = []
+    elif raw_type == "bool":
+        expects = "Boolean literal: true or false (lowercase)."
+        example = "true"
+        notes = []
+    elif raw_type == "address":
+        if internal_type.lower().startswith("contract "):
+            expects = f"20-byte address of a deployed {internal_type[9:]} contract."
+        elif internal_type.lower() == "address payable":
+            expects = "20-byte hexadecimal address for an address payable value."
+        else:
+            expects = "20-byte Ethereum address, normally written as 0x followed by 40 hexadecimal characters."
+        example = "0x1111111111111111111111111111111111111111"
+        notes = []
+    elif raw_type == "string":
+        expects = "UTF-8 text. Quote text containing spaces so Bash passes it as one argument."
+        example = "Community proposal"
+        notes = []
+    elif raw_type == "bytes":
+        expects = "Dynamic byte sequence as 0x-prefixed hexadecimal with an even number of hex digits."
+        example = "0x1234"
+        notes = ["Use 0x for an empty byte sequence."]
+    elif re.fullmatch(r"bytes[0-9]+", raw_type):
+        byte_count = int(raw_type[5:])
+        expects = f"Fixed byte sequence of exactly {byte_count} byte(s), written as 0x-prefixed hexadecimal."
+        example = "0x" + ("11" * byte_count)
+        notes = []
+    elif raw_type == "function":
+        expects = "External function pointer encoded as 24 bytes of hexadecimal data."
+        example = "0x" + ("11" * 24)
+        notes = []
+    elif raw_type in {"fixed", "ufixed"} or re.fullmatch(r"u?fixed[0-9]+x[0-9]+", raw_type):
+        expects = f"Fixed-point ABI value ({canonical}); support depends on the installed Cast version."
+        example = None
+        notes = ["No automatic command example is emitted for this less common ABI type."]
+    else:
+        expects = f"ABI type {canonical or raw_type or '<unknown>'}; Lowkey cannot safely infer a literal format for this type."
+        example = None
+        notes = ["Inspect the Solidity declaration and the installed Cast parser before submitting a value."]
+
+    if example is not None:
+        example = shlex.quote(example)
+    return {
+        "expects": expects,
+        "example": example,
+        "notes": notes,
+        "components": [],
+    }
+
+
+def _abi_sample_literal(param, depth=0, context=None):
+    """Return a small valid-shaped Cast literal for common ABI scalar/composite types."""
+    if depth > 8 or not isinstance(param, dict):
+        return None
+    raw_type = str(param.get("type") or "").strip()
+    internal_type = str(param.get("internalType") or "").strip()
+    array_match = re.fullmatch(r"(.+)\[([0-9]*)\]", raw_type)
+
+    if array_match:
+        element = dict(param)
+        element["type"] = array_match.group(1)
+        count_text = array_match.group(2)
+        count = 2 if not count_text else int(count_text)
+        if count > 8:
+            return None
+        values = []
+        for _ in range(count):
+            value = _abi_sample_literal(element, depth + 1, context="array")
+            if value is None:
+                return None
+            if element.get("type") in {"string", "bytes", "address"}:
+                value = json.dumps(value)
+            values.append(value)
+        return "[" + ", ".join(values) + "]"
+
+    if raw_type.startswith("tuple"):
+        components = param.get("components") or []
+        values = []
+        for component in components:
+            value = _abi_sample_literal(component, depth + 1, context="tuple")
+            if value is None:
+                return None
+            values.append(value)
+        return "(" + ",".join(values) + ")"
+
+    if internal_type.lower().startswith("enum "):
+        return "1"
+    if re.fullmatch(r"u?int(?:[0-9]+)?", raw_type):
+        return "42" if raw_type.startswith("uint") else "-7"
+    if raw_type == "bool":
+        return "true"
+    if raw_type == "address":
+        return "0x1111111111111111111111111111111111111111"
+    if raw_type == "string":
+        return "Yes" if context else "Community proposal"
+    if raw_type == "bytes":
+        return "0x1234"
+    if re.fullmatch(r"bytes[0-9]+", raw_type):
+        return "0x" + ("11" * int(raw_type[5:]))
+    if raw_type == "function":
+        return "0x" + ("11" * 24)
+    return None
+
+
 def format_signature(item):
     return f"{item.get('name','<anonymous>')}({','.join(canonical_type(v) for v in item.get('inputs',[]))})"
 def format_output_signature(item):
@@ -29406,7 +29591,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd=="fork": return run_fork(args,config)
     elif cmd=="ask":
         if len(args) != 1:
-            return fail("Usage: lk ask <function>  (this command only inspects the function's parameters)")
+            return fail("Usage: lk ask <function>  (this command inspects ABI inputs and shows value examples)")
         query=args[0]
         root=audit_context.foundry_project_root()
         target=active_project_target(config,root)
@@ -29418,7 +29603,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             print(f"Built-project function matches for '{query}':")
             for contract,signature,path in artifact_matches[:8]:
                 print(f"  {contract}::{signature}")
-            print("Use a deployed project target when you need live-chain details.")
+            print("Use a deployed project target when you need live-chain ABI input guidance.")
             return 0
         matches=matching_functions(funcs,query)
         if len(matches) != 1:
@@ -29431,9 +29616,48 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             print("Use 'lk functions' to list the full contract interface.")
             return 2
         item=matches[0]
-        print(f"Function: {format_signature(item)}")
-        for index,param in enumerate(item.get("inputs",[]),1):
-            print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
+        signature = format_signature(item)
+        inputs = item.get("inputs",[]) or []
+        print(f"Function: {signature}")
+        print("INPUT GUIDE")
+        if not inputs:
+            print("  This function takes no input arguments.")
+            examples = []
+        else:
+            examples = []
+            for index,param in enumerate(inputs,1):
+                name = str(param.get("name") or f"arg{index}")
+                abi_type = canonical_type(param)
+                guide = _abi_input_guide(param)
+                print(f"  {index}. {name} : {abi_type}")
+                print(f"     Expects: {guide['expects']}")
+                if guide.get("example"):
+                    print(f"     Example: {guide['example']}")
+                    examples.append(guide["example"])
+                else:
+                    examples.append(None)
+                    print("     Example: not generated safely for this ABI type.")
+                for note in guide.get("notes") or []:
+                    print(f"     Note: {note}")
+                for component in guide.get("components") or []:
+                    print(f"     Field: {component}")
+        print("")
+        if all(value is not None for value in examples):
+            command = "lk send " + shlex.quote(signature)
+            if examples:
+                command += " " + " ".join(examples)
+            command += " --preview"
+            print("PREVIEW COMMAND (prepares the call; does not broadcast)")
+            print(f"  {command}")
+        else:
+            print("PREVIEW COMMAND")
+            print("  One or more ABI types need a manual value; use the examples above and inspect the source for custom constraints.")
+        print("")
+        print("ABI LIMIT")
+        print("  ABI types describe the encoded shape, not the business meaning.")
+        print("  For example, uint256 alone cannot tell Lowkey whether a value is seconds, a timestamp, a token amount, or a price.")
+        print("  Contract require checks, enum labels, valid address roles, and application-specific bounds must be verified in source.")
+        return 0
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
     elif cmd in {"project", "detect-project", "detect"}:
