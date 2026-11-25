@@ -12287,8 +12287,8 @@ def artifact_is_project_application(root, path, artifact):
     # Explicit sourceName metadata is stronger provenance and needs no basename check.
     if not explicit_source:
         parent_stem = path_obj.parent.name
-        if parent_stem.lower().endswith(".sol"):
-            parent_stem = parent_stem[:-4]
+        if parent_stem.lower().endswith((".sol", ".vy")):
+            parent_stem = parent_stem.rsplit(".", 1)[0]
         if Path(normalized).stem.lower() != parent_stem.lower():
             return False
     source_path = root_path / normalized
