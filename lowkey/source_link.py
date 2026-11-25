@@ -13,8 +13,10 @@ from typing import Any, Sequence
 
 try:
     from source_index import SourceIndexError, build_source_index, find_symbols
+    from source_graph import render_project_graph
 except ImportError:  # pragma: no cover - package-style import
     from lowkey.source_index import SourceIndexError, build_source_index, find_symbols
+    from lowkey.source_graph import render_project_graph
 
 
 ONLY_KINDS = {
@@ -31,6 +33,13 @@ ONLY_KINDS = {
     },
     "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY"},
     "assets": {"ASSET_FLOW"},
+    "all": {
+        "CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS", "REVERTS",
+        "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES", "MUTATES",
+        "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "INITIALIZES",
+        "USES_TYPE", "ALIASES_STORAGE", "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION",
+        "IMPORTS", "INHERITS", "USES_LIBRARY", "ASSET_FLOW",
+    },
 }
 
 
@@ -1620,65 +1629,46 @@ def _render_link_help(command: str = "lk link") -> str:
     return _render_help_page(
         command,
         what=(
-            "Browse the Solidity source map or inspect one contract, function, modifier, "
-            "mapping, or state variable and the relationships Lowkey can resolve from source."
+            "Explore the protocol relationship graph, focus on one contract, or inspect "
+            "a function, mapping, or state variable using Lowkey's source evidence."
         ),
         when=(
-            "Start here when you need to find a declaration, understand who calls a function, "
-            "or see which code reads and writes a piece of state before building a test."
+            "Start with the architecture graph to understand contract dependencies, then "
+            "focus on a contract or trace a function before writing tests."
         ),
-        usage="lk link [TARGET] [OPTIONS]  |  lk link [SOURCE-MAP OPTIONS]",
-        example="lk link Vault.positions",
+        usage="lk link [TARGET] [OPTIONS]",
+        example="lk link --format html",
         forms=[
-            (
-                "lk link",
-                "Browse the source map. The default page shows up to 24 declarations.",
-                "lk link",
-            ),
-            (
-                "lk link <Contract>",
-                "See a contract overview and its source relationships.",
-                "lk link PositionManager --only writes --depth 3",
-            ),
-            (
-                "lk link <Contract.function>",
-                "Inspect a function or modifier, including its callers/callees and state touchpoints.",
-                "lk link PositionManager.increasePosition",
-            ),
-            (
-                "lk link '<Contract.function(types...)>'",
-                "Select a specific function overload by its full ABI parameter types.",
-                "lk link 'Vault.withdraw(uint256)'",
-            ),
-            (
-                "lk link <Contract.mapping>",
-                "Inspect mapping keys, readers, writers, and related state paths.",
-                "lk link Vault.positions",
-            ),
-            (
-                "lk link --search <TEXT> [--type <KIND>]",
-                "Filter the source map by declaration name or source path; do not supply TARGET.",
-                "lk link --search Position --type contract",
-            ),
+            ("lk link", "Show the protocol architecture graph with cross-contract relationships.", "lk link"),
+            ("lk link <Contract>", "Focus the graph on a contract and show its relationship overview.", "lk link OrderBook --depth 2"),
+            ("lk link --only <FILTER>", "Show only calls, storage, imports, or asset-flow relationships.", "lk link --only calls"),
+            ("lk link <Contract.function>", "Inspect a function's callers/callees and state touchpoints.", "lk link OrderBook.createIncreaseOrder"),
+            ("lk link <Contract.mapping>", "Inspect mapping keys, readers, writers, and related state paths.", "lk link Vault.positions"),
+            ("lk link --format html", "Generate an offline, interactive SVG graph with search, filtering, zoom, and node details.", "lk link --format html"),
+            ("lk link --list", "Open the searchable, paginated declaration inventory.", "lk link --list --search Vault"),
         ],
         options=[
-            ("--root <DIR>", "Scan another project. Defaults to the current directory.", "lk link --root ../protocol"),
-            ("--depth <N>", "Limit call traversal to 1-10 levels. Function/modifier default is 3; contract default is 1.", "lk link Vault --depth 3"),
-            ("--only <FILTER>", "Filter contract relationships: calls (internal calls), storage (reads and writes), reads, writes (mutations/initializers), imports (imports/inheritance), or assets (external/asset paths).", "lk link Vault --only writes"),
-            ("--detail <VIEW>", "Function/modifier view: summary (default), calls, storage, external, or all. Use this instead of --only for a detailed function view.", "lk link Vault.withdraw --detail storage"),
-            ("--limit <N>", "Set source-map entries per page and cap items in detail sections (1-500; default 24).", "lk link --search Vault --limit 50"),
-            ("--search <TEXT>", "Filter source-map declarations by name or source path; requires no TARGET.", "lk link --search Position"),
-            ("--type <KIND>", "Keep contract, interface, or library declarations only; requires no TARGET.", "lk link --type interface"),
-            ("--page <N>", "Show one source-map page (starts at 1); requires no TARGET and cannot be combined with --all.", "lk link --page 2"),
-            ("--all", "Show every matching source-map declaration in one compact list; requires no TARGET and cannot be combined with --page.", "lk link --search Vault --all"),
-            ("--json", "Emit structured JSON instead of terminal formatting.", "lk link --search Vault --json"),
+            ("--only <FILTER>", "Filter graph relationships: calls, storage, reads, writes, imports, assets, or all.", "lk link --only storage"),
+            ("--depth <N>", "Expand a focused graph by 1-10 relationship hops (default 1).", "lk link OrderBook --depth 3"),
+            ("--format <terminal|html|json>", "Choose the terminal graph, offline interactive HTML, or graph JSON.", "lk link --format html"),
+            ("--output <FILE>", "Choose the HTML output path; default is .lowkey/link-graph.html.", "lk link --format html --output /tmp/gmx-map.html"),
+            ("--include-third-party", "Include dependencies normally hidden from the architecture view.", "lk link --include-third-party"),
+            ("--list", "Show the original searchable declaration inventory instead of the graph.", "lk link --list"),
+            ("--search <TEXT>", "In list mode, filter declarations by name or source path.", "lk link --list --search Vault"),
+            ("--type <KIND>", "In list mode, keep contract, interface, or library declarations only.", "lk link --list --type interface"),
+            ("--page <N> / --all", "In list mode, show one page or the complete filtered inventory.", "lk link --list --page 2"),
+            ("--detail <VIEW>", "Function/modifier view: summary, calls, storage, external, or all.", "lk link OrderBook.createIncreaseOrder --detail all"),
+            ("--limit <N>", "Cap displayed graph relationships or inventory/detail items (1-500; default 24).", "lk link --limit 60"),
+            ("--root <DIR>", "Scan a different project root. Defaults to the current directory.", "lk link --root ../protocol"),
+            ("--json", "Compatibility alias for --format json; emits structured graph or target data.", "lk link --format json"),
         ],
         related=("lk trace source <TARGET>", "lk fn --flow both --asset all", "lk sources --scope application", "lk trace <TX>"),
         notes=(
-            "Source-map options (--search, --type, --page, --all) are used without TARGET. --page and --all are mutually exclusive.",
-            "--detail applies to function/modifier views. A non-summary --detail cannot be combined with --only.",
-            "Static links do not prove execution, transaction success, storage-slot identity, or the implementation behind an external address.",
-            "Incomplete source coverage and unresolved relationships are reported rather than hidden.",
+            "The architecture view collapses function-level relationships into contract-level links for readability.",
+            "Storage and asset filters expose potential source effects; they are not proof that a path executed or succeeded.",
+            "Third-party dependencies are hidden by default. Use --include-third-party to reveal them.",
+            "The old declaration inventory remains available with --list. --search, --type, --page, and --all also select list mode.",
+            "Unresolved relationships and incomplete source coverage remain visible; static edges are not runtime evidence.",
         ),
     )
 
@@ -1719,116 +1709,79 @@ def _link_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lk link",
         description=(
-            "What it does: Browse the source map or inspect one declaration and its statically resolved relationships.\n"
-            "When to use: Find callers, state readers/writers, imports, and asset paths before testing.\n"
+            "What it does: Explore the protocol relationship graph or inspect one source declaration.\n"
+            "When to use: Understand contract dependencies, calls, storage effects, imports, and asset paths.\n"
             "Static source evidence is not proof that a path executed."
         ),
         epilog="""QUICK START
-  lk link                                      Browse the source map (24 per page).
-  lk link Vault                                See the contract overview.
-  lk link Vault.positions                      Inspect a mapping and its readers/writers.
-  lk link ContractName.mappingName              Inspect mapping keys, readers and writers.
-  lk trace source Vault.increasePosition       Trace source calls and state touchpoints.
+  lk link                                      Show the protocol architecture graph.
+  lk link OrderBook --depth 2                  Focus the graph on OrderBook.
+  lk link --only calls                         Show cross-contract call relationships.
+  lk link --only storage                       Show state readers and writers.
+  lk link --format html                        Generate the interactive offline graph.
+  lk link --list                               Browse the original declaration inventory.
+  lk trace source OrderBook.createIncreaseOrder Trace one function's source call path.
 
-SOURCE MAP OPTIONS  (use without TARGET)
-  --root DIR       Scan another project. Example: lk link --root ../protocol
-  --search TEXT    Find by declaration name or file path. Example: lk link --search Vault
+GRAPH OPTIONS
+  --only FILTER    calls, storage, reads, writes, imports, assets, or all.
+  --depth N        Expand focused graph neighbourhood (1-10; default 1).
+  --format FORMAT  terminal (default), html, or json.
+  --output FILE    HTML output path; default .lowkey/link-graph.html.
+  --include-third-party  Include third-party dependencies hidden by default.
+
+INVENTORY OPTIONS  (select with --list; source-map filters also select list mode)
+  --list           Show the original searchable declaration inventory.
+  --search TEXT    Filter by declaration name or source path.
   --type KIND      Keep contract, interface, or library declarations only.
-                   Example: lk link --type interface
-  --page N         Move through the 24-item pages. Example: lk link --page 2
+  --page N         Move through inventory pages.
   --all            Show every matching declaration in one compact list.
-                   Use it when you need the complete filtered inventory.
-                   Example: lk link --all
 
 TARGET OPTIONS
-  --only FILTER    Narrow a contract's relationships:
-                   calls = internal calls; storage = reads and writes;
-                   reads = reads only; writes = mutations and initializers;
-                   imports = imports and inheritance; assets = external/asset paths.
-                   Example: lk link Vault --only writes
-  --depth N        Bound source-call traversal (1-10). Function default is 3;
-                   contract default is 1. Increase it to follow deeper helpers.
-                   Example: lk link Vault --depth 3
-
-FUNCTION / MODIFIER OPTIONS
-  --detail VIEW    summary (default), calls, storage, external, or all.
-                   Use calls for caller/callee flow, storage for state effects,
-                   external for boundaries/events/assets, or all for the full view.
-                   Example: lk trace source Vault.increasePosition --detail storage
-  --limit N        Maximum source-map declarations per page and items per detail
-                   section (1-500; default: 24). Increase it when a section reports omitted entries.
-                   Examples: lk link --search Vault --limit 60
-                             lk link Vault --only writes --limit 60
-
-OUTPUT
-  --json           Emit structured JSON for scripts and downstream tooling.
-                   Example: lk link --search Vault --json
-  -h, --h, --help  Show this reference.
-
-COMMON INVESTIGATION SEQUENCE
-  lk link --search Position
-  lk link PositionManager
-  lk link PositionManager --only writes --depth 3
-  lk trace source PositionManager.increasePosition --detail all --depth 4
+  --detail VIEW    Function/modifier view: summary, calls, storage, external, or all.
+  --limit N        Maximum terminal graph relationships and detail/inventory items (1-500).
+  --root DIR       Scan another project root.
+  --json           Alias for --format json.
 
 RULES
-  --search, --type, --page and --all are source-map options and cannot be
-  combined with TARGET. --detail applies only to functions and modifiers.
-  Source links are static analysis: they do not prove execution, success,
-  storage-slot identity, or the implementation behind an external address.
-  Incomplete source coverage is reported; unresolved relationships stay visible.""",
+  TARGET focuses the graph when --format html is selected. Contract targets show a
+  focused terminal graph followed by the contract relationship overview.
+  --search, --type, --page, and --all select inventory mode and cannot be combined
+  with TARGET. --detail applies only to function and modifier targets.
+  Static relationships do not prove runtime execution, success, or deployed target identity.""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
     parser.add_argument(
         "target", nargs="?",
-        help="contract, function, modifier, mapping, or state variable; omit to browse the source map",
+        help="contract, function, modifier, mapping, or state variable; omit to show the project graph",
     )
-    parser.add_argument(
-        "--root", metavar="DIR", default=".",
-        help="project root to scan (default: current directory); use outside the project root",
-    )
-    parser.add_argument(
-        "--depth", metavar="N", type=int, default=None,
-        help="maximum call traversal depth, 1-10 (function default 3; contract default 1)",
-    )
+    parser.add_argument("--root", metavar="DIR", default=".", help="project root to scan (default: current directory)")
+    parser.add_argument("--depth", metavar="N", type=int, default=None, help="focused graph depth (1-10; default 1)")
     parser.add_argument(
         "--only", metavar="FILTER", choices=sorted(ONLY_KINDS),
-        help="contract relationship filter: calls, storage, reads, writes, imports, or assets",
+        help="filter graph/declaration relationships: calls, storage, reads, writes, imports, assets, or all",
     )
     parser.add_argument(
-        "--detail", metavar="VIEW",
-        choices=("summary", "calls", "storage", "external", "all"), default="summary",
-        help="function view: summary (default), calls, storage, external, or all",
+        "--detail", metavar="VIEW", choices=("summary", "calls", "storage", "external", "all"),
+        default="summary", help="function/modifier detail view",
     )
+    parser.add_argument("--limit", metavar="N", type=int, default=24, help="maximum displayed items (1-500; default 24)")
+    parser.add_argument("--format", dest="output_format", choices=("terminal", "html", "json"), default="terminal", help="graph output format")
+    parser.add_argument("--output", metavar="FILE", help="HTML output path (default: .lowkey/link-graph.html)")
+    parser.add_argument("--include-third-party", action="store_true", help="include third-party dependencies in the graph")
+    parser.add_argument("--list", dest="list_view", action="store_true", help="show the original declaration inventory")
+    parser.add_argument("--search", metavar="TEXT", help="inventory filter by declaration name or source path")
     parser.add_argument(
-        "--limit", metavar="N", type=int, default=24,
-        help="maximum source-map entries per page and items per detail section, 1-500 (default: 24)",
-    )
-    parser.add_argument(
-        "--search", metavar="TEXT",
-        help="source-map filter by declaration name or source path (requires no TARGET)",
-    )
-    parser.add_argument(
-        "--type", dest="declaration_type", metavar="KIND",
-        choices=("contract", "interface", "library"),
-        help="source-map filter by declaration kind (requires no TARGET)",
+        "--type", dest="declaration_type", metavar="KIND", choices=("contract", "interface", "library"),
+        help="inventory declaration filter",
     )
     page_group = parser.add_mutually_exclusive_group()
-    page_group.add_argument(
-        "--page", metavar="N", type=int,
-        help="source-map page number (requires no TARGET)",
-    )
-    page_group.add_argument(
-        "--all", dest="show_all", action="store_true",
-        help="show all matching source-map declarations (requires no TARGET)",
-    )
-    parser.add_argument(
-        "--json", action="store_true",
-        help="emit machine-readable JSON instead of terminal formatting",
-    )
+    page_group.add_argument("--page", metavar="N", type=int, help="inventory page number (starts at 1)")
+    page_group.add_argument("--all", dest="show_all", action="store_true", help="show all matching inventory declarations")
+    parser.add_argument("--json", action="store_true", help="compatibility alias for --format json")
     parser.add_argument("-h", "--h", "--help", action="help", help="show this help")
     return parser
+
 
 def render_project_index(
     index: dict[str, Any], *, limit: int = 24, page: int = 1,
@@ -1962,29 +1915,83 @@ def run_link(argv: list[str], *, help_command: str = "lk link") -> int:
         return 0
     parser = _link_parser()
     args = parser.parse_args(argv)
-    if args.depth is not None and (args.depth < 1 or args.depth > 10):
+    if args.depth is not None and not 1 <= args.depth <= 10:
         parser.error("--depth must be between 1 and 10")
-    if args.limit < 1 or args.limit > 500:
+    if not 1 <= args.limit <= 500:
         parser.error("--limit must be between 1 and 500")
-    if not args.target:
-        if args.depth is not None or args.only is not None or args.detail != "summary":
-            parser.error("--depth, --only, and --detail require a target; run 'lk link' to browse")
-        if args.page is not None and args.page < 1:
-            parser.error("--page must be at least 1")
-        return run_project_index_args(args)
-    if args.page is not None or args.show_all or args.search or args.declaration_type:
-        parser.error("--page, --all, --search, and --type are source-map options; omit TARGET")
-    if args.detail != "summary" and args.only is not None:
-        parser.error("--detail is for function views; use --only for contract filters")
+    if args.json and args.output_format == "html":
+        parser.error("--json cannot be combined with --format html")
+    if args.output and args.output_format != "html":
+        parser.error("--output requires --format html")
+
+    inventory_options = (
+        args.list_view or args.search is not None or args.declaration_type is not None
+        or args.page is not None or args.show_all
+    )
+    if args.target and inventory_options:
+        parser.error("--list, --search, --type, --page, and --all are inventory options; omit TARGET")
+    if inventory_options and args.only is not None:
+        parser.error("--only applies to graph/declaration relationships, not inventory mode")
+    if args.detail != "summary" and not args.target:
+        parser.error("--detail requires a function or modifier TARGET")
+    if args.page is not None and args.page < 1:
+        parser.error("--page must be at least 1")
+    if args.output_format == "html" and inventory_options:
+        parser.error("--format html exports a relationship graph; remove inventory options")
+    if args.list_view and args.target:
+        parser.error("--list cannot be combined with TARGET")
+    if args.output_format == "html" and args.detail != "summary":
+        parser.error("--detail is for terminal function views, not graph HTML")
+
     try:
         index = build_source_index(args.root)
     except (SourceIndexError, OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
+
+    if inventory_options:
+        return render_project_index(
+            index, limit=args.limit, page=args.page or 1, search=args.search,
+            declaration_type=args.declaration_type, show_all=args.show_all,
+            as_json=(args.json or args.output_format == "json"),
+        )
+
+    if not args.target:
+        return render_project_graph(
+            index, root=args.root, only=args.only, depth=args.depth or 1,
+            limit=args.limit, include_third_party=args.include_third_party,
+            output=args.output, output_format=("json" if args.json else args.output_format),
+        )
+
+    if args.output_format == "html":
+        return render_project_graph(
+            index, root=args.root, only=args.only, focus=args.target,
+            depth=args.depth or 1, limit=args.limit,
+            include_third_party=args.include_third_party,
+            output=args.output, output_format="html",
+        )
+
+    candidates = find_symbols(index, args.target)
+    if len(candidates) == 1 and candidates[0].get("kind") == "contract":
+        graph_status = render_project_graph(
+            index, root=args.root, only=args.only, focus=args.target,
+            depth=args.depth or 1, limit=args.limit,
+            include_third_party=args.include_third_party,
+            output_format="terminal",
+        )
+        if graph_status:
+            return graph_status
+        print()
+    elif args.include_third_party:
+        print("NOTE  --include-third-party is only used by project/focused graph views.")
+
+    if args.detail != "summary" and args.only is not None:
+        parser.error("--detail is for function views; use --only for contract relationship filters")
     return render_link(
         index=index, target=args.target, only=args.only, depth=args.depth,
-        limit=args.limit, as_json=args.json, detail=args.detail,
+        limit=args.limit, as_json=(args.json or args.output_format == "json"), detail=args.detail,
     )
+
 
 
 
