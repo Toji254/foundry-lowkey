@@ -152,24 +152,29 @@ class AuditorWorkflowTests(unittest.TestCase):
         self.assertIn("original file was preserved", errors.getvalue())
 
     def test_workflow_refuses_a_symlinked_state_directory_outside_project(self):
-        outside = self.root.parent / "outside-workflow-state"
-        outside.mkdir()
-        (self.root / ".audit").symlink_to(outside, target_is_directory=True)
-        with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
-            workflow_engine._save(self.root, workflow_engine._default(self.root))
-        self.assertFalse((outside / "workflow").exists())
+        # Use a unique external directory so repeated/parallel test runs cannot collide.
+        with tempfile.TemporaryDirectory() as outside_tmp:
+            outside = pathlib.Path(outside_tmp)
+            (self.root / ".audit").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
+                workflow_engine._save(self.root, workflow_engine._default(self.root))
+            self.assertFalse((outside / "workflow").exists())
 
     def test_workflow_refuses_a_symlinked_state_file_and_preserves_target(self):
         state_dir = self.root / ".audit" / "workflow"
         state_dir.mkdir(parents=True)
-        protected = self.root.parent / "protected-workflow-state.json"
-        protected.write_text('{"started":true,"notes":["keep me"]}\n', encoding="utf-8")
-        (state_dir / workflow_engine.STATE_FILE).symlink_to(protected)
-        with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
-            workflow_engine._load(self.root)
-        with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
-            workflow_engine._save(self.root, workflow_engine._default(self.root))
-        self.assertEqual(protected.read_text(encoding="utf-8"), '{"started":true,"notes":["keep me"]}\n')
+        with tempfile.TemporaryDirectory() as protected_tmp:
+            protected = pathlib.Path(protected_tmp) / "protected-workflow-state.json"
+            protected.write_text('{"started":true,"notes":["keep me"]}\n', encoding="utf-8")
+            (state_dir / workflow_engine.STATE_FILE).symlink_to(protected)
+            with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
+                workflow_engine._load(self.root)
+            with self.assertRaisesRegex(workflow_engine.WorkflowStateError, "symlink"):
+                workflow_engine._save(self.root, workflow_engine._default(self.root))
+            self.assertEqual(
+                protected.read_text(encoding="utf-8"),
+                '{"started":true,"notes":["keep me"]}\n',
+            )
 
 
 if __name__ == "__main__": unittest.main()
