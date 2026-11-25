@@ -8281,7 +8281,8 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
             sender = None
 
     tx = {}
-    if is_address(sender):
+    sender_resolved = is_address(sender)
+    if sender_resolved:
         tx["from"] = sender
     if is_address(target):
         tx["to"] = target
@@ -8354,12 +8355,13 @@ def _transaction_preview_gas(config, command, target, function_item, raw_values,
             decoded = _decode_contract_revert(detail, config=config, target=target)
             readable = str(decoded.get("reason") or "").strip() if isinstance(decoded, dict) else ""
             if not readable:
-                match = re.search(r"(?i)execution reverted\s*:??\s*(.*)$", detail)
+                match = re.search(r"(?i)execution reverted\s*:?\s*(.*)$", detail)
                 readable = match.group(1).strip() if match else detail
             return {
                 "available": False,
                 "status": "reverted",
                 "reason": redact_secrets(readable or "the contract reverted during simulation"),
+                "sender_resolved": sender_resolved,
                 "technical": redact_secrets(detail),
             }
         return {"available": False, "status": "unavailable", "reason": redact_secrets(detail)}
@@ -8423,6 +8425,8 @@ def _print_transaction_gas_context(gas):
     if isinstance(gas, dict) and gas.get("status") == "reverted":
         print("Execution simulation: REVERTED (read-only eth_estimateGas)")
         print(f"Contract reason: {gas.get('reason') or 'the contract rejected the supplied inputs'}")
+        if gas.get("sender_resolved") is False:
+            print("Caller context: no explicit sender was resolved; the RPC used its default caller context.")
         print("Gas estimate: unavailable because the simulated execution reverted.")
         print("No transaction has been broadcast.")
         return
@@ -8925,6 +8929,18 @@ def run_cast(args,config,capture=False):
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
         if answer not in {"y","yes"}: print("Transaction cancelled. No transaction was broadcast."); return 0
+    if cast_cmd == "send" and bypass:
+        # --yes skips the interactive prompt, not transaction safety checks.
+        preflight = _transaction_preview_gas(
+            config, cmd, target, function_item, remaining[1:], actor,
+            direct_eth_transfer=direct_eth_transfer,
+        )
+        if isinstance(preflight, dict) and preflight.get("status") == "reverted":
+            _print_transaction_gas_context(preflight)
+            print("Send blocked: the read-only preflight detected a revert.")
+            record_status(1)
+            return 1
+
     send_tx_hash = None
     send_receipt = None
     send_transaction = None
