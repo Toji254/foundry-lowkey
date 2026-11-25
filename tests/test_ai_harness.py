@@ -1027,6 +1027,7 @@ class AIHarnessTests(unittest.TestCase):
             result = ai.request_structured(
                 purpose="protocol_analysis", task="inspect", context=oversized,
                 required_fields=("facts", "hypotheses"),
+                return_request_meta=True,
             )
 
         self.assertEqual(result["facts"], [])

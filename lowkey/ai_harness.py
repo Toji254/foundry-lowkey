@@ -1308,6 +1308,7 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
         cached = _read_jev_cached_response(cache_key, required_fields)
         if cached is not None:
             cached_result = dict(cached)
+            cached_result.pop("_lowkey_request_meta", None)
             if return_request_meta:
                 cached_result["_lowkey_request_meta"] = request_meta
             return cached_result
