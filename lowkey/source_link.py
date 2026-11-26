@@ -6,6 +6,7 @@ import argparse
 import json
 import shlex
 import sys
+import tempfile
 import textwrap
 from collections import defaultdict
 from pathlib import Path
@@ -14,9 +15,17 @@ from typing import Any, Sequence
 try:
     from source_index import SourceIndexError, build_source_index, find_symbols
     from source_graph import render_project_graph
+    from source_explorer import (
+        clone_github_repository, extract_source_archive,
+        render_explorer_html, serve_explorer,
+    )
 except ImportError:  # pragma: no cover - package-style import
     from lowkey.source_index import SourceIndexError, build_source_index, find_symbols
     from lowkey.source_graph import render_project_graph
+    from lowkey.source_explorer import (
+        clone_github_repository, extract_source_archive,
+        render_explorer_html, serve_explorer,
+    )
 
 
 ONLY_KINDS = {
@@ -1727,7 +1736,12 @@ GRAPH OPTIONS
   --depth N        Expand focused graph neighbourhood (1-10; default 1).
   --format FORMAT  terminal (default), html, or json.
   --output FILE    HTML output path; default .lowkey/link-graph.html.
-  --include-third-party  Include third-party dependencies hidden by default.
+  --include-third-party  Show third-party declarations by default in the graph.
+  --serve                Open the live local workspace with import controls.
+  --github URL           Import a GitHub repository; use --ref for a branch or tag.
+  --archive ZIP          Import a ZIP project archive.
+  --ref REF              Select the GitHub branch or tag.
+  --port N               Local workspace port (default 8765).
 
 INVENTORY OPTIONS  (select with --list; source-map filters also select list mode)
   --list           Show the original searchable declaration inventory.
@@ -1768,7 +1782,13 @@ RULES
     parser.add_argument("--limit", metavar="N", type=int, default=24, help="maximum displayed items (1-500; default 24)")
     parser.add_argument("--format", dest="output_format", choices=("terminal", "html", "json"), default="terminal", help="graph output format")
     parser.add_argument("--output", metavar="FILE", help="HTML output path (default: .lowkey/link-graph.html)")
-    parser.add_argument("--include-third-party", action="store_true", help="include third-party dependencies in the graph")
+    parser.add_argument("--include-third-party", action="store_true", help="show third-party declarations by default in the interactive graph")
+    parser.add_argument("--serve", action="store_true", help="start the loopback-only interactive workspace with file, folder, ZIP and GitHub import")
+    import_group = parser.add_mutually_exclusive_group()
+    import_group.add_argument("--github", metavar="URL", help="clone and index a GitHub repository (HTTPS github.com URL)")
+    import_group.add_argument("--archive", metavar="ZIP", help="extract and index a Solidity project ZIP archive")
+    parser.add_argument("--ref", metavar="REF", help="Git branch or tag for --github")
+    parser.add_argument("--port", metavar="N", type=int, default=8765, help="local workspace port for --serve (default 8765)")
     parser.add_argument("--list", dest="list_view", action="store_true", help="show the original declaration inventory")
     parser.add_argument("--search", metavar="TEXT", help="inventory filter by declaration name or source path")
     parser.add_argument(
@@ -1919,10 +1939,24 @@ def run_link(argv: list[str], *, help_command: str = "lk link") -> int:
         parser.error("--depth must be between 1 and 10")
     if not 1 <= args.limit <= 500:
         parser.error("--limit must be between 1 and 500")
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535")
     if args.json and args.output_format == "html":
         parser.error("--json cannot be combined with --format html")
     if args.output and args.output_format != "html":
         parser.error("--output requires --format html")
+    if args.ref and not args.github:
+        parser.error("--ref requires --github")
+    if args.serve and args.target:
+        parser.error("--serve starts a project workspace; omit TARGET")
+    if args.serve and args.output:
+        parser.error("--output cannot be combined with --serve")
+    if args.serve and (args.list_view or args.search is not None or args.declaration_type is not None or args.page is not None or args.show_all):
+        parser.error("--serve cannot be combined with inventory options")
+    if args.serve and args.output_format == "json":
+        parser.error("--serve cannot be combined with --format json")
+    if args.output_format == "html" and args.detail != "summary":
+        parser.error("--detail is for terminal function views, not graph HTML")
 
     inventory_options = (
         args.list_view or args.search is not None or args.declaration_type is not None
@@ -1937,63 +1971,97 @@ def run_link(argv: list[str], *, help_command: str = "lk link") -> int:
     if args.page is not None and args.page < 1:
         parser.error("--page must be at least 1")
     if args.output_format == "html" and inventory_options:
-        parser.error("--format html exports a relationship graph; remove inventory options")
+        parser.error("--format html exports the protocol graph; remove inventory options")
     if args.list_view and args.target:
         parser.error("--list cannot be combined with TARGET")
-    if args.output_format == "html" and args.detail != "summary":
-        parser.error("--detail is for terminal function views, not graph HTML")
 
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    source_root = Path(args.root).expanduser()
+    if args.github or args.archive:
+        temporary = tempfile.TemporaryDirectory(prefix="lowkey-source-import-")
+        source_root = Path(temporary.name) / "source"
     try:
-        index = build_source_index(args.root)
-    except (SourceIndexError, OSError, ValueError) as error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        return 2
+        if args.github:
+            try:
+                clone_github_repository(args.github, source_root, ref=args.ref)
+            except (ValueError, OSError) as error:
+                print(f"IMPORT ERROR: {error}", file=sys.stderr)
+                return 2
+        elif args.archive:
+            try:
+                extract_source_archive(args.archive, source_root)
+            except (ValueError, OSError) as error:
+                print(f"IMPORT ERROR: {error}", file=sys.stderr)
+                return 2
 
-    if inventory_options:
-        return render_project_index(
-            index, limit=args.limit, page=args.page or 1, search=args.search,
-            declaration_type=args.declaration_type, show_all=args.show_all,
-            as_json=(args.json or args.output_format == "json"),
+        try:
+            index = build_source_index(source_root)
+        except (SourceIndexError, OSError, ValueError) as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 2
+
+        explorer_root = source_root.parent if source_root.is_file() else source_root
+        if inventory_options:
+            return render_project_index(
+                index, limit=args.limit, page=args.page or 1, search=args.search,
+                declaration_type=args.declaration_type, show_all=args.show_all,
+                as_json=(args.json or args.output_format == "json"),
+            )
+
+        if args.serve:
+            return serve_explorer(index, root=explorer_root, port=args.port)
+
+        if args.output_format == "html":
+            output = args.output
+            if (args.github or args.archive) and not output:
+                output = str(Path.cwd() / ".lowkey" / "link-graph.html")
+            try:
+                saved = render_explorer_html(
+                    index, root=explorer_root, output=output,
+                    focus=args.target, include_third_party=args.include_third_party,
+                    only=args.only,
+                )
+            except (OSError, ValueError, TypeError) as error:
+                print(f"GRAPH ERROR: {error}", file=sys.stderr)
+                return 2
+            print("LOWKEY // PROTOCOL GRAPH")
+            print(f"GRAPH SAVED  {saved}")
+            print("OPEN         xdg-open " + str(saved))
+            print("EVIDENCE     Static source relationships; not runtime execution.")
+            return 0
+
+        if not args.target:
+            return render_project_graph(
+                index, root=explorer_root, only=args.only, depth=args.depth or 1,
+                limit=args.limit, include_third_party=args.include_third_party,
+                output=args.output, output_format=("json" if args.json else args.output_format),
+            )
+
+        candidates = find_symbols(index, args.target)
+        if args.detail != "summary" and args.only is not None:
+            parser.error("--detail is for function views; use --only for contract relationship filters")
+
+        graph_json = args.json or args.output_format == "json"
+        if len(candidates) == 1 and candidates[0].get("kind") == "contract":
+            graph_status = render_project_graph(
+                index, root=explorer_root, only=args.only, focus=args.target,
+                depth=args.depth or 1, limit=args.limit,
+                include_third_party=args.include_third_party,
+                output_format="json" if graph_json else "terminal",
+            )
+            if graph_status or graph_json:
+                return graph_status
+            print()
+        elif args.include_third_party:
+            print("NOTE  --include-third-party is used by project/focused graph views.")
+
+        return render_link(
+            index=index, target=args.target, only=args.only, depth=args.depth,
+            limit=args.limit, as_json=graph_json, detail=args.detail,
         )
-
-    if not args.target:
-        return render_project_graph(
-            index, root=args.root, only=args.only, depth=args.depth or 1,
-            limit=args.limit, include_third_party=args.include_third_party,
-            output=args.output, output_format=("json" if args.json else args.output_format),
-        )
-
-    if args.output_format == "html":
-        return render_project_graph(
-            index, root=args.root, only=args.only, focus=args.target,
-            depth=args.depth or 1, limit=args.limit,
-            include_third_party=args.include_third_party,
-            output=args.output, output_format="html",
-        )
-
-    candidates = find_symbols(index, args.target)
-    if args.detail != "summary" and args.only is not None:
-        parser.error("--detail is for function views; use --only for contract relationship filters")
-
-    graph_json = args.json or args.output_format == "json"
-    if len(candidates) == 1 and candidates[0].get("kind") == "contract":
-        graph_status = render_project_graph(
-            index, root=args.root, only=args.only, focus=args.target,
-            depth=args.depth or 1, limit=args.limit,
-            include_third_party=args.include_third_party,
-            output_format="json" if graph_json else "terminal",
-        )
-        if graph_status or graph_json:
-            return graph_status
-        print()
-    elif args.include_third_party:
-        print("NOTE  --include-third-party is only used by project/focused graph views.")
-
-    return render_link(
-        index=index, target=args.target, only=args.only, depth=args.depth,
-        limit=args.limit, as_json=graph_json, detail=args.detail,
-    )
-
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
 
 
 
