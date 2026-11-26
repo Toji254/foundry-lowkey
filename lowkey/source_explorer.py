@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover
 
 
 EDGE_LABELS = {
-    "CALLS": "CALLS", "EXTERNAL_CALL": "EXTERNAL CALL",
+    "CALLS": "CALLS", "LIBRARY_CALL": "LIBRARY CALL", "EXTERNAL_CALL": "EXTERNAL CALL",
     "APPLIES_MODIFIER": "MODIFIER", "OVERRIDES": "OVERRIDES",
     "READS": "READS", "READS_CONSTANT": "READS CONSTANT",
     "READS_IMMUTABLE": "READS IMMUTABLE", "WRITES": "WRITES",
@@ -40,7 +40,7 @@ EDGE_LABELS = {
     "ASSET_FLOW": "ASSET FLOW", "EMITS": "EMITS", "REVERTS": "REVERTS",
     "DECLARES": "CONTAINS",
 }
-CALL_KINDS = {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"}
+CALL_KINDS = {"CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"}
 STATE_KINDS = {
     "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES",
     "MUTATES", "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
@@ -217,13 +217,15 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
         file_name = str(raw.get("file") or raw.get("name") or "")
         provenance = str(raw.get("provenance") or "unclassified")
         owner_id = None if kind == "contract" else _owner_contract_id(raw, by_name_file, by_name)
+        owner_raw = declarations.get(owner_id or "", {})
+        declaration_kind = raw.get("declaration_kind") or raw.get("contract_kind") or owner_raw.get("declaration_kind") or ""
         label = _node_label(raw)
         node = {
             "id": node_id, "type": _node_type(raw), "kind": kind, "label": label,
             "qualified_name": str(raw.get("qualified_name") or label),
             "name": str(raw.get("name") or label), "contract": str(raw.get("contract") or ""),
             "contract_id": owner_id or (node_id if kind == "contract" else None),
-            "declaration_kind": str(raw.get("declaration_kind") or ""),
+            "declaration_kind": str(declaration_kind),
             "file": str(raw.get("file") or ""), "line": raw.get("line"),
             "location": f"{raw.get('file')}:{raw.get('line')}" if raw.get("line") else str(raw.get("file") or ""),
             "folder": _folder(file_name) if file_name else ".",
@@ -287,10 +289,23 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
         details = dict(raw)
         details["source_excerpt"] = _source_excerpt(root_path, file_name, line)
         details["target_label"] = nodes_by_id[target_id]["label"]
+        raw_kind = str(raw.get("kind") or "UNKNOWN")
+        target_raw = raw_nodes.get(target_id, {})
+        target_owner = _owner_contract_id(target_raw, by_name_file, by_name) if target_raw else None
+        target_declaration = declarations.get(target_owner or "", {})
+        is_library_call = (
+            raw_kind == "CALLS"
+            and str(raw.get("resolution") or "DIRECT") != "UNRESOLVED"
+            and (
+                str(raw.get("call_kind") or "").casefold() in {"library", "using-for extension"}
+                or str(target_raw.get("contract_kind") or target_declaration.get("declaration_kind") or "").casefold() == "library"
+            )
+        )
+        display_kind = "LIBRARY_CALL" if is_library_call else raw_kind
         edge = {
             "id": edge_id, "source": source_id, "target": target_id,
-            "kind": str(raw.get("kind") or "UNKNOWN"),
-            "label": EDGE_LABELS.get(str(raw.get("kind") or ""), str(raw.get("kind") or "").replace("_", " ")),
+            "kind": display_kind, "source_kind": raw_kind,
+            "label": EDGE_LABELS.get(display_kind, display_kind.replace("_", " ")),
             "resolution": str(raw.get("resolution") or "DIRECT"),
             "evidence": str(raw.get("evidence") or "STATIC_SOURCE"),
             "file": file_name, "line": line, "detail": str(raw.get("detail") or ""),
