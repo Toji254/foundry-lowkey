@@ -700,15 +700,21 @@ contract Delegation {
                 lk._preferred_lab_contract(root, None, "Delegate", manual_pin=True),
                 "Delegate",
             )
+            # Delegate is an externally supplied implementation address, not
+            # a compiler-proven constructor deployment requirement. An AI
+            # suggestion for it is therefore not automatically demoted.
             self.assertEqual(
                 lk._preferred_lab_contract(root, None, "Delegate", "Delegate"),
-                "Delegation",
+                "Delegate",
             )
             self.assertEqual(
                 lk._preferred_lab_contract(root, None, "Delegate", "Delegation"),
                 "Delegation",
             )
-            self.assertEqual(lk.discover_contract_dependencies(root, "Delegation"), ["Delegate"])
+            # The constructor receives an address and casts it to Delegate.
+            # That is an externally supplied integration, not proof that
+            # Lowkey should deploy a second Delegate automatically.
+            self.assertEqual(lk.discover_contract_dependencies(root, "Delegation"), [])
             candidate = lk.discover_generic_lab_contract(root)
             self.assertIsNotNone(candidate)
             self.assertEqual(candidate[1], "Delegation")
@@ -873,6 +879,30 @@ contract Delegation {
                 lk._COMMAND_STATUS = previous_status
 
 
+    def test_factory_created_constructor_child_is_not_predeployed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Factory.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; "
+                "contract Main { constructor() { new Helper(); } } "
+                "contract Helper {}",
+                encoding="utf-8",
+            )
+            for name in ("Main", "Helper"):
+                artifact = root / "out" / "Factory.sol" / f"{name}.json"
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_text(json.dumps({
+                    "contractName": name,
+                    "sourceName": "src/Factory.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0x6000"},
+                }), encoding="utf-8")
+
+            self.assertEqual(lk.discover_contract_dependencies(root, "Main"), [])
+
     def test_cyclic_constructor_dependencies_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -880,8 +910,8 @@ contract Delegation {
             source.parent.mkdir(parents=True)
             source.write_text(
                 "pragma solidity ^0.8.20; "
-                "contract Alpha { Beta beta; } "
-                "contract Beta { Alpha alpha; }",
+                "contract Alpha { constructor() { new Beta(); } } "
+                "contract Beta { constructor() { new Alpha(); } }",
                 encoding="utf-8",
             )
             for name in ("Alpha", "Beta"):

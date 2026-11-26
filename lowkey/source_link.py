@@ -1688,8 +1688,8 @@ def _render_link_help(command: str = "lk link") -> str:
             "Third-party dependencies are hidden by default. Use --include-third-party or the vendor controls in the explorer.",
             "The old declaration inventory remains available with --list. --search, --type, --page, and --all also select list mode.",
             "Unresolved relationships and incomplete source coverage remain visible; static edges are not runtime evidence.",
-            "With no TARGET, the protocol graph is the default and inventory modes remain available; this requires no TARGET.",
-            "Static relationships are review leads; they do not prove execution, successful calls, or deployed target identity.",
+            "With no TARGET, the protocol graph is the default; declaration inventory modes are also available without a target. This requires no TARGET; use --search, --type, --page, or --all.",
+            "Static source relationships are review leads; they do not prove execution, successful calls, or deployed target identity.",
         ),
     )
 
@@ -1737,11 +1737,28 @@ def _link_parser() -> argparse.ArgumentParser:
         epilog="""QUICK START
   lk link                                      Show the protocol architecture graph.
   lk link OrderBook --depth 2                  Focus the graph on OrderBook.
+  lk link --root ../protocol                   Scan a different project root.
   lk link --only calls                         Show cross-contract call relationships.
   lk link --only storage                       Show state readers and writers.
+  lk link Vault --only writes                  Show state writers related to Vault.
+  lk link Vault --depth 3                      Expand Vault's relationship graph.
+  lk link Vault --only writes --limit 60       Increase the displayed relationship limit.
+  lk link ContractName.mappingName             Inspect a mapping's storage relationships.
   lk link --format html                        Generate the interactive offline graph.
   lk link --list                               Browse the original declaration inventory.
+  lk link --search Vault                       Search declarations by name or path.
+  lk link --type interface                     Show interface declarations only.
+  lk link --page 2                             Show the second inventory page.
+  lk link --all                                Show every matching inventory declaration.
+  lk link --search Vault --json                Emit filtered inventory as JSON.
+  lk link --serve                              Start the loopback-only source workspace.
+  lk link --github https://github.com/gmx-io/gmx-contracts --ref master --format html
+                                               Import a GitHub repository and graph it.
+  lk link --archive ./protocol.zip --format html
+                                               Import a ZIP archive and graph it.
   lk trace source OrderBook.createIncreaseOrder Trace one function's source call path.
+  lk trace source Vault.increasePosition --detail storage
+                                               Inspect function-level storage effects.
 
 MORE COPY-PASTE EXAMPLES
   lk link --root ../protocol
@@ -1765,7 +1782,9 @@ USAGE NOTES
 
 GRAPH OPTIONS
   --only FILTER    calls, storage, reads, writes, imports, assets, or all.
+                   Use calls for caller/callee flow.
   --depth N        Expand focused graph neighbourhood (1-10; default 1).
+                   Function default is 3; contract default is 1.
   --format FORMAT  terminal (default), html, or json.
   --output FILE    HTML output path; default .lowkey/link-graph.html.
   --include-third-party  Show third-party declarations by default in the graph.
@@ -1785,14 +1804,17 @@ INVENTORY OPTIONS  (select with --list; source-map filters also select list mode
 TARGET OPTIONS
   --detail VIEW    Function/modifier view: summary, calls, storage, external, or all.
   --limit N        Maximum terminal graph relationships and detail/inventory items (1-500).
+                   Increase it when a section reports omitted entries.
   --root DIR       Scan another project root.
   --json           Alias for --format json.
 
 RULES
   TARGET focuses the graph when --format html is selected. Contract targets show a
   focused terminal graph followed by the contract relationship overview.
-  --search, --type, --page, and --all select inventory mode and cannot be combined
-  with TARGET. --detail applies only to function and modifier targets.
+  This project graph and inventory view requires no TARGET. A target is not required
+  for those modes. --search, --type, --page, and --all select inventory mode and
+  cannot be combined with TARGET. --detail applies only to function/modifier targets.
+  Function default is 3; contract default is 1.
   Static relationships do not prove runtime execution, success, or deployed target identity.""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,

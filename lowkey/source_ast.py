@@ -253,6 +253,382 @@ def _load_matched_units(
 
 
 
+def compiler_dependency_evidence(
+    root: str | Path,
+    source_by_path: dict[str, str],
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Extract typed deployment relationships from source-matched solc output.
+
+    Imports are deliberately not treated as deployment dependencies. Only
+    compiler link references and AST creation/type relationships are emitted,
+    with conservative confidence and provenance labels. The function does not
+    build, deploy, or infer an address from a name.
+    """
+    try:
+        manifest = manifest if manifest is not None else build_info_manifest(root)
+    except Exception as error:
+        return {
+            "available": False, "build_info_files": 0, "matched_units": 0,
+            "stale_units": 0, "contracts": [], "edges": [],
+            "warnings": [f"Could not inspect build-info: {error}"],
+        }
+
+    root_path = Path(root).resolve()
+    sources = {
+        str(path).replace("\\", "/").lstrip("./"): content
+        for path, content in source_by_path.items()
+        if isinstance(path, str) and isinstance(content, str)
+    }
+    by_digest: dict[str, list[str]] = {}
+    for path, content in sources.items():
+        by_digest.setdefault(hashlib.sha256(content.encode("utf-8")).hexdigest(), []).append(path)
+
+    units: dict[tuple[str, str], dict[str, Any]] = {}
+    compiled_contracts: dict[tuple[str, str], dict[str, Any]] = {}
+    warnings: list[str] = []
+    stale_units = 0
+    source_units_seen = 0
+    total_bytes = 0
+    for file_entry in manifest.get("files") or []:
+        info_path = Path(str(file_entry.get("path") or ""))
+        try:
+            size = info_path.stat().st_size
+            if size > MAX_BUILD_INFO_FILE_BYTES or total_bytes + size > MAX_BUILD_INFO_TOTAL_BYTES:
+                warnings.append(f"Skipped oversized build-info file: {info_path.name}")
+                continue
+            raw = info_path.read_bytes()
+            total_bytes += len(raw)
+            payload = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeError, ValueError, TypeError) as error:
+            warnings.append(f"Could not read build-info {info_path.name}: {error}")
+            continue
+
+        build_name = info_path.name
+        input_sources = (payload.get("input") or {}).get("sources") or {}
+        output = payload.get("output") or {}
+        output_sources = output.get("sources") or {}
+        output_contracts = output.get("contracts") or {}
+        if not isinstance(input_sources, dict) or not isinstance(output_sources, dict) or not isinstance(output_contracts, dict):
+            warnings.append(f"Build-info has incomplete compiler source/contract maps: {build_name}")
+            continue
+
+        source_paths: dict[str, str] = {}
+        for source_key, output_source in output_sources.items():
+            if not isinstance(output_source, dict):
+                continue
+            source_units_seen += 1
+            ast = output_source.get("ast")
+            input_entry = input_sources.get(source_key)
+            content = input_entry.get("content") if isinstance(input_entry, dict) else None
+            if not isinstance(ast, dict) or not isinstance(content, str):
+                stale_units += 1
+                continue
+            normalized_key = str(source_key).replace("\\", "/").lstrip("./")
+            matched = normalized_key if normalized_key in sources and sources[normalized_key] == content else None
+            if matched is None:
+                candidates = by_digest.get(hashlib.sha256(content.encode("utf-8")).hexdigest(), [])
+                if len(candidates) == 1:
+                    matched = candidates[0]
+            if matched is None or sources.get(matched) != content:
+                stale_units += 1
+                continue
+            source_paths[str(source_key)] = matched
+            units[(build_name, str(source_key))] = {
+                "path": matched,
+                "source": content,
+                "ast": ast,
+            }
+
+        # Preserve compiler contract outputs only for AST source units whose
+        # embedded source content exactly matches the currently indexed file.
+        for source_key, contracts_for_source in output_contracts.items():
+            if str(source_key) not in source_paths or not isinstance(contracts_for_source, dict):
+                continue
+            for contract_name, contract_output in contracts_for_source.items():
+                if isinstance(contract_output, dict):
+                    compiled_contracts[(build_name, f"{source_key}:{contract_name}")] = contract_output
+
+    definitions: dict[tuple[str, int], dict[str, Any]] = {}
+    contract_rows: dict[tuple[str, str], dict[str, Any]] = {}
+    for (build_name, source_key), unit in units.items():
+        root_ast = unit["ast"]
+        for declaration in root_ast.get("nodes") or []:
+            if not isinstance(declaration, dict) or declaration.get("nodeType") != "ContractDefinition":
+                continue
+            name = str(declaration.get("name") or "")
+            if not name:
+                continue
+            identity = f"{unit['path']}:{name}"
+            kind = str(declaration.get("contractKind") or "contract").lower()
+            row = {
+                "id": identity,
+                "source": unit["path"],
+                "name": name,
+                "contract_kind": kind,
+                "compiler_build_info": build_name,
+                "declaration_id": declaration.get("id"),
+            }
+            contract_rows[(build_name, identity)] = row
+            try:
+                definitions[(build_name, int(declaration.get("id")))] = {
+                    "identity": identity, "kind": kind, "source": unit["path"], "name": name,
+                }
+            except (TypeError, ValueError):
+                pass
+
+    edges: list[dict[str, Any]] = []
+    seen_edges: set[tuple[Any, ...]] = set()
+
+    def add_edge(edge: dict[str, Any]) -> None:
+        key = (
+            edge.get("from"), edge.get("to"), edge.get("kind"),
+            edge.get("source"), edge.get("line"),
+            tuple(tuple(item) for item in edge.get("link_references", [])),
+        )
+        if key not in seen_edges:
+            seen_edges.add(key)
+            edges.append(edge)
+
+    def referenced_contract(value: Any, build_name: str) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            raw = value.get("referencedDeclaration")
+            try:
+                result = definitions.get((build_name, int(raw)))
+            except (TypeError, ValueError):
+                result = None
+            if result:
+                return result
+            for child in value.values():
+                found = referenced_contract(child, build_name)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = referenced_contract(child, build_name)
+                if found:
+                    return found
+        return None
+
+    def source_line(source: str, node: dict[str, Any]) -> int | None:
+        span = _src_range(node)
+        if span is None:
+            return None
+        return _line_column(source, _byte_to_char_offset(source, span[0]))[0]
+
+    for (build_name, source_key), unit in units.items():
+        root_ast = unit["ast"]
+        source_text = unit["source"]
+        for declaration in root_ast.get("nodes") or []:
+            if not isinstance(declaration, dict) or declaration.get("nodeType") != "ContractDefinition":
+                continue
+            name = str(declaration.get("name") or "")
+            from_identity = f"{unit['path']}:{name}"
+            if not name:
+                continue
+
+            # Inheritance is a compiler-resolved relation, not an import-based guess.
+            for base in declaration.get("baseContracts") or []:
+                target = referenced_contract((base or {}).get("baseName"), build_name)
+                if target:
+                    add_edge({
+                        "from": from_identity, "to": target["identity"],
+                        "kind": "inheritance", "confidence": "CONFIRMED",
+                        "source": "solc-ast:BaseContractSpecifier",
+                        "line": source_line(source_text, base),
+                        "requires_resolution": False, "auto_deploy": False,
+                        "evidence": {"build_info": build_name, "source_path": unit["path"]},
+                    })
+
+            def walk(node: Any, parent_function: str | None = None):
+                if isinstance(node, dict):
+                    current_function = parent_function
+                    if node.get("nodeType") == "FunctionDefinition":
+                        current_function = str(node.get("name") or node.get("kind") or "<anonymous>")
+                    node_type = node.get("nodeType")
+                    if node_type == "NewExpression":
+                        target = referenced_contract(node.get("typeName"), build_name)
+                        if target:
+                            add_edge({
+                                "from": from_identity, "to": target["identity"],
+                                "kind": "creation-expression", "confidence": "CONFIRMED",
+                                "source": "solc-ast:NewExpression",
+                                "line": source_line(source_text, node),
+                                "function": current_function,
+                                "requires_resolution": False, "auto_deploy": False,
+                                "factory_created": True,
+                                "evidence": {"build_info": build_name, "source_path": unit["path"]},
+                            })
+                    if node_type == "VariableDeclaration":
+                        target = referenced_contract(node.get("typeName"), build_name)
+                        if target:
+                            if node.get("stateVariable"):
+                                relation = "state-contract-reference"
+                                confidence = "INFERRED"
+                            else:
+                                relation = "typed-parameter-reference"
+                                confidence = "INFERRED"
+                            if node.get("stateVariable") or current_function == "constructor":
+                                add_edge({
+                                    "from": from_identity, "to": target["identity"],
+                                    "kind": relation, "confidence": confidence,
+                                    "source": "solc-ast:VariableDeclaration",
+                                    "line": source_line(source_text, node),
+                                    "function": current_function,
+                                    "requires_resolution": current_function == "constructor",
+                                    "auto_deploy": False,
+                                    "evidence": {
+                                        "build_info": build_name,
+                                        "source_path": unit["path"],
+                                        "declaration_id": node.get("id"),
+                                        "type_string": (node.get("typeDescriptions") or {}).get("typeString"),
+                                    },
+                                })
+                    for child in node.values():
+                        if isinstance(child, (dict, list)):
+                            walk(child, current_function)
+                elif isinstance(node, list):
+                    for child in node:
+                        walk(child, parent_function)
+
+            walk(declaration)
+
+            # Compiler link references are authoritative for library deployment
+            # and linking. Offsets remain in bytecode units and are never inferred.
+            compiled = compiled_contracts.get((build_name, f"{source_key}:{name}"), {})
+            evm = compiled.get("evm") if isinstance(compiled, dict) else {}
+            bytecode = evm.get("bytecode") if isinstance(evm, dict) else {}
+            link_refs = bytecode.get("linkReferences") if isinstance(bytecode, dict) else {}
+            if isinstance(link_refs, dict):
+                for dependency_source, libraries in link_refs.items():
+                    dependency_path = source_paths.get(str(dependency_source))
+                    for library_name, references in (libraries or {}).items():
+                        target_identity = f"{dependency_path or dependency_source}:{library_name}"
+                        target_kind = None
+                        for (candidate_build, candidate_id), candidate in definitions.items():
+                            if candidate_build == build_name and candidate["identity"] == target_identity:
+                                target_kind = candidate["kind"]
+                                break
+                        positions = []
+                        for reference in references if isinstance(references, list) else []:
+                            if not isinstance(reference, dict):
+                                continue
+                            start = reference.get("start")
+                            length = reference.get("length")
+                            if isinstance(start, int) and not isinstance(start, bool) and isinstance(length, int) and not isinstance(length, bool):
+                                positions.append((start, length))
+                        add_edge({
+                            "from": from_identity, "to": target_identity,
+                            "kind": "solidity-library-link",
+                            "confidence": "CONFIRMED" if target_kind == "library" and positions else "UNRESOLVED",
+                            "source": "solc-output:evm.bytecode.linkReferences",
+                            "line": None,
+                            "link_references": positions,
+                            "requires_resolution": True,
+                            "auto_deploy": target_kind == "library" and bool(positions),
+                            "evidence": {
+                                "build_info": build_name,
+                                "source_path": unit["path"],
+                                "dependency_source": dependency_source,
+                                "library_name": library_name,
+                                "target_contract_kind": target_kind,
+                            },
+                        })
+
+    # Produce a dependency-first order only for compiler-confirmed library
+    # links. Other relationships (imports, typed address references, runtime
+    # creation sites) have different semantics and must not be flattened into
+    # a deployable ordering.  A cycle is reported explicitly rather than
+    # returning a misleading partial sequence.
+    library_edges = [
+        edge for edge in edges
+        if edge.get("kind") == "solidity-library-link"
+        and edge.get("confidence") == "CONFIRMED"
+        and edge.get("auto_deploy") is True
+    ]
+    library_nodes = {
+        identity
+        for edge in library_edges
+        for identity in (edge.get("from"), edge.get("to"))
+        if isinstance(identity, str) and identity
+    }
+    adjacency: dict[str, set[str]] = {node: set() for node in library_nodes}
+    indegree: dict[str, int] = {node: 0 for node in library_nodes}
+    for edge in library_edges:
+        consumer, dependency = edge.get("from"), edge.get("to")
+        if consumer not in library_nodes or dependency not in library_nodes:
+            continue
+        # Dependency must be deployed before the consumer.
+        if consumer not in adjacency[dependency]:
+            adjacency[dependency].add(consumer)
+            indegree[consumer] += 1
+
+    ready = sorted(node for node, count in indegree.items() if count == 0)
+    library_order: list[str] = []
+    while ready:
+        node = ready.pop(0)
+        library_order.append(node)
+        for consumer in sorted(adjacency[node]):
+            indegree[consumer] -= 1
+            if indegree[consumer] == 0:
+                ready.append(consumer)
+                ready.sort()
+
+    # Tarjan SCC identifies the actual cycle components, not every downstream
+    # node that is blocked by one.  Self-links are cycles too.
+    index = 0
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    indexes: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    library_cycles: list[list[str]] = []
+
+    def strongconnect(node: str) -> None:
+        nonlocal index
+        indexes[node] = lowlinks[node] = index
+        index += 1
+        stack.append(node)
+        on_stack.add(node)
+        for child in sorted(adjacency[node]):
+            if child not in indexes:
+                strongconnect(child)
+                lowlinks[node] = min(lowlinks[node], lowlinks[child])
+            elif child in on_stack:
+                lowlinks[node] = min(lowlinks[node], indexes[child])
+        if lowlinks[node] == indexes[node]:
+            component = []
+            while stack:
+                child = stack.pop()
+                on_stack.remove(child)
+                component.append(child)
+                if child == node:
+                    break
+            if len(component) > 1 or (len(component) == 1 and component[0] in adjacency[component[0]]):
+                library_cycles.append(sorted(component))
+
+    for node in sorted(library_nodes):
+        if node not in indexes:
+            strongconnect(node)
+
+    library_cycles.sort(key=lambda component: tuple(component))
+    cycle_nodes = {node for component in library_cycles for node in component}
+    ordering_complete = not library_cycles and len(library_order) == len(library_nodes)
+    return {
+        "available": bool(manifest.get("files")),
+        "build_info_files": len(manifest.get("files") or []),
+        "matched_units": len(units),
+        "stale_units": stale_units,
+        "source_units": source_units_seen,
+        "contracts": sorted(contract_rows.values(), key=lambda item: item["id"]),
+        "edges": edges,
+        "library_deployment_order": library_order if ordering_complete else [],
+        "library_order_complete": ordering_complete,
+        "library_cycles": library_cycles,
+        "library_order_blocked": sorted(library_nodes - set(library_order)) if not ordering_complete else [],
+        "warnings": warnings,
+    }
+
+
 def _match_storage_declaration(
     candidates: list[dict[str, Any]],
     *,

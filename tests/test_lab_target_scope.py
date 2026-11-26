@@ -13,10 +13,12 @@ sys.path.insert(0, str(LOWKEY))
 
 scope_spec = importlib.util.spec_from_file_location("lab_target_scope", LOWKEY / "lab_target_scope.py")
 scope_module = importlib.util.module_from_spec(scope_spec)
+sys.modules[scope_spec.name] = scope_module
 scope_spec.loader.exec_module(scope_module)
 
 lk_spec = importlib.util.spec_from_file_location("lab_scope_lk", LOWKEY / "lk.py")
 lk = importlib.util.module_from_spec(lk_spec)
+sys.modules[lk_spec.name] = lk
 lk_spec.loader.exec_module(lk)
 
 

@@ -102,6 +102,9 @@ def _node_label(raw: dict[str, Any]) -> str:
     if kind == "contract":
         return str(raw.get("name") or "Unnamed declaration")
     if kind in {"function", "modifier"}:
+        # Keep the owning declaration in the visible label. A bare signature
+        # is ambiguous in projects with common names such as `initialize`,
+        # `transfer`, or overloaded functions across several contracts.
         return str(raw.get("qualified_name") or raw.get("signature") or raw.get("name") or kind)
     if kind == "file":
         return str(raw.get("name") or raw.get("file") or "Source file")
@@ -1514,8 +1517,7 @@ def _normalise_paths(paths: list[PurePosixPath]) -> list[PurePosixPath]:
     source_roots = {
         "src", "contracts", "contract", "interfaces", "interface",
         "test", "tests", "script", "scripts", "lib", "libs",
-        "vendor", "vendors", "docs",
-        "mocks", "mock", "fixtures", "fixture",
+        "vendor", "vendors", "docs", "mocks", "mock", "fixtures", "fixture",
     }
     if wrapper.casefold() in source_roots:
         return paths

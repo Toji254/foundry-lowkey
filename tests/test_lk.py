@@ -83,23 +83,32 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(base["pid"], 111)
         self.assertEqual(base["rpc"], "http://127.0.0.1:8545")
 
-    def test_replacing_fixture_node_keeps_existing_base_anvil_lineage(self):
+    def test_replacing_fixture_node_requires_registered_session_identity(self):
         managed = {
             "auto_started": True,
             "purpose": "project-fixture-block-context",
             "pid": 222,
             "rpc": "http://127.0.0.1:8546",
+            "fixture_session_id": "fixture-session-uuid",
             "base_anvil": {
                 "auto_started": True,
                 "pid": 111,
                 "rpc": "http://127.0.0.1:8545",
             },
         }
-        old_fixture_pid, base = lk._fixture_anvil_lineage(
+        old_fixture_session_id, base = lk._fixture_anvil_lineage(
             managed, "http://127.0.0.1:8546"
         )
-        self.assertEqual(old_fixture_pid, 222)
+        self.assertEqual(old_fixture_session_id, "fixture-session-uuid")
         self.assertEqual(base["pid"], 111)
+
+        # PID-only legacy records are not process ownership proof and are never
+        # returned as signal targets.
+        managed.pop("fixture_session_id")
+        old_fixture_session_id, _base = lk._fixture_anvil_lineage(
+            managed, "http://127.0.0.1:8546"
+        )
+        self.assertIsNone(old_fixture_session_id)
 
     def test_repeated_fixture_promotion_preserves_original_global_rpc(self):
         current_rpc = "http://127.0.0.1:8546"
@@ -1274,7 +1283,7 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk, "load_abi", return_value=[]), patch.object(
             lk, "resolve_wallet_key", return_value=None
         ), patch.object(lk, "cast_output", return_value=(1, "", error)):
-            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--from", "0x2222222222222222222222222222222222222222", "--yes"], config, capture=True)
+            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--from", "0x2222222222222222222222222222222222222222", "--yes", "--rpc-url", "http://127.0.0.1:8545"], config, capture=True)
 
         self.assertEqual(result.code, 1)
         self.assertIn("Error: Transaction not sent", result.text)
@@ -1302,7 +1311,7 @@ class LowkeyCastTests(unittest.TestCase):
             lk, "cast_output",
             return_value=(1, f"transactionHash: {tx_hash}", "execution reverted: invalid number"),
         ):
-            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--from", "0x2222222222222222222222222222222222222222", "--yes"], config, capture=True)
+            result = lk.run_cast(["send", "setNumber(uint256)", "53", "--from", "0x2222222222222222222222222222222222222222", "--yes", "--rpc-url", "http://127.0.0.1:8545"], config, capture=True)
 
         self.assertEqual(result.code, 1)
         self.assertEqual(config["last_tx"], tx_hash)
@@ -4406,6 +4415,60 @@ contract Pool {
             self.assertEqual(config["wallets"]["Alice"]["anvil_index"], 1)
             self.assertEqual(lk.select_anvil_actor(config, 1, "Bob"), 2)
 
+    def test_managed_actor_assignment_is_session_scoped_through_real_dispatch(self):
+        address = "0x" + "2" * 40
+        session = {
+            "id": "session-alpha",
+            "name": "local-dev",
+            "actors": {"lab-deployer": "0x" + "1" * 40, "anvil-1": address},
+        }
+        calls = []
+
+        class FakeManager:
+            def __init__(self, *args, **kwargs):
+                calls.append(("init", args, kwargs))
+
+            def register_actor(self, session_id, account_index, alias):
+                calls.append(("register", session_id, account_index, alias))
+                return {
+                    "session_id": session_id,
+                    "actor": alias,
+                    "address": address,
+                    "created": True,
+                }
+
+            def set_actor(self, session_id, actor):
+                calls.append(("select", session_id, actor))
+                return {"session_id": session_id, "actor": actor, "address": address}
+
+        config = {"_active_network_session": session, "wallets": {}, "actor": None}
+        with patch.object(lk, "activate_project_context"), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(".")), \
+             patch.object(lk, "NetworkManager", FakeManager), \
+             patch.object(lk, "tool_path", return_value="anvil"), \
+             patch("builtins.print"):
+            code = lk._dispatch_command_impl("actor", ["1", "Alice"], config)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(config["actor"], "Alice")
+        self.assertEqual(session["actors"]["Alice"], address)
+        self.assertEqual(config["_network_actor_selection"], {
+            "session_id": "session-alpha", "actor": "Alice"
+        })
+        self.assertNotIn("Alice", config["wallets"])
+        self.assertIn(("register", "session-alpha", 1, "Alice"), calls)
+        self.assertIn(("select", "session-alpha", "Alice"), calls)
+
+    def test_managed_actor_assignment_rejects_extra_arguments(self):
+        session = {"id": "session-alpha", "name": "local-dev", "actors": {}}
+        config = {"_active_network_session": session, "wallets": {}, "actor": None}
+        with patch.object(lk, "activate_project_context"), patch.object(lk, "register_managed_network_actor") as register, patch("builtins.print"):
+            code = lk._dispatch_command_impl("actor", ["1", "Alice", "unexpected"], config)
+        self.assertEqual(code, 2)
+        register.assert_not_called()
+        self.assertIsNone(config["actor"])
+        self.assertEqual(session["actors"], {})
+
     def test_actor_index_without_name_selects_existing_profile(self):
         address0 = "0x" + "1" * 40
         address1 = "0x" + "2" * 40
@@ -5902,7 +5965,7 @@ contract Pool {
         ):
             output = io.StringIO()
             with redirect_stdout(output):
-                result = lk.run_cast(["call", "balanceOf", owner], config)
+                result = lk.run_cast(["call", "balanceOf", owner, "--rpc-url", "http://127.0.0.1:0"], config)
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
@@ -6153,7 +6216,7 @@ contract Pool {
         ):
             output = io.StringIO()
             with redirect_stdout(output), redirect_stderr(output):
-                result = lk.run_cast(["call", "balanceOf", owner], config)
+                result = lk.run_cast(["call", "balanceOf", owner, "--rpc-url", "http://127.0.0.1:0"], config)
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
@@ -6392,7 +6455,7 @@ contract Pool {
         }]
         with patch.object(lk,"load_abi",return_value=abi), \
              patch.object(lk,"cast_output",return_value=(0,"ok","")) as cast:
-            self.assertEqual(lk.run_cast(["send","sendTo","Bob","--from","0x3333333333333333333333333333333333333333","--yes"],config),0)
+            self.assertEqual(lk.run_cast(["send","sendTo","Bob","--from","0x3333333333333333333333333333333333333333","--yes","--rpc-url","http://127.0.0.1:0"],config),0)
         sent=cast.call_args.args[0]
         self.assertIn("sendTo(address)",sent)
         self.assertIn("0x"+"2"*40,sent)
@@ -7348,7 +7411,7 @@ contract Pool {
             "wallets":{"whale":{"source":"anvil-impersonated","address":actor}},
         }
         with patch.object(lk,"cast_output",return_value=(0,"ok","")) as cast_output:
-            self.assertEqual(lk.run_cast(["send","ping()","--yes"],config),0)
+            self.assertEqual(lk.run_cast(["send","ping()","--yes","--rpc-url","http://127.0.0.1:0"],config),0)
         sent_args=cast_output.call_args.args[0]
         self.assertIn("--unlocked",sent_args)
         self.assertIn(actor,sent_args)

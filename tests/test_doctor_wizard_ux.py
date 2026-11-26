@@ -301,7 +301,7 @@ PASS  dependency command: cast receipt
         prompt.assert_not_called()
 
 
-    def test_yes_with_explicit_sender_can_continue_when_rpc_is_unavailable(self):
+    def test_yes_with_explicit_sender_still_requires_rpc(self):
         target = "0x" + "1" * 40
         sender = "0x" + "2" * 40
         abi = [{
@@ -323,9 +323,8 @@ PASS  dependency command: cast receipt
                 {"target": target},
             )
 
-        self.assertEqual(result, 0)
-        cast.assert_called_once()
-        self.assertIn(sender, cast.call_args.args[0])
+        self.assertEqual(result, 2)
+        cast.assert_not_called()
 
     def test_wallet_error_explains_no_signer_and_no_broadcast(self):
         rendered = lk._format_cli_error(

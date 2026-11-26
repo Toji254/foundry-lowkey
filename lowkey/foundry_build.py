@@ -273,6 +273,7 @@ def _resolve_target(root: Path, target: str, config: dict[str, Any]) -> str:
     declaration = re.compile(
         r"\b(?:contract|interface|library)\s+" + re.escape(target) + r"\b"
     )
+    basename_selector = candidate.name == target and candidate.suffix.lower() == ".sol" and not candidate.parent.parts
     for search_root in search_roots:
         for current, dirs, files in os.walk(search_root, followlinks=False):
             dirs[:] = sorted(name for name in dirs if name not in IGNORED)
@@ -280,9 +281,13 @@ def _resolve_target(root: Path, target: str, config: dict[str, Any]) -> str:
                 if not filename.endswith(".sol"):
                     continue
                 path = Path(current) / filename
+                relative_path = path.relative_to(root).as_posix()
+                if basename_selector and filename == target:
+                    matches.append(relative_path)
+                    continue
                 try:
                     if declaration.search(path.read_text(encoding="utf-8", errors="replace")):
-                        matches.append(path.relative_to(root).as_posix())
+                        matches.append(relative_path)
                 except OSError:
                     continue
     matches = sorted(set(matches))
@@ -753,8 +758,8 @@ def render_build_help() -> str:
         "When to use: Compile contracts or build another supported native project. Use --plan",
         "             first when you want to inspect the selected package and command without",
         "             starting the compiler.",
-        "Usage: lk build [LOWKEY OPTIONS] [FORGE OPTIONS]",
-        "Example: lk build --scope production --plan",
+        "Usage: lk build [SOURCE|CONTRACT] [LOWKEY OPTIONS] [FORGE OPTIONS]",
+        "Example: lk build PositionManager.sol --plan",
         "",
         "COMMAND VARIATIONS",
         "------------------",
@@ -764,8 +769,11 @@ def render_build_help() -> str:
         "  lk build --scope <SCOPE>",
         "      Select full, production, tests, scripts, or target scope.",
         "      Example: lk build --scope production",
-        "  lk build --target <CONTRACT>",
+        "  lk build <SOURCE|CONTRACT>",
         "      Build one source file or uniquely named contract. This implies target scope.",
+        "      Example: lk build PositionManager.sol --plan",
+        "  lk build --target <SOURCE|CONTRACT>",
+        "      Explicit form equivalent to the positional selector above.",
         "      Example: lk build --target PositionManager --plan",
         "  lk build --root <DIR> [--member <MEMBER>]",
         "      Select a project root or an explicit workspace member.",
@@ -785,9 +793,9 @@ def render_build_help() -> str:
         "      Choose what to compile. Default: full. Target scope can also be selected",
         "      implicitly with --target.",
         "      Example: lk build --scope tests",
-        "  --target <CONTRACT>",
-        "      Build one source file or unique contract. Cannot be combined with another",
-        "      non-default scope.",
+        "  --target <SOURCE|CONTRACT>",
+        "      Explicit target selector, equivalent to the first positional argument.",
+        "      Cannot be combined with another non-default scope.",
         "      Example: lk build --target src/Vault.sol",
         "  --low-memory",
         "      Force one compiler worker rather than using detected concurrency.",
@@ -865,7 +873,25 @@ def run_build(
     parser.add_argument("--low-memory", action="store_true", help="force one compiler worker")
     parser.add_argument("--plan", action="store_true", help="show the exact plan without compiling")
     parser.add_argument("--json", action="store_true", help="print the build plan as JSON")
-    args, forge_args = parser.parse_known_args(list(argv))
+
+    # A leading bare argument is Lowkey's target selector, not an arbitrary
+    # Forge positional argument. Resolve it through the same source/contract
+    # validation used by --target so it cannot be silently ignored or passed
+    # through as an unscoped project build. Only consume the first token:
+    # values belonging to unknown Forge flags (for example `--skip test`) must
+    # remain untouched.
+    positional_target = None
+    parse_values = list(argv)
+    if parse_values and not str(parse_values[0]).startswith("-"):
+        positional_target = str(parse_values.pop(0))
+
+    args, forge_args = parser.parse_known_args(parse_values)
+    if positional_target and args.target:
+        return forge_tools.die(
+            "provide a target either positionally or with --target, not both."
+        )
+    if positional_target:
+        args.target = positional_target
 
     requested = Path(args.root).expanduser().resolve() if args.root else (root or Path.cwd()).expanduser().resolve()
     project, selection_error = _resolve_project_root(requested, member=args.member)

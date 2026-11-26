@@ -655,7 +655,23 @@ ABI return values keep the decoded integer visible. When the ABI provides a stro
 
 Use `lk actor reset 1` (or omit the mode) to clear only the active actor. Use `lk actor reset 2` to remove Anvil-managed and impersonated actor profiles; private-key wallets, environment-backed wallets, and the internal lab-deployer are preserved.
 
-The same Anvil account cannot be assigned to two actor names.
+The same Anvil account cannot be assigned to two actor names within one session. When a Lowkey-managed network is active, actor aliases are persisted in that session only; separate sessions may use the same alias for different unlocked accounts.
+
+### Multiple isolated local networks
+
+Manage multiple Anvil sessions for the current project without mixing actors or deployments:
+
+```bash
+lk lab network create --name local-dev
+lk lab network create --name attack-lab
+lk lab network list
+lk lab network status local-dev
+lk lab network use attack-lab
+lk actor 1 Alice
+lk lab network stop attack-lab
+```
+
+Each managed session has its own UUID, process identity, chain ID, genesis hash and actor/deployment records. Lowkey only stops a process whose live PID/start-time/UID/executable/port identity still matches the process it launched. An explicit `--rpc-url` for another endpoint is not allowed to inherit the active session's actors or target context. See [managed networks and generic deployment](docs/managed-networks-and-deployment.md) for session isolation, compiler-aware library linking, approval and verification boundaries.
 
 On a local fork, you can also impersonate an existing address:
 

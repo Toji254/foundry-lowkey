@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any, Mapping
 
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -84,18 +85,50 @@ def target_owned_by_project(
         return False
 
 
+def same_rpc_endpoint(left: Any, right: Any) -> bool:
+    """Compare RPC endpoints without exposing credentials or query tokens."""
+    first = _text(left)
+    second = _text(right)
+    if not first or not second:
+        return False
+
+    def identity(value: str) -> tuple[Any, ...]:
+        try:
+            parts = urlsplit(value)
+            if not parts.scheme or not parts.hostname:
+                return (value.rstrip("/"),)
+            scheme = parts.scheme.lower()
+            host = parts.hostname.rstrip(".").lower()
+            port = parts.port
+            if port is None:
+                port = 443 if scheme == "https" else (80 if scheme == "http" else None)
+            path = parts.path.rstrip("/")
+            # Query strings can carry authentication tokens. Compare them
+            # exactly, but never include them in error text or diagnostics.
+            # Credentials are compared as identity material but never returned
+            # or interpolated into diagnostics. A URL for another tenant/user
+            # on the same RPC host must not inherit this session's actor/target.
+            return (scheme, host, port, path, parts.query, parts.username, parts.password)
+        except (TypeError, ValueError):
+            return (value.rstrip("/"),)
+
+    return identity(first) == identity(second)
+
+
 def choose_rpc(
     explicit_rpc: Any = None,
     *,
     project_rpc: Any = None,
     fixture_rpc: Any = None,
+    managed_rpc: Any = None,
     legacy_rpc: Any = None,
     environ: Mapping[str, str] | None = None,
 ) -> tuple[str | None, str | None]:
-    """Resolve RPC: explicit override, active fixture, project, safe legacy, env."""
+    """Resolve RPC: explicit override, fixture, selected session, project, legacy, env."""
     for value, source in (
         (explicit_rpc, "command-line"),
         (fixture_rpc, "project-fixture"),
+        (managed_rpc, "managed-network-session"),
         (project_rpc, "project"),
         (legacy_rpc, "legacy-project-owned"),
     ):
@@ -117,44 +150,87 @@ def resolve_actor(
     *,
     legacy_target_is_project_owned: bool = False,
     explicit_actor: Any = None,
+    network_actors: Mapping[str, Any] | None = None,
+    session_actor: Any = None,
 ) -> tuple[str | None, str | None]:
-    """Resolve the active actor profile without leaking it between projects."""
+    """Resolve an actor without allowing stale Anvil profiles to cross sessions.
+
+    Invocation-local explicit wallet selections win. Session aliases win over
+    same-named legacy Anvil profiles because each managed session has its own
+    randomly generated accounts. Legacy deterministic Anvil profiles are never
+    silently carried into a randomized managed network.
+    """
     cfg = config if isinstance(config, Mapping) else {}
     wallets = cfg.get("wallets", {})
     if not isinstance(wallets, Mapping):
         wallets = {}
+    session_actors = network_actors if isinstance(network_actors, Mapping) else {}
 
-    # "lk as <actor> ..." marks the signer as an explicit invocation-local
-    # override. It wins over project memory but is never persisted by callers.
+    def is_legacy_anvil_profile(name: str) -> bool:
+        entry = wallets.get(name)
+        return isinstance(entry, Mapping) and entry.get("source") == "anvil-default"
+
+    # `lk as <actor> ...` and other explicit invocation-local choices must
+    # override the active session actor, but may not use a stale deterministic
+    # Anvil profile on a randomly-generated managed session.
     if explicit_actor is None and cfg.get("_ephemeral") is True:
         explicit_actor = cfg.get("actor")
     explicit = _text(explicit_actor)
     if explicit:
-        return (explicit, "command-line") if explicit in wallets else (None, "command-line-invalid")
+        if explicit in session_actors:
+            return explicit, "managed-network-session"
+        if explicit in wallets:
+            if session_actors and is_legacy_anvil_profile(explicit):
+                return None, "command-line-network-mismatch"
+            return explicit, "command-line"
+        return None, "command-line-invalid"
+
+    selected_session_actor = _text(session_actor)
+    if selected_session_actor in session_actors:
+        return selected_session_actor, "managed-network-session"
 
     state = project_state if isinstance(project_state, Mapping) else {}
     if state.get("actor_scope_initialized") is True:
         profile = _text(state.get("actor_profile"))
-        return (profile, "project") if profile in wallets else (None, "project-cleared")
+        if profile in session_actors:
+            return profile, "managed-network-session"
+        if profile in wallets:
+            if session_actors and is_legacy_anvil_profile(profile):
+                return None, "project-network-mismatch"
+            return profile, "project"
+        return None, "project-cleared"
 
     # Migrate older context files which recorded a display string rather than
-    # the wallet-profile key. Match only an exact profile name or its prefix.
+    # the wallet-profile key. Session aliases are authoritative when names
+    # overlap with saved deterministic Anvil profiles.
     legacy_label = _text(state.get("actor"))
     if legacy_label:
+        for name in session_actors:
+            profile = str(name)
+            if legacy_label == profile or legacy_label.startswith(profile + " "):
+                return profile, "project-legacy-managed-session"
         for name in wallets:
             profile = str(name)
             if legacy_label == profile or legacy_label.startswith(profile + " "):
+                if session_actors and is_legacy_anvil_profile(profile):
+                    return None, "project-network-mismatch"
                 return profile, "project-legacy"
 
-    # Only migrate the old global actor when its selected target is explicitly
-    # registered as belonging to this same project.
+    # Only migrate the old global actor when its target is project-owned.
     legacy_actor = _text(cfg.get("actor"))
+    if legacy_actor in session_actors:
+        return legacy_actor, "managed-network-session"
     if legacy_target_is_project_owned and legacy_actor in wallets:
+        if session_actors and is_legacy_anvil_profile(legacy_actor):
+            return None, "project-network-mismatch"
         return legacy_actor, "legacy-project-owned"
+    if legacy_actor in wallets and session_actors and is_legacy_anvil_profile(legacy_actor):
+        return None, "project-network-mismatch"
 
-    # A fresh project gets the reserved local deployer only when that profile
-    # actually exists. Once actor scope is initialized, an explicit cleared or
-    # removed profile stays cleared instead of falling back to a global signer.
+    # Fresh project default: session-local deployment account first, then a
+    # non-session legacy internal account only when no managed session exists.
+    if "lab-deployer" in session_actors:
+        return "lab-deployer", "managed-network-session"
     if "lab-deployer" in wallets:
         return "lab-deployer", "project-default"
     return None, None
@@ -167,6 +243,9 @@ def resolve_runtime_context(
     *,
     validated_target: Mapping[str, Any] | None = None,
     fixture_rpc: Any = None,
+    managed_rpc: Any = None,
+    network_actors: Mapping[str, Any] | None = None,
+    session_actor: Any = None,
     explicit_target: Any = None,
     explicit_rpc: Any = None,
     explicit_actor: Any = None,
@@ -177,6 +256,44 @@ def resolve_runtime_context(
     canonical = project_root(root)
     state = project_state_for_root(canonical, project_state)
     cfg = config if isinstance(config, Mapping) else {}
+
+    # A command-line RPC override may intentionally inspect another network.
+    # In that case the project's target and session actors are not evidence
+    # about that endpoint. Keep only identities explicitly supplied for this
+    # invocation; never borrow the selected session's target or signer.
+    explicit_rpc_text = _text(explicit_rpc)
+    project_rpc_anchor = _text(state.get("rpc"))
+    legacy_address_for_scope = _text(cfg.get("target"))
+    legacy_owned_for_scope = bool(
+        target_owned_by_project(legacy_address_for_scope, cfg, canonical)
+    )
+    legacy_rpc_anchor = None
+    if legacy_owned_for_scope:
+        legacy_rpc_anchor = _text(cfg.get("rpc") or cfg.get("rpc_url"))
+    rpc_anchors = [
+        _text(fixture_rpc), _text(managed_rpc), project_rpc_anchor, legacy_rpc_anchor,
+    ]
+    known_anchor = next((item for item in rpc_anchors if item), None)
+    explicit_rpc_unscoped = bool(
+        explicit_rpc_text
+        and (
+            (known_anchor and not same_rpc_endpoint(explicit_rpc_text, known_anchor))
+            or (not known_anchor and (validated_target or network_actors or session_actor or legacy_owned_for_scope))
+        )
+    )
+    if explicit_rpc_unscoped:
+        state = dict(state)
+        state["actor_scope_initialized"] = True
+        state["actor_profile"] = None
+        state["actor"] = None
+        cfg = dict(cfg)
+        cfg["actor"] = None
+        network_actors = {}
+        session_actor = None
+        managed_rpc = None
+        fixture_rpc = None
+        validated_target = None
+        allow_legacy_target = False
 
     target = None
     explicit_address = _text(explicit_target)
@@ -209,6 +326,7 @@ def resolve_runtime_context(
         explicit_rpc,
         project_rpc=project_rpc,
         fixture_rpc=fixture_rpc,
+        managed_rpc=managed_rpc,
         legacy_rpc=legacy_rpc,
         environ=environ,
     )
@@ -218,6 +336,8 @@ def resolve_runtime_context(
         cfg,
         legacy_target_is_project_owned=legacy_rpc_allowed,
         explicit_actor=explicit_actor,
+        network_actors=network_actors,
+        session_actor=session_actor,
     )
     return {
         "project_root": str(canonical),
@@ -227,5 +347,9 @@ def resolve_runtime_context(
         "rpc_source": rpc_source,
         "actor": actor,
         "actor_source": actor_source,
+        "network_actors": dict(network_actors or {}),
+        "network_session_actor": session_actor,
         "legacy_target_owned": legacy_owned,
+        "rpc_override_unscoped": explicit_rpc_unscoped,
+        "network_identity_verified": not explicit_rpc_unscoped,
     }

@@ -124,6 +124,12 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(question_engine.exists())
             proxy_engine_module = pathlib.Path(home) / ".lowkey" / "proxy_engine.py"
             self.assertTrue(proxy_engine_module.is_file())
+            library_linker_module = pathlib.Path(home) / ".lowkey" / "library_linker.py"
+            network_manager_module = pathlib.Path(home) / ".lowkey" / "network_manager.py"
+            runtime_verification_module = pathlib.Path(home) / ".lowkey" / "runtime_verification.py"
+            for runtime_module in (library_linker_module, network_manager_module, runtime_verification_module):
+                with self.subTest(runtime_module=runtime_module.name):
+                    self.assertTrue(runtime_module.is_file())
             lab_target_scope = pathlib.Path(home) / ".lowkey" / "lab_target_scope.py"
             self.assertTrue(lab_target_scope.is_file())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "fixture_context.py").exists())
@@ -187,6 +193,9 @@ class InstallSmokeTests(unittest.TestCase):
             install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertIn(str(shared_context), install_manifest["files"])
             self.assertIn(str(proxy_engine_module), install_manifest["files"])
+            self.assertIn(str(library_linker_module), install_manifest["files"])
+            self.assertIn(str(network_manager_module), install_manifest["files"])
+            self.assertIn(str(runtime_verification_module), install_manifest["files"])
             self.assertIn(str(lab_target_scope), install_manifest["files"])
             for installed_path in [archetype_dir / "__init__.py", archetype_dir / "_index.py", *pack_paths]:
                 self.assertIn(str(installed_path), install_manifest["files"])

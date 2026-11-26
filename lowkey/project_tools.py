@@ -1468,11 +1468,35 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
         if edge["kind"] == "inherits" and edge["to"] in declaration_names:
             edge["resolved"] = True
 
+    # Keep the existing source/import graph as the primary project model, then
+    # enrich it with confidence-labelled compiler evidence. Imports are never
+    # promoted into deployment requirements merely because they resolve.
+    compiler_dependencies = {
+        "available": False, "build_info_files": 0, "matched_units": 0,
+        "stale_units": 0, "contracts": [], "edges": [], "warnings": [],
+    }
+    try:
+        try:
+            import source_ast as compiler_ast
+        except ImportError:
+            from lowkey import source_ast as compiler_ast
+        source_by_path = {_relative(path, root_path): _read(path) for path in files}
+        compiler_dependencies = compiler_ast.compiler_dependency_evidence(
+            root_path, source_by_path
+        )
+    except Exception as error:
+        compiler_dependencies["warnings"] = [
+            f"Compiler-backed dependency analysis unavailable: {type(error).__name__}: {error}"
+        ]
+    typed_edges = compiler_dependencies.get("edges") or []
+
     return {
         "root": str(root_path),
         "nodes": nodes,
         "edges": edges,
         "unresolved": unresolved,
+        "compiler_dependencies": compiler_dependencies,
+        "typed_edges": typed_edges,
         "summary": {
             "files": len(nodes),
             "imports": sum(1 for edge in edges if edge["kind"] == "import"),
@@ -1491,6 +1515,15 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                 if edge["kind"] == "import" and edge.get("provenance") == "workspace"
             ),
             "external_call_sites": sum(len(node.get("calls", [])) for node in nodes),
+            "compiler_contracts": len(compiler_dependencies.get("contracts") or []),
+            "typed_relationships": len(typed_edges),
+            "confirmed_library_links": sum(
+                1 for edge in typed_edges
+                if edge.get("kind") == "solidity-library-link" and edge.get("confidence") == "CONFIRMED"
+            ),
+            "unresolved_compiler_relationships": sum(
+                1 for edge in typed_edges if edge.get("confidence") == "UNRESOLVED"
+            ),
         },
     }
 

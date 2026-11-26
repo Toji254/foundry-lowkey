@@ -1008,10 +1008,33 @@ class CliConsistencyTests(unittest.TestCase):
              patch.object(lk, "prepare_cast_call_arguments", side_effect=lambda _config, _item, values: values), \
              patch.object(lk, "cast_output", return_value=(0, "", "")) as cast, \
              patch.object(lk, "_print_transaction_preview") as preview:
-            result = lk.run_cast(["send", "setValue", "10", "--from", "0x1111111111111111111111111111111111111111", "--yes"], config, capture=True)
+            result = lk.run_cast([
+                "send", "setValue", "10", "--from", "0x1111111111111111111111111111111111111111",
+                "--rpc-url", "http://127.0.0.1:8545", "--yes",
+            ], config, capture=True)
         self.assertEqual(result.code, 0)
         preview.assert_not_called()
-        cast.assert_called_once()
+        self.assertEqual(cast.call_args_list[-1].args[0][:2], ["cast", "send"])
+
+    def test_send_yes_without_rpc_fails_closed_before_cast(self):
+        target = "0x" + "9" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValue",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "value", "type": "uint256"}],
+            "outputs": [],
+        }]
+        config = {"target": target, "target_contract": "Vault", "actor": None, "wallets": {}}
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "prepare_cast_call_arguments", side_effect=lambda _config, _item, values: values), \
+             patch.object(lk, "cast_output") as cast:
+            result = lk.run_cast([
+                "send", "setValue", "10", "--from", "0x1111111111111111111111111111111111111111", "--yes"
+            ], config, capture=True)
+        self.assertEqual(result.code, 2)
+        self.assertIn("RPC selection is blocked", result.output)
+        cast.assert_not_called()
 
     def test_transaction_preview_gas_uses_read_only_rpc_and_real_fee_quote(self):
         target = "0x" + "9" * 40

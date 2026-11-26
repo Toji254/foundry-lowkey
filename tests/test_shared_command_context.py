@@ -760,3 +760,239 @@ Warning (2072): Unused local variable.
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_managed_network_rpc_and_actor_take_precedence_without_global_wallets(tmp_path):
+    root = tmp_path / "lowkey-managed-context-test"
+    root.mkdir()
+    address = "0x" + "a" * 40
+    resolved = lk.shared_context.resolve_runtime_context(
+        root,
+        {"project": {"root": str(root)}, "actor_scope_initialized": True, "actor_profile": "anvil-1"},
+        {"wallets": {}, "actor": None},
+        managed_rpc="http://127.0.0.1:9545",
+        network_actors={"lab-deployer": "0x" + "b" * 40, "anvil-1": address},
+        environ={"ETH_RPC_URL": "http://unrelated.invalid"},
+    )
+    assert resolved["rpc"] == "http://127.0.0.1:9545"
+    assert resolved["rpc_source"] == "managed-network-session"
+    assert resolved["actor"] == "anvil-1"
+    assert resolved["actor_source"] == "managed-network-session"
+    assert resolved["network_actors"]["anvil-1"] == address
+
+
+def test_managed_network_actor_does_not_leak_to_a_different_project(tmp_path):
+    root = tmp_path / "lowkey-managed-context-test-b"
+    root.mkdir()
+    resolved = lk.shared_context.resolve_runtime_context(
+        root,
+        {"project": {"root": str(root)}, "actor_scope_initialized": True, "actor_profile": "anvil-1"},
+        {"wallets": {}, "actor": None},
+        managed_rpc="http://127.0.0.1:9546",
+        network_actors={"lab-deployer": "0x" + "c" * 40},
+        environ={},
+    )
+    assert resolved["actor"] is None
+    assert resolved["actor_source"] == "project-cleared"
+
+
+def test_managed_network_actor_profile_is_ephemeral_and_unlocked():
+    address = "0x" + "d" * 40
+    config = {
+        "actor": "anvil-1",
+        "wallets": {},
+        "_active_network_session": {
+            "id": "session-123",
+            "name": "isolated",
+            "actors": {"anvil-1": address},
+        },
+    }
+    entry = lk._actor_profile_entry(config)
+    assert entry["source"] == "anvil-impersonated"
+    assert entry["network_session_id"] == "session-123"
+    assert lk.actor_address(config) == address
+    assert "impersonated" in lk.actor_display(config)
+    assert lk.resolve_wallet_key(config) is None
+    assert config["wallets"] == {}
+
+
+def test_explicit_actor_overrides_the_managed_session_actor(tmp_path):
+    root = tmp_path / "project-explicit-actor"
+    root.mkdir()
+    resolved = lk.shared_context.resolve_runtime_context(
+        root,
+        {"project": {"root": str(root)}},
+        {
+            "actor": "Alice",
+            "wallets": {"Alice": {"private_key": "not-used-by-this-test"}},
+        },
+        network_actors={"lab-deployer": "0x" + "f" * 40},
+        session_actor="lab-deployer",
+        explicit_actor="Alice",
+        environ={},
+    )
+    assert resolved["actor"] == "Alice"
+    assert resolved["actor_source"] == "command-line"
+
+
+def test_legacy_deterministic_anvil_profile_does_not_cross_managed_session(tmp_path):
+    root = tmp_path / "project-legacy-anvil"
+    root.mkdir()
+    resolved = lk.shared_context.resolve_runtime_context(
+        root,
+        {
+            "project": {"root": str(root)},
+            "actor_scope_initialized": True,
+            "actor_profile": "anvil-1",
+        },
+        {
+            "actor": "anvil-1",
+            "wallets": {"anvil-1": {
+                "source": "anvil-default", "anvil_index": 1,
+                "address": "0x" + "a" * 40,
+            }},
+        },
+        network_actors={"lab-deployer": "0x" + "b" * 40},
+        session_actor=None,
+        environ={},
+    )
+    assert resolved["actor"] is None
+    assert resolved["actor_source"] == "project-network-mismatch"
+
+    def test_fixture_context_uses_its_own_network_actors_not_another_active_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "FixtureProject"
+            root.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\\n", encoding="utf-8")
+            fixture_rpc = "http://127.0.0.1:9550"
+            fixture_actor = "0x" + "a" * 40
+            fixture = {
+                "id": "fixture-session-id",
+                "name": "fixture-context",
+                "project_id": "project-id",
+                "chain_id": 31337,
+                "genesis_hash": "0x" + "1" * 64,
+                "rpc": fixture_rpc,
+                "actors": {"fixture-deployer": fixture_actor},
+                "active_actor": "fixture-deployer",
+                "process_owned": True,
+                "status": "running",
+            }
+
+            class FixtureManager:
+                def list(self):
+                    return [fixture]
+
+                def get_by_id(self, session_id):
+                    if session_id != fixture["id"]:
+                        raise lk.NetworkError("wrong fixture session")
+                    return fixture
+
+                def active(self):
+                    raise AssertionError("fixture selection must not borrow the active development session")
+
+                def _read(self):
+                    return {"fixture_session_id": fixture["id"]}
+
+            config = {"wallets": {}, "target": None}
+            with patch.object(lk, "project_fixture_rpc_info", return_value={"url": fixture_rpc}), \
+                 patch.object(lk, "_project_network_manager", return_value=FixtureManager()):
+                resolved = lk.resolve_runtime_context(config, root)
+            self.assertEqual(resolved["rpc"], fixture_rpc)
+            self.assertEqual(resolved["actor"], "fixture-deployer")
+            self.assertEqual(resolved["network_actors"]["fixture-deployer"], fixture_actor)
+            self.assertEqual(resolved["network_session"]["id"], fixture["id"])
+
+
+def test_explicit_rpc_on_another_network_drops_unrelated_target_and_session_actor(tmp_path):
+    root = tmp_path / "explicit-rpc-unscoped"
+    root.mkdir()
+    target = "0x" + "a" * 40
+    session_actor = "0x" + "b" * 40
+    resolved = lk.shared_context.resolve_runtime_context(
+        root,
+        {
+            "project": {"root": str(root)},
+            "actor_scope_initialized": True,
+            "actor_profile": "Alice",
+            "rpc": "http://127.0.0.1:8545",
+        },
+        {
+            "target": target,
+            "target_contract": "Vault",
+            "actor": "Alice",
+            "wallets": {"Alice": {"private_key": "1" * 64}},
+        },
+        validated_target={"address": target, "contract": "Vault"},
+        managed_rpc="http://127.0.0.1:8545",
+        network_actors={"Alice": session_actor, "lab-deployer": "0x" + "c" * 40},
+        session_actor="Alice",
+        explicit_rpc="http://127.0.0.1:9545",
+        environ={},
+    )
+    assert resolved["rpc"] == "http://127.0.0.1:9545"
+    assert resolved["rpc_override_unscoped"] is True
+    assert resolved["network_identity_verified"] is False
+    assert resolved["target"] is None
+    assert resolved["actor"] is None
+    assert resolved["network_actors"] == {}
+    assert resolved["network_session_actor"] is None
+
+
+def test_explicit_rpc_matching_managed_endpoint_preserves_session_identity(tmp_path):
+    root = tmp_path / "explicit-rpc-matching"
+    root.mkdir()
+    actor_address = "0x" + "d" * 40
+    resolved = lk.shared_context.resolve_runtime_context(
+        root,
+        {"project": {"root": str(root)}},
+        {"wallets": {}},
+        managed_rpc="http://127.0.0.1:8545/",
+        network_actors={"Alice": actor_address},
+        session_actor="Alice",
+        explicit_rpc="HTTP://127.0.0.1:8545",
+        environ={},
+    )
+    assert resolved["rpc"] == "HTTP://127.0.0.1:8545"
+    assert resolved["rpc_override_unscoped"] is False
+    assert resolved["network_identity_verified"] is True
+    assert resolved["actor"] == "Alice"
+    assert resolved["network_actors"]["Alice"] == actor_address
+
+
+def test_explicit_rpc_keeps_only_explicitly_named_target_and_actor(tmp_path):
+    root = tmp_path / "explicit-rpc-explicit-identities"
+    root.mkdir()
+    address = "0x" + "e" * 40
+    resolved = lk.shared_context.resolve_runtime_context(
+        root,
+        {
+            "project": {"root": str(root)},
+            "actor_scope_initialized": True,
+            "actor_profile": "Alice",
+        },
+        {"wallets": {"Alice": {"env": "ALICE_KEY"}}},
+        validated_target={"address": "0x" + "1" * 40, "contract": "OldTarget"},
+        network_actors={"Alice": "0x" + "2" * 40},
+        session_actor="Alice",
+        explicit_target=address,
+        explicit_rpc="http://127.0.0.1:9545",
+        explicit_actor="Alice",
+        environ={},
+    )
+    assert resolved["rpc_override_unscoped"] is True
+    assert resolved["target"] == {"address": address, "source": "command-line"}
+    assert resolved["actor"] == "Alice"
+    assert resolved["actor_source"] == "command-line"
+    assert resolved["network_actors"] == {}
+
+
+def test_rpc_endpoint_identity_compares_secret_credentials_without_echoing_them():
+    assert not lk.shared_context.same_rpc_endpoint(
+        "https://alice:first-secret@rpc.example/v1",
+        "https://alice:second-secret@rpc.example/v1",
+    )
+    assert lk.shared_context.same_rpc_endpoint(
+        "https://alice:first-secret@rpc.example/v1",
+        "https://alice:first-secret@rpc.example/v1/",
+    )

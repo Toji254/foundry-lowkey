@@ -11,6 +11,7 @@ import io
 import shutil
 import socket
 import tempfile
+import uuid
 from urllib import request as urllib_request
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime
@@ -34,6 +35,10 @@ try:
     import shared_context
 except ImportError:
     from lowkey import shared_context
+try:
+    from network_manager import NetworkManager, NetworkError
+except ImportError:
+    from lowkey.network_manager import NetworkManager, NetworkError
 import walkthrough
 try:
     import proxy_engine
@@ -171,6 +176,22 @@ except (ImportError, SyntaxError):
     # checkout is temporarily syntactically invalid. Commands that need the
     # break engine will report that it is unavailable.
     break_engine = None
+
+try:
+    import library_linker
+except ImportError:
+    try:
+        from lowkey import library_linker
+    except ImportError:
+        library_linker = None
+
+try:
+    import runtime_verification
+except ImportError:
+    try:
+        from lowkey import runtime_verification
+    except ImportError:
+        runtime_verification = None
 
 try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
@@ -715,6 +736,32 @@ def anvil_rpc_info(config):
     project_info = project_fixture_rpc_info(config)
     if project_info:
         return project_info
+
+    # Once a project has managed sessions, account discovery must follow the
+    # selected session too. Do not scan common ports and accidentally describe
+    # an unrelated/unmanaged Anvil as the project's active network.
+    try:
+        cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
+        cached_root = None
+        if isinstance(cached, dict):
+            candidate = Path(str(cached.get("project_root") or "")).expanduser().resolve()
+            if candidate.is_dir():
+                cached_root = candidate
+        root = cached_root or Path(audit_context.foundry_project_root()).expanduser().resolve()
+        manager = NetworkManager(root, tool_path("anvil") or "anvil")
+        sessions = manager.list()
+        if sessions:
+            selected = manager.active()
+            if not selected:
+                return None
+            return detect_anvil_rpc(str(selected.get("rpc") or ""))
+    except NetworkError:
+        return None
+    except Exception:
+        # If project/network metadata cannot be inspected, do not use cached
+        # discovery in a project where session ownership may be ambiguous.
+        return None
+
     explicit=config.get("rpc")
     if explicit:
         return detect_anvil_rpc(explicit)
@@ -726,17 +773,122 @@ def anvil_rpc_info(config):
         config["_auto_rpc_info"]=info
     return info
 
+def _explicit_rpc_matches_selected_identity(config, explicit_rpc):
+    """Return whether an explicit endpoint is the currently selected identity."""
+    fixture_info = project_fixture_rpc_info(config)
+    fixture_rpc = fixture_info.get("url") if isinstance(fixture_info, dict) else None
+    if fixture_rpc:
+        return shared_context.same_rpc_endpoint(explicit_rpc, fixture_rpc)
+
+    session = config.get("_active_network_session") if isinstance(config, dict) else None
+    if isinstance(session, dict) and session.get("rpc"):
+        return shared_context.same_rpc_endpoint(explicit_rpc, session.get("rpc"))
+
+    try:
+        root = audit_context.foundry_project_root()
+        state = audit_context.load(root)
+        project_rpc = state.get("rpc") if isinstance(state, dict) else None
+        if project_rpc:
+            return shared_context.same_rpc_endpoint(explicit_rpc, project_rpc)
+    except Exception:
+        pass
+
+    # If a target/actor exists but its RPC provenance cannot be established,
+    # an explicit endpoint is unscoped; matching chain IDs are not enough.
+    return not bool(
+        isinstance(config, dict)
+        and not config.get("target")
+        and not config.get("actor")
+    )
+
+
 def effective_rpc(config, explicit_rpc=None, target=None):
     # A per-command RPC flag must govern both the external Cast invocation and
-    # Lowkey's follow-up receipt/trace/evidence requests.
+    # Lowkey's follow-up receipt/trace/evidence requests. When it names another
+    # endpoint, detach session-owned identities for the rest of this invocation.
     if explicit_rpc is not None:
         selected, _source = shared_context.choose_rpc(explicit_rpc=explicit_rpc)
         if selected:
+            if _explicit_rpc_matches_selected_identity(config, selected):
+                if isinstance(config, dict):
+                    config.pop("_explicit_rpc_unscoped", None)
+            elif isinstance(config, dict):
+                config["_explicit_rpc_unscoped"] = True
+                config.pop("_active_network_session", None)
+                config.pop("_network_actor_selection", None)
+                config.pop("_rpc_override_explicit_actor", None)
             return selected
+        # An explicit but empty/invalid override is not permission to use a
+        # different network selected from project or environment configuration.
+        return None
+
     project_info = project_fixture_rpc_info(config)
     fixture_rpc = project_info.get("url") if isinstance(project_info, dict) else None
     if fixture_rpc:
         return fixture_rpc
+
+    # Managed Anvil selection is resolved centrally so every existing command
+    # using effective_rpc (send/call/read/trace/status/deploy/etc.) follows the
+    # same persistent project session. Once a project root is known, any error
+    # reading or validating its registry is a hard failure: falling through to
+    # a project/global/environment RPC could silently select another chain.
+    cached_root = None
+    cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
+    if isinstance(cached, dict):
+        candidate_value = str(cached.get("project_root") or "").strip()
+        if candidate_value:
+            try:
+                candidate = Path(candidate_value).expanduser().resolve()
+                if candidate.is_dir():
+                    cached_root = candidate
+            except (OSError, TypeError, ValueError):
+                cached_root = None
+    if cached_root is None:
+        try:
+            cached_root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+        except Exception:
+            # No project context: preserve legacy non-project RPC resolution.
+            cached_root = None
+
+    if cached_root is not None:
+        try:
+            manager = NetworkManager(cached_root, tool_path("anvil") or "anvil")
+            registered_sessions = manager.list()
+            managed = manager.active()
+            if registered_sessions and not managed:
+                raise NetworkError(
+                    "This project has Lowkey-managed network sessions but none is selected and healthy. "
+                    "Run `lk lab network use <name>` or create a new session; Lowkey will not fall back to another RPC."
+                )
+            if managed:
+                selected, _source = shared_context.choose_rpc(managed_rpc=managed.get("rpc"))
+                if not selected:
+                    raise NetworkError(
+                        "The selected Lowkey network session has no usable RPC endpoint. "
+                        "Run `lk lab network status` and repair or recreate that session."
+                    )
+                config["_active_network_session"] = {
+                    "id": managed.get("id"),
+                    "name": managed.get("name"),
+                    "chain_id": managed.get("chain_id"),
+                    "genesis_hash": managed.get("genesis_hash"),
+                    "rpc": managed.get("rpc"),
+                    "project_id": managed.get("project_id"),
+                }
+                config.pop("_network_selection_error", None)
+                return selected
+        except Exception as exc:
+            message = (
+                str(exc) if isinstance(exc, NetworkError)
+                else f"Could not verify this project's managed network registry: {type(exc).__name__}: {exc}"
+            )
+            if isinstance(config, dict) and config.get("_network_selection_error") != message:
+                print(f"ERROR NETWORK SELECTION: {message}", file=sys.stderr)
+                config["_network_selection_error"] = message
+            # Never fall through to an unrelated configured/default RPC after
+            # a managed-network registry error.
+            return None
+
     try:
         cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
         root = None
@@ -770,11 +922,11 @@ def effective_rpc(config, explicit_rpc=None, target=None):
         if selected:
             return selected
     except Exception:
-        # RPC discovery remains best-effort; never break a command just because
-        # optional project metadata could not be read.
+        # RPC discovery remains best-effort only when no project-scoped managed
+        # registry could be located; managed-registry errors were blocked above.
         pass
-    info=anvil_rpc_info(config)
-    return info.get("url") if isinstance(info,dict) else None
+    info = anvil_rpc_info(config)
+    return info.get("url") if isinstance(info, dict) else None
 
 def derive_default_anvil_key(index):
     try:
@@ -1010,6 +1162,14 @@ def select_anvil_actor(config,index,name):
     return 0
 
 def list_anvil_actors(config):
+    session = config.get("_active_network_session") if isinstance(config, dict) else None
+    if isinstance(session, dict) and isinstance(session.get("actors"), dict):
+        print(f"Actor: {actor_display(config)}")
+        print(f"Network: {session.get('name')} ({session.get('id')})")
+        for profile, address in session["actors"].items():
+            marker = "*" if profile == config.get("actor") else " "
+            print(f"{marker} {profile:<18} {address}")
+        return
     info=anvil_rpc_info(config)
     if info:
         accounts=info.get("accounts",[])
@@ -1059,10 +1219,81 @@ def list_anvil_actors(config):
             else:
                 print("        Contract   : deployed contract")
 
+def _actor_profile_entry(config, name=None):
+    """Resolve a wallet or active-session actor without persisting session keys."""
+    profile = name or config.get("actor")
+    if not profile:
+        return None
+    if isinstance(config, dict) and config.get("_explicit_rpc_unscoped"):
+        # Only a deliberately supplied actor override may cross onto an
+        # unregistered RPC. Session aliases and project-default actors carry
+        # network identity and cannot be borrowed by endpoint alone.
+        explicitly_selected = config.get("_rpc_override_explicit_actor")
+        if not explicitly_selected or str(profile) != str(explicitly_selected):
+            return None
+        entry = (config.get("wallets") or {}).get(profile)
+        if not isinstance(entry, dict) or entry.get("source") in {"anvil-default", "anvil-impersonated"}:
+            return None
+        return entry if entry.get("private_key") or entry.get("env") else None
+    session = config.get("_active_network_session") if isinstance(config, dict) else None
+    session_actors = session.get("actors", {}) if isinstance(session, dict) else {}
+    address = session_actors.get(profile) if isinstance(session_actors, dict) else None
+    if is_address(address):
+        # Session actors are unlocked by the managed local Anvil. This public
+        # profile is invocation-local; no key or address is copied to global config.
+        return {
+            "source": "anvil-impersonated",
+            "address": address,
+            "network_session_id": session.get("id"),
+        }
+    wallets = config.get("wallets", {}) if isinstance(config, dict) else {}
+    return wallets.get(profile) if isinstance(wallets, dict) else None
+
+
+def register_managed_network_actor(config, account_index, alias):
+    """Register and select an alias scoped to the active managed network."""
+    session = config.get("_active_network_session") if isinstance(config, dict) else None
+    if not isinstance(session, dict) or not session.get("id"):
+        return fail("Error: no active managed network session. Run `lk lab network use <name>` first.")
+    try:
+        manager = NetworkManager(audit_context.foundry_project_root(), tool_path("anvil") or "anvil")
+        registered = manager.register_actor(str(session["id"]), int(account_index), str(alias))
+        selected = manager.set_actor(str(session["id"]), registered["actor"])
+    except (NetworkError, TypeError, ValueError) as exc:
+        return fail(f"Error registering managed-network actor: {exc}")
+    config["actor"] = registered["actor"]
+    config["_network_actor_selection"] = {
+        "session_id": str(session["id"]), "actor": registered["actor"]
+    }
+    session.setdefault("actors", {})[registered["actor"]] = registered["address"]
+    session["active_actor"] = registered["actor"]
+    verb = "registered and selected" if registered.get("created") else "selected"
+    print(f"Actor {verb}: {registered['actor']} ({registered['address']}) [managed network {session.get('name')}]")
+    print(f"Account index: {int(account_index)} · session-scoped · no private key stored")
+    return 0
+
+
+def select_managed_network_actor(config, name_or_index):
+    session = config.get("_active_network_session") if isinstance(config, dict) else None
+    actors = session.get("actors", {}) if isinstance(session, dict) else {}
+    token = str(name_or_index).strip()
+    profile = "lab-deployer" if token == "0" else (f"anvil-{token}" if token.isdigit() else token)
+    address = actors.get(profile) if isinstance(actors, dict) else None
+    if not is_address(address):
+        return fail(f"Error: actor {token!r} is not available in the selected managed network.")
+    config["actor"] = profile
+    manager = NetworkManager(audit_context.foundry_project_root(), tool_path("anvil") or "anvil")
+    manager.set_actor(str(session.get("id")), profile)
+    config["_network_actor_selection"] = {"session_id": session.get("id"), "actor": profile}
+    print(f"Actor selected: {profile} ({address}) [managed network {session.get('name')}]")
+    print("Signer mode: Anvil-unlocked account; no private key is stored by Lowkey.")
+    return 0
+
+
 def resolve_wallet_key(config,wallet_name=None):
     name=wallet_name or config.get("actor")
     if not name: return None
-    entry=config.get("wallets",{}).get(name)
+    entry=_actor_profile_entry(config, name)
     if isinstance(entry,dict):
         if entry.get("source") == "anvil-default" and entry.get("anvil_index") is not None:
             info=anvil_rpc_info(config)
@@ -1098,7 +1329,7 @@ def _sync_current_anvil_actor(config, info=None, name=None):
     actor=name or config.get("actor")
     if not actor:
         return False
-    entry=config.get("wallets",{}).get(actor)
+    entry=_actor_profile_entry(config, actor)
     if not isinstance(entry,dict) or entry.get("source")!="anvil-default":
         return False
     if info is None:
@@ -1136,7 +1367,7 @@ def actor_display(config):
     actor=config.get("actor")
     if not actor:
         return "none"
-    entry=config.get("wallets",{}).get(actor)
+    entry=_actor_profile_entry(config, actor)
     if isinstance(entry,dict) and entry.get("source")=="anvil-default":
         index=entry.get("anvil_index","?")
         address=entry.get("address","?")
@@ -1156,7 +1387,7 @@ def actor_address(config, name=None):
     name = name or config.get("actor")
     if not name:
         return None
-    entry = config.get("wallets", {}).get(name)
+    entry = _actor_profile_entry(config, name)
     if isinstance(entry, dict) and entry.get("address"):
         if entry.get("source") == "anvil-default":
             try:
@@ -2048,6 +2279,8 @@ def project_context_target(root=None):
 
 def active_project_target(config, root=None):
     """Resolve a target for the current Foundry project before using global config."""
+    if isinstance(config, dict) and config.get("_explicit_rpc_unscoped"):
+        return None
     project_root = audit_context.foundry_project_root(root)
     target = project_context_target(project_root)
     if target:
@@ -2079,11 +2312,58 @@ def active_project_target(config, root=None):
     return None
 
 def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit_rpc=None, explicit_actor=None):
-    """Return the single resolved project/target/RPC/actor snapshot for commands."""
+    """Resolve project, target, active network session and actor in one snapshot."""
     project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
     state = audit_context.load(project_root)
     fixture_info = project_fixture_rpc_info(config)
     fixture_rpc = fixture_info.get("url") if isinstance(fixture_info, dict) else None
+
+    managed_session = None
+    managed_rpc = None
+    network_actors = {}
+    session_actor = None
+    managed_error = None
+    try:
+        manager = _project_network_manager(project_root)
+        registered_sessions = manager.list()
+        if fixture_rpc:
+            fixture_state = manager._read()
+            fixture_session_id = fixture_state.get("fixture_session_id")
+            if not fixture_session_id:
+                raise NetworkError(
+                    "The selected fixture-context RPC has no registered Lowkey network-session identity. "
+                    "Recreate the fixture context before using network-scoped actors or deployments."
+                )
+            managed_session = manager.get_by_id(str(fixture_session_id))
+            if str(managed_session.get("rpc") or "").rstrip("/") != str(fixture_rpc).rstrip("/"):
+                raise NetworkError("The fixture-context RPC does not match its registered network session.")
+        else:
+            managed_session = manager.active()
+        if registered_sessions and not managed_session:
+            raise NetworkError(
+                "This project has Lowkey-managed network sessions but none is selected and healthy. "
+                "Run `lk lab network use <name>` or create a new session; Lowkey will not guess an RPC."
+            )
+        if managed_session:
+            managed_rpc = managed_session.get("rpc")
+            network_actors = dict(managed_session.get("actors") or {})
+            session_actor = managed_session.get("active_actor")
+            config["_active_network_session"] = dict(managed_session)
+            config.pop("_network_selection_error", None)
+        else:
+            config.pop("_active_network_session", None)
+            config.pop("_network_selection_error", None)
+    except NetworkError as exc:
+        managed_error = str(exc)
+        config["_network_selection_error"] = managed_error
+        config.pop("_active_network_session", None)
+    except Exception as exc:
+        managed_error = (
+            f"Could not verify this project's managed network registry: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        config["_network_selection_error"] = managed_error
+        config.pop("_active_network_session", None)
 
     validated_target = project_context_target(project_root)
     if validated_target is None:
@@ -2096,18 +2376,49 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
                 "source": "legacy-global",
             }
 
-    return shared_context.resolve_runtime_context(
+    resolved = shared_context.resolve_runtime_context(
         project_root,
         state,
         config,
         validated_target=validated_target,
         fixture_rpc=fixture_rpc,
+        managed_rpc=managed_rpc,
+        network_actors=network_actors,
+        session_actor=session_actor,
         allow_legacy_target=False,
         explicit_target=explicit_target,
         explicit_rpc=explicit_rpc,
         explicit_actor=explicit_actor,
     )
-
+    if managed_error and not explicit_rpc and not fixture_rpc:
+        resolved["rpc"] = None
+        resolved["rpc_source"] = "managed-network-selection-required"
+    if managed_error and fixture_rpc:
+        # The fixture RPC may still be selected by its explicit project
+        # context, but never borrow actors from a different active session.
+        resolved["actor"] = None
+        resolved["actor_source"] = "fixture-session-identity-unverified"
+    if resolved.get("rpc_override_unscoped"):
+        # The RPC was explicitly overridden to an endpoint with no matching
+        # selected-session identity. Do not export the old target/session into
+        # downstream command state.
+        config.pop("_active_network_session", None)
+        config.pop("_network_actor_selection", None)
+        config["_explicit_rpc_unscoped"] = True
+    elif managed_session:
+        config.pop("_explicit_rpc_unscoped", None)
+        resolved["network_session"] = {
+            "id": managed_session.get("id"),
+            "name": managed_session.get("name"),
+            "project_id": managed_session.get("project_id"),
+            "chain_id": managed_session.get("chain_id"),
+            "genesis_hash": managed_session.get("genesis_hash"),
+            "rpc": managed_session.get("rpc"),
+            "actors": network_actors,
+        }
+    elif managed_error:
+        resolved["network_selection_error"] = managed_error
+    return resolved
 
 def activate_project_context(config, root=None):
     """Hydrate target, RPC and active actor from the current project's context."""
@@ -2147,6 +2458,16 @@ def activate_project_context(config, root=None):
     if resolved.get("rpc_source") != "project-fixture":
         config["rpc"] = resolved.get("rpc")
     config["actor"] = resolved.get("actor")
+    if isinstance(resolved.get("network_session"), dict):
+        config["_active_network_session"] = dict(resolved["network_session"])
+        config.pop("_network_actor_selection", None)
+    else:
+        config.pop("_active_network_session", None)
+        config.pop("_network_actor_selection", None)
+    if resolved.get("network_selection_error"):
+        config["_network_selection_error"] = resolved["network_selection_error"]
+    else:
+        config.pop("_network_selection_error", None)
     config["_resolved_project_context"] = resolved
     return resolved
 
@@ -2157,6 +2478,8 @@ def persist_project_actor(config, root=None):
     # project's remembered actor, even though nested dispatch uses this logger.
     if isinstance(config, dict) and config.get("_ephemeral") is True:
         return None
+    if isinstance(config, dict) and config.get("_network_actor_selection"):
+        return config["_network_actor_selection"].get("actor")
     project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
     resolved = config.get("_resolved_project_context") if isinstance(config, dict) else None
     if not isinstance(resolved, dict):
@@ -2173,7 +2496,9 @@ def persist_project_actor(config, root=None):
     if not isinstance(wallets, dict):
         wallets = {}
     actor = config.get("actor") if isinstance(config, dict) else None
-    actor_profile = actor if isinstance(actor, str) and actor in wallets else None
+    session = config.get("_active_network_session") if isinstance(config, dict) else None
+    session_actors = session.get("actors", {}) if isinstance(session, dict) else {}
+    actor_profile = actor if isinstance(actor, str) and (actor in wallets or actor in session_actors) else None
     audit_context.update(
         project_root,
         actor_profile=actor_profile,
@@ -4989,6 +5314,13 @@ def _post_transaction_state_report(
 
     _score, getter, getter_values = candidates[0]
     rpc = effective_rpc(config)
+    if not rpc:
+        return [
+            "POST-TRANSACTION STATE",
+            "======================",
+            f"Read: {format_signature(getter)}",
+            "State refresh unavailable: no explicit or unambiguous active Lowkey RPC is selected",
+        ]
     command = ["cast", "call", target, format_signature(getter), *getter_values]
     if is_address(sender):
         command.extend(["--from", sender])
@@ -5378,7 +5710,25 @@ def _print_disassembly_guide(disassembly):
 
 
 def run_tx(config, args):
-    tx_hash = args[0] if args else last_transaction(config)
+    tx_args = [str(value) for value in (args or [])]
+    explicit_rpc = _explicit_cast_rpc(tx_args)
+    if explicit_rpc is not None:
+        cleaned = []
+        index = 0
+        while index < len(tx_args):
+            token = tx_args[index]
+            if token == "--rpc-url":
+                index += 2
+                continue
+            if token.startswith("--rpc-url="):
+                index += 1
+                continue
+            cleaned.append(token)
+            index += 1
+        tx_args = cleaned
+    if len(tx_args) > 1:
+        return fail("Usage: lk tx <transaction-hash> [--rpc-url <url>]")
+    tx_hash = tx_args[0] if tx_args else last_transaction(config)
     if not tx_hash:
         return fail(
             "Error: no transaction is saved for this project and target. "
@@ -5387,10 +5737,18 @@ def run_tx(config, args):
     if not is_tx_hash(tx_hash):
         return fail("Error: invalid transaction hash")
 
-    command = ["cast", "tx", tx_hash, "--json"]
-    rpc = effective_rpc(config)
-    if rpc:
-        command.extend(["--rpc-url", rpc])
+    rpc = effective_rpc(config, explicit_rpc=explicit_rpc)
+    if not rpc:
+        return _lowkey_command_error(
+            "RPC selection is blocked: this transaction lookup has no explicit --rpc-url or unambiguous active Lowkey network. "
+            "Select the network that contains the transaction with 'lk lab network use <name>' or pass --rpc-url. "
+            "No Cast command was executed.",
+            2,
+            config=config,
+            target=config.get("target"),
+            command="tx",
+        )
+    command = ["cast", "tx", tx_hash, "--json", "--rpc-url", rpc]
     code, output, error = cast_output(command)
     if code != 0 and not output:
         print(error or "cast tx failed", file=sys.stderr)
@@ -6002,7 +6360,7 @@ def _known_address_identities(config):
     # an internal name such as "lab-deployer" when the user explicitly named
     # that same Anvil address "Alice".
     actor_name = str(config.get("actor") or "").strip()
-    actor_entry = (config.get("wallets") or {}).get(actor_name)
+    actor_entry = _actor_profile_entry(config, actor_name)
     if actor_name and isinstance(actor_entry, dict):
         actor_address_value = actor_entry.get("address")
         if is_address(actor_address_value):
@@ -8917,13 +9275,7 @@ def run_cast(args,config,capture=False):
     for flag in ["--preview","--dry-run","--confirm","--yes"]:
         while flag in remaining: remaining.remove(flag)
     cmd.extend(remaining)
-    explicit_rpc = None
-    for rpc_index, token in enumerate(cmd):
-        token = str(token)
-        if token == "--rpc-url" and rpc_index + 1 < len(cmd):
-            explicit_rpc = str(cmd[rpc_index + 1])
-        elif token.startswith("--rpc-url="):
-            explicit_rpc = token.split("=", 1)[1]
+    explicit_rpc = _explicit_cast_rpc(cmd)
 
     def command_rpc():
         # The resolved invocation target may differ from the project's active
@@ -8931,10 +9283,34 @@ def run_cast(args,config,capture=False):
         # against that exact target, not an unrelated previously selected one.
         return effective_rpc(config, explicit_rpc=explicit_rpc, target=target)
 
-    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","rpc","access-list"}
     active_rpc=command_rpc()
-    if cast_cmd in rpc_commands and active_rpc and explicit_rpc is None: cmd.extend(["--rpc-url",active_rpc])
-    actor=actor_override or config.get("actor")
+    # An interactive send may still show its review and let the user cancel
+    # when no network is selected. It must not broadcast: if the user accepts,
+    # the RPC requirement is enforced immediately after consent and before any
+    # Cast invocation. Explicit previews and --yes remain fail-closed because
+    # they promise an RPC-backed preflight or an immediate broadcast path.
+    allow_cancel_without_rpc = (
+        cast_cmd == "send" and not preview and not bypass
+    )
+    if cast_cmd in RPC_REQUIRED_CAST_COMMANDS:
+        if not active_rpc and not allow_cancel_without_rpc:
+            return _lowkey_command_error(
+                "RPC selection is blocked: no explicit --rpc-url or unambiguous active Lowkey network is available. "
+                "Select a managed network with 'lk lab network use <name>' or provide --rpc-url. "
+                "No Cast command was executed.",
+                2,
+                capture=capture,
+                command=cast_cmd,
+                config=config,
+                target=target,
+            )
+        if active_rpc and explicit_rpc is None:
+            cmd.extend(["--rpc-url", active_rpc])
+    if config.get("_explicit_rpc_unscoped") and actor_override:
+        config["_rpc_override_explicit_actor"] = actor_override
+    actor = actor_override or (
+        None if config.get("_explicit_rpc_unscoped") else config.get("actor")
+    )
 
     # eth_call has no wallet signer, but msg.sender still matters to contract
     # logic. Mirror the selected Lowkey actor unless the caller explicitly
@@ -8947,7 +9323,7 @@ def run_cast(args,config,capture=False):
         if is_address(sender):
             cmd.extend(["--from", sender])
 
-    actor_entry=config.get("wallets",{}).get(actor) if actor else None
+    actor_entry=_actor_profile_entry(config, actor) if actor else None
     actor_key=resolve_wallet_key(config,actor) if cast_cmd=="send" else None
 
     # A view/pure function can technically be invoked by a signed transaction,
@@ -9010,6 +9386,17 @@ def run_cast(args,config,capture=False):
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
         if answer not in {"y","yes"}: print("Transaction cancelled. No transaction was broadcast."); return 0
+    if cast_cmd == "send" and not active_rpc:
+        return _lowkey_command_error(
+            "RPC selection is blocked: no explicit --rpc-url or unambiguous active Lowkey network is available. "
+            "Select a managed network with 'lk lab network use <name>' or provide --rpc-url. "
+            "The confirmation was received, but no Cast command was executed.",
+            2,
+            capture=capture,
+            command=cast_cmd,
+            config=config,
+            target=target,
+        )
     if cast_cmd == "send" and bypass:
         # --yes skips the prompt, not sender-resolution or revert safety checks.
         preflight = _transaction_preview_gas(
@@ -11699,15 +12086,39 @@ def _artifact_runtime_matches(path, artifact, runtime):
     return None
 
 
-def _live_target_artifact_match(config, address, artifact):
-    """Match direct deployments and common proxy/clone instances to an artifact."""
+def _live_target_artifact_match(
+    config, address, artifact, artifact_path=None, *, network_identity=None, rpc=None
+):
+    """Match direct deployments and common proxy/clone instances to an artifact.
+
+    Compiler AST identity is required before Solidity-library self-address
+    normalization. Unknown compiler provenance remains UNVERIFIED.
+    """
     runtime = _live_runtime(config, address)
     if not runtime:
         return None
 
-    direct = _artifact_runtime_matches("", artifact, runtime)
-    if direct:
-        return direct
+    root = configured_project_root(address, config)
+    if not root:
+        root = str(config.get("_lab_system_root") or Path.cwd())
+    compiled = _verify_compiled_runtime(
+        config, root, address, artifact, runtime, artifact_path=artifact_path,
+        network_identity=network_identity, rpc=rpc,
+    )
+    if compiled is not None:
+        if compiled.verification == "MATCHED":
+            return "runtime"
+        if compiled.verification == "MISMATCH":
+            direct_mismatch = True
+        else:
+            direct_mismatch = False
+            direct_unverified = True
+    else:
+        direct = _artifact_runtime_matches("", artifact, runtime)
+        if direct:
+            return direct
+        direct_mismatch = False
+        direct_unverified = False
 
     implementation = _minimal_proxy_implementation(runtime)
     if not implementation:
@@ -11723,8 +12134,15 @@ def _live_target_artifact_match(config, address, artifact):
                 implementation = str(impl).strip()
     if implementation:
         implementation_runtime = _live_runtime(config, implementation)
-        if implementation_runtime and _artifact_runtime_matches("", artifact, implementation_runtime):
-            return "clone-or-proxy"
+        if implementation_runtime:
+            implementation_check = _verify_compiled_runtime(
+                config, root, implementation, artifact, implementation_runtime,
+                artifact_path=artifact_path, network_identity=network_identity, rpc=rpc,
+            ) if compiled is not None else None
+            if implementation_check and implementation_check.verification == "MATCHED":
+                return "clone-or-proxy"
+            if implementation_check is None and _artifact_runtime_matches("", artifact, implementation_runtime):
+                return "clone-or-proxy"
 
         # The proxy may currently use a source-proven derived implementation (for
         # example, a test fixture that upgrades to a V2 mock). Match its runtime
@@ -11739,6 +12157,10 @@ def _live_target_artifact_match(config, address, artifact):
             )
         ):
             return "clone-or-proxy"
+    if direct_mismatch:
+        return "mismatch"
+    if direct_unverified:
+        return "unverified"
     return None
 
 
@@ -11822,7 +12244,7 @@ def _runtime_code_keccak_hash(runtime_code):
     return "0x" + bytes(digest).hex()
 
 
-def _live_target_state(config, address=None, artifact=None):
+def _live_target_state(config, address=None, artifact=None, *, network_identity=None):
     """Return authoritative runtime state for a configured EVM target."""
     address = address or config.get("target")
     state = {
@@ -11834,6 +12256,11 @@ def _live_target_state(config, address=None, artifact=None):
         "chain_id": None,
         "block_number": None,
         "code_size": 0,
+        "runtime_code_present": "MISSING",
+        "artifact_match_status": "UNVERIFIED",
+        "initialization_status": "UNVERIFIED",
+        "dependency_readiness": "UNVERIFIED",
+        "protocol_readiness": "UNVERIFIED",
         "runtime_code_hash": None,
         "runtime_code_hash_algorithm": "keccak256",
         "runtime_code_hash_status": "UNAVAILABLE",
@@ -11878,8 +12305,10 @@ def _live_target_state(config, address=None, artifact=None):
     runtime = str(code or "").strip()
     if runtime.lower() in {"", "0x", "0x0"}:
         state["status"] = "NOT_DEPLOYED"
+        state["runtime_code_present"] = "MISSING"
     else:
         state["status"] = "DEPLOYED"
+        state["runtime_code_present"] = "PRESENT"
         if runtime.lower().startswith("0x"):
             state["code_size"] = max(0, (len(runtime) - 2) // 2)
             runtime_hash = _runtime_code_keccak_hash(runtime)
@@ -11902,15 +12331,24 @@ def _live_target_state(config, address=None, artifact=None):
                 deployed_bytecode = deployed_bytecode.get("object")
         if isinstance(artifact_data, dict) and str(deployed_bytecode or "").strip() not in {"", "0x", "0x0"}:
             try:
-                match = _live_target_artifact_match(config, address, artifact_data)
+                match = _live_target_artifact_match(
+                    config, address, artifact_data, artifact_path=artifact_path,
+                    network_identity=network_identity, rpc=rpc,
+                )
             except Exception:
-                match = None
+                match = "unverified"
             if match == "runtime":
                 state["verification"] = "MATCHED"
+                state["artifact_match_status"] = "MATCHED"
             elif match == "clone-or-proxy":
                 state["verification"] = "PROXY/CLONE MATCHED"
-            else:
+                state["artifact_match_status"] = "MATCHED"
+            elif match == "mismatch":
                 state["verification"] = "CODE MISMATCH"
+                state["artifact_match_status"] = "MISMATCH"
+            else:
+                state["verification"] = "UNVERIFIED"
+                state["artifact_match_status"] = "UNVERIFIED"
     return state
 
 
@@ -12885,6 +13323,175 @@ def _artifact_runtime_bytecode(artifact):
     return None
 
 
+_BUILD_INFO_CACHE = {}
+
+def _artifact_build_info_paths(root, artifact_path):
+    """Find only compiler build-info files relevant to a Hardhat/Foundry artifact."""
+    root_path = Path(root).expanduser().resolve()
+    artifact_file = Path(artifact_path).expanduser().resolve() if artifact_path else None
+    candidates = []
+    if artifact_file and artifact_file.is_file():
+        debug_file = artifact_file.with_suffix(".dbg.json")
+        if debug_file.is_file():
+            try:
+                debug = json.loads(debug_file.read_text(encoding="utf-8"))
+                relative = debug.get("buildInfo") if isinstance(debug, dict) else None
+                if isinstance(relative, str) and relative.strip():
+                    resolved = (debug_file.parent / relative).resolve()
+                    resolved.relative_to(root_path)
+                    if resolved.is_file():
+                        candidates.append(resolved)
+            except (OSError, ValueError, TypeError):
+                pass
+    for directory in (
+        root_path / "artifacts" / "build-info",
+        root_path / "out" / "build-info",
+        root_path / "build-info",
+    ):
+        if directory.is_dir():
+            candidates.extend(sorted(directory.glob("*.json")))
+    unique = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root_path)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            unique.append(resolved)
+    return unique
+
+def _compiler_contract_kind(root, artifact_path, artifact):
+    """Return AST contractKind only from a source-qualified compiler build-info record."""
+    if runtime_verification is None or not isinstance(artifact, dict):
+        return None
+    source_name = artifact_source_name(artifact, artifact_path, root)
+    contract_name = artifact_contract_name(artifact_path or "", artifact)
+    if not source_name or not contract_name:
+        return None
+    normalized_source = str(source_name).replace("\\", "/").lstrip("./")
+    for path in _artifact_build_info_paths(root, artifact_path):
+        try:
+            stat = path.stat()
+            cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+            build_info = _BUILD_INFO_CACHE.get(cache_key)
+            if build_info is None:
+                with path.open("r", encoding="utf-8") as handle:
+                    build_info = json.load(handle)
+                if not isinstance(build_info, dict):
+                    continue
+                # Bound memory: compiler output can be large and only a few latest
+                # files are required for one Lowkey process.
+                if len(_BUILD_INFO_CACHE) > 24:
+                    _BUILD_INFO_CACHE.clear()
+                _BUILD_INFO_CACHE[cache_key] = build_info
+        except (OSError, ValueError, TypeError):
+            continue
+        output = build_info.get("output")
+        sources = output.get("sources") if isinstance(output, dict) else None
+        if not isinstance(sources, dict):
+            continue
+        source_key = next((
+            key for key in sources
+            if isinstance(key, str) and key.replace("\\", "/").lstrip("./") == normalized_source
+        ), None)
+        if source_key is None:
+            continue
+        kind = runtime_verification.contract_kind_from_build_info(
+            build_info, source_key, contract_name
+        )
+        if kind:
+            return kind
+    return None
+
+def _verified_runtime_library_addresses(config, root, rpc, artifact, network_identity, catalog=None):
+    """Resolve and re-verify each runtime-linked library in this exact network session."""
+    if library_linker is None:
+        return {}, "library linker unavailable"
+    try:
+        refs = library_linker.extract_link_references(artifact, "runtime")
+        if not refs:
+            return {}, None
+        catalog = catalog if catalog is not None else _artifact_catalog(root)
+        records = _supporting_deployment_records(config, root, network_identity)
+        addresses = {}
+        network = network_identity or {}
+        for ref in refs:
+            identity = ref.identity
+            library_artifact = library_linker.resolve_library_artifact(identity, catalog)
+            library_path = library_artifact.get("_lowkeyArtifactPath")
+            if not library_path or _compiler_contract_kind(root, library_path, library_artifact) != "library":
+                return {}, f"compiler AST does not prove {identity.qualified_name} is a library"
+            expected_hash = _artifact_file_sha256(library_path)
+            candidates = [item for item in records if (
+                item.get("role") == "solidity_library"
+                and item.get("qualified_identity") == identity.qualified_name
+                and item.get("artifact_sha256") == expected_hash
+                and is_address(item.get("address"))
+                and isinstance(item.get("network"), dict)
+                and item["network"].get("network_session_id") == network.get("network_session_id")
+                and item["network"].get("project_id") == network.get("project_id")
+                and item["network"].get("chain_id") == network.get("chain_id")
+                and item["network"].get("genesis_hash") == network.get("genesis_hash")
+            )]
+            candidates.sort(key=lambda item: str(item.get("recorded_at") or ""), reverse=True)
+            verified_record = None
+            for candidate in candidates:
+                dependencies = candidate.get("dependencies") if isinstance(candidate.get("dependencies"), dict) else {}
+                verification = _supporting_runtime_match(
+                    config, root, rpc, library_path, library_artifact, candidate["address"],
+                    network, dependencies=dependencies, library_artifacts=catalog,
+                )
+                if verification is not None:
+                    verified_record = candidate
+                    break
+            if verified_record is None:
+                return {}, f"no runtime-verified supporting deployment for {identity.qualified_name} in the selected network session"
+            addresses[identity.qualified_name] = verified_record["address"]
+        return addresses, None
+    except Exception as error:
+        return {}, str(error)
+
+def _verify_compiled_runtime(
+    config, root, address, artifact, runtime, artifact_path=None,
+    *, network_identity=None, rpc=None,
+):
+    """Verify runtime while keeping code presence, artifact match and Keccak separate."""
+    if runtime_verification is None:
+        return None
+    kind = _compiler_contract_kind(root, artifact_path, artifact)
+    library_artifacts = None
+    library_addresses = None
+    try:
+        runtime_refs = library_linker.extract_link_references(artifact, "runtime") if library_linker else ()
+    except Exception as error:
+        return runtime_verification.RuntimeVerification(
+            "DEPLOYED", "UNVERIFIED", None, None, False,
+            f"Compiler runtime link metadata is invalid: {error}", "PENDING",
+        )
+    if runtime_refs:
+        rpc = rpc or effective_rpc(config)
+        if network_identity is None and rpc:
+            network_identity = _current_deployment_network_identity(config, root, rpc)
+        library_artifacts = _artifact_catalog(root)
+        library_addresses, reason = _verified_runtime_library_addresses(
+            config, root, rpc, artifact, network_identity or {}, catalog=library_artifacts
+        )
+        if reason:
+            return runtime_verification.RuntimeVerification(
+                "DEPLOYED", "UNVERIFIED", None, None, False,
+                "Runtime-linked library verification is incomplete: " + reason, "PENDING",
+            )
+    return runtime_verification.verify_runtime(
+        artifact, runtime, address, contract_kind=kind,
+        library_artifacts=library_artifacts, library_addresses=library_addresses,
+        network_identity=network_identity,
+    )
+
+
 def _fixture_target_artifact(root, target_contract):
     target_name = str(target_contract or "").strip().lower()
     if not target_name:
@@ -12897,50 +13504,37 @@ def _fixture_target_artifact(root, target_contract):
 
 
 def _artifact_runtime_normalizer(artifact):
-    """Return a bytecode normalizer that masks Solidity immutable references."""
+    """Return a strict immutable-only bytecode normalizer.
+
+    This legacy fixture matcher is intentionally not allowed to infer Solidity
+    library identity. Library self-address normalization belongs to
+    ``runtime_verification`` and requires source-qualified compiler AST proof.
+    """
+    if runtime_verification is None:
+        return None
     expected_runtime = _artifact_runtime_bytecode(artifact)
-    if not expected_runtime:
+    expected = runtime_verification._bytes(expected_runtime)
+    if expected is None:
+        return None
+    try:
+        ranges = runtime_verification._immutable_ranges(artifact)
+        normalized_expected = runtime_verification._apply_ranges(
+            expected, ranges, expected_length=len(expected)
+        )
+    except (TypeError, ValueError):
         return None
 
-    normalized = expected_runtime.removeprefix("0x").lower()
-    immutable_refs = {}
-    deployed = artifact.get("deployedBytecode") if isinstance(artifact, dict) else None
-    if isinstance(deployed, dict):
-        immutable_refs = deployed.get("immutableReferences") or {}
-
-    spans = []
-    if isinstance(immutable_refs, dict):
-        for references in immutable_refs.values():
-            if not isinstance(references, list):
-                continue
-            for reference in references:
-                if not isinstance(reference, dict):
-                    continue
-                try:
-                    start = int(reference.get("start"))
-                    length = int(reference.get("length"))
-                except (TypeError, ValueError):
-                    continue
-                if start >= 0 and length > 0:
-                    spans.append((start, start + length))
-
     def normalize(bytecode):
-        value = str(bytecode or "").strip().removeprefix("0x").lower()
-        if len(value) != len(normalized):
+        actual = runtime_verification._bytes(bytecode)
+        if actual is None or len(actual) != len(expected):
             return None
-        chars = list(value)
-        for start, end in spans:
-            left = start * 2
-            right = min(end * 2, len(chars))
-            for index in range(left, right):
-                chars[index] = "0"
-        expected = list(normalized)
-        for start, end in spans:
-            left = start * 2
-            right = min(end * 2, len(expected))
-            for index in range(left, right):
-                expected[index] = "0"
-        return "".join(chars) == "".join(expected)
+        try:
+            normalized_actual = runtime_verification._apply_ranges(
+                actual, ranges, expected_length=len(expected)
+            )
+        except (TypeError, ValueError):
+            return None
+        return normalized_actual == normalized_expected
 
     return normalize
 
@@ -13354,12 +13948,12 @@ def _fixture_anvil_lineage(managed_state, current_rpc):
         return None, None
     purpose = managed_state.get("purpose")
     if purpose == "project-fixture-block-context":
-        old_fixture_pid = managed_state.get("pid")
+        old_fixture_session_id = managed_state.get("fixture_session_id")
         base_anvil = managed_state.get("base_anvil")
         if not isinstance(base_anvil, dict):
             base_anvil = None
         return (
-            old_fixture_pid if isinstance(old_fixture_pid, int) else None,
+            str(old_fixture_session_id) if old_fixture_session_id else None,
             base_anvil,
         )
     managed_rpc = str(managed_state.get("rpc") or "").rstrip("/")
@@ -13390,7 +13984,7 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
         return None, None, "the Anvil executable is unavailable"
 
     managed_state = read_project_anvil_state(root)
-    old_fixture_pid, base_anvil = _fixture_anvil_lineage(
+    old_fixture_session_id, base_anvil = _fixture_anvil_lineage(
         managed_state, current_rpc
     )
 
@@ -13438,29 +14032,57 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
             "inspect .audit/anvil-fixture-context.log"
         )
 
-    # Replace only an older fixture-context node. Retain the original
-    # Lowkey-managed Anvil as the project's general-purpose node so other
-    # projects do not auto-discover this fixture-specific RPC by port scanning.
-    if old_fixture_pid is not None:
+    # Register this special-purpose node through the same process/session
+    # manager as ordinary local networks. This makes replacement and shutdown
+    # use the same /proc identity + pidfd safety checks; a legacy fixture PID is
+    # never signalled just because it appears in old JSON.
+    manager = _project_network_manager(root)
+    fixture_session = None
+    try:
+        fixture_session = manager.register_existing_process(
+            f"fixture-context-{uuid.uuid4().hex[:8]}",
+            fixture_rpc,
+            process.pid,
+            purpose="project-fixture-block-context",
+            log_path=str(log_path),
+        )
+    except Exception as exc:
         try:
-            os.kill(old_fixture_pid, 15)
-        except OSError:
+            process.terminate()  # This exact process object was created above.
+            process.wait(timeout=2)
+        except Exception:
             pass
+        return None, None, f"fixture Anvil identity registration failed: {exc}"
+
+    if old_fixture_session_id is not None:
+        try:
+            manager.stop_session(old_fixture_session_id)
+        except NetworkError as exc:
+            print(
+                "Warning: previous fixture Anvil was not stopped safely: "
+                f"{exc}. The previous process was left untouched.",
+                file=sys.stderr,
+            )
 
     previous_rpc_present, previous_rpc = _fixture_rpc_origin(
         config, current_rpc, managed_state
     )
-    write_project_anvil_state(root, {
+    # Merge fixture metadata into the manager's existing state instead of
+    # replacing the session registry from a stale pre-launch snapshot.
+    fixture_state = manager._read()
+    fixture_state.update({
         "auto_started": True,
         "pid": process.pid,
         "rpc": fixture_rpc,
         "started": datetime.now().astimezone().isoformat(timespec="seconds"),
         "purpose": "project-fixture-block-context",
+        "fixture_session_id": fixture_session["id"],
         "fixture_context": context,
         "previous_rpc_present": previous_rpc_present,
         "previous_rpc": previous_rpc,
         "base_anvil": base_anvil,
     })
+    manager._write(fixture_state)
     config["_fixture_rpc_scope"] = {
         "runtime_rpc": fixture_rpc,
         "previous_rpc_present": previous_rpc_present,
@@ -14609,12 +15231,59 @@ class ContractDependencyCycleError(ValueError):
     """Raised when constructor-time contract dependencies cannot be linearly deployed."""
 
 
-def discover_contract_dependencies(root, contract_name):
-    """Return first-party deployable contract dependencies in deployment order.
+def _solidity_constructor_body(contract_body):
+    """Return only the Solidity constructor body, excluding comments/strings.
 
-    A dependency must be referenced as a Solidity contract type, constructed
-    with new, or explicitly cast from a constructor argument. Mere mentions in
-    comments/strings, events, or sibling declarations do not create an edge.
+    A contract reference elsewhere in runtime code may describe a factory
+    relationship or an externally supplied integration. It is not a prerequisite
+    for deploying the host contract. This helper intentionally extracts only
+    constructor-time code before generic dependency ordering is considered.
+    """
+    body = str(contract_body or "")
+    match = re.search(r"\bconstructor\s*\(", body)
+    if not match:
+        return ""
+    opening_paren = body.find("(", match.start())
+    depth = 0
+    cursor = opening_paren
+    closing_paren = None
+    while cursor < len(body):
+        if body[cursor] == "(":
+            depth += 1
+        elif body[cursor] == ")":
+            depth -= 1
+            if depth == 0:
+                closing_paren = cursor
+                break
+        cursor += 1
+    if closing_paren is None:
+        return ""
+    opening_brace = body.find("{", closing_paren + 1)
+    if opening_brace < 0:
+        return ""
+    depth = 1
+    cursor = opening_brace + 1
+    while cursor < len(body) and depth:
+        if body[cursor] == "{":
+            depth += 1
+        elif body[cursor] == "}":
+            depth -= 1
+        cursor += 1
+    return body[opening_brace + 1:cursor - 1] if depth == 0 else ""
+
+
+def discover_contract_dependencies(root, contract_name):
+    """Detect recursive constructor-time creation cycles without predeploying children.
+
+    A Solidity ``new Child(...)`` expression creates the child as part of the
+    selected contract's own constructor execution. It is a factory/creation
+    relationship, not evidence that Child must be deployed first as a separate
+    transaction. The compiler-backed dependency graph records that relationship
+    as ``creation-expression`` with ``factory_created=True`` and
+    ``auto_deploy=False``. This compatibility helper therefore returns no
+    predeployment list; it only rejects recursive creation cycles that cannot
+    produce a finite deployment sequence. Contract-typed constructor inputs
+    remain explicit values to resolve in the constructor wizard.
     """
     root_path = Path(root).expanduser().resolve()
     artifacts = {}
@@ -14652,23 +15321,24 @@ def discover_contract_dependencies(root, contract_name):
         current = unique.get(key)
         if not current:
             return []
-        body = current[3]
+        constructor_body = _solidity_constructor_body(current[3])
+        if not constructor_body:
+            return []
         found = []
         for dependency_key, dependency in unique.items():
             if dependency_key == key:
                 continue
             dependency_name = dependency[0]
             escaped = re.escape(dependency_name)
-            patterns = (
-                rf"\b{escaped}\s+(?:(?:public|private|internal|external|immutable|constant)\s+)*[A-Za-z_]\w*\s*(?:=[^;]*)?;",
-                rf"\bnew\s+{escaped}\b",
-                rf"\b{escaped}\s*\(\s*_[A-Za-z_]\w*\s*\)",
-            )
-            if any(re.search(pattern, body) for pattern in patterns):
+            # Only an explicit `new Contract(...)` inside this contract's
+            # constructor establishes a generic pre-deployment requirement.
+            # Contract-typed storage, interface parameters, and casts such as
+            # `SomeIntegration(addressValue)` are unresolved external inputs,
+            # not instructions to deploy a replacement contract.
+            if re.search(rf"\bnew\s+{escaped}\b", constructor_body):
                 found.append(dependency_name)
         return sorted(found, key=str.casefold)
 
-    ordered = []
     visiting = set()
     visited = set()
     stack = []
@@ -14688,15 +15358,16 @@ def discover_contract_dependencies(root, contract_name):
         visiting.add(key)
         stack.append(key)
         for dependency in direct_dependencies(name):
+            # Traverse factory-created relationships only to detect recursive
+            # constructor creation. Never turn an internal ``new`` expression
+            # into a separate deployment transaction.
             visit(dependency)
-            if dependency.casefold() != target_key and dependency not in ordered:
-                ordered.append(dependency)
         stack.pop()
         visiting.remove(key)
         visited.add(key)
 
     visit(contract_name)
-    return ordered
+    return []
 
 
 def _live_project_contract_target(config, root, contract_name, rpc):
@@ -14724,7 +15395,9 @@ def _live_project_contract_target(config, root, contract_name, rpc):
     return None
 
 
-def set_lab_target(config, root, target, contract, artifact):
+def set_lab_target(
+    config, root, target, contract, artifact, *, network_identity=None, link_evidence=None
+):
     _sync_security_patterns(root)
     config["target"] = target
     config["target_contract"] = contract
@@ -14739,8 +15412,50 @@ def set_lab_target(config, root, target, contract, artifact):
         artifact=artifact,
         source="project-lab",
     )
-    runtime_state = _live_target_state(config, target, artifact)
+    runtime_state = _live_target_state(
+        config, target, artifact, network_identity=network_identity
+    )
     remember_project_target(config, root, contract, target, runtime_state=runtime_state)
+    if network_identity or link_evidence:
+        project_key = str(Path(root).expanduser().resolve())
+        record = config.get("project_target_registry", {}).get(project_key, {}).get(str(contract))
+        if isinstance(record, dict):
+            if network_identity:
+                record["network"] = dict(network_identity)
+            if hasattr(link_evidence, "evidence"):
+                record["link_evidence"] = link_evidence.evidence()
+            elif isinstance(link_evidence, dict):
+                record["link_evidence"] = dict(link_evidence)
+            record["deployment_role"] = "primary_audit_target"
+    if network_identity and is_address(target):
+        session_record = {
+            "role": "primary_audit_target",
+            "qualified_identity": (
+                f"{artifact_source_name(read_artifact(artifact) or {}, artifact, root) or ''}:{contract}"
+            ).lstrip(":"),
+            "artifact": str(Path(artifact).resolve()) if artifact else None,
+            "deployment_transaction": (
+                (config.get("_last_deployment_receipt") or {}).get("tx_hash")
+                if isinstance(config.get("_last_deployment_receipt"), dict) else None
+            ),
+            "runtime_verification": runtime_state.get("verification"),
+            "runtime_code_hash": runtime_state.get("runtime_code_hash"),
+            "initialization_status": runtime_state.get("initialization_status"),
+            "dependency_readiness": runtime_state.get("dependency_readiness"),
+            "protocol_readiness": runtime_state.get("protocol_readiness"),
+        }
+        registry_status = _record_network_session_deployment(
+            root, network_identity, target, session_record
+        )
+        project_key = str(Path(root).expanduser().resolve())
+        primary_record = config.get("project_target_registry", {}).get(project_key, {}).get(str(contract))
+        if isinstance(primary_record, dict):
+            primary_record["network_registry_status"] = registry_status
+            if registry_status.startswith("FAILED"):
+                primary_record["reuse_permitted"] = False
+            save_config(config)
+        if registry_status.startswith("FAILED"):
+            print("WARNING  Network deployment registry could not be synchronized; this address is not eligible for automatic reuse.")
     save_config(config)
     deployment = {
         "source": "project-lab",
@@ -14804,108 +15519,136 @@ def read_project_anvil_state(root):
     except (OSError, json.JSONDecodeError):
         return None
 
+def _project_network_manager(root):
+    return NetworkManager(root, tool_path("anvil") or "anvil")
+
+
+def _restore_anvil_compatibility_fields(manager, state):
+    """Point legacy single-network readers at a verified remaining session only."""
+    active_id = state.get("active_session_id")
+    selected = next(
+        (item for item in manager.list() if item.get("id") == active_id
+         and item.get("process_owned") and item.get("status") == "running"),
+        None,
+    )
+    if selected is None:
+        for key in ("managed_session_id", "auto_started", "pid", "rpc", "started"):
+            state.pop(key, None)
+        return state
+    state.update({
+        "managed_session_id": selected["id"],
+        "auto_started": True,
+        "pid": selected["pid"],
+        "rpc": selected["rpc"],
+        "started": selected.get("started_at"),
+    })
+    return state
+
+
 def stop_project_anvil(root):
-    state = read_project_anvil_state(root)
-    if not isinstance(state, dict) or not state.get("auto_started"):
-        print("Project Anvil: not managed by Lowkey.")
-        return 0
-    pids = []
-    pid = state.get("pid")
-    if isinstance(pid, int):
-        pids.append(pid)
-    base_anvil = state.get("base_anvil")
-    if isinstance(base_anvil, dict) and base_anvil.get("auto_started"):
-        base_pid = base_anvil.get("pid")
-        if isinstance(base_pid, int) and base_pid not in pids:
-            pids.append(base_pid)
-    for managed_pid in pids:
+    """Stop only a process whose managed session identity still verifies."""
+    manager = _project_network_manager(root)
+    sessions = manager.list()
+    state = read_project_anvil_state(root) or {}
+    fixture_id = state.get("fixture_session_id")
+    if fixture_id:
         try:
-            os.kill(managed_pid, 15)
-        except OSError:
-            pass
+            stopped = manager.stop_session(str(fixture_id))
+        except NetworkError as exc:
+            return fail(f"Error stopping fixture-context Anvil: {exc}", 2)
+        current = manager._read()
+        for key in (
+            "purpose", "fixture_session_id", "fixture_context",
+            "previous_rpc_present", "previous_rpc", "base_anvil",
+        ):
+            current.pop(key, None)
+        # The fixture RPC overwrote legacy compatibility fields when it was
+        # started. Restore those fields only from a still-owned active session;
+        # never resurrect a stale PID or an unverified legacy RPC.
+        _restore_anvil_compatibility_fields(manager, current)
+        manager._write(current)
+        print(f"Fixture-context network stopped: {stopped['name']} ({stopped['id']})")
+        return 0
+    active_id = state.get("active_session_id")
+    selected = next((item for item in sessions if item.get("id") == active_id), None)
+    if selected is None:
+        # Legacy state files do not prove process ownership. Never signal their
+        # stored PID; leave the process untouched and give the operator guidance.
+        if state.get("auto_started") and not state.get("managed_session_id"):
+            print("Project Anvil: legacy process ownership cannot be verified; no process was signalled.")
+            return 2
+        print("Project Anvil: no selected Lowkey-managed network.")
+        return 0
     try:
-        os.remove(project_anvil_state_path(root))
-    except OSError:
-        pass
-    print(f"Project Anvil stopped: PID {pid or 'unknown'}")
+        stopped = manager.stop(str(selected.get("name")))
+    except NetworkError as exc:
+        return fail(f"Error stopping managed network: {exc}", 2)
+    print(f"Managed network stopped: {stopped['name']} ({stopped['id']})")
     return 0
 
+
 def ensure_project_anvil(config, root):
-    info = anvil_rpc_info(config)
-    if info:
-        return info
-
+    # Explicit and fixture RPCs retain their documented precedence. Otherwise,
+    # managed sessions outrank project/legacy/global Anvil discovery.
+    fixture_info = project_fixture_rpc_info(config)
+    if fixture_info:
+        return fixture_info
     if config.get("rpc"):
-        return None
+        return detect_anvil_rpc(config.get("rpc"))
 
-    existing = read_project_anvil_state(root)
-    if isinstance(existing, dict):
-        pid = existing.get("pid")
-        rpc = existing.get("rpc")
-        if isinstance(pid, int) and isinstance(rpc, str) and local_port_open("127.0.0.1", int(rpc.rsplit(":", 1)[-1])):
-            info = detect_anvil_rpc(rpc)
+    manager = _project_network_manager(root)
+    try:
+        registered = manager.list()
+        active = manager.active()
+        if active:
+            info = detect_anvil_rpc(active.get("rpc"))
             if info:
                 config["_auto_rpc_info"] = info
+                config["_active_network_session"] = {
+                    "id": active.get("id"),
+                    "name": active.get("name"),
+                    "chain_id": active.get("chain_id"),
+                    "genesis_hash": active.get("genesis_hash"),
+                    "rpc": active.get("rpc"),
+                    "project_id": active.get("project_id"),
+                }
                 return info
-        try:
-            os.remove(project_anvil_state_path(root))
-        except OSError:
-            pass
-
-    binary = tool_path("anvil")
-    if not binary:
+            raise NetworkError("The selected managed network RPC failed its health check.")
+        if registered and any(item.get("status") == "stale-or-unowned" for item in registered):
+            raise NetworkError(
+                "A recorded Anvil session no longer matches its process identity. "
+                "No process was adopted or terminated; inspect `lk lab network list` and choose a healthy session."
+            )
+        existing_names = {str(item.get("name")) for item in registered}
+        name = "default"
+        suffix = 2
+        while name in existing_names:
+            name = f"default-{suffix}"
+            suffix += 1
+        # Preserve backwards compatibility with an unmanaged local node only
+        # when this project has no managed-session history at all.
+        if not registered:
+            unmanaged = detect_anvil_rpc()
+            if unmanaged:
+                return unmanaged
+        session = manager.create(name)
+        info = detect_anvil_rpc(session["rpc"])
+        if not info:
+            manager.stop(name)
+            raise NetworkError("New Anvil session started but Lowkey's RPC probe could not verify it.")
+        config["_auto_rpc_info"] = info
+        config["_active_network_session"] = {
+            "id": session.get("id"),
+            "name": session.get("name"),
+            "chain_id": session.get("chain_id"),
+            "genesis_hash": session.get("genesis_hash"),
+            "rpc": session.get("rpc"),
+            "project_id": session.get("project_id"),
+        }
+        return info
+    except NetworkError as exc:
+        print(f"Warning: Lowkey could not select/start a managed Anvil network: {exc}", file=sys.stderr)
         return None
-
-    port = None
-    for candidate in range(8545, 8556):
-        if not local_port_open("127.0.0.1", candidate):
-            port = candidate
-            break
-    if port is None:
-        return None
-
-    rpc = f"http://127.0.0.1:{port}"
-    log_path = os.path.join(root, ".audit", "anvil.log")
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    try:
-        log = open(log_path, "a", encoding="utf-8")
-        process = subprocess.Popen(
-            [binary, "--port", str(port), "--silent"],
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-        log.close()
-    except (OSError, ValueError) as error:
-        try:
-            log.close()
-        except Exception:
-            pass
-        print(f"Warning: Lowkey could not start project Anvil: {error}", file=sys.stderr)
-        return None
-
-    for _ in range(40):
-        info = detect_anvil_rpc(rpc)
-        if info:
-            state = {
-                "auto_started": True,
-                "pid": process.pid,
-                "rpc": rpc,
-                "started": datetime.now().astimezone().isoformat(timespec="seconds"),
-            }
-            write_project_anvil_state(root, state)
-            config["_auto_rpc_info"] = info
-            return info
-        if process.poll() is not None:
-            return None
-        import time
-        time.sleep(0.1)
-
-    try:
-        process.terminate()
-    except OSError:
-        pass
-    return None
 
 def _format_build_failure(output):
     text = str(output or "").strip()
@@ -16469,6 +17212,29 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
     except Exception:
         inventory = []
 
+    # Supporting deployments live in the selected session's .audit/anvil.json
+    # registry. Do not treat the project-wide primary-target registry as a
+    # second deployment database.
+    support_by_name: dict[str, list[dict[str, Any]]] = {}
+    if config.get("_lab_rpc"):
+        try:
+            current_network = _current_deployment_network_identity(
+                config, project_root, config.get("_lab_rpc")
+            )
+        except Exception:
+            current_network = {}
+        for supporting in _supporting_deployment_records(config, project_root, current_network):
+            network = supporting.get("network") if isinstance(supporting.get("network"), dict) else {}
+            if (
+                network.get("network_session_id") == current_network.get("network_session_id")
+                and network.get("project_id") == current_network.get("project_id")
+                and supporting.get("runtime_verification") == "MATCHED"
+                and is_address(supporting.get("address"))
+            ):
+                support_by_name.setdefault(
+                    str(supporting.get("contract_name") or "").casefold(), []
+                ).append(supporting)
+
     entries = []
     for name, address in choices or []:
         if not is_address(address):
@@ -16495,6 +17261,9 @@ def _lab_address_picker_entries(config, accounts, choices, requires_contract=Fal
                         == str(name).casefold()
                 ):
                     artifact_candidates.append(item.get("artifact"))
+            for supporting in support_by_name.get(str(name).casefold(), []):
+                if str(supporting.get("address") or "").lower() == key:
+                    artifact_candidates.append(supporting.get("artifact"))
 
             if (
                 isinstance(context_target, dict)
@@ -16615,13 +17384,21 @@ def _lab_resolve_address_selection(raw_value, entries, label):
     )
 
 
+class LabInputCancelled(Exception):
+    """Raised when a user explicitly cancels any nested deployment prompt."""
+
+
 def _lab_prompt_address_selection(entries, label):
     while True:
         raw = input(
             "  Select by number, name, partial name, or address (? = search): "
         ).strip()
+        if raw.lower() in {"q", "quit", "cancel"}:
+            raise LabInputCancelled("local lab cancelled")
         if raw in {"?", "/", "search"}:
             query = input("  Search contract, wallet, actor, or project name: ").strip()
+            if query.lower() in {"q", "quit", "cancel"}:
+                raise LabInputCancelled("local lab cancelled")
             if not query:
                 print("  Search cancelled; choose from the list or enter a value.")
                 continue
@@ -16639,6 +17416,8 @@ def _lab_prompt_address_selection(entries, label):
                 return matches[0]["address"]
             _lab_print_address_picker(matches, title=f"SEARCH RESULTS FOR '{query}'")
             raw = input("  Select a result by number or name: ").strip()
+            if raw.lower() in {"q", "quit", "cancel"}:
+                raise LabInputCancelled("local lab cancelled")
             try:
                 return _lab_resolve_address_selection(raw, matches, label)
             except ValueError as error:
@@ -16725,6 +17504,11 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
     print(f"  Field     : {label}")
     print(f"  Type      : {ptype}")
     print(f"  Meaning   : {_lab_constructor_meaning(label, ptype, param)}")
+    internal_type = str((param or {}).get("internalType") or "").strip()
+    if internal_type:
+        print(f"  ABI evidence: {internal_type}")
+    if ptype == "address" and internal_type.startswith("contract "):
+        print("  Resolution : select an existing verified contract on this network, or cancel and deploy/configure it through the project workflow.")
 
     if ptype.startswith(("uint", "int")):
         _print_numeric_unit_reference(label, ptype)
@@ -16760,7 +17544,9 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
         value = _lab_prompt_address_selection(entries, label)
     else:
         prompt = f"  Value{' [Enter = ' + default + ']' if default is not None else ''}: "
-        value = input(prompt).strip()
+        value = input(prompt + "(q to cancel) ").strip()
+        if value.lower() in {"q", "quit", "cancel"}:
+            raise LabInputCancelled("local lab cancelled")
 
     if not value:
         if default is None:
@@ -16834,7 +17620,9 @@ def _lab_prompt_value(config, accounts, contract, param, path="root", nested=Fal
         print(f"  Meaning   : {_lab_constructor_meaning(label, canonical_type(param), param)}")
 
         if fixed_length is None:
-            raw_count = input("  Number of items [0]: ").strip()
+            raw_count = input("  Number of items [0] (q to cancel): ").strip()
+            if raw_count.lower() in {"q", "quit", "cancel"}:
+                raise LabInputCancelled("local lab cancelled")
             count = 0 if not raw_count else int(raw_count)
         else:
             count = fixed_length
@@ -17029,8 +17817,15 @@ def _lab_review_deployment(config, root, rpc, accounts, contract, constructor_in
     print("  [2] Change constructor values")
     print("  [3] Cancel deployment")
     if not sys.stdin.isatty():
-        print("  Non-interactive mode: continuing with the supplied constructor values.")
-        return "deploy"
+        authorized = str(os.environ.get("LOWKEY_NONINTERACTIVE_DEPLOY", "")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if authorized:
+            print("  Explicit non-interactive deployment authorization: LOWKEY_NONINTERACTIVE_DEPLOY=1")
+            return "deploy"
+        print("  BLOCKED: non-interactive deployment is disabled by default.")
+        print("  Recovery: rerun in a terminal, or explicitly set LOWKEY_NONINTERACTIVE_DEPLOY=1 for a reviewed automation job.")
+        return "cancel"
     while True:
         try:
             choice = input("  Choose [1]: ").strip().lower()
@@ -17046,18 +17841,563 @@ def _lab_review_deployment(config, root, rpc, accounts, contract, constructor_in
         print("  Enter 1 to deploy, 2 to edit, or 3 to cancel.")
 
 
-def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_inputs):
+def _collect_constructor_deployment_values(
+    config, root, rpc, accounts, contract, constructor_inputs, *, review=True,
+):
+    """Collect constructor inputs; optionally show a separate deployment review."""
+    while True:
+        values = []
+        for index, param in enumerate(constructor_inputs or [], 1):
+            try:
+                values.append(_lab_prompt_value(
+                    config, accounts, str(contract), param,
+                    path=f"params[{index}]", nested=False,
+                ))
+            except (EOFError, KeyboardInterrupt, LabInputCancelled):
+                return None, "local lab cancelled"
+            except (TypeError, ValueError) as error:
+                return None, f"constructor input error: {error}"
+        if not review:
+            return values, None
+        choice = _lab_review_deployment(
+            config, root, rpc, accounts, str(contract), constructor_inputs, values
+        )
+        if choice == "deploy":
+            return values, None
+        if choice == "edit":
+            print("\nRe-enter the constructor values below.")
+            continue
+        return None, "local deployment cancelled by user"
+
+
+def _artifact_catalog(root):
+    """Build a source-qualified, non-mutating Hardhat/Foundry artifact catalogue."""
+    if library_linker is None:
+        raise RuntimeError("Lowkey library linker module is unavailable")
+    catalog = {}
+    collisions = {}
+    for artifact_path in local_artifact_paths(root):
+        artifact = read_artifact(artifact_path) or {}
+        if not artifact:
+            continue
+        source_name = artifact_source_name(artifact, artifact_path, root)
+        contract_name = artifact_contract_name(artifact_path, artifact)
+        if not source_name or not contract_name:
+            continue
+        normalized_source = str(source_name).replace("\\", "/").lstrip("./")
+        qualified = f"{normalized_source}:{contract_name}"
+        normalized = dict(artifact)
+        normalized["sourceName"] = normalized_source
+        normalized["contractName"] = contract_name
+        previous = catalog.get(qualified)
+        if previous is None:
+            catalog[qualified] = normalized
+            normalized["_lowkeyArtifactPath"] = str(Path(artifact_path).resolve())
+            continue
+        previous_path = previous.get("_lowkeyArtifactPath")
+        previous_compare = {key: value for key, value in previous.items() if key != "_lowkeyArtifactPath"}
+        previous_data = json.dumps(previous_compare, sort_keys=True, separators=(",", ":"), default=str)
+        current_data = json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
+        if previous_data != current_data:
+            collisions.setdefault(qualified, [previous_path]).append(str(Path(artifact_path).resolve()))
+    if collisions:
+        detail = "; ".join(
+            f"{name} ({', '.join(paths)})" for name, paths in sorted(collisions.items())
+        )
+        raise library_linker.LinkError(
+            "AMBIGUOUS_ARTIFACT_IDENTITY",
+            "Multiple non-identical build artifacts have the same source-qualified identity: " + detail,
+        )
+    return catalog
+
+def _current_deployment_network_identity(config, root, rpc):
+    """Capture a project/network identity; unmanaged RPCs get non-reusable invocation UUIDs."""
+    root_path = Path(root).expanduser().resolve()
+    chain_raw = rpc_json(rpc, "eth_chainId", []) if rpc else None
+    try:
+        chain_id = int(str(chain_raw), 16) if str(chain_raw).lower().startswith("0x") else int(chain_raw)
+    except (TypeError, ValueError):
+        chain_id = None
+    genesis = rpc_json(rpc, "eth_getBlockByNumber", ["0x0", False]) if rpc else None
+    genesis_hash = genesis.get("hash") if isinstance(genesis, dict) else None
+    rpc_identity = _rpc_identity_fingerprint(rpc)
+    managed = read_project_anvil_state(root_path) or {}
+    selected_rpc = str(rpc or "").rstrip("/")
+    project_id = hashlib.sha256(str(root_path).encode("utf-8")).hexdigest()
+    sessions = managed.get("managed_sessions") if isinstance(managed.get("managed_sessions"), dict) else {}
+    selected_id = managed.get("active_session_id")
+    session = sessions.get(selected_id) if selected_id else None
+    session_kind = "managed-anvil"
+    # Fixture-context nodes are separate managed sessions, not the active
+    # development session. Match their explicit fixture-session ID when their
+    # RPC is the endpoint selected by the fixture command.
+    fixture_id = managed.get("fixture_session_id")
+    fixture_session = sessions.get(fixture_id) if fixture_id else None
+    if isinstance(fixture_session, dict) and str(fixture_session.get("rpc") or "").rstrip("/") == selected_rpc:
+        selected_id = fixture_id
+        session = fixture_session
+        session_kind = "fixture-anvil"
+    if not isinstance(session, dict) or (
+        str(session.get("rpc") or "").rstrip("/") != selected_rpc
+        or session.get("project_id") != project_id
+        or session.get("status") != "running"
+    ):
+        # Backward-compatible lookup for state written by an intermediate
+        # manager version. Never infer identity from chain ID/RPC alone.
+        legacy_id = managed.get("managed_session_id")
+        legacy_session = sessions.get(legacy_id) if legacy_id else None
+        if isinstance(legacy_session, dict) and (
+            str(legacy_session.get("rpc") or "").rstrip("/") == selected_rpc
+            and legacy_session.get("project_id") == project_id
+            and legacy_session.get("status") == "running"
+        ):
+            selected_id = legacy_id
+            session = legacy_session
+            session_kind = "managed-anvil"
+    managed_session = bool(
+        selected_id and isinstance(session, dict)
+        and str(session.get("rpc") or "").rstrip("/") == selected_rpc
+        and session.get("project_id") == project_id
+        and session.get("status") == "running"
+        and session.get("chain_id") == chain_id
+        and str(session.get("genesis_hash") or "").lower() == str(genesis_hash or "").lower()
+    )
+    if managed_session:
+        try:
+            live_row = next(
+                (
+                    item for item in _project_network_manager(root_path).list()
+                    if item.get("id") == selected_id
+                ),
+                None,
+            )
+            managed_session = bool(
+                live_row and live_row.get("process_owned")
+                and live_row.get("status") == "running"
+            )
+        except Exception:
+            managed_session = False
+    return {
+        "project_id": project_id,
+        "project_root": str(root_path),
+        "network_session_id": str(selected_id) if managed_session else str(uuid.uuid4()),
+        "session_kind": session_kind if managed_session else "unmanaged-invocation",
+        "reuse_permitted": managed_session,
+        "chain_id": chain_id,
+        "genesis_hash": str(genesis_hash).lower() if genesis_hash else None,
+        "rpc_fingerprint": rpc_identity.get("rpc_fingerprint"),
+        "rpc_origin": rpc_identity.get("rpc_origin"),
+    }
+
+def _record_network_session_deployment(root, network_identity, address, record):
+    """Persist supporting deployment evidence in its owning network session."""
+    identity = network_identity if isinstance(network_identity, dict) else {}
+    if not identity.get("reuse_permitted") or not identity.get("network_session_id"):
+        return "NOT_APPLICABLE"
+    try:
+        session_record = dict(record or {})
+        session_record["address"] = str(address) if is_address(address) else None
+        session_record["network"] = {
+            key: identity.get(key)
+            for key in (
+                "project_id", "project_root", "network_session_id", "session_kind",
+                "chain_id", "genesis_hash", "rpc_fingerprint", "rpc_origin",
+            )
+        }
+        session_record["reuse_permitted"] = True
+        operation_key = str(
+            session_record.get("operation_key")
+            or session_record.get("deployment_transaction")
+            or uuid.uuid4()
+        )
+        session_record["operation_key"] = operation_key
+        manager = _project_network_manager(root)
+        manager.record_deployment(
+            str(identity["network_session_id"]),
+            session_record,
+            operation_key=operation_key,
+        )
+        return "RECORDED"
+    except Exception as error:
+        return f"FAILED: {type(error).__name__}: {error}"
+
+
+def _supporting_deployment_records(config, root, network_identity=None):
+    """Read supporting deployments from the selected session's one registry.
+
+    Older WIP revisions mirrored full records into ``project_target_registry``.
+    Migrate only records whose project, session, chain and genesis identity all
+    match the selected session, then remove that legacy copy. Primary target
+    records in ``project_target_registry`` are not touched.
+    """
+    identity = network_identity if isinstance(network_identity, dict) else {}
+    session_id = str(identity.get("network_session_id") or "")
+    project_id = str(identity.get("project_id") or "")
+    if not identity.get("reuse_permitted") or not session_id or not project_id:
+        return []
+
+    manager = _project_network_manager(root)
+    root_key = str(Path(root).expanduser().resolve())
+    registry = config.get("project_target_registry") if isinstance(config, dict) else None
+    project_entries = registry.get(root_key) if isinstance(registry, dict) else None
+    legacy_bucket = project_entries.get("__supporting_deployments__") if isinstance(project_entries, dict) else None
+    migrated_keys = []
+    if isinstance(legacy_bucket, dict):
+        for legacy_key, legacy_record in list(legacy_bucket.items()):
+            if not isinstance(legacy_record, dict):
+                continue
+            legacy_network = legacy_record.get("network") if isinstance(legacy_record.get("network"), dict) else {}
+            if (
+                legacy_network.get("network_session_id") != session_id
+                or legacy_network.get("project_id") != project_id
+                or legacy_network.get("chain_id") != identity.get("chain_id")
+                or str(legacy_network.get("genesis_hash") or "").lower()
+                    != str(identity.get("genesis_hash") or "").lower()
+            ):
+                continue
+            operation_key = str(
+                legacy_record.get("operation_key")
+                or legacy_record.get("deployment_transaction")
+                or legacy_key
+            )
+            migrated = dict(legacy_record)
+            migrated["operation_key"] = operation_key
+            try:
+                manager.record_deployment(session_id, migrated, operation_key=operation_key)
+            except Exception:
+                # Keep the legacy record intact when the canonical write fails.
+                continue
+            migrated_keys.append(legacy_key)
+
+    if migrated_keys and isinstance(config, dict) and isinstance(project_entries, dict):
+        for legacy_key in migrated_keys:
+            legacy_bucket.pop(legacy_key, None)
+        if not legacy_bucket:
+            project_entries.pop("__supporting_deployments__", None)
+        save_config(config)
+
+    try:
+        records = manager.get_deployments(session_id)
+    except Exception:
+        return []
+
+    result = []
+    for key, value in records.items():
+        if value.get("role") not in {"supporting_contract", "solidity_library"}:
+            continue
+        network = value.get("network") if isinstance(value.get("network"), dict) else {}
+        if (
+            network.get("network_session_id") == session_id
+            and network.get("project_id") == project_id
+            and network.get("chain_id") == identity.get("chain_id")
+            and str(network.get("genesis_hash") or "").lower()
+                == str(identity.get("genesis_hash") or "").lower()
+        ):
+            item = dict(value)
+            item.setdefault("network_registry_key", key)
+            result.append(item)
+    return result
+
+
+def _artifact_file_sha256(path):
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+def _supporting_record_key(identity, network_identity, operation_id=None):
+    # Keep failed/partial attempts alongside successful deployments in the
+    # owning network session. A failed later attempt cannot erase good evidence.
+    return "::".join((
+        str(identity.qualified_name),
+        str(network_identity.get("network_session_id") or "unscoped"),
+        str(operation_id or uuid.uuid4()),
+    ))
+
+def _supporting_registry_write_error(record, network_identity):
+    """Return an actionable failure when a managed-session record was not saved."""
+    identity = network_identity if isinstance(network_identity, dict) else {}
+    if not identity.get("reuse_permitted"):
+        # Unmanaged invocations deliberately have no persistent session registry;
+        # they may deploy for this invocation but are never eligible for reuse.
+        return None
+    if not isinstance(record, dict):
+        return "Lowkey could not create the supporting deployment evidence record."
+    status = str(record.get("network_registry_status") or "")
+    if status != "RECORDED":
+        return (
+            "The managed-network supporting deployment registry write failed "
+            f"({status or 'no status'}). Lowkey will not continue with an untracked dependency."
+        )
+    return None
+
+
+def _record_supporting_deployment(
+    config, root, rpc, artifact_path, artifact, address, network_identity, *,
+    role, verification, link_evidence=None, dependencies=None, failure=None,
+):
+    """Record a supporting deployment without mutating the active audit target."""
+    if library_linker is None:
+        return None
+    source_name = artifact_source_name(artifact, artifact_path, root)
+    contract_name = artifact_contract_name(artifact_path or "", artifact)
+    if not source_name or not contract_name:
+        return None
+    identity = library_linker.ArtifactIdentity(
+        str(source_name).replace("\\", "/").lstrip("./"), str(contract_name)
+    )
+    runtime_code = None
+    runtime_hash = None
+    if is_address(address):
+        code, output, _error = cast_output(["cast", "code", address, "--rpc-url", str(rpc)])
+        if code == 0 and str(output or "").strip().lower() not in {"", "0x", "0x0"}:
+            runtime_code = str(output).strip()
+            runtime_hash = _runtime_code_keccak_hash(runtime_code)
+    receipt = config.get("_last_deployment_receipt")
+    receipt = dict(receipt) if isinstance(receipt, dict) else {}
+    record = {
+        "schema_version": 1,
+        "role": str(role),
+        "qualified_identity": identity.qualified_name,
+        "contract_name": identity.contract_name,
+        "source_name": identity.source_name,
+        "address": str(address) if is_address(address) else None,
+        "artifact": str(Path(artifact_path).resolve()) if artifact_path else None,
+        "artifact_sha256": _artifact_file_sha256(artifact_path) if artifact_path else None,
+        "network": dict(network_identity or {}),
+        "deployment_transaction": receipt.get("tx_hash"),
+        "deployment_receipt": receipt or None,
+        "deployer_actor": config.get("actor") or "lab-deployer",
+        "deployer_address": receipt.get("deployer"),
+        "link_evidence": link_evidence.evidence() if hasattr(link_evidence, "evidence") else link_evidence,
+        "dependencies": dict(dependencies or {}),
+        "runtime_code_present": "PRESENT" if runtime_code else "MISSING",
+        "runtime_code_hash": runtime_hash,
+        "runtime_hash_status": "AVAILABLE" if runtime_hash else "UNAVAILABLE",
+        "runtime_verification": getattr(verification, "verification", "UNVERIFIED"),
+        "runtime_verification_reason": getattr(verification, "reason", None) or failure,
+        "deployment_stage": "VERIFIED" if getattr(verification, "verification", None) == "MATCHED" else ("FAILED" if failure else "UNVERIFIED"),
+        "initialization_status": "UNVERIFIED",
+        "dependency_readiness": "UNVERIFIED",
+        "protocol_readiness": "UNVERIFIED",
+        "recorded_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "reuse_permitted": bool((network_identity or {}).get("reuse_permitted")),
+    }
+    operation_id = receipt.get("tx_hash") or (str(address).lower() if is_address(address) else str(uuid.uuid4()))
+    record["operation_key"] = _supporting_record_key(
+        identity, network_identity or {}, operation_id
+    )
+    record["network_registry_status"] = _record_network_session_deployment(
+        root, network_identity or {}, address, record
+    )
+    if record["network_registry_status"] not in {"RECORDED", "NOT_APPLICABLE"}:
+        record["reuse_permitted"] = False
+    config.pop("_last_deployment_receipt", None)
+    save_config(config)
+    return record
+
+def _supporting_runtime_match(
+    config, root, rpc, artifact_path, artifact, address, network_identity,
+    *, dependencies=None, library_artifacts=None,
+):
+    if not is_address(address):
+        return None
+    code, runtime, _error = cast_output(["cast", "code", address, "--rpc-url", str(rpc)])
+    if code != 0 or not str(runtime or "").strip() or str(runtime).strip().lower() in {"0x", "0x0"}:
+        return None
+    kind = _compiler_contract_kind(root, artifact_path, artifact)
+    result = runtime_verification.verify_runtime(
+        artifact, str(runtime).strip(), address, contract_kind=kind,
+        library_artifacts=library_artifacts, library_addresses=dependencies,
+        network_identity=network_identity,
+    ) if runtime_verification is not None else None
+    if result is None or result.runtime_status != "DEPLOYED" or result.verification != "MATCHED":
+        return None
+    return result
+
+def _matching_supporting_deployment(
+    config, root, rpc, identity, artifact_path, artifact, network_identity,
+    *, role="solidity_library", dependencies=None,
+):
+    """Reuse only an artifact- and session-matched deployment with live verified runtime."""
+    if not (network_identity or {}).get("reuse_permitted"):
+        return None
+    try:
+        records = _supporting_deployment_records(config, root, network_identity)
+    except Exception:
+        return None
+    expected_dependencies = dict(dependencies or {})
+    expected_hash = _artifact_file_sha256(artifact_path) if artifact_path else None
+    candidates = []
+    for record in records:
+        network = record.get("network") if isinstance(record.get("network"), dict) else {}
+        if (
+            record.get("role") == role
+            and record.get("qualified_identity") == identity.qualified_name
+            and network.get("network_session_id") == network_identity.get("network_session_id")
+            and network.get("project_id") == network_identity.get("project_id")
+            and network.get("chain_id") == network_identity.get("chain_id")
+            and network.get("genesis_hash") == network_identity.get("genesis_hash")
+            and record.get("artifact_sha256") == expected_hash
+            and record.get("dependencies", {}) == expected_dependencies
+            and is_address(record.get("address"))
+        ):
+            candidates.append(record)
+    # Prefer the newest records first, but prove each candidate against live
+    # runtime. An older failed operation cannot mask a later verified one.
+    candidates.sort(key=lambda item: str(item.get("recorded_at") or ""), reverse=True)
+    catalog = _artifact_catalog(root)
+    for record in candidates:
+        verification = _supporting_runtime_match(
+            config, root, rpc, artifact_path, artifact, record["address"], network_identity,
+            dependencies=expected_dependencies, library_artifacts=catalog,
+        )
+        if verification is not None:
+            record["runtime_verification"] = verification.verification
+            record["runtime_code_present"] = "PRESENT"
+            record["runtime_code_hash"] = verification.actual_keccak
+            record["runtime_hash_status"] = verification.keccak_status
+            record["last_verified_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            record["operation_key"] = record.get("operation_key") or str(uuid.uuid4())
+            record["network_registry_status"] = _record_network_session_deployment(
+                root, network_identity, record.get("address"), record
+            )
+            return record
+    return None
+
+def _deploy_artifact_library_dependencies(config, root, rpc, accounts, target_artifact, target_path, network_identity):
+    """Deploy/reuse compiler-linked libraries dependency-first and link target bytecode."""
+    if library_linker is None:
+        return None, {}, None, "Lowkey's compiler library linker is unavailable."
+    try:
+        catalog = _artifact_catalog(root)
+        target_source = artifact_source_name(target_artifact, target_path, root)
+        target_name = artifact_contract_name(target_path, target_artifact)
+        normalized_target = dict(target_artifact)
+        if target_source:
+            normalized_target["sourceName"] = str(target_source).replace("\\", "/").lstrip("./")
+        normalized_target["contractName"] = target_name
+        order = library_linker.recursive_library_order(normalized_target, catalog)
+    except Exception as error:
+        return None, {}, None, str(error)
+    if not order:
+        return target_artifact, {}, None, None
+
+    addresses = {}
+    for identity in order:
+        try:
+            library_artifact = library_linker.resolve_library_artifact(identity, catalog)
+            library_path = library_artifact.get("_lowkeyArtifactPath")
+            if not library_path or not artifact_is_deployable(library_artifact):
+                raise library_linker.LinkError("LIBRARY_ARTIFACT_INVALID", f"{identity.qualified_name} has no deployable compiler artifact.")
+            contract_kind = _compiler_contract_kind(root, library_path, library_artifact)
+            if contract_kind != "library":
+                raise library_linker.LinkError(
+                    "LIBRARY_KIND_UNVERIFIED",
+                    f"Compiler AST does not prove {identity.qualified_name} is a Solidity library; refusing deployment/reuse.",
+                )
+            library_refs = library_linker.extract_link_references(library_artifact, "creation")
+            dependencies = {
+                ref.identity.qualified_name: addresses[ref.identity.qualified_name]
+                for ref in library_refs if ref.identity.qualified_name in addresses
+            }
+            existing = _matching_supporting_deployment(
+                config, root, rpc, identity, library_path, library_artifact,
+                network_identity, role="solidity_library", dependencies=dependencies,
+            )
+            if existing:
+                addresses[identity.qualified_name] = existing["address"]
+                print(f"REUSE LIBRARY  {identity.qualified_name} @ {existing['address']} (runtime verified on this network session)")
+                continue
+
+            library_link_result = library_linker.link_creation_bytecode(
+                library_artifact, catalog, dependencies, network_identity=network_identity
+            )
+            print(f"DEPLOY LIBRARY  {identity.qualified_name}")
+            target, reason = _deploy_artifact_locally(
+                config, root, rpc, accounts, library_artifact, [],
+                creation_bytecode=library_link_result.linked_bytecode,
+                constructor_values=[],
+                approved=True,
+            )
+            if not target:
+                _record_supporting_deployment(
+                    config, root, rpc, library_path, library_artifact, None, network_identity,
+                    role="solidity_library", verification=None,
+                    link_evidence=library_link_result.evidence(), dependencies=dependencies,
+                    failure=reason or "library deployment failed",
+                )
+                raise library_linker.LinkError("LIBRARY_DEPLOYMENT_FAILED", f"{identity.qualified_name}: {reason or 'deployment failed'}")
+            code, runtime, error = cast_output(["cast", "code", target, "--rpc-url", str(rpc)])
+            if code != 0 or not str(runtime or "").strip():
+                verification = None
+                reason = error or "runtime code could not be read after deployment"
+            else:
+                verification = runtime_verification.verify_runtime(
+                    library_artifact, str(runtime).strip(), target,
+                    contract_kind=contract_kind, library_artifacts=catalog,
+                    library_addresses=dependencies, network_identity=network_identity,
+                )
+                reason = verification.reason
+            supporting_record = _record_supporting_deployment(
+                config, root, rpc, library_path, library_artifact, target, network_identity,
+                role="solidity_library", verification=verification,
+                link_evidence=library_link_result.evidence(), dependencies=dependencies,
+                failure=reason if verification is None or verification.verification != "MATCHED" else None,
+            )
+            registry_error = _supporting_registry_write_error(supporting_record, network_identity)
+            if registry_error:
+                raise library_linker.LinkError(
+                    "LIBRARY_REGISTRY_WRITE_FAILED",
+                    f"{identity.qualified_name} was deployed at {target}, but its supporting record could not be persisted. {registry_error}",
+                )
+            if verification is None or verification.verification != "MATCHED":
+                raise library_linker.LinkError(
+                    "LIBRARY_RUNTIME_UNVERIFIED",
+                    f"{identity.qualified_name} was deployed at {target}, but runtime verification is {getattr(verification, 'verification', 'UNVERIFIED')}: {reason or 'no verification evidence'}. Refusing to link it.",
+                )
+            addresses[identity.qualified_name] = target
+        except Exception as error:
+            return None, addresses, None, str(error)
+
+    try:
+        link_result = library_linker.link_creation_bytecode(
+            normalized_target, catalog, addresses, network_identity=network_identity
+        )
+        linked_artifact = dict(target_artifact)
+        original_bytecode = target_artifact.get("bytecode")
+        if isinstance(original_bytecode, dict):
+            linked_artifact["bytecode"] = dict(original_bytecode)
+            linked_artifact["bytecode"]["object"] = link_result.linked_bytecode
+        else:
+            linked_artifact["bytecode"] = link_result.linked_bytecode
+        return linked_artifact, addresses, link_result, None
+    except Exception as error:
+        return None, addresses, None, str(error)
+
+
+def _deploy_artifact_locally(
+    config, root, rpc, accounts, artifact, constructor_inputs, *,
+    creation_bytecode=None, constructor_values=None, approved=False,
+):
     """Deploy an ABI-bearing artifact directly with cast on local EVM nodes."""
     if not artifact_is_deployable(artifact):
         return None, "artifact has no deployable bytecode"
 
     bytecode = artifact.get("bytecode")
-    creation = bytecode.get("object") if isinstance(bytecode, dict) else bytecode
+    creation = creation_bytecode if creation_bytecode is not None else (
+        bytecode.get("object") if isinstance(bytecode, dict) else bytecode
+    )
     creation = str(creation or "").strip()
     if not re.fullmatch(r"0x[0-9a-fA-F]+", creation):
         return None, "artifact bytecode is not valid hex"
 
     contract = artifact.get("contractName") or artifact.get("sourceName") or "target"
+    config.pop("_last_deployment_receipt", None)
 
     print()
     print("CONSTRUCTOR WIZARD")
@@ -17066,34 +18406,20 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     print("Lowkey prefers project-native deployment/test harnesses; the generic deployer is the fallback.")
     print("")
 
-    while True:
-        values = []
-        for index, param in enumerate(constructor_inputs or [], 1):
-            try:
-                values.append(
-                    _lab_prompt_value(
-                        config,
-                        accounts,
-                        str(contract),
-                        param,
-                        path=f"params[{index}]",
-                        nested=False,
-                    )
-                )
-            except (EOFError, KeyboardInterrupt):
-                return None, "local lab cancelled"
-            except (TypeError, ValueError) as error:
-                return None, f"constructor input error: {error}"
-
-        review = _lab_review_deployment(
-            config, root, rpc, accounts, str(contract), constructor_inputs, values
+    if constructor_values is None:
+        values, input_error = _collect_constructor_deployment_values(
+            config, root, rpc, accounts, str(contract), constructor_inputs
         )
-        if review == "deploy":
-            break
-        if review == "edit":
-            print("\nRe-enter the constructor values below.")
-            continue
-        return None, "local deployment cancelled by user"
+        if input_error:
+            return None, input_error
+    else:
+        values = list(constructor_values)
+        if not approved:
+            review = _lab_review_deployment(
+                config, root, rpc, accounts, str(contract), constructor_inputs, values
+            )
+            if review != "deploy":
+                return None, "local deployment cancelled by user"
 
     command = [
         "cast", "send",
@@ -17129,6 +18455,12 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     # Never treat arbitrary address-shaped text as the deployed contract.
     # Cast output can contain the sender address, which is commonly an Anvil EOA.
     tx_hash = _deployment_tx_hash(output)
+    config["_last_deployment_receipt"] = {
+        "tx_hash": tx_hash,
+        "target": None,
+        "deployer": accounts[0] if accounts else None,
+        "submitted_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
     receipt_target = _deployment_receipt_address(rpc, tx_hash) if tx_hash else None
 
     labeled_targets = []
@@ -17152,6 +18484,7 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
 
     target = _live_deployed_address(rpc, candidates)
     if target:
+        config["_last_deployment_receipt"]["target"] = target
         return target, None
 
     if tx_hash:
@@ -17162,9 +18495,17 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     return None, "deployment succeeded, but Lowkey could not identify a live deployed contract address"
 
 
-def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic", deployment_only=False, _skip_dependency_discovery=False, *, target_scope=None, source_file=None):
+def run_generic_lab(
+    config, root, rpc, accounts, key, requested=None, mode="generic",
+    deployment_only=False, _skip_dependency_discovery=False, *,
+    target_scope=None, source_file=None, _network_identity=None,
+):
     config["_lab_system_root"] = str(Path(root).resolve())
-    config.pop("lab_system", None)
+    # A supporting deployment must not clear or replace the primary audit target.
+    # Share one session snapshot across recursive dependency deployments.
+    network_identity = _network_identity or _current_deployment_network_identity(
+        config, root, rpc
+    )
     candidate = (
         _discover_artifact_lab_contract_scoped(
             root, requested, target_scope=target_scope, source_file=source_file
@@ -17207,64 +18548,262 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
             "implementation inspection, use 'lk lab --artifact " + str(contract) + "'."
         )
 
-    if not _skip_dependency_discovery and mode != "artifact":
-        try:
-            dependencies = discover_contract_dependencies(root, contract)
-        except ContractDependencyCycleError as exc:
+    # Detect recursive factory creation before the first transaction. Solidity
+    # ``new Contract(...)`` expressions are created by the selected contract's
+    # constructor; they are not independent predeployment requirements. Compiler
+    # dependency evidence is retained separately for planning and provenance.
+    planned_contract_dependencies = []
+    planned_library_identities = []
+    _library_addresses = {}
+    _main_link_result = None
+    _main_linked_artifact = artifact
+    try:
+        dependencies = (
+            discover_contract_dependencies(root, contract)
+            if not _skip_dependency_discovery and mode != "artifact" else []
+        )
+    except ContractDependencyCycleError as exc:
+        return fail(
+            f"Lowkey found a cyclic constructor-time dependency graph: {exc}. "
+            "A linear generic deployment order is unsafe. Use the project's native factory, "
+            "proxy, clone, or deterministic-deployment setup, or explicitly select an already "
+            "deployed instance. No contracts in this deployment plan were deployed.",
+            1,
+        )
+
+    for dependency in dependencies:
+        # Target scope only selects the primary contract. Its required
+        # constructor-created dependencies are resolved inside the selected
+        # project, matching LabTargetScope.dependency_scope; a --source or
+        # narrow --scope must not make an imported first-party dependency
+        # disappear from the deployment plan.
+        dependency_candidate = _discover_artifact_lab_contract_scoped(
+            root, dependency, target_scope=root, source_file=None
+        )
+        if not dependency_candidate:
             return fail(
-                f"Lowkey found a cyclic constructor-time dependency graph: {exc}. "
-                "A linear generic deployment order is unsafe. Use the project's native factory, "
-                "proxy, clone, or deterministic-deployment setup, or explicitly select an already "
-                "deployed instance. No contracts in this dependency plan were deployed.",
+                f"Dependency {dependency} is explicitly created by {contract}'s constructor, "
+                "but no unique deployable artifact was found inside the selected source scope. "
+                "No deployment transaction was sent. Broaden the scope or select the dependency explicitly.",
                 1,
             )
-        if dependencies:
-            print()
-            print("LOCAL CONTRACT DEPENDENCY PLAN")
-            print("==============================")
-            print(f"Primary target: {contract}")
-            print("Deployment order (dependencies first): " + " -> ".join(dependencies + [contract]))
-            for dependency in dependencies:
-                existing = _live_project_contract_target(config, root, dependency, rpc)
-                if existing:
-                    print(
-                        f"REUSE   {dependency} @ {existing.get('address')} "
-                        "(live bytecode matched its project artifact)"
+        _dep_score, _dep_name, dependency_path, dependency_artifact, _dep_inputs, _dep_fqn = dependency_candidate
+        dependency_source = artifact_source_name(dependency_artifact, dependency_path, root)
+        if not dependency_source:
+            return fail(
+                f"Dependency {dependency} has no source-qualified compiler artifact identity. "
+                "Lowkey will not reuse or deploy it by contract name alone.", 1,
+            )
+        dependency_identity = library_linker.ArtifactIdentity(
+            str(dependency_source).replace("\\", "/").lstrip("./"),
+            artifact_contract_name(dependency_path, dependency_artifact),
+        )
+        if artifact_is_locked_implementation(root, dependency_path, dependency_artifact):
+            return fail(
+                f"Dependency {dependency} is an initializer-locked implementation. "
+                "Lowkey will not deploy it as a standalone dependency; use the project's native proxy/clone setup.",
+                1,
+            )
+        existing = _matching_supporting_deployment(
+            config, root, rpc, dependency_identity, dependency_path,
+            dependency_artifact, network_identity, role="supporting_contract",
+            dependencies={},
+        )
+        planned_contract_dependencies.append({
+            "name": dependency,
+            "identity": dependency_identity.qualified_name,
+            "candidate": dependency_candidate,
+            "existing": existing,
+        })
+
+    # Compiler linkReferences are authoritative. Resolve the complete recursive
+    # source-qualified library order now, before any transaction, and require AST
+    # proof of each library's contract kind.
+    try:
+        _link_refs = library_linker.extract_link_references(artifact, "creation") if library_linker else ()
+        if _link_refs:
+            _catalog = _artifact_catalog(root)
+            _target_source = artifact_source_name(artifact, path, root)
+            _normalized_target = dict(artifact)
+            if _target_source:
+                _normalized_target["sourceName"] = str(_target_source).replace("\\", "/").lstrip("./")
+            _normalized_target["contractName"] = artifact_contract_name(path, artifact)
+            planned_library_identities = list(
+                library_linker.recursive_library_order(_normalized_target, _catalog)
+            )
+            for library_identity in planned_library_identities:
+                library_artifact = library_linker.resolve_library_artifact(library_identity, _catalog)
+                library_path = library_artifact.get("_lowkeyArtifactPath")
+                if not library_path or not artifact_is_deployable(library_artifact):
+                    raise library_linker.LinkError(
+                        "LIBRARY_ARTIFACT_INVALID",
+                        f"{library_identity.qualified_name} has no deployable compiler artifact.",
                     )
-                    continue
-                dependency_candidate = discover_artifact_lab_contract(root, dependency)
-                if not dependency_candidate:
-                    return fail(
-                        f"Dependency {dependency} is referenced by {contract}, but no unique deployable artifact was found. "
-                        "The primary contract was not deployed.",
-                        1,
+                if _compiler_contract_kind(root, library_path, library_artifact) != "library":
+                    raise library_linker.LinkError(
+                        "LIBRARY_KIND_UNVERIFIED",
+                        f"Compiler AST does not prove {library_identity.qualified_name} is a Solidity library.",
                     )
-                if artifact_is_locked_implementation(
-                    root, dependency_candidate[2], dependency_candidate[3]
-                ):
-                    return fail(
-                        f"Dependency {dependency} is an initializer-locked implementation. "
-                        "Lowkey will not deploy it as a standalone dependency; use the project's native proxy/clone setup.",
-                        1,
-                    )
-                print(f"DEPLOY  {dependency} (required by {contract}; constructor values will be requested)")
-                dependency_code = run_generic_lab(
-                    config,
-                    root,
-                    rpc,
-                    accounts,
-                    key,
-                    dependency,
-                    mode="generic",
-                    deployment_only=True,
-                    _skip_dependency_discovery=True,
-                )
-                if dependency_code != 0:
-                    return fail(
-                        f"Dependency deployment failed for {dependency}; "
-                        f"{contract} was not deployed.",
-                        dependency_code if isinstance(dependency_code, int) else 1,
-                    )
+                # Validate its metadata and recursively-resolved dependencies. Actual
+                # address patching happens only after each dependency is verified.
+                library_linker.extract_link_references(library_artifact, "creation")
+    except Exception as link_error:
+        return fail(
+            f"Deployment preflight blocked: compiler library metadata could not be resolved: {link_error}. "
+            "No deployment transaction was sent.", 1,
+        )
+
+    plan_has_support_work = bool(planned_contract_dependencies or planned_library_identities)
+    print()
+    print("LOWKEY / DEPLOYMENT PLAN")
+    print("========================")
+    print(f"PROJECT       : {Path(root).resolve()}")
+    session_name = None
+    try:
+        state = read_project_anvil_state(root) or {}
+        sessions = state.get("managed_sessions") if isinstance(state.get("managed_sessions"), dict) else {}
+        sid = (network_identity or {}).get("network_session_id")
+        selected_session = sessions.get(sid) if sid else None
+        session_name = selected_session.get("name") if isinstance(selected_session, dict) else None
+    except Exception:
+        pass
+    print(f"NETWORK       : {session_name or rpc_display(rpc)}")
+    if (network_identity or {}).get("network_session_id"):
+        print(f"SESSION ID    : {network_identity['network_session_id']}")
+    print(f"PRIMARY TARGET: {contract}")
+    print("DEPENDENCIES  :")
+    if not planned_contract_dependencies and not planned_library_identities:
+        print("  No compiler-linked libraries or explicit constructor-created contracts discovered.")
+    for index, item in enumerate(planned_contract_dependencies, 1):
+        status = "REUSE · live runtime verified" if item["existing"] else "DEPLOY · supporting contract"
+        print(f"  {index}. {item['identity']} — {status}")
+        _candidate = item["candidate"]
+        _inputs = _candidate[4] or []
+        for param_index, param in enumerate(_inputs, 1):
+            label = str(param.get("name") or f"argument{param_index}")
+            abi_type = canonical_type(param)
+            internal_type = str(param.get("internalType") or "")
+            print(f"       constructor {label}: {abi_type}" + (f" ({internal_type})" if internal_type and internal_type != abi_type else ""))
+    for index, identity in enumerate(planned_library_identities, 1):
+        print(f"  L{index}. {identity.qualified_name} — compiler linkReferences · verify/reuse or deploy and link")
+    print("PRIMARY CONSTRUCTOR:")
+    if constructor_inputs:
+        for index, param in enumerate(constructor_inputs, 1):
+            label = str(param.get("name") or f"argument{index}")
+            abi_type = canonical_type(param)
+            internal_type = str(param.get("internalType") or "")
+            print(f"  {label}: {abi_type}" + (f" ({internal_type})" if internal_type and internal_type != abi_type else ""))
+    else:
+        print("  (none)")
+
+    # When compiler-linked support deployments are part of this plan, resolve
+    # every primary constructor value before the first supporting transaction.
+    # A user cancelling a value prompt must not leave libraries deployed merely
+    # because the constructor wizard was deferred until after dependency setup.
+    target_constructor_values = None
+    if plan_has_support_work and not deployment_only:
+        target_constructor_values, constructor_error = _collect_constructor_deployment_values(
+            config, root, rpc, accounts, contract, constructor_inputs, review=False
+        )
+        if constructor_error:
+            return fail(
+                f"Deployment plan blocked before any dependency transaction: {constructor_error}. "
+                "No supporting contract or primary target was deployed.", 1,
+            )
+        print("RESOLVED CONSTRUCTOR INPUTS:")
+        if not constructor_inputs:
+            print("  (none)")
+        for index, (param, value) in enumerate(zip(constructor_inputs or [], target_constructor_values or []), 1):
+            label = str(param.get("name") or f"argument{index}")
+            abi_type = canonical_type(param)
+            sensitive_name = re.search(r"(?i)(?:secret|private.?key|password|token|mnemonic|seed|credential)", label)
+            rendered = "<redacted>" if sensitive_name else str(value)
+            if len(rendered) > 112:
+                rendered = rendered[:109] + "..."
+            print(f"  {label}: {abi_type} = {rendered}")
+
+    print("INITIALIZATION  : UNVERIFIED until post-deployment evidence")
+    print("PROXY TOPOLOGY  : evidence-based inspection only; no proxy inferred from initialize()")
+    print("PROTOCOL READY  : UNVERIFIED")
+
+    if plan_has_support_work and not deployment_only:
+        print()
+        print("  [1] Approve and execute the dependency plan")
+        print("  [2] Cancel without sending a transaction")
+        if not sys.stdin.isatty():
+            authorized = str(os.environ.get("LOWKEY_NONINTERACTIVE_DEPLOY", "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+            if not authorized:
+                print("  BLOCKED: non-interactive dependency execution is disabled by default.")
+                print("  Recovery: review this plan in a terminal, or set LOWKEY_NONINTERACTIVE_DEPLOY=1 in a reviewed automation job.")
+                return fail("Deployment plan was not approved; no deployment transaction was sent.", 1)
+            print("  Explicit non-interactive plan authorization: LOWKEY_NONINTERACTIVE_DEPLOY=1")
+        else:
+            try:
+                approval = input("  Approve dependency plan? [1/2]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                approval = "2"
+            if approval not in {"1", "yes", "y", "approve", "a"}:
+                return fail("Deployment plan cancelled; no deployment transaction was sent.", 1)
+
+    # Execute only after every artifact/relationship has been resolved and the
+    # user has approved the visible plan. Supporting records never own the target.
+    for item in planned_contract_dependencies:
+        if item["existing"]:
+            existing = item["existing"]
+            print(
+                f"REUSE   {item['identity']} @ {existing.get('address')} "
+                "(artifact and runtime verified on this network session)"
+            )
+            continue
+        dependency = item["name"]
+        print(f"DEPLOY  {item['identity']} (supporting deployment; constructor review required)")
+        dependency_code = run_generic_lab(
+            config,
+            root,
+            rpc,
+            accounts,
+            key,
+            dependency,
+            mode="generic",
+            deployment_only=True,
+            _skip_dependency_discovery=True,
+            # The recursively deployed dependency is not the user's selected
+            # primary target; resolve it project-wide after primary-target
+            # scoping has already been enforced above.
+            target_scope=root,
+            source_file=None,
+            _network_identity=network_identity,
+        )
+        if dependency_code != 0:
+            return fail(
+                f"Supporting dependency deployment failed for {dependency}; "
+                f"{contract} was not deployed. Any already verified dependencies remain recorded.",
+                dependency_code if isinstance(dependency_code, int) else 1,
+            )
+
+    # Libraries are deployed/reused only after all planned requirements were
+    # reviewed. The function re-checks live runtime before reuse and before link.
+    if _link_refs:
+        linked_artifact, _library_addresses, _main_link_result, link_error = _deploy_artifact_library_dependencies(
+            config, root, rpc, accounts, artifact, path, network_identity
+        )
+        if link_error:
+            return fail(
+                f"Library linking blocked for {contract}: {link_error}. "
+                "The primary target was not deployed. Inspect compiler build-info and network-session evidence.",
+                1,
+            )
+        if linked_artifact is None or _main_link_result is None:
+            return fail(
+                f"Library linking did not produce verified creation bytecode for {contract}. "
+                "The primary target was not deployed.", 1,
+            )
+        print(
+            f"LIBRARY LINKS  {len(_main_link_result.links)} compiler reference(s) resolved "
+            f"across {len(_library_addresses)} library artifact(s)"
+        )
 
     heading = "LOWKEY CONTRACT DEPLOYMENT" if deployment_only else "LOWKEY LOCAL AUDIT LAB"
     print(heading)
@@ -17287,11 +18826,24 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     # It supports constructor prompts instead of assuming a zero-argument contract.
     try:
         target, reason = _deploy_artifact_locally(
-            config, root, rpc, accounts, artifact, constructor_inputs
+            config, root, rpc, accounts, artifact, constructor_inputs,
+            creation_bytecode=(
+                _main_link_result.linked_bytecode if _main_link_result is not None else None
+            ),
+            constructor_values=target_constructor_values,
+            approved=target_constructor_values is not None,
         )
     finally:
         config.pop("_lab_rpc", None)
     if not target:
+        if deployment_only:
+            _record_supporting_deployment(
+                config, root, rpc, path, artifact, None, network_identity,
+                role="supporting_contract", verification=None,
+                link_evidence=_main_link_result.evidence() if _main_link_result else None,
+                dependencies=_library_addresses,
+                failure=reason or "supporting deployment did not produce a verifiable address",
+            )
         label = "artifact" if mode == "artifact" else "generic"
         return fail(
             f"Error: {label} local deployment failed. {reason or ''}".strip(),
@@ -17309,14 +18861,53 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
         and current_entry.get("source") not in {"anvil-default", "anvil-impersonated"}
     ):
         _ensure_lab_deployer(config, accounts[0], 0)
-    set_lab_target(config, root, target, contract, path)
-    config["_lab_system_root"] = str(Path(root).resolve())
-    config["lab_system"] = {
-        "root": target,
-        "target": target,
-        "root_model": contract,
-        "target_model": contract,
-    }
+    if deployment_only:
+        runtime_code_status, runtime_output, runtime_error = cast_output(
+            ["cast", "code", target, "--rpc-url", str(rpc)]
+        )
+        runtime_result = None
+        if runtime_code_status == 0 and str(runtime_output or "").strip():
+            runtime_result = runtime_verification.verify_runtime(
+                artifact, str(runtime_output).strip(), target,
+                contract_kind=_compiler_contract_kind(root, path, artifact),
+                library_artifacts=_artifact_catalog(root) if _library_addresses else None,
+                library_addresses=_library_addresses if _library_addresses else None,
+                network_identity=network_identity,
+            )
+        supporting_record = _record_supporting_deployment(
+            config, root, rpc, path, artifact, target, network_identity,
+            role="supporting_contract", verification=runtime_result,
+            link_evidence=_main_link_result.evidence() if _main_link_result else None,
+            dependencies=_library_addresses,
+            failure=(
+                runtime_error or "runtime verification was not established"
+                if runtime_result is None or runtime_result.verification != "MATCHED" else None
+            ),
+        )
+        registry_error = _supporting_registry_write_error(supporting_record, network_identity)
+        if registry_error:
+            return fail(
+                f"Supporting deployment {contract} was submitted at {target}, but its network-session evidence was not stored. "
+                f"The primary audit target was preserved. {registry_error}", 1
+            )
+        if runtime_result is None or runtime_result.verification != "MATCHED":
+            return fail(
+                f"Supporting deployment {contract} was submitted at {target}, but runtime verification is "
+                f"{getattr(runtime_result, 'verification', 'UNVERIFIED')}. The primary audit target was preserved.", 1
+            )
+    else:
+        set_lab_target(
+            config, root, target, contract, path,
+            network_identity=network_identity,
+            link_evidence=_main_link_result,
+        )
+        config["_lab_system_root"] = str(Path(root).resolve())
+        config["lab_system"] = {
+            "root": target,
+            "target": target,
+            "root_model": contract,
+            "target_model": contract,
+        }
 
     # Run this after set_lab_target: target and ABI must refer to the deployment
     # just created, not a stale project selection from before this command.
@@ -17883,6 +19474,105 @@ def _preferred_lab_contract(
     return detected
 
 
+def _run_lab_network_command(root, args):
+    """CLI surface for the project-scoped managed Anvil session registry."""
+    tokens = list(args or [])
+    if not tokens or tokens[0] in {"help", "--help", "-h"}:
+        print("Usage:")
+        print("  lk lab network create --name <name> [--chain-id <id>] [--fork-url <url>] [--fork-block <n>]")
+        print("  lk lab network list")
+        print("  lk lab network status [name]")
+        print("  lk lab network use <name>")
+        print("  lk lab network stop <name>")
+        print("Each session has its own UUID, genesis identity, process identity and actor/deployment scope.")
+        return 0
+    manager = _project_network_manager(root)
+    action = str(tokens.pop(0)).lower()
+    try:
+        if action == "list":
+            rows = manager.list()
+            if not rows:
+                print("No managed networks for this project.")
+                return 0
+            state = read_project_anvil_state(root) or {}
+            active_id = state.get("active_session_id")
+            print("LOWKEY / NETWORKS")
+            print(f"PROJECT  {Path(root).resolve()}")
+            for item in rows:
+                active = "ACTIVE" if item.get("id") == active_id else "       "
+                print(f"{active:6}  {item.get('name')}  {item.get('status')}  chain={item.get('chain_id')}  {item.get('rpc')}  id={item.get('id')}")
+            return 0
+        if action == "create":
+            name = None
+            chain_id = 31337
+            fork_url = None
+            fork_block = None
+            index = 0
+            while index < len(tokens):
+                token = tokens[index]
+                if token == "--name" and index + 1 < len(tokens):
+                    name = tokens[index + 1]
+                    index += 2
+                elif token == "--chain-id" and index + 1 < len(tokens):
+                    chain_id = int(tokens[index + 1], 0)
+                    index += 2
+                elif token == "--fork-url" and index + 1 < len(tokens):
+                    fork_url = tokens[index + 1]
+                    index += 2
+                elif token in {"--fork-block", "--fork-block-number"} and index + 1 < len(tokens):
+                    fork_block = int(tokens[index + 1], 0)
+                    index += 2
+                elif token.startswith("-"):
+                    return fail(f"Unknown network create option: {token}", 2)
+                elif name is None:
+                    name = token
+                    index += 1
+                else:
+                    return fail(f"Unexpected network create argument: {token}", 2)
+            if not name:
+                return fail("Usage: lk lab network create --name <name>", 2)
+            session = manager.create(name, chain_id=chain_id, fork_url=fork_url, fork_block=fork_block)
+            print(f"Network created: {session['name']}")
+            print(f"Session ID : {session['id']}")
+            print(f"Chain ID   : {session['chain_id']}")
+            print(f"RPC        : {session['rpc']}")
+            print(f"Genesis    : {session['genesis_hash']}")
+            print("Actors     : " + ", ".join(session.get("actors", {}).keys()))
+            print("ACTIVE     : yes")
+            return 0
+        if action == "status":
+            if len(tokens) > 1:
+                return fail("Usage: lk lab network status [name]", 2)
+            item = manager.status(tokens[0] if tokens else None)
+            if not item:
+                return fail("No selected/available managed network. Run `lk lab network list`.", 2)
+            print(f"Network       : {item.get('name')}")
+            print(f"Session ID    : {item.get('id')}")
+            print(f"Lifecycle     : {item.get('status')}")
+            print(f"Process owned : {'yes' if item.get('process_owned') else 'no'}")
+            print(f"RPC healthy   : {'yes' if item.get('rpc_healthy') else 'no'}")
+            print(f"Genesis match : {'yes' if item.get('genesis_matches') else 'no'}")
+            print(f"Chain ID      : {item.get('chain_id')}")
+            print(f"RPC           : {item.get('rpc')}")
+            return 0 if item.get('process_owned') and item.get('rpc_healthy') and item.get('genesis_matches') else 2
+        if action == "use":
+            if len(tokens) != 1:
+                return fail("Usage: lk lab network use <name>", 2)
+            item = manager.use(tokens[0])
+            print(f"Active network: {item['name']} ({item['id']})")
+            print(f"RPC: {item['rpc']}")
+            return 0
+        if action == "stop":
+            if len(tokens) != 1:
+                return fail("Usage: lk lab network stop <name>", 2)
+            item = manager.stop(tokens[0])
+            print(f"Network stopped: {item['name']} ({item['id']})")
+            return 0
+        return fail(f"Unknown network action: {action}. Use `lk lab network --help`.", 2)
+    except (NetworkError, ValueError) as exc:
+        return fail(f"Network operation blocked: {exc}", 2)
+
+
 def run_lab(config,args, *, deployment_only=False):
     args = list(args or [])
     invocation_dir = Path.cwd().expanduser().resolve()
@@ -18030,6 +19720,12 @@ def run_lab(config,args, *, deployment_only=False):
                     print(f"ACTIVE PROJECT: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
                     break
                 print("Please enter one of the project numbers, or q.")
+    # Network subcommands share the project's established audit root and Anvil
+    # state file. Handle them before source/contract discovery so names are not
+    # interpreted as deployment target selectors.
+    if len(args) >= 1 and str(args[0]).lower() == "network":
+        return _run_lab_network_command(root, args[1:])
+
     # Optional protocol reasoning has two explicit modes: manual review on demand,
     # or deterministic complexity-triggered assistance after the user selects auto.
     # Neither mode grants the model authority over targets, tool execution, or deployment.
@@ -22868,6 +24564,26 @@ def run_native_project_command(config, command_name, args):
                     file=sys.stderr,
                 )
 
+        # The planner existed as a separate helper but the public `lk build`
+        # dispatcher still sent every Foundry invocation straight to Forge.
+        # Route Lowkey-owned build planning options and positional source/contract
+        # selectors through that planner, while leaving ordinary Forge-only
+        # switches (for example `lk build --skip test`) on the established
+        # native path. Bootstrap above remains shared with the legacy runner.
+        planner_flags = {
+            "--root", "--member", "--scope", "--target", "--low-memory",
+            "--plan", "--json",
+        }
+        uses_build_planner = any(
+            str(value).split("=", 1)[0] in planner_flags for value in args
+        ) or bool(args and not str(args[0]).startswith("-"))
+        if command_name == "build" and uses_build_planner:
+            try:
+                import foundry_build as build_planner
+            except ImportError as exc:
+                return fail(f"Error: Lowkey build planner is unavailable: {exc}", 2)
+            return build_planner.run_build(list(args), root=Path(root))
+
         native_command = [command_name, *args]
         result = run_foundry(native_command, capture=True)
         native_code = getattr(
@@ -23053,6 +24769,31 @@ def run_deps(args):
 
     if not edges:
         print("No imports or inheritance relationships detected.")
+
+    typed_edges = graph.get("typed_edges") or []
+    if typed_edges:
+        print("\nCompiler-backed relationships (source-matched solc evidence):")
+        for edge in typed_edges:
+            relation = str(edge.get("kind") or "relationship").replace("-", " ")
+            confidence = str(edge.get("confidence") or "UNRESOLVED")
+            suffix = f" @ line {edge['line']}" if edge.get("line") else ""
+            print(f"  [{confidence}] {edge.get('from')} -> {relation} -> {edge.get('to')}{suffix}")
+            if edge.get("kind") == "solidity-library-link":
+                refs = edge.get("link_references") or []
+                print(f"      compiler link references: {len(refs)} exact bytecode location(s); deployment candidate only when artifact identity resolves")
+        print("  Imports and inferred type references are not automatic deployment instructions.")
+    compiler_report = graph.get("compiler_dependencies") or {}
+    if compiler_report.get("library_cycles"):
+        print("\nLIBRARY DEPLOYMENT ORDER: BLOCKED")
+        for cycle in compiler_report.get("library_cycles") or []:
+            print("  Cycle: " + " -> ".join(cycle + [cycle[0]]))
+        print("  Use the project's native deployment/factory mechanism; Lowkey will not invent a linear order.")
+    elif compiler_report.get("library_deployment_order"):
+        print("\nCompiler-confirmed library deployment order:")
+        for index, identity in enumerate(compiler_report["library_deployment_order"], 1):
+            print(f"  {index}. {identity}")
+    for warning in compiler_report.get("warnings") or []:
+        print(f"Compiler evidence warning: {warning}")
     unresolved = graph.get("unresolved") or []
     if unresolved:
         print(f"Unresolved imports: {len(unresolved)}")
@@ -23450,12 +25191,50 @@ def run_state_variable_read(config, args):
         print("Note:       Solidity visibility limits contract-level access; it does not hide on-chain storage.")
     return 0
 
+RPC_REQUIRED_CAST_COMMANDS = frozenset({
+    "balance", "call", "send", "storage", "chain-id", "block-number", "code",
+    "codesize", "codehash", "nonce", "logs", "receipt", "run", "tx", "estimate",
+    "implementation", "admin", "proof", "lookup-address", "resolve-name", "erc20-token",
+    "block", "gas-price", "rpc", "access-list",
+})
+
+
+def _explicit_cast_rpc(arguments):
+    values = [str(value) for value in (arguments or [])]
+    for index, token in enumerate(values):
+        if token == "--rpc-url" and index + 1 < len(values):
+            value = values[index + 1].strip()
+            return value or None
+        if token.startswith("--rpc-url="):
+            value = token.split("=", 1)[1].strip()
+            return value or None
+    return None
+
+
 def run_raw(config,args):
     if not args:
         return fail("Usage: lk raw <cast-subcommand> [args...]")
-    safe = redact_secrets(shlex.join(["cast"] + args))
+    raw_args = [str(value) for value in args]
+    raw_rpc = _explicit_cast_rpc(raw_args)
+    raw_command = ["cast"] + raw_args
+    if raw_args[0] in RPC_REQUIRED_CAST_COMMANDS:
+        selected_rpc = effective_rpc(config, explicit_rpc=raw_rpc)
+        if not selected_rpc:
+            return _lowkey_command_error(
+                "RPC selection is blocked: no explicit --rpc-url or unambiguous active Lowkey network is available. "
+                "Select a managed network with 'lk lab network use <name>' or provide --rpc-url. "
+                "No Cast command was executed.",
+                2,
+                capture=False,
+                command="raw",
+                config=config,
+                target=config.get("target"),
+            )
+        if raw_rpc is None:
+            raw_command.extend(["--rpc-url", selected_rpc])
+    safe = redact_secrets(shlex.join(raw_command))
     print(f"DEBUG: Executing -> {safe}")
-    code, out, err = cast_output(["cast"] + args)
+    code, out, err = cast_output(raw_command)
     log_session(safe, out or err)
     if code != 0:
         detail = "\n".join(part for part in (err, out) if part).strip()
@@ -25829,6 +27608,7 @@ COMMAND_HELP = {
 
         children={
             "stop": _help_entry("Stop the project-local Anvil that Lowkey started.", "lk lab stop", "lk lab stop", "Use it when the disposable lab is no longer needed."),
+
         },
         options=[
             ("--generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic MyContract"),
@@ -28510,6 +30290,30 @@ def _apply_command_help_audit_catalog():
         lab_entry.setdefault("forms", []).append(
             ("lk lab --forge [Contract]", "Backward-compatible alias for --generic; new commands should use --generic.", "lk lab --generic Vault")
         )
+        network_child = _help_entry(
+            "Manage independently identified, project-scoped Anvil sessions with isolated RPC, process ownership, actors and deployment evidence.",
+            "lk lab network create --name <name> [--chain-id <id>] [--fork-url <url>] [--fork-block <n>] | list | status [name] | use <name> | stop <name>",
+            "lk lab network create --name local-dev",
+            "Use it when a project needs separate development, test and attack chains. Session UUID, process identity and genesis hash prevent chain-ID/address collisions.",
+            forms=[
+                ("lk lab network create --name <name> [--chain-id <id>] [--fork-url <url>] [--fork-block <n>]", "Start a new Lowkey-owned Anvil session with an independent account seed.", "lk lab network create --name local-dev"),
+                ("lk lab network list", "List sessions owned by this project and identify the active one.", "lk lab network list"),
+                ("lk lab network status <name>", "Verify process ownership, RPC health, chain ID and genesis identity.", "lk lab network status local-dev"),
+                ("lk lab network use <name>", "Select one healthy owned session for existing Lowkey RPC-consuming commands.", "lk lab network use attack-lab"),
+                ("lk lab network stop <name>", "Gracefully stop only the exact process instance Lowkey created and still owns.", "lk lab network stop attack-lab"),
+            ],
+            notes=[
+                ("Fail-closed selection", "If several managed sessions exist without an active selection, RPC-consuming commands stop and request an explicit use selection. Lowkey does not fall back to another RPC.", "lk lab network use attack-lab"),
+                ("Process safety", "Lowkey validates PID, process start time, UID, executable and command line before signalling; unmanaged Anvil processes are never terminated.", "lk lab network status local-dev"),
+                ("Session actors", "Use lk actor <index> <name> to register an alias in the active session. Account zero is reserved for the internal deployer; no private key is stored.", "lk actor 1 Alice"),
+                ("Deployment identity", "A deployment record is scoped to project, session UUID, chain ID and address; the same address on another session is a different deployment.", "lk lab network status attack-lab"),
+            ],
+            related=["lk actor", "lk actors", "lk status", "lk deployments"],
+        )
+        lab_entry.setdefault("children", {})["network"] = network_child
+        lab_entry.setdefault("forms", []).append(
+            ("lk lab network ...", "Manage multiple isolated project-local Anvil sessions.", "lk lab network list")
+        )
         lab_entry.setdefault("notes", []).append(
             ("AI review privacy", "An explicit or automatic AI review may send selected project source to the configured provider. The review is optional and unverified; native Lowkey lab setup remains authoritative.", "lk lab --generic Vault --ai-review")
         )
@@ -30364,7 +32168,12 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         elif len(args)==3 and args[0]=="set-env":
             config["wallets"][args[1]]={"env":args[2]}; config["actor"]=args[1]; save_config(config)
             print(f"Wallet profile '{args[1]}' now reads from environment variable {args[2]}.")
-        elif len(args)==2 and args[0]=="use" and args[1] in config.get("wallets",{}): config["actor"]=args[1]; save_config(config)
+        elif len(args)==2 and args[0]=="use" and args[1] in config.get("wallets",{}):
+            config["actor"]=args[1]
+            if isinstance(config.get("_active_network_session"), dict):
+                session = config["_active_network_session"]
+                NetworkManager(audit_context.foundry_project_root(), tool_path("anvil") or "anvil").set_actor(str(session.get("id")), None)
+            save_config(config)
         elif len(args)==2 and args[0]=="use": return fail(f"Error: unknown wallet profile: {args[1]}")
         elif len(args)==2 and args[0]=="remove":
             config["wallets"].pop(args[1],None)
@@ -30428,13 +32237,27 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 print("Actor reset 2: no active actor; no saved Anvil actor profiles to remove.")
             print("Preserved: private-key/environment wallet profiles and Lowkey's internal lab-deployer.")
             return 0
+        elif len(args)==1 and args[0].isdigit() and isinstance(config.get("_active_network_session"), dict):
+            return select_managed_network_actor(config,args[0])
         elif len(args)==1 and args[0].isdigit():
             return select_existing_anvil_actor(config,args[0])
-        elif len(args)>=2 and args[0].isdigit():
+        elif len(args)==2 and args[0].isdigit() and isinstance(config.get("_active_network_session"), dict):
+            return register_managed_network_actor(config, args[0], args[1])
+        elif len(args)==2 and args[0].isdigit():
             return select_anvil_actor(config,args[0],args[1])
+        elif len(args)==1 and isinstance(config.get("_active_network_session"), dict) and args[0] in (config.get("_active_network_session") or {}).get("actors", {}) and args[0] not in config.get("wallets", {}):
+            return select_managed_network_actor(config,args[0])
         elif len(args)==1 and args[0] in config.get("wallets",{}):
             name = args[0]
             entry = config.get("wallets", {}).get(name)
+            if isinstance(config.get("_active_network_session"), dict):
+                if isinstance(entry, dict) and entry.get("source") == "anvil-default":
+                    return fail(
+                        f"Error: '{name}' is bound to Lowkey's legacy deterministic Anvil wallet and cannot sign on a randomized managed session. Use `lk actor <index>` to select that session's unlocked account."
+                    )
+                session = config["_active_network_session"]
+                NetworkManager(audit_context.foundry_project_root(), tool_path("anvil") or "anvil").set_actor(str(session.get("id")), None)
+                config.pop("_network_actor_selection", None)
             if (
                 isinstance(entry, dict)
                 and entry.get("source") == "anvil-default"

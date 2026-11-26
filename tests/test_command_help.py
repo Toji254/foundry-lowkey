@@ -1880,6 +1880,21 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("starts a disposable project-local Anvil", output)
         self.assertIn("does not reset the existing chain", output)
 
+    def test_lab_network_help_is_registered_with_actionable_examples(self):
+        code, output = self.capture_dispatch("lab", "network", "--h")
+        self.assertEqual(code, 0)
+        for expected in (
+            "lk lab network create --name local-dev",
+            "lk lab network list",
+            "lk lab network status local-dev",
+            "lk lab network use attack-lab",
+            "lk lab network stop attack-lab",
+            "genesis hash",
+            "lk actor 1 Alice",
+            "unmanaged Anvil processes are never terminated",
+        ):
+            self.assertIn(expected, output)
+
     def test_full_help_surfaces_direct_deployment_and_history_distinction(self):
         output = io.StringIO()
         with redirect_stdout(output):

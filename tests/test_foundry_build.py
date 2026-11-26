@@ -41,7 +41,7 @@ class FoundryBuildPlannerTests(unittest.TestCase):
             "What it does:", "When to use:", "COMMAND VARIATIONS",
             "OPTIONS / MODES", "RELATED COMMANDS", "HELP TIP",
             "--root <DIR>", "--member <MEMBER>", "--scope <full|production|tests|scripts|target>",
-            "--target <CONTRACT>", "--low-memory", "--plan", "--json",
+            "--target <SOURCE|CONTRACT>", "--low-memory", "--plan", "--json",
             "--guide", "--lazy", "FORGE OPTIONS",
         ):
             self.assertIn(item, rendered)
@@ -441,6 +441,149 @@ class FoundryBuildPlannerTests(unittest.TestCase):
 
             self.assertIsNone(error)
             self.assertIsNone(selected)
+
+    def test_lk_cli_routes_positional_build_target_through_planner(self):
+        import os
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "contracts"\n')
+            self.write(root, "contracts/PositionManager.sol", "contract PositionManager {}")
+            isolated_home = root / "home"
+            isolated_home.mkdir()
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(isolated_home),
+                "XDG_CONFIG_HOME": str(isolated_home / ".config"),
+                "XDG_DATA_HOME": str(isolated_home / ".local/share"),
+                "XDG_STATE_HOME": str(isolated_home / ".local/state"),
+                "PYTHONPATH": str(ROOT / "lowkey"),
+            })
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "lowkey" / "lk.py"), "build", "PositionManager.sol", "--plan"],
+                cwd=root, env=env, capture_output=True, text=True, timeout=30,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("Scope        : target -> contracts/PositionManager.sol", completed.stdout)
+            self.assertIn("Plan only: no compiler was started", completed.stdout)
+
+    def test_run_build_resolves_positional_source_file_as_target_scope(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "contracts"\n')
+            self.write(root, "contracts/PositionManager.sol", "contract PositionManager {}")
+            resources = {
+                "memory_total_bytes": 8 * 1024 ** 3,
+                "memory_available_bytes": 6 * 1024 ** 3,
+                "swap_total_bytes": 0, "swap_used_bytes": 0,
+                "zram_used_bytes": 0, "cpu_count": 4,
+                "memory_psi_some_avg10": 0.0,
+                "memory_psi_full_avg10": 0.0,
+            }
+            output = io.StringIO()
+            with (
+                patch.object(foundry_build, "_resolve_project_root", return_value=(root, None)),
+                patch.object(foundry_build, "load_foundry_config", return_value=({"src": "contracts"}, "test config")),
+                patch.object(foundry_build, "collect_resources", return_value=resources),
+                contextlib.redirect_stdout(output),
+            ):
+                result = foundry_build.run_build(["PositionManager.sol", "--root", str(root), "--plan"])
+
+            self.assertEqual(result, 0)
+            self.assertIn("Scope        : target -> contracts/PositionManager.sol", output.getvalue())
+            self.assertIn("Plan only: no compiler was started", output.getvalue())
+
+    def test_run_build_resolves_positional_contract_name_as_target_scope(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "contracts"\n')
+            self.write(root, "contracts/PositionManager.sol", "contract PositionManager {}")
+            resources = {
+                "memory_total_bytes": 8 * 1024 ** 3,
+                "memory_available_bytes": 6 * 1024 ** 3,
+                "swap_total_bytes": 0, "swap_used_bytes": 0,
+                "zram_used_bytes": 0, "cpu_count": 4,
+                "memory_psi_some_avg10": 0.0,
+                "memory_psi_full_avg10": 0.0,
+            }
+            output = io.StringIO()
+            with (
+                patch.object(foundry_build, "_resolve_project_root", return_value=(root, None)),
+                patch.object(foundry_build, "load_foundry_config", return_value=({"src": "contracts"}, "test config")),
+                patch.object(foundry_build, "collect_resources", return_value=resources),
+                contextlib.redirect_stdout(output),
+            ):
+                result = foundry_build.run_build(["PositionManager", "--root", str(root), "--plan"])
+
+            self.assertEqual(result, 0)
+            self.assertIn("Scope        : target -> contracts/PositionManager.sol", output.getvalue())
+
+    def test_run_build_rejects_missing_positional_target_instead_of_running_full_build(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "contracts"\n')
+            output = io.StringIO()
+            errors = io.StringIO()
+            with (
+                patch.object(foundry_build, "_resolve_project_root", return_value=(root, None)),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(errors),
+            ):
+                result = foundry_build.run_build(["MissingContract", "--root", str(root), "--plan"])
+
+            self.assertNotEqual(result, 0)
+            self.assertIn("no source file or contract named 'MissingContract'", errors.getvalue())
+            self.assertNotIn("Scope        : full", output.getvalue())
+
+    def test_run_build_rejects_positional_and_explicit_targets_together(self):
+        import contextlib
+        import io
+
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            result = foundry_build.run_build(["Vault.sol", "--target", "Vault"])
+        self.assertNotEqual(result, 0)
+        self.assertIn("provide a target either positionally or with --target", errors.getvalue())
+
+    def test_run_build_preserves_unknown_forge_option_values_as_forge_args(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", '[profile.default]\nsrc = "src"\n')
+            self.write(root, "src/Vault.sol", "contract Vault {}")
+            resources = {
+                "memory_total_bytes": 8 * 1024 ** 3,
+                "memory_available_bytes": 6 * 1024 ** 3,
+                "swap_total_bytes": 0, "swap_used_bytes": 0,
+                "zram_used_bytes": 0, "cpu_count": 4,
+                "memory_psi_some_avg10": 0.0,
+                "memory_psi_full_avg10": 0.0,
+            }
+            output = io.StringIO()
+            with (
+                patch.object(foundry_build, "_resolve_project_root", return_value=(root, None)),
+                patch.object(foundry_build, "load_foundry_config", return_value=({"src": "src"}, "test config")),
+                patch.object(foundry_build, "collect_resources", return_value=resources),
+                contextlib.redirect_stdout(output),
+            ):
+                result = foundry_build.run_build(["--skip", "test", "--plan"], root=root)
+
+            self.assertEqual(result, 0)
+            self.assertIn("Scope        : full", output.getvalue())
+            self.assertIn("--skip", output.getvalue())
 
     def test_build_plan_honors_explicit_foundry_config_override(self):
         with tempfile.TemporaryDirectory() as tmp:

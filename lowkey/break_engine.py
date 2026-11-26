@@ -2428,20 +2428,102 @@ def _read_telemetry_uint(text_output: str, marker: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _keccak256(data: bytes) -> bytes | None:
-    """Use Ethereum Keccak when available; never substitute NIST SHA3-256."""
+def _keccak_f1600(state):
+    """Apply the 24-round Keccak-f[1600] permutation to 25 little-endian lanes."""
+    rotations = (
+        0, 1, 62, 28, 27,
+        36, 44, 6, 55, 20,
+        3, 10, 43, 25, 39,
+        41, 45, 15, 21, 8,
+        18, 2, 61, 56, 14,
+    )
+    round_constants = (
+        0x0000000000000001, 0x0000000000008082,
+        0x800000000000808A, 0x8000000080008000,
+        0x000000000000808B, 0x0000000080000001,
+        0x8000000080008081, 0x8000000000008009,
+        0x000000000000008A, 0x0000000000000088,
+        0x0000000080008009, 0x000000008000000A,
+        0x000000008000808B, 0x800000000000008B,
+        0x8000000000008089, 0x8000000000008003,
+        0x8000000000008002, 0x8000000000000080,
+        0x000000000000800A, 0x800000008000000A,
+        0x8000000080008081, 0x8000000000008080,
+        0x0000000080000001, 0x8000000080008008,
+    )
+    mask = (1 << 64) - 1
+    for constant in round_constants:
+        # Theta.
+        columns = [state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20] for x in range(5)]
+        delta = [columns[(x - 1) % 5] ^ (((columns[(x + 1) % 5] << 1) | (columns[(x + 1) % 5] >> 63)) & mask) for x in range(5)]
+        for y in range(5):
+            for x in range(5):
+                state[x + 5 * y] ^= delta[x]
+
+        # Rho and Pi. Coordinates use x + 5*y lane indexing.
+        rotated = [0] * 25
+        for y in range(5):
+            for x in range(5):
+                lane = state[x + 5 * y]
+                shift = rotations[x + 5 * y]
+                if shift:
+                    lane = ((lane << shift) | (lane >> (64 - shift))) & mask
+                rotated[y + 5 * ((2 * x + 3 * y) % 5)] = lane
+
+        # Chi.
+        for y in range(5):
+            row = rotated[5 * y:5 * y + 5]
+            for x in range(5):
+                state[x + 5 * y] = row[x] ^ ((~row[(x + 1) % 5]) & row[(x + 2) % 5])
+                state[x + 5 * y] &= mask
+
+        # Iota.
+        state[0] ^= constant
+
+def _keccak256_fallback(data: bytes) -> bytes:
+    """Dependency-free Ethereum Keccak-256 (rate 1088, legacy 0x01 padding)."""
+    if not isinstance(data, bytes):
+        raise TypeError("Keccak input must be bytes")
+    rate = 136
+    padded = bytearray(data)
+    padded.append(0x01)  # Ethereum Keccak domain suffix, not SHA3's 0x06.
+    padded.extend(b"\x00" * ((rate - (len(padded) % rate) - 1) % rate))
+    padded.append(0x80)
+    state = [0] * 25
+    for offset in range(0, len(padded), rate):
+        block = padded[offset:offset + rate]
+        for lane_index in range(rate // 8):
+            state[lane_index] ^= int.from_bytes(block[lane_index * 8:lane_index * 8 + 8], "little")
+        _keccak_f1600(state)
+    digest = b"".join(lane.to_bytes(8, "little") for lane in state[:rate // 8])[:32]
+    if len(digest) != 32:
+        raise RuntimeError("Keccak-256 fallback produced an invalid digest length")
+    return digest
+
+def _keccak256(data: bytes) -> bytes:
+    """Ethereum Keccak-256; optional native providers fall back to pure Python.
+
+    NIST SHA3-256 is deliberately never used because its domain padding differs.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("Keccak input must be bytes")
     try:
         from Crypto.Hash import keccak
         digest = keccak.new(digest_bits=256)
         digest.update(data)
-        return digest.digest()
+        value = digest.digest()
+        if isinstance(value, bytes) and len(value) == 32:
+            return value
     except Exception:
         pass
     try:
         from eth_hash.auto import keccak
-        return keccak(data)
+        value = keccak(data)
+        if isinstance(value, (bytes, bytearray)) and len(value) == 32:
+            return bytes(value)
     except Exception:
-        return None
+        pass
+    return _keccak256_fallback(data)
 
 
 def _canonical_abi_type(item: dict[str, Any]) -> str:
