@@ -86,7 +86,7 @@ These stay blocked/partial until there are dedicated Solidity fixtures, target-s
 
 ## Test boundary
 
-`tests/test_proxy_engine.py` exercises slot decoding and conflict handling, exact clone matching, PUSH-data-safe opcode scanning, UUPS UUID interpretation, beacon caller-dependence, Diamond Loupe candidate handling, storage reordering/type/gap behavior, source anchors, bounded EIP-1967 event decoding/reconciliation and non-executed attack plans. `tests/test_break_engine.py` checks the generated UUPS replacement harness and its telemetry gates. These are unit/mocked tests; they do not yet constitute an end-to-end Anvil proxy takeover acceptance fixture.
+`tests/test_proxy_engine.py` exercises slot decoding and conflict handling, exact clone matching, PUSH-data-safe opcode scanning, UUPS UUID interpretation, beacon caller-dependence, Diamond Loupe candidate handling, storage reordering/type/gap behavior, source anchors, bounded EIP-1967 event decoding/reconciliation and non-executed attack plans. `tests/test_break_engine.py` checks the generated UUPS replacement harness and its telemetry gates. `scripts/proxy-break-acceptance-e2e.py` deploys a vulnerable UUPS fixture and owner-gated control to local Anvil, requires Lowkey to produce BREAK/OBSERVED respectively, and verifies that Forge-fork execution leaves both Anvil implementation slots unchanged. This validates one standard UUPS route; it is not generic proxy-family coverage.
 
 ## Bounded upgrade history
 
@@ -107,6 +107,6 @@ For a Foundry project with an Anvil node and an ABI exposing a standard UUPS upg
 lk break --family proxy --function upgradeTo
 ```
 
-The harness forks the configured Anvil RPC, deploys a marker implementation, calls the selected upgrade function as an unprivileged actor and checks the implementation slot plus an actual marker call through the target. It does not send transactions to the fork's upstream chain or to a production RPC. An observed local break still requires a matched control manifest and human review before it can be treated as a finding.
+The harness forks the configured Anvil RPC, deploys a marker implementation, calls the selected upgrade function as an unprivileged actor and checks the implementation slot plus an actual marker call through the target. It does not send transactions to the fork's upstream chain or to a production RPC. The automated Anvil acceptance deploys a deliberately vulnerable UUPS implementation and a separate owner-gated implementation as a negative control; Lowkey must identify the former and observe rejection on the latter. Both source Anvil implementation slots are checked after the Forge runs to prove that the attack stayed inside the fork. The acceptance command is `python3 scripts/proxy-break-acceptance-e2e.py` (run after installing Foundry/Lowkey and starting a disposable Anvil node).
 
 This adapter does **not** currently test a ProxyAdmin contract's `upgrade(proxy,implementation)`, immutable-admin behavior, Beacon upgrades, Diamond cuts, storage migration or reinitializer takeover. Unsupported ABI shapes are reported as blocked rather than silently treated as generic proxy checks.

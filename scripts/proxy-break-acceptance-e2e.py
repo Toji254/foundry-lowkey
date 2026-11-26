@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Installed Lowkey UUPS proxy-break E2E acceptance against disposable Anvil.
+
+The vulnerable and secured proxy fixtures are deployed to Anvil. Lowkey's
+generated probe executes on Forge forks and must demonstrate both takeover
+and rejection, while the upstream Anvil implementation slots remain unchanged.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+
+RPC = os.environ.get("LOWKEY_RPC_URL", "http://127.0.0.1:8545")
+ANVIL_KEY0 = "0xac0974bec39a17e36ba4ba6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+FORGE_STD = Path("/tmp/lowkey-fixture/lib/forge-std")
+
+SOURCE = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface IUUPSProbe {
+    function proxiableUUID() external view returns (bytes32);
+}
+
+abstract contract UUPSProbeBase {
+    bytes32 internal constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    // Must match the proxy's slot-zero owner declaration.
+    address public owner;
+
+    function proxiableUUID() external pure returns (bytes32) {
+        return IMPLEMENTATION_SLOT;
+    }
+
+    function _installImplementation(address nextImplementation) internal {
+        require(nextImplementation.code.length > 0, "NO_IMPLEMENTATION_CODE");
+        require(
+            IUUPSProbe(nextImplementation).proxiableUUID() == IMPLEMENTATION_SLOT,
+            "UNSUPPORTED_PROXIABLE_UUID"
+        );
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly {
+            sstore(slot, nextImplementation)
+        }
+    }
+}
+
+contract VulnerableUUPSImplementation is UUPSProbeBase {
+    function upgradeTo(address nextImplementation) external {
+        // Deliberate vulnerability: there is no authorization check.
+        _installImplementation(nextImplementation);
+    }
+}
+
+contract SecureUUPSImplementation is UUPSProbeBase {
+    function upgradeTo(address nextImplementation) external {
+        require(msg.sender == owner, "ONLY_OWNER");
+        _installImplementation(nextImplementation);
+    }
+}
+
+contract UUPSProxyFixture {
+    address public owner;
+
+    bytes32 private constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    constructor(address implementation_) {
+        require(implementation_.code.length > 0, "NO_IMPLEMENTATION_CODE");
+        owner = msg.sender;
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly {
+            sstore(slot, implementation_)
+        }
+    }
+
+    fallback() external payable {
+        _delegate();
+    }
+
+    receive() external payable {
+        _delegate();
+    }
+
+    function _delegate() internal {
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly {
+            let implementation_ := sload(slot)
+            calldatacopy(0, 0, calldatasize())
+            let ok := delegatecall(gas(), implementation_, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch ok
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
+        }
+    }
+}
+"""
+
+
+def run(
+    argv: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int = 240,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        argv, cwd=cwd, env=env, text=True, capture_output=True,
+        timeout=timeout, check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"Command failed ({result.returncode}): {argv!r}\n"
+            f"--- stdout ---\n{result.stdout[-16000:]}\n"
+            f"--- stderr ---\n{result.stderr[-16000:]}"
+        )
+    return result
+
+
+def deploy(
+    forge: str,
+    root: Path,
+    env: dict[str, str],
+    contract: str,
+    *args: str,
+) -> str:
+    output = run(
+        [
+            forge, "create", f"src/ProxyTargets.sol:{contract}",
+            "--rpc-url", RPC, "--private-key", ANVIL_KEY0, "--broadcast", "--json",
+            *(["--constructor-args", *args] if args else []),
+        ],
+        root,
+        env,
+    )
+    payload = json.loads(output.stdout)
+    address = payload.get("deployedTo")
+    if not isinstance(address, str) or len(address) != 42 or not address.startswith("0x"):
+        raise AssertionError(f"forge create did not return a deployed address for {contract}: {payload}")
+    return address.lower()
+
+
+def campaign_result(
+    lk: str,
+    root: Path,
+    env: dict[str, str],
+    contract: str,
+    proxy: str,
+    expected_status: str,
+    evidence_root: Path,
+) -> dict[str, Any]:
+    run([lk, "target", "reset"], root, env)
+    run([lk, "target", contract, proxy], root, env)
+
+    runs_dir = root / ".audit" / "break" / "runs"
+    if runs_dir.exists():
+        shutil.rmtree(runs_dir)
+
+    output = run(
+        [
+            lk, "break",
+            "--family", "proxy",
+            "--function", "upgradeTo",
+            "--rounds", "1",
+        ],
+        root,
+        env,
+        timeout=360,
+    )
+    reports = sorted(runs_dir.glob("*_campaign_*.json")) if runs_dir.is_dir() else []
+    if not reports:
+        raise AssertionError(
+            f"lk break wrote no campaign report for {contract}.\n{output.stdout[-16000:]}"
+        )
+    report_path = reports[-1]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    results = report.get("results") or []
+    if len(results) != 1:
+        raise AssertionError(
+            f"Expected one proxy result for {contract}; got {len(results)}: "
+            + json.dumps(report, indent=2)
+        )
+    result = results[0]
+    detail = result.get("detail") or {}
+    probe = detail.get("proxy_upgrade_probe") or {}
+    expected_break = expected_status == "BREAK"
+
+    if result.get("status") != expected_status:
+        raise AssertionError(
+            f"{contract}: expected {expected_status}, got {result.get('status')}.\n"
+            + json.dumps(result, indent=2)
+            + "\nCLI output:\n" + output.stdout[-16000:]
+        )
+    required = {
+        "upgrade_call_success",
+        "implementation_changed",
+        "candidate_implementation_installed",
+        "delegatecall_route_confirmed",
+    }
+    missing = required - set(probe)
+    if missing:
+        raise AssertionError(f"{contract}: missing probe evidence fields: {sorted(missing)}")
+    observed_break = all(probe.get(name) is True for name in required)
+    if observed_break != expected_break:
+        raise AssertionError(
+            f"{contract}: proxy result evidence does not match expected break state: "
+            + json.dumps(probe, indent=2)
+        )
+    if bool(result.get("break_condition")) != expected_break:
+        raise AssertionError(
+            f"{contract}: break_condition mismatch: " + json.dumps(result, indent=2)
+        )
+
+    harness_archive = detail.get("harness_archive")
+    if not harness_archive or not Path(harness_archive).is_file():
+        raise AssertionError(f"{contract}: archived Forge harness is missing: {harness_archive!r}")
+    harness = Path(harness_archive).read_text(encoding="utf-8", errors="replace")
+    baseline_index = harness.find("markerWasAlreadyReachable")
+    upgrade_index = harness.find("TARGET.call")
+    if baseline_index < 0 or upgrade_index < 0 or baseline_index > upgrade_index:
+        raise AssertionError(f"{contract}: generated harness does not measure route baseline before upgrade.")
+
+    destination = evidence_root / contract
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(report_path, destination / "campaign.json")
+    archived_copy = destination / Path(harness_archive).name
+    shutil.copy2(harness_archive, archived_copy)
+    (destination / "cli-output.txt").write_text(
+        output.stdout + (("\n" + output.stderr) if output.stderr else ""),
+        encoding="utf-8",
+    )
+
+    print(
+        f"PASS: {contract} -> {expected_status}; "
+        f"upgrade={probe['upgrade_call_success']} slot={probe['implementation_changed']} "
+        f"route={probe['delegatecall_route_confirmed']}"
+    )
+    return {
+        "implementation_contract": contract,
+        "proxy": proxy,
+        "expected_status": expected_status,
+        "observed_status": result.get("status"),
+        "break_condition": result.get("break_condition"),
+        "probe": probe,
+        "harness_archive": str(archived_copy),
+        "evidence_path": str(destination),
+    }
+
+
+def rpc_storage(cast: str, root: Path, env: dict[str, str], proxy: str) -> str:
+    raw = run(
+        [cast, "storage", proxy, IMPLEMENTATION_SLOT, "--rpc-url", RPC],
+        root,
+        env,
+    ).stdout.strip().lower()
+    if not raw.startswith("0x") or len(raw) != 66:
+        raise AssertionError(f"cast storage returned a malformed 32-byte word: {raw!r}")
+    return "0x" + raw[-40:]
+
+
+def main() -> int:
+    forge = shutil.which("forge") or str(Path.home() / ".foundry" / "bin" / "forge")
+    cast = shutil.which("cast") or str(Path.home() / ".foundry" / "bin" / "cast")
+    lk = shutil.which("lk") or str(Path.home() / ".foundry" / "bin" / "lk")
+    if not all(Path(binary).is_file() or shutil.which(binary) for binary in (forge, cast, lk)):
+        raise AssertionError("forge, cast, or installed lk is unavailable")
+    if not FORGE_STD.is_dir():
+        raise AssertionError(f"CI forge-std dependency is unavailable: {FORGE_STD}")
+
+    env = os.environ.copy()
+    env["LOWKEY_RPC_URL"] = RPC
+    env["FOUNDRY_ETH_RPC_URL"] = RPC
+    evidence_root = Path.cwd() / ".audit" / "proxy-break-acceptance"
+    if evidence_root.exists():
+        shutil.rmtree(evidence_root)
+    evidence_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="lowkey-proxy-break-e2e-") as temp:
+            root = Path(temp).resolve()
+            (root / "src").mkdir()
+            (root / "lib").mkdir()
+            (root / "lib" / "forge-std").symlink_to(FORGE_STD, target_is_directory=True)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\n'
+                'src = "src"\n'
+                'test = "test"\n'
+                'out = "out"\n'
+                'libs = ["lib"]\n'
+                'solc_version = "0.8.20"\n'
+                'optimizer = true\n'
+                'optimizer_runs = 200\n',
+                encoding="utf-8",
+            )
+            (root / "src" / "ProxyTargets.sol").write_text(SOURCE, encoding="utf-8")
+            run([forge, "build"], root, env)
+
+            vulnerable_impl = deploy(forge, root, env, "VulnerableUUPSImplementation")
+            vulnerable_proxy = deploy(
+                forge, root, env, "UUPSProxyFixture", vulnerable_impl,
+            )
+            secure_impl = deploy(forge, root, env, "SecureUUPSImplementation")
+            secure_proxy = deploy(forge, root, env, "UUPSProxyFixture", secure_impl)
+
+            cases = [
+                campaign_result(
+                    lk, root, env, "VulnerableUUPSImplementation", vulnerable_proxy,
+                    "BREAK", evidence_root,
+                ),
+                campaign_result(
+                    lk, root, env, "SecureUUPSImplementation", secure_proxy,
+                    "OBSERVED", evidence_root,
+                ),
+            ]
+
+            # Forge runs its adversarial test against a fork. Confirm that neither
+            # the vulnerable nor control probe mutated the source Anvil deployment.
+            vulnerable_slot_after = rpc_storage(cast, root, env, vulnerable_proxy)
+            secure_slot_after = rpc_storage(cast, root, env, secure_proxy)
+            if vulnerable_slot_after != vulnerable_impl.lower():
+                raise AssertionError(
+                    "The vulnerable proxy's upstream Anvil implementation slot changed; "
+                    "the probe escaped its fork: " + vulnerable_slot_after
+                )
+            if secure_slot_after != secure_impl.lower():
+                raise AssertionError(
+                    "The secure proxy's upstream Anvil implementation slot changed; "
+                    "the probe escaped its fork: " + secure_slot_after
+                )
+
+            report = {
+                "gate": "Lowkey UUPS proxy break adapter",
+                "status": "PASS",
+                "chain_id": int(run(
+                    [cast, "chain-id", "--rpc-url", RPC], root, env
+                ).stdout.strip()),
+                "cases": cases,
+                "source_anvil_unchanged": True,
+                "scope": (
+                    "Local Anvil deployments; Lowkey attack harness executes on Forge forks. "
+                    "Vulnerable UUPS route must break; authorized control must reject the attacker."
+                ),
+            }
+            (evidence_root / "report.json").write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(json.dumps(report, indent=2, sort_keys=True))
+            print("PASS: vulnerable UUPS upgrade was reproduced and the authorized control rejected it.")
+    finally:
+        subprocess.run([lk, "target", "reset"], env=env, text=True, capture_output=True, check=False)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
