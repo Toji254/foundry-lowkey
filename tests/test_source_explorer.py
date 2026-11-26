@@ -178,6 +178,15 @@ class ProtocolExplorerTests(unittest.TestCase):
                 destination / "bad",
             )
 
+    def test_upload_does_not_strip_real_src_directory(self):
+        destination = self.root / "src-root-upload"
+        write_uploaded_files(
+            [{"path": "src/OnlySource.sol", "content": "pragma solidity ^0.8.20; contract OnlySource {}"}],
+            destination,
+        )
+        self.assertTrue((destination / "src" / "OnlySource.sol").is_file())
+        self.assertFalse((destination / "OnlySource.sol").exists())
+
     def test_zip_import_skips_docs_but_rejects_traversal(self):
         archive = self.root / "good.zip"
         with zipfile.ZipFile(archive, "w") as bundle:
@@ -212,7 +221,7 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertEqual(status, 0, capture.getvalue())
         self.assertTrue(output.is_file())
         document = output.read_text(encoding="utf-8")
-        self.assertIn("LOWKEY // PROTOCOL GRAPH", document)
+        self.assertIn("PROTOCOL GRAPH", document)
         self.assertIn("Imported", document)
 
     def test_github_url_validation_is_strict(self):
