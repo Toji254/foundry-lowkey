@@ -53,10 +53,10 @@ def _help() -> str:
         "      Maximum source-call hops to follow (1-10; default 5).",
         "      Example: lk flow eth --depth 8",
         "  --limit <N>",
-        "      Maximum routes shown (1-100; default: 6).",
+        "      Maximum source routes to explore and display (1-100; default: 100). Ingress, exit-site, accounting and unresolved-edge inventories remain complete.",
         "      Example: lk flow eth --limit 20",
         "  --detail",
-        "      Show full signatures, source locations, accounting touchpoints and unresolved call edges.",
+        "      Show the expanded forensic evidence layout and additional review annotations.",
         "      Example: lk flow eth --detail",
         "  --include-tests",
         "      Include test, mock, fixture and harness contracts normally excluded from the default audit view.",
@@ -290,9 +290,8 @@ def _accounting_for_functions(
     function_ids: set[str],
     edges: list[dict[str, Any]],
     nodes: dict[str, dict[str, Any]],
-    *,
-    limit: int,
 ) -> list[dict[str, Any]]:
+    """Return every accounting edge attached to the functions in the inspected flow."""
     result = []
     for edge in edges:
         if edge.get("kind") not in ACCOUNTING_KINDS or edge.get("from") not in function_ids:
@@ -306,8 +305,7 @@ def _accounting_for_functions(
         int((item["edge"].get("source") or {}).get("line") or 0),
         str(item["variable"].get("name") or ""),
     ))
-    return result[:limit]
-
+    return result
 
 def build_eth_report(
     index: dict[str, Any],
@@ -418,7 +416,7 @@ def build_eth_report(
     accounting_function_ids = {str(item["function"]["id"]) for item in entries}
     for record in paths:
         accounting_function_ids.update(str(item.get("id")) for item in record.get("functions") or [])
-    accounting = _accounting_for_functions(accounting_function_ids, all_edges, nodes, limit=limit)
+    accounting = _accounting_for_functions(accounting_function_ids, all_edges, nodes)
 
     inventory = index.get("inventory") or {}
     coverage_complete = bool(inventory.get("complete", True))
@@ -497,7 +495,8 @@ def _exit_mechanisms(report: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(groups.values(), key=lambda item: (-item["count"], item["label"]))
 
 
-def _state_touchpoints(report: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+def _state_touchpoints(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Group every state/accounting edge while retaining all functions and source sites."""
     groups: dict[str, dict[str, Any]] = {}
     for item in report.get("accounting") or []:
         variable = item.get("variable") or {}
@@ -508,19 +507,19 @@ def _state_touchpoints(report: dict[str, Any], *, limit: int) -> list[dict[str, 
             "kinds": set(),
             "functions": set(),
             "accesses": set(),
-            "location": _location(edge),
+            "locations": set(),
         })
         group["kinds"].add(str(edge.get("kind") or "TOUCH"))
-        group["functions"].add(_compact_function_label(item.get("function") or {}))
+        group["functions"].add(_node_label(item.get("function") or {}))
         if edge.get("access_path"):
             group["accesses"].add(str(edge["access_path"]))
+        group["locations"].add(_location(edge))
     values = list(groups.values())
     values.sort(key=lambda item: (
         not bool(item["kinds"].intersection({"WRITES", "DELETES", "MUTATES"})),
         str(item["name"]).lower(),
     ))
-    return values[:limit]
-
+    return values
 
 
 def _print_inventory_warning(report: dict[str, Any], *, limit: int) -> None:
@@ -538,98 +537,204 @@ def _print_inventory_warning(report: dict[str, Any], *, limit: int) -> None:
 
 
 def _render(report: dict[str, Any], *, limit: int) -> None:
-    """Render the audit-first terminal view: show routes, not every raw edge."""
+    """Render the complete audit evidence in a structured, navigable terminal layout."""
     summary = report["summary"]
     parser = str(report.get("parser") or "unknown").lower()
-    coverage = "complete" if report["coverage"]["complete"] else "INCOMPLETE"
-    print("LOWKEY / ETH FLOW")
-    print(f"PROJECT   {report.get('root') or '.'}")
-    print(f"SOURCE    {parser} · {coverage} inventory")
-    if report.get("contract_filter"):
-        print(f"SCOPE     {report['contract_filter']} and reachable declared calls")
-    print()
+    coverage = "COMPLETE" if report["coverage"]["complete"] else "INCOMPLETE"
     paths = report.get("paths") or []
-    more_routes = bool(report.get("truncated"))
-    route_count = len(paths)
-    shown_label = f"{route_count}+" if more_routes and route_count else str(route_count)
-    print(
-        f"OVERVIEW  {summary['entry_points']} ingress points · "
-        f"{summary['exit_sites']} exit sites · {shown_label} mapped routes"
-    )
-
-    print()
-    print(f"ROUTES TO ETH EXITS  ({min(route_count, limit)} shown)")
-    if not paths:
-        print("  No resolved public/external call path to a native-ETH exit was found.")
-    for number, record in enumerate(paths[:limit], start=1):
-        print(f"  {number:>2}. {_route_label(record)}")
-        root = record.get("entry") or {}
-        exit_edge = record.get("exit") or {}
-        print(f"      {_location(root)} → {_location(exit_edge)}")
-        if record.get("cross_contract_hops"):
-            print("      declared external hop; runtime implementation/address needs verification")
-    if more_routes:
-        print("      More routes or roots were not expanded; raise --limit or --depth.")
-
-    mechanisms = _exit_mechanisms(report)
-    print()
-    print(f"EXIT MECHANISMS  ({len(mechanisms)} distinct)")
-    if not mechanisms:
-        print("  No recognized native-ETH exit mechanism in this scope.")
-    for item in mechanisms[:min(limit, 6)]:
-        suffix = f" · {item['count']} sites" if item["count"] > 1 else ""
-        print(f"  {item['label']}{suffix}")
-    if len(mechanisms) > min(limit, 6):
-        print(f"  ... {len(mechanisms) - min(limit, 6)} more; use --detail")
-
     entries = report.get("entries") or []
+    exits = report.get("exits") or []
+    unresolved = report.get("unresolved") or []
+    truncated = report.get("truncated") or []
+
     routed_entry_ids = {
         str((record.get("entry") or {}).get("id") or "")
         for record in paths
     }
-    other_entries = [
-        item for item in entries
-        if str((item.get("function") or {}).get("id") or "") not in routed_entry_ids
-    ]
+
+    def divider() -> None:
+        print("─" * 76)
+
+    def section(number: str, label: str, count: int | None = None) -> None:
+        print()
+        divider()
+        suffix = f"  ({count})" if count is not None else ""
+        print(f"{number}  {label}{suffix}")
+        divider()
+
+    print("LOWKEY / ETH FLOW")
+    print("═" * 76)
+    print(f"PROJECT     {report.get('root') or '.'}")
+    print(f"SOURCE      {parser} parser · {coverage} inventory")
+    if report.get("contract_filter"):
+        print(f"SCOPE       {report['contract_filter']} entry points + reachable declared calls")
+    print(
+        f"INDEX       {summary['contracts']} contracts · {summary['functions']} functions"
+    )
+
+    route_count = len(paths)
+    route_count_label = f"{route_count}+" if truncated and route_count else str(route_count)
     print()
-    print(f"OTHER ETH ENTRY POINTS  ({len(other_entries)})")
+    print("FLOW SNAPSHOT")
+    print(
+        f"  INGRESS   {summary['entry_points']} ABI entry points"
+        f"     EXITS   {summary['exit_sites']} native-ETH exit sites"
+    )
+    print(
+        f"  ROUTES    {route_count_label} source paths to exit sites"
+        f"     HOPS    {summary['cross_contract_hops']} declared cross-contract hops"
+    )
+    print(
+        f"  REVIEW    {summary['unresolved_boundaries']} unresolved call boundaries"
+        f"     BOUNDS  {len(truncated)} traversal-limited roots"
+    )
+
+    # Keep every ingress candidate visible. A route marker tells the auditor
+    # whether this entry point was connected to an exit within the current scan.
+    section("01", "ETH INGRESS POINTS", len(entries))
     if not entries:
         print("  No payable/value-reading ABI entry points were identified.")
-    elif not other_entries:
-        print("  All detected ingress points are represented in the routes above.")
-    for item in other_entries[:min(limit, 6)]:
-        function = item["function"]
-        statuses = {str(edge.get("status")) for edge in item.get("signals") or []}
-        labels = []
-        if "CAPABILITY" in statuses:
-            labels.append("payable")
-        if "VALUE_USAGE" in statuses:
-            labels.append("reads msg.value")
-        print(f"  {_compact_function_label(function)}  [{', '.join(labels)}]  ·  {_location(function)}")
-    if len(other_entries) > min(limit, 6):
-        print(f"  ... {len(other_entries) - min(limit, 6)} more; use --detail")
+    else:
+        grouped_entries: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in entries:
+            function = item.get("function") or {}
+            grouped_entries[str(function.get("contract") or "Unknown contract")].append(item)
+        for contract_name in sorted(grouped_entries):
+            contract_entries = grouped_entries[contract_name]
+            print(f"  {contract_name}  ·  {len(contract_entries)}")
+            for index, item in enumerate(contract_entries):
+                function = item.get("function") or {}
+                statuses = {str(edge.get("status")) for edge in item.get("signals") or []}
+                labels = []
+                if "CAPABILITY" in statuses:
+                    labels.append("PAYABLE")
+                if "VALUE_USAGE" in statuses:
+                    labels.append("READS msg.value")
+                function_id = str(function.get("id") or "")
+                labels.append("ROUTE FOUND" if function_id in routed_entry_ids else "NO ROUTE MAPPED")
+                connector = "└─" if index == len(contract_entries) - 1 else "├─"
+                print(f"    {connector} [{' · '.join(labels)}] {_node_label(function)}")
+                print(f"       {_location(function)}")
 
-    review_flags = []
-    if report.get("unresolved"):
-        review_flags.append(f"{len(report['unresolved'])} unresolved call boundaries on ETH-related functions")
-    if report.get("truncated"):
-        review_flags.append(f"traversal bounded for {len(report['truncated'])} roots")
+    # Print each path as a small call tree, including the source location of
+    # every call edge and the final ETH-effect site.
+    section("02", "SOURCE ROUTES TO ETH EXITS", len(paths))
+    if not paths:
+        print("  No resolved public/external source path to a native-ETH exit was found.")
+    for number, record in enumerate(paths, start=1):
+        root = record.get("entry") or {}
+        hops = record.get("hops") or []
+        print(f"  [{number:02}] {_node_label(root)}")
+        print(f"       ENTRY  {_location(root)}")
+        for hop_index, hop in enumerate(hops):
+            target = report["nodes"].get(str(hop.get("to") or ""), {})
+            relation = str(hop.get("kind") or "CALLS").replace("_", " ")
+            resolution = str(hop.get("resolution") or "UNRESOLVED")
+            branch = "└─" if hop_index == len(hops) - 1 else "├─"
+            print(
+                f"       {branch} {relation} [{resolution}]  {_node_label(target)}"
+            )
+            print(f"          at {_location(hop)}")
+            if hop.get("kind") == "EXTERNAL_CALL":
+                print("          runtime implementation/address is not proven by this source edge")
+        edge = record.get("exit") or {}
+        print(f"       └─ ETH EXIT ATTEMPT  {_exit_action(edge)}")
+        print(f"          at {_location(edge)}")
+        if record.get("cross_contract_hops"):
+            print("          verify the declared external target against the runtime address")
+        if number != len(paths):
+            print()
+
+    # Group by mechanism for readability, but retain the exact function and
+    # source site for every occurrence rather than hiding repeated sites.
+    mechanism_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in exits:
+        mechanism_groups[_exit_action(item.get("edge") or {})].append(item)
+    section("03", "ETH EXIT SITES BY MECHANISM", len(exits))
+    if not mechanism_groups:
+        print("  No recognized native-ETH exit mechanism in this scope.")
+    for mechanism in sorted(mechanism_groups, key=lambda key: (-len(mechanism_groups[key]), key)):
+        sites = sorted(
+            mechanism_groups[mechanism],
+            key=lambda item: (
+                str((item.get("function") or {}).get("file") or ""),
+                int(((item.get("edge") or {}).get("source") or {}).get("line") or 0),
+            ),
+        )
+        print(f"  {mechanism}  ·  {len(sites)} site(s)")
+        for index, item in enumerate(sites):
+            function = item.get("function") or {}
+            edge = item.get("edge") or {}
+            connector = "└─" if index == len(sites) - 1 else "├─"
+            status = str(edge.get("status") or "UNKNOWN").replace("_", " ").lower()
+            direction = str(edge.get("direction") or "unresolved").upper()
+            print(f"    {connector} {direction} / {status}  {_node_label(function)}")
+            print(f"       {_location(edge)}")
+
+    touchpoints = _state_touchpoints(report)
+    section("04", "STATE / ACCOUNTING TOUCHPOINTS", len(touchpoints))
+    if not touchpoints:
+        print("  No indexed mapping/state-variable accounting touchpoints in the inspected functions.")
+    for index, item in enumerate(touchpoints):
+        connector = "└─" if index == len(touchpoints) - 1 else "├─"
+        operations = "/".join(sorted(item["kinds"]))
+        print(f"  {connector} {operations:<22} {item['name']}")
+        if item["accesses"]:
+            print(f"     ACCESS  {', '.join(sorted(item['accesses']))}")
+        print(f"     USED BY {', '.join(sorted(item['functions']))}")
+        for location in sorted(item["locations"]):
+            print(f"     SOURCE  {location}")
+
+    section("05", "UNRESOLVED CALL BOUNDARIES", len(unresolved))
+    if not unresolved:
+        print("  No unresolved call edges were retained on the inspected ETH-related paths.")
+    for index, item in enumerate(unresolved):
+        edge = item.get("edge") or {}
+        source_function = item.get("from") or {}
+        receiver = edge.get("receiver") or edge.get("to") or "dynamic target"
+        candidates = edge.get("candidates") or []
+        suffix = f" · {len(candidates)} candidate(s)" if candidates else ""
+        connector = "└─" if index == len(unresolved) - 1 else "├─"
+        print(
+            f"  {connector} {_node_label(source_function)} → {receiver}"
+            f"  [{edge.get('resolution', 'UNRESOLVED')}]{suffix}"
+        )
+        print(f"     {_location(edge)}")
+        if candidates:
+            candidate_names = [
+                str(candidate.get("qualified_name") or candidate.get("name") or candidate)
+                if isinstance(candidate, dict) else str(candidate)
+                for candidate in candidates
+            ]
+            print(f"     CANDIDATES  {', '.join(candidate_names)}")
+
+    section("06", "REVIEW / COVERAGE")
+    if unresolved:
+        print(f"  • {len(unresolved)} call boundary/boundaries need manual target resolution.")
+    if truncated:
+        print(f"  • Traversal was bounded for {len(truncated)} root(s) by --depth or --limit.")
+        for root_label in truncated:
+            print(f"      {root_label}")
+        print(f"    Current route budget: {limit}; maximum source-call depth: configured --depth.")
     if not report["coverage"]["complete"]:
-        review_flags.append("source inventory incomplete")
-    if review_flags:
-        print()
-        print("REVIEW  " + " · ".join(review_flags))
-        print("        Run with --detail to inspect the evidence and source locations.")
+        print("  • Source inventory is incomplete; uninspected files are listed below.")
+        _print_inventory_warning(report, limit=max(limit, 100))
+    if not unresolved and not truncated and report["coverage"]["complete"]:
+        print("  No traversal or source-inventory warnings were recorded.")
+    print("  PAYABLE is ingress capability, not proof that value was supplied.")
+    print("  An ETH exit is a source-level attempt, not proof that the call succeeded.")
+    print("  Forced ETH, dynamic dispatch, proxy implementation selection and complex assembly may remain unresolved.")
 
     print()
+    divider()
     print("NEXT")
-    print("  lk flow eth --detail                 Full accounting and unresolved-call evidence")
-    if paths:
-        root = paths[0].get("entry") or {}
-        print(f"  lk trace source '{_node_label(root)}' --detail all")
-    print("  lk link <Contract>                   Inspect a contract's wider relationships")
+    print("  lk trace source '<Contract.function(...)>' --detail all")
+    print("  lk link <Contract>                  Inspect the wider source relationship graph")
+    print("  lk flow eth --detail                Expanded forensic annotations")
     print()
-    print("STATIC EVIDENCE ONLY  ·  payable ≠ value received  ·  transfer attempt ≠ success")
+    print("STATIC SOURCE EVIDENCE ONLY  ·  No runtime execution is claimed.")
+
+
 
 def _render_detail(report: dict[str, Any], *, limit: int) -> None:
     """Expanded forensic view. Kept separate so the default stays easy to scan."""
@@ -755,8 +860,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".", metavar="DIR", help="project/workspace root (default: current directory)")
     parser.add_argument("--contract", metavar="NAME", help="restrict starting functions to one contract")
     parser.add_argument("--depth", type=int, default=5, choices=range(1, 11), metavar="N", help="maximum source-call hops (default: 5)")
-    parser.add_argument("--limit", type=int, default=6, metavar="N", help="maximum routes shown (1-100; default: 6)")
-    parser.add_argument("--detail", action="store_true", help="show full forensic evidence instead of the concise default view")
+    parser.add_argument("--limit", type=int, default=100, metavar="N", help="maximum source routes to explore (1-100; default: 100)")
+    parser.add_argument("--detail", action="store_true", help="show the expanded forensic evidence layout")
     parser.add_argument("--include-tests", action="store_true", help="include test, mock, fixture and harness contracts")
     parser.add_argument("--json", action="store_true", help="emit structured JSON")
     try:
