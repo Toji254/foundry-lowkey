@@ -666,6 +666,30 @@ lk as whale s transfer ...
 
 The fork actor uses Anvil's unlocked-account path; no private key is required for the impersonated account.
 
+## Proxy security and upgrade intelligence
+
+The proxy workflow is an auditor-first, read-only entry point:
+
+```bash
+# Inspect architecture from a block-pinned RPC snapshot
+lk proxy inspect 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
+
+# Add local ABI/source investigation leads and save a JSON evidence report
+lk proxy audit 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
+
+# Generate architecture-specific attack hypotheses (not executed)
+lk proxy plan 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
+
+# Compare compiler storage layouts before an upgrade
+lk proxy validate --reference out/V1.json --candidate out/V2.json
+```
+
+The detector separates implementation, beacon and admin-slot evidence; reports conflicting implementation/beacon slots; validates the beacon's `implementation()` result against two read-only caller probes; recognizes the canonical EIP-1167 runtime; and probes Diamond Loupe facets and selectors. A direct `proxiableUUID()` match is reported only as a UUPS-compatible implementation signal, not proof that upgrade authorization is safe or that the proxy is exclusively UUPS.
+
+Inspection reads are pinned to one block number and the block hash is checked again before the report is returned. RPC failures are UNVERIFIED, unsupported proxy shapes remain UNCLASSIFIED, and an empty admin slot never proves that a target is not a proxy. Admin-slot contents are reported as candidates rather than effective admin proof because immutable-admin proxy implementations can diverge from mirrored storage.
+
+`lk proxy audit` scans local `src/` and `contracts/` Solidity files for line-anchored signals. That scanner is textual and deliberately does not claim compiler-AST reachability. `lk proxy plan` writes NOT_EXECUTED hypotheses only; it does not send transactions. `lk proxy validate` is a conservative compiler-layout comparison, not a replacement for OpenZeppelin's compiler-backed upgrade validator. Storage gaps and namespaces remain inconclusive. Generic upgrade simulation and executable proxy attack campaigns remain blocked until a deployment-specific adapter, implementation artifact, initialization calldata, paired controls and target invariants are supplied.
+
 ## ABI and function discovery
 
 Lowkey normally finds the ABI from Foundry's out/ artifacts. It can use deployment records, the configured contract name, proxy implementation discovery, and runtime bytecode matching.

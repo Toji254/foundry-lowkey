@@ -26,7 +26,7 @@ This matrix is the acceptance contract for generic verification. "Implemented" m
 | Vault / lending accounting | Solidity + Foundry | Share inflation; solvency invariant violation | Pending |
 | Reentrancy / callbacks | Solidity + Foundry | State update after external call; nested withdrawal | Pending |
 | Oracle / AMM integration | Solidity + Foundry | Stale price; slippage bound bypass; bad decimal assumptions | Pending |
-| Proxy / upgradeable contracts | Solidity + Foundry | Uninitialized implementation; storage-layout regression | Pending |
+| Proxy / upgradeable contracts | Solidity + Foundry | Pinned ERC-1967 slot/precedence, beacon caller dependence, EIP-1167 exact runtime, Diamond Loupe consistency, storage-layout reorder/type regression | Partial: read-only proxy intelligence and unit fixtures; executable upgrade/attack campaigns pending |
 | Cross-contract integration | Solidity + Foundry | Wrong dependency wiring; token/oracle revert behavior | Pending |
 | Solidity + Hardhat | Hardhat / JavaScript or TypeScript | Test failure, config mismatch, mutation | Pending |
 | Vyper | Vyper + Foundry-compatible ABI tooling | ABI/build mismatch; state transition regression | Detection/build CI exists; generation pending |
@@ -36,6 +36,14 @@ This matrix is the acceptance contract for generic verification. "Implemented" m
 | Python / TypeScript / Rust / Go services | Native language build/test systems | Unit mutation, integration failure, timeout | Detection/generator adapters pending |
 | Large monorepo / workspace | Multiple build systems and languages | Nested project selection, dependency boundaries | Pending |
 | Resource-constrained laptop | Any supported local project | Timeout, missing tool, high-memory exclusion | Partial: serial execution/time budget; live RAM/CPU measurement pending |
+
+
+### Proxy capability boundary
+
+The current Lowkey proxy engine provides read-only, block-pinned reconnaissance; evidence-backed ERC-1967 implementation/beacon/admin-slot inspection; exact canonical ERC-1167 detection; a consistency-checked Diamond Loupe probe; a direct implementation `proxiableUUID()` compatibility signal; textual source/ABI investigation leads; and a conservative compiler-layout comparator.
+
+It does **not** yet claim generic UUPS-versus-Transparent proof, effective immutable-admin recovery, historical upgrade reconstruction, complete ERC-7201 namespace compatibility, generic upgrade simulation, or executable proxy exploit campaigns. Those remain pending until deployment-specific fixtures, paired controls, mutation tests and trace-backed acceptance gates exist. The `lk proxy plan` output is a list of NOT_EXECUTED hypotheses, not a BREAK result. The `lk proxy simulate` command intentionally fails closed without a target-specific adapter.
+
 
 ## Promotion gates
 

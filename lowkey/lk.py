@@ -36,6 +36,10 @@ except ImportError:
     from lowkey import shared_context
 import walkthrough
 try:
+    import proxy_engine
+except ImportError:
+    from lowkey import proxy_engine
+try:
     import fixture_context
 except ImportError:
     from lowkey import fixture_context
@@ -28773,6 +28777,33 @@ _PROXY_HELP_GUIDES = {
         "related": ["lk proxy", "lk implementation", "lk info"],
     },
 }
+_PROXY_HELP_GUIDES["proxy"].update({
+    "summary": "Evidence-first proxy reconnaissance, upgrade-surface review and storage-layout validation.",
+    "usage": "lk proxy [inspect|audit|plan|validate|simulate] [address] [options]",
+    "example": "lk proxy audit 0x... --rpc-url $FOUNDRY_ETH_RPC_URL",
+    "forms": [
+        ("Inspect runtime architecture", "Pin RPC reads to one block and inspect ERC-1967 slots, beacon behavior, ERC-1167 clones, Diamond Loupe data and delegatecall candidates.", "lk proxy inspect 0xTarget"),
+        ("Audit investigation leads", "Combine runtime observations with local ABI/source signals and write a JSON evidence report. Signals are not vulnerability verdicts.", "lk proxy audit 0xTarget"),
+        ("Generate attack plan", "Create architecture-specific, not-executed proxy hypotheses for later target-specific Foundry adapters.", "lk proxy plan 0xTarget"),
+        ("Compare storage layouts", "Conservatively compare compiler storageLayout data from V1 and V2 artifacts.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
+        ("Upgrade simulation", "Fail closed until a deployment-specific adapter, implementation artifact, initializer calldata and invariants are provided.", "lk proxy simulate 0xTarget"),
+    ],
+    "options": [
+        ("--rpc-url <url>", "Use an explicit RPC endpoint for read-only inspection.", "lk proxy inspect 0xTarget --rpc-url $FOUNDRY_ETH_RPC_URL"),
+        ("--block <number>", "Inspect a historical block number when the RPC supports historical state.", "lk proxy inspect 0xTarget --block 19000000"),
+        ("--json", "Print the structured evidence report or storage diff as JSON.", "lk proxy audit 0xTarget --json"),
+        ("--verbose", "Include source anchors, ABI signals and investigation hypotheses.", "lk proxy inspect 0xTarget --verbose"),
+        ("--reference / --candidate", "Select the V1 and V2 compiler artifacts for storage validation.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
+    ],
+    "children": {
+        "inspect": _help_entry("Inspect the target using block-pinned runtime and storage evidence.", "lk proxy inspect [address] [--rpc-url URL] [--block N] [--json] [--verbose]", "lk proxy inspect 0xTarget", "Start here when an address may be a proxy. Unsupported patterns remain unclassified.", related=["lk recon", "lk implementation", "lk admin"]),
+        "audit": _help_entry("Run proxy reconnaissance plus local ABI/source investigation leads.", "lk proxy audit [address] [--rpc-url URL] [--block N] [--json]", "lk proxy audit 0xTarget", "Use this to prioritize proxy-specific manual review. It does not execute attacks or confirm vulnerabilities.", related=["lk proxy plan", "lk break", "lk proxy validate"]),
+        "plan": _help_entry("Generate a non-executed proxy attack hypothesis plan.", "lk proxy plan [address] [--rpc-url URL] [--json]", "lk proxy plan 0xTarget", "Use this to identify which target-specific Foundry tests need to be built. Every scenario remains NOT_EXECUTED.", related=["lk break", "lk test", "lk proxy audit"]),
+        "validate": _help_entry("Compare V1/V2 compiler storage layouts conservatively.", "lk proxy validate --reference <V1.json> --candidate <V2.json> [--json]", "lk proxy validate --reference out/V1.json --candidate out/V2.json", "Use this before considering an upgrade. Storage gaps and namespaces remain manual/adapter review; compatible-candidate is not a formal proof.", related=["lk storage", "lk namespace"]),
+        "simulate": _help_entry("Fail-closed placeholder for deployment-specific upgrade simulation.", "lk proxy simulate [address]", "lk proxy simulate 0xTarget", "The generic simulator refuses to guess upgrade routes, calldata, privileged callers or invariants. No transaction is sent.", related=["lk proxy validate", "lk lab"]),
+    },
+    "related": ["lk implementation", "lk admin", "lk recon", "lk proxy audit", "lk proxy validate"],
+})
 for _proxy_help_name, _proxy_help_values in _PROXY_HELP_GUIDES.items():
     _proxy_help_entry = COMMAND_HELP.get(_proxy_help_name)
     if isinstance(_proxy_help_entry, dict):
@@ -30525,7 +30556,14 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         if len(args)==2: config["labels"][args[0]]=args[1]; save_config(config)
         else: print("Usage: lk label <address> <name>")
     elif cmd=="recon": run_recon(config)
-    elif cmd=="proxy": return run_proxy(config)
+    elif cmd=="proxy":
+        return proxy_engine.run_cli(
+            config,
+            args,
+            rpc_resolver=effective_rpc,
+            abi_resolver=load_abi,
+            root_resolver=audit_context.foundry_project_root,
+        )
     elif cmd=="implementation": return run_proxy_field(config, "implementation")
     elif cmd=="admin": return run_proxy_field(config, "admin")
     elif cmd in {"mapping","map"}: return run_mapping(config,*args)
@@ -31157,10 +31195,16 @@ def main():
     # Machine-readable engine inventory must be valid JSON without Lowkey's
     # normal recommendation footer appended to stdout.
     machine_readable_verification = (
-        _canonical_help_command(command) == "verification"
-        and len(sys.argv) > 2
-        and str(sys.argv[2]).strip().lower() == "engines"
-        and "--json" in sys.argv[3:]
+        (
+            _canonical_help_command(command) == "verification"
+            and len(sys.argv) > 2
+            and str(sys.argv[2]).strip().lower() == "engines"
+            and "--json" in sys.argv[3:]
+        )
+        or (
+            _canonical_help_command(command) == "proxy"
+            and "--json" in sys.argv[2:]
+        )
     )
     if not machine_readable_verification:
         _print_recommended_next_commands(
