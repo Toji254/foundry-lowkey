@@ -1642,6 +1642,17 @@ contract LowkeyBreakProxyUpgrade is Test {{
 
     function test_break_proxy_upgrade() public {{
         address replacement = address(new LowkeyProxyReplacement());
+        bytes32 routeChallenge = keccak256(
+            abi.encodePacked(address(this), replacement, block.number, block.timestamp)
+        );
+        vm.prank(ATTACKER);
+        (bool routeBeforeSucceeded, bytes memory routeBeforeData) =
+            TARGET.staticcall(abi.encodeWithSignature("lowkeyProxyMarker(bytes32)", routeChallenge));
+        bool markerWasAlreadyReachable = routeBeforeSucceeded
+            && routeBeforeData.length == 32
+            && abi.decode(routeBeforeData, (bytes32))
+                == keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", routeChallenge, TARGET));
+
         bytes memory data = LowkeyABIPatch.replaceAddress(
             hex"{calldata[2:]}",
             address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})),
@@ -1661,17 +1672,6 @@ contract LowkeyBreakProxyUpgrade is Test {{
         bool candidateInstalled = changed
             && afterImplementation == replacement
             && replacement.code.length > 0;
-
-        bytes32 routeChallenge = keccak256(
-            abi.encodePacked(address(this), replacement, block.number, block.timestamp)
-        );
-        vm.prank(ATTACKER);
-        (bool routeBeforeSucceeded, bytes memory routeBeforeData) =
-            TARGET.staticcall(abi.encodeWithSignature("lowkeyProxyMarker(bytes32)", routeChallenge));
-        bool markerWasAlreadyReachable = routeBeforeSucceeded
-            && routeBeforeData.length == 32
-            && abi.decode(routeBeforeData, (bytes32))
-                == keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", routeChallenge, TARGET));
 
         vm.prank(ATTACKER);
         (bool routeCallSucceeded, bytes memory routeData) =

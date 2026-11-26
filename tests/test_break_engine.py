@@ -2303,6 +2303,7 @@ class ProxyBreakAdapterTests(unittest.TestCase):
         self.assertIn("proxiableUUID()", body)
         self.assertIn("lowkeyProxyMarker(bytes32)", body)
         self.assertIn("markerWasAlreadyReachable", body)
+        self.assertLess(body.index("markerWasAlreadyReachable"), body.index("TARGET.call"))
         self.assertIn("DELEGATECALL_ROUTE_CONFIRMED", body)
         self.assertIn("LOWKEY_BREAK", body)
 
