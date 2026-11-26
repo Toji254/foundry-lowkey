@@ -38,7 +38,7 @@ class ProxyEngineCliTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             result = lk._render_command_help(["proxy", "audit"])
         self.assertEqual(result, 0)
-        self.assertIn("hypotheses", output.getvalue().lower())
+        self.assertIn("does not execute attacks", output.getvalue().lower())
 
     def test_json_proxy_commands_suppress_recommendation_footer(self):
         source = pathlib.Path(lk.__file__).read_text(encoding="utf-8")
