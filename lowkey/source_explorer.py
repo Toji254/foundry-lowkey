@@ -7,6 +7,7 @@ projections of one model and never upgrades static edges into runtime claims.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1133,263 +1134,6 @@ def render_explorer_html(index: dict[str, Any], root: str | Path = ".", *, outpu
     document = render_explorer_document(model)
     fd, temporary = tempfile.mkstemp(prefix=".lk-explorer-", suffix=".html", dir=str(destination.parent))
     try:
-        with open(fd, "w", encoding="utf-8", closefd=True) as handle:
-            handle.write(document)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-    finally:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-    return destination
-
-
-def _normalise_paths(paths: list[PurePosixPath]) -> list[PurePosixPath]:
-    if paths and all(len(item.parts) > 1 for item in paths):
-        first = {item.parts[0] for item in paths}
-        if len(first) == 1:
-            return [PurePosixPath(*item.parts[1:]) for item in paths]
-    return paths
-
-
-def _safe_upload_path(value: str) -> PurePosixPath:
-    normalised = str(value or "").replace("\\", "/")
-    candidate = PurePosixPath(normalised)
-    if not normalised or candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
-        raise ValueError(f"Unsafe source path: {value!r}")
-    if re.match(r"^[A-Za-z]:", normalised):
-        raise ValueError(f"Drive-qualified source path is not allowed: {value!r}")
-    if any(part in IGNORED_PARTS or part.startswith(".git") for part in candidate.parts):
-        raise ValueError(f"Build or VCS directory cannot be imported: {value!r}")
-    suffix = Path(candidate.name).suffix.lower()
-    if suffix != ".sol" and candidate.name.lower() not in ROOT_CONFIGS:
-        raise ValueError(f"Unsupported file type: {value!r}. Use Solidity files and project configuration files.")
-    return candidate
-
-
-def write_uploaded_files(files: list[dict[str, Any]], destination: str | Path) -> Path:
-    if not isinstance(files, list) or not files or len(files) > MAX_UPLOAD_FILES:
-        raise ValueError(f"Select between 1 and {MAX_UPLOAD_FILES} supported files.")
-    validated = [(_safe_upload_path(str(item.get("path") or "")), item) for item in files if isinstance(item, dict)]
-    paths = _normalise_paths([path for path, _ in validated])
-    root = Path(destination).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    total = sol_count = 0
-    for relative, (_, item) in zip(paths, validated):
-        content = item.get("content")
-        if not isinstance(content, str):
-            raise ValueError(f"Text content is missing for {relative}.")
-        encoded = content.encode("utf-8")
-        if len(encoded) > MAX_UPLOAD_FILE_BYTES:
-            raise ValueError(f"{relative} exceeds the 2 MiB per-file source limit.")
-        total += len(encoded)
-        if total > MAX_UPLOAD_BYTES:
-            raise ValueError("The uploaded workspace exceeds the 128 MiB source budget.")
-        if relative.suffix.lower() == ".sol":
-            sol_count += 1
-        target = (root / Path(*relative.parts)).resolve()
-        target.relative_to(root)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(encoded)
-    if sol_count == 0:
-        raise ValueError("The selected workspace contains no .sol source files.")
-    return root
-
-
-def extract_source_archive(archive_path: str | Path, destination: str | Path) -> Path:
-    root = Path(destination).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    total = sol_count = 0
-    with zipfile.ZipFile(archive_path) as bundle:
-        members = [item for item in bundle.infolist() if not item.is_dir()]
-        if len(members) > MAX_ARCHIVE_ENTRIES:
-            raise ValueError(f"Archive exceeds the {MAX_ARCHIVE_ENTRIES}-file safety limit.")
-        validated = []
-        for info in members:
-            relative = _safe_upload_path(info.filename)
-            mode = (info.external_attr >> 16) & 0o170000
-            if mode == 0o120000:
-                raise ValueError(f"Symbolic links are not allowed: {info.filename}")
-            if info.file_size > MAX_UPLOAD_FILE_BYTES:
-                raise ValueError(f"{info.filename} exceeds the 2 MiB per-file source limit.")
-            validated.append((info, relative))
-        paths = _normalise_paths([item[1] for item in validated])
-        for (info, _), relative in zip(validated, paths):
-            total += info.file_size
-            if total > MAX_UPLOAD_BYTES:
-                raise ValueError("Archive exceeds the 128 MiB uncompressed source budget.")
-            if relative.suffix.lower() == ".sol":
-                sol_count += 1
-            target = (root / Path(*relative.parts)).resolve()
-            target.relative_to(root)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with bundle.open(info) as source, target.open("wb") as output:
-                shutil.copyfileobj(source, output)
-    if sol_count == 0:
-        raise ValueError("Archive contains no Solidity source files.")
-    return root
-
-
-def validate_github_url(value: str) -> str:
-    parsed = urllib.parse.urlsplit(str(value or "").strip())
-    if parsed.scheme != "https" or parsed.hostname not in {"github.com", "www.github.com"}:
-        raise ValueError("Only HTTPS repository URLs on github.com are supported.")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("Credentials, query strings and fragments are not accepted in repository URLs.")
-    parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) != 2:
-        raise ValueError("Use a repository URL like https://github.com/owner/repository.")
-    owner, name = parts
-    name = name.removesuffix(".git")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name):
-        raise ValueError("Repository owner or name contains unsupported characters.")
-    return f"https://github.com/{owner}/{name}.git"
-
-
-def clone_github_repository(url: str, destination: str | Path, ref: str | None = None) -> Path:
-    repo_url = validate_github_url(url)
-    if ref and (ref.startswith("-") or any(ord(char) < 32 for char in ref) or ".." in ref.split("/")):
-        raise ValueError("Invalid Git ref.")
-    root = Path(destination).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    command = ["git", "clone", "--depth", "1", "--no-tags", "--single-branch", "--filter=blob:none"]
-    if ref:
-        command.extend(["--branch", ref])
-    command.extend([repo_url, str(root)])
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
-    except FileNotFoundError as error:
-        raise ValueError("Git is required to import a GitHub repository.") from error
-    except subprocess.TimeoutExpired as error:
-        raise ValueError("GitHub clone timed out after 180 seconds.") from error
-    if result.returncode:
-        message = (result.stderr or result.stdout or "git clone failed").strip()
-        raise ValueError("Could not import GitHub repository: " + message[-1200:])
-    if not any(root.rglob("*.sol")):
-        raise ValueError("The selected repository contains no Solidity source files.")
-    return root
-
-
-def _build_imported_graph(source_root: Path, name: str) -> dict[str, Any]:
-    index = build_source_index(source_root, use_cache=False)
-    graph = build_explorer_model(index, root=source_root)
-    graph["project_name"] = name
-    return graph
-
-
-def create_explorer_server(index: dict[str, Any], root: str | Path = ".", *, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
-    if host not in {"127.0.0.1", "::1", "localhost"}:
-        raise ValueError("The source workspace server may only bind to loopback.")
-    model = build_explorer_model(index, root=root)
-    model["project_name"] = Path(root).resolve().name or "Local project"
-
-    class Handler(BaseHTTPRequestHandler):
-        server_version = "LowkeyExplorer/1"
-
-        def log_message(self, fmt: str, *args: Any) -> None:
-            return
-
-        def send_bytes(self, status: int, payload: bytes, content_type: str) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def send_json(self, status: int, value: dict[str, Any]) -> None:
-            self.send_bytes(status, json.dumps(value, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
-
-        def read_body(self, limit: int = MAX_UPLOAD_BYTES + 20 * 1024 * 1024) -> bytes:
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError as error:
-                raise ValueError("Invalid Content-Length.") from error
-            if length < 1 or length > limit:
-                raise ValueError("Upload is empty or exceeds the local source budget.")
-            payload = self.rfile.read(length)
-            if len(payload) != length:
-                raise ValueError("Upload body was incomplete.")
-            return payload
-
-        def check_origin(self) -> None:
-            origin = self.headers.get("Origin")
-            if not origin:
-                return
-            parsed = urllib.parse.urlsplit(origin)
-            host_header = self.headers.get("Host", "")
-            if parsed.scheme != "http" or parsed.netloc != host_header:
-                raise ValueError("Cross-origin requests are not accepted by the local workspace.")
-
-        def do_GET(self) -> None:
-            if self.path in {"/", "/index.html"}:
-                self.send_bytes(200, render_explorer_document(model, server_mode=True).encode("utf-8"), "text/html; charset=utf-8")
-            elif self.path == "/health":
-                self.send_json(200, {"ok": True, "service": "lowkey-local-source-workspace"})
-            else:
-                self.send_json(404, {"error": "Not found."})
-
-        def do_POST(self) -> None:
-            try:
-                self.check_origin()
-                if self.path == "/api/import":
-                    payload = json.loads(self.read_body().decode("utf-8"))
-                    files = payload.get("files") if isinstance(payload, dict) else None
-                    with tempfile.TemporaryDirectory(prefix="lowkey-upload-") as temporary:
-                        source_root = write_uploaded_files(files, temporary)
-                        graph = _build_imported_graph(source_root, str(payload.get("name") or "Uploaded Solidity workspace"))
-                    self.send_json(200, {"graph": graph})
-                    return
-                if self.path == "/api/archive":
-                    data = self.read_body()
-                    name = urllib.parse.unquote(self.headers.get("X-Archive-Name", "source.zip"))
-                    if not name.lower().endswith(".zip"):
-                        raise ValueError("Upload a .zip archive.")
-                    with tempfile.TemporaryDirectory(prefix="lowkey-archive-") as temporary:
-                        archive = Path(temporary) / "upload.zip"
-                        archive.write_bytes(data)
-                        source_root = Path(temporary) / "source"
-                        extract_source_archive(archive, source_root)
-                        graph = _build_imported_graph(source_root, Path(name).name)
-                    self.send_json(200, {"graph": graph})
-                    return
-                if self.path == "/api/github":
-                    payload = json.loads(self.read_body(64 * 1024).decode("utf-8"))
-                    url = validate_github_url(payload.get("url", ""))
-                    ref = str(payload.get("ref") or "").strip() or None
-                    repo_name = Path(urllib.parse.urlsplit(url).path).stem
-                    with tempfile.TemporaryDirectory(prefix="lowkey-github-") as temporary:
-                        checkout = Path(temporary) / "checkout"
-                        clone_github_repository(url, checkout, ref=ref)
-                        graph = _build_imported_graph(checkout, repo_name)
-                    self.send_json(200, {"graph": graph})
-                    return
-                self.send_json(404, {"error": "Not found."})
-            except (ValueError, OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile, SourceIndexError, subprocess.SubprocessError) as error:
-                self.send_json(400, {"error": str(error)[:1800]})
-
-    return ThreadingHTTPServer((host, port), Handler)
-
-
-def render_explorer_document(model: dict[str, Any], *, server_mode: bool = False) -> str:
-    payload = json.dumps(model, ensure_ascii=False, separators=(",", ":"))
-    payload = payload.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
-    return HTML_TEMPLATE.replace("__GRAPH_DATA__", payload).replace("__SERVER_MODE__", "true" if server_mode else "false")
-
-
-def render_explorer_html(index: dict[str, Any], root: str | Path = ".", *, output: str | Path | None = None) -> Path:
-    model = build_explorer_model(index, root=root)
-    model["project_name"] = Path(root).resolve().name or "Protocol workspace"
-    destination = Path(output).expanduser() if output else Path(root) / ".lowkey" / "link-graph.html"
-    if not destination.is_absolute():
-        destination = Path(root) / destination
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    document = render_explorer_document(model)
-    fd, temporary = tempfile.mkstemp(prefix=".lk-explorer-", suffix=".html", dir=str(destination.parent))
-    try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(document)
             handle.flush()
@@ -1411,28 +1155,39 @@ def _normalise_paths(paths: list[PurePosixPath]) -> list[PurePosixPath]:
     return paths
 
 
-def _safe_upload_path(value: str) -> PurePosixPath:
+def _safe_upload_path(value: str, *, ignore_unsupported: bool = False) -> PurePosixPath | None:
     normalised = str(value or "").replace("\\", "/")
     candidate = PurePosixPath(normalised)
     if not normalised or candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
         raise ValueError(f"Unsafe source path: {value!r}")
-    if re.match(r"^[A-Za-z]:", normalised) or any(part in IGNORED_PARTS or part.startswith(".git") for part in candidate.parts):
-        raise ValueError(f"Unsafe or generated project path: {value!r}")
+    if re.match(r"^[A-Za-z]:", normalised):
+        raise ValueError(f"Drive-qualified source path is not allowed: {value!r}")
+    if any(part in IGNORED_PARTS or (part.startswith(".git") and part not in {".gitmodules", ".gitignore"}) for part in candidate.parts):
+        raise ValueError(f"Build or VCS directory cannot be imported: {value!r}")
     suffix = Path(candidate.name).suffix.lower()
     if suffix != ".sol" and candidate.name.lower() not in ROOT_CONFIGS:
-        raise ValueError(f"Unsupported file type: {value!r}. Use Solidity files and project configuration files.")
+        if ignore_unsupported:
+            return None
+        raise ValueError(f"Unsupported file type: {value!r}. Use Solidity files and recognised project configuration files.")
     return candidate
 
 
 def write_uploaded_files(files: list[dict[str, Any]], destination: str | Path) -> Path:
     if not isinstance(files, list) or not files or len(files) > MAX_UPLOAD_FILES:
         raise ValueError(f"Select between 1 and {MAX_UPLOAD_FILES} supported files.")
-    validated = [(_safe_upload_path(str(item.get("path") or "")), item) for item in files if isinstance(item, dict)]
-    paths = _normalise_paths([path for path, _ in validated])
+    if any(not isinstance(item, dict) for item in files):
+        raise ValueError("Each uploaded file must contain a path and text content.")
+    validated = [(_safe_upload_path(str(item.get("path") or "")), item) for item in files]
+    if any(path is None for path, _ in validated):
+        raise ValueError("The selected upload contains an unsupported file type.")
+    typed = [(path, item) for path, item in validated if path is not None]
+    paths = _normalise_paths([path for path, _ in typed])
+    if len(set(paths)) != len(paths):
+        raise ValueError("The upload contains duplicate paths after folder-root normalisation.")
     root = Path(destination).resolve()
     root.mkdir(parents=True, exist_ok=True)
     total = sol_count = 0
-    for relative, (_, item) in zip(paths, validated):
+    for relative, (_, item) in zip(paths, typed):
         content = item.get("content")
         if not isinstance(content, str):
             raise ValueError(f"Text content is missing for {relative}.")
@@ -1463,18 +1218,23 @@ def extract_source_archive(archive_path: str | Path, destination: str | Path) ->
             raise ValueError(f"Archive exceeds the {MAX_ARCHIVE_ENTRIES}-file safety limit.")
         validated = []
         for info in members:
-            relative = _safe_upload_path(info.filename)
+            relative = _safe_upload_path(info.filename, ignore_unsupported=True)
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:
                 raise ValueError(f"Symbolic links are not allowed: {info.filename}")
-            if info.file_size > MAX_UPLOAD_FILE_BYTES:
-                raise ValueError(f"{info.filename} exceeds the 2 MiB per-file source limit.")
-            validated.append((info, relative))
-        paths = _normalise_paths([item[1] for item in validated])
-        for (info, _), relative in zip(validated, paths):
             total += info.file_size
             if total > MAX_UPLOAD_BYTES:
                 raise ValueError("Archive exceeds the 128 MiB uncompressed source budget.")
+            if info.file_size > MAX_UPLOAD_FILE_BYTES:
+                if relative is not None:
+                    raise ValueError(f"{info.filename} exceeds the 2 MiB per-file source limit.")
+                continue
+            if relative is not None:
+                validated.append((info, relative))
+        paths = _normalise_paths([item[1] for item in validated])
+        if len(set(paths)) != len(paths):
+            raise ValueError("Archive contains duplicate source paths after root-folder normalisation.")
+        for (info, _), relative in zip(validated, paths):
             if relative.suffix.lower() == ".sol":
                 sol_count += 1
             target = (root / Path(*relative.parts)).resolve()
