@@ -468,7 +468,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
-.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.EXTERNAL_CALL{stroke:#e6a66a}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.INHERITS,.edge.USES_LIBRARY{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.hot{opacity:1;stroke-width:3.5}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}
+.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.EXTERNAL_CALL{stroke:#e6a66a}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.INHERITS,.edge.USES_LIBRARY{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}
 .graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
 .graph-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}.graph-empty span{max-width:420px;text-align:center;color:#9cb0c9;background:#0d1c30e8;border:1px solid #284563;border-radius:12px;padding:16px}
 #minimap{position:absolute;right:12px;bottom:12px;width:154px;height:95px;border:1px solid #36516e;border-radius:8px;background:#091626dd;pointer-events:none}.graph-hint{position:absolute;left:13px;bottom:13px;color:#7f96b2;font-size:10px;background:#081523cc;border:1px solid #253e5c;border-radius:6px;padding:5px 8px;pointer-events:none}
@@ -814,7 +814,7 @@ function layoutProjection(projection,rootId){
       const current=queue.shift(),level=levels.get(current);
       if(level>=maxDepth)continue;
       edges.forEach(function(e){
-        if(e.source===current&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","INHERITS","USES_LIBRARY","USES_TYPE"].includes(e.kind)&&!levels.has(e.target)&&node(e.target)){
+        if(e.source===current&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","INHERITS","USES_LIBRARY","USES_TYPE","CONTAINS"].includes(e.kind)&&!levels.has(e.target)&&node(e.target)){
           levels.set(e.target,level+1);queue.push(e.target);
         }
       });
@@ -1173,7 +1173,22 @@ function initialise(){
   mapModel();document.getElementById("project-name").textContent=MODEL.project_name||"Local protocol workspace";
   const select=document.getElementById("edge-select");
   Array.from(new Set(MODEL.edges.map(function(e){return e.kind}))).sort().forEach(function(kind){const option=document.createElement("option");option.value=kind;option.textContent=kind.replaceAll("_"," ");select.appendChild(option)});
-  setupImport();setupInteractions();renderAll();requestAnimationFrame(fitGraph);
+  if(MODEL.show_third_party){const thirdParty=document.querySelector('[data-filter="third-party"]');if(thirdParty)thirdParty.checked=true}
+  if(MODEL.initial_only){
+    const modeMap={storage:"storage",reads:"storage",writes:"storage",assets:"assets"};
+    if(modeMap[MODEL.initial_only])mode=modeMap[MODEL.initial_only];
+    if(MODEL.initial_only==="imports")document.querySelector('[data-edge="IMPORTS"]').checked=true;
+    if(MODEL.initial_only==="reads")document.querySelector('[data-edge="WRITES"]').checked=false;
+    if(MODEL.initial_only==="writes")document.querySelector('[data-edge="READS"]').checked=false;
+    if(MODEL.initial_only==="calls"){
+      document.querySelectorAll("[data-edge]").forEach(function(input){input.checked=["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","USES_LIBRARY"].includes(input.dataset.edge)});
+    }
+    document.querySelectorAll(".mode-tab").forEach(function(button){button.classList.toggle("active",button.dataset.mode===mode)});
+  }
+  setupImport();setupInteractions();
+  const wanted=String(MODEL.initial_selection||"").toLowerCase();
+  const initial=MODEL.nodes.find(function(n){return n.id===MODEL.initial_selection||n.label.toLowerCase()===wanted||String(n.qualified_name||"").toLowerCase()===wanted});
+  if(initial)openNode(initial.id,false);else{renderAll();requestAnimationFrame(fitGraph)}
 }
 initialise();
 })();
@@ -1189,12 +1204,29 @@ def render_explorer_document(model: dict[str, Any], *, server_mode: bool = False
     return HTML_TEMPLATE.replace("__GRAPH_DATA__", payload).replace("__SERVER_MODE__", "true" if server_mode else "false")
 
 
-def render_explorer_html(index: dict[str, Any], root: str | Path = ".", *, output: str | Path | None = None) -> Path:
-    model = build_explorer_model(index, root=root)
-    model["project_name"] = Path(root).resolve().name or "Protocol workspace"
-    destination = Path(output).expanduser() if output else Path(root) / ".lowkey" / "link-graph.html"
-    if not destination.is_absolute():
-        destination = Path(root) / destination
+def render_explorer_html(
+    index: dict[str, Any],
+    root: str | Path = ".",
+    *,
+    output: str | Path | None = None,
+    focus: str | None = None,
+    include_third_party: bool = False,
+    only: str | None = None,
+) -> Path:
+    root_path = Path(root).expanduser().resolve()
+    if root_path.is_file():
+        root_path = root_path.parent
+    model = build_explorer_model(index, root=root_path)
+    model["project_name"] = root_path.name or "Protocol workspace"
+    model["initial_selection"] = focus
+    model["show_third_party"] = bool(include_third_party)
+    model["initial_only"] = only
+    if output:
+        destination = Path(output).expanduser()
+        if not destination.is_absolute():
+            destination = Path.cwd() / destination
+    else:
+        destination = root_path / ".lowkey" / "link-graph.html"
     destination.parent.mkdir(parents=True, exist_ok=True)
     document = render_explorer_document(model)
     fd, temporary = tempfile.mkstemp(prefix=".lk-explorer-", suffix=".html", dir=str(destination.parent))
