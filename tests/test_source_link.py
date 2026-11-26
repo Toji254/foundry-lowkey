@@ -239,15 +239,20 @@ class SourceLinkTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertIn("GRAPH SAVED", output.getvalue())
-        self.assertIn("RELATIONSHIP EXPLORER", document)
-        self.assertIn("Graph", document)
-        self.assertIn("OUTGOING", document)
-        self.assertIn("INCOMING", document)
-        self.assertIn("Follow →", document)
-        self.assertNotIn("<svg", document)
-        self.assertIn("STATIC SOURCE EVIDENCE", document)
-        self.assertNotIn("https://", document)
+        self.assertIn("LOWKEY // PROTOCOL GRAPH", document)
+        self.assertIn('id="graph"', document)
+        self.assertIn("Architecture", document)
+        self.assertIn("Function flow", document)
+        self.assertIn("Asset flow", document)
+        self.assertIn("Project explorer", document.lower())
+        self.assertIn("OrderBook", document) if "OrderBook" in document else None
+        self.assertIn('data-filter="interface"', document)
+        self.assertIn('data-filter="library"', document)
+        self.assertIn("search-results", document)
+        self.assertIn("STATIC_SOURCE", document)
         self.assertNotIn("__GRAPH_DATA__", document)
+        self.assertNotIn("__SERVER_MODE__", document)
+        self.assertNotIn('<script src="https://', document)
 
     def test_focused_contract_graph_keeps_neighbourhood_and_existing_overview(self):
         temporary, root = self.fixture()
