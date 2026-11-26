@@ -1322,8 +1322,13 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 signature = f"{function_name}({','.join(parameter_types)})"
                 function_id = _node_id("function", path, f"{name}.{signature}")
                 header_text = clean[function_match.start():terminator]
-                mutability_match = re.search(r"\b(payable|view|pure)\b", header_text)
-                visibility_match = re.search(r"\b(public|external|internal|private)\b", header_text)
+                # Parameter and return types can contain "payable" (for example, address payable recipient).
+                # Only function descriptors after the parameter list determine function mutability.
+                descriptor_text = clean[params_close + 1:terminator]
+                while re.search(r"\([^()]*\)", descriptor_text):
+                    descriptor_text = re.sub(r"\([^()]*\)", " ", descriptor_text)
+                mutability_match = re.search(r"\b(payable|view|pure)\b", descriptor_text)
+                visibility_match = re.search(r"\b(public|external|internal|private)\b", descriptor_text)
                 func_kind = "modifier" if raw_kind == "modifier" else "function"
                 func = {
                     "id": function_id, "kind": func_kind, "name": function_name,
