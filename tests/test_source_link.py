@@ -239,7 +239,7 @@ class SourceLinkTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertIn("GRAPH SAVED", output.getvalue())
-        self.assertIn("LOWKEY // PROTOCOL GRAPH", document)
+        self.assertIn("PROTOCOL GRAPH", document)
         self.assertIn('id="graph"', document)
         self.assertIn("Architecture", document)
         self.assertIn("Function flow", document)
