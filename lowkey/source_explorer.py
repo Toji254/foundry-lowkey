@@ -172,7 +172,11 @@ def _make_review_leads(nodes: list[dict[str, Any]], edges: list[dict[str, Any]])
         if unresolved:
             signals.append(("Unresolved or ambiguous target", "Resolve the receiver and runtime implementation before making execution claims."))
             score += 1
-        if any(word in text for word in ("oracle", "price", "feed", "twap", "indexprice", "getminprice", "getmaxprice")):
+        dependency_text = " ".join(
+            str(edge.get("details", {}).get("target_label") or edge.get("receiver") or edge.get("method") or "")
+            for edge in related
+        ).casefold()
+        if any(word in text + " " + dependency_text for word in ("oracle", "price", "feed", "twap", "indexprice", "getminprice", "getmaxprice")):
             signals.append(("Price / oracle dependency", "Check freshness, manipulation resistance, decimals, bounds and failure behaviour."))
             score += 2
         targets = [str(edge.get("details", {}).get("target_label") or "") for edge in related if edge["kind"] == "APPLIES_MODIFIER"]
@@ -693,7 +697,7 @@ function selectedContractProjection(contractId){
   return {nodes:nodes,edges:edges};
 }
 function functionProjection(contractId,focusFunction){
-  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&(!contractId||n.contract_id===contractId)&&visibleNode(n)});
+  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
   const root=focusFunction?node(focusFunction):functions.find(function(n){return n.visibility==="external"||n.visibility==="public"})||functions[0];
   if(!root)return {nodes:[],edges:[],root:null};
   const distance=new Map([[root.id,0]]),queue=[root.id],callEdges=[],maxDepth=10,maxNodes=400;
@@ -717,7 +721,7 @@ function functionProjection(contractId,focusFunction){
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:Array.from(new Map(edges.map(function(e){return [e.id,e]})).values()),root:root,distance:distance};
 }
 function storageProjection(contractId){
-  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&(!contractId||n.contract_id===contractId)&&visibleNode(n)});
+  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
   const ids=new Set(functions.map(function(n){return n.id})),edges=[];
   MODEL.edges.forEach(function(e){
     if(!ids.has(e.source)||!["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind)||!visibleEdge(e))return;
@@ -897,6 +901,11 @@ function renderGraph(){
   });
   document.getElementById("graph-empty").style.display=renderNodes.length?"none":"grid";
   document.getElementById("view-label").textContent=mode.toUpperCase().replace("FUNCTIONS","FUNCTION FLOW").replace("SECURITY","SECURITY REVIEW");
+  const empty=document.getElementById("graph-empty");
+  if(!renderNodes.length){
+    const message=mode==="functions"&&!selectedId?"Select a contract or function to inspect its call tree.":mode==="storage"&&!selectedId?"Select a contract to inspect function-to-storage relationships.":mode==="assets"&&!selectedId?"Select a contract to inspect its asset-flow paths.":"No visible relationships match these filters. Re-enable a layer or select another node.";
+    empty.querySelector("span").textContent=message;
+  }
   updateMinimap();applyTransform();
 }
 function renderPositionsOnly(){
@@ -995,6 +1004,10 @@ function renderInspector(){
     const coverage=add(root,"div","coverage "+(MODEL.inventory.complete?"ok":"warn"));
     add(coverage,"strong","",MODEL.inventory.complete?"Source inventory complete":"Source inventory needs attention");
     add(coverage,"p","",MODEL.inventory.files_inspected+" indexed · "+MODEL.inventory.files_discovered+" discovered · "+MODEL.inventory.uninspected.length+" inspection issues");
+    if(MODEL.inventory.excluded_directories.length){
+      const excluded=add(root,"div","inspector-section");add(excluded,"div","section-head","EXCLUDED SOURCE DIRECTORIES · "+MODEL.inventory.excluded_directories.length);
+      MODEL.inventory.excluded_directories.slice(0,25).forEach(function(item){add(excluded,"p","muted",item.path+" · "+item.reason)});
+    }
     const leadSection=add(root,"div","inspector-section");add(leadSection,"div","section-head","AUDIT REVIEW LEADS · "+MODEL.review_leads.length);
     MODEL.review_leads.slice(0,8).forEach(function(lead){const b=add(leadSection,"button","inspect-item","");add(b,"strong","",lead.label);add(b,"small","",lead.tier+" · "+lead.score+"/10");b.addEventListener("click",function(){openNode(lead.function,true)})});
     if(MODEL.inventory.uninspected.length){
@@ -1029,7 +1042,7 @@ function renderInspector(){
     add(body,"div","section-head","FUNCTION / STATE ACCESS · "+edges.length);
     edges.slice(0,80).forEach(function(e){const b=add(body,"button","inspect-item",e.kind+" · "+(node(e.target)?.label||e.target));b.addEventListener("click",function(){openNode(e.target,true)})});
   }else if(selectedTab==="calls"){
-    const edges=MODEL.edges.filter(function(e){return functions.some(function(fn){return fn.id===e.source})&&["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","USES_LIBRARY","INHERITS"].includes(e.kind)});
+    const edges=MODEL.edges.filter(function(e){return functions.some(function(fn){return fn.id===e.source})&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","USES_LIBRARY","INHERITS"].includes(e.kind)});
     add(body,"div","section-head","CALL / INTERFACE BOUNDARIES · "+edges.length);
     edges.slice(0,100).forEach(function(e){const b=add(body,"button","inspect-item",e.label+" → "+(node(e.target)?.label||e.target));add(b,"small","",e.resolution+" · "+e.file+":"+e.line);b.addEventListener("click",function(){if(node(e.target))openNode(e.target,true)})});
   }else if(selectedTab==="assets"){
@@ -1058,7 +1071,7 @@ function renderFlow(){
   if(!functionId){document.getElementById("flow-note").textContent="Select an individual function to follow reachable helpers and effects";return}
   const path=[functionId],seen=new Set(path);let current=functionId;
   for(let i=0;i<7;i++){
-    const next=MODEL.edges.find(function(e){return e.source===current&&["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER"].includes(e.kind)&&node(e.target)&&!seen.has(e.target)&&visibleEdge(e)});
+    const next=MODEL.edges.find(function(e){return e.source===current&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER"].includes(e.kind)&&node(e.target)&&!seen.has(e.target)&&visibleEdge(e)});
     if(!next)break;current=next.target;seen.add(current);path.push(current);
   }
   path.forEach(function(id,i){const n=node(id);if(!n)return;if(i)add(track,"span","flow-arrow","→");const b=add(track,"button","flow-step",String(i+1)+" · "+n.label);b.addEventListener("click",function(){openNode(id,true)})});
@@ -1109,7 +1122,12 @@ function refreshModel(next){
 }
 async function importFiles(fileList){
   if(!SERVER_MODE){toast("Source import needs the local workspace. Run lk link --serve");return}
-  const files=Array.from(fileList||[]).filter(function(file){const ext=(file.webkitRelativePath||file.name).toLowerCase().split(".").pop();return ext==="sol"||["foundry.toml","remappings.txt","soldeer.lock",".gitmodules",".gitignore"].includes(file.name.toLowerCase())});
+  const files=Array.from(fileList||[]).filter(function(file){
+    const path=file.webkitRelativePath||file.name,parts=path.replace(/\\/g,"/").split("/");
+    if(parts.some(function(part){return [".git",".hg",".svn","node_modules","out","cache","broadcast","artifacts","build","dist","__pycache__",".venv","venv"].includes(part)}))return false;
+    const ext=file.name.toLowerCase().split(".").pop();
+    return ext==="sol"||["foundry.toml","remappings.txt","soldeer.lock",".gitmodules",".gitignore"].includes(file.name.toLowerCase());
+  });
   if(!files.some(function(file){return file.name.toLowerCase().endsWith(".sol")})){toast("No Solidity source files selected.");return}
   setServerStatus("Reading "+files.length+" selected files…");
   try{
@@ -1203,7 +1221,8 @@ function initialise(){
   if(MODEL.initial_only){
     const modeMap={storage:"storage",reads:"storage",writes:"storage",assets:"assets"};
     if(modeMap[MODEL.initial_only])mode=modeMap[MODEL.initial_only];
-    if(MODEL.initial_only==="imports")document.querySelector('[data-edge="IMPORTS"]').checked=true;
+    if(MODEL.initial_only==="imports")document.querySelectorAll("[data-edge]").forEach(function(input){input.checked=input.dataset.edge==="IMPORTS"});
+    if(MODEL.initial_only==="all")document.querySelector('[data-edge="IMPORTS"]').checked=true;
     if(MODEL.initial_only==="reads")document.querySelector('[data-edge="WRITES"]').checked=false;
     if(MODEL.initial_only==="writes")document.querySelector('[data-edge="READS"]').checked=false;
     if(MODEL.initial_only==="calls"){
@@ -1214,7 +1233,7 @@ function initialise(){
   setupImport();setupInteractions();
   const wanted=String(MODEL.initial_selection||"").toLowerCase();
   const initial=MODEL.nodes.find(function(n){return n.id===MODEL.initial_selection||n.label.toLowerCase()===wanted||String(n.qualified_name||"").toLowerCase()===wanted});
-  if(initial)openNode(initial.id,false);else{renderAll();requestAnimationFrame(fitGraph)}
+  if(initial){openNode(initial.id,false);requestAnimationFrame(fitGraph)}else{renderAll();requestAnimationFrame(fitGraph)}
 }
 initialise();
 })();
