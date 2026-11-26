@@ -1711,6 +1711,7 @@ contract LowkeyBreakProxyUpgrade is Test {{
         console2.log("LOWKEY_BREAK", success && candidateInstalled && routeConfirmed);
     }}
 }}
+"""
 
 
 
