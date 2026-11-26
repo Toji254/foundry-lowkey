@@ -1101,7 +1101,7 @@ function renderInspector(){
       MODEL.inventory.excluded_directories.forEach(function(item){add(excluded,"p","muted",item.path+" · "+item.reason)});
     }
     const leadSection=add(root,"div","inspector-section");add(leadSection,"div","section-head","AUDIT REVIEW LEADS · "+MODEL.review_leads.length);
-    MODEL.review_leads.slice(0,8).forEach(function(lead){const b=add(leadSection,"button","inspect-item","");add(b,"strong","",lead.label);add(b,"small","",lead.tier+" · "+lead.score+"/10");b.addEventListener("click",function(){openNode(lead.function,true)})});
+    MODEL.review_leads.forEach(function(lead){const b=add(leadSection,"button","inspect-item","");add(b,"strong","",lead.label);add(b,"small","",lead.tier+" · "+lead.score+"/10");b.addEventListener("click",function(){openNode(lead.function,true)})});
     if(MODEL.inventory.uninspected.length){
       const failures=add(root,"div","inspector-section");add(failures,"div","section-head","UNINSPECTED SOURCES");
       MODEL.inventory.uninspected.forEach(function(item){add(failures,"p","muted",item.path+" · "+item.phase+" · "+item.error)});
