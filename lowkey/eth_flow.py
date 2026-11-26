@@ -737,39 +737,39 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
 
 
 def _render_detail(report: dict[str, Any], *, limit: int) -> None:
-    """Expanded forensic view. Kept separate so the default stays easy to scan."""
+    """Expanded forensic rendering; all evidence inventories remain untruncated."""
     summary = report["summary"]
     nodes = report["nodes"]
-    print("LOWKEY / ETH FLOW RECON  ·  DETAIL")
-    print(f"PROJECT   {report.get('root') or '.'}")
-    coverage = "complete inventory" if report["coverage"]["complete"] else "incomplete inventory"
-    print(f"SOURCE    {report.get('parser', 'unknown')}  ·  {coverage}")
+    print("LOWKEY / ETH FLOW  ·  FORENSIC VIEW")
+    print("═" * 76)
+    print(f"PROJECT     {report.get('root') or '.'}")
+    coverage = "COMPLETE inventory" if report["coverage"]["complete"] else "INCOMPLETE inventory"
+    print(f"SOURCE      {report.get('parser', 'unknown')} parser · {coverage}")
     if report.get("contract_filter"):
-        print(f"FILTER    contract={report['contract_filter']}")
+        print(f"SCOPE       contract={report['contract_filter']} + reachable declared calls")
     print(
-        "SUMMARY   "
-        f"contracts={summary['contracts']}  functions={summary['functions']}  "
-        f"ETH entries={summary['entry_points']}  ETH exit sites={summary['exit_sites']}  "
-        f"paths={summary['paths_to_exit']}"
+        f"INDEX       {summary['contracts']} contracts · {summary['functions']} functions"
+        f" · {summary['entry_points']} ingress · {summary['exit_sites']} exits"
+        f" · {summary['paths_to_exit']} mapped routes"
     )
-    print("EVIDENCE  Static source relationships; no transaction execution is claimed.")
-    print()
+    print("EVIDENCE    Static source relationships only; no transaction execution is claimed.")
 
-    print("ETH ENTRY POINTS")
-    for item in report["entries"][:limit]:
+    print()
+    print("01 / ETH INGRESS POINTS")
+    for item in report["entries"]:
         function = item["function"]
         statuses = {str(edge.get("status")) for edge in item["signals"]}
-        label = "payable" if "CAPABILITY" in statuses else "reads msg.value"
-        if "VALUE_USAGE" in statuses and "CAPABILITY" in statuses:
-            label += " · reads msg.value"
-        print(f"  {label:<24} {_node_label(function)}")
-        print(f"    {_location(function)}")
-    if len(report["entries"]) > limit:
-        print(f"  ... {len(report['entries']) - limit} more")
+        labels = []
+        if "CAPABILITY" in statuses:
+            labels.append("PAYABLE")
+        if "VALUE_USAGE" in statuses:
+            labels.append("READS msg.value")
+        print(f"  [{' · '.join(labels)}] {_node_label(function)}")
+        print(f"     {_location(function)}")
 
     print()
-    print("ETH EXIT SITES")
-    for item in report["exits"][:limit]:
+    print("02 / ETH EXIT SITES")
+    for item in report["exits"]:
         function, edge = item["function"], item["edge"]
         status = str(edge.get("status") or "UNKNOWN").replace("_", " ").lower()
         direction = str(edge.get("direction") or "unresolved").upper()
@@ -782,68 +782,81 @@ def _render_detail(report: dict[str, Any], *, limit: int) -> None:
             details.append(f"method={edge['method']}")
         suffix = "  " + "  ".join(details) if details else ""
         print(f"  {direction:<10} {status:<27} {_node_label(function)}{suffix}")
-        print(f"    {_location(edge)}")
-    if len(report["exits"]) > limit:
-        print(f"  ... {len(report['exits']) - limit} more")
+        print(f"     {_location(edge)}")
 
     print()
-    print("CALL PATHS TO ETH EXITS")
-    for number, item in enumerate(report["paths"][:limit], start=1):
+    print("03 / CALL PATHS TO ETH EXITS")
+    for number, item in enumerate(report["paths"], start=1):
         root = item["entry"]
-        print(f"  [{number}] {_node_label(root)}")
+        print(f"  [{number:02}] {_node_label(root)}")
+        print(f"       ENTRY  {_location(root)}")
         for hop in item["hops"]:
             target = nodes.get(str(hop.get("to") or ""), {})
             relation = str(hop.get("kind") or "CALLS").replace("_", " ").lower()
             note = str(hop.get("resolution") or "UNRESOLVED").lower()
             if hop.get("kind") == "EXTERNAL_CALL":
                 note = "declared target; runtime implementation/address unresolved"
-            print(f"      └─ {relation} → {_node_label(target)} [{note}]  {_location(hop)}")
+            print(f"       └─ {relation} → {_node_label(target)} [{note}]")
+            print(f"          {_location(hop)}")
         edge = item["exit"]
-        print(f"      └─ ETH EXIT ATTEMPT: {_exit_action(edge)}  [{_location(edge)}]")
-    if len(report["paths"]) > limit:
-        print(f"  ... {len(report['paths']) - limit} more")
+        print(f"       └─ ETH EXIT ATTEMPT: {_exit_action(edge)}")
+        print(f"          {_location(edge)}")
 
-    touchpoints = _state_touchpoints(report, limit=limit)
-    if touchpoints:
-        print()
-        print("ACCOUNTING TOUCHPOINTS")
-        for item in touchpoints:
-            kinds = "/".join(sorted(item["kinds"]))
-            functions = ", ".join(sorted(item["functions"])[:4])
-            accesses = ", ".join(sorted(item["accesses"])[:3])
-            access_label = f" [{accesses}]" if accesses else ""
-            print(f"  {kinds:<20} {item['name']}{access_label}  [{functions}]")
-            print(f"    {item['location']}")
+    touchpoints = _state_touchpoints(report)
+    print()
+    print(f"04 / ACCOUNTING TOUCHPOINTS ({len(touchpoints)})")
+    if not touchpoints:
+        print("  No indexed mapping/state-variable touchpoints in the inspected functions.")
+    for item in touchpoints:
+        kinds = "/".join(sorted(item["kinds"]))
+        functions = ", ".join(sorted(item["functions"]))
+        accesses = ", ".join(sorted(item["accesses"]))
+        access_label = f" [{accesses}]" if accesses else ""
+        print(f"  {kinds:<20} {item['name']}{access_label}")
+        print(f"     FUNCTIONS  {functions}")
+        for location in sorted(item["locations"]):
+            print(f"     SOURCE     {location}")
 
-    if report["unresolved"]:
-        print()
-        print(f"UNRESOLVED CALL BOUNDARIES ({len(report['unresolved'])})")
-        for item in report["unresolved"][:limit]:
-            edge = item["edge"]
-            candidates = edge.get("candidates") or []
-            suffix = f" candidates={len(candidates)}" if candidates else ""
-            print(
-                f"  {_node_label(item['from'])} → "
-                f"{edge.get('receiver') or edge.get('to') or 'dynamic target'}"
-                f" [{edge.get('resolution', 'UNRESOLVED')}]{suffix}"
-            )
-            print(f"    {_location(edge)}")
-        if len(report["unresolved"]) > limit:
-            print(f"  ... {len(report['unresolved']) - limit} more")
+    print()
+    print(f"05 / UNRESOLVED CALL BOUNDARIES ({len(report['unresolved'])})")
+    if not report["unresolved"]:
+        print("  None recorded on the inspected ETH-related paths.")
+    for item in report["unresolved"]:
+        edge = item["edge"]
+        candidates = edge.get("candidates") or []
+        suffix = f" · {len(candidates)} candidate(s)" if candidates else ""
+        print(
+            f"  {_node_label(item['from'])} → "
+            f"{edge.get('receiver') or edge.get('to') or 'dynamic target'}"
+            f" [{edge.get('resolution', 'UNRESOLVED')}]{suffix}"
+        )
+        print(f"     {_location(edge)}")
+        if candidates:
+            names = [
+                str(candidate.get("qualified_name") or candidate.get("name") or candidate)
+                if isinstance(candidate, dict) else str(candidate)
+                for candidate in candidates
+            ]
+            print(f"     CANDIDATES  {', '.join(names)}")
 
     if report["truncated"]:
         print()
-        print(f"DEPTH / OUTPUT LIMIT  Additional paths were not expanded for {len(report['truncated'])} root(s).")
-        for label in report["truncated"][:limit]:
+        print(f"06 / DEPTH OR ROUTE BOUNDS ({len(report['truncated'])} root(s))")
+        for label in report["truncated"]:
             print(f"  {label}")
+        print(f"  Route budget={limit}; increase --limit or --depth to expand more paths.")
 
-    _print_inventory_warning(report, limit=limit)
+    if not report["coverage"]["complete"]:
+        print()
+        _print_inventory_warning(report, limit=max(limit, 100))
+
     print()
     print("REVIEW NOTES")
-    print("  Payable means ETH can enter; it does not prove a nonzero msg.value was supplied.")
+    print("  PAYABLE means ETH can enter; it does not prove a nonzero msg.value was supplied.")
     print("  Exit sites are attempts; inspect return handling, reverts, recipient control and balance changes.")
     print("  Deposits and later withdrawals are separate transactions unless a source call path connects them.")
     print("  Forced ETH, proxy implementation selection, dynamic calls and complex assembly may not be fully resolved.")
+
 
 
 def main(argv: list[str] | None = None) -> int:
