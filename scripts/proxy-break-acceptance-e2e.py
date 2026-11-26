@@ -546,11 +546,11 @@ def main() -> int:
                 ),
                 proxy_admin_campaign_result(
                     lk, root, env, "VulnerableProxyAdmin", vulnerable_admin,
-                    vulnerable_transparent_proxy, "BREAK", evidence_root,
+                    vulnerable_transparent_proxy, "CANDIDATE", evidence_root,
                 ),
                 proxy_admin_campaign_result(
                     lk, root, env, "SecureProxyAdmin", secure_admin,
-                    secure_transparent_proxy, "OBSERVED", evidence_root,
+                    secure_transparent_proxy, "CONTROL", evidence_root,
                 ),
             ]
 
