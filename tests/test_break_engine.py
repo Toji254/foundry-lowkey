@@ -841,7 +841,7 @@ class BreakEngineTests(unittest.TestCase):
         target = break_engine.Target("TransparentProxyAdmin", "0x" + "1" * 40)
         before = "0x" + "2" * 40
         after = "0x" + "3" * 40
-        output = "\\n".join([
+        output = "\n".join([
             "LOWKEY_BREAK_FAMILY proxy",
             "UPGRADE_CALL_SUCCESS true",
             "IMPLEMENTATION_CHANGED true",
@@ -865,7 +865,7 @@ class BreakEngineTests(unittest.TestCase):
         self.assertTrue(probe["implementation_changed"])
 
     def test_console_byte_extractor_keeps_multiline_revert_data_compatibility(self):
-        output = "TARGET_RETURNDATA_LENGTH 4\\n0xdeadbeef"
+        output = "TARGET_RETURNDATA_LENGTH 4\n0xdeadbeef"
         self.assertEqual(
             break_engine._extract_console_bytes(output, "TARGET_RETURNDATA_LENGTH"),
             "0xdeadbeef",
