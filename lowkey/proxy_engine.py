@@ -35,6 +35,10 @@ class ProxyError(RuntimeError):
     """Expected proxy-inspection failure with a user-actionable message."""
 
 
+class RpcExecutionError(ProxyError):
+    """An eth_call that reached the EVM and reverted, distinct from RPC failure."""
+
+
 def is_address(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", value.strip()))
 
@@ -48,17 +52,23 @@ def _hex_bytes(value: Any) -> bytes | None:
         return None
 
 
-def _decode_slot_address(value: Any) -> tuple[str | None, str]:
-    """Decode a canonical EIP-1967 address word; reject malformed high bytes."""
+def _decode_slot_state(value: Any) -> tuple[str, str | None, str]:
+    """Return ZERO, ADDRESS, or MALFORMED without conflating bad words with empty slots."""
     raw = _hex_bytes(value)
     if raw is None or len(raw) != 32:
-        return None, "malformed or unavailable 32-byte slot value"
+        return "MALFORMED", None, "malformed or unavailable 32-byte slot value"
     if raw[:12] != b"\x00" * 12:
-        return None, "slot word has non-zero high 12 bytes; not a canonical address"
+        return "MALFORMED", None, "slot word has non-zero high 12 bytes; not a canonical address"
     address = "0x" + raw[12:].hex()
     if address.lower() == ZERO_ADDRESS:
-        return None, "slot is zero"
-    return address, "non-zero canonical address"
+        return "ZERO", None, "slot is zero"
+    return "ADDRESS", address, "non-zero canonical address"
+
+
+def _decode_slot_address(value: Any) -> tuple[str | None, str]:
+    """Compatibility wrapper for callers that only need the address and explanation."""
+    _state, address, explanation = _decode_slot_state(value)
+    return address, explanation
 
 
 def _minimal_clone_implementation(runtime: str) -> str | None:
@@ -187,6 +197,9 @@ class RpcClient:
         if body.get("error") is not None:
             error = body["error"]
             message = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+            code = error.get("code") if isinstance(error, dict) else None
+            if method == "eth_call" and (code == 3 or "revert" in str(message).lower()):
+                raise RpcExecutionError(f"RPC eth_call reverted: {message}")
             raise ProxyError(f"RPC {method} error: {message}")
         if "result" not in body:
             raise ProxyError(f"RPC {method} response omitted result.")
@@ -258,15 +271,24 @@ def _decode_abi_address(data: str) -> str | None:
     return "0x" + raw[12:].hex()
 
 
-def _try_call(client: RpcClient, address: str, selector: str, caller: str) -> tuple[bool, str | None]:
+def _try_call_detailed(client: RpcClient, address: str, selector: str, caller: str) -> dict[str, Any]:
+    """Preserve the difference between an EVM revert and an RPC/provider failure."""
     try:
-        return True, client.call(address, selector, caller=caller)
-    except ProxyError:
-        return False, None
+        return {"status": "SUCCESS", "raw": client.call(address, selector, caller=caller)}
+    except RpcExecutionError as exc:
+        return {"status": "REVERT", "raw": None, "error": str(exc)}
+    except ProxyError as exc:
+        return {"status": "RPC_ERROR", "raw": None, "error": str(exc)}
+
+
+def _try_call(client: RpcClient, address: str, selector: str, caller: str) -> tuple[bool, str | None]:
+    """Legacy boolean wrapper; security-sensitive probes use _try_call_detailed."""
+    result = _try_call_detailed(client, address, selector, caller)
+    return result["status"] == "SUCCESS", result.get("raw")
 
 
 def _probe_owner_getter(client: RpcClient, address: str) -> dict[str, Any]:
-    """Read owner() from two independent caller contexts; a getter value is not authority proof."""
+    """Read owner() from two caller contexts; do not collapse RPC failure into a revert."""
     try:
         code = client.code(address)
     except ProxyError as exc:
@@ -274,39 +296,56 @@ def _probe_owner_getter(client: RpcClient, address: str) -> dict[str, Any]:
     if code == "0x":
         return {"status": "NO_CODE"}
     selector = function_selector("owner()")
-    values = []
+    probes = []
     for caller in SENTINEL_CALLERS:
-        ok, raw = _try_call(client, address, selector, caller)
-        owner = _decode_abi_address(raw) if ok and raw is not None else None
-        values.append({"caller": caller, "readable": ok, "owner": owner})
-    owners = {item["owner"] for item in values if item["readable"] and item["owner"] is not None}
-    if owners == {ZERO_ADDRESS} and all(
-        item["readable"] and item["owner"] is not None for item in values
-    ):
+        attempt = _try_call_detailed(client, address, selector, caller)
+        owner = _decode_abi_address(attempt.get("raw")) if attempt["status"] == "SUCCESS" else None
+        status = attempt["status"]
+        if status == "SUCCESS" and owner is None:
+            status = "MALFORMED_RESULT"
+        probes.append({
+            "caller": caller,
+            "status": status,
+            "readable": status == "SUCCESS",
+            "owner": owner,
+            **({"error": attempt["error"]} if attempt.get("error") else {}),
+        })
+    if any(item["status"] == "RPC_ERROR" for item in probes):
         return {
-            "status": "ZERO_OWNER_VALUE_OBSERVED",
-            "probes": values,
-            "limitation": "owner() consistently returned address(0); this is not an authority candidate and may represent a renounced or unset owner.",
+            "status": "UNVERIFIED_RPC_FAILURE",
+            "probes": probes,
+            "limitation": "At least one owner() probe failed at the RPC/provider layer; it is not treated as an EVM revert or empty value.",
         }
-    if len(owners) == 1 and all(item["readable"] and item["owner"] is not None for item in values):
+    owners = {item["owner"] for item in probes if item["status"] == "SUCCESS"}
+    if len(owners) == 1 and all(item["status"] == "SUCCESS" for item in probes):
         owner = next(iter(owners))
+        if owner.lower() == ZERO_ADDRESS:
+            return {
+                "status": "ZERO_OWNER_VALUE_OBSERVED",
+                "probes": probes,
+                "limitation": "owner() consistently returned address(0); this is not an authority candidate and may represent a renounced or unset owner.",
+            }
         return {
             "status": "OWNER_GETTER_VALUE_OBSERVED",
             "owner_candidate": owner,
             "caller_independence": "CONSISTENT_FOR_TWO_SENTINEL_CALLERS",
-            "probes": values,
+            "probes": probes,
             "limitation": "owner() is an application getter signal; it does not by itself prove control over the proxy upgrade route.",
         }
     if len(owners) > 1:
         return {
             "status": "CALLER_DEPENDENT",
-            "probes": values,
+            "probes": probes,
             "limitation": "Different callers observed different owner() values; do not treat one as the authority.",
         }
+    if all(item["status"] == "REVERT" for item in probes):
+        status = "GETTER_REVERTED_FOR_PROBES"
+    else:
+        status = "UNAVAILABLE"
     return {
-        "status": "UNAVAILABLE",
-        "probes": values,
-        "limitation": "No consistent canonical owner() address was decoded.",
+        "status": status,
+        "probes": probes,
+        "limitation": "No consistent canonical owner() address was decoded; reverts and malformed results remain distinct from RPC failure.",
     }
 
 
@@ -317,7 +356,7 @@ def _probe_transparent_admin_routing(
     admin_candidate: str | None,
     abi: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Compare safe view calls through the implementation and proxy for an admin candidate."""
+    """Require differential caller behavior, matching returndata, and an actual EVM revert."""
     if not admin_candidate:
         return {"status": "NO_ADMIN_SLOT_CANDIDATE"}
     other_caller = next((item for item in SENTINEL_CALLERS if item.lower() != admin_candidate.lower()), None)
@@ -329,9 +368,7 @@ def _probe_transparent_admin_routing(
             continue
         if item.get("stateMutability") not in {"view", "pure"}:
             continue
-        if item.get("inputs"):
-            continue
-        if not item.get("outputs"):
+        if item.get("inputs") or not item.get("outputs"):
             continue
         name = str(item.get("name") or "")
         if not name or name in {"proxiableUUID", "implementation", "admin"}:
@@ -342,35 +379,52 @@ def _probe_transparent_admin_routing(
         return {"status": "NOT_PROBED_NO_SAFE_NOARG_VIEW_FUNCTIONS"}
 
     examined = []
+    rpc_failure = False
     for signature, selector in view_items[:8]:
-        direct_admin_ok, direct_admin_result = _try_call(client, implementation, selector, admin_candidate)
-        direct_other_ok, direct_other_result = _try_call(client, implementation, selector, other_caller)
-        proxy_admin_ok, proxy_admin_result = _try_call(client, proxy, selector, admin_candidate)
-        proxy_other_ok, proxy_other_result = _try_call(client, proxy, selector, other_caller)
+        direct_admin = _try_call_detailed(client, implementation, selector, admin_candidate)
+        direct_other = _try_call_detailed(client, implementation, selector, other_caller)
+        proxy_admin = _try_call_detailed(client, proxy, selector, admin_candidate)
+        proxy_other = _try_call_detailed(client, proxy, selector, other_caller)
         row = {
             "signature": signature,
             "selector": selector,
-            "implementation_admin_call_succeeded": direct_admin_ok,
-            "implementation_other_call_succeeded": direct_other_ok,
-            "proxy_admin_call_succeeded": proxy_admin_ok,
-            "proxy_other_call_succeeded": proxy_other_ok,
+            "implementation_admin": direct_admin["status"],
+            "implementation_other": direct_other["status"],
+            "proxy_admin": proxy_admin["status"],
+            "proxy_other": proxy_other["status"],
+            "implementation_admin_result": direct_admin.get("raw"),
+            "implementation_other_result": direct_other.get("raw"),
+            "proxy_other_result": proxy_other.get("raw"),
+            "proxy_admin_error": proxy_admin.get("error"),
         }
         examined.append(row)
+        if any(item["status"] == "RPC_ERROR" for item in (direct_admin, direct_other, proxy_admin, proxy_other)):
+            rpc_failure = True
+            continue
+        same_return_data = (
+            direct_other["status"] == "SUCCESS"
+            and proxy_other["status"] == "SUCCESS"
+            and direct_other.get("raw") == proxy_other.get("raw")
+        )
         if (
-            direct_admin_ok and direct_other_ok and proxy_other_ok and not proxy_admin_ok
+            direct_admin["status"] == "SUCCESS"
+            and direct_other["status"] == "SUCCESS"
+            and same_return_data
+            and proxy_admin["status"] == "REVERT"
         ):
             return {
                 "status": "TRANSPARENT_ROUTING_CANDIDATE",
                 "admin_slot_candidate": admin_candidate,
                 "matched_function": signature,
+                "return_data_matches": True,
                 "probes": examined,
-                "limitation": "Observed only with this admin-slot candidate and one safe view selector; not a version fingerprint or proof of every upgrade route.",
+                "limitation": "Differential behavior is consistent with Transparent admin fallback blocking for one selector and a mirrored admin-slot candidate; immutable-admin mismatch and alternative dispatch paths remain possible.",
             }
     return {
-        "status": "NOT_OBSERVED",
+        "status": "INCONCLUSIVE_RPC_FAILURE" if rpc_failure else "NOT_OBSERVED",
         "admin_slot_candidate": admin_candidate,
         "probes": examined,
-        "limitation": "No tested selector showed the expected admin-only fallback restriction. This does not exclude Transparent proxies, especially where the effective admin is immutable or the ABI lacks suitable view functions.",
+        "limitation": "A Transparent candidate requires direct calls to succeed, the non-admin proxy result to match, and an actual EVM revert for the admin caller. Provider errors are never interpreted as access-control reverts.",
     }
 
 
@@ -409,8 +463,24 @@ def _resolve_nested_proxy_chain(
 
         slot_values: dict[str, str | None] = {}
         try:
-            impl, _ = _decode_slot_address(client.storage(current, EIP1967_IMPLEMENTATION_SLOT))
-            beacon, _ = _decode_slot_address(client.storage(current, EIP1967_BEACON_SLOT))
+            impl_state, impl, impl_note = _decode_slot_state(
+                client.storage(current, EIP1967_IMPLEMENTATION_SLOT)
+            )
+            beacon_state, beacon, beacon_note = _decode_slot_state(
+                client.storage(current, EIP1967_BEACON_SLOT)
+            )
+            if "MALFORMED" in {impl_state, beacon_state}:
+                status = "MALFORMED_EIP1967_SLOT"
+                hops.append({
+                    "depth": depth,
+                    "address": current,
+                    "architecture": "MALFORMED_EIP1967_SLOT",
+                    "implementation_state": impl_state,
+                    "implementation_explanation": impl_note,
+                    "beacon_state": beacon_state,
+                    "beacon_explanation": beacon_note,
+                })
+                break
             slot_values = {"implementation": impl, "beacon": beacon}
         except ProxyError as exc:
             status = "UNVERIFIED"
@@ -419,6 +489,16 @@ def _resolve_nested_proxy_chain(
 
         impl = slot_values["implementation"]
         beacon = slot_values["beacon"]
+        if (impl or beacon) and not _has_opcode(runtime, 0xF4):
+            status = "SLOT_CANDIDATE_ONLY"
+            hops.append({
+                "depth": depth,
+                "address": current,
+                "architecture": "EIP1967_SLOT_WITHOUT_DELEGATECALL_EVIDENCE",
+                "implementation_candidate": impl,
+                "beacon_candidate": beacon,
+            })
+            break
         if impl and beacon:
             status = "CONFLICTING_ROUTING"
             hops.append({
@@ -462,6 +542,16 @@ def _resolve_nested_proxy_chain(
             })
             current = resolved
             continue
+        if _has_opcode(runtime, 0xF4):
+            hops.append({
+                "depth": depth,
+                "address": current,
+                "architecture": "CUSTOM_DELEGATECALL_CANDIDATE",
+                "code_sha256": hashlib.sha256(bytes.fromhex(runtime[2:])).hexdigest(),
+                "limitation": "Delegatecall opcode presence does not establish its target or reachable dispatch route.",
+            })
+            status = "CUSTOM_DELEGATECALL_CANDIDATE"
+            break
         hops.append({
             "depth": depth,
             "address": current,
@@ -700,10 +790,22 @@ def inspect_proxy(
         ):
             try:
                 raw = client.storage(target, slot)
-                address, explanation = _decode_slot_address(raw)
-                slot_results[name] = {"read": True, "raw": raw, "address": address, "explanation": explanation}
+                state, address, explanation = _decode_slot_state(raw)
+                slot_results[name] = {
+                    "read": True,
+                    "valid": state in {"ZERO", "ADDRESS"},
+                    "state": state,
+                    "raw": raw,
+                    "address": address,
+                    "explanation": explanation,
+                }
+                if state == "MALFORMED":
+                    report["warnings"].append(f"The {name} slot was readable but malformed: {explanation}.")
             except ProxyError as exc:
-                slot_results[name] = {"read": False, "raw": None, "address": None, "explanation": str(exc)}
+                slot_results[name] = {
+                    "read": False, "valid": False, "state": "UNREADABLE",
+                    "raw": None, "address": None, "explanation": str(exc),
+                }
                 report["errors"].append(str(exc))
 
         report["checks"]["eip1967_slots"] = slot_results
@@ -716,12 +818,18 @@ def inspect_proxy(
             "admin": admin_slot,
         }
         report["addresses"]["admin_slot_candidate"] = admin_slot
-        if not slot_results["admin"]["read"]:
+        delegatecall_observed = _has_opcode(runtime, 0xF4)
+        report["checks"]["runtime_routing"] = {
+            "delegatecall_opcode_observed": delegatecall_observed,
+            "status": "DELEGATECALL_OPCODE_PRESENT" if delegatecall_observed else "NO_DELEGATECALL_OPCODE_OBSERVED",
+            "limitation": "Opcode presence is runtime evidence, not proof that a specific EIP-1967 slot is consumed by a reachable dispatch path.",
+        }
+        if not slot_results["admin"]["valid"]:
             report["checks"]["admin_slot_authority"] = {
-                "status": "UNVERIFIED",
-                "note": "The EIP-1967 admin slot could not be read; no conclusion about a zero or non-zero value is made.",
+                "status": "UNVERIFIED" if slot_results["admin"]["state"] == "UNREADABLE" else "MALFORMED",
+                "note": "The EIP-1967 admin slot was not established as a canonical zero or address word; effective proxy administration remains unknown.",
             }
-            report["warnings"].append("The admin slot was unreadable; effective proxy administration remains unknown.")
+            report["warnings"].append("The admin slot was unreadable or malformed; effective proxy administration remains unknown.")
         elif admin_slot:
             report["checks"]["admin_slot_authority"] = {
                 "status": "NONZERO_SLOT_CANDIDATE",
@@ -742,15 +850,23 @@ def inspect_proxy(
                 "Both implementation and beacon slots are non-zero. ERC-1967 says the beacon slot "
                 "should only be considered when the implementation slot is empty; no routing choice was guessed."
             )
-        elif not slot_results["implementation"]["read"] or not slot_results["beacon"]["read"]:
+        elif not slot_results["implementation"]["valid"] or not slot_results["beacon"]["valid"]:
             report["architecture"] = "UNVERIFIED_EIP1967"
             report["status"] = "UNVERIFIED"
             report["warnings"].append("Implementation/beacon precedence could not be established because a slot read failed.")
         elif impl:
             report["addresses"]["implementation"] = impl
-            report["architecture"] = "ERC1967_IMPLEMENTATION_PROXY"
-            report["confidence"] = "HIGH"
-            report["status"] = "OBSERVED"
+            report["architecture"] = (
+                "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE"
+                if delegatecall_observed else "ERC1967_IMPLEMENTATION_SLOT_CANDIDATE"
+            )
+            report["confidence"] = "MEDIUM" if delegatecall_observed else "LOW"
+            report["status"] = "REVIEW_REQUIRED"
+            report["warnings"].append(
+                "A populated EIP-1967 implementation slot is not by itself proof of proxy routing. "
+                + ("Runtime contains DELEGATECALL, but slot consumption/reachability is not proven." if delegatecall_observed
+                   else "Runtime contains no DELEGATECALL opcode, so this is a slot candidate only.")
+            )
             try:
                 impl_code = client.code(impl)
                 report["addresses"]["implementation_has_code"] = impl_code != "0x"
@@ -806,9 +922,16 @@ def inspect_proxy(
                 report["evidence"].append("The EIP-1967 admin slot was successfully read as zero; this does not exclude UUPS or immutable-admin designs.")
         elif beacon:
             report["addresses"]["beacon"] = beacon
-            report["architecture"] = "ERC1967_BEACON_PROXY"
-            report["confidence"] = "HIGH"
-            report["status"] = "OBSERVED"
+            report["architecture"] = (
+                "ERC1967_BEACON_PROXY_CANDIDATE"
+                if delegatecall_observed else "ERC1967_BEACON_SLOT_CANDIDATE"
+            )
+            report["confidence"] = "MEDIUM" if delegatecall_observed else "LOW"
+            report["status"] = "REVIEW_REQUIRED"
+            report["warnings"].append(
+                "A populated EIP-1967 beacon slot and coherent implementation() response do not prove "
+                "that reachable proxy dispatch delegates to the beacon implementation."
+            )
             report["addresses"]["beacon_has_code"] = False
             try:
                 beacon_code = client.code(beacon)
@@ -869,12 +992,20 @@ def inspect_proxy(
             else:
                 diamond = _diamond_loupe(client, target)
                 if diamond:
-                    report["architecture"] = "DIAMOND_LOUPE_CONFIRMED"
-                    report["confidence"] = "HIGH"
-                    report["status"] = "OBSERVED"
+                    report["architecture"] = (
+                        "DIAMOND_LOUPE_AND_DELEGATECALL_CANDIDATE"
+                        if delegatecall_observed else "DIAMOND_LOUPE_INTERFACE_CANDIDATE"
+                    )
+                    report["confidence"] = "MEDIUM" if delegatecall_observed else "LOW"
+                    report["status"] = "REVIEW_REQUIRED"
                     report["checks"]["diamond_loupe"] = diamond
                     report["upgrade_mechanisms"].append("DIAMONDCUT_REVIEW_REQUIRED")
-                    report["evidence"].append("facetAddresses() and per-facet selector/code checks returned a coherent Diamond Loupe surface.")
+                    report["evidence"].append("Diamond Loupe selectors/facets were internally consistent and facet code was present.")
+                    report["warnings"].append(
+                        "Loupe responses are self-reported by the target. "
+                        + ("DELEGATECALL is present, but selector dispatch to the reported facets is not proven." if delegatecall_observed
+                           else "No DELEGATECALL opcode was observed; this is a Loupe-interface candidate only.")
+                    )
                 elif _has_opcode(runtime, 0xF4):
                     report["architecture"] = "CUSTOM_DELEGATECALL_CANDIDATE"
                     report["confidence"] = "INFERRED"
@@ -909,10 +1040,19 @@ def inspect_proxy(
             client, target, report.get("addresses", {}).get("implementation"), abi,
         )
         impl_for_chain = report.get("addresses", {}).get("implementation")
-        if impl_for_chain and report.get("architecture") not in {
-            "CONFLICTING_EIP1967_SLOTS", "UNVERIFIED_EIP1967",
+        if impl_for_chain and report.get("architecture") in {
+            "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE",
+            "ERC1967_BEACON_PROXY_CANDIDATE",
+            "EIP1167_MINIMAL_CLONE",
         }:
             report["nested_proxy_chain"] = _resolve_nested_proxy_chain(client, impl_for_chain)
+        elif impl_for_chain:
+            report["nested_proxy_chain"] = {
+                "start": impl_for_chain,
+                "status": "NOT_FOLLOWED_ROUTING_NOT_PROVEN",
+                "hops": [],
+                "limitations": ["Nested routing is not followed from an unverified slot/interface claim."],
+            }
 
         # Re-check the pinned block hash so a reorg cannot silently mix states.
         try:
@@ -927,6 +1067,152 @@ def inspect_proxy(
         report["errors"].append(str(exc))
     report["upgrade_mechanisms"] = list(dict.fromkeys(report["upgrade_mechanisms"]))
     return report
+
+
+
+def _event_topic(signature: str) -> str:
+    return "0x" + keccak256(signature.encode("ascii")).hex()
+
+
+def proxy_upgrade_history(
+    rpc_url: str,
+    target: str,
+    from_block: int,
+    to_block: int | None = None,
+    *,
+    chunk_size: int = 2000,
+    max_blocks: int = 100000,
+    max_logs: int = 20000,
+) -> dict[str, Any]:
+    """Reconstruct bounded EIP-1967 Upgraded/BeaconUpgraded/AdminChanged logs."""
+    if not is_address(target):
+        raise ProxyError("Target must be a 20-byte hexadecimal address.")
+    if from_block < 0:
+        raise ProxyError("--from-block must be a non-negative block number.")
+    if chunk_size < 1 or chunk_size > 10000:
+        raise ProxyError("History chunk size must be between 1 and 10000 blocks.")
+    client = RpcClient(rpc_url)
+    snapshot = client.pin(to_block)
+    end = int(snapshot["block_number"])
+    if from_block > end:
+        raise ProxyError(f"--from-block {from_block} is after the pinned block {end}.")
+    if end - from_block + 1 > max_blocks:
+        raise ProxyError(
+            f"Requested history spans more than {max_blocks} blocks. "
+            "Narrow the range; Lowkey does not silently scan an unbounded history."
+        )
+    topics = {
+        _event_topic("Upgraded(address)"): "Upgraded",
+        _event_topic("BeaconUpgraded(address)"): "BeaconUpgraded",
+        _event_topic("AdminChanged(address,address)"): "AdminChanged",
+    }
+    filter_topics = [list(topics)]
+    events = []
+    for start in range(from_block, end + 1, chunk_size):
+        stop = min(end, start + chunk_size - 1)
+        logs = client.request("eth_getLogs", [{
+            "address": target,
+            "fromBlock": hex(start),
+            "toBlock": hex(stop),
+            "topics": filter_topics,
+        }])
+        if not isinstance(logs, list):
+            raise ProxyError(f"eth_getLogs returned a non-list response for blocks {start}-{stop}.")
+        for log in logs:
+            if not isinstance(log, dict):
+                continue
+            raw_topics = log.get("topics") or []
+            if not raw_topics:
+                continue
+            event_name = topics.get(str(raw_topics[0]).lower())
+            if not event_name:
+                continue
+            row = {
+                "event": event_name,
+                "block_number": int(str(log.get("blockNumber", "0x0")), 16),
+                "block_hash": log.get("blockHash"),
+                "transaction_hash": log.get("transactionHash"),
+                "transaction_index": int(str(log.get("transactionIndex", "0x0")), 16),
+                "log_index": int(str(log.get("logIndex", "0x0")), 16),
+                "removed": bool(log.get("removed", False)),
+            }
+            if event_name == "Upgraded":
+                row["implementation"] = _decode_abi_address(str(raw_topics[1])) if len(raw_topics) > 1 else None
+            elif event_name == "BeaconUpgraded":
+                row["beacon"] = _decode_abi_address(str(raw_topics[1])) if len(raw_topics) > 1 else None
+            elif event_name == "AdminChanged":
+                # EIP-1967 declares both AdminChanged address fields non-indexed.
+                raw_data = _hex_bytes(str(log.get("data") or "0x"))
+                if raw_data is not None and len(raw_data) == 64:
+                    row["previous_admin"] = _decode_abi_address("0x" + raw_data[:32].hex())
+                    row["new_admin"] = _decode_abi_address("0x" + raw_data[32:].hex())
+                else:
+                    row["previous_admin"] = None
+                    row["new_admin"] = None
+                    row["decode_status"] = "MALFORMED_ADMIN_CHANGED_DATA"
+            events.append(row)
+            if len(events) > max_logs:
+                raise ProxyError(
+                    f"History exceeded the {max_logs}-log safety cap. Narrow the block range."
+                )
+    events.sort(key=lambda item: (item["block_number"], item["transaction_index"], item["log_index"]))
+    current_slots = {}
+    for name, slot in (
+        ("implementation", EIP1967_IMPLEMENTATION_SLOT),
+        ("beacon", EIP1967_BEACON_SLOT),
+        ("admin", EIP1967_ADMIN_SLOT),
+    ):
+        raw = client.storage(target, slot)
+        state, address, explanation = _decode_slot_state(raw)
+        current_slots[name] = {"state": state, "address": address, "raw": raw, "explanation": explanation}
+    if not client.verify_snapshot():
+        raise ProxyError("Pinned block hash changed during history reconstruction; discard this report and retry.")
+    canonical_events = [item for item in events if not item.get("removed")]
+    latest_upgrade = next((item for item in reversed(canonical_events) if item["event"] == "Upgraded"), None)
+    latest_beacon = next((item for item in reversed(canonical_events) if item["event"] == "BeaconUpgraded"), None)
+    latest_admin = next((item for item in reversed(canonical_events) if item["event"] == "AdminChanged"), None)
+
+    def reconcile(event, field, slot_name):
+        if event is None:
+            return {"status": "NO_EVENT_IN_REQUESTED_RANGE"}
+        current = current_slots[slot_name]
+        if current["state"] == "ZERO":
+            matches = str(event.get(field) or "").lower() == ZERO_ADDRESS.lower()
+            return {
+                "status": "MATCH" if matches else "MISMATCH",
+                "event_value": event.get(field),
+                "current_slot_value": ZERO_ADDRESS,
+            }
+        if current["state"] != "ADDRESS":
+            return {"status": "CURRENT_SLOT_UNAVAILABLE_OR_MALFORMED", "event_value": event.get(field)}
+        matches = str(current["address"]).lower() == str(event.get(field) or "").lower()
+        return {
+            "status": "MATCH" if matches else "MISMATCH",
+            "event_value": event.get(field),
+            "current_slot_value": current["address"],
+        }
+
+    return {
+        "schema": "lowkey.proxy.history.v1",
+        "target": target,
+        "snapshot": snapshot,
+        "range": {"from_block": from_block, "to_block": end},
+        "status": "OBSERVED",
+        "event_count": len(events),
+        "events": events,
+        "current_slots": current_slots,
+        "reconciliation": {
+            "implementation": reconcile(latest_upgrade, "implementation", "implementation"),
+            "beacon": reconcile(latest_beacon, "beacon", "beacon"),
+            "admin": reconcile(latest_admin, "new_admin", "admin"),
+        },
+        "limitations": [
+            "Only standard EIP-1967 Upgraded, BeaconUpgraded and AdminChanged events emitted by the target are included.",
+            "Custom upgrade events, ProxyAdmin-mediated history emitted by another contract, and silent storage writes are not discovered.",
+            "The requested range is bounded; no claim is made about upgrades before from_block.",
+            "Events are historical signals, not proof that the implementation was safely initialized or that a route was reachable.",
+        ],
+    }
 
 
 _SOURCE_PATTERNS = (
@@ -1788,7 +2074,7 @@ def run_cli(
         print("LOWKEY ERROR: " + str(exc))
         return 2
     action = positional.pop(0).lower() if positional and positional[0].lower() in {
-        "inspect", "audit", "report", "plan", "attack", "validate", "diff", "simulate",
+        "inspect", "audit", "report", "plan", "attack", "validate", "diff", "history", "simulate",
     } else "inspect"
     address = next((item for item in positional if is_address(item)), None) or config.get("target")
     if action in {"validate", "diff"}:
@@ -1841,6 +2127,61 @@ def run_cli(
     if not is_address(address):
         print("LOWKEY ERROR: Set a target with 'lk target <address>' or pass a proxy address.")
         return 2
+    if action == "history":
+        if "--from-block" not in values:
+            print("Usage: lk proxy history <address> --from-block N [--to-block N] [--json]")
+            return 2
+        try:
+            from_block = int(values["--from-block"], 0)
+            to_block = int(values["--to-block"], 0) if "--to-block" in values else None
+        except ValueError:
+            print("LOWKEY ERROR: --from-block/--to-block must be integers or 0x-prefixed block numbers.")
+            return 2
+        history_rpc = values.get("--rpc-url")
+        if not history_rpc and callable(rpc_resolver):
+            try:
+                history_rpc = rpc_resolver(config, explicit_rpc=None, target=address)
+            except TypeError:
+                history_rpc = rpc_resolver(config)
+        if not history_rpc:
+            print("LOWKEY BLOCKED: No RPC is configured. Pass --rpc-url or set 'lk rpc'.")
+            return 2
+        try:
+            history = proxy_upgrade_history(history_rpc, address, from_block, to_block)
+        except ProxyError as exc:
+            print("LOWKEY BLOCKED: " + str(exc))
+            return 2
+        try:
+            report_root = root_resolver() if callable(root_resolver) else None
+        except Exception:
+            report_root = None
+        path = _save_report(
+            report_root, address,
+            f"history-{history['range']['from_block']}-{history['range']['to_block']}.json",
+            history,
+        )
+        if path:
+            history["evidence_path"] = str(path)
+        if "json" in flags:
+            print(json.dumps(history, indent=2, sort_keys=True))
+        else:
+            print(
+                "LOWKEY / PROXY UPGRADE HISTORY\n"
+                f"TARGET       {address}\n"
+                f"RANGE        {history['range']['from_block']}..{history['range']['to_block']}\n"
+                f"EVENTS       {history['event_count']}\n"
+                + "\n".join(
+                    f"  {item['block_number']}  {item['event']}  "
+                    f"{item.get('implementation') or item.get('beacon') or item.get('new_admin') or '-'}"
+                    for item in history["events"]
+                )
+                + "\nRECONCILE    "
+                + ", ".join(f"{key}={value['status']}" for key, value in history["reconciliation"].items())
+                + "\nNOTE         Event history is bounded to the selected range and is not a security verdict."
+            )
+            if path:
+                print("EVIDENCE     " + str(path))
+        return 0
     explicit_rpc = values.get("--rpc-url")
     rpc = None
     if callable(rpc_resolver):

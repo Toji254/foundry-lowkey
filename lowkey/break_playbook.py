@@ -155,9 +155,9 @@ FINDING_PATTERNS: tuple[FindingPattern, ...] = (
     ),
     FindingPattern(
         "PROXY-001", "proxy", "Proxy / implementation authorization mismatch",
-        "Proxy, implementation, admin, and delegatecall storage can disagree about the actor authorized to change logic.",
+        "Proxy, implementation, admin, and delegatecall storage can disagree about the actor authorized to change logic. A narrow local adapter probes standard UUPS upgradeTo/upgradeToAndCall entrypoints; other proxy families remain hypotheses.",
         ("proxy", "implementation", "delegatecall", "upgradeTo", "beacon", "admin"),
-        executable="hypothesis",
+        executable="partial",
     ),
     FindingPattern(
         "PROXY-002", "proxy", "Implementation storage collision / slot corruption",

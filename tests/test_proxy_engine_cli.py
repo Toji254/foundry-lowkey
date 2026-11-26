@@ -32,6 +32,7 @@ class ProxyEngineCliTests(unittest.TestCase):
             result = lk._render_command_help(["proxy"])
         self.assertEqual(result, 0)
         self.assertIn("proxy audit", output.getvalue())
+        self.assertIn("proxy history", output.getvalue())
 
     def test_proxy_validate_help_exposes_build_info_and_namespace_inputs(self):
         output = io.StringIO()
@@ -114,8 +115,8 @@ class ProxyEngineCliTests(unittest.TestCase):
                 source = root / "src" / "Vault.sol"
                 source.parent.mkdir(parents=True)
                 source.write_text(
-                    "/// @custom:storage-location erc7201:example.storage.Vault\\n"
-                    "struct VaultStorage { address owner; uint256 totalAssets; }\\n",
+                    "/// @custom:storage-location erc7201:example.storage.Vault\n"
+                    "struct VaultStorage { address owner; uint256 totalAssets; }\n",
                     encoding="utf-8",
                 )
             output = io.StringIO()
@@ -155,7 +156,7 @@ class ProxyEngineCliTests(unittest.TestCase):
             for root in (reference_source, candidate_source):
                 source = root / "src" / "Vault.sol"
                 source.parent.mkdir(parents=True)
-                source.write_text("contract Vault {}\\n", encoding="utf-8")
+                source.write_text("contract Vault {}\n", encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 code = lk.proxy_engine.run_cli(
@@ -179,6 +180,30 @@ class ProxyEngineCliTests(unittest.TestCase):
         self.assertIn('_canonical_help_command(command) == "proxy"', source)
         self.assertIn('and "--json" in sys.argv[2:]', source)
 
+
+
+    def test_proxy_history_cli_uses_explicit_block_range(self):
+        import json
+        address = "0x" + "11" * 20
+        history = {
+            "range": {"from_block": 10, "to_block": 20},
+            "events": [],
+            "event_count": 0,
+            "reconciliation": {},
+            "status": "OBSERVED",
+        }
+        output = io.StringIO()
+        with patch.object(lk.proxy_engine, "proxy_upgrade_history", return_value=history) as run_history:
+            with contextlib.redirect_stdout(output):
+                code = lk.proxy_engine.run_cli(
+                    {},
+                    ["history", address, "--from-block", "10", "--to-block", "20", "--json"],
+                    rpc_resolver=lambda config, **kwargs: "http://localhost:8545",
+                    root_resolver=lambda: None,
+                )
+        self.assertEqual(code, 0)
+        run_history.assert_called_once_with("http://localhost:8545", address, 10, 20)
+        self.assertEqual(json.loads(output.getvalue())["event_count"], 0)
 
 if __name__ == "__main__":
     unittest.main()

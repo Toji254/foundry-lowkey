@@ -46,9 +46,15 @@ class FakeRpc:
         self.requested_calls.append((to, data, caller))
         key = (to, data, caller)
         if key in self.calls:
-            return self.calls[key]
+            value = self.calls[key]
+            if isinstance(value, BaseException):
+                raise value
+            return value
         if (to, data) in self.calls:
-            return self.calls[(to, data)]
+            value = self.calls[(to, data)]
+            if isinstance(value, BaseException):
+                raise value
+            return value
         raise pe.ProxyError("call unavailable")
 
     def verify_snapshot(self):
@@ -211,7 +217,9 @@ class InspectionTests(unittest.TestCase):
         )
         with patch.object(pe, "RpcClient", return_value=fake):
             report = pe.inspect_proxy("http://rpc.invalid", target)
-        self.assertEqual(report["architecture"], "ERC1967_IMPLEMENTATION_PROXY")
+        self.assertEqual(report["architecture"], "ERC1967_IMPLEMENTATION_SLOT_CANDIDATE")
+        self.assertEqual(report["status"], "REVIEW_REQUIRED")
+        self.assertFalse(report["checks"]["runtime_routing"]["delegatecall_opcode_observed"])
         self.assertNotIn("UUPS_COMPATIBLE_IMPLEMENTATION", report["upgrade_mechanisms"])
         self.assertEqual(report["checks"]["proxiable_uuid"]["status"], "NO_MATCH")
 
@@ -290,7 +298,7 @@ class InspectionTests(unittest.TestCase):
         )
         with patch.object(pe, "RpcClient", return_value=fake):
             report = pe.inspect_proxy("http://rpc.invalid", target)
-        self.assertEqual(report["architecture"], "ERC1967_BEACON_PROXY")
+        self.assertEqual(report["architecture"], "ERC1967_BEACON_SLOT_CANDIDATE")
         self.assertEqual(report["checks"]["beacon_caller_independence"], "CALLER_DEPENDENT")
         self.assertEqual(report["status"], "REVIEW_REQUIRED")
 
@@ -309,7 +317,8 @@ class InspectionTests(unittest.TestCase):
         )
         with patch.object(pe, "RpcClient", return_value=fake):
             report = pe.inspect_proxy("http://rpc.invalid", target)
-        self.assertEqual(report["architecture"], "DIAMOND_LOUPE_CONFIRMED")
+        self.assertEqual(report["architecture"], "DIAMOND_LOUPE_INTERFACE_CANDIDATE")
+        self.assertEqual(report["status"], "REVIEW_REQUIRED")
         self.assertEqual(report["checks"]["diamond_loupe"]["facet_count"], 1)
         self.assertEqual(report["checks"]["diamond_loupe"]["selector_count"], 1)
         self.assertEqual(
@@ -371,10 +380,11 @@ class AuthorityAndLifecycleTests(unittest.TestCase):
         }]
         fake = FakeRpc(
             slots=self._base_slots(implementation=implementation, admin=admin),
-            code={target: "0x6000", implementation: "0x6001"},
+            code={target: "0x6000f4", implementation: "0x6001"},
             calls={
                 (implementation, selector, admin): value,
                 (implementation, selector, pe.SENTINEL_CALLERS[0]): value,
+                (target, selector, admin): pe.RpcExecutionError("execution reverted"),
                 (target, selector, pe.SENTINEL_CALLERS[0]): value,
             },
         )
@@ -472,7 +482,7 @@ class AuthorityAndLifecycleTests(unittest.TestCase):
             },
             code={
                 clone: clone_runtime,
-                nested_proxy: "0x6000",
+                nested_proxy: "0x6000f4",
                 implementation: "0x6001",
             },
         )
@@ -497,7 +507,7 @@ class AuthorityAndLifecycleTests(unittest.TestCase):
                 (proxy_b, pe.EIP1967_IMPLEMENTATION_SLOT): word_address(proxy_a),
                 (proxy_b, pe.EIP1967_BEACON_SLOT): word_address(pe.ZERO_ADDRESS),
             },
-            code={proxy_a: "0x6000", proxy_b: "0x6001"},
+            code={proxy_a: "0x6000f4", proxy_b: "0x6000f4"},
         )
         result = pe._resolve_nested_proxy_chain(fake, proxy_a)
         self.assertEqual(result["status"], "CYCLE_DETECTED")
@@ -712,6 +722,194 @@ class AuditPlanTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["signal"], "uups_authorization_hook")
         self.assertEqual(findings[0]["evidence_type"], "SOURCE_PATTERN")
+
+
+
+
+class ProxyHistoryTests(unittest.TestCase):
+    def test_upgrade_history_decodes_and_reconciles_standard_events(self):
+        target = "0x" + "11" * 20
+        implementation = "0x" + "22" * 20
+        implementation_topic = "0x" + "0" * 24 + implementation[2:]
+        topic = pe._event_topic("Upgraded(address)")
+
+        class HistoryRpc:
+            def __init__(self, url):
+                self.calls = []
+            def pin(self, requested_block=None):
+                return {"chain_id": 31337, "block_number": 1002, "block_hash": "0x" + "a" * 64}
+            def request(self, method, params):
+                self.calls.append((method, params))
+                if method == "eth_getLogs":
+                    if params[0]["fromBlock"] != "0x3e9":
+                        return []
+                    return [{
+                        "topics": [topic, implementation_topic],
+                        "blockNumber": "0x3e9",
+                        "blockHash": "0x" + "b" * 64,
+                        "transactionHash": "0x" + "c" * 64,
+                        "transactionIndex": "0x0",
+                        "logIndex": "0x2",
+                    }]
+                raise AssertionError("unexpected RPC method")
+            def storage(self, address, slot):
+                if slot == pe.EIP1967_IMPLEMENTATION_SLOT:
+                    return word_address(implementation)
+                return word_address(pe.ZERO_ADDRESS)
+            def verify_snapshot(self):
+                return True
+
+        with patch.object(pe, "RpcClient", HistoryRpc):
+            report = pe.proxy_upgrade_history("http://rpc.invalid", target, 1001, 1002, chunk_size=1)
+        self.assertEqual(report["event_count"], 1)
+        self.assertEqual(report["events"][0]["event"], "Upgraded")
+        self.assertEqual(report["events"][0]["implementation"], implementation)
+        self.assertEqual(report["reconciliation"]["implementation"]["status"], "MATCH")
+
+
+    def test_admin_changed_uses_non_indexed_event_data(self):
+        target = "0x" + "11" * 20
+        old_admin = "0x" + "22" * 20
+        new_admin = "0x" + "33" * 20
+        topic = pe._event_topic("AdminChanged(address,address)")
+        data = word_address(old_admin)[2:] + word_address(new_admin)[2:]
+
+        class HistoryRpc:
+            def __init__(self, url):
+                pass
+            def pin(self, requested_block=None):
+                return {"chain_id": 1, "block_number": 50, "block_hash": "0x" + "a" * 64}
+            def request(self, method, params):
+                if method == "eth_getLogs":
+                    return [{
+                        "topics": [topic], "data": "0x" + data,
+                        "blockNumber": "0x32", "blockHash": "0x" + "b" * 64,
+                        "transactionHash": "0x" + "c" * 64,
+                        "transactionIndex": "0x0", "logIndex": "0x0",
+                    }]
+                raise AssertionError("unexpected RPC method")
+            def storage(self, address, slot):
+                if slot == pe.EIP1967_ADMIN_SLOT:
+                    return word_address(new_admin)
+                return word_address(pe.ZERO_ADDRESS)
+            def verify_snapshot(self):
+                return True
+
+        with patch.object(pe, "RpcClient", HistoryRpc):
+            report = pe.proxy_upgrade_history("http://rpc.invalid", target, 50, 50)
+        admin_event = report["events"][0]
+        self.assertEqual(admin_event["previous_admin"], old_admin)
+        self.assertEqual(admin_event["new_admin"], new_admin)
+        self.assertEqual(report["reconciliation"]["admin"]["status"], "MATCH")
+
+    def test_history_rejects_unbounded_ranges(self):
+        class TooManyHistoryRpc:
+            def __init__(self, url):
+                pass
+            def pin(self, requested_block=None):
+                return {"chain_id": 1, "block_number": requested_block, "block_hash": "0x" + "a" * 64}
+        with patch.object(pe, "RpcClient", TooManyHistoryRpc):
+            with self.assertRaisesRegex(pe.ProxyError, "100000 blocks"):
+                pe.proxy_upgrade_history("http://rpc.invalid", "0x" + "11" * 20, 0, 100001)
+
+
+
+
+    def test_nonzero_implementation_slot_with_delegatecall_remains_candidate(self):
+        target = "0x" + "11" * 20
+        implementation = "0x" + "22" * 20
+        fake = FakeRpc(
+            slots={
+                pe.EIP1967_IMPLEMENTATION_SLOT: word_address(implementation),
+                pe.EIP1967_BEACON_SLOT: word_address(pe.ZERO_ADDRESS),
+                pe.EIP1967_ADMIN_SLOT: word_address(pe.ZERO_ADDRESS),
+            },
+            code={target: "0x6000f4", implementation: "0x6001"},
+        )
+        with patch.object(pe, "RpcClient", return_value=fake):
+            report = pe.inspect_proxy("http://rpc.invalid", target)
+        self.assertEqual(report["architecture"], "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE")
+        self.assertEqual(report["status"], "REVIEW_REQUIRED")
+        self.assertEqual(report["confidence"], "MEDIUM")
+
+    def test_malformed_implementation_slot_is_unverified_not_empty(self):
+        target = "0x" + "11" * 20
+        fake = FakeRpc(
+            slots={
+                pe.EIP1967_IMPLEMENTATION_SLOT: "0x" + "01" * 12 + "00" * 20,
+                pe.EIP1967_BEACON_SLOT: word_address(pe.ZERO_ADDRESS),
+                pe.EIP1967_ADMIN_SLOT: word_address(pe.ZERO_ADDRESS),
+            },
+            code={target: "0x6000f4"},
+        )
+        with patch.object(pe, "RpcClient", return_value=fake):
+            report = pe.inspect_proxy("http://rpc.invalid", target)
+        self.assertEqual(report["architecture"], "UNVERIFIED_EIP1967")
+        self.assertEqual(report["checks"]["eip1967_slots"]["implementation"]["state"], "MALFORMED")
+
+    def test_zero_admin_changed_event_reconciles_as_zero_not_missing(self):
+        target = "0x" + "11" * 20
+        zero_word = "0" * 64
+        topic = pe._event_topic("AdminChanged(address,address)")
+
+        class HistoryRpc:
+            def __init__(self, url):
+                pass
+            def pin(self, requested_block=None):
+                return {"chain_id": 1, "block_number": 51, "block_hash": "0x" + "a" * 64}
+            def request(self, method, params):
+                if method == "eth_getLogs":
+                    return [{
+                        "topics": [topic], "data": "0x" + zero_word + zero_word,
+                        "blockNumber": "0x33", "blockHash": "0x" + "b" * 64,
+                        "transactionHash": "0x" + "c" * 64,
+                        "transactionIndex": "0x0", "logIndex": "0x0",
+                    }]
+                raise AssertionError("unexpected RPC method")
+            def storage(self, address, slot):
+                return "0x" + zero_word
+            def verify_snapshot(self):
+                return True
+
+        with patch.object(pe, "RpcClient", HistoryRpc):
+            report = pe.proxy_upgrade_history("http://rpc.invalid", target, 51, 51)
+        self.assertEqual(report["reconciliation"]["admin"]["status"], "MATCH")
+
+class RpcCallClassificationTests(unittest.TestCase):
+
+    def test_nested_custom_delegatecall_is_not_called_terminal_implementation(self):
+        implementation = "0x" + "22" * 20
+        fake = FakeRpc(
+            slots={
+                pe.EIP1967_IMPLEMENTATION_SLOT: word_address(pe.ZERO_ADDRESS),
+                pe.EIP1967_BEACON_SLOT: word_address(pe.ZERO_ADDRESS),
+            },
+            code={implementation: "0x6000f4"},
+        )
+        report = pe._resolve_nested_proxy_chain(fake, implementation)
+        self.assertEqual(report["status"], "CUSTOM_DELEGATECALL_CANDIDATE")
+        self.assertEqual(report["hops"][0]["architecture"], "CUSTOM_DELEGATECALL_CANDIDATE")
+
+    def test_rpc_execution_revert_is_not_classified_as_provider_failure(self):
+        class Client:
+            def __init__(self, error):
+                self.error = error
+            def call(self, address, selector, caller=None):
+                raise self.error
+        reverted = pe._try_call_detailed(
+            Client(pe.RpcExecutionError("execution reverted")), "0x" + "11" * 20, "0x12345678", pe.SENTINEL_CALLERS[0]
+        )
+        failed = pe._try_call_detailed(
+            Client(pe.ProxyError("connection reset")), "0x" + "11" * 20, "0x12345678", pe.SENTINEL_CALLERS[0]
+        )
+        self.assertEqual(reverted["status"], "REVERT")
+        self.assertEqual(failed["status"], "RPC_ERROR")
+
+    def test_malformed_slot_is_not_treated_as_zero(self):
+        state, address, note = pe._decode_slot_state("0x" + "01" * 12 + "00" * 20)
+        self.assertEqual(state, "MALFORMED")
+        self.assertIsNone(address)
+        self.assertIn("non-zero high", note)
 
 
 if __name__ == "__main__":

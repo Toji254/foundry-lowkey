@@ -26,7 +26,7 @@ This matrix is the acceptance contract for generic verification. "Implemented" m
 | Vault / lending accounting | Solidity + Foundry | Share inflation; solvency invariant violation | Pending |
 | Reentrancy / callbacks | Solidity + Foundry | State update after external call; nested withdrawal | Pending |
 | Oracle / AMM integration | Solidity + Foundry | Stale price; slippage bound bypass; bad decimal assumptions | Pending |
-| Proxy / upgradeable contracts | Solidity + Foundry | Pinned ERC-1967 slot/precedence, beacon caller dependence, UUPS UUID signal, Transparent routing candidate, initialization/owner getters, nested clone/proxy chain, Diamond Loupe cross-check, storage-layout and ERC-7201 namespace regression | Partial: read-only intelligence, bounded investigation plans and mocked adversarial tests; executable target-specific upgrade/attack campaigns pending |
+| Proxy / upgradeable contracts | Solidity + Foundry | Pinned ERC-1967 slot/precedence, beacon caller dependence, UUPS UUID signal, Transparent routing candidate, initialization/owner getters, nested clone/proxy chain, Diamond Loupe cross-check, storage-layout and ERC-7201 namespace regression | Partial: read-only candidate evidence, bounded EIP-1967 event timeline, compiler-layout/source comparison, and local-fork replacement probe for standard UUPS upgradeTo/upgradeToAndCall shapes; Transparent ProxyAdmin, Beacon, Diamond, initializer and full storage-migration campaigns pending |
 | Cross-contract integration | Solidity + Foundry | Wrong dependency wiring; token/oracle revert behavior | Pending |
 | Solidity + Hardhat | Hardhat / JavaScript or TypeScript | Test failure, config mismatch, mutation | Pending |
 | Vyper | Vyper + Foundry-compatible ABI tooling | ABI/build mismatch; state transition regression | Detection/build CI exists; generation pending |
@@ -40,9 +40,9 @@ This matrix is the acceptance contract for generic verification. "Implemented" m
 
 ### Proxy capability boundary
 
-The current Lowkey proxy engine provides read-only, block-pinned reconnaissance; evidence-backed ERC-1967 implementation/beacon/admin-slot inspection; exact canonical ERC-1167 detection; a consistency-checked Diamond Loupe probe; a direct implementation `proxiableUUID()` compatibility signal; textual source/ABI investigation leads; and a conservative compiler-layout comparator.
+The current Lowkey proxy engine provides read-only, block-pinned reconnaissance; explicit slot/interface candidate states rather than automatic proxy confirmation; exact canonical ERC-1167 detection; a consistency-checked but self-reported Diamond Loupe candidate; a direct implementation `proxiableUUID()` compatibility signal; textual source/ABI investigation leads; a bounded EIP-1967 event timeline; a conservative compiler-layout comparator; and a local-fork implementation-replacement probe limited to standard UUPS upgrade entrypoint shapes.
 
-It does **not** yet claim generic UUPS-versus-Transparent proof, effective immutable-admin recovery, historical upgrade reconstruction, complete ERC-7201 namespace compatibility, generic upgrade simulation, or executable proxy exploit campaigns. Those remain pending until deployment-specific fixtures, paired controls, mutation tests and trace-backed acceptance gates exist. The `lk proxy plan` output is a list of NOT_EXECUTED hypotheses, not a BREAK result. The `lk proxy simulate` command intentionally fails closed without a target-specific adapter.
+It does **not** claim generic UUPS-versus-Transparent proof, reachable slot-to-dispatch proof, effective immutable-admin recovery, complete ProxyAdmin/Beacon/Diamond attack coverage, complete historical upgrade reconstruction, complete ERC-7201 namespace compatibility, generic upgrade simulation, or full proxy exploit campaigns. Those remain pending until deployment-specific fixtures, paired controls, mutation tests and trace-backed acceptance gates exist. The `lk proxy plan` output is a list of NOT_EXECUTED hypotheses, not a BREAK result. The `lk proxy simulate` command intentionally fails closed without a target-specific adapter.
 
 
 ## Promotion gates

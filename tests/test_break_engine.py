@@ -2290,5 +2290,63 @@ SECOND_RETURNDATA_LENGTH 0
             generic_observation, {"inputs": [{"name": "amount", "type": "uint256"}]}
         ))
 
+
+
+class ProxyBreakAdapterTests(unittest.TestCase):
+    def test_proxy_upgrade_harness_requires_slot_replacement_and_live_route(self):
+        target = break_engine.Target("Proxy", "0x" + "11" * 20)
+        body = break_engine._render_proxy_upgrade_test(
+            target, "upgradeTo(address)", "0x12345678" + "00" * 32, "0"
+        )
+        self.assertIn("vm.load(TARGET, IMPLEMENTATION_SLOT)", body)
+        self.assertIn("CANDIDATE_IMPLEMENTATION_INSTALLED", body)
+        self.assertIn("proxiableUUID()", body)
+        self.assertIn("lowkeyProxyMarker(bytes32)", body)
+        self.assertIn("markerWasAlreadyReachable", body)
+        self.assertIn("DELEGATECALL_ROUTE_CONFIRMED", body)
+        self.assertIn("LOWKEY_BREAK", body)
+
+    def test_proxy_family_only_selects_standard_upgrade_entrypoints(self):
+        selected = break_engine._select_functions([
+            {"type": "function", "name": "upgradeTo", "inputs": [{"type": "address"}], "stateMutability": "nonpayable"},
+            {"type": "function", "name": "withdraw", "inputs": [], "stateMutability": "nonpayable"},
+        ], {"family": "proxy"})
+        self.assertEqual([item["name"] for item in selected], ["upgradeTo"])
+
+    def test_proxy_success_is_not_a_break_without_implementation_and_route_proof(self):
+        target = break_engine.Target("Proxy", "0x" + "11" * 20)
+        output = """
+LOWKEY_BREAK_FAMILY proxy
+UPGRADE_CALL_SUCCESS true
+IMPLEMENTATION_CHANGED true
+CANDIDATE_IMPLEMENTATION_INSTALLED true
+DELEGATECALL_ROUTE_CONFIRMED false
+LOWKEY_BREAK false
+"""
+        result = break_engine._result_from_output(
+            None, family="proxy", target=target, function="upgradeTo(address)",
+            output=output, evidence_path=None,
+        )
+        self.assertEqual(result.status, "OBSERVED")
+        self.assertFalse(result.break_condition)
+
+
+    def test_proxy_break_requires_all_four_observations_and_break_marker(self):
+        target = break_engine.Target("Proxy", "0x" + "11" * 20)
+        output = """
+LOWKEY_BREAK_FAMILY proxy
+UPGRADE_CALL_SUCCESS true
+IMPLEMENTATION_CHANGED true
+CANDIDATE_IMPLEMENTATION_INSTALLED true
+DELEGATECALL_ROUTE_CONFIRMED true
+LOWKEY_BREAK true
+"""
+        result = break_engine._result_from_output(
+            None, family="proxy", target=target, function="upgradeTo(address)",
+            output=output, evidence_path=None,
+        )
+        self.assertEqual(result.status, "BREAK")
+        self.assertTrue(result.break_condition)
+
 if __name__ == "__main__":
     unittest.main()

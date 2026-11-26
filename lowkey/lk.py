@@ -28779,18 +28779,21 @@ _PROXY_HELP_GUIDES = {
 }
 _PROXY_HELP_GUIDES["proxy"].update({
     "summary": "Evidence-first proxy reconnaissance, upgrade-surface review and storage-layout validation.",
-    "usage": "lk proxy [inspect|audit|plan|validate|simulate] [address] [options]",
+    "usage": "lk proxy [inspect|audit|plan|history|validate|simulate] [address] [options]",
     "example": "lk proxy audit 0x... --rpc-url $FOUNDRY_ETH_RPC_URL",
     "forms": [
         ("Inspect runtime architecture", "Pin RPC reads to one block and inspect ERC-1967 slots, beacon behavior, ERC-1167 clones, Diamond Loupe data and delegatecall candidates.", "lk proxy inspect 0xTarget"),
         ("Audit investigation leads", "Combine runtime observations with local ABI/source signals and write a JSON evidence report. Signals are not vulnerability verdicts.", "lk proxy audit 0xTarget"),
         ("Generate attack plan", "Create architecture-specific, not-executed proxy hypotheses for later target-specific Foundry adapters.", "lk proxy plan 0xTarget"),
+        ("Reconstruct upgrade history", "Read bounded EIP-1967 Upgraded, BeaconUpgraded and AdminChanged events, then reconcile the latest observed events with current slots.", "lk proxy history 0xTarget --from-block 18000000"),
         ("Compare storage layouts", "Conservatively compare compiler storageLayout data from V1 and V2 artifacts.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
         ("Upgrade simulation", "Fail closed until a deployment-specific adapter, implementation artifact, initializer calldata and invariants are provided.", "lk proxy simulate 0xTarget"),
     ],
     "options": [
         ("--rpc-url <url>", "Use an explicit RPC endpoint for read-only inspection.", "lk proxy inspect 0xTarget --rpc-url $FOUNDRY_ETH_RPC_URL"),
         ("--block <number>", "Inspect a historical block number when the RPC supports historical state.", "lk proxy inspect 0xTarget --block 19000000"),
+        ("--from-block <number>", "Start a bounded EIP-1967 event-history scan (required by the history action).", "lk proxy history 0xTarget --from-block 18000000"),
+        ("--to-block <number>", "End the event-history scan at this pinned block; defaults to latest.", "lk proxy history 0xTarget --from-block 18000000 --to-block 19000000"),
         ("--json", "Print the structured evidence report or storage diff as JSON.", "lk proxy audit 0xTarget --json"),
         ("--verbose", "Include source anchors, ABI signals and investigation hypotheses.", "lk proxy inspect 0xTarget --verbose"),
         ("--reference / --candidate", "Select the V1 and V2 compiler artifacts for storage validation.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
@@ -28836,6 +28839,19 @@ _PROXY_HELP_GUIDES["proxy"].update({
             ],
             related=["lk break", "lk test", "lk proxy audit"],
         ),
+        "history": _help_entry(
+            "Reconstruct bounded standard EIP-1967 upgrade/admin/beacon events and reconcile them with current slots.",
+            "lk proxy history [address] --from-block N [--to-block N] [--rpc-url URL] [--json]",
+            "lk proxy history 0xTarget --from-block 18000000",
+            "This only sees standard events emitted by the target address in the selected range. ProxyAdmin-emitted logs, custom events and silent storage writes may be missing.",
+            options=[
+                ("--from-block <number>", "First block to scan; required.", "lk proxy history 0xTarget --from-block 18000000"),
+                ("--to-block <number>", "Last block to scan; defaults to the latest pinned block.", "lk proxy history 0xTarget --from-block 18000000 --to-block 19000000"),
+                ("--rpc-url <url>", "Use an explicit RPC endpoint for read-only logs and storage reads.", "lk proxy history 0xTarget --from-block 18000000 --rpc-url $FOUNDRY_ETH_RPC_URL"),
+                ("--json", "Emit the event timeline and slot reconciliation as JSON.", "lk proxy history 0xTarget --from-block 18000000 --json"),
+            ],
+            related=["lk proxy inspect", "lk proxy audit"],
+        ),
         "validate": _help_entry(
             "Compare V1/V2 compiler storage layouts conservatively.",
             "lk proxy validate --reference <V1.json> --candidate <V2.json> [--reference-contract NAME --candidate-contract NAME] [--reference-source DIR --candidate-source DIR] [--json]",
@@ -28860,7 +28876,7 @@ _PROXY_HELP_GUIDES["proxy"].update({
             related=["lk proxy validate", "lk lab"],
         ),
     },
-    "related": ["lk implementation", "lk admin", "lk recon", "lk proxy audit", "lk proxy validate"],
+    "related": ["lk implementation", "lk admin", "lk recon", "lk proxy audit", "lk proxy history", "lk proxy validate"],
 })
 for _proxy_help_name, _proxy_help_values in _PROXY_HELP_GUIDES.items():
     _proxy_help_entry = COMMAND_HELP.get(_proxy_help_name)
