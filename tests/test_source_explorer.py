@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 import zipfile
 import unittest
+import unittest.mock
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
