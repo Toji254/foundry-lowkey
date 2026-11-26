@@ -97,7 +97,7 @@ class EthFlowReconTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("FILTER    contract=Vault", rendered)
+        self.assertIn("SCOPE       contract=Vault", rendered)
         self.assertIn("Vault.withdraw(", rendered)
         self.assertIn("Treasury.pay(", rendered)
 
@@ -263,7 +263,7 @@ class EthFlowReconTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("LOWKEY / ETH FLOW RECON  ·  DETAIL", rendered)
+        self.assertIn("LOWKEY / ETH FLOW  ·  FORENSIC VIEW", rendered)
         self.assertIn("ETH EXIT SITES", rendered)
         self.assertIn("CALL PATHS TO ETH EXITS", rendered)
 
