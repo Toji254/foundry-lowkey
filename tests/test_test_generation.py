@@ -336,10 +336,13 @@ class TestGenerationTests(unittest.TestCase):
             runtime = Path(home) / ".lowkey"
             generator_module = runtime / "test_generation.py"
             self.assertTrue(generator_module.is_file())
+            proxy_engine_module = runtime / "proxy_engine.py"
+            self.assertTrue(proxy_engine_module.is_file())
             manifest = json.loads(
                 (runtime / "install-manifest.json").read_text(encoding="utf-8")
             )
             self.assertIn(str(generator_module), manifest["files"])
+            self.assertIn(str(proxy_engine_module), manifest["files"])
 
             help_result = subprocess.run(
                 [

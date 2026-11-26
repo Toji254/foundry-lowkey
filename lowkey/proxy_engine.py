@@ -21,12 +21,14 @@ EIP1967_UUID = EIP1967_IMPLEMENTATION_SLOT.lower()
 ZERO_ADDRESS = "0x" + "0" * 40
 DIAMOND_FACET_ADDRESSES = "0x52ef6b2c"
 DIAMOND_FACET_SELECTORS = "0xadfca15e"
+DIAMOND_FACET_ADDRESS = "0xcdffacc6"
 PROXIABLE_UUID_SELECTOR = "0x52d1902d"
 SENTINEL_CALLERS = (
     "0x0000000000000000000000000000000000000001",
     "0x0000000000000000000000000000000000000002",
 )
 MAX_DIAMOND_FACETS = 64
+MAX_DIAMOND_SELECTORS = 256
 
 
 class ProxyError(RuntimeError):
@@ -249,7 +251,12 @@ def _decode_returned_address(data: str) -> str | None:
     return None if address == ZERO_ADDRESS else address
 
 
-def _decode_dynamic_array(data: str, item_bytes: int, address_items: bool = False) -> list[str] | None:
+def _decode_dynamic_array(
+    data: str,
+    item_bytes: int,
+    address_items: bool = False,
+    max_items: int = MAX_DIAMOND_FACETS,
+) -> list[str] | None:
     raw = _hex_bytes(data)
     if raw is None or len(raw) < 64:
         return None
@@ -257,7 +264,7 @@ def _decode_dynamic_array(data: str, item_bytes: int, address_items: bool = Fals
     if offset % 32 or offset + 32 > len(raw):
         return None
     count = int.from_bytes(raw[offset:offset + 32], "big")
-    if count > MAX_DIAMOND_FACETS or offset + 32 + count * 32 > len(raw):
+    if count > max_items or offset + 32 + count * 32 > len(raw):
         return None
     items = []
     for index in range(count):
@@ -274,30 +281,52 @@ def _decode_dynamic_array(data: str, item_bytes: int, address_items: bool = Fals
 
 
 def _diamond_loupe(client: RpcClient, target: str) -> dict[str, Any] | None:
-    """Require a coherent loupe address list, per-facet selector lists and live code."""
+    """Cross-check the Diamond Loupe's facet lists against selector-to-facet routing."""
     try:
         raw = client.call(target, DIAMOND_FACET_ADDRESSES)
         facets = _decode_dynamic_array(raw, 32, address_items=True)
-        if not facets:
+        if not facets or len({item.lower() for item in facets}) != len(facets):
             return None
         checked = []
-        for facet in facets[:MAX_DIAMOND_FACETS]:
+        seen_selectors: set[str] = set()
+        for facet in facets:
             selectors_data = client.call(
                 target,
                 DIAMOND_FACET_SELECTORS + facet[2:].lower().rjust(64, "0"),
             )
-            selectors = _decode_dynamic_array(selectors_data, 32, address_items=False)
+            selectors = _decode_dynamic_array(
+                selectors_data, 32, address_items=False, max_items=MAX_DIAMOND_SELECTORS,
+            )
             if not selectors:
                 return None
             facet_code = client.code(facet)
             if facet_code == "0x":
                 return None
+            normalized_selectors = [selector.lower() for selector in selectors]
+            if len(set(normalized_selectors)) != len(normalized_selectors):
+                return None
+            for selector in normalized_selectors:
+                if selector in seen_selectors or selector == "0x00000000":
+                    return None
+                seen_selectors.add(selector)
+                mapped = client.call(
+                    target,
+                    DIAMOND_FACET_ADDRESS + selector[2:].ljust(64, "0"),
+                )
+                mapped_address = _decode_returned_address(mapped)
+                if not mapped_address or mapped_address.lower() != facet.lower():
+                    return None
             checked.append({
                 "address": facet,
-                "selectors": selectors,
+                "selectors": normalized_selectors,
                 "code_sha256": hashlib.sha256(bytes.fromhex(facet_code[2:])).hexdigest(),
             })
-        return {"facets": checked, "facet_count": len(facets)}
+        return {
+            "facets": checked,
+            "facet_count": len(facets),
+            "selector_count": len(seen_selectors),
+            "routing_cross_check": "FACET_ADDRESS_MATCHES_EVERY_REPORTED_SELECTOR",
+        }
     except ProxyError:
         return None
 

@@ -59,7 +59,7 @@ def dynamic_array(items, address_items=False):
             words.append("0" * 24 + item[2:].lower())
         else:
             words.append(item[2:].lower().ljust(64, "0"))
-    return "0x" + "0" * 63 + "20" + format(len(items), "064x") + "".join(words)
+    return "0x" + "0" * 62 + "20" + format(len(items), "064x") + "".join(words)
 
 
 class KeccakTests(unittest.TestCase):
@@ -187,12 +187,37 @@ class InspectionTests(unittest.TestCase):
             calls={
                 (target, pe.DIAMOND_FACET_ADDRESSES): dynamic_array([facet], address_items=True),
                 (target, pe.DIAMOND_FACET_SELECTORS + facet[2:].rjust(64, "0")): dynamic_array([facet_selector]),
+                (target, pe.DIAMOND_FACET_ADDRESS + facet_selector[2:].ljust(64, "0")): word_address(facet),
             },
         )
         with patch.object(pe, "RpcClient", return_value=fake):
             report = pe.inspect_proxy("http://rpc.invalid", target)
         self.assertEqual(report["architecture"], "DIAMOND_LOUPE_CONFIRMED")
         self.assertEqual(report["checks"]["diamond_loupe"]["facet_count"], 1)
+        self.assertEqual(report["checks"]["diamond_loupe"]["selector_count"], 1)
+        self.assertEqual(
+            report["checks"]["diamond_loupe"]["routing_cross_check"],
+            "FACET_ADDRESS_MATCHES_EVERY_REPORTED_SELECTOR",
+        )
+
+    def test_diamond_loupe_is_rejected_when_facet_address_disagrees(self):
+        target = "0x" + "11" * 20
+        facet = "0x" + "22" * 20
+        impostor = "0x" + "33" * 20
+        facet_selector = "0x12345678"
+        fake = FakeRpc(
+            slots=self._slots(),
+            code={target: "0x6000", facet: "0x6001"},
+            calls={
+                (target, pe.DIAMOND_FACET_ADDRESSES): dynamic_array([facet], address_items=True),
+                (target, pe.DIAMOND_FACET_SELECTORS + facet[2:].rjust(64, "0")): dynamic_array([facet_selector]),
+                (target, pe.DIAMOND_FACET_ADDRESS + facet_selector[2:].ljust(64, "0")): word_address(impostor),
+            },
+        )
+        with patch.object(pe, "RpcClient", return_value=fake):
+            report = pe.inspect_proxy("http://rpc.invalid", target)
+        self.assertNotEqual(report["architecture"], "DIAMOND_LOUPE_CONFIRMED")
+        self.assertEqual(report["status"], "UNCLASSIFIED")
 
     def test_direct_contract_is_unclassified_not_proven_safe(self):
         target = "0x" + "11" * 20
@@ -225,7 +250,7 @@ class StorageLayoutTests(unittest.TestCase):
     def test_append_only_layout_is_compatible_candidate(self):
         candidate = {
             "storageLayout": {
-                "storage": self.reference["storage"] + [
+                "storage": self.reference["storageLayout"]["storage"] + [
                     {"label": "nonce", "slot": "2", "offset": 0, "type": "t_uint256"}
                 ],
                 "types": self.reference["storageLayout"]["types"],
