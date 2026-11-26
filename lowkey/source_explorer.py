@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import urllib.parse
@@ -1581,7 +1580,7 @@ def write_uploaded_files(files: list[dict[str, Any]], destination: str | Path) -
 def extract_source_archive(archive_path: str | Path, destination: str | Path) -> Path:
     root = Path(destination).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    total = sol_count = 0
+    declared_total = actual_total = sol_count = 0
     with zipfile.ZipFile(archive_path) as bundle:
         members = [item for item in bundle.infolist() if not item.is_dir()]
         if len(members) > MAX_ARCHIVE_ENTRIES:
@@ -1592,26 +1591,38 @@ def extract_source_archive(archive_path: str | Path, destination: str | Path) ->
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:
                 raise ValueError(f"Symbolic links are not allowed: {info.filename}")
-            total += info.file_size
-            if total > MAX_UPLOAD_BYTES:
-                raise ValueError("Archive exceeds the 128 MiB uncompressed source budget.")
-            if info.file_size > MAX_UPLOAD_FILE_BYTES:
-                if relative is not None:
-                    raise ValueError(f"{info.filename} exceeds the 2 MiB per-file source limit.")
+            # Non-source archive files are never extracted or decompressed.
+            # Apply byte budgets to the accepted source/config payload itself.
+            if relative is None:
                 continue
-            if relative is not None:
-                validated.append((info, relative))
+            if info.file_size > MAX_UPLOAD_FILE_BYTES:
+                raise ValueError(f"{info.filename} exceeds the 2 MiB per-file source limit.")
+            declared_total += info.file_size
+            if declared_total > MAX_UPLOAD_BYTES:
+                raise ValueError("Archive exceeds the 128 MiB uncompressed source budget.")
+            validated.append((info, relative))
         paths = _normalise_paths([item[1] for item in validated])
         if len(set(paths)) != len(paths):
             raise ValueError("Archive contains duplicate source paths after root-folder normalisation.")
         for (info, _), relative in zip(validated, paths):
+            # ZIP directory metadata is untrusted. Read at most one byte beyond
+            # the per-file limit, verify the declared size, then account actual
+            # decompressed bytes before writing anything to disk.
+            with bundle.open(info) as source:
+                data = source.read(MAX_UPLOAD_FILE_BYTES + 1)
+            if len(data) > MAX_UPLOAD_FILE_BYTES:
+                raise ValueError(f"{info.filename} expands beyond the 2 MiB per-file source limit.")
+            if len(data) != info.file_size:
+                raise ValueError(f"{info.filename} has inconsistent ZIP size metadata.")
+            actual_total += len(data)
+            if actual_total > MAX_UPLOAD_BYTES:
+                raise ValueError("Archive exceeds the 128 MiB uncompressed source budget.")
             if relative.suffix.lower() == ".sol":
                 sol_count += 1
             target = (root / Path(*relative.parts)).resolve()
             target.relative_to(root)
             target.parent.mkdir(parents=True, exist_ok=True)
-            with bundle.open(info) as source, target.open("wb") as output:
-                shutil.copyfileobj(source, output)
+            target.write_bytes(data)
     if sol_count == 0:
         raise ValueError("Archive contains no Solidity source files.")
     return root
