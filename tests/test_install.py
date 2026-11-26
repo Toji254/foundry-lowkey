@@ -122,6 +122,8 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(manifest.exists())
             question_engine = pathlib.Path(home) / ".lowkey" / "question_engine.py"
             self.assertTrue(question_engine.exists())
+            proxy_engine_module = pathlib.Path(home) / ".lowkey" / "proxy_engine.py"
+            self.assertTrue(proxy_engine_module.is_file())
             lab_target_scope = pathlib.Path(home) / ".lowkey" / "lab_target_scope.py"
             self.assertTrue(lab_target_scope.is_file())
             self.assertTrue((pathlib.Path(home) / ".lowkey" / "fixture_context.py").exists())
@@ -142,6 +144,23 @@ class InstallSmokeTests(unittest.TestCase):
             )
             self.assertEqual(target_scope_import.returncode, 0, target_scope_import.stdout + target_scope_import.stderr)
             self.assertIn("TARGET_SCOPE_IMPORT_OK", target_scope_import.stdout)
+
+            proxy_import = subprocess.run(
+                ["python3", "-c", "import proxy_engine; print('PROXY_ENGINE_IMPORT_OK')"],
+                cwd=ROOT,
+                env={**env, "PYTHONPATH": str(pathlib.Path(home) / ".lowkey")},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proxy_import.returncode, 0, proxy_import.stdout + proxy_import.stderr)
+            self.assertIn("PROXY_ENGINE_IMPORT_OK", proxy_import.stdout)
+
+            proxy_help = subprocess.run(
+                [str(installed_lk), "proxy", "audit", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(proxy_help.returncode, 0, proxy_help.stdout + proxy_help.stderr)
+            self.assertIn("COMMAND VARIATIONS", proxy_help.stdout)
 
             trace_import = subprocess.run(
                 ["python3", "-c", "import forge_state_diff, godmode, attack_engine; print('TRACE_IMPORT_OK')"],
@@ -167,6 +186,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertEqual(len(pack_paths), 10)
             install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertIn(str(shared_context), install_manifest["files"])
+            self.assertIn(str(proxy_engine_module), install_manifest["files"])
             self.assertIn(str(lab_target_scope), install_manifest["files"])
             for installed_path in [archetype_dir / "__init__.py", archetype_dir / "_index.py", *pack_paths]:
                 self.assertIn(str(installed_path), install_manifest["files"])
