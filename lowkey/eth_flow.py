@@ -53,7 +53,7 @@ def _help() -> str:
         "      Maximum source-call hops to follow (1-10; default 5).",
         "      Example: lk flow eth --depth 8",
         "  --limit <N>",
-        "      Maximum source routes to explore and display (1-100; default: 100). Ingress, exit-site, accounting and unresolved-edge inventories remain complete.",
+        "      Maximum source routes to explore and display (1-100; default: 100). Ingress and exit-site inventories are still fully listed; path-dependent evidence reflects the explored routes.",
         "      Example: lk flow eth --limit 20",
         "  --detail",
         "      Show the expanded forensic evidence layout and additional review annotations.",
@@ -679,6 +679,7 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
 
     touchpoints = _state_touchpoints(report)
     section("04", "STATE / ACCOUNTING TOUCHPOINTS", len(touchpoints))
+    print("  Scope: indexed accesses in ingress functions and functions on discovered routes.")
     if not touchpoints:
         print("  No indexed mapping/state-variable accounting touchpoints in the inspected functions.")
     for index, item in enumerate(touchpoints):
