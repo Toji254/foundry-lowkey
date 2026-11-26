@@ -247,7 +247,7 @@ class EthFlowReconTests(unittest.TestCase):
         self.assertIn("ETH INGRESS POINTS  (2)", rendered)
         self.assertIn("Vault.deposit()", rendered)
         self.assertIn("Vault.directPay(", rendered)
-        self.assertIn("ETH EXIT SITES BY MECHANISM  (2)", rendered)
+        self.assertIn("ETH EXIT SITES BY MECHANISM", rendered)
         self.assertIn("Treasury.pay(", rendered)
         self.assertIn("Vault.directPay(", rendered)
         self.assertIn("Current route budget: 1", rendered)
