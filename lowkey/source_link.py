@@ -1688,6 +1688,8 @@ def _render_link_help(command: str = "lk link") -> str:
             "Third-party dependencies are hidden by default. Use --include-third-party or the vendor controls in the explorer.",
             "The old declaration inventory remains available with --list. --search, --type, --page, and --all also select list mode.",
             "Unresolved relationships and incomplete source coverage remain visible; static edges are not runtime evidence.",
+            "With no TARGET, the protocol graph is the default and inventory modes remain available; this requires no TARGET.",
+            "Static relationships are review leads; they do not prove execution, successful calls, or deployed target identity.",
         ),
     )
 
@@ -1740,6 +1742,26 @@ def _link_parser() -> argparse.ArgumentParser:
   lk link --format html                        Generate the interactive offline graph.
   lk link --list                               Browse the original declaration inventory.
   lk trace source OrderBook.createIncreaseOrder Trace one function's source call path.
+
+MORE COPY-PASTE EXAMPLES
+  lk link --root ../protocol
+  lk link --search Vault
+  lk link --type interface
+  lk link --page 2
+  lk link --all
+  lk link Vault --only writes
+  lk link Vault --depth 3
+  lk trace source Vault.increasePosition --detail storage
+  lk link Vault --only writes --limit 60
+  lk link ContractName.mappingName
+  lk link --search Vault --json
+
+USAGE NOTES
+  --root DIR       Scan another project.
+  --only calls     Use calls for caller/callee flow.
+  --limit N        Increase it when a section reports omitted entries.
+  With no TARGET, the project graph is the default; this requires no TARGET.
+  Function default is 3 for source tracing; contract graph default is 1.
 
 GRAPH OPTIONS
   --only FILTER    calls, storage, reads, writes, imports, assets, or all.
