@@ -2389,11 +2389,18 @@ contract LowkeyBreakReentrancy is Test {{
 """
 
 def _extract_console_bytes(text_output: str, marker: str) -> str | None:
-    """Return the first raw 0x-prefixed bytes line immediately after a telemetry marker."""
+    """Extract raw hex telemetry whether Forge prints it beside or below its marker."""
     lines = str(text_output or "").splitlines()
     for index, line in enumerate(lines):
-        if marker not in line:
+        marker_at = line.find(marker)
+        if marker_at < 0:
             continue
+        # console2.log(string, bytes) renders both values on one line, while
+        # console2.log(string) followed by console2.logBytes emits a separate line.
+        inline = line[marker_at + len(marker):].strip()
+        inline_match = re.match(r"^(0x[0-9a-fA-F]*)$", inline)
+        if inline_match:
+            return inline_match.group(1)
         for candidate in lines[index + 1:index + 5]:
             value = candidate.strip()
             if re.fullmatch(r"0x[0-9a-fA-F]*", value):
