@@ -1227,7 +1227,9 @@ def _safe_upload_path(value: str, *, ignore_unsupported: bool = False) -> PurePo
         raise ValueError(f"Unsafe source path: {value!r}")
     if re.match(r"^[A-Za-z]:", normalised):
         raise ValueError(f"Drive-qualified source path is not allowed: {value!r}")
-    if any(part in IGNORED_PARTS or (part.startswith(".git") and part not in {".gitmodules", ".gitignore"}) for part in candidate.parts):
+    if any(part in IGNORED_PARTS for part in candidate.parts):
+        if ignore_unsupported:
+            return None
         raise ValueError(f"Build or VCS directory cannot be imported: {value!r}")
     suffix = Path(candidate.name).suffix.lower()
     if suffix != ".sol" and candidate.name.lower() not in ROOT_CONFIGS:
