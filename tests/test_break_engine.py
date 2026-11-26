@@ -837,6 +837,40 @@ class BreakEngineTests(unittest.TestCase):
         self.assertEqual(observed.status, "BLOCKED")
         self.assertIn("Compiler run failed", observed.summary)
 
+    def test_proxy_upgrade_parser_preserves_inline_before_after_implementation_addresses(self):
+        target = break_engine.Target("TransparentProxyAdmin", "0x" + "1" * 40)
+        before = "0x" + "2" * 40
+        after = "0x" + "3" * 40
+        output = "\\n".join([
+            "LOWKEY_BREAK_FAMILY proxy",
+            "UPGRADE_CALL_SUCCESS true",
+            "IMPLEMENTATION_CHANGED true",
+            "CANDIDATE_IMPLEMENTATION_INSTALLED true",
+            "DELEGATECALL_ROUTE_CONFIRMED true",
+            "BEFORE_IMPLEMENTATION " + before,
+            "AFTER_IMPLEMENTATION " + after,
+            "LOWKEY_BREAK true",
+        ])
+        result = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="proxy",
+            target=target,
+            function="upgradeAndCall(address,address,bytes)",
+            output=output,
+            evidence_path="/tmp/proxy-evidence.json",
+        )
+        probe = result.detail["proxy_upgrade_probe"]
+        self.assertEqual(probe["before_implementation"], before)
+        self.assertEqual(probe["after_implementation"], after)
+        self.assertTrue(probe["implementation_changed"])
+
+    def test_console_byte_extractor_keeps_multiline_revert_data_compatibility(self):
+        output = "TARGET_RETURNDATA_LENGTH 4\\n0xdeadbeef"
+        self.assertEqual(
+            break_engine._extract_console_bytes(output, "TARGET_RETURNDATA_LENGTH"),
+            "0xdeadbeef",
+        )
+
     def test_reentrancy_harness_exposes_seed_revert_telemetry(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         fn = {
