@@ -538,6 +538,10 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
           <label class="checkline"><input type="checkbox" data-edge="DELETES" checked> Deletes</label>
           <label class="checkline"><input type="checkbox" data-edge="ASSET_FLOW" checked> Assets</label>
           <label class="checkline"><input type="checkbox" data-edge="USES_LIBRARY" checked> Libraries</label>
+          <label class="checkline"><input type="checkbox" data-edge="USES_TYPE" checked> Type dependencies</label>
+          <label class="checkline"><input type="checkbox" data-edge="OVERRIDES" checked> Overrides</label>
+          <label class="checkline"><input type="checkbox" data-edge="EMITS" checked> Events</label>
+          <label class="checkline"><input type="checkbox" data-edge="REVERTS" checked> Errors</label>
           <label class="checkline"><input type="checkbox" data-edge="IMPORTS"> Imports</label>
         </div>
       </div>
@@ -589,7 +593,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 "use strict";
 let MODEL=JSON.parse(document.getElementById("graph-data").textContent);
 const SERVER_MODE=__SERVER_MODE__;
-const byId=new Map(),positions=new Map();
+const byId=new Map(),positions=new Map(),hiddenVendors=new Set();
 let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,history=[];
 let scale=1,tx=0,ty=0,drag=null,pan=null,renderNodes=[],renderEdges=[];
 const svg=document.getElementById("graph"),viewport=document.getElementById("viewport");
@@ -620,8 +624,7 @@ function visibleNode(n){
   if(n.origin!=="third-party"&&!f["first-party"]&&n.scope!=="external")return false;
   if(n.scope==="support"&&!f.support)return false;
   if(n.origin==="unresolved"&&!f.unresolved)return false;
-  const vendorInput=Array.from(document.querySelectorAll("[data-vendor]")).find(function(x){return x.dataset.vendor===n.vendor});
-  if(vendorInput&&vendorInput.checked)return false;
+  if(n.vendor&&hiddenVendors.has(n.vendor))return false;
   return true;
 }
 function visibleEdge(e){
@@ -807,7 +810,7 @@ function overviewProjection(){
     let sourceGroup=null,targetGroup=null;
     if(e.kind==="IMPORTS"){
       sourceGroup="group:"+a.folder;
-      targetGroup=b.type==="file"?"group:"+b.folder:"external-dependencies";
+      targetGroup="external-dependencies";
     }else{
       const sourceOwner=a.type==="declaration"?a.id:a.contract_id;
       const targetOwner=b.type==="declaration"?b.id:b.contract_id;
@@ -1003,7 +1006,7 @@ function fitGraph(){
   if(!positions.size)return;
   const values=Array.from(positions.values()),xs=values.map(function(p){return p.x}),ys=values.map(function(p){return p.y});
   const minX=Math.min(...xs)-190,maxX=Math.max(...xs)+190,minY=Math.min(...ys)-130,maxY=Math.max(...ys)+130,bounds=svg.getBoundingClientRect();
-  scale=Math.max(.23,Math.min(1.35,Math.min((bounds.width||1000)/(maxX-minX),(bounds.height||700)/(maxY-minY))));
+  scale=Math.max(.005,Math.min(1.35,Math.min((bounds.width||1000)/(maxX-minX),(bounds.height||700)/(maxY-minY))));
   tx=(1500/scale-(minX+maxX))/2;ty=(920/scale-(minY+maxY))/2;applyTransform();
 }
 function showEdgeDetails(e){
@@ -1051,8 +1054,13 @@ function renderStats(){
 function renderVendorFilters(){
   const root=document.getElementById("vendor-filters");clear(root);
   (MODEL.vendors||[]).forEach(function(vendor){
-    const label=add(root,"label","checkline",""),input=document.createElement("input");input.type="checkbox";input.checked=false;input.dataset.vendor=vendor;
-    input.addEventListener("change",function(){renderSidebar();renderGraph()});label.append(input);add(label,"span","", "Hide "+vendor);
+    const label=add(root,"label","checkline",""),input=document.createElement("input");
+    input.type="checkbox";input.checked=hiddenVendors.has(vendor);input.dataset.vendor=vendor;
+    input.addEventListener("change",function(){
+      if(input.checked)hiddenVendors.add(vendor);else hiddenVendors.delete(vendor);
+      renderSidebar();renderGraph();renderInspector();renderFlow();
+    });
+    label.append(input);add(label,"span","","Hide "+vendor);
     const count=MODEL.nodes.filter(function(n){return n.origin==="third-party"&&n.vendor===vendor&&n.type==="declaration"}).length;
     add(label,"span","count-label",count);
   });
@@ -1157,19 +1165,61 @@ function renderInspector(){
 }
 function renderFlow(){
   const track=document.getElementById("flow-track");clear(track);const selected=node(selectedId);
-  if(!selected){document.getElementById("flow-title").textContent="SELECTED WORKFLOW";document.getElementById("flow-note").textContent="Choose a function to trace its call and effect path";return}
+  if(!selected){
+    document.getElementById("flow-title").textContent="SELECTED WORKFLOW";
+    document.getElementById("flow-note").textContent="Choose a function to trace its call and effect path";
+    return;
+  }
   const functionId=["function","modifier"].includes(selected.type)?selected.id:null;
   document.getElementById("flow-title").textContent="CALL / EFFECT PATH";
-  if(!functionId){document.getElementById("flow-note").textContent="Select an individual function to follow reachable helpers and effects";return}
-  const path=[functionId],seen=new Set(path);let current=functionId;
-  for(let i=0;i<MODEL.edges.length+1;i++){
-    const next=MODEL.edges.find(function(e){return e.source===current&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER"].includes(e.kind)&&node(e.target)&&!seen.has(e.target)&&visibleEdge(e)});
-    if(!next)break;current=next.target;seen.add(current);path.push(current);
+  if(!functionId){
+    document.getElementById("flow-note").textContent="Select an individual function to follow all reachable helpers and state / asset effects";
+    return;
   }
-  path.forEach(function(id,i){const n=node(id);if(!n)return;if(i)add(track,"span","flow-arrow","→");const b=add(track,"button","flow-step",String(i+1)+" · "+n.label);b.addEventListener("click",function(){openNode(id,true)})});
-  const effects=MODEL.edges.filter(function(e){return e.source===functionId&&["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION","ASSET_FLOW"].includes(e.kind)});
-  if(effects.length)add(track,"span","flow-arrow","→"),add(track,"span","flow-step","STATE / ASSET EFFECTS · "+effects.length);
-  document.getElementById("flow-note").textContent="Static path candidate · verify branch conditions and runtime execution";
+  const callKinds=["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES"];
+  const queue=[functionId],visited=new Set(queue),callEdges=[];
+  while(queue.length){
+    const current=queue.shift();
+    const outgoing=MODEL.edges.filter(function(e){return e.source===current&&callKinds.includes(e.kind)&&visibleEdge(e)})
+      .sort(function(a,b){return (a.file||"").localeCompare(b.file||"")||(a.line||0)-(b.line||0)});
+    outgoing.forEach(function(edge){
+      callEdges.push(edge);
+      const target=node(edge.target);
+      if(target&&["function","modifier"].includes(target.type)&&!visited.has(target.id)){
+        visited.add(target.id);queue.push(target.id);
+      }
+    });
+  }
+  const effectKinds=[
+    "READS","READS_CONSTANT","READS_IMMUTABLE","TRANSIENT_READS",
+    "WRITES","DELETES","MUTATES","TRANSIENT_WRITES","TRANSIENT_DELETES",
+    "INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE",
+    "UNRESOLVED_MUTATION","ASSET_FLOW",
+  ];
+  const effects=MODEL.edges.filter(function(e){return visited.has(e.source)&&effectKinds.includes(e.kind)&&visibleEdge(e)});
+  callEdges.forEach(function(edge){
+    const source=node(edge.source),target=node(edge.target);if(!target)return;
+    const button=add(track,"button","flow-step","");
+    add(button,"span","",source?source.label:edge.source);
+    add(button,"span","flow-arrow","→");
+    add(button,"span","",target.label);
+    add(button,"small","",edge.label);
+    button.title=(edge.file||"")+" : "+(edge.line||"?")+" · "+edge.resolution;
+    button.addEventListener("click",function(){openNode(target.id,true)});
+  });
+  effects.forEach(function(edge){
+    const source=node(edge.source),target=node(edge.target);if(!target)return;
+    const button=add(track,"button","flow-step","");
+    add(button,"span","",source?source.label:edge.source);
+    add(button,"span","flow-arrow","→");
+    add(button,"span","",edge.kind+" · "+target.label);
+    button.title=(edge.file||"")+" : "+(edge.line||"?")+" · "+edge.resolution+(edge.access_path?" · "+edge.access_path:"");
+    button.addEventListener("click",function(){openNode(target.id,true)});
+  });
+  if(!callEdges.length&&!effects.length)add(track,"span","flow-note","No outgoing calls, state touches or asset-flow candidates were indexed.");
+  document.getElementById("flow-note").textContent=
+    visited.size+" reachable function / modifier nodes · "+callEdges.length+
+    " call edges · "+effects.length+" state / asset effects · static source candidates";
 }
 function renderSearchResults(){
   const root=document.getElementById("search-results"),query=search.value.trim().toLowerCase();
@@ -1180,10 +1230,11 @@ function renderSearchResults(){
     return [n.label,n.qualified_name,n.file,n.contract,n.type_text].some(function(value){return String(value||"").toLowerCase().includes(query)});
   }).sort(function(a,b){
     const ap=a.label.toLowerCase().startsWith(query)?0:1,bp=b.label.toLowerCase().startsWith(query)?0:1;
-    return ap-bp||(priority[a.type]||5)-(priority[b.type]||5)||a.label.localeCompare(b.label);
+    const at=priority[a.type]===undefined?5:priority[a.type],bt=priority[b.type]===undefined?5:priority[b.type];
+    return ap-bp||at-bt||a.label.localeCompare(b.label);
   }).slice(0,24);
   if(!matches.length){add(root,"div","search-empty","No visible declarations, functions or state items match.");root.hidden=false;return}
-  if(matches.length===24)add(root,"div","search-empty","Showing the first 24 matches · refine your search to narrow the results.");
+  if(matches.length===24)add(root,"div","search-empty","Showing the first 24 suggestions · refine your search to narrow the results.");
   matches.forEach(function(n){
     const button=add(root,"button","search-result","");
     add(button,"strong","",n.label);
@@ -1390,11 +1441,22 @@ def render_explorer_html(
 
 
 def _normalise_paths(paths: list[PurePosixPath]) -> list[PurePosixPath]:
-    if paths and all(len(item.parts) > 1 for item in paths):
-        first = {item.parts[0] for item in paths}
-        if len(first) == 1:
-            return [PurePosixPath(*item.parts[1:]) for item in paths]
-    return paths
+    if not paths or not all(len(item.parts) > 1 for item in paths):
+        return paths
+    first = {item.parts[0] for item in paths}
+    if len(first) != 1:
+        return paths
+    wrapper = next(iter(first))
+    source_roots = {
+        "src", "contracts", "contract", "interfaces", "interface",
+        "test", "tests", "script", "scripts", "lib", "libs",
+        "vendor", "vendors", "examples", "example", "docs",
+        "mocks", "mock", "fixtures", "fixture",
+    }
+    if wrapper.casefold() in source_roots:
+        return paths
+    # Browser folder uploads and GitHub ZIPs wrap source paths in one project directory.
+    return [PurePosixPath(*item.parts[1:]) for item in paths]
 
 
 def _safe_upload_path(value: str, *, ignore_unsupported: bool = False) -> PurePosixPath | None:
