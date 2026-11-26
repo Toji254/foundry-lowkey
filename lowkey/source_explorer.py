@@ -643,20 +643,41 @@ function folderProjection(folder){
   const ids=new Set((group.declarations||[]).filter(function(id){return visibleNode(node(id))}));
   const rows=new Map();
   MODEL.edges.forEach(function(e){
-    const a=node(e.source),b=node(e.target);
-    if(!a||!b||e.kind==="CONTAINS")return;
+    if(e.kind==="CONTAINS"||["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind))return;
+    const a=node(e.source),b=node(e.target);if(!a||!b||!visibleEdge(e))return;
     const aOwner=a.type==="declaration"?a.id:a.contract_id;
     const bOwner=b.type==="declaration"?b.id:b.contract_id;
-    if(!aOwner||!bOwner||aOwner===bOwner)return;
-    if(ids.has(aOwner)||ids.has(bOwner)){
-      const peer=ids.has(aOwner)?bOwner:aOwner;
-      const peerNode=node(peer);if(peerNode&&visibleNode(peerNode))ids.add(peer);
-      const key=aOwner+"|"+bOwner+"|"+e.kind+"|"+e.resolution;
-      const row=rows.get(key)||{id:key,source:aOwner,target:bOwner,kind:e.kind,label:e.label,count:0,resolution:e.resolution,file:e.file,line:e.line};
-      row.count++;rows.set(key,row);
-    }
+    const aLocal=!!aOwner&&ids.has(aOwner);
+    const bLocal=!!bOwner&&ids.has(bOwner);
+    if(!aLocal&&!bLocal)return;
+    // Keep concrete functions/endpoints and their owning declarations so the
+    // folder map exposes external calls and asset boundaries, not just peers.
+    ids.add(e.source);ids.add(e.target);
+    if(aOwner)ids.add(aOwner);
+    if(bOwner)ids.add(bOwner);
+    const sourceAnchor=aOwner||e.source;
+    const targetAnchor=bOwner||e.target;
+    if(sourceAnchor===targetAnchor)return;
+    const key=sourceAnchor+"|"+targetAnchor+"|"+e.kind+"|"+e.resolution;
+    const row=rows.get(key)||{
+      id:key,source:sourceAnchor,target:targetAnchor,kind:e.kind,
+      label:e.label,count:0,resolution:e.resolution,file:e.file,line:e.line
+    };
+    row.count++;rows.set(key,row);
   });
-  return {nodes:Array.from(ids).map(node).filter(Boolean),edges:Array.from(rows.values())};
+  const nodes=Array.from(ids).map(node).filter(function(n){return n&&visibleNode(n)});
+  const kept=new Set(nodes.map(function(n){return n.id}));
+  const edges=MODEL.edges.filter(function(e){
+    if(e.kind==="CONTAINS")return kept.has(e.source)&&kept.has(e.target)&&visibleEdge(e);
+    const a=node(e.source),b=node(e.target);
+    const aOwner=a&&(a.type==="declaration"?a.id:a.contract_id);
+    const bOwner=b&&(b.type==="declaration"?b.id:b.contract_id);
+    return kept.has(e.source)&&kept.has(e.target)&&visibleEdge(e)&&
+      ((aOwner&&ids.has(aOwner))||(bOwner&&ids.has(bOwner)));
+  });
+  // Use the source edge set for exact node-to-node relationships. The aggregate
+  // rows are available as topology summaries to the inspector when needed.
+  return {nodes:nodes,edges:edges,aggregates:Array.from(rows.values())};
 }
 function selectedContractProjection(contractId){
   const focus=node(contractId);if(!focus)return {nodes:[],edges:[]};
@@ -713,34 +734,64 @@ function functionProjection(contractId,focusFunction){
       }
     });
   }
-  const ids=new Set(distance.keys()),edges=callEdges.filter(function(e){return ids.has(e.source)&&(ids.has(e.target)||!node(e.target))});
+  const functionIds=new Set(distance.keys());
+  const ids=new Set(functionIds);
+  const edges=callEdges.filter(function(e){return functionIds.has(e.source)&&(functionIds.has(e.target)||!node(e.target))});
   MODEL.edges.forEach(function(e){
-    if(!ids.has(e.source)||!["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION","ASSET_FLOW"].includes(e.kind))return;
+    if(!functionIds.has(e.source)||!["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION","ASSET_FLOW"].includes(e.kind))return;
     if(visibleEdge(e)){edges.push(e);ids.add(e.target)}
   });
-  return {nodes:Array.from(ids).map(node).filter(Boolean),edges:Array.from(new Map(edges.map(function(e){return [e.id,e]})).values()),root:root,distance:distance};
+  const ownerIds=new Set(Array.from(functionIds).map(function(id){return (node(id)||{}).contract_id}).filter(Boolean));
+  ownerIds.forEach(function(id){if(visibleNode(node(id)))ids.add(id)});
+  const ownership=MODEL.edges.filter(function(e){
+    return e.kind==="CONTAINS"&&ownerIds.has(e.source)&&functionIds.has(e.target)&&visibleEdge(e);
+  });
+  ownership.forEach(function(e){edges.push(e)});
+  const kept=new Set(ids);
+  const filteredEdges=Array.from(new Map(edges.filter(function(e){return kept.has(e.source)&&kept.has(e.target)}).map(function(e){return [e.id,e]})).values());
+  return {nodes:Array.from(ids).map(node).filter(Boolean),edges:filteredEdges,root:root,distance:distance};
 }
 function storageProjection(contractId){
+  if(!contractId||!node(contractId))return {nodes:[],edges:[]};
   const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
-  const ids=new Set(functions.map(function(n){return n.id})),edges=[];
+  const ids=new Set([contractId]),functionIds=new Set(functions.map(function(n){return n.id})),edges=[];
+  functionIds.forEach(function(id){ids.add(id)});
   MODEL.edges.forEach(function(e){
-    if(!ids.has(e.source)||!["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind)||!visibleEdge(e))return;
+    if(!functionIds.has(e.source)||!["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind)||!visibleEdge(e))return;
     edges.push(e);ids.add(e.target);
+  });
+  MODEL.edges.forEach(function(e){
+    if(e.kind==="CONTAINS"&&e.source===contractId&&functionIds.has(e.target)&&visibleEdge(e))edges.push(e);
   });
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:edges};
 }
 function assetProjection(contractId){
-  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&(!contractId||n.contract_id===contractId)&&visibleNode(n)});
-  const ids=new Set(functions.map(function(n){return n.id})),edges=[];
-  MODEL.edges.forEach(function(e){if(ids.has(e.source)&&e.kind==="ASSET_FLOW"&&visibleEdge(e)){edges.push(e);ids.add(e.target)}});
+  if(!contractId||!node(contractId))return {nodes:[],edges:[]};
+  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
+  const functionIds=new Set(functions.map(function(n){return n.id})),ids=new Set([contractId]),edges=[];
+  functionIds.forEach(function(id){ids.add(id)});
+  MODEL.edges.forEach(function(e){
+    if(functionIds.has(e.source)&&e.kind==="ASSET_FLOW"&&visibleEdge(e)){edges.push(e);ids.add(e.target)}
+  });
+  MODEL.edges.forEach(function(e){
+    if(e.kind==="CONTAINS"&&e.source===contractId&&functionIds.has(e.target)&&visibleEdge(e))edges.push(e);
+  });
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:edges};
 }
 function securityProjection(contractId){
   const leads=MODEL.review_leads.filter(function(lead){return !contractId||lead.contract===(node(contractId)||{}).name||lead.contract===(node(contractId)||{}).contract});
-  const ids=new Set(),edges=[];
+  const ids=new Set(),edges=[],owners=new Set();
   leads.forEach(function(lead){
     ids.add(lead.function);
-    lead.edge_ids.forEach(function(id){const e=MODEL.edges.find(function(item){return item.id===id});if(e&&visibleEdge(e)){edges.push(e);ids.add(e.source);ids.add(e.target)}});
+    const fn=node(lead.function);if(fn&&fn.contract_id)owners.add(fn.contract_id);
+    lead.edge_ids.forEach(function(id){
+      const e=MODEL.edges.find(function(item){return item.id===id});
+      if(e&&visibleEdge(e)){edges.push(e);ids.add(e.source);ids.add(e.target)}
+    });
+  });
+  owners.forEach(function(id){if(visibleNode(node(id)))ids.add(id)});
+  MODEL.edges.forEach(function(e){
+    if(e.kind==="CONTAINS"&&owners.has(e.source)&&ids.has(e.target)&&visibleEdge(e))edges.push(e);
   });
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:Array.from(new Map(edges.map(function(e){return [e.id,e]})).values()),leads:leads};
 }
