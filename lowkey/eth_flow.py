@@ -312,7 +312,7 @@ def build_eth_report(
     *,
     contract: str | None = None,
     depth: int = 5,
-    limit: int = 8,
+    limit: int = 100,
     include_tests: bool = False,
 ) -> dict[str, Any]:
     """Build a bounded graph report from static source edges; never claims runtime execution."""
@@ -551,6 +551,7 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
         str((record.get("entry") or {}).get("id") or "")
         for record in paths
     }
+    bounded_root_labels = set(truncated)
 
     def divider() -> None:
         print("─" * 76)
@@ -573,7 +574,7 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
     )
 
     route_count = len(paths)
-    route_count_label = f"{route_count}+" if truncated and route_count else str(route_count)
+    route_count_label = f"{route_count} found (scan bounded)" if truncated else str(route_count)
     print()
     print("FLOW SNAPSHOT")
     print(
@@ -611,7 +612,12 @@ def _render(report: dict[str, Any], *, limit: int) -> None:
                 if "VALUE_USAGE" in statuses:
                     labels.append("READS msg.value")
                 function_id = str(function.get("id") or "")
-                labels.append("ROUTE FOUND" if function_id in routed_entry_ids else "NO ROUTE MAPPED")
+                if function_id in routed_entry_ids:
+                    labels.append("ROUTE FOUND")
+                elif _node_label(function) in bounded_root_labels:
+                    labels.append("SCAN BOUNDED")
+                else:
+                    labels.append("NO ROUTE FOUND IN SCANNED CALL PATHS")
                 connector = "└─" if index == len(contract_entries) - 1 else "├─"
                 print(f"    {connector} [{' · '.join(labels)}] {_node_label(function)}")
                 print(f"       {_location(function)}")
