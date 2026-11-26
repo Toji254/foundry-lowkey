@@ -473,7 +473,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
-.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.EXTERNAL_CALL{stroke:#e6a66a}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.INHERITS,.edge.USES_LIBRARY{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}
+.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}
 .graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
 .graph-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}.graph-empty span{max-width:420px;text-align:center;color:#9cb0c9;background:#0d1c30e8;border:1px solid #284563;border-radius:12px;padding:16px}
 #minimap{position:absolute;right:12px;bottom:12px;width:154px;height:95px;border:1px solid #36516e;border-radius:8px;background:#091626dd;pointer-events:none}.graph-hint{position:absolute;left:13px;bottom:13px;color:#7f96b2;font-size:10px;background:#081523cc;border:1px solid #253e5c;border-radius:6px;padding:5px 8px;pointer-events:none}
@@ -993,10 +993,33 @@ function showEdgeDetails(e){
   add(root,"div","section-head","RELATIONSHIP EVIDENCE");add(root,"div","entity-name",e.label||e.kind);
   add(root,"p","entity-meta",(node(e.source)?.label||e.source)+" → "+(node(e.target)?.label||e.target));
   const badge=add(root,"div","coverage "+(e.resolution==="DIRECT"?"ok":"warn"),e.resolution+" · "+e.evidence);
-  if(e.file)add(root,"code","location",e.file+":"+e.line);
+  if(e.file)add(root,"code","location",e.file+(e.line?":"+e.line:""));
+  if(e.receiver)add(root,"p","muted","Receiver: "+e.receiver);
+  if(e.method)add(root,"p","muted","Declared method: "+e.method);
+  if(e.implementation_resolution){
+    const implementation=add(root,"div","coverage "+(e.implementation_resolution==="DIRECT"?"ok":"warn"),"Implementation resolution: "+e.implementation_resolution);
+    add(implementation,"p","",e.implementation_resolution==="UNRESOLVED"?"The declared interface method is known, but the deployed implementation is not established by this source edge.":"Implementation is statically identified at this source site.");
+  }
+  if(e.asset||e.direction||e.recipient||e.amount){
+    add(root,"div","section-head","ASSET DETAILS");
+    [["Asset",e.asset],["Direction",e.direction],["Recipient",e.recipient],["Amount expression",e.amount],["Transfer status",e.status]].forEach(function(pair){
+      if(pair[1]===undefined||pair[1]===null||pair[1]==="")return;
+      add(root,"p","muted",pair[0]+": "+pair[1]);
+    });
+  }
+  if(e.access_path)add(root,"p","muted","Storage access: "+e.access_path);
   if(e.detail)add(root,"p","muted",e.detail);
   if(e.via&&e.via.length)add(root,"p","muted","Reachability chain: "+e.via.map(function(id){return node(id)?.label||id}).join(" → "));
   if(e.source_excerpt){const code=add(root,"div","source-card");add(code,"pre","",e.source_excerpt)}
+  if(e.file){
+    const copy=add(root,"button","tool-button","Copy source location");
+    copy.addEventListener("click",function(){
+      const value=e.file+(e.line?":"+e.line:"");
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(value).then(function(){toast("Source location copied")}).catch(function(){toast(value)});
+      }else toast(value);
+    });
+  }
   const button=add(root,"button","tool-button primary","Open source function");button.addEventListener("click",function(){openNode(e.source,true)});
   renderGraph();
 }
