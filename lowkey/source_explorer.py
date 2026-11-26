@@ -735,7 +735,7 @@ function functionProjection(contractId,focusFunction){
     });
   }
   const distanceMap=distance;
-  const functionIds=new Set(distanceMap.keys());  const functionIds=new Set(distance.keys());
+  const functionIds=new Set(distanceMap.keys());
   const ids=new Set(functionIds);
   const edges=callEdges.filter(function(e){return functionIds.has(e.source)});
   edges.forEach(function(e){ids.add(e.source);ids.add(e.target)});
@@ -928,7 +928,7 @@ function renderGraph(){
     const title=el("title");title.textContent=(e.label||e.kind)+" · "+e.resolution+(e.file?" · "+e.file+":"+e.line:"");path.appendChild(title);
     path.addEventListener("click",function(event){event.stopPropagation();showEdgeDetails(e)});
     edgeLayer.appendChild(path);
-    if(i<90&&e.kind!=="CONTAINS"){
+    if(renderEdges.length<=180&&e.kind!=="CONTAINS"){
       const text=el("text",{x:(start.x+end.x)/2,y:(start.y+end.y)/2-6,class:"edge-label"});
       text.textContent=(e.label||e.kind)+(e.count>1?" ×"+e.count:"");edgeLayer.appendChild(text);
     }
