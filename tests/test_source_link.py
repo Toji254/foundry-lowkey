@@ -752,6 +752,7 @@ class SourceLinkTests(unittest.TestCase):
         for option in (
             "--root", "--depth", "--only", "--detail", "--limit",
             "--search", "--type", "--page", "--all", "--json",
+            "--serve", "--github", "--archive", "--ref", "--port",
             "-h", "--h", "--help",
         ):
             self.assertIn(option, help_text)
@@ -768,6 +769,9 @@ class SourceLinkTests(unittest.TestCase):
             "lk link Vault --only writes --limit 60",
             "lk link ContractName.mappingName",
             "lk link --search Vault --json",
+            "lk link --serve",
+            "lk link --github https://github.com/gmx-io/gmx-contracts --ref master --format html",
+            "lk link --archive ./protocol.zip --format html",
         ):
             self.assertIn(example, help_text)
 
@@ -803,6 +807,11 @@ class SourceLinkTests(unittest.TestCase):
                 "--page <N>",
                 "--all",
                 "--json",
+                "--serve",
+                "--github <URL>",
+                "--archive <ZIP>",
+                "--ref <REF>",
+                "--port <N>",
                 "requires no TARGET",
                 "do not prove execution",
             ):
