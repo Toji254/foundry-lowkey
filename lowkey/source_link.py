@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
 
 
 ONLY_KINDS = {
-    "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS", "REVERTS"},
+    "calls": {"CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS", "REVERTS"},
     "storage": {
         "READS", "WRITES", "DELETES", "MUTATES", "TRANSIENT_READS",
         "TRANSIENT_WRITES", "TRANSIENT_DELETES", "USES_TYPE",
@@ -43,7 +43,7 @@ ONLY_KINDS = {
     "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY"},
     "assets": {"ASSET_FLOW"},
     "all": {
-        "CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS", "REVERTS",
+        "CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS", "REVERTS",
         "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES", "MUTATES",
         "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES", "INITIALIZES",
         "USES_TYPE", "ALIASES_STORAGE", "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION",
@@ -1653,7 +1653,10 @@ def _render_link_help(command: str = "lk link") -> str:
             ("lk link --only <FILTER>", "Show only calls, storage, imports, or asset-flow relationships.", "lk link --only calls"),
             ("lk link <Contract.function>", "Inspect a function's callers/callees and state touchpoints.", "lk link OrderBook.createIncreaseOrder"),
             ("lk link <Contract.mapping>", "Inspect mapping keys, readers, writers, and related state paths.", "lk link Vault.positions"),
-            ("lk link --format html", "Generate an offline, interactive SVG graph with search, filtering, zoom, and node details.", "lk link --format html"),
+            ("lk link --format html", "Generate the interactive graph-first protocol explorer with function, storage, asset and review views.", "lk link --format html"),
+            ("lk link --serve", "Start the local import workspace for folders, files, ZIP archives and GitHub repositories.", "lk link --serve"),
+            ("lk link --github <URL>", "Clone and index a GitHub repository; add --ref to select a branch or tag.", "lk link --github https://github.com/gmx-io/gmx-contracts --ref master --format html"),
+            ("lk link --archive <ZIP>", "Import and graph a Solidity project ZIP archive.", "lk link --archive ./protocol.zip --format html"),
             ("lk link --list", "Open the searchable, paginated declaration inventory.", "lk link --list --search Vault"),
         ],
         options=[
@@ -1661,7 +1664,12 @@ def _render_link_help(command: str = "lk link") -> str:
             ("--depth <N>", "Expand a focused graph by 1-10 relationship hops (default 1).", "lk link OrderBook --depth 3"),
             ("--format <terminal|html|json>", "Choose the terminal graph, offline interactive HTML, or graph JSON.", "lk link --format html"),
             ("--output <FILE>", "Choose the HTML output path; default is .lowkey/link-graph.html.", "lk link --format html --output /tmp/gmx-map.html"),
-            ("--include-third-party", "Include dependencies normally hidden from the architecture view.", "lk link --include-third-party"),
+            ("--include-third-party", "Show third-party declarations by default; vendor filters remain available in the graph.", "lk link --include-third-party --format html"),
+            ("--serve", "Start the loopback-only live workspace with local import controls.", "lk link --serve"),
+            ("--github <URL>", "Import a public or credential-accessible GitHub repository over HTTPS.", "lk link --github https://github.com/gmx-io/gmx-contracts --ref master"),
+            ("--archive <ZIP>", "Extract a project archive safely and build its source graph.", "lk link --archive ./protocol.zip"),
+            ("--ref <REF>", "Choose the GitHub branch or tag; requires --github.", "lk link --github https://github.com/gmx-io/gmx-contracts --ref master"),
+            ("--port <N>", "Choose the local workspace port (default 8765).", "lk link --serve --port 8766"),
             ("--list", "Show the original searchable declaration inventory instead of the graph.", "lk link --list"),
             ("--search <TEXT>", "In list mode, filter declarations by name or source path.", "lk link --list --search Vault"),
             ("--type <KIND>", "In list mode, keep contract, interface, or library declarations only.", "lk link --list --type interface"),
@@ -1673,9 +1681,11 @@ def _render_link_help(command: str = "lk link") -> str:
         ],
         related=("lk trace source <TARGET>", "lk fn --flow both --asset all", "lk sources --scope application", "lk trace <TX>"),
         notes=(
-            "The architecture view collapses function-level relationships into contract-level links for readability.",
-            "Storage and asset filters expose potential source effects; they are not proof that a path executed or succeeded.",
-            "Third-party dependencies are hidden by default. Use --include-third-party to reveal them.",
+            "The interactive graph preserves declaration, function, storage, interface, library and asset relationships from the shared source index.",
+            "The local workspace listens on loopback only. Uploaded source is indexed locally and import requests are not exposed on the network.",
+            "ZIP imports ignore non-source files and reject unsafe paths, symbolic links and archives outside the bounded source budget.",
+            "Storage, asset and review-lead views are source-analysis aids, not proof of runtime execution or vulnerability findings.",
+            "Third-party dependencies are hidden by default. Use --include-third-party or the vendor controls in the explorer.",
             "The old declaration inventory remains available with --list. --search, --type, --page, and --all also select list mode.",
             "Unresolved relationships and incomplete source coverage remain visible; static edges are not runtime evidence.",
         ),
@@ -1975,7 +1985,7 @@ def run_link(argv: list[str], *, help_command: str = "lk link") -> int:
     if args.list_view and args.target:
         parser.error("--list cannot be combined with TARGET")
 
-    temporary: tempfile.TemporaryDirectory[str] | None = None
+    temporary: tempfile.TemporaryDirectory | None = None
     source_root = Path(args.root).expanduser()
     if args.github or args.archive:
         temporary = tempfile.TemporaryDirectory(prefix="lowkey-source-import-")
