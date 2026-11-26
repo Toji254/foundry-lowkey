@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 RPC = os.environ.get("LOWKEY_RPC_URL", "http://127.0.0.1:8545")
 ANVIL_KEY0 = "0xac0974bec39a17e36ba4ba6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -273,6 +274,27 @@ def main() -> int:
     if not FORGE_STD.is_dir():
         raise AssertionError(f"CI forge-std dependency is unavailable: {FORGE_STD}")
 
+    parsed_rpc = urlparse(RPC)
+    if parsed_rpc.scheme not in {"http", "https"} or parsed_rpc.hostname not in {
+        "127.0.0.1", "localhost", "::1",
+    }:
+        raise AssertionError(
+            "Refusing to broadcast proxy fixtures to a non-loopback RPC. "
+            f"Expected localhost Anvil, received {parsed_rpc.hostname!r}."
+        )
+
+    install_manifest_path = Path.home() / ".lowkey" / "install-manifest.json"
+    if not install_manifest_path.is_file():
+        raise AssertionError(f"Installed Lowkey manifest is missing: {install_manifest_path}")
+    install_manifest = json.loads(install_manifest_path.read_text(encoding="utf-8"))
+    installed_git_sha = install_manifest.get("git_sha")
+    expected_git_sha = os.environ.get("GITHUB_SHA")
+    if expected_git_sha and installed_git_sha != expected_git_sha:
+        raise AssertionError(
+            "Installed Lowkey SHA does not match this workflow: "
+            f"installed={installed_git_sha!r}, expected={expected_git_sha!r}"
+        )
+
     env = os.environ.copy()
     env["LOWKEY_RPC_URL"] = RPC
     env["FOUNDRY_ETH_RPC_URL"] = RPC
@@ -299,6 +321,15 @@ def main() -> int:
                 encoding="utf-8",
             )
             (root / "src" / "ProxyTargets.sol").write_text(SOURCE, encoding="utf-8")
+            chain_id_raw = run([cast, "chain-id", "--rpc-url", RPC], root, env).stdout.strip()
+            try:
+                chain_id = int(chain_id_raw, 0)
+            except ValueError as exc:
+                raise AssertionError(f"Could not decode Anvil chain ID: {chain_id_raw!r}") from exc
+            if chain_id != 31337:
+                raise AssertionError(
+                    f"Refusing to broadcast fixture deployments: expected Anvil chain ID 31337, got {chain_id}."
+                )
             run([forge, "build"], root, env)
 
             vulnerable_impl = deploy(forge, root, env, "VulnerableUUPSImplementation")
@@ -337,9 +368,9 @@ def main() -> int:
             report = {
                 "gate": "Lowkey UUPS proxy break adapter",
                 "status": "PASS",
-                "chain_id": int(run(
-                    [cast, "chain-id", "--rpc-url", RPC], root, env
-                ).stdout.strip()),
+                "chain_id": chain_id,
+                "source_sha": expected_git_sha,
+                "installed_git_sha": installed_git_sha,
                 "cases": cases,
                 "source_anvil_unchanged": True,
                 "scope": (
