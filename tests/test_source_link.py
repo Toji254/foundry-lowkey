@@ -181,6 +181,35 @@ class SourceLinkTests(unittest.TestCase):
         self.assertNotIn("AVAILABLE CONTRACTS", rendered)
         self.assertNotIn("ImportedMath", rendered)
 
+    def test_default_architecture_hides_import_edges_but_import_filter_keeps_them(self):
+        temporary, root = self.fixture()
+        try:
+            index = build_source_index(root)
+        finally:
+            temporary.cleanup()
+
+        architecture = build_protocol_graph(index)
+        imports = build_protocol_graph(index, only="imports")
+        self.assertFalse(any(edge["kind"] == "IMPORTS" for edge in architecture["edges"]))
+        self.assertTrue(any(edge["kind"] == "IMPORTS" for edge in imports["edges"]))
+
+    def test_library_function_calls_are_labelled_as_library_calls(self):
+        index = {
+            "nodes": [
+                {"id": "contract:vault", "kind": "contract", "name": "Vault", "file": "src/Vault.sol", "declaration_kind": "contract"},
+                {"id": "contract:math", "kind": "contract", "name": "Math", "file": "src/Math.sol", "declaration_kind": "library"},
+                {"id": "function:vault", "kind": "function", "contract": "Vault", "file": "src/Vault.sol", "qualified_name": "Vault.withdraw()"},
+                {"id": "function:math", "kind": "function", "contract": "Math", "file": "src/Math.sol", "qualified_name": "Math.add(uint256,uint256)"},
+            ],
+            "edges": [{
+                "kind": "CALLS", "from": "function:vault", "to": "function:math",
+                "resolution": "INFERRED", "source": {"file": "src/Vault.sol", "line": 42},
+            }],
+            "summary": {"files": 2, "functions": 2, "relationships": 1},
+        }
+        graph = build_protocol_graph(index)
+        self.assertTrue(any(edge["kind"] == "LIBRARY_CALL" and edge["label"] == "LIBRARY CALL" for edge in graph["edges"]))
+
     def test_graph_json_contains_nodes_and_relationship_edges(self):
         temporary, root = self.fixture()
         try:
@@ -210,8 +239,12 @@ class SourceLinkTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertIn("GRAPH SAVED", output.getvalue())
-        self.assertIn("<svg", document)
+        self.assertIn("RELATIONSHIP EXPLORER", document)
         self.assertIn("Graph", document)
+        self.assertIn("OUTGOING", document)
+        self.assertIn("INCOMING", document)
+        self.assertIn("Follow →", document)
+        self.assertNotIn("<svg", document)
         self.assertIn("STATIC SOURCE EVIDENCE", document)
         self.assertNotIn("https://", document)
         self.assertNotIn("__GRAPH_DATA__", document)
