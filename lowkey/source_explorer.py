@@ -1419,11 +1419,24 @@ def _build_imported_graph(source_root: Path, name: str) -> dict[str, Any]:
     return graph
 
 
-def create_explorer_server(index: dict[str, Any], root: str | Path = ".", *, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
+def create_explorer_server(
+    index: dict[str, Any],
+    root: str | Path = ".",
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    include_third_party: bool = False,
+    only: str | None = None,
+) -> ThreadingHTTPServer:
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError("The source workspace server may only bind to loopback.")
-    model = build_explorer_model(index, root=root)
-    model["project_name"] = Path(root).resolve().name or "Local project"
+    root_path = Path(root).expanduser().resolve()
+    if root_path.is_file():
+        root_path = root_path.parent
+    model = build_explorer_model(index, root=root_path)
+    model["project_name"] = root_path.name or "Local project"
+    model["show_third_party"] = bool(include_third_party)
+    model["initial_only"] = only
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "LowkeyExplorer/1"
@@ -1451,12 +1464,25 @@ def create_explorer_server(index: dict[str, Any], root: str | Path = ".", *, hos
                 raise ValueError("Upload body was incomplete.")
             return payload
         def check_origin(self) -> None:
+            port_number = int(self.server.server_address[1])
+            allowed_hosts = {
+                f"127.0.0.1:{port_number}", f"localhost:{port_number}",
+                f"[::1]:{port_number}", f"::1:{port_number}",
+            }
+            host_header = self.headers.get("Host", "").casefold()
+            if host_header not in allowed_hosts:
+                raise ValueError("The local workspace only accepts loopback Host headers.")
             origin = self.headers.get("Origin")
             if origin:
                 parsed = urllib.parse.urlsplit(origin)
-                if parsed.scheme != "http" or parsed.netloc != self.headers.get("Host", ""):
+                if parsed.scheme != "http" or parsed.netloc.casefold() not in allowed_hosts:
                     raise ValueError("Cross-origin requests are not accepted by the local workspace.")
         def do_GET(self) -> None:
+            try:
+                self.check_origin()
+            except ValueError as error:
+                self.send_json(421, {"error": str(error)})
+                return
             if self.path in {"/", "/index.html"}:
                 self.send_bytes(200, render_explorer_document(model, server_mode=True).encode("utf-8"), "text/html; charset=utf-8")
             elif self.path == "/health":
@@ -1501,8 +1527,20 @@ def create_explorer_server(index: dict[str, Any], root: str | Path = ".", *, hos
     return ThreadingHTTPServer((host, port), Handler)
 
 
-def serve_explorer(index: dict[str, Any], root: str | Path = ".", *, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> int:
-    server = create_explorer_server(index, root=root, host=host, port=port)
+def serve_explorer(
+    index: dict[str, Any],
+    root: str | Path = ".",
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    open_browser: bool = True,
+    include_third_party: bool = False,
+    only: str | None = None,
+) -> int:
+    server = create_explorer_server(
+        index, root=root, host=host, port=port,
+        include_third_party=include_third_party, only=only,
+    )
     address, actual_port = server.server_address[:2]
     url = f"http://{address}:{actual_port}/"
     print("LOWKEY // LOCAL PROTOCOL WORKSPACE")
