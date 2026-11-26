@@ -1618,10 +1618,14 @@ contract LowkeyBreakRepeat is Test {{
 
 
 def _render_proxy_upgrade_test(target: Target, signature: str, calldata: str, value: str):
-    """Test a standard UUPS-style upgrade entrypoint on an isolated fork."""
+    """Test standard UUPS upgrade entrypoints on an isolated fork."""
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     value_lit = "0" if value in {"0", "0wei"} else "1"
     slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+    if _function_name(signature).lower() == "upgradetoandcall":
+        encoded_call = f'abi.encodeWithSignature("{signature}", replacement, bytes(""))'
+    else:
+        encoded_call = f'abi.encodeWithSignature("{signature}", replacement)'
     return _render_common_header() + f"""
 contract LowkeyProxyReplacement {{
     fallback() external payable {{}}
@@ -1653,11 +1657,7 @@ contract LowkeyBreakProxyUpgrade is Test {{
             && abi.decode(routeBeforeData, (bytes32))
                 == keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", routeChallenge, TARGET));
 
-        bytes memory data = LowkeyABIPatch.replaceAddress(
-            hex"{calldata[2:]}",
-            address(uint160(0x00{ABI_ADDRESS_SENTINEL[2:]})),
-            replacement
-        );
+        bytes memory data = {encoded_call};
         bytes32 beforeRaw = vm.load(TARGET, IMPLEMENTATION_SLOT);
         address beforeImplementation = address(uint160(uint256(beforeRaw)));
         require(beforeImplementation != address(0), "no EIP1967 implementation slot");
@@ -1691,10 +1691,12 @@ contract LowkeyBreakProxyUpgrade is Test {{
         console2.log("BEFORE_IMPLEMENTATION", beforeImplementation);
         console2.log("AFTER_IMPLEMENTATION", afterImplementation);
         console2.log("RETURNDATA_LENGTH", returndata.length);
+        if (!success) console2.logBytes(returndata);
         console2.log("LOWKEY_BREAK", success && candidateInstalled && routeConfirmed);
     }}
 }}
-"""
+
+
 
 
 def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
