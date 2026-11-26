@@ -15,7 +15,7 @@ from typing import Any
 
 
 EDGE_FILTERS: dict[str, set[str]] = {
-    "calls": {"CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"},
+    "calls": {"CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"},
     "storage": {
         "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES",
         "MUTATES", "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
@@ -30,7 +30,7 @@ EDGE_FILTERS: dict[str, set[str]] = {
     "imports": {"IMPORTS", "INHERITS", "USES_LIBRARY", "USES_TYPE"},
     "assets": {"ASSET_FLOW", "EXTERNAL_CALL"},
     "all": {
-        "CALLS", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS",
+        "CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "EMITS",
         "REVERTS", "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES",
         "DELETES", "MUTATES", "TRANSIENT_READS", "TRANSIENT_WRITES",
         "TRANSIENT_DELETES", "INITIALIZES", "ALIASES_STORAGE", "UNRESOLVED_STORAGE",
@@ -43,10 +43,11 @@ DEFAULT_KINDS = EDGE_FILTERS["all"] - {
     "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES",
     "MUTATES", "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
     "INITIALIZES", "ALIASES_STORAGE", "UNRESOLVED_STORAGE", "UNRESOLVED_MUTATION",
-    "ASSET_FLOW", "EMITS", "REVERTS",
+    "ASSET_FLOW", "EMITS", "REVERTS", "IMPORTS",
 }
 
 KIND_LABELS = {
+    "LIBRARY_CALL": "LIBRARY CALL",
     "CALLS": "CALLS",
     "EXTERNAL_CALL": "EXTERNAL CALL",
     "APPLIES_MODIFIER": "MODIFIER",
@@ -343,7 +344,11 @@ def build_protocol_graph(
                 if source_contract == target_contract:
                     internal_counts[source_contract] += 1
                 else:
-                    add_edge(source_contract, target_contract, kind, edge)
+                    display_kind = kind
+                    target_declaration = str(contracts[target_contract].get("declaration_kind") or "").casefold()
+                    if kind == "CALLS" and target_declaration == "library":
+                        display_kind = "LIBRARY_CALL"
+                    add_edge(source_contract, target_contract, display_kind, edge)
             continue
 
         if kind in {"INHERITS", "USES_LIBRARY", "USES_TYPE"}:
@@ -561,59 +566,132 @@ def render_protocol_graph_json(graph: dict[str, Any]) -> int:
     return 0
 
 
-HTML_TEMPLATE = r"""<!doctype html>
+HTML_TEMPLATE = r"""
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lowkey · Protocol Graph</title>
+<title>Lowkey · Relationship Explorer</title>
 <style>
-:root{color-scheme:dark;--bg:#0b1020;--panel:#111a2e;--line:#26344e;--muted:#91a0b9;--text:#e8eef8;--accent:#7dd3fc}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 ui-sans-serif,system-ui,sans-serif}
-header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:14px 18px;border-bottom:1px solid var(--line);background:#0d1527}
-.brand{font-weight:800;letter-spacing:.08em}.sub{color:var(--muted);font-size:12px}
-.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}
-input,select,button{background:#101b30;border:1px solid #33425f;color:var(--text);border-radius:7px;padding:8px 10px;font:inherit}
-input{min-width:210px}button{cursor:pointer}button:hover{border-color:var(--accent)}
-main{display:grid;grid-template-columns:minmax(0,1fr) 310px;height:calc(100vh - 102px);min-height:520px}
-#canvas{position:relative;overflow:hidden;background-image:radial-gradient(#26344e 1px,transparent 1px);background-size:24px 24px}
-svg{width:100%;height:100%;display:block;touch-action:none}
-aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel);padding:16px}
-h1{font-size:17px;margin:0 0 4px}h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin:18px 0 8px}
-p{margin:7px 0}.muted{color:var(--muted)}.metric{display:inline-block;margin:10px 12px 0 0}.metric b{font-size:18px;display:block}
-#warning{padding:9px 18px;color:#fbbf24;border-bottom:1px solid #58451c;background:#211b12;font-size:12px}
-.edge{stroke-width:1.8;opacity:.72;fill:none}.edge.dim{opacity:.08}.edge.selected{opacity:1;stroke-width:3.2}
-.node rect{stroke-width:1.5;rx:8;fill:#14223a;stroke:#50627f}.node text{font-size:12px;fill:var(--text);pointer-events:none}
-.node.contract rect{fill:#142c40;stroke:#3b9ac4}.node.external rect{fill:#302719;stroke:#bb8b40}.node.asset rect{fill:#2e2137;stroke:#b184c8}
-.node.storage rect{fill:#172b22;stroke:#65a681}.node.module rect{fill:#202943;stroke:#8192b5}
-.node.selected rect{stroke:#f5d36a;stroke-width:3}.node.dim{opacity:.2}.node{cursor:pointer}
-.legend{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin-top:10px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
-.pill{display:inline-block;padding:2px 6px;border:1px solid #40516f;border-radius:5px;color:#b8c7df;font-size:11px;margin:2px}
-a{color:var(--accent)}code{color:#b6e3ff;overflow-wrap:anywhere}
-@media(max-width:850px){main{grid-template-columns:1fr;height:auto;min-height:calc(100vh - 120px)}#canvas{height:65vh;min-height:420px}aside{border-left:0;border-top:1px solid var(--line)}header{align-items:flex-start}.toolbar{margin-left:0;width:100%}}
+:root{color-scheme:dark;--bg:#0a1020;--panel:#111b2f;--panel2:#15223a;--line:#2a3b57;--muted:#9aa9bf;--text:#e8eef8;--accent:#78c9ed;--green:#71c5a0;--amber:#e4b96c;--red:#df927d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
+button,input,select{font:inherit}
+button{cursor:pointer}
+header{display:flex;align-items:center;gap:18px;padding:13px 18px;border-bottom:1px solid var(--line);background:#0d172a}
+.brand{font-weight:850;letter-spacing:.075em}
+.sub{color:var(--muted);font-size:12px;margin-top:2px}
+.header-actions{display:flex;gap:8px;align-items:center;margin-left:auto}
+.btn,input,select{border:1px solid #3a4d6b;border-radius:7px;background:#111d32;color:var(--text);padding:8px 10px}
+.btn{font-weight:650}
+.btn:hover,.contract-button:hover,.follow:hover,.relation-select:hover{border-color:var(--accent)}
+.btn.primary{background:#17344a;border-color:#367b9c}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+#kind{min-width:155px}
+#warning{padding:8px 18px;background:#211c12;border-bottom:1px solid #554520;color:#f2cb76;font-size:12px}
+main{display:grid;grid-template-columns:270px minmax(420px,1fr) 310px;height:calc(100vh - 105px);min-height:560px}
+.panel{min-height:0;overflow:auto;background:var(--panel)}
+#catalog{border-right:1px solid var(--line);padding:15px 12px}
+#inspector{border-left:1px solid var(--line);padding:16px}
+.panel-heading{font-size:11px;font-weight:800;letter-spacing:.12em;color:var(--muted);margin:0 0 10px}
+#search{width:100%;margin-bottom:9px}
+.catalog-meta{font-size:11px;color:var(--muted);margin:0 0 9px}
+.folder-label{padding:12px 7px 5px;color:#8194ae;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
+.contract-button{display:flex;align-items:center;justify-content:space-between;width:100%;gap:8px;padding:9px 8px;margin:2px 0;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--text);text-align:left}
+.contract-button.active{background:#1a3046;border-color:#3c7894}
+.contract-name{font-weight:650;overflow-wrap:anywhere}
+.contract-meta{display:block;color:var(--muted);font-size:10px;margin-top:2px}
+.count{flex:0 0 auto;color:#a9bdd4;font-size:11px;font-variant-numeric:tabular-nums}
+#workspace{min-width:0;min-height:0;overflow:auto;padding:20px 22px}
+.crumbs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:17px;color:var(--muted);font-size:12px}
+.crumb{border:0;padding:3px 5px;background:transparent;color:var(--accent);border-radius:4px}
+.crumb.current{color:var(--text);font-weight:700}
+h1{font-size:23px;line-height:1.2;margin:0 0 7px;overflow-wrap:anywhere}
+.lead{margin:0;color:var(--muted)}
+.summary-strip{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 20px}
+.summary-chip{border:1px solid var(--line);background:#101c30;border-radius:7px;padding:7px 10px;font-size:12px;color:#c9d6e8}
+.summary-chip b{color:#fff;font-size:14px;margin-right:4px}
+.section-title{display:flex;align-items:center;justify-content:space-between;margin:22px 0 9px;font-size:11px;font-weight:850;letter-spacing:.11em;color:#b4c3d8;text-transform:uppercase}
+.direction-group{margin:18px 0 24px}
+.direction-heading{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;font-weight:850;letter-spacing:.09em}
+.direction-heading.out{color:var(--green)}
+.direction-heading.in{color:var(--amber)}
+.direction-heading .line{height:1px;background:var(--line);flex:1}
+.relation-list{display:grid;gap:7px}
+.relation-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;border:1px solid var(--line);background:#101b2e;border-radius:9px;padding:10px 11px}
+.relation-card:hover{border-color:#496684}
+.relation-select{display:block;min-width:0;border:0;background:transparent;color:var(--text);padding:0;text-align:left}
+.relation-top{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.kind-pill,.status-pill{display:inline-block;border:1px solid #405674;border-radius:5px;padding:2px 6px;font-size:10px;font-weight:750;letter-spacing:.035em;color:#c7d7e9}
+.kind-pill{background:#182940}
+.status-pill.direct{color:#92d8b7;border-color:#366a55}
+.status-pill.inferred{color:#f0c875;border-color:#78613b}
+.status-pill.unresolved{color:#ef9c8b;border-color:#784a42}
+.peer-name{font-weight:750;font-size:14px;overflow-wrap:anywhere}
+.relation-detail{display:block;margin-top:5px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.relation-count{color:#b6c5d8;font-size:11px;font-variant-numeric:tabular-nums}
+.follow{border:1px solid #3a5872;border-radius:6px;background:#172b42;color:#ccecff;padding:7px 9px;font-size:11px;font-weight:750;white-space:nowrap}
+.empty{border:1px dashed #40516b;border-radius:8px;padding:15px;color:var(--muted);font-size:13px}
+#inspector h2{font-size:12px;letter-spacing:.1em;margin:17px 0 7px;color:#b3c3d8}
+#inspector h2:first-child{margin-top:0}
+#inspect-title{font-size:18px;font-weight:800;overflow-wrap:anywhere}
+#inspect-sub{color:var(--muted);font-size:12px;margin-top:3px}
+.inspect-row{margin:9px 0;color:#c4d2e4;font-size:12px;overflow-wrap:anywhere}
+.inspect-row b{color:#f0f4fb}
+.location{display:block;color:#a9d8ee;background:#0c1728;border:1px solid #263e58;border-radius:6px;padding:7px 8px;margin:6px 0;font:11px/1.45 ui-monospace,monospace;overflow-wrap:anywhere}
+#suggestions{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:9px;margin-top:14px}
+.suggestion{display:block;text-align:left;padding:12px;border:1px solid var(--line);border-radius:9px;background:#101c30;color:var(--text)}
+.suggestion:hover{border-color:var(--accent)}
+.suggestion strong{display:block;font-size:14px}
+.suggestion span{display:block;margin-top:4px;color:var(--muted);font-size:11px}
+.steps{margin:12px 0 0;padding-left:18px;color:var(--muted);font-size:12px}
+.steps li{margin:6px 0}
+.limit-note{font-size:11px;color:var(--muted);line-height:1.5}
+@media(max-width:1100px){main{grid-template-columns:235px minmax(360px,1fr)}#inspector{grid-column:1/-1;border-left:0;border-top:1px solid var(--line);min-height:200px}#workspace{grid-column:2;grid-row:1}#catalog{grid-column:1;grid-row:1}}
+@media(max-width:760px){header{align-items:flex-start;flex-wrap:wrap}.header-actions{width:100%;margin-left:0}main{display:flex;flex-direction:column;height:auto;min-height:0}#catalog{max-height:270px;border-right:0;border-bottom:1px solid var(--line)}#workspace{overflow:visible;padding:17px}#inspector{border-left:0;border-top:1px solid var(--line)}}
 </style>
 </head>
 <body>
 <header>
-  <div><div class="brand">LOWKEY // PROTOCOL GRAPH</div><div class="sub" id="subtitle">Static source relationships · offline interactive map</div></div>
-  <div class="toolbar">
-    <input id="search" placeholder="Find a contract or dependency…" aria-label="Search graph">
-    <select id="kind" aria-label="Relationship type"><option value="">All relationships</option></select>
-    <button id="fit">Fit graph</button>
-    <button id="reset">Reset</button>
+  <div>
+    <div class="brand">LOWKEY // RELATIONSHIP EXPLORER</div>
+    <div class="sub" id="subtitle">Follow source relationships contract by contract</div>
+  </div>
+  <div class="header-actions">
+    <select id="kind" aria-label="Filter relationship type"><option value="">All relationship types</option></select>
+    <button class="btn" id="back" disabled>← Back</button>
+    <button class="btn" id="overview">Project overview</button>
   </div>
 </header>
-<div id="warning">STATIC SOURCE EVIDENCE — a relationship in this graph does not prove runtime execution, successful calls, or deployed implementation identity.</div>
+<div id="warning">STATIC SOURCE EVIDENCE — these links are found in source code; they do not prove a path executed or succeeded on-chain.</div>
 <main>
-  <section id="canvas"><svg id="graph" viewBox="0 0 1600 1050" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Interactive contract relationship graph"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#91a0b9"/></marker></defs><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg></section>
-  <aside>
-    <h1 id="detail-title">Protocol overview</h1>
-    <p class="muted" id="detail-sub">Select a node to inspect its connections.</p>
-    <div id="metrics"></div>
-    <div class="legend"><span><i class="dot" style="background:#3b9ac4"></i>Contract</span><span><i class="dot" style="background:#65a681"></i>Storage</span><span><i class="dot" style="background:#bb8b40"></i>External</span><span><i class="dot" style="background:#b184c8"></i>Asset</span></div>
-    <h2>Selected node</h2><div id="details" class="muted">No node selected.</div>
-    <h2>Connections</h2><div id="connections" class="muted">Choose a node to see its incoming and outgoing relationships.</div>
-    <h2>Analysis limits</h2><div id="limits" class="muted"></div>
+  <aside class="panel" id="catalog">
+    <div class="panel-heading">CONTRACTS</div>
+    <input id="search" placeholder="Search contracts…" aria-label="Search contracts">
+    <div class="catalog-meta" id="catalog-meta"></div>
+    <div id="contract-list"></div>
+  </aside>
+  <section id="workspace">
+    <div class="crumbs" id="crumbs"></div>
+    <h1 id="focus-title">Choose a contract to begin</h1>
+    <p class="lead" id="focus-lead">Start with one contract. Lowkey will show only its direct incoming and outgoing relationships.</p>
+    <div class="summary-strip" id="summary-strip"></div>
+    <div id="connections"></div>
+  </section>
+  <aside class="panel" id="inspector">
+    <div id="inspect-title">How to follow the graph</div>
+    <div id="inspect-sub">A focused investigation, not a wall of lines.</div>
+    <ol class="steps">
+      <li>Choose a contract from the left.</li>
+      <li>Read its outgoing and incoming links separately.</li>
+      <li>Check the source file and line for each link.</li>
+      <li>Use Follow to move to the connected contract.</li>
+      <li>Use Back to retrace your steps.</li>
+    </ol>
+    <h2>Evidence boundary</h2>
+    <p class="limit-note">A source relationship is a lead for investigation. It does not prove runtime reachability, execution, successful transfer, or deployed implementation identity.</p>
+    <div id="limits"></div>
   </aside>
 </main>
 <script id="graph-data" type="application/json">__GRAPH_DATA__</script>
@@ -621,83 +699,230 @@ a{color:var(--accent)}code{color:#b6e3ff;overflow-wrap:anywhere}
 (function(){
 "use strict";
 const DATA=JSON.parse(document.getElementById("graph-data").textContent);
-const svg=document.getElementById("graph"),viewport=document.getElementById("viewport"),edgeLayer=document.getElementById("edges"),nodeLayer=document.getElementById("nodes");
-const NS="http://www.w3.org/2000/svg",nodes=DATA.nodes||[],edges=DATA.edges||[],byId=new Map(nodes.map(n=>[n.id,n]));
-const kinds=[...new Set(edges.map(e=>e.kind))].sort(),kindSelect=document.getElementById("kind");
-kinds.forEach(k=>{const o=document.createElement("option");o.value=k;o.textContent=k.replaceAll("_"," ");kindSelect.appendChild(o)});
-document.getElementById("subtitle").textContent=(DATA.summary.displayed_nodes||0)+" nodes · "+(DATA.summary.displayed_edges||0)+" relationship groups · "+(DATA.summary.files||0)+" source files";
-document.getElementById("metrics").innerHTML="";
-["displayed_nodes","displayed_edges","connected_nodes"].forEach((k,i)=>{const d=document.createElement("span");d.className="metric";const b=document.createElement("b");b.textContent=DATA.summary[k]||0;const s=document.createElement("span");s.className="muted";s.textContent=["Nodes","Links","Connected"][i];d.append(b,s);document.getElementById("metrics").appendChild(d)});
-(DATA.limitations||[]).forEach(t=>{const p=document.createElement("p");p.textContent="• "+t;document.getElementById("limits").appendChild(p)});
-const positions=new Map();let selected=null,scale=1,tx=0,ty=0,drag=null,pan=null;
-const width=1600,height=1050;
-function initialLayout(){
- const groups=[...new Set(nodes.map(n=>n.group||n.type))].sort(),buckets=new Map(groups.map(g=>[g,[]]));
- nodes.forEach(n=>buckets.get(n.group||n.type).push(n));
- groups.forEach((g,gi)=>{
-   const centerAngle=(gi/Math.max(groups.length,1))*Math.PI*2-Math.PI/2;
-   const radius=groups.length<2?0:Math.min(350,180+groups.length*13);
-   const cx=width/2+Math.cos(centerAngle)*radius,cy=height/2+Math.sin(centerAngle)*radius;
-   const bucket=buckets.get(g),ring=Math.max(110,bucket.length*17);
-   bucket.forEach((n,i)=>{const a=(i/Math.max(bucket.length,1))*Math.PI*2;positions.set(n.id,{x:cx+Math.cos(a)*ring,y:cy+Math.sin(a)*ring})});
- });
- // A small deterministic force pass separates overlaps and pulls connected nodes together.
- for(let step=0;step<90;step++){
-   const delta=new Map(nodes.map(n=>[n.id,{x:0,y:0}]));
-   for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
-     const a=positions.get(nodes[i].id),b=positions.get(nodes[j].id),dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+20;
-     const f=4200/d2,fx=dx*f,fy=dy*f;delta.get(nodes[i].id).x+=fx;delta.get(nodes[i].id).y+=fy;delta.get(nodes[j].id).x-=fx;delta.get(nodes[j].id).y-=fy;
-   }
-   edges.forEach(e=>{const a=positions.get(e.source),b=positions.get(e.target);if(!a||!b)return;const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1,f=(d-180)*.006;delta.get(e.source).x+=dx*f;delta.get(e.source).y+=dy*f;delta.get(e.target).x-=dx*f;delta.get(e.target).y-=dy*f});
-   nodes.forEach(n=>{const p=positions.get(n.id),d=delta.get(n.id);p.x=Math.max(70,Math.min(width-70,p.x+d.x*.025));p.y=Math.max(70,Math.min(height-70,p.y+d.y*.025))});
- }
+const nodes=DATA.nodes||[],edges=DATA.edges||[];
+const byId=new Map(nodes.map(function(n){return [n.id,n]}));
+const contracts=nodes.filter(function(n){return n.type==="contract"}).sort(function(a,b){
+  return ((b.incoming||0)+(b.outgoing||0))-((a.incoming||0)+(a.outgoing||0)) || a.label.localeCompare(b.label);
+});
+const kind=document.getElementById("kind"),search=document.getElementById("search");
+const list=document.getElementById("contract-list"),connections=document.getElementById("connections");
+let activeId=null,history=[],activeEdge=null;
+
+function make(tag,className,text){
+  const item=document.createElement(tag);
+  if(className)item.className=className;
+  if(text!==undefined&&text!==null)item.textContent=String(text);
+  return item;
 }
-function el(tag,attrs){const e=document.createElementNS(NS,tag);Object.entries(attrs||{}).forEach(([k,v])=>e.setAttribute(k,v));return e}
-function sizeFor(n){return {w:Math.max(116,Math.min(230,(n.label||"").length*7.2+28)),h:38}}
+function add(parent,tag,className,text){
+  const item=make(tag,className,text);parent.appendChild(item);return item;
+}
+function degree(n){return (n.incoming||0)+(n.outgoing||0)}
+function visibleEdges(){return edges.filter(function(e){return !kind.value||e.kind===kind.value})}
+function peerFor(edge,direction){return byId.get(direction==="out"?edge.target:edge.source)}
+function statusClass(value){return String(value||"").toLowerCase()}
+function locationText(loc){
+  if(!loc||!loc.file)return "";
+  return loc.file+(loc.line?":"+loc.line:"")+(loc.detail?" · "+loc.detail:"");
+}
+function clear(parent){parent.replaceChildren()}
+function renderKindOptions(){
+  Array.from(new Set(edges.map(function(e){return e.kind}))).sort().forEach(function(k){
+    const option=make("option","",k.replaceAll("_"," "));
+    option.value=k;kind.appendChild(option);
+  });
+}
+function renderCatalog(){
+  clear(list);
+  const query=search.value.trim().toLowerCase();
+  const matched=contracts.filter(function(n){
+    return !query||n.label.toLowerCase().includes(query)||(n.file||"").toLowerCase().includes(query);
+  });
+  document.getElementById("catalog-meta").textContent=matched.length+" of "+contracts.length+" contracts · sorted by connected relationships";
+  let folder="";
+  matched.forEach(function(n){
+    const nextFolder=n.group||"Other";
+    if(nextFolder!==folder){folder=nextFolder;add(list,"div","folder-label",folder)}
+    const button=make("button","contract-button"+(activeId===n.id?" active":""));
+    button.type="button";
+    const main=add(button,"span","");
+    add(main,"span","contract-name",n.label);
+    add(main,"span","contract-meta",n.file||"Source location unavailable");
+    add(button,"span","count",degree(n)+" links");
+    button.addEventListener("click",function(){openNode(n.id,true)});
+    list.appendChild(button);
+  });
+  if(!matched.length)add(list,"div","empty","No contracts match that search.");
+}
+function renderCrumbs(){
+  const root=document.getElementById("crumbs");clear(root);
+  const home=make("button","crumb","Project");
+  home.type="button";home.addEventListener("click",showOverview);root.appendChild(home);
+  history.forEach(function(id,index){
+    const node=byId.get(id);if(!node)return;
+    add(root,"span","","›");
+    const button=make("button","crumb"+(index===history.length-1?" current":""),node.label);
+    button.type="button";
+    button.addEventListener("click",function(){history=history.slice(0,index+1);activeId=id;activeEdge=null;render()});
+    root.appendChild(button);
+  });
+  document.getElementById("back").disabled=history.length<2;
+}
+function renderOverview(){
+  const heading=document.getElementById("focus-title");
+  heading.textContent="Choose a contract to begin";
+  document.getElementById("focus-lead").textContent="This project has "+contracts.length+" contract nodes and "+edges.length+" relationship groups. Pick one contract; Lowkey will expose its direct connections without drawing the entire protocol at once.";
+  const strip=document.getElementById("summary-strip");clear(strip);
+  [["Contracts",contracts.length],["Relationship groups",edges.length],["Source files",(DATA.summary||{}).files||0]].forEach(function(item){
+    const chip=add(strip,"div","summary-chip","");
+    add(chip,"b","",item[1]);chip.appendChild(document.createTextNode(item[0]));
+  });
+  clear(connections);
+  add(connections,"div","section-title","GOOD STARTING POINTS");
+  add(connections,"p","lead","These contracts have the most indexed relationships. They are starting points, not audit-priority rankings.");
+  const suggestions=add(connections,"div","");
+  suggestions.id="suggestions";
+  contracts.slice(0,8).forEach(function(n){
+    const button=make("button","suggestion");
+    button.type="button";
+    add(button,"strong","",n.label);
+    add(button,"span","",degree(n)+" indexed links · "+(n.file||""));
+    button.addEventListener("click",function(){openNode(n.id,true)});
+    suggestions.appendChild(button);
+  });
+  if(!contracts.length)add(connections,"div","empty","No contract declarations were available in this graph.");
+  showNodeInspector(null);
+}
+function relationCard(edge,direction){
+  const peer=peerFor(edge,direction);
+  const card=make("div","relation-card");
+  const inspect=make("button","relation-select");
+  inspect.type="button";
+  const top=add(inspect,"span","relation-top");
+  add(top,"span","kind-pill",edge.label||edge.kind);
+  add(top,"span","status-pill "+statusClass(edge.resolution),edge.resolution||"UNKNOWN");
+  const peerLabel=peer?peer.label:(direction==="out"?edge.target:edge.source);
+  add(inspect,"span","peer-name",peerLabel);
+  const loc=(edge.locations||[])[0];
+  add(inspect,"span","relation-detail",(edge.count>1?edge.count+" source relationships · ":"")+(locationText(loc)||"Source location unavailable"));
+  inspect.addEventListener("click",function(){activeEdge={edge:edge,direction:direction};showEdgeInspector(edge,direction)});
+  card.appendChild(inspect);
+  const canFollow=!!peer&&degree(peer)>0;
+  if(canFollow){
+    const follow=make("button","follow","Follow →");
+    follow.type="button";
+    follow.title="Open "+peer.label+" and inspect its direct relationships";
+    follow.addEventListener("click",function(){openNode(peer.id,true)});
+    card.appendChild(follow);
+  }else{
+    const marker=make("span","relation-count",edge.count>1?"×"+edge.count:"");
+    card.appendChild(marker);
+  }
+  return card;
+}
+function renderDirection(title,direction,rows){
+  const group=add(connections,"section","direction-group");
+  const heading=add(group,"div","direction-heading "+(direction==="out"?"out":"in"));
+  add(heading,"span","",title);
+  add(heading,"span","line","");
+  const list=add(group,"div","relation-list");
+  if(!rows.length){add(list,"div","empty","No "+direction+" relationships in this view.");return}
+  rows.forEach(function(edge){list.appendChild(relationCard(edge,direction))});
+}
+function renderFocus(){
+  const node=byId.get(activeId);
+  if(!node){renderOverview();return}
+  document.getElementById("focus-title").textContent=node.label;
+  document.getElementById("focus-lead").textContent=(node.type||"node").toUpperCase()+" · "+(node.file||node.group||"Source relationship endpoint");
+  const all=visibleEdges();
+  const outgoing=all.filter(function(e){return e.source===activeId}).sort(function(a,b){return b.count-a.count||a.label.localeCompare(b.label)});
+  const incoming=all.filter(function(e){return e.target===activeId}).sort(function(a,b){return b.count-a.count||a.label.localeCompare(b.label)});
+  const strip=document.getElementById("summary-strip");clear(strip);
+  [["Outgoing",outgoing.length],["Incoming",incoming.length],["Source links",outgoing.concat(incoming).reduce(function(sum,e){return sum+(e.count||1)},0)]].forEach(function(item){
+    const chip=add(strip,"div","summary-chip","");
+    add(chip,"b","",item[1]);chip.appendChild(document.createTextNode(item[0]));
+  });
+  clear(connections);
+  add(connections,"div","section-title","DIRECT RELATIONSHIPS");
+  add(connections,"p","lead","Select a relationship to inspect its evidence. Use Follow to move one step through the protocol.");
+  renderDirection("OUTGOING · THIS CONTRACT CALLS / USES", "out",outgoing);
+  renderDirection("INCOMING · OTHER CONTRACTS REACH THIS", "in",incoming);
+  showNodeInspector(node);
+}
+function showNodeInspector(node){
+  clear(document.getElementById("inspect-title"));
+  clear(document.getElementById("inspect-sub"));
+  clear(document.getElementById("limits"));
+  document.getElementById("inspect-title").textContent=node?node.label:"How to follow the graph";
+  document.getElementById("inspect-sub").textContent=node?(node.type||"node").toUpperCase()+" · "+(node.origin||"origin not classified"):"A focused investigation, not a wall of lines.";
+  const limits=document.getElementById("limits");
+  if(node){
+    [["Source",node.location],["Directory",node.group],["Incoming indexed links",node.incoming],["Outgoing indexed links",node.outgoing],["Internal relationships",node.internal_relationships]].forEach(function(pair){
+      if(pair[1]===undefined||pair[1]===null||pair[1]==="")return;
+      const row=add(limits,"p","inspect-row","");
+      const b=add(row,"b","",pair[0]+": ");
+      row.appendChild(document.createTextNode(String(pair[1])));
+    });
+  }else{
+    (DATA.limitations||[]).forEach(function(t){add(limits,"p","limit-note",t)});
+  }
+}
+function showEdgeInspector(edge,direction){
+  const peer=peerFor(edge,direction);
+  document.getElementById("inspect-title").textContent=edge.label||edge.kind;
+  document.getElementById("inspect-sub").textContent=(direction==="out"?"OUTGOING FROM ":"INCOMING TO ")+(byId.get(activeId)||{}).label;
+  const limits=document.getElementById("limits");clear(limits);
+  [["Direction",direction==="out"?"Selected contract → connected node":"Connected node → selected contract"],["Connected node",peer?peer.label:(direction==="out"?edge.target:edge.source)],["Relationship",edge.kind],["Aggregated source matches",edge.count],["Resolution",edge.resolution]].forEach(function(pair){
+    const row=add(limits,"p","inspect-row","");
+    add(row,"b","",""+pair[0]+": ");
+    row.appendChild(document.createTextNode(String(pair[1]===undefined?"unknown":pair[1])));
+  });
+  add(limits,"h2","","SOURCE LOCATIONS");
+  const locations=edge.locations||[];
+  if(!locations.length)add(limits,"p","limit-note","No source location was retained for this relationship.");
+  locations.forEach(function(loc){
+    add(limits,"code","location",locationText(loc)||"Source location unavailable");
+  });
+  if(edge.details&&edge.details.length){
+    add(limits,"h2","","DETAILS");
+    edge.details.forEach(function(detail){add(limits,"p","inspect-row",detail)});
+  }
+}
 function render(){
- edgeLayer.replaceChildren();nodeLayer.replaceChildren();
- const chosenKind=kindSelect.value,query=document.getElementById("search").value.trim().toLowerCase();
- const visibleEdges=edges.filter(e=>(!chosenKind||e.kind===chosenKind));
- const neighbour=new Set();if(selected){neighbour.add(selected);visibleEdges.forEach(e=>{if(e.source===selected)neighbour.add(e.target);if(e.target===selected)neighbour.add(e.source)})}
- visibleEdges.forEach(e=>{
-   const a=positions.get(e.source),b=positions.get(e.target);if(!a||!b)return;
-   const line=el("line",{x1:a.x,y1:a.y,x2:b.x,y2:b.y,class:"edge"+(selected&&e.source!==selected&&e.target!==selected?" dim":"")+(selected&&(e.source===selected||e.target===selected)?" selected":""),stroke:edgeColor(e.kind),"marker-end":"url(#arrow)"});
-   const title=el("title");title.textContent=e.label+" ×"+e.count+" · "+e.resolution;line.appendChild(title);edgeLayer.appendChild(line);
- });
- nodes.forEach(n=>{
-   const p=positions.get(n.id),s=sizeFor(n),match=!query||n.label.toLowerCase().includes(query)||n.file.toLowerCase().includes(query);
-   const active=!selected||neighbour.has(n.id),g=el("g",{class:"node "+n.type+(selected===n.id?" selected":"")+(active&&match?"":" dim"),transform:"translate("+(p.x-s.w/2)+","+(p.y-s.h/2)+")"});
-   const rect=el("rect",{width:s.w,height:s.h});const text=el("text",{x:12,y:23});text.textContent=n.label.length>29?n.label.slice(0,26)+"…":n.label;
-   const title=el("title");title.textContent=n.label+" · "+(n.location||n.type);g.append(rect,text,title);
-   g.addEventListener("click",ev=>{ev.stopPropagation();selected=n.id;showDetails(n);render()});
-   g.addEventListener("pointerdown",ev=>{ev.stopPropagation();drag={id:n.id,startX:ev.clientX,startY:ev.clientY,origin:{...p}};g.setPointerCapture(ev.pointerId)});
-   g.addEventListener("pointermove",ev=>{if(!drag||drag.id!==n.id)return;const rectSvg=svg.getBoundingClientRect();const dx=(ev.clientX-drag.startX)*(width/rectSvg.width)/scale,dy=(ev.clientY-drag.startY)*(height/rectSvg.height)/scale;positions.set(n.id,{x:drag.origin.x+dx,y:drag.origin.y+dy});render()});
-   g.addEventListener("pointerup",()=>{drag=null});nodeLayer.appendChild(g);
- });
+  renderCatalog();renderCrumbs();
+  if(activeId)renderFocus();else renderOverview();
+  if(activeEdge&&activeId){
+    const found=visibleEdges().find(function(e){return e.id===activeEdge.edge.id});
+    if(found)showEdgeInspector(found,activeEdge.direction);
+    else activeEdge=null;
+  }
 }
-function showDetails(n){
- document.getElementById("detail-title").textContent=n.label;
- document.getElementById("detail-sub").textContent=(n.type||"node").toUpperCase()+" · "+(n.origin||"unknown");
- const d=document.getElementById("details");d.replaceChildren();
- [["Location",n.location],["Directory",n.group],["Declaration",n.declaration_kind],["Internal relationships",n.internal_relationships],["Incoming",n.incoming],["Outgoing",n.outgoing]].forEach(([k,v])=>{if(v===undefined||v===null||v==="")return;const p=document.createElement("p"),b=document.createElement("b");b.textContent=k+": ";p.append(b,document.createTextNode(String(v)));d.appendChild(p)});
- const c=document.getElementById("connections");c.replaceChildren();
- const rows=edges.filter(e=>e.source===n.id||e.target===n.id);
- rows.slice(0,80).forEach(e=>{const p=document.createElement("p"),other=byId.get(e.source===n.id?e.target:e.source);p.textContent=(e.source===n.id?"→ ":"← ")+(other?other.label:e.target)+" · "+e.label+" ×"+e.count+" ["+e.resolution+"]";c.appendChild(p)});
- if(!rows.length)c.textContent="No displayed relationships for this node.";
+function openNode(id,push){
+  if(!byId.has(id))return;
+  if(push&&(history.length===0||history[history.length-1]!==id))history.push(id);
+  activeId=id;activeEdge=null;render();
 }
-function applyTransform(){viewport.setAttribute("transform","translate("+tx+" "+ty+") scale("+scale+")")}
-function fit(){if(!nodes.length)return;const xs=nodes.map(n=>positions.get(n.id).x),ys=nodes.map(n=>positions.get(n.id).y),minX=Math.min(...xs)-160,maxX=Math.max(...xs)+160,minY=Math.min(...ys)-120,maxY=Math.max(...ys)+120;const sx=width/(maxX-minX),sy=height/(maxY-minY);scale=Math.max(.18,Math.min(1.6,Math.min(sx,sy)));tx=(width/scale-(minX+maxX))/2;ty=(height/scale-(minY+maxY))/2;applyTransform()}
-function edgeColor(kind){return ({INHERITS:"#e6ba65",USES_LIBRARY:"#9b8bd5",USES_TYPE:"#7ba5d8",IMPORTS:"#8497b5",CALLS:"#63b6a0",EXTERNAL_CALL:"#d58b5c",APPLIES_MODIFIER:"#83a8d4",ASSET_FLOW:"#bd88d2",READS:"#6ea6a1",WRITES:"#e18b72"})[kind]||"#8292aa"}
-svg.addEventListener("wheel",ev=>{ev.preventDefault();const factor=ev.deltaY<0?1.12:.89;scale=Math.max(.18,Math.min(3,scale*factor));applyTransform()},{passive:false});
-svg.addEventListener("pointerdown",ev=>{if(ev.target!==svg&&ev.target.tagName!=="g")return;pan={x:ev.clientX,y:ev.clientY,tx,ty}});
-svg.addEventListener("pointermove",ev=>{if(!pan)return;const r=svg.getBoundingClientRect();tx=pan.tx+(ev.clientX-pan.x)*(width/r.width)/scale;ty=pan.ty+(ev.clientY-pan.y)*(height/r.height)/scale;applyTransform()});
-svg.addEventListener("pointerup",()=>{pan=null});svg.addEventListener("click",()=>{selected=null;document.getElementById("detail-title").textContent="Protocol overview";document.getElementById("detail-sub").textContent="Select a node to inspect its connections.";document.getElementById("details").textContent="No node selected.";document.getElementById("connections").textContent="Choose a node to see its incoming and outgoing relationships.";render()});
-document.getElementById("search").addEventListener("input",render);kindSelect.addEventListener("change",render);document.getElementById("fit").addEventListener("click",fit);document.getElementById("reset").addEventListener("click",()=>{selected=null;scale=1;tx=0;ty=0;applyTransform();render()});
-initialLayout();render();requestAnimationFrame(fit);
+function showOverview(){history=[];activeId=null;activeEdge=null;render()}
+document.getElementById("back").addEventListener("click",function(){
+  if(history.length>1){history.pop();activeId=history[history.length-1];activeEdge=null;render()}
+});
+document.getElementById("overview").addEventListener("click",showOverview);
+search.addEventListener("input",renderCatalog);
+kind.addEventListener("change",function(){activeEdge=null;render()});
+renderKindOptions();
+(document.getElementById("subtitle")).textContent=contracts.length+" contracts · "+edges.length+" relationship groups · choose a contract to follow";
+(DATA.limitations||[]).forEach(function(t){add(document.getElementById("limits"),"p","limit-note",t)});
+if(DATA.focus){
+  const wanted=String(DATA.focus).split(".")[0].toLowerCase();
+  const found=contracts.find(function(n){return n.label.toLowerCase()===String(DATA.focus).toLowerCase()||n.label.toLowerCase()===wanted});
+  if(found)history.push(found.id),activeId=found.id;
+}
+render();
 })();
 </script>
 </body>
 </html>
+
 """
 
 
