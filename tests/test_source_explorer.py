@@ -98,6 +98,11 @@ class ProtocolExplorerTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_source_index_keeps_excluded_dependency_directory_coverage(self):
+        self.assertIn("excluded_directories", self.index["inventory"])
+        self.assertIsInstance(self.index["inventory"]["excluded_directories"], list)
+        self.assertEqual(self.model["inventory"]["excluded_directories"], self.index["inventory"]["excluded_directories"])
+
     def test_model_preserves_all_declaration_kinds_and_function_ownership(self):
         declarations = [n for n in self.model["nodes"] if n["type"] == "declaration"]
         by_label = {n["label"]: n for n in declarations}
