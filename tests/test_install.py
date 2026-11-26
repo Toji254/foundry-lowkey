@@ -263,8 +263,8 @@ class InstallSmokeTests(unittest.TestCase):
             )
             self.assertEqual(eth_flow_recon.returncode, 0, eth_flow_recon.stdout + eth_flow_recon.stderr)
             self.assertIn("LOWKEY / ETH FLOW", eth_flow_recon.stdout)
-            self.assertIn("OVERVIEW", eth_flow_recon.stdout)
-            self.assertIn("ROUTES TO ETH EXITS", eth_flow_recon.stdout)
+            self.assertIn("FLOW SNAPSHOT", eth_flow_recon.stdout)
+            self.assertIn("SOURCE ROUTES TO ETH EXITS", eth_flow_recon.stdout)
             self.assertIn("FlowVault.withdraw", eth_flow_recon.stdout)
 
             eth_flow_detail = subprocess.run(
@@ -272,7 +272,7 @@ class InstallSmokeTests(unittest.TestCase):
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(eth_flow_detail.returncode, 0, eth_flow_detail.stdout + eth_flow_detail.stderr)
-            self.assertIn("LOWKEY / ETH FLOW RECON  ·  DETAIL", eth_flow_detail.stdout)
+            self.assertIn("LOWKEY / ETH FLOW  ·  FORENSIC VIEW", eth_flow_detail.stdout)
             self.assertIn("ETH EXIT SITES", eth_flow_detail.stdout)
 
             version = subprocess.run(
