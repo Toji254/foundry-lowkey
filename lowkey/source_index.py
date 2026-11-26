@@ -836,6 +836,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "uninspected": merged_failures,
                     "files_inspected": len(root_manifest),
                     "files_discovered": inventory.get("files_discovered", len(root_manifest)),
+                    "excluded_directories": inventory.get("excluded_directories") or [],
                 }
                 cached["cache"] = {"status": "HIT", "fingerprint": fingerprint}
                 return cached
@@ -2644,6 +2645,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "uninspected": failures,
             "files_inspected": len(source_units),
             "files_discovered": inventory.get("files_discovered", len(source_units)),
+            "excluded_directories": inventory.get("excluded_directories") or [],
         },
         "summary": {
             "files": len(file_ids),
