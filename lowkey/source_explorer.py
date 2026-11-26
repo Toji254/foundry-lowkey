@@ -1305,7 +1305,9 @@ function openNode(id,push){
   if(push&&selectedId&&selectedId!==id)history.push(selectedId);
   selectedId=id;selectedEdge=null;
   focusFunctionId=functionContextForNode(n);
-  if(n.type==="function"||n.type==="modifier")mode="functions";
+  const presetMode={storage:"storage",reads:"storage",writes:"storage",assets:"assets"}[MODEL.initial_only];
+  if(presetMode)mode=presetMode;
+  else if(n.type==="function"||n.type==="modifier")mode="functions";
   else if(n.type==="state"||n.type==="unresolved_state")mode="storage";
   else if(n.type==="asset")mode="assets";
   else if(focusFunctionId&&n.type==="external")mode="functions";
