@@ -605,7 +605,7 @@ def _inspect_upgrade_authority(client: RpcClient, proxy: str, runtime: str, admi
     }
 
 
-def _probe_transparent_admin_routing(def _probe_transparent_admin_routing(
+def _probe_transparent_admin_routing(
     client: RpcClient,
     proxy: str,
     implementation: str,
