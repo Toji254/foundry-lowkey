@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 RPC = os.environ.get("LOWKEY_RPC_URL", "http://127.0.0.1:8545")
-ANVIL_KEY0 = "0xac0974bec39a17e36ba4ba6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+ANVIL_KEY0 = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 FORGE_STD = Path("/tmp/lowkey-fixture/lib/forge-std")
 
