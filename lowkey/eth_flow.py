@@ -762,7 +762,7 @@ def _render_detail(report: dict[str, Any], *, limit: int) -> None:
     print("EVIDENCE    Static source relationships only; no transaction execution is claimed.")
 
     print()
-    print("01 / ETH INGRESS POINTS")
+    print("01 / ETH ENTRY POINTS (ETH INGRESS POINTS)")
     for item in report["entries"]:
         function = item["function"]
         statuses = {str(edge.get("status")) for edge in item["signals"]}
