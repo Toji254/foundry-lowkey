@@ -264,13 +264,16 @@ def campaign_result(
     result = results[0]
     detail = result.get("detail") or {}
     probe = detail.get("proxy_upgrade_probe") or {}
-    expected_break = expected_status == "BREAK"
+    expected_candidate = expected_status == "CANDIDATE"
 
-    if result.get("status") != expected_status:
+    # The Forge harness impersonates an attacker and deploys synthetic replacement
+    # code. Without a separately executed sequential-control manifest, Lowkey must
+    # preserve OBSERVED rather than promote this simulated candidate to BREAK.
+    if result.get("status") != "OBSERVED":
         raise AssertionError(
-            f"{contract}: expected {expected_status}, got {result.get('status')}.\n"
+            f"{contract}: expected fail-closed OBSERVED, got {result.get('status')}.\\n"
             + json.dumps(result, indent=2)
-            + "\nCLI output:\n" + output.stdout[-16000:]
+            + "\\nCLI output:\\n" + output.stdout[-16000:]
         )
     required = {
         "upgrade_call_success",
@@ -281,15 +284,22 @@ def campaign_result(
     missing = required - set(probe)
     if missing:
         raise AssertionError(f"{contract}: missing probe evidence fields: {sorted(missing)}")
-    observed_break = all(probe.get(name) is True for name in required)
-    if observed_break != expected_break:
+    observed_candidate = all(probe.get(name) is True for name in required)
+    if observed_candidate != expected_candidate:
         raise AssertionError(
-            f"{contract}: proxy result evidence does not match expected break state: "
+            f"{contract}: proxy candidate telemetry does not match the fixture: "
             + json.dumps(probe, indent=2)
         )
-    if bool(result.get("break_condition")) != expected_break:
+    candidate_flag = bool(detail.get("candidate_break_condition"))
+    if candidate_flag != expected_candidate or bool(result.get("break_condition")):
         raise AssertionError(
-            f"{contract}: break_condition mismatch: " + json.dumps(result, indent=2)
+            f"{contract}: candidate classification or fail-closed verdict mismatch: "
+            + json.dumps(result, indent=2)
+        )
+    if expected_candidate and (detail.get("control_gate") or {}).get("status") != "missing":
+        raise AssertionError(
+            f"{contract}: expected the explicit missing-control downgrade: "
+            + json.dumps(detail.get("control_gate"), indent=2)
         )
 
     harness_archive = detail.get("harness_archive")
@@ -312,15 +322,16 @@ def campaign_result(
     )
 
     print(
-        f"PASS: {contract} -> {expected_status}; "
+        f"PASS: {contract} -> OBSERVED ({'candidate break' if expected_candidate else 'authorized control'}); "
         f"upgrade={probe['upgrade_call_success']} slot={probe['implementation_changed']} "
         f"route={probe['delegatecall_route_confirmed']}"
     )
     return {
         "implementation_contract": contract,
         "proxy": proxy,
-        "expected_status": expected_status,
+        "fixture_role": expected_status,
         "observed_status": result.get("status"),
+        "candidate_break_condition": candidate_flag,
         "break_condition": result.get("break_condition"),
         "probe": probe,
         "harness_archive": str(archived_copy),
@@ -360,11 +371,11 @@ def proxy_admin_campaign_result(
     result = results[0]
     detail = result.get("detail") or {}
     probe = detail.get("proxy_upgrade_probe") or {}
-    expected_break = expected_status == "BREAK"
-    if result.get("status") != expected_status:
+    expected_candidate = expected_status == "CANDIDATE"
+    if result.get("status") != "OBSERVED":
         raise AssertionError(
-            f"{admin_contract}: expected {expected_status}, got {result.get('status')}."
-            + json.dumps(result, indent=2) + "\n" + output.stdout[-16000:]
+            f"{admin_contract}: expected fail-closed OBSERVED, got {result.get('status')}."
+            + json.dumps(result, indent=2) + "\\n" + output.stdout[-16000:]
         )
     if str(detail.get("proxy_address") or "").lower() != proxy_address.lower():
         raise AssertionError(f"{admin_contract}: explicit proxy address is missing from evidence.")
@@ -375,12 +386,24 @@ def proxy_admin_campaign_result(
     missing = required - set(probe)
     if missing:
         raise AssertionError(f"{admin_contract}: missing ProxyAdmin telemetry: {sorted(missing)}")
-    observed_break = all(probe.get(name) is True for name in required)
-    if observed_break != expected_break or bool(result.get("break_condition")) != expected_break:
+    observed_candidate = all(probe.get(name) is True for name in required)
+    candidate_flag = bool(detail.get("candidate_break_condition"))
+    if observed_candidate != expected_candidate or candidate_flag != expected_candidate:
         raise AssertionError(
-            f"{admin_contract}: attack/control evidence mismatch: "
+            f"{admin_contract}: proxy candidate telemetry mismatch: "
             + json.dumps({"probe": probe, "result": result}, indent=2)
         )
+    if bool(result.get("break_condition")):
+        raise AssertionError(
+            f"{admin_contract}: an unpaired simulated candidate was incorrectly promoted: "
+            + json.dumps(result, indent=2)
+        )
+    if expected_candidate and (detail.get("control_gate") or {}).get("status") != "missing":
+        raise AssertionError(
+            f"{admin_contract}: expected the explicit missing-control downgrade: "
+            + json.dumps(detail.get("control_gate"), indent=2)
+        )
+
     harness_archive = detail.get("harness_archive")
     if not harness_archive or not Path(harness_archive).is_file():
         raise AssertionError(f"{admin_contract}: archived harness is missing.")
@@ -399,7 +422,7 @@ def proxy_admin_campaign_result(
         encoding="utf-8",
     )
     print(
-        f"PASS: {admin_contract} -> {expected_status}; "
+        f"PASS: {admin_contract} -> OBSERVED ({'candidate break' if expected_candidate else 'authorized control'}); "
         f"upgrade={probe['upgrade_call_success']} slot={probe['implementation_changed']} "
         f"route={probe['delegatecall_route_confirmed']}"
     )
@@ -407,8 +430,9 @@ def proxy_admin_campaign_result(
         "proxy_admin_contract": admin_contract,
         "proxy_admin": admin_address,
         "proxy": proxy_address,
-        "expected_status": expected_status,
+        "fixture_role": expected_status,
         "observed_status": result.get("status"),
+        "candidate_break_condition": candidate_flag,
         "break_condition": result.get("break_condition"),
         "probe": probe,
         "harness_archive": str(archived_copy),
@@ -514,11 +538,11 @@ def main() -> int:
             cases = [
                 campaign_result(
                     lk, root, env, "VulnerableUUPSImplementation", vulnerable_proxy,
-                    "BREAK", evidence_root,
+                    "CANDIDATE", evidence_root,
                 ),
                 campaign_result(
                     lk, root, env, "SecureUUPSImplementation", secure_proxy,
-                    "OBSERVED", evidence_root,
+                    "CONTROL", evidence_root,
                 ),
                 proxy_admin_campaign_result(
                     lk, root, env, "VulnerableProxyAdmin", vulnerable_admin,
@@ -545,7 +569,7 @@ def main() -> int:
                     )
 
             report = {
-                "gate": "Lowkey UUPS and ProxyAdmin proxy break adapters",
+                "gate": "Lowkey UUPS and ProxyAdmin candidate-evidence acceptance",
                 "status": "PASS",
                 "chain_id": chain_id,
                 "source_sha": expected_git_sha,
@@ -554,7 +578,7 @@ def main() -> int:
                 "source_anvil_unchanged": True,
                 "scope": (
                     "Local Anvil deployments; Lowkey attack harness executes on Forge forks. "
-                    "Vulnerable UUPS and ProxyAdmin routes must break; owner-gated controls must reject the attacker."
+                    "Vulnerable UUPS and ProxyAdmin fixtures must produce complete candidate telemetry; owner-gated controls must reject the attacker. All results remain OBSERVED until an independent sequential-control manifest passes."
                 ),
             }
             (evidence_root / "report.json").write_text(
