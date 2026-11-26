@@ -69,12 +69,23 @@ lk proxy validate \
 
 A `COMPATIBLE_CANDIDATE` result is a conservative local comparison, not formal proof that an upgrade is safe. Run the project's OpenZeppelin Foundry Upgrades validator when its build requirements are met, then write target-specific tests for migration behavior and protocol invariants.
 
+## Upgrade authority candidate graph
+
+The inspector now supplements the raw EIP-1967 admin slot with a bounded candidate search:
+
+- It scans runtime `PUSH20` constants for embedded contract addresses, which can reveal immutable-admin candidates in some TransparentUpgradeableProxy builds.
+- It probes OpenZeppelin ProxyAdmin v5's `UPGRADE_INTERFACE_VERSION()` and v4-style `upgrade(address,address)` / `upgradeAndCall(address,address,bytes)` selector signals plus `owner()`.
+- For an observed owner contract it probes Safe-style `getOwners()` / `getThreshold()` and timelock-style `getMinDelay()` getters.
+- The JSON report preserves each candidate's origin, observed code, method signals, owner edge and limitations. Verbose terminal output shows the candidate graph.
+
+These are **candidate signals only**. A PUSH20 address may be unrelated data; a function selector may be present but unreachable; a self-reported getter does not prove that the contract is the proxy's effective admin. Lowkey does not currently prove complete Safe module/guard policy, timelock proposer/executor roles, nested governance authority, or that the candidate can successfully upgrade this proxy. Confirm the routing and authority path with a target-specific local-fork paired-control test.
+
 ## Current limitations — do not overclaim
 
 The current implementation does not yet provide:
 - proof that an observed EIP-1967 slot is consumed by the target's reachable runtime dispatch path;
 - proof of selector-to-facet DELEGATECALL routing for Diamonds or Diamond-cut authorization;
-- effective immutable-admin recovery for every proxy build or full ProxyAdmin -> owner -> multisig -> timelock authority graph;
+- definitive immutable-admin recovery or full authority proof: the current graph only surfaces bounded PUSH20, ProxyAdmin v4/v5, owner(), Safe-style and timelock-style candidates;
 - complete custom proxy slot discovery;
 - complete historical upgrade reconstruction: `history` currently covers only standard EIP-1967 events emitted by the target itself, within an explicit bounded range; it does not discover ProxyAdmin-emitted events, custom events, silent storage writes or events before the selected start block;
 - full ERC-7201 namespace compatibility proof;
@@ -86,7 +97,7 @@ These stay blocked/partial until there are dedicated Solidity fixtures, target-s
 
 ## Test boundary
 
-`tests/test_proxy_engine.py` exercises slot decoding and conflict handling, exact clone matching, PUSH-data-safe opcode scanning, UUPS UUID interpretation, beacon caller-dependence, Diamond Loupe candidate handling, storage reordering/type/gap behavior, source anchors, bounded EIP-1967 event decoding/reconciliation and non-executed attack plans. `tests/test_break_engine.py` checks the generated UUPS replacement harness and its telemetry gates. `scripts/proxy-break-acceptance-e2e.py` deploys a vulnerable UUPS fixture and owner-gated control to local Anvil, requires Lowkey to produce BREAK/OBSERVED respectively, and verifies that Forge-fork execution leaves both Anvil implementation slots unchanged. This validates one standard UUPS route; it is not generic proxy-family coverage.
+`tests/test_proxy_engine.py` exercises slot decoding and conflict handling, exact clone matching, PUSH-data-safe opcode scanning, UUPS UUID interpretation, beacon caller-dependence, Diamond Loupe candidate handling, bounded ProxyAdmin/owner candidate discovery, storage reordering/type/gap behavior, source anchors, bounded EIP-1967 event decoding/reconciliation and non-executed attack plans. `tests/test_break_engine.py` checks the generated UUPS replacement harness and its telemetry gates. `scripts/proxy-break-acceptance-e2e.py` deploys a vulnerable UUPS fixture and owner-gated control to local Anvil, requires Lowkey to produce BREAK/OBSERVED respectively, and verifies that Forge-fork execution leaves both Anvil implementation slots unchanged. This validates one standard UUPS route; it is not generic proxy-family coverage.
 
 ## Bounded upgrade history
 

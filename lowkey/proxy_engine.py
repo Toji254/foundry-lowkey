@@ -349,7 +349,263 @@ def _probe_owner_getter(client: RpcClient, address: str) -> dict[str, Any]:
     }
 
 
-def _probe_transparent_admin_routing(
+def _decode_abi_uint(value: Any) -> int | None:
+    raw = _hex_bytes(value)
+    if raw is None or len(raw) != 32:
+        return None
+    return int.from_bytes(raw, "big")
+
+
+def _decode_abi_string(value: Any, max_length: int = 256) -> str | None:
+    raw = _hex_bytes(value)
+    if raw is None or len(raw) < 64 or len(raw) % 32:
+        return None
+    offset = int.from_bytes(raw[:32], "big")
+    if offset + 32 > len(raw) or offset % 32:
+        return None
+    length = int.from_bytes(raw[offset:offset + 32], "big")
+    start = offset + 32
+    if length > max_length or start + length > len(raw):
+        return None
+    try:
+        return raw[start:start + length].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _decode_abi_address_array(value: Any, max_items: int = 128) -> list[str] | None:
+    raw = _hex_bytes(value)
+    if raw is None or len(raw) < 64 or len(raw) % 32:
+        return None
+    offset = int.from_bytes(raw[:32], "big")
+    if offset % 32 or offset + 32 > len(raw):
+        return None
+    count = int.from_bytes(raw[offset:offset + 32], "big")
+    start = offset + 32
+    if count > max_items or start + count * 32 > len(raw):
+        return None
+    result = []
+    for index in range(count):
+        word = raw[start + index * 32:start + (index + 1) * 32]
+        if word[:12] != b"\x00" * 12:
+            return None
+        result.append("0x" + word[12:].hex())
+    return result
+
+
+def _push_values(runtime: str, wanted_size: int, limit: int = 64) -> list[bytes]:
+    """Read PUSH immediates without interpreting bytes inside those immediates as opcodes."""
+    code = _hex_bytes(runtime)
+    if code is None or not 1 <= wanted_size <= 32:
+        return []
+    result = []
+    index = 0
+    opcode_wanted = 0x5F + wanted_size
+    while index < len(code):
+        opcode = code[index]
+        index += 1
+        if opcode == opcode_wanted:
+            value = code[index:index + wanted_size]
+            if len(value) == wanted_size:
+                result.append(value)
+                if len(result) >= limit:
+                    break
+            index += wanted_size
+        elif 0x60 <= opcode <= 0x7F:
+            index += opcode - 0x5F
+    return result
+
+
+def _embedded_code_addresses(runtime: str, limit: int = 32) -> list[str]:
+    values = _push_values(runtime, 20, limit=limit)
+    return list(dict.fromkeys("0x" + value.hex() for value in values if value != b"\x00" * 20))
+
+
+def _runtime_has_selector(runtime: str, selector: str) -> bool:
+    raw = _hex_bytes(selector)
+    return bool(raw and len(raw) == 4 and raw in _push_values(runtime, 4, limit=256))
+
+
+def _inspect_owner_contract(client: RpcClient, address: str) -> dict[str, Any]:
+    """Classify a contract owner using bounded read-only Safe/timelock/Ownable signals."""
+    result: dict[str, Any] = {"address": address, "status": "UNVERIFIED"}
+    try:
+        runtime = client.code(address)
+    except ProxyError as exc:
+        return {"address": address, "status": "RPC_ERROR", "error": str(exc)}
+    if runtime == "0x":
+        return {"address": address, "status": "ADDRESS_WITHOUT_CODE", "kind": "EOA_OR_DESTROYED"}
+    result["code_sha256"] = hashlib.sha256(bytes.fromhex(runtime[2:])).hexdigest()
+
+    safe_owners_call = _try_call_detailed(
+        client, address, function_selector("getOwners()"), SENTINEL_CALLERS[0]
+    )
+    safe_threshold_call = _try_call_detailed(
+        client, address, function_selector("getThreshold()"), SENTINEL_CALLERS[0]
+    )
+    safe_owners = (
+        _decode_abi_address_array(safe_owners_call.get("raw"))
+        if safe_owners_call["status"] == "SUCCESS" else None
+    )
+    safe_threshold = (
+        _decode_abi_uint(safe_threshold_call.get("raw"))
+        if safe_threshold_call["status"] == "SUCCESS" else None
+    )
+    if (
+        safe_owners is not None and safe_threshold is not None
+        and 0 < safe_threshold <= len(safe_owners)
+    ):
+        result.update({
+            "status": "OWNER_CONTRACT_CANDIDATE",
+            "kind": "SAFE_STYLE_MULTISIG_CANDIDATE",
+            "owners": safe_owners,
+            "threshold": safe_threshold,
+            "evidence": ["getOwners() decoded", "getThreshold() decoded and is within owner count"],
+            "limitation": "Getter consistency is a multisig-shape signal; it does not prove this contract controls the proxy upgrade path or that its transaction policy is safe.",
+        })
+        return result
+
+    delay_call = _try_call_detailed(
+        client, address, function_selector("getMinDelay()"), SENTINEL_CALLERS[0]
+    )
+    delay = _decode_abi_uint(delay_call.get("raw")) if delay_call["status"] == "SUCCESS" else None
+    if delay is not None:
+        result.update({
+            "status": "OWNER_CONTRACT_CANDIDATE",
+            "kind": "TIMELOCK_STYLE_CANDIDATE",
+            "min_delay_seconds": delay,
+            "evidence": ["getMinDelay() returned a canonical uint256"],
+            "limitation": "A delay getter does not enumerate proposers/executors or prove that this timelock controls the proxy upgrade path.",
+        })
+        return result
+
+    owner_probe = _probe_owner_getter(client, address)
+    result["owner_getter"] = owner_probe
+    if owner_probe.get("owner_candidate"):
+        result.update({
+            "status": "OWNER_CONTRACT_CANDIDATE",
+            "kind": "OWNABLE_STYLE_CONTRACT_CANDIDATE",
+            "owner_candidate": owner_probe["owner_candidate"],
+            "limitation": "owner() is a candidate edge only; downstream authority and upgrade authorization are not proven.",
+        })
+        return result
+
+    result.update({
+        "status": "CONTRACT_WITHOUT_RECOGNIZED_OWNER_SHAPE",
+        "kind": "UNKNOWN_CONTRACT_OWNER",
+        "limitation": "No supported Safe, timelock, or consistent owner() signal was decoded.",
+    })
+    return result
+
+
+def _inspect_upgrade_authority(client: RpcClient, proxy: str, runtime: str, admin_slot: str | None) -> dict[str, Any]:
+    """Build a bounded candidate graph for slot admins and immutable PUSH20 admin constants."""
+    discovered: list[tuple[str, str]] = []
+    if admin_slot:
+        discovered.append((admin_slot, "EIP1967_ADMIN_SLOT"))
+    for address in _embedded_code_addresses(runtime):
+        if address.lower() != proxy.lower() and all(address.lower() != item[0].lower() for item in discovered):
+            discovered.append((address, "RUNTIME_PUSH20_IMMUTABLE_CANDIDATE"))
+    discovered = discovered[:33]
+
+    candidates = []
+    authority_edges = []
+    for address, origin in discovered:
+        try:
+            code = client.code(address)
+        except ProxyError as exc:
+            candidates.append({
+                "address": address, "origin": origin, "status": "RPC_ERROR", "error": str(exc),
+            })
+            continue
+        if code == "0x":
+            candidates.append({
+                "address": address, "origin": origin,
+                "status": "ADDRESS_WITHOUT_CODE",
+                "kind": "EOA_OR_DESTROYED_ADMIN_CANDIDATE",
+                "limitation": "No runtime code at the pinned block; address is not established as an OpenZeppelin ProxyAdmin contract.",
+            })
+            continue
+
+        version_call = _try_call_detailed(
+            client, address, function_selector("UPGRADE_INTERFACE_VERSION()"), SENTINEL_CALLERS[0]
+        )
+        version = (
+            _decode_abi_string(version_call.get("raw"))
+            if version_call["status"] == "SUCCESS" else None
+        )
+        runtime_v4_upgrade = _runtime_has_selector(code, function_selector("upgrade(address,address)"))
+        runtime_v4_upgrade_call = _runtime_has_selector(
+            code, function_selector("upgradeAndCall(address,address,bytes)")
+        )
+        owner_probe = _probe_owner_getter(client, address)
+        is_oz_v5 = version == "5.0.0"
+        is_oz_v4_candidate = (
+            runtime_v4_upgrade and runtime_v4_upgrade_call
+            and bool(owner_probe.get("owner_candidate"))
+        )
+        is_proxy_admin = is_oz_v5 or is_oz_v4_candidate
+        candidate = {
+            "address": address,
+            "origin": origin,
+            "status": "PROXY_ADMIN_INTERFACE_CANDIDATE" if is_proxy_admin else "CONTRACT_CANDIDATE",
+            "kind": "OPENZEPPELIN_PROXY_ADMIN_V5_SIGNAL" if is_oz_v5 else (
+                "OPENZEPPELIN_PROXY_ADMIN_V4_CANDIDATE" if is_oz_v4_candidate else "UNKNOWN_ADMIN_CONTRACT"
+            ),
+            "runtime_code_sha256": hashlib.sha256(bytes.fromhex(code[2:])).hexdigest(),
+            "upgrade_interface_version": version,
+            "upgrade_interface_version_probe": version_call["status"],
+            "runtime_upgrade_selector_signals": {
+                "upgrade(address,address)": runtime_v4_upgrade,
+                "upgradeAndCall(address,address,bytes)": runtime_v4_upgrade_call,
+            },
+            "owner_getter": owner_probe,
+            "limitation": (
+                "Interface and owner() signals identify a ProxyAdmin candidate, not proof that this address is the proxy's effective immutable admin or that the owner can complete every upgrade."
+            ),
+        }
+        if owner_probe.get("owner_candidate"):
+            owner_address = owner_probe["owner_candidate"]
+            candidate["owner_candidate"] = owner_address
+            owner_contract = _inspect_owner_contract(client, owner_address)
+            candidate["owner_contract"] = owner_contract
+            authority_edges.append({
+                "from": address, "to": owner_address, "relation": "OWNER_GETTER_CANDIDATE",
+                "source": "owner()", "status": owner_probe["status"],
+            })
+            nested_owner = owner_contract.get("owner_candidate")
+            if nested_owner and nested_owner.lower() != address.lower():
+                authority_edges.append({
+                    "from": owner_address, "to": nested_owner,
+                    "relation": "OWNER_GETTER_CANDIDATE",
+                    "source": "owner()", "status": "CANDIDATE",
+                })
+        candidates.append(candidate)
+
+    recognized = [
+        item for item in candidates
+        if item.get("status") == "PROXY_ADMIN_INTERFACE_CANDIDATE"
+    ]
+    return {
+        "status": "CANDIDATES_OBSERVED" if candidates else "NO_ADMIN_CANDIDATE_DISCOVERED",
+        "candidate_count": len(candidates),
+        "proxy_admin_candidate_count": len(recognized),
+        "candidates": candidates,
+        "authority_edges": authority_edges,
+        "search_scope": {
+            "eip1967_admin_slot": admin_slot,
+            "runtime_push20_constants_considered": len(_embedded_code_addresses(runtime)),
+            "max_candidate_addresses": 33,
+        },
+        "limitations": [
+            "Immutable-admin discovery scans only PUSH20 immediate constants with deployed code; compiler encodings and custom immutable layouts may be missed.",
+            "Owner, Safe-style and timelock-style getters are self-reported read-only signals, not proofs of upgrade authorization, signer independence, threshold safety or operational control.",
+            "The graph is bounded and does not enumerate every role member, proposer, executor, guardian, or nested governance module.",
+        ],
+    }
+
+
+def _probe_transparent_admin_routing(def _probe_transparent_admin_routing(
     client: RpcClient,
     proxy: str,
     implementation: str,
@@ -818,6 +1074,9 @@ def inspect_proxy(
             "admin": admin_slot,
         }
         report["addresses"]["admin_slot_candidate"] = admin_slot
+        report["checks"]["upgrade_authority_graph"] = _inspect_upgrade_authority(
+            client, target, runtime, admin_slot,
+        )
         delegatecall_observed = _has_opcode(runtime, 0xF4)
         report["checks"]["runtime_routing"] = {
             "delegatecall_opcode_observed": delegatecall_observed,
@@ -1387,18 +1646,34 @@ _ATTACK_SCENARIOS = (
 def build_attack_plan(report: dict[str, Any]) -> dict[str, Any]:
     """Create review tasks only; never label these generated hypotheses as executed attacks."""
     architecture = report.get("architecture", "UNKNOWN")
+    implementation_architectures = {
+        "ERC1967_IMPLEMENTATION_PROXY",
+        "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE",
+        "ERC1967_IMPLEMENTATION_SLOT_CANDIDATE",
+        "CONFLICTING_EIP1967_SLOTS",
+    }
+    beacon_architectures = {
+        "ERC1967_BEACON_PROXY",
+        "ERC1967_BEACON_PROXY_CANDIDATE",
+        "ERC1967_BEACON_SLOT_CANDIDATE",
+    }
+    diamond_architectures = {
+        "DIAMOND_LOUPE_CONFIRMED",
+        "DIAMOND_LOUPE_AND_DELEGATECALL_CANDIDATE",
+        "DIAMOND_LOUPE_INTERFACE_CANDIDATE",
+    }
+    custom_architectures = {"CUSTOM_DELEGATECALL_CANDIDATE"}
     applicable = []
-    for row in _ATTACK_SCENARIOS:
-        key, title, invariant = row
-        if "UUPS" in key and architecture not in {"ERC1967_IMPLEMENTATION_PROXY", "CONFLICTING_EIP1967_SLOTS"}:
+    for key, title, invariant in _ATTACK_SCENARIOS:
+        if "UUPS" in key and architecture not in implementation_architectures:
             continue
-        if "TRANSPARENT" in key and architecture not in {"ERC1967_IMPLEMENTATION_PROXY", "CONFLICTING_EIP1967_SLOTS"}:
+        if "TRANSPARENT" in key and architecture not in implementation_architectures:
             continue
-        if "BEACON" in key and architecture != "ERC1967_BEACON_PROXY":
+        if "BEACON" in key and architecture not in beacon_architectures:
             continue
-        if "DIAMOND" in key and architecture != "DIAMOND_LOUPE_CONFIRMED":
+        if "DIAMOND" in key and architecture not in diamond_architectures:
             continue
-        if "CUSTOM" in key and architecture != "CUSTOM_DELEGATECALL_CANDIDATE":
+        if "CUSTOM" in key and architecture not in custom_architectures:
             continue
         applicable.append({
             "id": key,
@@ -1413,8 +1688,31 @@ def build_attack_plan(report: dict[str, Any]) -> dict[str, Any]:
                 "independent reproduction",
             ],
         })
+
+    authority = (report.get("checks") or {}).get("upgrade_authority_graph") or {}
+    if authority.get("proxy_admin_candidate_count", 0):
+        applicable.append({
+            "id": "PROXY-ADMIN-001",
+            "title": "ProxyAdmin owner-chain authorization",
+            "invariant_to_test": "prove that the discovered ProxyAdmin candidate is the effective admin and that only the intended owner/governance path can upgrade the proxy",
+            "status": "NOT_EXECUTED",
+            "required_evidence": [
+                "proxy admin routing proof",
+                "ProxyAdmin owner/upgrade interface evidence",
+                "Safe threshold/owner or timelock role/delay state",
+                "unprivileged negative-control and authorized positive-control attempts",
+                "pre/post implementation slot and delegated-route state",
+            ],
+        })
+
     # Generic initialization and storage tests apply to all recognized proxy-like targets.
-    if architecture not in {"DIRECT_OR_UNKNOWN", "NO_CODE", "UNKNOWN", "UNVERIFIED_EIP1967"}:
+    proxy_like = (
+        architecture not in {"DIRECT_OR_UNKNOWN", "NO_CODE", "UNKNOWN", "UNVERIFIED_EIP1967"}
+        or bool(report.get("slot_candidates", {}).get("implementation"))
+        or bool(report.get("slot_candidates", {}).get("beacon"))
+        or bool((report.get("checks") or {}).get("diamond_loupe"))
+    )
+    if proxy_like:
         applicable.extend([
             {
                 "id": "PROXY-INIT-001",
@@ -1445,7 +1743,6 @@ def build_attack_plan(report: dict[str, Any]) -> dict[str, Any]:
                 "pre/post namespaced state snapshots",
             ],
         })
-    # De-duplicate IDs where general and architecture-specific plans overlap.
     unique = {item["id"]: item for item in applicable}
     return {
         "schema": "lowkey.proxy.attack-plan.v1",
@@ -1984,6 +2281,13 @@ def _render_inspection(report: dict[str, Any], verbose: bool = False) -> str:
     admin_authority = checks.get("admin_slot_authority") or {}
     if admin_authority:
         lines.append(f"ADMIN SLOT STATE {admin_authority.get('status')}")
+    authority_graph = checks.get("upgrade_authority_graph") or {}
+    if authority_graph:
+        lines.append(
+            "AUTHORITY CANDS  "
+            f"{authority_graph.get('candidate_count', 0)} total / "
+            f"{authority_graph.get('proxy_admin_candidate_count', 0)} ProxyAdmin signals"
+        )
     transparent = checks.get("transparent_admin_routing") or {}
     if transparent:
         lines.append(f"ADMIN ROUTING    {transparent.get('status')}")
@@ -2025,6 +2329,25 @@ def _render_inspection(report: dict[str, Any], verbose: bool = False) -> str:
                 f"  {item.get('namespace_id')} -> {item.get('root_slot')} "
                 f"({item.get('path')}:{item.get('line')})"
             )
+        if authority_graph:
+            lines.append("UPGRADE AUTHORITY CANDIDATE GRAPH")
+            for candidate in authority_graph.get("candidates", []):
+                lines.append(
+                    f"  {candidate.get('address')} [{candidate.get('kind')}] "
+                    f"origin={candidate.get('origin')} status={candidate.get('status')}"
+                )
+                owner_candidate = candidate.get("owner_candidate")
+                owner_contract = candidate.get("owner_contract") or {}
+                if owner_candidate:
+                    lines.append(f"    owner() -> {owner_candidate} [{owner_contract.get('kind', 'UNKNOWN')}]")
+                for owner in owner_contract.get("owners", []):
+                    lines.append(f"      Safe owner candidate: {owner}")
+                if owner_contract.get("threshold") is not None:
+                    lines.append(f"      Safe threshold candidate: {owner_contract.get('threshold')}")
+                if owner_contract.get("min_delay_seconds") is not None:
+                    lines.append(f"      Timelock delay candidate: {owner_contract.get('min_delay_seconds')} seconds")
+            for limitation in authority_graph.get("limitations", []):
+                lines.append("  LIMITATION: " + limitation)
         lines.append("AUTHORITY / LIFECYCLE CHECKS")
         for key in ("transparent_admin_routing", "admin_owner_getter", "beacon_owner_getter", "initialization"):
             value = checks.get(key)

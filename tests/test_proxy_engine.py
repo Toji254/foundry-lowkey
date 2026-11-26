@@ -703,6 +703,30 @@ class AuditPlanTests(unittest.TestCase):
         self.assertEqual(scenario["status"], "NOT_EXECUTED")
         self.assertIn("pre/post namespaced state snapshots", scenario["required_evidence"])
 
+
+    def test_candidate_architecture_still_gets_uups_scenarios(self):
+        report = {
+            "target": "0x" + "11" * 20,
+            "architecture": "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE",
+            "slot_candidates": {"implementation": "0x" + "22" * 20},
+        }
+        plan = pe.build_attack_plan(report)
+        ids = {item["id"] for item in plan["scenarios"]}
+        self.assertIn("PROXY-UUPS-001", ids)
+        self.assertIn("PROXY-TRANSPARENT-001", ids)
+        self.assertTrue(all(item["status"] == "NOT_EXECUTED" for item in plan["scenarios"]))
+
+    def test_proxy_admin_graph_adds_owner_chain_hypothesis(self):
+        report = {
+            "target": "0x" + "11" * 20,
+            "architecture": "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE",
+            "checks": {"upgrade_authority_graph": {"proxy_admin_candidate_count": 1}},
+        }
+        plan = pe.build_attack_plan(report)
+        scenario = next(item for item in plan["scenarios"] if item["id"] == "PROXY-ADMIN-001")
+        self.assertEqual(scenario["status"], "NOT_EXECUTED")
+        self.assertIn("unprivileged negative-control and authorized positive-control attempts", scenario["required_evidence"])
+
     def test_attack_plan_never_claims_execution(self):
         report = {"target": "0x" + "11" * 20, "architecture": "ERC1967_IMPLEMENTATION_PROXY", "snapshot": {"block_number": 1}}
         plan = pe.build_attack_plan(report)
@@ -910,6 +934,59 @@ class RpcCallClassificationTests(unittest.TestCase):
         self.assertEqual(state, "MALFORMED")
         self.assertIsNone(address)
         self.assertIn("non-zero high", note)
+
+
+
+class UpgradeAuthorityGraphTests(unittest.TestCase):
+    def test_discovers_oz5_proxy_admin_embedded_as_push20_and_safe_owner(self):
+        proxy = "0x" + "11" * 20
+        proxy_admin = "0x" + "22" * 20
+        safe = "0x" + "33" * 20
+        safe_owner = "0x" + "44" * 20
+        sentinel = pe.SENTINEL_CALLERS[0]
+        owner_selector = pe.function_selector("owner()")
+        version_selector = pe.function_selector("UPGRADE_INTERFACE_VERSION()")
+        owners_selector = pe.function_selector("getOwners()")
+        threshold_selector = pe.function_selector("getThreshold()")
+        version = "0x" + f"{32:064x}" + f"{5:064x}" + "352e302e30".ljust(64, "0")
+        safe_owners = dynamic_array([safe_owner], address_items=True)
+        fake = FakeRpc(
+            code={
+                proxy: "0x73" + proxy_admin[2:] + "f4",
+                proxy_admin: "0x6000",
+                safe: "0x6000",
+            },
+            calls={
+                (proxy_admin, version_selector, sentinel): version,
+                (proxy_admin, owner_selector, pe.SENTINEL_CALLERS[0]): word_address(safe),
+                (proxy_admin, owner_selector, pe.SENTINEL_CALLERS[1]): word_address(safe),
+                (safe, owners_selector, sentinel): safe_owners,
+                (safe, threshold_selector, sentinel): "0x" + f"{1:064x}",
+            },
+        )
+        graph = pe._inspect_upgrade_authority(fake, proxy, "0x73" + proxy_admin[2:] + "f4", None)
+        self.assertEqual(graph["proxy_admin_candidate_count"], 1)
+        candidate = graph["candidates"][0]
+        self.assertEqual(candidate["origin"], "RUNTIME_PUSH20_IMMUTABLE_CANDIDATE")
+        self.assertEqual(candidate["kind"], "OPENZEPPELIN_PROXY_ADMIN_V5_SIGNAL")
+        self.assertEqual(candidate["owner_candidate"], safe)
+        self.assertEqual(candidate["owner_contract"]["kind"], "SAFE_STYLE_MULTISIG_CANDIDATE")
+        self.assertEqual(candidate["owner_contract"]["threshold"], 1)
+        self.assertEqual(candidate["owner_contract"]["owners"], [safe_owner])
+
+    def test_admin_slot_eoa_is_not_mislabeled_as_proxyadmin(self):
+        proxy = "0x" + "11" * 20
+        admin = "0x" + "22" * 20
+        fake = FakeRpc(code={proxy: "0x6000", admin: "0x"})
+        graph = pe._inspect_upgrade_authority(fake, proxy, "0x6000", admin)
+        self.assertEqual(graph["candidate_count"], 1)
+        self.assertEqual(graph["proxy_admin_candidate_count"], 0)
+        self.assertEqual(graph["candidates"][0]["kind"], "EOA_OR_DESTROYED_ADMIN_CANDIDATE")
+
+    def test_push20_scanner_skips_push_immediates_of_other_sizes(self):
+        address = "0x" + "12" * 20
+        runtime = "0x60" + "73" + address[2:] + "73" + address[2:]
+        self.assertEqual(pe._embedded_code_addresses(runtime), [address])
 
 
 if __name__ == "__main__":
