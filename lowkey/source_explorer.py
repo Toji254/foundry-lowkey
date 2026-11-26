@@ -594,7 +594,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 let MODEL=JSON.parse(document.getElementById("graph-data").textContent);
 const SERVER_MODE=__SERVER_MODE__;
 const byId=new Map(),positions=new Map(),hiddenVendors=new Set();
-let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,history=[];
+let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,focusFunctionId=null,history=[];
 let scale=1,tx=0,ty=0,drag=null,pan=null,renderNodes=[],renderEdges=[];
 const svg=document.getElementById("graph"),viewport=document.getElementById("viewport");
 const edgeLayer=document.getElementById("graph-edges"),nodeLayer=document.getElementById("graph-nodes");
@@ -770,6 +770,37 @@ function storageProjection(contractId){
   });
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:edges};
 }
+function functionContextForNode(selected){
+  if(!selected)return null;
+  if(selected.type==="function"||selected.type==="modifier")return selected.id;
+  const edgeKinds=[
+    "CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES",
+    "READS","READS_CONSTANT","READS_IMMUTABLE","TRANSIENT_READS",
+    "WRITES","DELETES","MUTATES","TRANSIENT_WRITES","TRANSIENT_DELETES",
+    "INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION",
+    "ASSET_FLOW",
+  ];
+  const incoming=MODEL.edges.filter(function(edge){
+    return edge.target===selected.id&&edgeKinds.includes(edge.kind);
+  });
+  const source=incoming.map(function(edge){return node(edge.source)}).find(function(item){
+    return item&&(item.type==="function"||item.type==="modifier");
+  });
+  return source?source.id:null;
+}
+function contractContextForNode(selected){
+  if(!selected)return null;
+  if(selected.type==="declaration")return selected.id;
+  if(selected.contract_id)return selected.contract_id;
+  const functionId=functionContextForNode(selected);
+  const functionNode=functionId?node(functionId):null;
+  if(functionNode&&functionNode.contract_id)return functionNode.contract_id;
+  const incoming=MODEL.edges.find(function(edge){
+    return edge.target===selected.id&&edge.kind==="IMPORTS";
+  });
+  const importer=incoming?node(incoming.source):null;
+  return importer?(importer.type==="declaration"?importer.id:importer.contract_id):null;
+}
 function assetProjection(contractId){
   if(!contractId||!node(contractId))return {nodes:[],edges:[]};
   const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
@@ -857,10 +888,10 @@ function currentProjection(){
     if(selected.type==="declaration")return selectedContractProjection(selectedId);
     return overviewProjection();
   }
-  const owner=selected?(selected.type==="declaration"?selected.id:selected.contract_id):null;
+  const owner=contractContextForNode(selected);
   if(mode==="functions"){
     if(!selected)return {nodes:[],edges:[],root:null};
-    return functionProjection(owner,selected&&["function","modifier"].includes(selected.type)?selected.id:null);
+    return functionProjection(owner,focusFunctionId||(["function","modifier"].includes(selected.type)?selected.id:null));
   }
   if(mode==="storage")return storageProjection(owner);
   if(mode==="assets")return assetProjection(owner);
@@ -919,7 +950,8 @@ function subtitle(n){
 function renderGraph(){
   const p=currentProjection();renderNodes=p.nodes||[];renderEdges=(p.edges||[]).filter(visibleEdge);
   positions.clear();
-  const root=mode==="functions"&&node(selectedId)&&["function","modifier"].includes(node(selectedId).type)?selectedId:selectedId;
+  const selected=node(selectedId);
+  const root=mode==="functions"?(focusFunctionId||selectedId):((mode==="storage"||mode==="assets")?contractContextForNode(selected):selectedId);
   layoutProjection({nodes:renderNodes,edges:renderEdges},root).forEach(function(value,key){positions.set(key,value)});
   clear(edgeLayer);clear(nodeLayer);
   const coords=new Map(renderNodes.map(function(n){return [n.id,positions.get(n.id)]}));
@@ -1121,7 +1153,7 @@ function renderInspector(){
   add(header,"span","entity-badge",selected.declaration_kind||selected.type);
   const tabs=add(root,"nav","inspector-tabs");
   ["overview","functions","state","calls","assets","review"].forEach(function(tab){const button=add(tabs,"button","inspector-tab"+(selectedTab===tab?" active":""),tab.toUpperCase());button.addEventListener("click",function(){selectedTab=tab;renderInspector()})});
-  const body=add(root,"div","inspector-body"),owner=selected.type==="declaration"?selected.id:selected.contract_id;
+  const body=add(root,"div","inspector-body"),owner=contractContextForNode(selected);
   const owned=MODEL.nodes.filter(function(n){return n.contract_id===owner});
   const functions=owned.filter(function(n){return n.type==="function"||n.type==="modifier"}).sort(function(a,b){return Number(b.visibility==="external"||b.visibility==="public")-Number(a.visibility==="external"||a.visibility==="public")||a.label.localeCompare(b.label)});
   const state=owned.filter(function(n){return n.type==="state"}).sort(function(a,b){return a.label.localeCompare(b.label)});
@@ -1192,7 +1224,7 @@ function renderFlow(){
     document.getElementById("flow-note").textContent="Choose a function to trace its call and effect path";
     return;
   }
-  const functionId=["function","modifier"].includes(selected.type)?selected.id:null;
+  const functionId=focusFunctionId||(["function","modifier"].includes(selected.type)?selected.id:null);
   document.getElementById("flow-title").textContent="CALL / EFFECT PATH";
   if(!functionId){
     document.getElementById("flow-note").textContent="Select an individual function to follow all reachable helpers and state / asset effects";
@@ -1273,19 +1305,21 @@ function openNode(id,push){
   const n=node(id);if(!n)return;
   if(push&&selectedId&&selectedId!==id)history.push(selectedId);
   selectedId=id;selectedEdge=null;
+  focusFunctionId=functionContextForNode(n);
   if(n.type==="function"||n.type==="modifier")mode="functions";
   else if(n.type==="state"||n.type==="unresolved_state")mode="storage";
   else if(n.type==="asset")mode="assets";
+  else if(focusFunctionId&&n.type==="external")mode="functions";
   else mode="architecture";
   document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});
   renderAll();requestAnimationFrame(fitGraph);
 }
-function clearFocus(){selectedId=null;history=[];selectedEdge=null;selectedTab="overview";mode="architecture";document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderAll();fitGraph()}
+function clearFocus(){selectedId=null;focusFunctionId=null;history=[];selectedEdge=null;selectedTab="overview";mode="architecture";document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderAll();fitGraph()}
 function setMode(next){mode=next;selectedEdge=null;document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderGraph();renderInspector();renderFlow();requestAnimationFrame(fitGraph)}
 function setServerStatus(text){document.getElementById("import-status").textContent=text}
 function refreshModel(next){
   if(!next||next.schema_version!==2||!Array.isArray(next.nodes)||!Array.isArray(next.edges))throw new Error("The selected file is not a Lowkey graph model.");
-  MODEL=next;hiddenVendors.clear();mapModel();selectedId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
+  MODEL=next;hiddenVendors.clear();mapModel();selectedId=null;focusFunctionId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
   document.getElementById("project-name").textContent=MODEL.project_name||"Imported source workspace";
   renderAll();fitGraph();toast("Graph workspace loaded");
 }
