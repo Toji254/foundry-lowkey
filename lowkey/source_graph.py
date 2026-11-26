@@ -702,6 +702,9 @@ const DATA=JSON.parse(document.getElementById("graph-data").textContent);
 const nodes=DATA.nodes||[],edges=DATA.edges||[];
 const byId=new Map(nodes.map(function(n){return [n.id,n]}));
 const contracts=nodes.filter(function(n){return n.type==="contract"}).sort(function(a,b){
+  return (a.group||"").localeCompare(b.group||"") || a.label.localeCompare(b.label);
+});
+const rankedContracts=contracts.slice().sort(function(a,b){
   return ((b.incoming||0)+(b.outgoing||0))-((a.incoming||0)+(a.outgoing||0)) || a.label.localeCompare(b.label);
 });
 const kind=document.getElementById("kind"),search=document.getElementById("search");
@@ -782,7 +785,7 @@ function renderOverview(){
   add(connections,"p","lead","These contracts have the most indexed relationships. They are starting points, not audit-priority rankings.");
   const suggestions=add(connections,"div","");
   suggestions.id="suggestions";
-  contracts.slice(0,8).forEach(function(n){
+  rankedContracts.slice(0,8).forEach(function(n){
     const button=make("button","suggestion");
     button.type="button";
     add(button,"strong","",n.label);
@@ -833,7 +836,7 @@ function renderFocus(){
   const node=byId.get(activeId);
   if(!node){renderOverview();return}
   document.getElementById("focus-title").textContent=node.label;
-  document.getElementById("focus-lead").textContent=(node.type||"node").toUpperCase()+" · "+(node.file||node.group||"Source relationship endpoint");
+  document.getElementById("focus-lead").textContent=(node.declaration_kind||node.type||"node").toUpperCase()+" · "+(node.file||node.group||"Source relationship endpoint");
   const all=visibleEdges();
   const outgoing=all.filter(function(e){return e.source===activeId}).sort(function(a,b){return b.count-a.count||a.label.localeCompare(b.label)});
   const incoming=all.filter(function(e){return e.target===activeId}).sort(function(a,b){return b.count-a.count||a.label.localeCompare(b.label)});
@@ -845,8 +848,8 @@ function renderFocus(){
   clear(connections);
   add(connections,"div","section-title","DIRECT RELATIONSHIPS");
   add(connections,"p","lead","Select a relationship to inspect its evidence. Use Follow to move one step through the protocol.");
-  renderDirection("OUTGOING · THIS CONTRACT CALLS / USES", "out",outgoing);
-  renderDirection("INCOMING · OTHER CONTRACTS REACH THIS", "in",incoming);
+  renderDirection("OUTGOING · RELATIONSHIPS FROM THIS CONTRACT", "out",outgoing);
+  renderDirection("INCOMING · RELATIONSHIPS TO THIS CONTRACT", "in",incoming);
   showNodeInspector(node);
 }
 function showNodeInspector(node){
@@ -854,7 +857,7 @@ function showNodeInspector(node){
   clear(document.getElementById("inspect-sub"));
   clear(document.getElementById("limits"));
   document.getElementById("inspect-title").textContent=node?node.label:"How to follow the graph";
-  document.getElementById("inspect-sub").textContent=node?(node.type||"node").toUpperCase()+" · "+(node.origin||"origin not classified"):"A focused investigation, not a wall of lines.";
+  document.getElementById("inspect-sub").textContent=node?(node.declaration_kind||node.type||"node").toUpperCase()+" · "+(node.origin||"origin not classified"):"A focused investigation, not a wall of lines.";
   const limits=document.getElementById("limits");
   if(node){
     [["Source",node.location],["Directory",node.group],["Incoming indexed links",node.incoming],["Outgoing indexed links",node.outgoing],["Internal relationships",node.internal_relationships]].forEach(function(pair){
@@ -863,6 +866,8 @@ function showNodeInspector(node){
       const b=add(row,"b","",pair[0]+": ");
       row.appendChild(document.createTextNode(String(pair[1])));
     });
+    add(limits,"h2","","FUNCTION-LEVEL TRACE");
+    add(limits,"p","limit-note","This view aggregates relationships at contract level. For the actual function call tree, use: lk trace source ContractName.functionName");
   }else{
     (DATA.limitations||[]).forEach(function(t){add(limits,"p","limit-note",t)});
   }
