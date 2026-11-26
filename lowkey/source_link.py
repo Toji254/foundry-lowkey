@@ -2019,7 +2019,10 @@ def run_link(argv: list[str], *, help_command: str = "lk link") -> int:
             )
 
         if args.serve:
-            return serve_explorer(index, root=explorer_root, port=args.port)
+            return serve_explorer(
+                index, root=explorer_root, port=args.port,
+                include_third_party=args.include_third_party, only=args.only,
+            )
 
         if args.output_format == "html":
             output = args.output
