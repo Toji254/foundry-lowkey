@@ -667,15 +667,15 @@ h1{font-size:23px;line-height:1.2;margin:0 0 7px;overflow-wrap:anywhere}
 <div id="warning">STATIC SOURCE EVIDENCE — these links are found in source code; they do not prove a path executed or succeeded on-chain.</div>
 <main>
   <aside class="panel" id="catalog">
-    <div class="panel-heading">CONTRACTS</div>
+    <div class="panel-heading">DECLARATIONS</div>
     <input id="search" placeholder="Search contracts…" aria-label="Search contracts">
     <div class="catalog-meta" id="catalog-meta"></div>
     <div id="contract-list"></div>
   </aside>
   <section id="workspace">
     <div class="crumbs" id="crumbs"></div>
-    <h1 id="focus-title">Choose a contract to begin</h1>
-    <p class="lead" id="focus-lead">Start with one contract. Lowkey will show only its direct incoming and outgoing relationships.</p>
+    <h1 id="focus-title">Choose a declaration to begin</h1>
+    <p class="lead" id="focus-lead">Start with a contract, interface, or library. Lowkey will show only its direct incoming and outgoing relationships.</p>
     <div class="summary-strip" id="summary-strip"></div>
     <div id="connections"></div>
   </section>
@@ -750,7 +750,7 @@ function renderCatalog(){
     button.type="button";
     const main=add(button,"span","");
     add(main,"span","contract-name",n.label);
-    add(main,"span","contract-meta",n.file||"Source location unavailable");
+    add(main,"span","contract-meta",(n.declaration_kind||"declaration")+" · "+(n.file||"Source location unavailable"));
     add(button,"span","count",degree(n)+" links");
     button.addEventListener("click",function(){openNode(n.id,true)});
     list.appendChild(button);
@@ -773,10 +773,10 @@ function renderCrumbs(){
 }
 function renderOverview(){
   const heading=document.getElementById("focus-title");
-  heading.textContent="Choose a contract to begin";
-  document.getElementById("focus-lead").textContent="This project has "+contracts.length+" contract nodes and "+edges.length+" relationship groups. Pick one contract; Lowkey will expose its direct connections without drawing the entire protocol at once.";
+  heading.textContent="Choose a declaration to begin";
+  document.getElementById("focus-lead").textContent="This project has "+contracts.length+" declaration nodes and "+edges.length+" relationship groups. Pick one declaration; Lowkey will expose its direct connections without drawing the entire protocol at once.";
   const strip=document.getElementById("summary-strip");clear(strip);
-  [["Contracts",contracts.length],["Relationship groups",edges.length],["Source files",(DATA.summary||{}).files||0]].forEach(function(item){
+  [["Declarations",contracts.length],["Relationship groups",edges.length],["Source files",(DATA.summary||{}).files||0]].forEach(function(item){
     const chip=add(strip,"div","summary-chip","");
     add(chip,"b","",item[1]);chip.appendChild(document.createTextNode(item[0]));
   });
@@ -915,7 +915,7 @@ document.getElementById("overview").addEventListener("click",showOverview);
 search.addEventListener("input",renderCatalog);
 kind.addEventListener("change",function(){activeEdge=null;render()});
 renderKindOptions();
-(document.getElementById("subtitle")).textContent=contracts.length+" contracts · "+edges.length+" relationship groups · choose a contract to follow";
+(document.getElementById("subtitle")).textContent=contracts.length+" declarations · "+edges.length+" relationship groups · choose one to follow";
 (DATA.limitations||[]).forEach(function(t){add(document.getElementById("limits"),"p","limit-note",t)});
 if(DATA.focus){
   const wanted=String(DATA.focus).split(".")[0].toLowerCase();
