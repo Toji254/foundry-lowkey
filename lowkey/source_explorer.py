@@ -593,15 +593,20 @@ function clear(parent){parent.replaceChildren()}
 function el(tag,attrs){const item=document.createElementNS("http://www.w3.org/2000/svg",tag);Object.entries(attrs||{}).forEach(function(pair){item.setAttribute(pair[0],pair[1])});return item}
 function h(tag,cls,value){const item=document.createElement(tag);if(cls)item.className=cls;if(value!==undefined&&value!==null)item.textContent=String(value);return item}
 function add(parent,tag,cls,value){const item=h(tag,cls,value);parent.appendChild(item);return item}
-function mapModel(){byId.clear();MODEL.nodes.forEach(function(n){byId.set(n.id,n)});(MODEL.groups||[]).forEach(function(g){byId.set(g.id,{id:g.id,type:"group",kind:"group",label:g.label,folder:g.folder,description:g.count+" declarations",count:g.count,declarations:g.declarations,vendor:(g.vendors||[]).join(", "),origin:"first-party",scope:"application",incoming:0,outgoing:0})})}
+function mapModel(){byId.clear();MODEL.nodes.forEach(function(n){byId.set(n.id,n)});(MODEL.groups||[]).forEach(function(g){byId.set(g.id,{...g,id:g.id,type:"group",kind:"group",label:g.label,folder:g.folder,description:g.count+" declarations",vendor:(g.vendors||[]).join(", "),origin:"mixed",scope:"application",incoming:0,outgoing:0})})}
 function node(id){return byId.get(id)}
 function toast(message){const item=document.getElementById("toast");item.textContent=message;item.classList.add("show");clearTimeout(toast.handle);toast.handle=setTimeout(function(){item.classList.remove("show")},2600)}
 function filters(){const result={};document.querySelectorAll("[data-filter]").forEach(function(x){result[x.dataset.filter]=x.checked});return result}
 function visibleNode(n){
   if(!n)return false;
   const f=filters();
-  if(n.type==="declaration"){
-    const dk=(n.declaration_kind||"contract").toLowerCase();
+  if(n.type==="group"){
+    if(Array.isArray(n.declarations)&&n.declarations.length)return n.declarations.some(function(id){return visibleNode(node(id))});
+    return true;
+  }
+  const declaration=n.type==="declaration"?n:node(n.contract_id);
+  if(declaration&&declaration.type==="declaration"){
+    const dk=(declaration.declaration_kind||"contract").toLowerCase();
     const key=dk.includes("interface")?"interface":dk.includes("library")?"library":dk.includes("abstract")?"abstract":"contract";
     if(!f[key])return false;
   }
@@ -626,7 +631,7 @@ function visibleEdge(e){
   return visibleNode(node(e.source))&&visibleNode(node(e.target));
 }
 function declarationNodes(){return MODEL.nodes.filter(function(n){return n.type==="declaration"&&visibleNode(n)})}
-function groupNodes(){return MODEL.groups.map(function(g){return node(g.id)})}
+function groupNodes(){return MODEL.groups.map(function(g){return node(g.id)}).filter(visibleNode)}
 function folderProjection(folder){
   const group=MODEL.groups.find(function(g){return g.folder===folder});if(!group)return {nodes:[],edges:[]};
   const ids=new Set((group.declarations||[]).filter(function(id){return visibleNode(node(id))}));
@@ -649,44 +654,52 @@ function folderProjection(folder){
 }
 function selectedContractProjection(contractId){
   const focus=node(contractId);if(!focus)return {nodes:[],edges:[]};
-  const ids=new Set([contractId]),rows=new Map(),owned=MODEL.nodes.filter(function(n){return n.contract_id===contractId});
+  const owned=MODEL.nodes.filter(function(n){return n.contract_id===contractId});
   const functions=owned.filter(function(n){return n.type==="function"||n.type==="modifier"});
-  const outgoing=MODEL.edges.filter(function(e){return functions.some(function(fn){return fn.id===e.source})&&["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","ASSET_FLOW","READS","WRITES","DELETES","USES_TYPE"].includes(e.kind)});
-  outgoing.forEach(function(e){
-    const a=node(e.source),b=node(e.target);if(!visibleEdge(e))return;
+  const ownFunctionIds=new Set(functions.map(function(fn){return fn.id}));
+  const relevant=MODEL.edges.filter(function(e){
+    if(e.kind==="CONTAINS")return false;
+    const inbound=ownFunctionIds.has(e.target)&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL"].includes(e.kind);
+    const outbound=ownFunctionIds.has(e.source);
+    const contractDependency=e.source===contractId&&["INHERITS","USES_LIBRARY","USES_TYPE","IMPORTS"].includes(e.kind);
+    return (inbound||outbound||contractDependency)&&visibleEdge(e);
+  });
+  const ids=new Set([contractId]);
+  relevant.forEach(function(e){
     ids.add(e.source);ids.add(e.target);
-    if(b&&b.contract_id&&b.contract_id!==contractId)ids.add(b.contract_id);
-    if(a&&a.contract_id&&a.contract_id!==contractId)ids.add(a.contract_id);
-  });
-  const directFunctions=functions.filter(function(fn){
-    return fn.visibility==="external"||fn.visibility==="public"||outgoing.some(function(e){return e.source===fn.id&&["EXTERNAL_CALL","ASSET_FLOW"].includes(e.kind)});
-  }).sort(function(a,b){return Number(b.visibility==="external"||b.visibility==="public")-Number(a.visibility==="external"||a.visibility==="public")||a.label.localeCompare(b.label)}).slice(0,16);
-  directFunctions.forEach(function(fn){ids.add(fn.id)});
-  // Show linked declaration nodes and the actual function-level relationship edges.
-  const candidates=MODEL.edges.filter(function(e){return ids.has(e.source)||ids.has(e.target)});
-  candidates.forEach(function(e){
     const a=node(e.source),b=node(e.target);
-    if(a&&b&&visibleEdge(e)){
-      if(a.contract_id===contractId||b.contract_id===contractId||ids.has(e.source)&&ids.has(e.target)){
-        ids.add(e.source);ids.add(e.target);
-      }
-    }
+    if(a&&a.contract_id)ids.add(a.contract_id);
+    if(b&&b.contract_id)ids.add(b.contract_id);
   });
+  // Retain all externally callable entry points, including functions with no indexed edges.
+  functions.filter(function(fn){return fn.visibility==="external"||fn.visibility==="public"}).forEach(function(fn){
+    if(visibleNode(fn))ids.add(fn.id);
+  });
+  const includedContracts=new Set(Array.from(ids).map(function(id){
+    const n=node(id);return n&&(n.type==="declaration"?n.id:n.contract_id);
+  }).filter(Boolean));
+  const ownership=MODEL.edges.filter(function(e){
+    return e.kind==="CONTAINS"&&includedContracts.has(e.source)&&ids.has(e.target)&&visibleEdge(e);
+  });
+  ownership.forEach(function(e){ids.add(e.source);ids.add(e.target)});
   const nodes=Array.from(ids).map(node).filter(function(n){return n&&visibleNode(n)});
   const kept=new Set(nodes.map(function(n){return n.id}));
-  const edges=MODEL.edges.filter(function(e){return kept.has(e.source)&&kept.has(e.target)&&e.kind!=="CONTAINS"&&visibleEdge(e)});
+  const edges=MODEL.edges.filter(function(e){
+    if(e.kind==="CONTAINS")return includedContracts.has(e.source)&&kept.has(e.target)&&visibleEdge(e);
+    return kept.has(e.source)&&kept.has(e.target)&&visibleEdge(e);
+  });
   return {nodes:nodes,edges:edges};
 }
 function functionProjection(contractId,focusFunction){
   const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&(!contractId||n.contract_id===contractId)&&visibleNode(n)});
   const root=focusFunction?node(focusFunction):functions.find(function(n){return n.visibility==="external"||n.visibility==="public"})||functions[0];
   if(!root)return {nodes:[],edges:[],root:null};
-  const distance=new Map([[root.id,0]]),queue=[root.id],callEdges=[],maxDepth=5,maxNodes=140;
+  const distance=new Map([[root.id,0]]),queue=[root.id],callEdges=[],maxDepth=10,maxNodes=400;
   while(queue.length){
     const current=queue.shift(),depth=distance.get(current);
     if(depth>=maxDepth)continue;
     MODEL.edges.forEach(function(e){
-      if(e.source!==current||!["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES"].includes(e.kind)||!visibleEdge(e))return;
+      if(e.source!==current||!["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES"].includes(e.kind)||!visibleEdge(e))return;
       callEdges.push(e);
       const target=node(e.target);
       if(target&&["function","modifier"].includes(target.type)&&!distance.has(target.id)&&distance.size<maxNodes){
@@ -702,7 +715,7 @@ function functionProjection(contractId,focusFunction){
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:Array.from(new Map(edges.map(function(e){return [e.id,e]})).values()),root:root,distance:distance};
 }
 function storageProjection(contractId){
-  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
+  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&(!contractId||n.contract_id===contractId)&&visibleNode(n)});
   const ids=new Set(functions.map(function(n){return n.id})),edges=[];
   MODEL.edges.forEach(function(e){
     if(!ids.has(e.source)||!["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind)||!visibleEdge(e))return;
@@ -711,7 +724,7 @@ function storageProjection(contractId){
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:edges};
 }
 function assetProjection(contractId){
-  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
+  const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&(!contractId||n.contract_id===contractId)&&visibleNode(n)});
   const ids=new Set(functions.map(function(n){return n.id})),edges=[];
   MODEL.edges.forEach(function(e){if(ids.has(e.source)&&e.kind==="ASSET_FLOW"&&visibleEdge(e)){edges.push(e);ids.add(e.target)}});
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:edges};
@@ -726,19 +739,53 @@ function securityProjection(contractId){
   return {nodes:Array.from(ids).map(node).filter(Boolean),edges:Array.from(new Map(edges.map(function(e){return [e.id,e]})).values()),leads:leads};
 }
 function overviewProjection(){
-  const groups=groupNodes(),ids=new Set(groups.map(function(g){return g.id}));
+  const groupMap=new Map(groupNodes().map(function(g){return [g.id,g]}));
   const rows=new Map();
-  MODEL.overview_edges.forEach(function(e){
-    if(e.kind==="IMPORTS"&&!document.querySelector('[data-edge="IMPORTS"]').checked)return;
-    if(!ids.has(e.source)||!ids.has(e.target))return;
-    const a=MODEL.groups.find(function(g){return g.id===e.source}),b=MODEL.groups.find(function(g){return g.id===e.target});
-    if(a&&a.third_party&&!filters()["third-party"])return;
-    if(b&&b.third_party&&!filters()["third-party"])return;
-    const key=e.source+"|"+e.target+"|"+e.kind;
-    const row=rows.get(key)||{id:key,source:e.source,target:e.target,kind:e.kind,label:e.label,count:0,resolution:e.resolution};
-    row.count+=e.count;rows.set(key,row);
+  MODEL.edges.forEach(function(e){
+    if(e.kind==="CONTAINS"||["READS","READS_CONSTANT","READS_IMMUTABLE","WRITES","DELETES","MUTATES","TRANSIENT_READS","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind))return;
+    if(!visibleEdge(e))return;
+    const a=node(e.source),b=node(e.target);if(!a||!b)return;
+    let sourceGroup=null,targetGroup=null;
+    if(e.kind==="IMPORTS"){
+      sourceGroup="group:"+a.folder;
+      targetGroup=b.type==="file"?"group:"+b.folder:"external-dependencies";
+    }else{
+      const sourceOwner=a.type==="declaration"?a.id:a.contract_id;
+      const targetOwner=b.type==="declaration"?b.id:b.contract_id;
+      if(!sourceOwner)return;
+      sourceGroup="group:"+(node(sourceOwner)||{}).folder;
+      targetGroup=targetOwner?"group:"+(node(targetOwner)||{}).folder:(e.kind==="ASSET_FLOW"?"asset-boundary":"external-dependencies");
+    }
+    if(!sourceGroup||!targetGroup||sourceGroup===targetGroup)return;
+    if(!groupMap.has(sourceGroup)){
+      const group=MODEL.groups.find(function(item){return item.id===sourceGroup});
+      if(group&&visibleNode(node(sourceGroup)))groupMap.set(sourceGroup,node(sourceGroup));
+    }
+    if(!groupMap.has(targetGroup)){
+      const group=MODEL.groups.find(function(item){return item.id===targetGroup});
+      if(group&&visibleNode(node(targetGroup)))groupMap.set(targetGroup,node(targetGroup));
+      else if(targetGroup==="asset-boundary"||targetGroup==="external-dependencies"){
+        groupMap.set(targetGroup,{
+          id:targetGroup,type:"group",kind:"group",
+          label:targetGroup==="asset-boundary"?"Asset flows":"External boundaries",
+          folder:targetGroup,count:0,declarations:[],origin:"external",scope:"external"
+        });
+      }
+    }
+    if(!groupMap.has(sourceGroup)||!groupMap.has(targetGroup))return;
+    const key=sourceGroup+"|"+targetGroup+"|"+e.kind+"|"+e.resolution;
+    const row=rows.get(key)||{
+      id:"overview:"+key,source:sourceGroup,target:targetGroup,
+      kind:e.kind,label:e.label,count:0,resolution:e.resolution,examples:[]
+    };
+    row.count++;
+    if(row.examples.length<5)row.examples.push({
+      source_contract:a.contract||a.label,target_contract:b.contract||b.label,
+      source_file:e.file,line:e.line
+    });
+    rows.set(key,row);
   });
-  return {nodes:groups,edges:Array.from(rows.values())};
+  return {nodes:Array.from(groupMap.values()),edges:Array.from(rows.values())};
 }
 function currentProjection(){
   const selected=node(selectedId);
@@ -749,7 +796,10 @@ function currentProjection(){
     return overviewProjection();
   }
   const owner=selected?(selected.type==="declaration"?selected.id:selected.contract_id):null;
-  if(mode==="functions")return functionProjection(owner,selected&&["function","modifier"].includes(selected.type)?selected.id:null);
+  if(mode==="functions"){
+    if(!selected)return {nodes:[],edges:[],root:null};
+    return functionProjection(owner,selected&&["function","modifier"].includes(selected.type)?selected.id:null);
+  }
   if(mode==="storage")return storageProjection(owner);
   if(mode==="assets")return assetProjection(owner);
   if(mode==="security")return securityProjection(owner);
@@ -764,7 +814,7 @@ function layoutProjection(projection,rootId){
       const current=queue.shift(),level=levels.get(current);
       if(level>=maxDepth)continue;
       edges.forEach(function(e){
-        if(e.source===current&&["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","INHERITS","USES_LIBRARY","USES_TYPE"].includes(e.kind)&&!levels.has(e.target)&&node(e.target)){
+        if(e.source===current&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","INHERITS","USES_LIBRARY","USES_TYPE"].includes(e.kind)&&!levels.has(e.target)&&node(e.target)){
           levels.set(e.target,level+1);queue.push(e.target);
         }
       });
