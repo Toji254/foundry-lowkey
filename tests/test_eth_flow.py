@@ -244,9 +244,13 @@ class EthFlowReconTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(status, 0)
-        self.assertIn("ETH INGRESS POINTS  (2)", rendered)
+        self.assertIn("ETH INGRESS POINTS  (3)", rendered)
         self.assertIn("Vault.deposit()", rendered)
         self.assertIn("Vault.directPay(", rendered)
+        ingress_section = rendered.split("01  ETH INGRESS POINTS", 1)[1].split(
+            "02  SOURCE ROUTES TO ETH EXITS", 1
+        )[0]
+        self.assertNotIn("Vault.withdraw(", ingress_section)
         self.assertIn("ETH EXIT SITES BY MECHANISM", rendered)
         self.assertIn("Treasury.pay(", rendered)
         self.assertIn("Vault.directPay(", rendered)
