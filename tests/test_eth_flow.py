@@ -198,7 +198,7 @@ class EthFlowReconTests(unittest.TestCase):
         self.assertNotIn("MockVaultTest", default_output.getvalue())
         self.assertIn("MockVaultTest", full_output.getvalue())
 
-    def test_default_view_is_compact_and_groups_duplicate_exit_mechanisms(self):
+    def test_default_view_keeps_full_evidence_in_a_structured_layout(self):
         temporary, root = self.workspace()
         try:
             output = io.StringIO()
@@ -210,11 +210,47 @@ class EthFlowReconTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertEqual(status, 0)
         self.assertIn("LOWKEY / ETH FLOW", rendered)
-        self.assertIn("OVERVIEW", rendered)
-        self.assertIn("ROUTES TO ETH EXITS", rendered)
-        self.assertIn("EXIT MECHANISMS", rendered)
-        self.assertNotIn("UNRESOLVED CALL BOUNDARIES", rendered)
-        self.assertLess(len(rendered.splitlines()), 55)
+        self.assertIn("FLOW SNAPSHOT", rendered)
+        self.assertIn("ETH INGRESS POINTS", rendered)
+        self.assertIn("Vault.deposit()", rendered)
+        self.assertIn("SOURCE ROUTES TO ETH EXITS", rendered)
+        self.assertIn("Vault.withdraw(", rendered)
+        self.assertIn("Treasury.pay(", rendered)
+        self.assertIn("ETH EXIT SITES BY MECHANISM", rendered)
+        self.assertIn("STATE / ACCOUNTING TOUCHPOINTS", rendered)
+        self.assertIn("balances[msg.sender]", rendered)
+        self.assertIn("UNRESOLVED CALL BOUNDARIES", rendered)
+        self.assertIn("REVIEW / COVERAGE", rendered)
+        self.assertIn("STATIC SOURCE EVIDENCE ONLY", rendered)
+
+    def test_route_limit_does_not_hide_ingress_or_exit_site_inventories(self):
+        temporary, root = self.workspace()
+        try:
+            source = root / "packages" / "vault" / "src" / "Vault.sol"
+            text = source.read_text(encoding="utf-8")
+            text = text.replace(
+                "function withdraw(uint256 amount, address payable recipient) external {",
+                "function directPay(address payable recipient) external payable {\n"
+                "                    recipient.transfer(msg.value);\n"
+                "                }\n\n"
+                "                function withdraw(uint256 amount, address payable recipient) external {",
+            )
+            source.write_text(text, encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = main(["--root", str(root), "--limit", "1"])
+        finally:
+            temporary.cleanup()
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("ETH INGRESS POINTS  (2)", rendered)
+        self.assertIn("Vault.deposit()", rendered)
+        self.assertIn("Vault.directPay(", rendered)
+        self.assertIn("ETH EXIT SITES BY MECHANISM  (2)", rendered)
+        self.assertIn("Treasury.pay(", rendered)
+        self.assertIn("Vault.directPay(", rendered)
+        self.assertIn("Current route budget: 1", rendered)
 
     def test_detail_flag_restores_full_forensic_sections(self):
         temporary, root = self.workspace()
