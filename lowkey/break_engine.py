@@ -1694,6 +1694,7 @@ contract LowkeyBreakProxyUpgrade is Test {{
         console2.log("LOWKEY_BREAK", success && candidateInstalled && routeConfirmed);
     }}
 }}
+"""
 
 
 def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
