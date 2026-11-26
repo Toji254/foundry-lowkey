@@ -365,10 +365,10 @@ def build_eth_report(
     reachable_functions: set[str] = set()
     unresolved: list[dict[str, Any]] = []
     truncated_roots: list[str] = []
-    for root in roots:
+    for root_index, root in enumerate(roots):
         remaining = limit - len(paths)
         if remaining <= 0:
-            truncated_roots.append(_node_label(root))
+            truncated_roots.extend(_node_label(item) for item in roots[root_index:])
             break
         records, reachable, pending, truncated = _path_records(
             root, functions, adjacency, unresolved_by_source, exits_by_source,
