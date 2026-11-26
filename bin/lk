@@ -109,6 +109,11 @@ Source relationship navigation:
   lk link --only calls          Show cross-contract call relationships
   lk link --only storage        Show state readers and writers
   lk link --format html         Generate the interactive offline graph
+  lk link --serve               Open the local workspace and import source projects
+  lk link --github URL --format html
+                                Clone and graph a GitHub repository
+  lk link --archive FILE.zip --format html
+                                Import and graph a Solidity ZIP archive
   lk link --list                Browse the searchable declaration inventory
   lk link --help                Full flags, use cases and copy-paste examples
   lk trace source --help        Source-call traversal, detail views and depth options
