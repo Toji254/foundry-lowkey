@@ -473,7 +473,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
-.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}
+.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}
 .graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
 .graph-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}.graph-empty span{max-width:420px;text-align:center;color:#9cb0c9;background:#0d1c30e8;border:1px solid #284563;border-radius:12px;padding:16px}
 #minimap{position:absolute;right:12px;bottom:12px;width:154px;height:95px;border:1px solid #36516e;border-radius:8px;background:#091626dd;pointer-events:auto;cursor:crosshair;touch-action:manipulation}.graph-hint{position:absolute;left:13px;bottom:13px;color:#7f96b2;font-size:10px;background:#081523cc;border:1px solid #253e5c;border-radius:6px;padding:5px 8px;pointer-events:none}
@@ -1135,16 +1135,38 @@ function renderInspector(){
       add(body,"div","section-head","FUNCTION PROFILE");
       [["Visibility",selected.visibility],["Mutability",selected.mutability],["Parameters",(selected.parameters||[]).join(", ")||"none recorded"],["Contract",selected.contract]].forEach(function(pair){add(body,"p","inspect-item",pair[0]+": "+(pair[1]||"unknown"))});
     }else add(body,"p","muted",selected.type_text||"Indexed source declaration or relationship endpoint.");
-  }else if(selectedTab==="functions")renderSection(body,"FUNCTIONS / MODIFIERS",functions,"No functions indexed.");
-  else if(selectedTab==="state"){
+  }else if(selectedTab==="state"){
     renderSection(body,"STATE DECLARATIONS",state,"No state variables indexed.");
-    const edges=MODEL.edges.filter(function(e){return functions.some(function(fn){return fn.id===e.source})&&["READS","WRITES","DELETES","MUTATES","INITIALIZES"].includes(e.kind)});
+    const stateKinds=[
+      "READS","READS_CONSTANT","READS_IMMUTABLE","TRANSIENT_READS",
+      "WRITES","DELETES","MUTATES","TRANSIENT_WRITES","TRANSIENT_DELETES",
+      "INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION",
+    ];
+    const functionIds=new Set(functions.map(function(fn){return fn.id}));
+    const edges=MODEL.edges.filter(function(e){return functionIds.has(e.source)&&stateKinds.includes(e.kind)});
     add(body,"div","section-head","FUNCTION / STATE ACCESS · "+edges.length);
-    edges.forEach(function(e){const b=add(body,"button","inspect-item",e.kind+" · "+(node(e.target)?.label||e.target));b.addEventListener("click",function(){openNode(e.target,true)})});
+    edges.forEach(function(e){
+      const target=node(e.target),button=add(body,"button","inspect-item",e.kind+" · "+(target?target.label:e.target));
+      add(button,"small","",e.resolution+" · "+e.file+":"+(e.line||"?")+(e.access_path?" · "+e.access_path:""));
+      button.addEventListener("click",function(){if(target)openNode(target.id,true)});
+    });
   }else if(selectedTab==="calls"){
-    const edges=MODEL.edges.filter(function(e){return functions.some(function(fn){return fn.id===e.source})&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","USES_LIBRARY","INHERITS"].includes(e.kind)});
-    add(body,"div","section-head","CALL / INTERFACE BOUNDARIES · "+edges.length);
-    edges.forEach(function(e){const b=add(body,"button","inspect-item",e.label+" → "+(node(e.target)?.label||e.target));add(b,"small","",e.resolution+" · "+e.file+":"+e.line);b.addEventListener("click",function(){if(node(e.target))openNode(e.target,true)})});
+    const functionIds=new Set(functions.map(function(fn){return fn.id}));
+    const callKinds=["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","USES_LIBRARY","USES_TYPE","INHERITS"];
+    const outgoing=MODEL.edges.filter(function(e){return functionIds.has(e.source)&&callKinds.includes(e.kind)});
+    const incoming=MODEL.edges.filter(function(e){return functionIds.has(e.target)&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL"].includes(e.kind)});
+    add(body,"div","section-head","OUTGOING CALLS / INTERFACE BOUNDARIES · "+outgoing.length);
+    outgoing.forEach(function(e){
+      const target=node(e.target),button=add(body,"button","inspect-item",e.label+" → "+(target?target.label:e.target));
+      add(button,"small","",e.resolution+" · "+e.file+":"+(e.line||"?")+(e.method?" · "+e.method:""));
+      button.addEventListener("click",function(){if(target)openNode(target.id,true)});
+    });
+    add(body,"div","section-head","INCOMING CALLERS / INTERFACE USES · "+incoming.length);
+    incoming.forEach(function(e){
+      const caller=node(e.source),button=add(body,"button","inspect-item",(caller?caller.label:e.source)+" → "+e.label);
+      add(button,"small","",e.resolution+" · "+e.file+":"+(e.line||"?"));
+      button.addEventListener("click",function(){if(caller)openNode(caller.id,true)});
+    });
   }else if(selectedTab==="assets"){
     const edges=MODEL.edges.filter(function(e){return functions.some(function(fn){return fn.id===e.source})&&e.kind==="ASSET_FLOW"});
     add(body,"div","section-head","ASSET FLOW CANDIDATES · "+edges.length);
@@ -1263,7 +1285,7 @@ function setMode(next){mode=next;selectedEdge=null;document.querySelectorAll(".m
 function setServerStatus(text){document.getElementById("import-status").textContent=text}
 function refreshModel(next){
   if(!next||next.schema_version!==2||!Array.isArray(next.nodes)||!Array.isArray(next.edges))throw new Error("The selected file is not a Lowkey graph model.");
-  MODEL=next;mapModel();selectedId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
+  MODEL=next;hiddenVendors.clear();mapModel();selectedId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
   document.getElementById("project-name").textContent=MODEL.project_name||"Imported source workspace";
   renderAll();fitGraph();toast("Graph workspace loaded");
 }
@@ -1325,9 +1347,10 @@ function setupImport(){
   document.getElementById("github-import").addEventListener("click",importGithub);
 }
 function resetFilters(){
+  hiddenVendors.clear();
   document.querySelectorAll("[data-filter]").forEach(function(x){x.checked=x.dataset.filter==="first-party"||x.dataset.filter==="unresolved"||["contract","abstract","interface","library"].includes(x.dataset.filter)});
   document.querySelectorAll("[data-edge]").forEach(function(x){x.checked=x.dataset.edge!=="IMPORTS"});
-  document.querySelectorAll("[data-vendor]").forEach(function(x){x.checked=false});renderAll();
+  renderAll();
 }
 function setupInteractions(){
   document.querySelectorAll(".mode-tab").forEach(function(button){button.addEventListener("click",function(){setMode(button.dataset.mode)})});
