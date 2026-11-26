@@ -271,9 +271,9 @@ def campaign_result(
     # preserve OBSERVED rather than promote this simulated candidate to BREAK.
     if result.get("status") != "OBSERVED":
         raise AssertionError(
-            f"{contract}: expected fail-closed OBSERVED, got {result.get('status')}.\\n"
+            f"{contract}: expected fail-closed OBSERVED, got {result.get('status')}.\n"
             + json.dumps(result, indent=2)
-            + "\\nCLI output:\\n" + output.stdout[-16000:]
+            + "\nCLI output:\n" + output.stdout[-16000:]
         )
     required = {
         "upgrade_call_success",
@@ -375,7 +375,7 @@ def proxy_admin_campaign_result(
     if result.get("status") != "OBSERVED":
         raise AssertionError(
             f"{admin_contract}: expected fail-closed OBSERVED, got {result.get('status')}."
-            + json.dumps(result, indent=2) + "\\n" + output.stdout[-16000:]
+            + json.dumps(result, indent=2) + "\n" + output.stdout[-16000:]
         )
     if str(detail.get("proxy_address") or "").lower() != proxy_address.lower():
         raise AssertionError(f"{admin_contract}: explicit proxy address is missing from evidence.")
