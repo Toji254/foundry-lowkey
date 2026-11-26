@@ -244,8 +244,7 @@ class SourceLinkTests(unittest.TestCase):
         self.assertIn("Architecture", document)
         self.assertIn("Function flow", document)
         self.assertIn("Asset flow", document)
-        self.assertIn("Project explorer", document.lower())
-        self.assertIn("OrderBook", document) if "OrderBook" in document else None
+        self.assertIn("project explorer", document.lower())
         self.assertIn('data-filter="interface"', document)
         self.assertIn('data-filter="library"', document)
         self.assertIn("search-results", document)
