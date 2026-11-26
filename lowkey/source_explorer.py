@@ -102,7 +102,7 @@ def _node_label(raw: dict[str, Any]) -> str:
     if kind == "contract":
         return str(raw.get("name") or "Unnamed declaration")
     if kind in {"function", "modifier"}:
-        return str(raw.get("signature") or raw.get("qualified_name") or raw.get("name") or kind)
+        return str(raw.get("qualified_name") or raw.get("signature") or raw.get("name") or kind)
     if kind == "file":
         return str(raw.get("name") or raw.get("file") or "Source file")
     return str(raw.get("qualified_name") or raw.get("name") or kind or "Unknown")
@@ -1514,7 +1514,7 @@ def _normalise_paths(paths: list[PurePosixPath]) -> list[PurePosixPath]:
     source_roots = {
         "src", "contracts", "contract", "interfaces", "interface",
         "test", "tests", "script", "scripts", "lib", "libs",
-        "vendor", "vendors", "examples", "example", "docs",
+        "vendor", "vendors", "docs",
         "mocks", "mock", "fixtures", "fixture",
     }
     if wrapper.casefold() in source_roots:
